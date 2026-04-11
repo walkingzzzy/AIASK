@@ -9,6 +9,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from .research.candidate_origin import (
+    EXTERNAL_AUTONOMY_CANDIDATE_ORIGIN,
+    GOVERNED_CANDIDATE_ACTIVATION_ORIGIN,
+    LOCAL_RULE_CANDIDATE_ORIGIN,
+    OPEN_RESEARCH_TASK_ORIGIN,
+    classify_research_candidate_origin,
+    classify_research_task_origin,
+    count_candidate_origins,
+    count_task_origins,
+)
 from .services.readiness_service import resolve_governed_pool_state
 
 RESEARCH_PLANE_CONTRACT_VERSION = "strategy_factory.research_plane.v1"
@@ -114,9 +124,11 @@ def _compact_task_brief(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "task_id": _string(payload.get("task_id") or payload.get("task_key")) or None,
         "task_source": _string(payload.get("task_source")) or None,
+        "task_origin": classify_research_task_origin(payload),
         "opportunity_type": _string(payload.get("opportunity_type")) or None,
         "candidate_family": _string(payload.get("candidate_family")) or None,
         "factor_name": _string(payload.get("factor_name")) or None,
+        "source_candidate_artifact_id": _string(payload.get("source_candidate_artifact_id")) or None,
         "target_symbols": _compact_list(payload.get("target_symbols"), limit=12),
         "generation_limit": _safe_int(payload.get("generation_limit")),
         "event_id": _string(payload.get("event_id")) or None,
@@ -157,6 +169,7 @@ def _compact_candidate_brief(candidate: dict[str, Any]) -> dict[str, Any]:
         "candidate_family": _candidate_family(payload),
         "task_source": _candidate_task_source(payload),
         "generator_mode": _candidate_generator_mode(payload),
+        "research_candidate_origin": classify_research_candidate_origin(payload),
         "target_pool_id": _string(
             payload.get("target_pool_id")
             or targeting.get("target_pool_id")
@@ -167,6 +180,12 @@ def _compact_candidate_brief(candidate: dict[str, Any]) -> dict[str, Any]:
             or targeting.get("target_symbols"),
             limit=12,
         ),
+        "source_candidate_artifact_id": _string(
+            payload.get("source_candidate_artifact_id")
+            or dict(payload.get("research_task") or {}).get("source_candidate_artifact_id")
+            or provenance.get("source_candidate_artifact_id")
+        )
+        or None,
         "experiment_id": _string(payload.get("experiment_id")) or None,
         "candidate_contract_ready": bool(contract_snapshot),
         "evidence_ready": bool(evidence_status or payload.get("evidence_bundle")),
@@ -205,6 +224,22 @@ def build_research_artifact(
         for item in list(artifact.get("top_candidate_lineage") or [])[:3]
         if isinstance(item, dict)
     ]
+    search_route_actions = [
+        {
+            "family": _string(item.get("family")) or None,
+            "action": _string(item.get("action")) or None,
+            "control_mode": _string(item.get("control_mode")) or None,
+            "budget_weight": round(_safe_float(item.get("budget_weight")), 4),
+            "budget_multiplier": round(_safe_float(item.get("budget_multiplier"), 1.0), 4),
+            "priority_adjustment": round(_safe_float(item.get("priority_adjustment")), 4),
+            "reasons": _compact_list(item.get("reasons"), limit=6),
+        }
+        for item in list(
+            artifact.get("search_route_actions") or summary.get("search_route_actions") or []
+        )[:12]
+        if isinstance(item, dict)
+    ]
+    search_route_action_counts = _count_by(search_route_actions, lambda item: item.get("action"))
     return {
         "contract_version": RESEARCH_ARTIFACT_CONTRACT_VERSION,
         "available": bool(artifact),
@@ -217,10 +252,22 @@ def build_research_artifact(
         "active_regime_names": _compact_list(summary.get("active_regime_names"), limit=12),
         "top_factor_names": _compact_list(summary.get("top_factor_names"), limit=8),
         "top_candidate_names": _compact_list(summary.get("top_candidate_names"), limit=8),
+        "family_preference_order": _compact_list(summary.get("family_preference_order"), limit=12),
+        "family_preference_source_mode": summary.get("family_preference_source_mode"),
         "governed_candidate_pool_active": bool(governed_pool_state.get("active")),
         "governed_candidate_pool_mode": summary.get("governed_candidate_pool_mode"),
         "governed_candidate_pool_provisional": bool(summary.get("governed_candidate_pool_provisional")),
+        "governed_candidate_pool_provisional_spillover_policy_status": summary.get(
+            "governed_candidate_pool_provisional_spillover_policy_status"
+        ),
+        "governed_candidate_pool_provisional_pending_count": _safe_int(
+            summary.get("governed_candidate_pool_provisional_pending_count")
+        ),
+        "governed_candidate_pool_strict_shortfall_count": _safe_int(
+            summary.get("governed_candidate_pool_strict_shortfall_count")
+        ),
         "stock_family_allocation_count": _safe_int(summary.get("stock_family_allocation_count")),
+        "stock_family_allocation_source_mode": summary.get("stock_family_allocation_source_mode"),
         "factor_llm_provider_health_status": summary.get("factor_llm_provider_health_status"),
         "factor_llm_provider_ready": bool(summary.get("factor_llm_provider_ready")),
         "lifecycle_feedback_input_contract_version": lifecycle_feedback_input.get("contract_version"),
@@ -229,6 +276,9 @@ def build_research_artifact(
         "lifecycle_feedback_strategy_count": _safe_int(summary.get("budget_feedback_strategy_count")),
         "lifecycle_feedback_target_pool_scope_count": _safe_int(
             summary.get("budget_feedback_target_pool_scope_count")
+        ),
+        "lifecycle_feedback_holding_bucket_scope_count": _safe_int(
+            summary.get("budget_feedback_holding_bucket_scope_count")
         ),
         "lifecycle_feedback_generator_mode_scope_count": _safe_int(
             summary.get("budget_feedback_generator_mode_scope_count")
@@ -245,6 +295,61 @@ def build_research_artifact(
         "lifecycle_feedback_promotion_review_status_counts": dict(
             summary.get("budget_feedback_promotion_review_status_counts") or {}
         ),
+        "lifecycle_feedback_signal_count_total": _safe_int(
+            summary.get("budget_feedback_signal_count_total")
+        ),
+        "lifecycle_feedback_zero_signal_strategy_count": _safe_int(
+            summary.get("budget_feedback_zero_signal_strategy_count")
+        ),
+        "lifecycle_feedback_zero_signal_ratio": _safe_float(
+            summary.get("budget_feedback_zero_signal_ratio")
+        ),
+        "lifecycle_feedback_low_signal_strategy_count": _safe_int(
+            summary.get("budget_feedback_low_signal_strategy_count")
+        ),
+        "lifecycle_feedback_low_signal_ratio": _safe_float(
+            summary.get("budget_feedback_low_signal_ratio")
+        ),
+        "lifecycle_feedback_observed_forward_window_count": _safe_int(
+            summary.get("budget_feedback_observed_forward_window_count")
+        ),
+        "lifecycle_feedback_missing_forward_window_count": _safe_int(
+            summary.get("budget_feedback_missing_forward_window_count")
+        ),
+        "lifecycle_feedback_expected_forward_window_count": _safe_int(
+            summary.get("budget_feedback_expected_forward_window_count")
+        ),
+        "lifecycle_feedback_forward_window_coverage_ratio": _safe_float(
+            summary.get("budget_feedback_forward_window_coverage_ratio"),
+            1.0,
+        ),
+        "lifecycle_feedback_promotion_ready_count": _safe_int(
+            summary.get("budget_feedback_promotion_ready_count")
+        ),
+        "lifecycle_feedback_promotion_ready_ratio": _safe_float(
+            summary.get("budget_feedback_promotion_ready_ratio"),
+            1.0,
+        ),
+        "lifecycle_feedback_promotion_review_coverage_ratio": _safe_float(
+            summary.get("budget_feedback_promotion_review_coverage_ratio"),
+            1.0,
+        ),
+        "lifecycle_feedback_evidence_debt_strategy_count": _safe_int(
+            summary.get("budget_feedback_evidence_debt_strategy_count")
+        ),
+        "lifecycle_feedback_evidence_debt_ratio": _safe_float(
+            summary.get("budget_feedback_evidence_debt_ratio")
+        ),
+        "family_reward_table": dict(
+            artifact.get("family_reward_table") or summary.get("family_reward_table") or {}
+        ),
+        "family_debt_table": dict(
+            artifact.get("family_debt_table") or summary.get("family_debt_table") or {}
+        ),
+        "search_route_actions": search_route_actions,
+        "search_route_action_counts": (
+            dict(summary.get("search_route_action_counts") or {}) or search_route_action_counts
+        ),
         "source_chain": list(artifact.get("source_chain") or []),
         "readiness_reference": {
             "decision": readiness_payload.get("decision"),
@@ -260,6 +365,12 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
     stage = dict(autonomy_stage or {})
     task_scan = dict(stage.get("task_scan") or {})
     task_scan_summary = dict(task_scan.get("summary") or {})
+    planned_tasks_raw = [
+        dict(task or {})
+        for task in list(task_scan.get("tasks") or [])
+        if isinstance(task, dict)
+    ]
+    task_origin_counts = count_task_origins(planned_tasks_raw)
     task_source_counts = dict(stage.get("task_source_counts") or task_scan_summary.get("task_sources") or {})
     event_task_count = _safe_int(
         stage.get("event_task_count"),
@@ -275,8 +386,7 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
     )
     planned_tasks = [
         _compact_task_brief(task)
-        for task in list(task_scan.get("tasks") or [])[:12]
-        if isinstance(task, dict)
+        for task in planned_tasks_raw[:12]
     ]
     task_results = [
         _compact_task_result_brief(task_result)
@@ -292,6 +402,11 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         "failed_task_count": _safe_int(stage.get("failed_task_count")),
         "generated_candidate_count": _safe_int(stage.get("generated_count")),
         "task_source_counts": task_source_counts,
+        "task_origin_counts": task_origin_counts,
+        "governed_candidate_activation_task_count": _safe_int(
+            task_origin_counts.get(GOVERNED_CANDIDATE_ACTIVATION_ORIGIN)
+        ),
+        "open_research_task_count": _safe_int(task_origin_counts.get(OPEN_RESEARCH_TASK_ORIGIN)),
         "event_task_count": event_task_count,
         "snapshot_task_count": snapshot_task_count,
         "bulk_stock_task_count": bulk_stock_task_count,
@@ -304,6 +419,9 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         "feedback_target_pool_control_mode_counts": dict(
             stage.get("selected_feedback_target_pool_control_mode_counts") or {}
         ),
+        "feedback_holding_bucket_control_mode_counts": dict(
+            stage.get("selected_feedback_holding_bucket_control_mode_counts") or {}
+        ),
         "feedback_generator_mode_control_mode_counts": dict(
             stage.get("selected_feedback_generator_mode_control_mode_counts") or {}
         ),
@@ -315,6 +433,7 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
 def build_candidate_artifact(candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     items = [dict(item or {}) for item in list(candidates or []) if isinstance(item, dict)]
     briefs = [_compact_candidate_brief(item) for item in items[:12]]
+    candidate_origin_counts = count_candidate_origins(items)
     targeted_candidate_count = sum(1 for item in items if list(item.get("target_symbols") or []))
     experiment_linked_count = sum(1 for item in items if _string(item.get("experiment_id")))
     contract_ready_count = sum(1 for item in items if bool(item.get("candidate_contract_snapshot")))
@@ -337,6 +456,14 @@ def build_candidate_artifact(candidates: list[dict[str, Any]] | None = None) -> 
         "experiment_linked_count": experiment_linked_count,
         "candidate_contract_ready_count": contract_ready_count,
         "candidate_evidence_ready_count": evidence_ready_count,
+        "candidate_origin_counts": candidate_origin_counts,
+        "local_rule_candidate_count": _safe_int(candidate_origin_counts.get(LOCAL_RULE_CANDIDATE_ORIGIN)),
+        "external_autonomy_candidate_count": _safe_int(
+            candidate_origin_counts.get(EXTERNAL_AUTONOMY_CANDIDATE_ORIGIN)
+        ),
+        "governed_candidate_activation_count": _safe_int(
+            candidate_origin_counts.get(GOVERNED_CANDIDATE_ACTIVATION_ORIGIN)
+        ),
         "generator_type_counts": _count_by(items, _candidate_generator_mode),
         "task_source_counts": _count_by(items, _candidate_task_source),
         "family_counts": _count_by(items, _candidate_family),
@@ -353,6 +480,7 @@ def build_research_evidence_artifact(
     experiment_rows = [dict(item or {}) for item in list(experiments or []) if isinstance(item, dict)]
     task_results = [dict(item or {}) for item in list(stage.get("task_results") or []) if isinstance(item, dict)]
     task_status_counts = _count_by(task_results, lambda item: item.get("status"))
+    task_origin_counts = count_task_origins([dict(item.get("task") or {}) for item in task_results])
     return {
         "contract_version": RESEARCH_EVIDENCE_ARTIFACT_CONTRACT_VERSION,
         "available": bool(stage or experiment_rows),
@@ -360,6 +488,10 @@ def build_research_evidence_artifact(
         "task_run_count": len(list(stage.get("task_run_ids") or [])),
         "task_run_ids": list(stage.get("task_run_ids") or [])[:12],
         "task_result_status_counts": task_status_counts,
+        "task_origin_counts": task_origin_counts,
+        "governed_candidate_activation_task_count": _safe_int(
+            task_origin_counts.get(GOVERNED_CANDIDATE_ACTIVATION_ORIGIN)
+        ),
         "experiment_count": _safe_int(stage.get("experiment_count"), len(experiment_rows)),
         "experiment_briefs": [_compact_experiment_brief(item) for item in experiment_rows[:12]],
         "external_llm_status": stage.get("external_llm_status"),
@@ -406,14 +538,27 @@ def build_research_plane_artifact(
         factor_payload.get("research_artifact"),
         expected_version=RESEARCH_ARTIFACT_CONTRACT_VERSION,
     )
-    research_artifact = (
-        prebuilt_research_artifact
-        if bool(prebuilt_research_artifact.get("available"))
-        else build_research_artifact(
-            factor_research=factor_research,
-            readiness=readiness,
-        )
+    derived_research_artifact = build_research_artifact(
+        factor_research=factor_research,
+        readiness=readiness,
     )
+    research_artifact = derived_research_artifact
+    if bool(prebuilt_research_artifact.get("available")):
+        research_artifact = {
+            **derived_research_artifact,
+            **prebuilt_research_artifact,
+        }
+        research_artifact["available"] = bool(
+            prebuilt_research_artifact.get("available")
+            or derived_research_artifact.get("available")
+        )
+        research_artifact["source_chain"] = _compact_list(
+            [
+                *list(prebuilt_research_artifact.get("source_chain") or []),
+                *list(derived_research_artifact.get("source_chain") or []),
+            ],
+            limit=12,
+        )
     prebuilt_task_artifact = _resolve_contract_artifact(
         autonomy_payload.get("task_artifact"),
         expected_version=TASK_ARTIFACT_CONTRACT_VERSION,

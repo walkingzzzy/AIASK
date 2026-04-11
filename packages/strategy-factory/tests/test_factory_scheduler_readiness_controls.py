@@ -361,21 +361,131 @@ class _GovernedPoolHighBlockedRatioGateway:
             "degraded": False,
             "summary": {
                 "active_factor_count": 1,
-                "active_candidate_count": 2,
+                "active_candidate_count": 0,
                 "governed_source_candidate_count": 8,
                 "governed_blocked_candidate_count": 6,
                 "governed_blocked_ratio": 0.75,
                 "governed_freshness_days": 0,
                 "ranked_factor_count": 0,
                 "top_factor_names": ["sentiment"],
-                "top_candidate_names": ["sentiment_breakout_factor"],
-                "active_family_names": ["sentiment"],
-                "active_regime_names": ["trend"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
                 "preferred_strategy_types": ["momentum"],
                 "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_active": False,
                 "degraded": False,
                 "stale": False,
                 "freshness_days": 0,
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _GovernedPoolPendingBacklogGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 8,
+                "governed_blocked_candidate_count": 1,
+                "governed_blocked_ratio": 0.125,
+                "governed_pending_candidate_count": 5,
+                "governed_pending_ratio": 0.625,
+                "governed_pending_reason_counts": {
+                    "registry_stage_validated": 5,
+                },
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["sentiment"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_active": False,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _EvidenceDebtBacklogGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 8,
+                "governed_blocked_candidate_count": 1,
+                "governed_blocked_ratio": 0.125,
+                "governed_pending_candidate_count": 2,
+                "governed_pending_ratio": 0.25,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["momentum"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_active": False,
+                "budget_feedback_strategy_count": 12,
+                "budget_feedback_zero_signal_strategy_count": 11,
+                "budget_feedback_zero_signal_ratio": 0.9167,
+                "budget_feedback_observed_forward_window_count": 2,
+                "budget_feedback_missing_forward_window_count": 46,
+                "budget_feedback_expected_forward_window_count": 48,
+                "budget_feedback_forward_window_coverage_ratio": 0.0417,
+                "budget_feedback_promotion_ready_count": 0,
+                "budget_feedback_promotion_ready_ratio": 0.0,
+                "budget_feedback_promotion_review_count": 0,
+                "budget_feedback_promotion_review_coverage_ratio": 0.0,
+                "budget_feedback_evidence_debt_strategy_count": 12,
+                "budget_feedback_evidence_debt_ratio": 0.9229,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _GovernedPoolResilientBlockedRatioGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 1,
+                "governed_source_candidate_count": 8,
+                "governed_blocked_candidate_count": 6,
+                "governed_blocked_ratio": 0.75,
+                "governed_freshness_days": 1,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["momentum"],
+                "top_candidate_names": ["momentum_factory_candidate"],
+                "active_family_names": ["momentum"],
+                "active_regime_names": ["trend"],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_active": True,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
             },
         }
 
@@ -1235,10 +1345,133 @@ async def test_scheduler_readiness_penalizes_high_governed_blocked_ratio(monkeyp
 
     result = await scheduler.run_once()
 
-    assert result["status"] in {"partial", "success"}
+    assert result["status"] == "skipped"
+    assert result["summary"]["skip_reason"] == "readiness_blocked"
     assert "governed_candidate_pool_blocked_ratio_high" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_blocked_ratio_high" in result["stages"]["readiness"]["blockers"]
     assert result["stages"]["readiness"]["governed_blocked_ratio"] == pytest.approx(0.75)
     assert result["summary"]["governed_blocked_ratio"] == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_allows_high_governed_blocked_ratio_when_viable_supply_remains(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_GovernedPoolResilientBlockedRatioGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["governed_supply_viable"] is True
+    assert "governed_candidate_pool_blocked_ratio_high" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_blocked_ratio_high" not in result["stages"]["readiness"]["blockers"]
+    assert result["summary"]["governed_blocked_ratio"] == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_penalizes_governed_pending_promotion_backlog(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_GovernedPoolPendingBacklogGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "skipped"
+    assert result["summary"]["skip_reason"] == "readiness_blocked"
+    assert "governed_candidate_pool_promotion_backlog_elevated" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_promotion_backlog_elevated" in result["stages"]["readiness"]["blockers"]
+    assert result["stages"]["readiness"]["governed_pending_ratio"] == pytest.approx(0.625)
+    assert result["summary"]["governed_pending_ratio"] == pytest.approx(0.625)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_blocks_on_severe_incubating_evidence_debt_when_hard_gate_enabled(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_EvidenceDebtBacklogGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "skipped"
+    assert result["summary"]["skip_reason"] == "readiness_blocked"
+    assert result["stages"]["readiness"]["can_proceed"] is False
+    assert "incubating_zero_signal_backlog_high" in result["stages"]["readiness"]["warnings"]
+    assert "incubating_forward_window_coverage_low" in result["stages"]["readiness"]["warnings"]
+    assert "incubating_evidence_debt_high" in result["stages"]["readiness"]["warnings"]
+    assert "incubating_evidence_debt_high" in result["stages"]["readiness"]["blockers"]
+    assert result["stages"]["readiness"]["budget_feedback_zero_signal_ratio"] == pytest.approx(0.9167, abs=1e-4)
+    assert result["stages"]["readiness"]["budget_feedback_evidence_debt_ratio"] == pytest.approx(0.9229, abs=1e-4)
+
+
+def test_scheduler_slo_treats_filled_bulk_budget_as_healthy_even_when_batch_coverage_is_narrow():
+    scheduler_slo = StrategyFactoryScheduler._build_scheduler_slo_summary(
+        {"stages": {}},
+        {
+            "factor_source_mode": "governed_candidate_pool",
+            "governed_candidate_pool_active": True,
+            "governed_blocked_ratio": 0.0,
+            "planned_bulk_task_count": 20,
+            "selected_bulk_task_count": 20,
+            "max_bulk_research_tasks": 20,
+            "reserved_bulk_task_budget": 20,
+            "bulk_stock_matrix_batch_count": 104,
+            "bulk_stock_matrix_selected_batch_count": 2,
+        },
+    )
+
+    assert scheduler_slo["status"] == "healthy"
+    assert "bulk_queue_imbalance" not in scheduler_slo["alert_codes"]
+    assert scheduler_slo["bulk_queue_imbalance"]["status"] == "healthy"
+    assert scheduler_slo["bulk_queue_imbalance"]["bulk_fill_ratio"] == pytest.approx(1.0)
+    assert scheduler_slo["bulk_queue_imbalance"]["planner_batch_coverage_ratio"] == pytest.approx(0.0192)
+
+
+def test_scheduler_slo_flags_governed_pending_promotion_backlog_separately_from_blocked_ratio():
+    scheduler_slo = StrategyFactoryScheduler._build_scheduler_slo_summary(
+        {"stages": {}},
+        {
+            "factor_source_mode": "governed_candidate_pool",
+            "governed_candidate_pool_active": True,
+            "governed_blocked_ratio": 0.125,
+            "governed_pending_ratio": 0.625,
+            "governed_pending_candidate_count": 5,
+            "governed_source_candidate_count": 8,
+        },
+    )
+
+    assert "governed_pool_promotion_backlog" in scheduler_slo["alert_codes"]
+    assert "governed_pool_blocked" not in scheduler_slo["alert_codes"]
+    assert scheduler_slo["governed_pool_promotion_backlog"]["status"] == "warning"
+    assert scheduler_slo["governed_pool_promotion_backlog"]["governed_pending_ratio"] == pytest.approx(0.625)
 
 
 @pytest.mark.asyncio
@@ -1344,6 +1577,18 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
         == result["research_plane"]["candidate_artifact"]["candidate_count"]
     )
     assert (
+        result["summary"]["research_candidate_origin_counts"]
+        == result["research_plane"]["candidate_artifact"]["candidate_origin_counts"]
+    )
+    assert (
+        result["summary"]["research_local_rule_candidate_count"]
+        == result["research_plane"]["candidate_artifact"]["local_rule_candidate_count"]
+    )
+    assert (
+        result["summary"]["research_external_autonomy_candidate_count"]
+        == result["research_plane"]["candidate_artifact"]["external_autonomy_candidate_count"]
+    )
+    assert (
         result["summary"]["research_experiment_count"]
         == result["research_plane"]["evidence_artifact"]["experiment_count"]
     )
@@ -1352,10 +1597,18 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
         == result["research_plane"]["evidence_artifact"]["task_evidence_count"]
     )
     assert (
+        result["summary"]["research_task_origin_counts"]
+        == result["research_plane"]["task_artifact"]["task_origin_counts"]
+    )
+    assert (
         result["summary"]["research_summary"]["research_plane_contract_version"]
         == RESEARCH_PLANE_CONTRACT_VERSION
     )
     assert result["summary"]["research_summary"]["task_contract_observed"] is True
+    assert (
+        result["summary"]["research_summary"]["candidate_origin_counts"]
+        == result["summary"]["research_candidate_origin_counts"]
+    )
     assert result["summary"]["research_summary"]["gate_2_passed"] == 3
     assert result["summary"]["research_summary"]["source_mix"]["generator_type_counts"] == {"rule": 2, "external_llm": 1}
     assert result["summary"]["research_summary"]["source_mix"]["task_source_counts"] == {
@@ -1467,6 +1720,20 @@ def test_build_layered_run_summary_exposes_feedback_summary_contract():
         "budget_feedback_runtime_risk_event_count": 6,
         "blocked_feedback_task_count": 2,
         "planned_feedback_cooldown_task_count": 1,
+        "budget_feedback_signal_count_total": 18,
+        "budget_feedback_zero_signal_strategy_count": 6,
+        "budget_feedback_zero_signal_ratio": 0.6667,
+        "budget_feedback_low_signal_strategy_count": 8,
+        "budget_feedback_low_signal_ratio": 0.8889,
+        "budget_feedback_observed_forward_window_count": 10,
+        "budget_feedback_missing_forward_window_count": 26,
+        "budget_feedback_expected_forward_window_count": 36,
+        "budget_feedback_forward_window_coverage_ratio": 0.2778,
+        "budget_feedback_promotion_ready_count": 1,
+        "budget_feedback_promotion_ready_ratio": 0.1111,
+        "budget_feedback_promotion_review_coverage_ratio": 0.2222,
+        "budget_feedback_evidence_debt_strategy_count": 8,
+        "budget_feedback_evidence_debt_ratio": 0.7408,
         "planned_feedback_control_mode_counts": {"cooldown": 2, "normal": 1},
         "planned_feedback_target_pool_control_mode_counts": {"freeze": 1},
         "planned_feedback_generator_mode_control_mode_counts": {"suppress": 1},
@@ -1496,6 +1763,20 @@ def test_build_layered_run_summary_exposes_feedback_summary_contract():
     assert feedback_summary["generator_mode_scope_count"] == 2
     assert feedback_summary["runtime_alert_count"] == 5
     assert feedback_summary["runtime_risk_event_count"] == 6
+    assert feedback_summary["signal_count_total"] == 18
+    assert feedback_summary["zero_signal_strategy_count"] == 6
+    assert feedback_summary["zero_signal_ratio"] == pytest.approx(0.6667)
+    assert feedback_summary["low_signal_strategy_count"] == 8
+    assert feedback_summary["low_signal_ratio"] == pytest.approx(0.8889)
+    assert feedback_summary["observed_forward_window_count"] == 10
+    assert feedback_summary["missing_forward_window_count"] == 26
+    assert feedback_summary["expected_forward_window_count"] == 36
+    assert feedback_summary["forward_window_coverage_ratio"] == pytest.approx(0.2778)
+    assert feedback_summary["promotion_ready_count"] == 1
+    assert feedback_summary["promotion_ready_ratio"] == pytest.approx(0.1111)
+    assert feedback_summary["promotion_review_coverage_ratio"] == pytest.approx(0.2222)
+    assert feedback_summary["evidence_debt_strategy_count"] == 8
+    assert feedback_summary["evidence_debt_ratio"] == pytest.approx(0.7408)
     assert feedback_summary["blocked_task_count"] == 2
     assert feedback_summary["planned_cooldown_task_count"] == 1
     assert feedback_summary["planned_control_mode_counts"] == {"cooldown": 2, "normal": 1}

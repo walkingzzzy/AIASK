@@ -345,6 +345,24 @@ class _LLMProxyStrategyGeneratorExternalMixin:
             return unique
 
         @staticmethod
+        def _candidate_payload_looks_normalized(candidate: Optional[dict[str, Any]]) -> bool:
+            payload = dict(candidate or {})
+            if not payload:
+                return False
+            if bool(payload.get("_legacy_contract_defaults_applied")):
+                return True
+            if isinstance(payload.get("params"), dict) and payload.get("params"):
+                return True
+            required_contract_keys = (
+                "portfolio_spec",
+                "execution_assumptions",
+                "validation_profile",
+            )
+            if all(isinstance(payload.get(key), dict) and payload.get(key) for key in required_contract_keys):
+                return True
+            return False
+
+        @staticmethod
         def _pipeline_run_timeout_sec() -> float:
             configured = os.getenv('STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC')
             if configured is not None:
@@ -401,24 +419,75 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                 )
                 request_metrics = dict((provider_payload or {}).get('request_metrics') or {})
                 analysis = dict((provider_payload or {}).get('analysis') or {})
-                returned_candidates = list((provider_payload or {}).get('candidates') or [])
+                raw_candidates = list((provider_payload or {}).get('raw_candidates') or [])
+                normalized_candidates = list((provider_payload or {}).get('candidates') or [])
+                returned_candidates = raw_candidates or normalized_candidates
                 all_specs: list[StrategySpec] = []
                 viable_specs: list[StrategySpec] = []
                 precompile_rejections: list[dict[str, Any]] = []
-                for candidate in returned_candidates:
+                open_dsl_candidate_count = 0
+                open_dsl_compiled_candidate_count = 0
+                open_dsl_viable_candidate_count = 0
+                open_dsl_rejected_count = 0
+                open_dsl_rejections: list[dict[str, Any]] = []
+                for candidate_index, candidate in enumerate(returned_candidates):
+                    normalized_candidate = (
+                        dict(normalized_candidates[candidate_index] or {})
+                        if candidate_index < len(normalized_candidates)
+                        else None
+                    )
+                    candidate_tags = {
+                        str(item or "").strip().lower()
+                        for item in list((candidate or {}).get("tags") or [])
+                        if str(item or "").strip()
+                    }
+                    candidate_generator_mode = str((candidate or {}).get("generator_mode") or "").strip().lower()
+                    candidate_strategy_type = str((candidate or {}).get("strategy_type") or "").strip().lower()
+                    open_dsl_candidate = bool(
+                        candidate_tags.intersection({"open_dsl", "llm_defined", "llm_defined_dsl", "daily_dsl"})
+                        or candidate_generator_mode in {"open_dsl", "llm_defined", "llm_defined_dsl"}
+                        or candidate_strategy_type in {"open_dsl", "llm_defined"}
+                    )
+                    if open_dsl_candidate:
+                        open_dsl_candidate_count += 1
+                    if isinstance(candidate, dict) and not self._candidate_payload_looks_normalized(normalized_candidate):
+                        normalized_candidate = StrategyLLMProvider._normalize_candidate_payload(
+                            candidate,
+                            research_task=research_task,
+                            allow_legacy_contract_defaults=True,
+                        )
                     spec = self._build_external_candidate_spec(
                         candidate,
                         provider_payload or {},
                         frame_cache,
                         frame,
+                        normalized_candidate=normalized_candidate,
                         research_task=research_task,
                     )
                     if spec is None:
                         reject_reasons = list(
-                            candidate.get("_normalize_reject_reasons")
+                            candidate.get("_open_dsl_reject_reasons")
+                            or ((normalized_candidate or {}).get("_open_dsl_reject_reasons") if isinstance(normalized_candidate, dict) else None)
+                            or candidate.get("_normalize_reject_reasons")
+                            or candidate.get("_hypothesis_reject_reasons")
+                            or candidate.get("_hypothesis_compile_reject_reasons")
                             or candidate.get("_generator_precompile_reject_reasons")
+                            or ((normalized_candidate or {}).get("_normalize_reject_reasons") if isinstance(normalized_candidate, dict) else None)
+                            or ((normalized_candidate or {}).get("_hypothesis_reject_reasons") if isinstance(normalized_candidate, dict) else None)
+                            or ((normalized_candidate or {}).get("_hypothesis_compile_reject_reasons") if isinstance(normalized_candidate, dict) else None)
+                            or ((normalized_candidate or {}).get("_generator_precompile_reject_reasons") if isinstance(normalized_candidate, dict) else None)
                             or []
                         )
+                        if open_dsl_candidate and reject_reasons:
+                            open_dsl_rejected_count += 1
+                            if len(open_dsl_rejections) < 8:
+                                open_dsl_rejections.append(
+                                    {
+                                        'name': str((candidate or {}).get('name') or ''),
+                                        'strategy_type': str((candidate or {}).get('strategy_type') or ''),
+                                        'reject_reasons': reject_reasons,
+                                    }
+                                )
                         if reject_reasons and len(precompile_rejections) < 8:
                             precompile_rejections.append(
                                 {
@@ -429,8 +498,12 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                             )
                         continue
                     all_specs.append(spec)
+                    if str((spec.metadata or {}).get('candidate_lane') or '').strip().lower() == 'l3_open_dsl':
+                        open_dsl_compiled_candidate_count += 1
                     if self._is_viable_external_spec(spec):
                         viable_specs.append(spec)
+                        if str((spec.metadata or {}).get('candidate_lane') or '').strip().lower() == 'l3_open_dsl':
+                            open_dsl_viable_candidate_count += 1
                 viable_specs.sort(key=self._spec_preflight_score, reverse=True)
                 all_specs.sort(key=self._spec_preflight_score, reverse=True)
                 non_executable_candidate_count = max(0, len(returned_candidates) - len(all_specs))
@@ -446,6 +519,11 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                         'compiled_candidate_count': len(all_specs),
                         'non_executable_candidate_count': non_executable_candidate_count,
                         'viable_candidate_count': len(viable_specs),
+                        'open_dsl_candidate_count': open_dsl_candidate_count,
+                        'open_dsl_compiled_candidate_count': open_dsl_compiled_candidate_count,
+                        'open_dsl_viable_candidate_count': open_dsl_viable_candidate_count,
+                        'open_dsl_rejected_count': open_dsl_rejected_count,
+                        'open_dsl_rejections': open_dsl_rejections,
                         'precompile_rejected_count': len(precompile_rejections),
                         'precompile_rejections': precompile_rejections,
                         'candidate_names': [str((item or {}).get('name') or '') for item in returned_candidates[:4]],
@@ -636,6 +714,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
             provider_payload: dict[str, Any],
             frame_cache: dict[str, pd.DataFrame],
             default_frame: Optional[pd.DataFrame],
+            normalized_candidate: Optional[dict[str, Any]] = None,
             research_task: Optional[dict[str, Any]] = None,
         ) -> Optional[StrategySpec]:
             frame_candidates: list[tuple[str, pd.DataFrame]] = []
@@ -650,6 +729,12 @@ class _LLMProxyStrategyGeneratorExternalMixin:
             best_rank: Optional[tuple[float, int, int]] = None
             for code, frame in frame_candidates:
                 spec = self._external_candidate_to_spec(candidate, provider_payload or {}, market_frame=frame)
+                if spec is None and normalized_candidate:
+                    spec = self._external_candidate_to_spec(
+                        normalized_candidate,
+                        provider_payload or {},
+                        market_frame=frame,
+                    )
                 if spec is None:
                     continue
                 metadata = dict(spec.metadata or {})

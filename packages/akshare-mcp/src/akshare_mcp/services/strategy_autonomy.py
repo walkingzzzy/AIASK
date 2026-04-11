@@ -376,6 +376,10 @@ class AutonomyCycleOrchestrator:
                             'compiled_candidate_count',
                             'non_executable_candidate_count',
                             'viable_candidate_count',
+                            'open_dsl_candidate_count',
+                            'open_dsl_compiled_candidate_count',
+                            'open_dsl_viable_candidate_count',
+                            'open_dsl_rejected_count',
                             'error_type',
                             'error',
                         ),
@@ -735,9 +739,8 @@ class AutonomyCycleOrchestrator:
             if isinstance(task_metadata.get('factor_research'), dict)
             else factor_research
         )
-        factor_summary = self._summarize_factor_research(task_factor_research)
-        if factor_summary:
-            task_metadata['factor_research'] = factor_summary
+        if task_factor_research:
+            task_metadata['factor_research'] = dict(task_factor_research)
         elif task_metadata.get('factor_research') not in (None, '', [], {}):
             task_metadata.pop('factor_research', None)
         if task_metadata:

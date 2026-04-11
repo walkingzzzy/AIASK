@@ -50,6 +50,13 @@ class TestReadinessService:
                 "active_candidate_count": 2,
                 "governed_source_candidate_count": 2,
                 "governed_freshness_days": 0,
+                "family_preference_order": ["momentum", "ma_cross"],
+                "family_preference_source_mode": "stock_family_allocation",
+                "stock_family_allocation_count": 24,
+                "stock_family_allocation_source_mode": "stock_universe_projection",
+                "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                "governed_candidate_pool_provisional_pending_count": 0,
+                "governed_candidate_pool_strict_shortfall_count": 1,
                 "active_family_names": ["momentum"],
                 "active_regime_names": ["bull"],
             },
@@ -72,6 +79,12 @@ class TestReadinessService:
         assert result["blocking_reason_codes"] == []
         assert result["critical_blocking_reason_codes"] == []
         assert result["skip_reason"] is None
+        assert result["family_preference_order"] == ["momentum", "ma_cross"]
+        assert result["family_preference_source_mode"] == "stock_family_allocation"
+        assert result["stock_family_allocation_count"] == 24
+        assert result["stock_family_allocation_source_mode"] == "stock_universe_projection"
+        assert result["governed_candidate_pool_provisional_spillover_policy_status"] == "spillover_applied"
+        assert result["governed_candidate_pool_strict_shortfall_count"] == 1
 
     def test_snapshot_degraded_adds_warning(self):
         svc = self._svc()

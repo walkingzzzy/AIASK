@@ -615,7 +615,7 @@ class _TestAutonomyEnhancementsCoreMixin:
 
         assert len(minimal_system) + len(minimal_user) < len(normal_system) + len(normal_user)
         assert len(minimal_system) < len(normal_system)
-        assert minimal_payload['output_contract']['target_symbol_rule'] == 'prefer_intersection_with_research_task'
+        assert minimal_payload['output_contract']['target_symbol_rule'] == 'strict_intersection_with_research_task'
         assert minimal_payload['output_contract']['prefer_single_high_confidence_candidate'] is True
         assert minimal_payload['output_contract']['required'] == ['candidates']
         assert minimal_payload['output_contract']['analysis_fields'] == []

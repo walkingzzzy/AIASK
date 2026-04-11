@@ -1,6 +1,7 @@
 import importlib
 import os
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,7 +24,29 @@ def _get_manager_callable(manager_name: str, register_module: str, register_func
 
 
 @pytest.mark.asyncio
-async def test_execution_manager_contract():
+async def test_execution_manager_contract(monkeypatch):
+    import akshare_mcp.tools.managers.execution_manager as execution_mod
+
+    monkeypatch.setattr(execution_mod, "_enrich_kwargs_with_realtime", lambda code, kwargs: kwargs)
+    monkeypatch.setattr(execution_mod, "get_artifact_async", AsyncMock(return_value=None))
+    monkeypatch.setattr(execution_mod, "list_artifacts_async", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        execution_mod,
+        "register_artifact_async",
+        AsyncMock(side_effect=lambda payload: dict(payload)),
+    )
+    monkeypatch.setattr(
+        execution_mod,
+        "evaluate_order_compliance",
+        lambda code, direction, quantity_raw, price_raw=None: {
+            "violations": [],
+            "warnings": [],
+            "checks": {"position_limit": True, "trading_hours": True},
+            "order_amount": (float(quantity_raw or 0) * float(price_raw or 0)) if price_raw is not None else None,
+        },
+    )
+    monkeypatch.setattr(execution_mod, "audit_event", lambda *args, **kwargs: None)
+
     execution_manager = _get_manager_callable(
         manager_name="execution_manager",
         register_module="akshare_mcp.tools.managers.execution_manager",

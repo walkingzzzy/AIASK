@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from strategy_factory.application._budget_feedback import (
 )
 from strategy_factory.application.factor_research import FactorResearchBuilder
 from strategy_factory.application.opportunity import MarketOpportunityScanner
+from strategy_factory.domain.constants import preferred_strategy_types_for_factor
 from strategy_factory.domain.spawner import StrategySpawner
 
 
@@ -38,6 +40,46 @@ def test_factor_research_family_plans_zero_budget_when_feedback_control_active()
     assert by_family["momentum"]["budget_weight"] == 0.0
     assert by_family["quality_factor"]["feedback_control_mode"] == "normal"
     assert by_family["quality_factor"]["budget_weight"] > 0.0
+
+
+def test_factor_research_family_plans_keep_reduced_budget_for_relaxable_backlog_control():
+    plans = FactorResearchBuilder._build_family_plans(
+        ["momentum", "quality_factor"],
+        priority=0.72,
+        budget_feedback_root={
+            "momentum": {
+                "strategy_count": 8,
+                "zero_signal_ratio": 1.0,
+                "low_signal_ratio": 1.0,
+                "forward_window_coverage_ratio": 0.0,
+                "promotion_ready_ratio": 0.0,
+                "promotion_review_coverage_ratio": 0.0,
+                "evidence_debt_ratio": 1.0,
+            },
+            "quality_factor": {
+                "paper_hit_ratio": 0.62,
+                "runtime_alert_pressure": 0.08,
+                "realized_turnover": 0.22,
+                "capacity_crowding": 0.16,
+            },
+        },
+    )
+
+    by_family = {plan["family"]: plan for plan in plans}
+
+    assert by_family["momentum"]["feedback_control_original_mode"] == "freeze"
+    assert by_family["momentum"]["feedback_control_mode"] == "normal"
+    assert by_family["momentum"]["feedback_control_relaxed_mode"] == "normal"
+    assert by_family["momentum"]["feedback_control_relaxed"] is True
+    assert by_family["momentum"]["budget_weight"] > 0.0
+    assert by_family["quality_factor"]["budget_weight"] > by_family["momentum"]["budget_weight"]
+
+
+def test_preferred_strategy_types_for_real_registry_families():
+    assert preferred_strategy_types_for_factor("overextension_filter")[0] == "mean_reversion_short"
+    assert preferred_strategy_types_for_factor("breakout_structure")[0] == "momentum"
+    assert preferred_strategy_types_for_factor("volatility_response")[0] == "volatility_breakout"
+    assert preferred_strategy_types_for_factor("intraday_overnight_bridge")[0] == "gap_fill"
 
 
 @pytest.mark.asyncio
@@ -226,6 +268,178 @@ async def test_factor_research_accepts_provisional_governed_candidate_pool(monke
 
 
 @pytest.mark.asyncio
+async def test_factor_research_separates_blocked_pending_and_ineligible_governance_candidates(monkeypatch):
+    db = MagicMock()
+    db.get_factor_ic_history = AsyncMock(return_value=[])
+
+    class _Scheduler:
+        def status(self):
+            return {"running": False, "quality_flags": [], "last_run": None, "freshness_sec": 0, "last_result": {}}
+
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_governed_candidate_pool",
+        AsyncMock(
+            return_value={
+                "available": True,
+                "summary": {
+                    "count": 8,
+                    "active_count": 1,
+                    "blocked_active_count": 4,
+                    "registry_stage_counts": {"governed": 1, "validated": 7},
+                },
+                "active_pool": {
+                    "active_pool_mode": "strict_governed",
+                    "count": 1,
+                    "strict_count": 1,
+                    "provisional_count": 0,
+                    "source_count": 8,
+                    "excluded_count": 7,
+                    "blocked_excluded_count": 4,
+                    "pending_excluded_count": 2,
+                    "ineligible_excluded_count": 1,
+                    "latest_active_candidate_updated_at": "2026-04-08T15:48:16+08:00",
+                    "exclusion_reason_counts": {
+                        "multiple_testing_risk_high": 4,
+                        "registry_stage_validated": 2,
+                        "recommendation_reject": 1,
+                        "score_below_provisional_threshold": 1,
+                    },
+                    "blocked_exclusion_reason_counts": {
+                        "multiple_testing_risk_high": 4,
+                    },
+                    "pending_exclusion_reason_counts": {
+                        "registry_stage_validated": 2,
+                    },
+                    "ineligible_exclusion_reason_counts": {
+                        "recommendation_reject": 1,
+                        "score_below_provisional_threshold": 1,
+                    },
+                    "family_summary": [
+                        {
+                            "family": "volatility_conditioned_reversal",
+                            "count": 1,
+                            "promote_count": 0,
+                            "review_count": 1,
+                            "avg_total_score": 64.2,
+                            "max_total_score": 64.2,
+                        }
+                    ],
+                    "regime_summary": [{"regime": "trend", "count": 1}],
+                    "top_candidates": [
+                        {
+                            "artifact_id": "candidate_governed_001",
+                            "name": "ShockAbsorptionReversal",
+                            "family": "volatility_conditioned_reversal",
+                            "expected_regime": ["trend"],
+                            "grade": "B",
+                            "recommendation": "review",
+                            "registry_stage": "governed",
+                            "total_score": 64.2,
+                            "source_validation_artifact_id": "candidate_governed_001",
+                            "latest_validation_at": "2026-04-08T15:48:16+08:00",
+                            "risk_audit": {
+                                "overall_risk_level": "medium",
+                                "lookahead_available": True,
+                                "multiple_testing_available": True,
+                                "required_audits_complete": True,
+                                "blocked": False,
+                            },
+                        }
+                    ],
+                    "excluded_candidates": [
+                        {
+                            "artifact_id": "candidate_blocked_001",
+                            "name": "BlockedCandidate",
+                            "family": "range_participation",
+                            "registry_stage": "validated",
+                            "admission_blocked": True,
+                            "latest_validation_at": "2026-04-08T15:48:20+08:00",
+                            "risk_audit": {
+                                "blocked": True,
+                                "block_reasons": ["multiple_testing_risk_high"],
+                            },
+                        },
+                        {
+                            "artifact_id": "candidate_pending_001",
+                            "name": "PendingCandidate",
+                            "family": "price_structure",
+                            "registry_stage": "validated",
+                            "admission_blocked": False,
+                            "latest_validation_at": "2026-04-08T15:48:22+08:00",
+                            "risk_audit": {
+                                "blocked": False,
+                                "block_reasons": [],
+                            },
+                            "exclusion_bucket": "pending",
+                        },
+                        {
+                            "artifact_id": "candidate_ineligible_001",
+                            "name": "RejectCandidate",
+                            "family": "trend_quality",
+                            "registry_stage": "validated",
+                            "recommendation": "reject",
+                            "latest_validation_at": "2026-04-08T15:48:25+08:00",
+                            "risk_audit": {
+                                "blocked": False,
+                                "block_reasons": [],
+                            },
+                            "exclusion_bucket": "ineligible",
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(FactorResearchBuilder, "_load_model_registry_lineage", AsyncMock(return_value={"available": False}))
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_budget_feedback",
+        AsyncMock(
+            return_value={
+                "available": False,
+                "reason": "feedback_unavailable",
+                "feedback": {},
+                "summary": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_stock_family_allocation",
+        AsyncMock(return_value={"available": False, "reason": "empty_stock_allocation", "allocation": {}, "summary": {}}),
+    )
+    monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+
+    artifact = await FactorResearchBuilder.build(
+        db,
+        {
+            "date": "2026-04-08",
+            "factor_ic": {},
+            "factor_ic_trend": {},
+            "sources": {"factor_ic": {"status": "success"}},
+        },
+    )
+
+    assert artifact["summary"]["governed_source_candidate_count"] == 8
+    assert artifact["summary"]["governed_active_registry_candidate_count"] == 1
+    assert artifact["summary"]["governed_blocked_candidate_count"] == 4
+    assert artifact["summary"]["governed_pending_candidate_count"] == 2
+    assert artifact["summary"]["governed_ineligible_candidate_count"] == 1
+    assert artifact["summary"]["governed_blocked_ratio"] == pytest.approx(0.5)
+    assert artifact["summary"]["governed_pending_ratio"] == pytest.approx(0.25)
+    assert artifact["summary"]["governed_ineligible_ratio"] == pytest.approx(0.125)
+    assert artifact["summary"]["governed_blocking_reason_counts"] == {"multiple_testing_risk_high": 4}
+    assert artifact["summary"]["governed_pending_reason_counts"] == {"registry_stage_validated": 2}
+    assert artifact["summary"]["governed_ineligible_reason_counts"] == {
+        "recommendation_reject": 1,
+        "score_below_provisional_threshold": 1,
+    }
+    assert "governed_candidate_pool_blocked_ratio_elevated" in artifact["quality_flags"]
+    assert "governed_candidate_pool_blocked_ratio_high" not in artifact["quality_flags"]
+
+
+@pytest.mark.asyncio
 async def test_factor_research_enriches_top_candidate_lineage_with_model_registry(monkeypatch):
     db = MagicMock()
     db.get_factor_ic_history = AsyncMock(return_value=[])
@@ -396,6 +610,210 @@ async def test_factor_research_builds_stock_family_allocation(monkeypatch):
     assert artifact["summary"]["stock_family_allocation_count"] == 2
     assert artifact["summary"]["stock_family_allocation_source_mode"] == "stock_universe_projection"
     assert artifact["summary"]["stock_family_allocation_entropy"] > 0.0
+    assert artifact["summary"]["family_preference_source_mode"] in {
+        "stock_family_allocation",
+        "feedback_router",
+    }
+    assert artifact["summary"]["family_preference_order"][0] == "momentum"
+    assert "growth_factor" in artifact["summary"]["family_preference_order"][:3]
+    assert artifact["family_preference_order"][0] == "momentum"
+
+
+@pytest.mark.asyncio
+async def test_factor_research_quality_family_plan_uses_trade_rule_validation_for_target_only(monkeypatch):
+    db = MagicMock()
+    db.get_factor_ic_history = AsyncMock(return_value=[])
+    db.list_stock_universe = AsyncMock(
+        return_value=[
+            {
+                "code": "600519",
+                "name": "白酒龙头",
+                "industry": "消费",
+                "sector": "消费",
+                "market_cap": 180_000_000_000,
+                "pe_ratio": 28,
+                "pb_ratio": 8.0,
+            }
+        ]
+    )
+
+    class _Scheduler:
+        def status(self):
+            return {"running": False, "quality_flags": [], "last_run": None, "freshness_sec": 0, "last_result": {}}
+
+    monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+    monkeypatch.setattr(factor_research_mod, "get_quant_manager_callable", lambda: None)
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_governed_candidate_pool",
+        AsyncMock(
+            return_value={
+                "available": True,
+                "active_pool": {
+                    "count": 1,
+                    "top_candidates": [
+                        {
+                            "artifact_id": "cand_quality_1",
+                            "name": "quality_family_candidate",
+                            "family": "quality_factor",
+                            "codes": ["600519"],
+                            "registry_stage": "governed",
+                            "total_score": 82.0,
+                            "latest_validation_at": "2026-04-01T09:30:00+08:00",
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(FactorResearchBuilder, "_load_budget_feedback", AsyncMock(return_value={}))
+
+    artifact = await FactorResearchBuilder.build(
+        db,
+        {
+            "date": "2026-04-02",
+            "fear_greed_index": 52,
+            "fg_level": "neutral",
+            "hot_sectors": ["消费"],
+            "cold_sectors": [],
+            "sources": {"factor_ic": {"status": "success"}},
+        },
+    )
+
+    plan = artifact["stock_family_allocation"]["600519"]["family_plans"][0]
+    assert plan["family"] == "quality_factor"
+    assert plan["validation_profile"]["profile"] == "trade_rule_validation"
+    assert plan["validation_profile"]["validation_focus"] == "candidate_target_only"
+
+
+@pytest.mark.asyncio
+async def test_factor_research_builds_stock_family_allocation_from_real_registry_families_without_codes(monkeypatch):
+    db = MagicMock()
+    db.get_factor_ic_history = AsyncMock(return_value=[])
+    db.list_stock_universe = AsyncMock(
+        return_value=[
+            {
+                "code": "300001",
+                "name": "算力成长A",
+                "industry": "算力",
+                "sector": "算力",
+                "market_cap": 120_000_000_000,
+                "pe_ratio": 42,
+                "pb_ratio": 4.2,
+            },
+            {
+                "code": "600001",
+                "name": "银行价值A",
+                "industry": "银行",
+                "sector": "银行",
+                "market_cap": 88_000_000_000,
+                "pe_ratio": 8.5,
+                "pb_ratio": 0.9,
+            },
+        ]
+    )
+
+    class _Scheduler:
+        def status(self):
+            return {"running": False, "quality_flags": [], "last_run": None, "freshness_sec": 0, "last_result": {}}
+
+    monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+    monkeypatch.setattr(factor_research_mod, "get_quant_manager_callable", lambda: None)
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_governed_candidate_pool",
+        AsyncMock(
+            return_value={
+                "available": True,
+                "active_pool": {
+                    "count": 2,
+                    "strict_count": 1,
+                    "provisional_count": 1,
+                    "provisional_spillover_count": 1,
+                    "provisional_spillover_policy": {
+                        "status": "spillover_applied",
+                        "decision": "spillover_applied",
+                        "strict_shortfall_count": 5,
+                        "pending_provisional_count": 0,
+                        "pending_reason_code": None,
+                    },
+                    "top_candidates": [
+                        {
+                            "artifact_id": "cand_stock_real_1",
+                            "name": "CrowdedMoveExhaustionFilter",
+                            "family": "overextension_filter",
+                            "registry_stage": "governed",
+                            "recommendation": "review",
+                            "total_score": 65.0,
+                            "latest_validation_at": "2026-04-01T09:30:00+08:00",
+                        },
+                        {
+                            "artifact_id": "cand_stock_real_2",
+                            "name": "RangeEscapePersistence",
+                            "family": "breakout_structure",
+                            "registry_stage": "validated",
+                            "recommendation": "watch",
+                            "total_score": 50.0,
+                            "latest_validation_at": "2026-04-01T09:31:00+08:00",
+                        },
+                    ],
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        FactorResearchBuilder,
+        "_load_budget_feedback",
+        AsyncMock(
+            return_value={
+                "available": True,
+                "feedback": {
+                    "momentum": {
+                        "strategy_count": 8,
+                        "zero_signal_ratio": 1.0,
+                        "low_signal_ratio": 1.0,
+                        "forward_window_coverage_ratio": 0.0,
+                        "promotion_ready_ratio": 0.0,
+                        "promotion_review_coverage_ratio": 0.0,
+                        "evidence_debt_ratio": 1.0,
+                    }
+                },
+                "summary": {"family_count": 1, "strategy_count": 8},
+            }
+        ),
+    )
+
+    artifact = await FactorResearchBuilder.build(
+        db,
+        {
+            "date": "2026-04-02",
+            "fear_greed_index": 68,
+            "fg_level": "greed",
+            "hot_sectors": ["算力"],
+            "cold_sectors": ["银行"],
+            "factor_ic": {"growth": 0.05, "value": 0.03},
+            "factor_ic_trend": {"growth": "rising", "value": "rising"},
+            "sources": {"factor_ic": {"status": "success"}},
+        },
+    )
+
+    allocation = dict(artifact["stock_family_allocation"])
+    assert allocation
+    assert artifact["summary"]["stock_family_allocation_count"] == 2
+    assert artifact["summary"]["governed_candidate_pool_provisional_spillover_policy_status"] == "spillover_applied"
+    assert artifact["summary"]["governed_candidate_pool_strict_shortfall_count"] == 5
+    assert artifact["summary"]["governed_candidate_pool_provisional_pending_count"] == 0
+    assert "mean_reversion_short" in allocation["600001"]["families"] or "momentum" in allocation["300001"]["families"]
+    assert any(
+        str(plan.get("feedback_control_mode") or "").strip().lower() == "normal"
+        and bool(plan.get("feedback_control_relaxed"))
+        for plan in allocation["300001"]["family_plans"]
+    )
+    assert artifact["summary"]["family_preference_source_mode"] in {
+        "stock_family_allocation",
+        "feedback_router",
+    }
+    assert artifact["summary"]["family_preference_order"][0] in {"momentum", "mean_reversion_short"}
 
 
 @pytest.mark.asyncio
@@ -454,6 +872,7 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
                     "id": "strategy_feedback_001",
                     "candidate_family": "momentum",
                     "target_pool_id": "theme:ai",
+                    "holding_period_bucket": "short",
                     "generator_mode": "external_llm",
                 }
             ]
@@ -490,6 +909,21 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
 
     monkeypatch.setattr(factor_research_mod, "get_quant_manager_callable", lambda: None)
     monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+    monkeypatch.setattr(
+        factor_research_mod,
+        "get_strategy_lifecycle_shared_runtime",
+        lambda: SimpleNamespace(
+            build_incubation_overview=AsyncMock(
+                return_value={
+                    "total_signals": 0,
+                    "minimum_signal_count": 10,
+                    "observed_forward_days": [],
+                    "missing_forward_days": [1, 5, 10, 20],
+                    "promotion_ready": False,
+                }
+            )
+        ),
+    )
 
     artifact = await FactorResearchBuilder.build(
         db,
@@ -503,6 +937,9 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
                     "ema_submit_count": 3.4,
                     "target_pool_feedback": {
                         "theme:ai": {"ema_submit_count": 1.2}
+                    },
+                    "holding_bucket_feedback": {
+                        "short": {"ema_submit_count": 1.1}
                     },
                     "generator_mode_feedback": {
                         "external_llm": {"ema_submit_count": 1.0}
@@ -524,6 +961,7 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
     assert feedback_contract["summary"]["promotion_review_count"] == 1
     assert feedback_contract["summary"]["promotion_review_status_counts"] == {"watch": 1}
     assert feedback_contract["summary"]["target_pool_scope_count"] == 1
+    assert feedback_contract["summary"]["holding_bucket_scope_count"] == 1
     assert feedback_contract["summary"]["generator_mode_scope_count"] == 1
     assert momentum_feedback["ema_submit_count"] == pytest.approx(3.4)
     assert momentum_feedback["strategy_count"] == 1
@@ -531,9 +969,22 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
     assert momentum_feedback["promotion_review_status"] == "watch"
     assert momentum_feedback["promotion_review_recommendation"] == "observe"
     assert momentum_feedback["promotion_review_score"] == pytest.approx(0.34)
+    assert momentum_feedback["signal_count_total"] == 0
+    assert momentum_feedback["zero_signal_strategy_count"] == 1
+    assert momentum_feedback["zero_signal_ratio"] == pytest.approx(1.0)
+    assert momentum_feedback["observed_forward_window_count"] == 0
+    assert momentum_feedback["missing_forward_window_count"] == 4
+    assert momentum_feedback["expected_forward_window_count"] == 4
+    assert momentum_feedback["forward_window_coverage_ratio"] == pytest.approx(0.0)
+    assert momentum_feedback["promotion_ready_count"] == 0
+    assert momentum_feedback["promotion_ready_ratio"] == pytest.approx(0.0)
+    assert momentum_feedback["promotion_review_coverage_ratio"] == pytest.approx(1.0)
+    assert momentum_feedback["evidence_debt_strategy_count"] == 1
+    assert momentum_feedback["evidence_debt_ratio"] == pytest.approx(0.85)
     assert (
         momentum_feedback["target_pool_feedback"]["theme:ai"]["strategy_count"] == 1
     )
+    assert momentum_feedback["holding_bucket_feedback"]["short"]["strategy_count"] == 1
     assert (
         momentum_feedback["generator_mode_feedback"]["external_llm"]["strategy_count"] == 1
     )
@@ -544,9 +995,94 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
     )
     assert artifact["summary"]["lifecycle_feedback_input_available"] is True
     assert artifact["summary"]["budget_feedback_target_pool_scope_count"] == 1
+    assert artifact["summary"]["budget_feedback_holding_bucket_scope_count"] == 1
     assert artifact["summary"]["budget_feedback_generator_mode_scope_count"] == 1
     assert artifact["summary"]["budget_feedback_promotion_review_count"] == 1
     assert artifact["summary"]["budget_feedback_promotion_review_status_counts"] == {"watch": 1}
+    assert artifact["summary"]["budget_feedback_zero_signal_strategy_count"] == 1
+    assert artifact["summary"]["budget_feedback_zero_signal_ratio"] == pytest.approx(1.0)
+    assert artifact["summary"]["budget_feedback_forward_window_coverage_ratio"] == pytest.approx(0.0)
+    assert artifact["summary"]["budget_feedback_promotion_ready_count"] == 0
+    assert artifact["summary"]["budget_feedback_promotion_ready_ratio"] == pytest.approx(0.0)
+    assert artifact["summary"]["budget_feedback_promotion_review_coverage_ratio"] == pytest.approx(1.0)
+    assert artifact["summary"]["budget_feedback_evidence_debt_strategy_count"] == 1
+    assert artifact["summary"]["budget_feedback_evidence_debt_ratio"] == pytest.approx(0.85)
+    assert "budget_feedback_zero_signal_backlog_high" in artifact["summary"]["quality_flags"]
+    assert "budget_feedback_forward_window_coverage_low" in artifact["summary"]["quality_flags"]
+    assert "budget_feedback_evidence_debt_high" in artifact["summary"]["quality_flags"]
+
+
+def test_factor_research_feedback_router_rewrites_family_preference_order():
+    family_reward_table, family_debt_table, search_route_actions, family_plans = (
+        FactorResearchBuilder._build_search_route_feedback_snapshot(
+            family_preference_order=["momentum", "value_factor", "quality_factor"],
+            budget_feedback_root={
+                "momentum": {
+                    "strategy_count": 6,
+                    "zero_signal_ratio": 1.0,
+                    "forward_window_coverage_ratio": 0.0,
+                    "promotion_ready_ratio": 0.0,
+                    "promotion_review_coverage_ratio": 0.0,
+                    "evidence_debt_ratio": 0.95,
+                    "raw_validation_a_rate": 0.0,
+                    "raw_validation_b_rate": 0.0,
+                    "raw_validation_d_rate": 0.83,
+                    "raw_validation_total_score_mean": 34.0,
+                    "strict_incubation_ready_rate": 0.0,
+                    "target_pool_feedback": {
+                        "theme:ai": {
+                            "strategy_count": 4,
+                            "promotion_ready_ratio": 0.6,
+                            "forward_window_coverage_ratio": 0.7,
+                        }
+                    },
+                },
+                "quality_factor": {
+                    "strategy_count": 4,
+                    "zero_signal_ratio": 0.0,
+                    "forward_window_coverage_ratio": 0.8,
+                    "promotion_ready_ratio": 0.6,
+                    "promotion_review_coverage_ratio": 0.75,
+                    "evidence_debt_ratio": 0.1,
+                    "raw_validation_a_rate": 0.12,
+                    "raw_validation_b_rate": 0.48,
+                    "raw_validation_d_rate": 0.0,
+                    "raw_validation_total_score_mean": 68.0,
+                    "strict_incubation_ready_rate": 0.34,
+                    "holding_bucket_feedback": {
+                        "medium": {
+                            "strategy_count": 3,
+                            "promotion_ready_ratio": 0.7,
+                            "forward_window_coverage_ratio": 0.75,
+                        }
+                    },
+                },
+            },
+        )
+    )
+
+    effective_order = FactorResearchBuilder._rewrite_family_preference_order_by_feedback(
+        ["momentum", "value_factor", "quality_factor"],
+        family_plans=family_plans,
+    )
+
+    assert effective_order.index("quality_factor") < effective_order.index("momentum")
+    assert effective_order[-1] == "momentum"
+    assert family_reward_table["quality_factor"]["family_route_action"] == "family_explore"
+    assert family_reward_table["quality_factor"]["raw_validation_b_rate"] == pytest.approx(0.48)
+    assert family_reward_table["quality_factor"]["strict_incubation_ready_rate"] == pytest.approx(0.34)
+    assert family_reward_table["quality_factor"]["family_quality_score"] > 0.0
+    assert family_debt_table["momentum"]["raw_validation_d_rate"] == pytest.approx(0.83)
+    assert family_debt_table["momentum"]["family_route_action"] in {
+        "family_retire",
+        "family_freeze",
+        "family_cooldown",
+    }
+    assert any(action["scope"] == "target_pool" for action in search_route_actions)
+    assert any(
+        action["action"] == "holding_promote" and action["scope"] == "holding_bucket"
+        for action in search_route_actions
+    )
 
 
 def test_spawner_factor_maps_can_use_governed_candidate_pool():

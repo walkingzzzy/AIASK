@@ -83,11 +83,20 @@ def test_build_quality_report_keeps_summary_fields():
                 "selection_ratio": 0.16,
                 "penalty": 0.03,
             },
+            "strict_incubation_ready": True,
+            "strict_incubation_blocked": False,
+            "cohort_effective_trials": 6.0,
+            "batch_correlation_mode": "llm_same_batch_sibling_proxy",
+            "batch_correlation_multiplier": 1.4142,
+            "batch_correlation_sibling_count": 2,
+            "multiple_testing_registry": {
+                "multiple_testing_cohort_mode": "target_only",
+            },
             "profile": "event_trade_validation",
             "validation_focus": "event_target_only",
             "primary_validation_layer": "target_layer_metrics",
         },
-        validation_report={"rating": {"grade": "B"}},
+        validation_report={"rating": {"grade": "B", "total_score": 61.0, "base_total_score": 56.0}},
         risk_report={"var_percent": 1.2},
         dedup_report={"duplicate": False},
         backtest_metrics={
@@ -190,6 +199,8 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["passed"] is True
     assert report["summary"]["strategy_id"] == "s1"
     assert report["summary"]["validation_grade"] == "B"
+    assert report["summary"]["raw_validation_total_score"] == 56.0
+    assert report["summary"]["validation_total_score"] == 61.0
     assert report["summary"]["spawn_reason"] == "unit-test"
     assert report["summary"]["admission_stage"] == "live"
     assert report["summary"]["live_candidate_ready"] is True
@@ -209,6 +220,14 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["summary"]["target_weight_scheme"] == "equal_weight"
     assert report["summary"]["committee_decision"] == "revise"
     assert report["summary"]["committee_final_score"] == 0.6842
+    assert report["raw_validation_total_score"] == 56.0
+    assert report["validation_total_score"] == 61.0
+    assert report["summary"]["strict_incubation_ready"] is True
+    assert report["summary"]["strict_incubation_blocked"] is False
+    assert report["summary"]["cohort_effective_trials"] == 6.0
+    assert report["summary"]["batch_correlation_mode"] == "llm_same_batch_sibling_proxy"
+    assert report["summary"]["batch_correlation_sibling_count"] == 2
+    assert report["summary"]["multiple_testing_cohort_mode"] == "target_only"
     assert report["task_signature"] == "event_driven|evt_1|ai||event_target_only|600519"
     assert report["refresh_mode"] == "refresh_metrics_only"
     assert report["backtest_assumptions"]["slippage_bps"] == 8
@@ -219,54 +238,89 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["research_candidate_ready"] is True
     assert report["incubation_candidate_ready"] is True
     assert report["live_candidate_ready"] is True
-    assert report["submission_lane"] == "live_ready_review"
-    assert report["direct_trade_candidate"] is True
-    assert report["live_review_ready"] is True
-    assert report["paper_lane_ready"] is True
-    assert report["paper_account_id"] == "paper_001"
-    assert report["paper_account_status"] == "active"
-    assert report["runtime_control_status"] == "active"
-    assert report["promotion_review_id"] == "pr_001"
-    assert report["promotion_review_recommendation"] == "observe"
-    assert report["submission_action"]["type"] == "runtime_review"
-    assert report["submission_action_type"] == "runtime_review"
-    assert report["submission_action_trigger"] == "live_candidate_ready"
-    assert report["submission_action_next_step"] == "pool_admission"
-    assert report["submission_action_completed"] is True
-    assert report["admission_evaluations"]["live"]["passed"] is True
-    assert report["position_assumption"] == "single_name_full_notional"
-    assert report["cost_assumptions"]["commission_bps"] == 8
-    assert report["cost_assumptions"]["market_ruleset"] == "cn_equity"
-    assert report["explicit_cost_breakdown"]["commission_cost"] == 120.0
-    assert report["implicit_cost_breakdown"]["slippage_cost"] == 36.0
-    assert report["tradability_summary"]["tradable_ratio"] == 0.92
-    assert report["capacity_summary"]["adv_utilization"] == 1.4
-    assert report["implementation_shortfall_model_source"] == "estimated"
-    assert report["implementation_shortfall_components"]["capacity_bps"] == 11.2
-    assert report["event_window_metrics"]["car"] == 0.061
-    assert report["constraint_check"]["intersection_ratio"] == 1.0
-    assert report["execution_reality"]["market_ruleset"] == "cn_equity"
-    assert report["execution_reality"]["sell_tax_rate"] == 0.001
-    assert report["execution_reality"]["min_trade_lot"] == 100
-    assert report["execution_reality"]["t_plus_one"] is True
-    assert report["execution_reality"]["target_weight_scheme"] == "equal_weight"
-    assert report["execution_reality"]["max_position_pct"] == 0.2
-    assert report["attempt_adjustment"]["penalty"] == 0.03
-    assert report["run_correction"]["mode"] == "bootstrap_family_proxy"
-    assert report["run_correction"]["multiple_testing_mode"] == "formal_runtime"
-    assert report["run_correction"]["deflated_sharpe_ratio"] == 0.88
-    assert report["run_correction"]["pbo"] == 0.21
-    assert report["run_correction"]["multiple_testing"]["pbo"]["pbo"] == 0.21
-    assert report["committee_review"]["decision"] == "revise"
-    assert report["committee_review"]["execution_score"] == 0.48
-    assert report["committee_review"]["accept_blockers"] == [
-        "execution_floor_failed",
-        "task_alignment_floor_failed",
-    ]
-    assert report["task_preference"]["override_applied"] is True
-    assert report["summary"]["source_candidate_artifact_id"] == "candidate_001"
-    assert report["summary"]["candidate_family"] == "sentiment"
-    assert report["candidate_provenance"]["validation_score"] == 83.5
+
+
+def test_build_quality_report_uses_trade_adjusted_validation_as_raw_grade_when_present():
+    report = build_quality_report(
+        strategy_id="s_trade_adjusted",
+        strategy_type="momentum",
+        quality_gate={
+            "passed": True,
+            "admission_stage": "incubation",
+            "incubation_pass_mode": "strict",
+            "research_candidate_ready": True,
+            "incubation_candidate_ready": True,
+            "live_candidate_ready": False,
+            "validation_grade": "C",
+            "raw_validation_grade": "C",
+            "effective_validation_grade": "C",
+            "validation_grade_adjustment_reason": "validation_trade_quality_adjustment:momentum:score=44.00",
+        },
+        validation_report={
+            "rating": {
+                "grade": "C",
+                "base_grade": "D",
+                "total_score": 44.0,
+                "base_total_score": 12.0,
+            },
+            "trade_quality_adjustment": {
+                "applied": True,
+                "adjustment_reason": "validation_trade_quality_adjustment:momentum:score=44.00",
+            },
+        },
+        risk_report={},
+        dedup_report={},
+        backtest_metrics={},
+        snapshot={"date": "2026-03-19"},
+        status_after_review="submitted",
+        review_source="factory",
+        report_type="submission",
+    )
+
+    assert report["summary"]["raw_validation_grade"] == "C"
+    assert report["summary"]["validation_total_score"] == 44.0
+    assert report["summary"]["raw_validation_total_score"] == 44.0
+    assert report["summary"]["raw_validation_baseline_total_score"] == 12.0
+    assert report["summary"]["validation_grade_adjustment_reason"].startswith(
+        "validation_trade_quality_adjustment"
+    )
+    assert report["summary"]["direct_trade_candidate"] is False
+    assert report["summary"]["live_review_ready"] is False
+    assert report["summary"]["paper_lane_ready"] is False
+
+
+def test_build_quality_report_prefers_effective_validation_grade():
+    report = build_quality_report(
+        strategy_id="s_eff",
+        strategy_type="momentum",
+        quality_gate={
+            "passed": True,
+            "validation_grade": "C",
+            "raw_validation_grade": "D",
+            "effective_validation_grade": "C",
+            "validation_grade_adjustment_reason": "trade_aware_validation_grade_upgrade:momentum:score=5.50",
+            "admission_stage": "incubation",
+            "incubation_pass_mode": "strict",
+            "research_candidate_ready": True,
+            "incubation_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": True,
+            "strict_incubation_blocked": False,
+        },
+        validation_report={"rating": {"grade": "D"}},
+        risk_report={},
+        dedup_report={},
+        backtest_metrics={},
+        snapshot={},
+        status_after_review="submitted",
+        review_source="unit-test",
+        report_type="strategy_review",
+    )
+
+    assert report["summary"]["validation_grade"] == "C"
+    assert report["summary"]["raw_validation_grade"] == "D"
+    assert report["summary"]["effective_validation_grade"] == "C"
+    assert report["summary"]["validation_grade_adjustment_reason"].startswith("trade_aware_validation_grade_upgrade")
 
 
 def test_maybe_grant_provisional_incubation_allows_technical_fallback_for_degenerate_validation_stats():

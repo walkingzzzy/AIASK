@@ -128,6 +128,22 @@ class CandidateGenerationService:
         )
 
     @classmethod
+    def _l2_hypothesis_enabled(cls) -> bool:
+        return _env_bool(
+            "STRATEGY_FACTORY_L2_HYPOTHESIS_ENABLED",
+            "STRATEGY_FACTORY_L2_ENABLED",
+            default=True,
+        )
+
+    @classmethod
+    def _l2_hypothesis_replay_enabled(cls) -> bool:
+        return _env_bool(
+            "STRATEGY_FACTORY_L2_HYPOTHESIS_REPLAY_ENABLED",
+            "STRATEGY_FACTORY_L2_REPLAY_ENABLED",
+            default=True,
+        )
+
+    @classmethod
     def _skipped_llm_report(
         cls,
         *,
@@ -414,6 +430,7 @@ class CandidateGenerationService:
                 else []
             )
         llm_specs: list[StrategySpec] = []
+        replay_specs: list[StrategySpec] = []
         llm_disabled_by_scheduler = bool(research_task.get("disable_external_llm"))
         llm_skip_reason = str(research_task.get("external_llm_skip_reason") or "provider_health_blocked").strip()
         optimizer_disabled_by_scheduler = bool(research_task.get("disable_optimizer"))
@@ -457,6 +474,55 @@ class CandidateGenerationService:
                         "skip_reason": optimizer_skip_reason or "generator_mode_cooldown",
                     },
                 }
+        replay_report: dict[str, Any] = {
+            "status": "disabled" if not self._l2_hypothesis_replay_enabled() else "not_needed",
+            "selected_count": 0,
+        }
+        replay_trigger_reason: Optional[str] = None
+        if self._l2_hypothesis_enabled() and self._l2_hypothesis_replay_enabled() and hasattr(
+            self.llm_generator,
+            "replay_persisted_specs",
+        ):
+            provider_status = str(
+                dict(dict(llm_report or {}).get("external_provider") or {}).get("status") or ""
+            ).strip().lower()
+            if llm_disabled_by_scheduler:
+                replay_trigger_reason = llm_skip_reason or "provider_health_blocked"
+            elif bulk_stock_matrix_task and not bulk_llm_enabled:
+                replay_trigger_reason = "bulk_stock_matrix_llm_disabled"
+            elif not llm_specs:
+                replay_trigger_reason = provider_status or "empty_external_selection"
+        if replay_trigger_reason:
+            try:
+                replay_result = await self.llm_generator.replay_persisted_specs(
+                    db,
+                    limit=max(1, effective_limit),
+                    snapshot=snapshot,
+                    parent_strategies=parents,
+                    research_task=research_task,
+                    trigger_reason=replay_trigger_reason,
+                )
+                replay_specs = list(dict(replay_result or {}).get("specs") or [])
+                replay_report = {
+                    "status": "succeeded" if replay_specs else "empty",
+                    "trigger_reason": replay_trigger_reason,
+                    **dict(dict(replay_result or {}).get("report") or {}),
+                }
+            except Exception as exc:
+                logger.warning(
+                    "CandidateGenerationService: replay_persisted_specs failed, continuing without replay: %s",
+                    exc,
+                )
+                replay_report = {
+                    "status": "failed",
+                    "trigger_reason": replay_trigger_reason,
+                    "error": str(exc),
+                    "selected_count": 0,
+                }
+        llm_report = {
+            **dict(llm_report or {}),
+            "replay_provider": dict(replay_report or {}),
+        }
         evolved_specs: list[StrategySpec] = []
         if optimizer_disabled_by_scheduler:
             llm_report = {
@@ -483,7 +549,12 @@ class CandidateGenerationService:
 
         merged_specs: list[StrategySpec] = []
         seen = set()
-        for spec in [*rule_specs, *llm_specs, *evolved_specs]:
+        prioritized_specs = (
+            [*llm_specs, *replay_specs, *evolved_specs, *rule_specs]
+            if (llm_specs or replay_specs or evolved_specs)
+            else [*rule_specs, *llm_specs, *replay_specs, *evolved_specs]
+        )
+        for spec in prioritized_specs:
             if research_task and not dict(spec.metadata or {}).get("research_task"):
                 spec.metadata = {**dict(spec.metadata or {}), "research_task": research_task}
             key = (spec.strategy_type, json.dumps(spec.params or {}, sort_keys=True, ensure_ascii=False, default=str))
@@ -498,6 +569,7 @@ class CandidateGenerationService:
             "parents": parents,
             "rule_specs": rule_specs,
             "llm_specs": llm_specs,
+            "replay_specs": replay_specs,
             "evolved_specs": evolved_specs,
             "merged_specs": merged_specs,
             "llm_report": llm_report,
@@ -685,7 +757,7 @@ class ExperimentRecorder:
         params = dict(spec.params or {})
         summary: dict[str, Any] = {}
         for key, value in params.items():
-            if key in {"dsl", "research_task", "event_context"}:
+            if key in {"research_task", "event_context"}:
                 continue
             if isinstance(value, (str, int, float, bool)) or value is None:
                 summary[key] = value
@@ -693,6 +765,28 @@ class ExperimentRecorder:
                 isinstance(item, (str, int, float, bool)) or item is None for item in value
             ):
                 summary[key] = value
+            elif key == "dsl" and isinstance(value, dict):
+                dsl_summary = cls._compact_dict(
+                    value,
+                    keys=("version", "timeframe", "entry", "exit", "risk_rules"),
+                )
+                metadata = dict(value.get("metadata") or {})
+                if metadata:
+                    dsl_summary["metadata"] = {
+                        meta_key: metadata.get(meta_key)
+                        for meta_key in (
+                            "target_symbols",
+                            "stock_pool",
+                            "portfolio_spec",
+                            "execution_assumptions",
+                            "validation_profile",
+                            "targeting_policy",
+                            "constraint_check",
+                        )
+                        if metadata.get(meta_key) not in (None, "", [], {})
+                    }
+                if dsl_summary:
+                    summary[key] = dsl_summary
             elif key == "stock_pool" and isinstance(value, dict):
                 summary[key] = cls._summarize_stock_pool(value)
         dsl_activity = dict(spec.metadata.get("dsl_activity") or {})
@@ -771,6 +865,72 @@ class ExperimentRecorder:
         return summary
 
     @classmethod
+    def _summarize_hypothesis_artifact(cls, artifact: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(artifact or {})
+        if not payload:
+            return {}
+        summary = cls._compact_dict(
+            payload,
+            keys=(
+                "artifact_id",
+                "version",
+                "provider",
+                "model",
+                "family_hint",
+                "holding_rationale",
+                "alpha_half_life",
+                "position_model",
+                "validation_focus",
+            ),
+        )
+        if payload.get("alpha_hypothesis") not in (None, "", [], {}):
+            summary["alpha_hypothesis"] = payload.get("alpha_hypothesis")
+        if payload.get("failure_mode") not in (None, "", [], {}):
+            summary["failure_mode"] = payload.get("failure_mode")
+        if payload.get("target_universe_hypothesis") not in (None, "", [], {}):
+            summary["target_universe_hypothesis"] = payload.get("target_universe_hypothesis")
+        if payload.get("capacity_assumption") not in (None, "", [], {}):
+            summary["capacity_assumption"] = payload.get("capacity_assumption")
+        if payload.get("cost_sensitivity_grid") not in (None, "", [], {}):
+            summary["cost_sensitivity_grid"] = payload.get("cost_sensitivity_grid")
+        return summary
+
+    @classmethod
+    def _build_replay_strategy_contract(
+        cls,
+        *,
+        spec: StrategySpec,
+        research_task: Optional[dict[str, Any]],
+        event_context: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        metadata = dict(spec.metadata or {})
+        return {
+            "strategy_type": spec.strategy_type,
+            "name": spec.name,
+            "description": spec.description,
+            "tags": list(spec.tags or []),
+            "params": dict(spec.params or {}),
+            "target_symbols": list(metadata.get("target_symbols") or [])[:12],
+            "stock_pool": dict(metadata.get("stock_pool") or {}),
+            "selection_logic": list(metadata.get("selection_logic") or []),
+            "research_task": dict(research_task or {}),
+            "event_context": dict(event_context or {}),
+            "hypothesis_artifact": dict(metadata.get("hypothesis_artifact") or {}),
+            "hypothesis_lowering_audit": dict(metadata.get("hypothesis_lowering_audit") or {}),
+            "holding_horizon": dict(metadata.get("holding_horizon") or {}),
+            "trade_plan": dict(metadata.get("trade_plan") or {}),
+            "risk_rules": dict(metadata.get("risk_rules") or {}),
+            "position_sizing": dict(metadata.get("position_sizing") or {}),
+            "execution_notes": metadata.get("execution_notes"),
+            "rebalance_rule": dict(metadata.get("rebalance_rule") or {}),
+            "portfolio_spec": dict(metadata.get("portfolio_spec") or {}),
+            "execution_assumptions": dict(metadata.get("execution_assumptions") or {}),
+            "validation_profile": dict(metadata.get("validation_profile") or {}),
+            "targeting_policy": dict(metadata.get("targeting_policy") or {}),
+            "constraint_check": dict(metadata.get("constraint_check") or {}),
+        }
+
+    @classmethod
     def _build_persisted_experiment_payload(
         cls,
         *,
@@ -779,6 +939,11 @@ class ExperimentRecorder:
     ) -> dict[str, Any]:
         research_task = dict((payload.get("strategy_spec") or {}).get("research_task") or {})
         event_context = dict((payload.get("strategy_spec") or {}).get("event_context") or {})
+        replay_contract = cls._build_replay_strategy_contract(
+            spec=spec,
+            research_task=research_task,
+            event_context=event_context,
+        )
         strategy_spec = {
             "strategy_type": spec.strategy_type,
             "name": spec.name,
@@ -790,6 +955,17 @@ class ExperimentRecorder:
             "selection_logic": cls._summarize_selection_logic(spec.metadata.get("selection_logic") or []),
             "research_task": cls._summarize_research_task(research_task),
             "event_context": cls._summarize_event_context(event_context),
+            "hypothesis_artifact": cls._summarize_hypothesis_artifact(spec.metadata.get("hypothesis_artifact") or {}),
+            "holding_horizon": dict(spec.metadata.get("holding_horizon") or {}),
+            "trade_plan": dict(spec.metadata.get("trade_plan") or {}),
+            "risk_rules": dict(spec.metadata.get("risk_rules") or {}),
+            "position_sizing": dict(spec.metadata.get("position_sizing") or {}),
+            "execution_notes": spec.metadata.get("execution_notes"),
+            "rebalance_rule": dict(spec.metadata.get("rebalance_rule") or {}),
+            "portfolio_spec": dict(spec.metadata.get("portfolio_spec") or {}),
+            "execution_assumptions": dict(spec.metadata.get("execution_assumptions") or {}),
+            "validation_profile": dict(spec.metadata.get("validation_profile") or {}),
+            "replay_contract": replay_contract,
         }
         evaluation = {
             "source": payload.get("source"),
@@ -806,6 +982,11 @@ class ExperimentRecorder:
                 spec.metadata.get("research_scope") or {},
                 keys=("scope", "symbol_count", "candidate_count", "source"),
             ),
+            "hypothesis_artifact": cls._summarize_hypothesis_artifact(spec.metadata.get("hypothesis_artifact") or {}),
+            "hypothesis_lowering_audit": cls._compact_dict(
+                spec.metadata.get("hypothesis_lowering_audit") or {},
+                keys=("source", "target_symbols"),
+            ),
             "research_task": cls._summarize_research_task(research_task),
             "event_context": cls._summarize_event_context(event_context),
         }
@@ -819,7 +1000,12 @@ class ExperimentRecorder:
 
     async def record_experiment(self, db, spec: StrategySpec, source: str, snapshot: dict, task_run: dict) -> dict:
         experiment_id = f"exp_{int(time.time())}_{uuid4().hex[:8]}"
-        hypothesis = spec.description or f"{source}:{spec.strategy_type}"
+        hypothesis_artifact = dict(spec.metadata.get("hypothesis_artifact") or {})
+        hypothesis = (
+            str(hypothesis_artifact.get("alpha_hypothesis") or "").strip()
+            or spec.description
+            or f"{source}:{spec.strategy_type}"
+        )
         artifact = register_experiment({
             "experiment_id": experiment_id,
             "hypothesis": hypothesis,
@@ -857,6 +1043,22 @@ class ExperimentRecorder:
                 "selection_logic": spec.metadata.get("selection_logic") or [],
                 "research_task": research_task,
                 "event_context": event_context,
+                "hypothesis_artifact": hypothesis_artifact,
+                "holding_horizon": spec.metadata.get("holding_horizon") or {},
+                "trade_plan": spec.metadata.get("trade_plan") or {},
+                "risk_rules": spec.metadata.get("risk_rules") or {},
+                "position_sizing": spec.metadata.get("position_sizing") or {},
+                "execution_notes": spec.metadata.get("execution_notes"),
+                "rebalance_rule": spec.metadata.get("rebalance_rule") or {},
+                "portfolio_spec": spec.metadata.get("portfolio_spec") or {},
+                "execution_assumptions": spec.metadata.get("execution_assumptions") or {},
+                "validation_profile": spec.metadata.get("validation_profile") or {},
+                "hypothesis_lowering_audit": spec.metadata.get("hypothesis_lowering_audit") or {},
+                "replay_contract": self._build_replay_strategy_contract(
+                    spec=spec,
+                    research_task=research_task,
+                    event_context=event_context,
+                ),
             },
             "evaluation": {
                 "source": source,
@@ -870,6 +1072,8 @@ class ExperimentRecorder:
                 "stock_pool": spec.metadata.get("stock_pool") or {},
                 "selection_logic": spec.metadata.get("selection_logic") or [],
                 "research_scope": spec.metadata.get("research_scope") or {},
+                "hypothesis_artifact": hypothesis_artifact,
+                "hypothesis_lowering_audit": spec.metadata.get("hypothesis_lowering_audit") or {},
                 "research_task": research_task,
                 "event_context": event_context,
             },

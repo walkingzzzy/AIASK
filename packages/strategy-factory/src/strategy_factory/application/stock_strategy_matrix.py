@@ -120,6 +120,8 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         elif normalized_focus == "event_target_only" or normalized_family in {"north_capital_track", "margin_divergence"}:
             profile = "event_trade_validation"
             normalized_focus = "event_target_only"
+        elif normalized_family == "quality_factor" and normalized_focus == "candidate_target_only":
+            profile = "trade_rule_validation"
         elif normalized_family in {"value_factor", "quality_factor", "growth_factor", "multi_factor", "sentiment", "sentiment_factor"}:
             profile = "factor_rank_validation"
         else:
@@ -147,6 +149,8 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             or default_profile.get("validation_focus")
             or "candidate_target_only"
         ).strip().lower() or "candidate_target_only"
+        if str(family or "").strip().lower() == "quality_factor" and validation_focus == "candidate_target_only":
+            normalized_profile = "trade_rule_validation"
         if not normalized_profile:
             normalized_profile = str(
                 cls._default_validation_profile_for_family(
@@ -342,7 +346,40 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         return normalized
 
     @classmethod
+    def _research_family_preference_order(cls, snapshot: dict[str, Any]) -> list[str]:
+        factor_research = dict(snapshot.get("factor_research") or {})
+        summary = dict(factor_research.get("summary") or {})
+        ordered: list[str] = []
+        for source in (
+            factor_research.get("family_preference_order"),
+            summary.get("family_preference_order"),
+        ):
+            for item in list(source or []):
+                family = str(item or "").strip().lower()
+                if family and family not in ordered:
+                    ordered.append(family)
+        return ordered
+
+    @classmethod
+    def _family_preference_source(cls, snapshot: dict[str, Any]) -> str:
+        factor_research = dict(snapshot.get("factor_research") or {})
+        summary = dict(factor_research.get("summary") or {})
+        if cls._research_family_preference_order(snapshot):
+            return (
+                str(
+                    factor_research.get("family_preference_source_mode")
+                    or summary.get("family_preference_source_mode")
+                    or "factor_research"
+                ).strip()
+                or "factor_research"
+            )
+        return "fear_greed_base_order"
+
+    @classmethod
     def _base_family_order(cls, snapshot: dict[str, Any]) -> list[str]:
+        research_order = cls._research_family_preference_order(snapshot)
+        if research_order:
+            return research_order
         fg = cls._safe_float(snapshot.get("fear_greed_index") or 50.0)
         if fg >= 60:
             return ["momentum", "growth_factor", "ma_cross", "quality_factor"]
@@ -514,11 +551,28 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
 
     @staticmethod
     def _holding_bucket_for_family(family: str) -> str:
-        if family in {"momentum", "rsi"}:
+        if family in {"rsi"}:
             return "short"
+        if family in {"momentum"}:
+            return "medium"
         if family in {"value_factor"}:
             return "long"
         return "medium"
+
+    @staticmethod
+    def _holding_window_for_family(family: str) -> dict[str, Any]:
+        normalized_family = str(family or "").strip().lower()
+        if normalized_family == "quality_factor":
+            return {"min_days": 24, "max_days": 72}
+        if normalized_family == "ma_cross":
+            return {"min_days": 14, "max_days": 48}
+        if normalized_family == "momentum":
+            return {"min_days": 14, "max_days": 42}
+        if normalized_family in {"value_factor", "growth_factor", "multi_factor"}:
+            return {"min_days": 18, "max_days": 60}
+        if normalized_family in {"rsi", "gap_fill", "mean_reversion_short"}:
+            return {"min_days": 3, "max_days": 12}
+        return {"min_days": 5, "max_days": 20}
 
     @staticmethod
     def _alpha_source_for_family(family: str) -> str:
@@ -765,6 +819,7 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             "preference_reason": f"stock_matrix:{code}:{family}",
             "validation_focus": str(validation_profile.get("validation_focus") or "candidate_target_only"),
             "validation_profile": validation_profile,
+            "holding_window": cls._holding_window_for_family(family),
             "target_symbols": [code],
             "stock_pool": {"selection_mode": "explicit", "symbols": [code]},
             "focus_industries": [str(row.get("industry") or row.get("sector") or "").strip()] if str(row.get("industry") or row.get("sector") or "").strip() else [],
@@ -895,6 +950,8 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             ]
             insufficient_history_filtered_count = max(0, len(candidate_rows) - len(filtered_rows))
 
+        family_preference_order = self._base_family_order(snapshot)
+        family_preference_source = self._family_preference_source(snapshot)
         ranked_rows = sorted(
             filtered_rows,
             key=lambda row: self._row_priority_score(
@@ -1136,6 +1193,8 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 "selected_shard_count": len(selected_shard_ids),
                 "selected_shard_ids": selected_shard_ids,
                 "stock_coverage_ratio": stock_coverage_ratio,
+                "family_preference_order": family_preference_order,
+                "family_preference_source": family_preference_source,
                 "allocation_mode": (
                     "factor_research_stock_family_allocation"
                     if allocation_applied_count > 0

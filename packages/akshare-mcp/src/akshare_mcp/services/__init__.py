@@ -69,10 +69,19 @@ from .evidence_chain import (
 
 
 async def close_shared_runtime_clients() -> None:
-    """关闭进程级共享 HTTP 客户端，供一次性脚本/退出钩子显式调用。"""
+    """关闭进程级共享资源，供一次性脚本/退出钩子显式调用。"""
     await close_factor_llm_provider()
     await close_strategy_llm_provider()
     await close_strategy_text_embedding_service()
+    try:
+        from ..storage import close_db, drain_cleanup_callbacks
+    except Exception:
+        close_db = None
+        drain_cleanup_callbacks = None
+    if callable(close_db):
+        await close_db()
+    if callable(drain_cleanup_callbacks):
+        await drain_cleanup_callbacks()
 
 __all__ = [
     'technical_analysis',

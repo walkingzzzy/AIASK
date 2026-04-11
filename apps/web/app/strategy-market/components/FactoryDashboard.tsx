@@ -24,14 +24,18 @@ import type {
   FactoryGovernanceDedupBrief,
   FactoryGovernanceEvidenceArtifact,
   FactoryGovernanceEvidenceStrategyBrief,
+  FactoryGenerationLaneQualityItem,
   FactoryGovernanceGateArtifact,
   FactoryGovernancePlaneArtifact,
   FactoryGovernanceSubmissionArtifact,
   FactoryGovernanceStrategyBrief,
+  FactoryQualityBaseline,
+  FactoryQualitySummarySnapshot,
   FactoryRunDetailResponse,
   FactoryRunItem,
   FactoryRunSummary,
   FactoryStatusResponse,
+  FactoryValidationFamilyQualityPanelItem,
   RunStatusFilter,
   TrendMetricKey,
 } from '../types';
@@ -360,6 +364,312 @@ function previewBadgeVariant(status: unknown): 'success' | 'danger' | 'warning' 
     return 'warning';
   }
   return 'info';
+}
+
+function validationGradeBadgeVariant(
+  grade: unknown,
+): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(grade ?? '').trim().toUpperCase();
+  if (!normalized) return 'neutral';
+  if (normalized === 'A' || normalized === 'B') return 'success';
+  if (normalized === 'C') return 'warning';
+  if (normalized === 'D') return 'danger';
+  return 'info';
+}
+
+function formatCountWithRate(count: unknown, rate: unknown) {
+  const normalizedCount = toDisplayNumber(count);
+  const formattedRate = formatRatioPercent(toDisplayNumber(rate));
+  if (normalizedCount == null) return formattedRate;
+  return `${normalizedCount} / ${formattedRate}`;
+}
+
+function gradeDistributionEntries(value: unknown) {
+  if (!isObjectRecord(value)) return [] as Array<[string, number]>;
+  const preferredOrder = ['A', 'B', 'C', 'D'];
+  const entries = Object.entries(value)
+    .map(([grade, rawCount]) => [String(grade).trim().toUpperCase(), Number(rawCount)] as [string, number])
+    .filter(([grade, count]) => grade && Number.isFinite(count) && count > 0);
+
+  entries.sort(([leftGrade], [rightGrade]) => {
+    const leftIndex = preferredOrder.indexOf(leftGrade);
+    const rightIndex = preferredOrder.indexOf(rightGrade);
+    const normalizedLeftIndex = leftIndex === -1 ? preferredOrder.length : leftIndex;
+    const normalizedRightIndex = rightIndex === -1 ? preferredOrder.length : rightIndex;
+    return normalizedLeftIndex - normalizedRightIndex || leftGrade.localeCompare(rightGrade);
+  });
+  return entries;
+}
+
+function formatGradeDistributionSummary(value: unknown) {
+  const entries = gradeDistributionEntries(value);
+  if (entries.length === 0) return '-';
+  return entries.map(([grade, count]) => `${grade}:${count}`).join(' / ');
+}
+
+function distributionsDiffer(left: unknown, right: unknown) {
+  return formatGradeDistributionSummary(left) !== formatGradeDistributionSummary(right);
+}
+
+function FactoryFamilyQualityPanel({
+  title,
+  items,
+}: {
+  title: string;
+  items: FactoryValidationFamilyQualityPanelItem[];
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+      <div className="text-xs font-medium text-text-primary">{title}</div>
+      <div className="space-y-2">
+        {items.slice(0, 4).map((item, idx) => {
+          const family = toDisplayText(item.strategy_family) ?? 'unknown';
+          const holdingBucket = toDisplayText(item.holding_period_bucket) ?? 'unknown';
+          const validationFocus = toDisplayText(item.validation_focus) ?? 'unknown';
+          const rawARate = firstDefinedValue(item.family_raw_a_rate, item.raw_validation_a_rate);
+          const rawBRate = firstDefinedValue(item.family_raw_b_rate, item.raw_validation_b_rate);
+          const meanTradeDensity = firstDefinedValue(item.family_mean_trade_density, item.mean_trade_density);
+          const meanPostCostSharpe = firstDefinedValue(
+            item.family_mean_post_cost_sharpe,
+            item.mean_post_cost_sharpe,
+          );
+          const meanDsr = firstDefinedValue(item.family_mean_dsr, item.mean_deflated_sharpe_ratio);
+          const meanPbo = firstDefinedValue(item.family_mean_pbo, item.mean_pbo);
+
+          return (
+            <div
+              key={`${family}-${holdingBucket}-${validationFocus}-${idx}`}
+              className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="font-medium text-text-primary">
+                  {family} · {holdingBucket} · {validationFocus}
+                </div>
+                <Badge variant="neutral">{item.strategy_count ?? 0} 个样本</Badge>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <div>Raw A / B：{formatRatioPercent(rawARate)} / {formatRatioPercent(rawBRate)}</div>
+                <div>Strict / Live：{formatCountWithRate(item.strict_incubation_ready_count, item.strict_incubation_ready_rate)} / {formatCountWithRate(item.live_candidate_ready_count, item.live_candidate_ready_rate)}</div>
+                <div>Raw B及以上：{formatCountWithRate(item.raw_b_or_above_count, item.raw_b_or_above_rate)}</div>
+                <div>Raw B 中 Strict：{formatRatioPercent(item.strict_ready_given_raw_b_rate)}</div>
+                <div>Raw B 中 Live：{formatRatioPercent(item.live_ready_given_raw_b_rate)}</div>
+                <div>Raw 分布：{formatGradeDistributionSummary(item.raw_validation_grade_distribution)}</div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div>Trade density：{formatArtifactScore(meanTradeDensity, 4)}</div>
+                <div>Post-cost Sharpe：{formatArtifactScore(meanPostCostSharpe, 4)}</div>
+                <div>DSR：{formatArtifactScore(meanDsr, 4)}</div>
+                <div>PBO：{formatArtifactScore(meanPbo, 4)}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function generationTierBadgeVariant(
+  tier: unknown,
+): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(tier ?? '').trim().toUpperCase();
+  if (normalized === 'L3') return 'warning';
+  if (normalized === 'L2') return 'info';
+  if (normalized === 'L1') return 'success';
+  return 'neutral';
+}
+
+function FactoryGenerationLanePanel({
+  title,
+  items,
+  description,
+}: {
+  title: string;
+  items: FactoryGenerationLaneQualityItem[];
+  description?: string | null;
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <Badge variant="neutral">
+          {items.reduce((sum, item) => sum + Number(item.strategy_count ?? 0), 0)} 个样本
+        </Badge>
+      </div>
+      {description ? (
+        <div className="text-xs text-text-secondary">{description}</div>
+      ) : null}
+      <div className="space-y-2">
+        {items.slice(0, 5).map((item, idx) => {
+          const laneLabel = toDisplayText(item.lane_label) ?? 'Unknown';
+          const generationTier = toDisplayText(item.generation_tier) ?? 'unknown';
+          const generatorModeSummary = formatCountSummary(item.generator_mode_counts ?? {});
+          const statusSummary = formatCountSummary(item.status_counts ?? {});
+          const familySummary = formatCountSummary(item.strategy_family_counts ?? {});
+          return (
+            <div
+              key={`${laneLabel}-${generationTier}-${idx}`}
+              className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="font-medium text-text-primary">{laneLabel}</div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant={generationTierBadgeVariant(generationTier)}>{generationTier}</Badge>
+                  <Badge variant="neutral">{item.strategy_count ?? 0} 个样本</Badge>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <div>Raw A / B：{formatRatioPercent(item.raw_validation_a_rate)} / {formatRatioPercent(item.raw_validation_b_rate)}</div>
+                <div>Raw B及以上：{formatCountWithRate(item.raw_b_or_above_count, item.raw_b_or_above_rate)}</div>
+                <div>Strict / Live：{formatCountWithRate(item.strict_incubation_ready_count, item.strict_incubation_ready_rate)} / {formatCountWithRate(item.live_candidate_ready_count, item.live_candidate_ready_rate)}</div>
+                <div>Promotion-ready：{formatCountWithRate(item.promotion_ready_count, item.promotion_ready_rate)}</div>
+                <div>Quality pass：{formatCountWithRate(item.quality_passed_count, item.quality_pass_rate)}</div>
+                <div>Raw 分布：{formatGradeDistributionSummary(item.raw_validation_grade_distribution)}</div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <div>生成模式：{generatorModeSummary || '-'}</div>
+                <div>状态分布：{statusSummary || '-'}</div>
+                <div>Family 分布：{familySummary || '-'}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FactoryQualityLensPanel({
+  title,
+  summary,
+  description,
+}: {
+  title: string;
+  summary: Partial<FactoryRunSummary> | FactoryQualitySummarySnapshot | Record<string, unknown> | null | undefined;
+  description?: string;
+}) {
+  const payload: Record<string, unknown> = isObjectRecord(summary) ? summary : {};
+  const rawDistribution = payload.raw_validation_grade_distribution;
+  const effectiveDistribution = firstDefinedValue(
+    payload.effective_validation_grade_distribution,
+    payload.validation_grade_distribution,
+  );
+  const familyPanel = toObjectArray(payload.validation_family_quality_panel) as FactoryValidationFamilyQualityPanelItem[];
+  const hasQualityData = [
+    rawDistribution,
+    effectiveDistribution,
+    payload.raw_validation_total_score_mean,
+    payload.raw_validation_b_rate,
+    payload.strict_incubation_ready_rate,
+    payload.live_candidate_ready_rate,
+    payload.raw_b_or_above_rate,
+    payload.strict_ready_given_raw_b_rate,
+    payload.live_ready_given_raw_b_rate,
+    familyPanel.length,
+  ].some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (isObjectRecord(value)) return Object.keys(value).length > 0;
+    return value != null && value !== '';
+  });
+
+  if (!hasQualityData) return null;
+
+  const hasEffectiveAdjustment = distributionsDiffer(rawDistribution, effectiveDistribution);
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <Badge variant={hasEffectiveAdjustment ? 'warning' : 'success'}>
+          {hasEffectiveAdjustment ? '存在有效等级修正' : 'raw / effective 一致'}
+        </Badge>
+      </div>
+      {description ? (
+        <div className="text-xs text-text-secondary">{description}</div>
+      ) : null}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <FactoryMetric title="Raw A率" value={formatRatioPercent(toDisplayNumber(payload.raw_validation_a_rate))} />
+        <FactoryMetric title="Raw B率" value={formatRatioPercent(toDisplayNumber(payload.raw_validation_b_rate))} />
+        <FactoryMetric title="Raw B及以上" value={formatCountWithRate(payload.raw_b_or_above_count, payload.raw_b_or_above_rate)} />
+        <FactoryMetric title="Strict就绪" value={formatCountWithRate(payload.strict_incubation_ready_count, payload.strict_incubation_ready_rate)} />
+        <FactoryMetric title="Live就绪" value={formatCountWithRate(payload.live_candidate_ready_count, payload.live_candidate_ready_rate)} />
+        <FactoryMetric title="Raw B中 Strict / Live" value={`${formatRatioPercent(toDisplayNumber(payload.strict_ready_given_raw_b_rate))} / ${formatRatioPercent(toDisplayNumber(payload.live_ready_given_raw_b_rate))}`} />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-text-secondary">
+        <div>原始分布：{formatGradeDistributionSummary(rawDistribution)}</div>
+        <div>有效分布：{formatGradeDistributionSummary(effectiveDistribution)}</div>
+        <div>
+          Raw 分数：均值 {formatArtifactScore(payload.raw_validation_total_score_mean, 2)} / P50 {formatArtifactScore(payload.raw_validation_total_score_p50, 2)} / P90 {formatArtifactScore(payload.raw_validation_total_score_p90, 2)}
+        </div>
+      </div>
+      <FactoryFamilyQualityPanel title="Family 质量面板" items={familyPanel} />
+    </div>
+  );
+}
+
+function FactoryQualityBaselinePanel({
+  factoryStatus,
+}: {
+  factoryStatus: FactoryStatusResponse | null | undefined;
+}) {
+  const qualityBaseline = asTypedObject<Record<string, unknown>>(
+    factoryStatus?.quality_baseline,
+  ) as Partial<FactoryQualityBaseline>;
+  const cohort = asTypedObject<Record<string, unknown>>(
+    qualityBaseline.submitted_strategy_cohort,
+  ) as NonNullable<FactoryQualityBaseline['submitted_strategy_cohort']>;
+  const statusCounts = toDisplayCountEntries(cohort.status_counts);
+
+  if (!qualityBaseline.contract_version && Object.keys(cohort).length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      <FactoryQualityLensPanel
+        title="已提交 Cohort Raw 质量口径"
+        summary={cohort}
+        description="聚焦 submitted / incubating / listed 三类工厂策略，看 strict / live 提升是否建立在 raw B/A 增长上。"
+      />
+      <FactoryGenerationLanePanel
+        title="生成层级对照基线"
+        items={Array.isArray(cohort.generation_lane_quality_panel)
+          ? cohort.generation_lane_quality_panel
+          : []}
+        description={toDisplayText(cohort.generation_lane_definition)}
+      />
+      {(statusCounts.length > 0
+        || cohort.strict_live_alignment_gap_count != null
+        || cohort.validation_grade_d_strict_incubation_pass_count != null
+        || cohort.validation_grade_d_promotion_ready_count != null) && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">Cohort 对齐与风险备注</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <FactoryMetric title="工厂策略数" value={cohort.factory_strategy_count ?? 0} />
+            <FactoryMetric title="Strict/Live 缺口" value={formatCountWithRate(cohort.strict_live_alignment_gap_count, cohort.strict_live_alignment_gap_rate)} />
+            <FactoryMetric title="D级仍过 Strict" value={formatCountWithRate(cohort.validation_grade_d_strict_incubation_pass_count, cohort.validation_grade_d_strict_incubation_pass_rate)} />
+            <FactoryMetric title="D级仍可晋级" value={formatCountWithRate(cohort.validation_grade_d_promotion_ready_count, cohort.validation_grade_d_promotion_ready_rate)} />
+          </div>
+          {statusCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">状态分布</div>
+              <div className="flex flex-wrap gap-2">
+                {statusCounts.map(([status, count]) => (
+                  <Badge key={status} variant="neutral">
+                    {formatTaskLabel(status)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function FactoryPreviewSection({
@@ -1754,6 +2064,13 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
                     const candidateFamily = toDisplayText(item.candidate_family);
                     const generatorMode = toDisplayText(item.generator_mode);
                     const strategyStatus = toDisplayText(item.status);
+                    const rawValidationGrade = toDisplayText(item.raw_validation_grade);
+                    const effectiveValidationGrade = toDisplayText(
+                      item.effective_validation_grade ?? item.validation_grade,
+                    );
+                    const validationAdjustmentReason = toDisplayText(
+                      item.validation_grade_adjustment_reason,
+                    );
                     const committeeReview = asTypedObject<Record<string, unknown>>(item.committee_review);
                     const validationProfile = asTypedObject<Record<string, unknown>>(item.validation_profile);
                     const constraintCheck = asTypedObject<Record<string, unknown>>(item.constraint_check);
@@ -1821,6 +2138,16 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
                           {validationProfileName && (
                             <Badge variant="info">{formatTaskLabel(validationProfileName)}</Badge>
                           )}
+                          {rawValidationGrade && (
+                            <Badge variant={validationGradeBadgeVariant(rawValidationGrade)}>
+                              Raw {rawValidationGrade}
+                            </Badge>
+                          )}
+                          {effectiveValidationGrade && (
+                            <Badge variant={validationGradeBadgeVariant(effectiveValidationGrade)}>
+                              Effective {effectiveValidationGrade}
+                            </Badge>
+                          )}
                           {committeeDecision && (
                             <Badge variant={previewBadgeVariant(committeeDecision)}>
                               {formatTaskLabel(committeeDecision)}
@@ -1885,6 +2212,17 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
                         </div>
                         <div>约束审计：{constraintSummary}</div>
                         <div>评审问题：{committeeIssueSummary}</div>
+                        <div>
+                          评级分离：
+                          {rawValidationGrade ?? '-'} → {effectiveValidationGrade ?? '-'}
+                          {validationAdjustmentReason ? ` / ${validationAdjustmentReason}` : ''}
+                        </div>
+                        <div>
+                          Raw / Effective 分数：
+                          {formatArtifactScore(item.raw_validation_total_score, 2)}
+                          {' / '}
+                          {formatArtifactScore(item.validation_total_score, 2)}
+                        </div>
                         <div>验证焦点：{validationFocus ?? '-'}</div>
                         <div>事件窗：{eventWindowSummary}</div>
                         <div>仓位 / 惩罚：{positionAssumption ?? '-'} / {attemptAdjustmentSummary}</div>
@@ -2288,6 +2626,11 @@ function FactoryRunDetailPanel({
 
       <FactoryTaskStructurePanel summary={summary} />
       <FactoryQualityAuditPanel summary={summary} />
+      <FactoryQualityLensPanel
+        title="运行质量口径"
+        summary={summary}
+        description="这里直接看 raw / effective 分布，以及 strict / live 是否由 raw B/A 样本支撑。"
+      />
       <FactoryFeedbackLoopPanel
         title="生命周期反馈闭环"
         summary={summary}
@@ -2430,6 +2773,12 @@ export function FactoryDashboard({
       </div>
       <FactoryTaskStructurePanel summary={factorySummary} />
       <FactoryQualityAuditPanel summary={factorySummary} />
+      <FactoryQualityLensPanel
+        title="最近一轮 Raw 质量口径"
+        summary={factorySummary}
+        description="优先看原始 validation 等级，再看 effective 等级与 strict / live 对齐情况，避免把门禁修正误当成质量提升。"
+      />
+      <FactoryQualityBaselinePanel factoryStatus={factoryStatus} />
       <FactoryFeedbackLoopPanel title="P3 反馈闭环" summary={factorySummary} compact />
       <div className="mt-3 flex flex-wrap gap-2">
         {capabilityBadges.map((item) => (

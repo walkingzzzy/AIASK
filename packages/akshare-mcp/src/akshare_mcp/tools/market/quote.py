@@ -29,6 +29,56 @@ import pandas as pd
 
 from ._quote_support import *
 
+
+def _backfill_prev_close(payload: dict, code: str) -> dict:
+    if not isinstance(payload, dict) or payload.get("preClose"):
+        return payload
+    try:
+        snap = _get_daily_snapshot(code)
+        prev_close = snap.get("prev_close")
+        if prev_close is None:
+            return payload
+        payload["preClose"] = prev_close
+        if payload.get("change") is None:
+            change, change_pct = _calc_change(safe_float(payload.get("price")), prev_close)
+            payload["change"] = change
+            payload["changePercent"] = change_pct
+    except Exception as e:
+        _log_quote_source_error("prev_close backfill", code, e)
+    return payload
+
+
+def _ok_quote_response(
+    payload: dict,
+    *,
+    attempted_sources: list[str],
+    source_chain: list[str],
+    fallback_reason: Optional[str] = None,
+) -> dict:
+    response = ok(payload, cached=False)
+    normalized_reasons = normalize_reason_list(fallback_reason)
+    if isinstance(response.get("data"), dict):
+        data = response["data"]
+        data["attempted_sources"] = attempted_sources
+        data["source_chain"] = source_chain
+        data["fallback_used"] = len(source_chain) > 1 or (source_chain and source_chain[0] != "data_source")
+        data["fallback_reason"] = fallback_reason
+        data["data_timestamp"] = payload.get("data_timestamp") or _current_data_timestamp()
+        _save_quote_nonblocking(data)
+    response.update(
+        build_quality_meta(
+            source=str(payload.get("source") or "unknown"),
+            source_chain=source_chain,
+            fallback_reason=normalized_reasons,
+            asof_value=payload.get("time") or payload.get("trade_time") or payload.get("data_timestamp"),
+            missing_fields=_quote_missing_fields(payload),
+            degraded=bool(_quote_missing_fields(payload)),
+            success=True,
+        )
+    )
+    return response
+
+
 def get_realtime_quote(stock_code: str) -> dict:
     """获取单只股票实时行情（优化版）
 
@@ -155,6 +205,8 @@ def get_realtime_quote(stock_code: str) -> dict:
             source_chain=["get_realtime_quote"],
             fallback_reason=str(e),
         )
+
+
 
 
 def _build_batch_quote_response(

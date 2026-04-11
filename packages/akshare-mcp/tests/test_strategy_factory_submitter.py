@@ -57,6 +57,9 @@ class TestStrategySubmitter:
         assert saved_report["dedup_report"] == {}
         assert saved_report["summary"]["review_source"] == "strategy_factory_submit"
         assert saved_report["quality_gate"]["reason_codes"] == []
+        assert result["strategies"][0]["quality_summary"]["raw_validation_grade"] == "B"
+        assert result["strategies"][0]["validation_grade"] == "B"
+        assert result["strategies"][0]["raw_validation_total_score"] == 58.0
 
     @pytest.mark.asyncio
     async def test_submitter_persists_target_universe_into_strategy_params(self, monkeypatch):
@@ -97,14 +100,15 @@ class TestStrategySubmitter:
         ], {"fg_level": "neutral"}, db)
 
         saved_strategy = db.save_strategy.await_args.args[0]
-        assert saved_strategy["params"]["target_symbols"] == ["688981", "002371"]
-        assert saved_strategy["params"]["stock_pool"]["symbols"] == ["688981", "002371"]
+        expected_symbols = ["002371", "688981"]
+        assert saved_strategy["params"]["target_symbols"] == expected_symbols
+        assert saved_strategy["params"]["stock_pool"]["symbols"] == expected_symbols
         assert saved_strategy["params"]["selection_logic"] == ["prefer semiconductor leaders"]
         assert saved_strategy["params"]["research_task"]["task_id"] == "task_chip"
-        assert validation_mock.await_args.args[1]["target_symbols"] == ["688981", "002371"]
-        assert validation_mock.await_args.args[1]["stock_pool"]["symbols"] == ["688981", "002371"]
+        assert validation_mock.await_args.args[1]["target_symbols"] == expected_symbols
+        assert validation_mock.await_args.args[1]["stock_pool"]["symbols"] == expected_symbols
         assert validation_mock.await_args.args[1]["research_task"]["task_id"] == "task_chip"
-        assert risk_mock.await_args.args[1]["target_symbols"] == ["688981", "002371"]
+        assert risk_mock.await_args.args[1]["target_symbols"] == expected_symbols
 
     @pytest.mark.asyncio
     async def test_submitter_preserves_event_context_in_experiment_record(self, monkeypatch):

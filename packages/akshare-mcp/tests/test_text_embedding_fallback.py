@@ -165,6 +165,55 @@ async def test_text_embedding_smoke_check_updates_service_status():
 
 
 @pytest.mark.asyncio
+async def test_text_embedding_smoke_check_falls_back_to_hash_on_provider_failure():
+    service = StrategyTextEmbeddingService(
+        StrategyTextEmbeddingConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="https://embedding.example.test/v1",
+            api_key="test-key",
+            model="text-embedding-3-small",
+            allow_hash_fallback=True,
+            hash_dimensions=32,
+            retry_count=0,
+            smoke_check_enabled=True,
+        )
+    )
+
+    class _FailingClient:
+        def __init__(self):
+            self.is_closed = False
+            self.calls = 0
+
+        async def post(self, *_args, **_kwargs):
+            self.calls += 1
+            request = httpx.Request("POST", "https://embedding.example.test/v1/embeddings")
+            response = httpx.Response(
+                400,
+                request=request,
+                json={"error": {"message": "broken embedding endpoint"}},
+            )
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+        async def aclose(self):
+            self.is_closed = True
+
+    service._client = _FailingClient()
+    try:
+        smoke = await service.smoke_check(force=True)
+
+        assert smoke["status"] == "passed"
+        assert smoke["provider"] == "hash_fallback"
+        assert smoke["requested_provider"] == "openai_compatible"
+        assert smoke["fallback_used"] is True
+        assert smoke["fallback_error"]
+        assert smoke["vector_length"] == 32
+        assert service.status()["ready"] is True
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_text_embedding_raises_when_hash_fallback_is_disabled():
     service = StrategyTextEmbeddingService(
         StrategyTextEmbeddingConfig(

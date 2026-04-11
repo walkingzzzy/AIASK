@@ -538,6 +538,21 @@ class _StrategySubmitterActionsMixin:
                 "feedback_target_pool_control_mode": feedback_target_pool_control_mode,
                 "feedback_generator_mode_control_mode": feedback_generator_mode_control_mode,
                 "primary_validation_layer": gate.get("primary_validation_layer"),
+                "quality_summary": quality_summary,
+                "validation_grade": quality_summary.get("validation_grade"),
+                "raw_validation_grade": quality_summary.get("raw_validation_grade"),
+                "effective_validation_grade": quality_summary.get("effective_validation_grade"),
+                "validation_grade_adjustment_reason": quality_summary.get(
+                    "validation_grade_adjustment_reason"
+                ),
+                "validation_total_score": quality_summary.get("validation_total_score"),
+                "raw_validation_total_score": quality_summary.get("raw_validation_total_score"),
+                "strict_incubation_ready": bool(
+                    quality_summary.get("strict_incubation_ready", gate.get("strict_incubation_ready"))
+                ),
+                "strict_incubation_blocked": bool(
+                    quality_summary.get("strict_incubation_blocked", gate.get("strict_incubation_blocked"))
+                ),
                 "event_window_config": dict(metrics.get("event_window_config") or {}),
                 "event_window_metrics": dict(metrics.get("event_window_metrics") or {}),
                 "position_assumption": metrics.get("position_assumption"),
@@ -971,7 +986,10 @@ class _StrategySubmitterActionsMixin:
                 fallback_conditions = ["promote_after_trade_audit_completed"]
                 next_step = "research"
                 completed = True
-            elif str(incubation_budget_track or "").strip().lower() == "formal_incubation":
+            elif (
+                str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+                and str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
+            ):
                 action_type = "incubation"
                 submission_lane = "formal_incubation"
                 final_status = "incubating"
@@ -983,6 +1001,25 @@ class _StrategySubmitterActionsMixin:
                 ]
                 next_step = "paper"
                 completed = False
+            elif str(incubation_budget_track or "").strip().lower() == "formal_incubation":
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
+                trigger = "formal_incubation_requires_strict_gate"
+                gaps = list(
+                    dict.fromkeys(
+                        [
+                            *list(admission_block_reasons),
+                            "strict_incubation_pass_required_for_formal_track",
+                        ]
+                    )
+                )
+                fallback_conditions = [
+                    "promote_after_strict_incubation_gate_passes",
+                    "observe_track_allowed_only_after_budget_rebalance",
+                ]
+                next_step = "research"
+                completed = True
             elif str(incubation_budget_track or "").strip().lower() == "observe_incubation":
                 action_type = "paper"
                 submission_lane = "observe_incubation"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -137,10 +138,201 @@ class DataCollector:
         return text[: max(0, limit - 3)] + "..."
 
     @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    @staticmethod
     def _normalize_codes(values: Any, limit: int = 5) -> List[str]:
         from ..domain.targets import _normalize_target_codes
 
         return _normalize_target_codes(values, limit=limit)
+
+    @staticmethod
+    def _is_factory_generated_strategy(strategy: Optional[dict]) -> bool:
+        payload = dict(strategy or {})
+        tags = {str(tag or "").strip().lower() for tag in list(payload.get("tags") or [])}
+        author_id = str(payload.get("author_id") or "").strip().lower()
+        source = str(payload.get("source") or "").strip().lower()
+        if "factory" in tags or "auto_generated" in tags:
+            return True
+        if author_id == "strategy_factory":
+            return True
+        return source.startswith("strategy_factory")
+
+    @classmethod
+    def _observed_forward_days(cls, signal_stats: Optional[dict]) -> List[int]:
+        payload = dict(signal_stats or {})
+        observed: List[int] = []
+        for days in (1, 5, 10, 20):
+            day_found = False
+            for metric_name in ("hit_rate", "forward_ic", "forward_sharpe"):
+                metric = dict(payload.get(metric_name) or {})
+                if metric.get(days) is not None or metric.get(str(days)) is not None:
+                    day_found = True
+                    break
+            if day_found:
+                observed.append(days)
+        return observed
+
+    @staticmethod
+    async def _load_latest_quality_report(db, strategy_id: str) -> Optional[dict]:
+        getter = getattr(db, "get_latest_strategy_quality_report", None)
+        if callable(getter):
+            report = getter(strategy_id)
+            if hasattr(report, "__await__"):
+                report = await report
+            return dict(report or {}) if report else None
+        getter = getattr(db, "list_strategy_quality_reports", None)
+        if callable(getter):
+            rows = getter(strategy_id, limit=1)
+            if hasattr(rows, "__await__"):
+                rows = await rows
+            first = list(rows or [])[:1]
+            return dict(first[0] or {}) if first else None
+        getter = getattr(db, "get_strategy_quality_report", None)
+        if callable(getter):
+            report = getter(strategy_id)
+            if hasattr(report, "__await__"):
+                report = await report
+            return dict(report or {}) if report else None
+        return None
+
+    async def _collect_parameter_distribution_snapshot(
+        self,
+        db,
+        *,
+        limit_per_status: int = 120,
+        max_samples: int = 96,
+    ) -> dict:
+        list_strategies = getattr(db, "list_strategies", None)
+        get_signal_stats = getattr(db, "get_signal_stats", None)
+        if not callable(list_strategies) or not callable(get_signal_stats):
+            return {
+                "items": [],
+                "summary": {
+                    "eligible_sample_count": 0,
+                    "factory_strategy_count": 0,
+                    "strategy_type_counts": {},
+                    "source": "unavailable",
+                },
+            }
+
+        submitted, incubating, listed = await asyncio.gather(
+            list_strategies("submitted", limit=limit_per_status),
+            list_strategies("incubating", limit=limit_per_status),
+            list_strategies("listed", limit=limit_per_status),
+        )
+        strategy_map: dict[str, dict] = {}
+        for row in [*list(submitted or []), *list(incubating or []), *list(listed or [])]:
+            strategy = dict(row or {})
+            strategy_id = str(strategy.get("id") or "").strip()
+            if not strategy_id or not self._is_factory_generated_strategy(strategy):
+                continue
+            strategy_map[strategy_id] = strategy
+
+        strategies = list(strategy_map.values())
+        if not strategies:
+            return {
+                "items": [],
+                "summary": {
+                    "eligible_sample_count": 0,
+                    "factory_strategy_count": 0,
+                    "strategy_type_counts": {},
+                    "source": "empty",
+                },
+            }
+
+        quality_reports, signal_stats_rows = await asyncio.gather(
+            asyncio.gather(
+                *(self._load_latest_quality_report(db, str(strategy.get("id") or "")) for strategy in strategies)
+            ),
+            asyncio.gather(
+                *(get_signal_stats(str(strategy.get("id") or "")) for strategy in strategies)
+            ),
+        )
+
+        items: list[dict[str, Any]] = []
+        strategy_type_counts: dict[str, int] = {}
+        validation_grade_distribution: dict[str, int] = {}
+        promotion_ready_count = 0
+        quality_passed_count = 0
+        for strategy, quality_report, signal_stats in zip(strategies, quality_reports, signal_stats_rows):
+            params = dict(strategy.get("params") or {})
+            strategy_type = str(strategy.get("strategy_type") or "").strip()
+            if not strategy_type or not params:
+                continue
+            report = dict(quality_report or {})
+            summary = dict(report.get("summary") or {})
+            validation_grade = str(summary.get("validation_grade") or "").strip().upper()
+            total_signals = self._safe_int(dict(signal_stats or {}).get("total_signals"), 0)
+            observed_forward_days = self._observed_forward_days(signal_stats)
+            quality_passed = bool(report.get("passed"))
+            promotion_ready = (
+                quality_passed
+                and total_signals >= 10
+                and {1, 5, 10, 20}.issubset(set(observed_forward_days))
+                and validation_grade in {"A", "B", "C"}
+            )
+            oos_passed = (
+                quality_passed
+                and total_signals >= 10
+                and validation_grade in {"A", "B", "C"}
+                and bool({5, 10, 20} & set(observed_forward_days))
+            )
+            if not oos_passed:
+                continue
+            sampling_weight = round(
+                {"A": 1.0, "B": 0.85, "C": 0.7}.get(validation_grade, 0.5)
+                + min(total_signals / 20.0, 1.0) * 0.3
+                + min(len(observed_forward_days) / 4.0, 1.0) * 0.25
+                + (0.15 if promotion_ready else 0.0),
+                4,
+            )
+            validation_grade_distribution[validation_grade] = (
+                validation_grade_distribution.get(validation_grade, 0) + 1
+            )
+            if promotion_ready:
+                promotion_ready_count += 1
+            if quality_passed:
+                quality_passed_count += 1
+            items.append(
+                {
+                    "strategy_id": str(strategy.get("id") or ""),
+                    "strategy_type": strategy_type,
+                    "params": params,
+                    "validation_grade": validation_grade,
+                    "quality_passed": quality_passed,
+                    "promotion_ready": promotion_ready,
+                    "total_signals": total_signals,
+                    "observed_forward_days": observed_forward_days,
+                    "oos_passed": oos_passed,
+                    "sampling_weight": sampling_weight,
+                }
+            )
+            strategy_type_counts[strategy_type] = strategy_type_counts.get(strategy_type, 0) + 1
+
+        items.sort(
+            key=lambda item: (
+                -float(item.get("sampling_weight") or 0.0),
+                -int(item.get("total_signals") or 0),
+                str(item.get("strategy_id") or ""),
+            )
+        )
+        return {
+            "items": items[:max_samples],
+            "summary": {
+                "eligible_sample_count": len(items[:max_samples]),
+                "factory_strategy_count": len(strategies),
+                "strategy_type_counts": strategy_type_counts,
+                "validation_grade_distribution": validation_grade_distribution,
+                "promotion_ready_count": promotion_ready_count,
+                "quality_passed_count": quality_passed_count,
+                "source": "strategy_population_quality_reports",
+            },
+        }
 
     def _get_sentiment_analyzer(self):
         if self._sentiment_analyzer_factory is None:
@@ -231,7 +423,7 @@ class DataCollector:
         theme_name: str,
         opportunity_hint: str,
     ) -> List[str]:
-        from .opportunity import MarketOpportunityScanner
+        from .research.opportunity import MarketOpportunityScanner
 
         return MarketOpportunityScanner._event_strategy_preferences(
             direction=direction,
@@ -933,6 +1125,21 @@ class DataCollector:
                 ["category_counts", "listed_count", "incubating_count"],
                 reason="strategy_population failed",
             )
+
+        try:
+            parameter_distribution = await self._collect_parameter_distribution_snapshot(db)
+            snapshot["parameter_distribution_samples"] = list(parameter_distribution.get("items") or [])
+            snapshot["parameter_distribution_summary"] = dict(parameter_distribution.get("summary") or {})
+        except Exception as exc:
+            logger.warning("DataCollector: parameter distribution snapshot failed: %s", exc)
+            snapshot["parameter_distribution_samples"] = []
+            snapshot["parameter_distribution_summary"] = {
+                "eligible_sample_count": 0,
+                "factory_strategy_count": 0,
+                "strategy_type_counts": {},
+                "source": "failed",
+                "error": str(exc),
+            }
 
         self._finalize_snapshot_contract(
             snapshot,

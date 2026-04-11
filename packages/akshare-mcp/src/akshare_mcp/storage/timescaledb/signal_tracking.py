@@ -82,30 +82,81 @@ class SignalTrackingMixin:
                 signal_id, forward_days, actual_return,
             )
 
-    async def get_pending_forward_returns(self, forward_days: int) -> List[dict]:
+    async def save_forward_returns_batch(self, rows: List[Dict[str, Any]]) -> int:
+        """批量写入前向收益。每个 dict: {signal_id, forward_days, actual_return}"""
+        if not rows:
+            return 0
+
+        payload = []
+        for row in list(rows or []):
+            try:
+                payload.append(
+                    (
+                        int(row["signal_id"]),
+                        int(row["forward_days"]),
+                        float(row["actual_return"]),
+                    )
+                )
+            except Exception as exc:
+                logger.warning("save_forward_returns_batch skip invalid row %s: %s", row, exc)
+
+        if not payload:
+            return 0
+
+        async with self.acquire() as conn:
+            await conn.executemany(
+                """INSERT INTO signal_forward_returns (signal_id, forward_days, actual_return)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (signal_id, forward_days) DO UPDATE
+                   SET actual_return = EXCLUDED.actual_return, calculated_at = NOW()""",
+                payload,
+            )
+        return len(payload)
+
+    async def get_pending_forward_returns(
+        self,
+        forward_days: int,
+        limit: int = 500,
+        after_signal_date: Optional[date] = None,
+        after_id: Optional[int] = None,
+    ) -> List[dict]:
         """找到 N 天前的信号中尚未计算前向收益的记录"""
         cutoff = date.today() - timedelta(days=forward_days)
+        batch_limit = max(1, min(int(limit or 500), 5000))
+        cursor_signal_date = after_signal_date
+        cursor_id = int(after_id or 0)
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT ss.id, ss.strategy_id, ss.signal_date, ss.code, ss.signal
                    FROM strategy_signals ss
                    WHERE ss.signal_date <= $1
+                     AND (
+                         $3::date IS NULL
+                         OR ss.signal_date > $3::date
+                         OR (ss.signal_date = $3::date AND ss.id > $4)
+                     )
                      AND NOT EXISTS (
                          SELECT 1 FROM signal_forward_returns sfr
                          WHERE sfr.signal_id = ss.id AND sfr.forward_days = $2
                      )
-                   ORDER BY ss.signal_date
-                   LIMIT 500""",
+                   ORDER BY ss.signal_date, ss.id
+                   LIMIT $5""",
                 cutoff, forward_days,
+                cursor_signal_date, cursor_id, batch_limit,
             )
         return [dict(r) for r in rows]
 
     async def get_signal_stats(self, strategy_id: str) -> dict:
         """聚合统计：命中率、前向 IC、前向 Sharpe"""
         async with self.acquire() as conn:
-            # 命中率：信号方向与实际收益方向一致的比例
+            total_row = await conn.fetchrow(
+                """SELECT COUNT(*) AS total_signals
+                   FROM strategy_signals
+                   WHERE strategy_id = $1""",
+                strategy_id,
+            )
             rows = await conn.fetch(
-                """SELECT ss.signal, sfr.forward_days, sfr.actual_return
+                """SELECT ss.id AS signal_id, ss.signal, sfr.forward_days, sfr.actual_return
                    FROM strategy_signals ss
                    JOIN signal_forward_returns sfr ON sfr.signal_id = ss.id
                    WHERE ss.strategy_id = $1
@@ -113,8 +164,20 @@ class SignalTrackingMixin:
                 strategy_id,
             )
 
+        raw_signal_count = int((total_row or {}).get("total_signals") or 0)
+        signals_with_forward_returns_count = len({int(r["signal_id"]) for r in rows}) if rows else 0
+        observed_forward_return_count = len(rows)
+
         if not rows:
-            return {"hit_rate": {}, "forward_ic": {}, "forward_sharpe": {}, "total_signals": 0}
+            return {
+                "hit_rate": {},
+                "forward_ic": {},
+                "forward_sharpe": {},
+                "total_signals": raw_signal_count,
+                "raw_signal_count": raw_signal_count,
+                "signals_with_forward_returns_count": signals_with_forward_returns_count,
+                "observed_forward_return_count": observed_forward_return_count,
+            }
 
         by_days: Dict[int, list] = {}
         for r in rows:
@@ -151,7 +214,10 @@ class SignalTrackingMixin:
             "hit_rate": hit_rate,
             "forward_ic": forward_ic,
             "forward_sharpe": forward_sharpe,
-            "total_signals": len(rows),
+            "total_signals": raw_signal_count,
+            "raw_signal_count": raw_signal_count,
+            "signals_with_forward_returns_count": signals_with_forward_returns_count,
+            "observed_forward_return_count": observed_forward_return_count,
         }
 
     async def is_subscribed(self, strategy_id: str, user_id: str) -> bool:

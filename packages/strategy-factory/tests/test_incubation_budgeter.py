@@ -256,6 +256,84 @@ def test_incubation_budgeter_hard_controls_defer_suppressed_candidates(monkeypat
     assert plan["summary"]["feedback_generator_mode_freeze_count"] == 1
 
 
+def test_incubation_budgeter_suppresses_evidence_debt_backlog(monkeypatch):
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    evidence_debt_candidate = {
+        "name": "evidence_debt_momentum",
+        "strategy_type": "momentum",
+        "backtest_metrics": {"sharpe_ratio": 1.0, "total_return": 0.13, "max_drawdown": 0.08},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "momentum",
+                "generator_mode": "external_llm",
+            }
+        },
+        "research_task": {"priority": 80, "candidate_family": "momentum"},
+    }
+    normal_candidate = {
+        "name": "normal_quality",
+        "strategy_type": "quality_factor",
+        "backtest_metrics": {"sharpe_ratio": 0.9, "total_return": 0.12, "max_drawdown": 0.08},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "quality_factor",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 74, "candidate_family": "quality_factor"},
+    }
+
+    plan = IncubationBudgeter.plan(
+        [evidence_debt_candidate, normal_candidate],
+        {
+            "fear_greed_index": 52,
+            "factor_research": {
+                "summary": {"active_family_names": ["momentum", "quality_factor"]},
+                "budget_feedback": {
+                    "momentum": {
+                        "strategy_count": 8,
+                        "paper_hit_ratio": 0.52,
+                        "runtime_alert_pressure": 0.04,
+                        "realized_turnover": 0.18,
+                        "capacity_crowding": 0.16,
+                        "zero_signal_ratio": 0.875,
+                        "low_signal_ratio": 1.0,
+                        "forward_window_coverage_ratio": 0.125,
+                        "promotion_ready_ratio": 0.0,
+                        "promotion_review_coverage_ratio": 0.0,
+                        "evidence_debt_ratio": 0.9,
+                    },
+                    "quality_factor": {
+                        "strategy_count": 4,
+                        "paper_hit_ratio": 0.62,
+                        "runtime_alert_pressure": 0.06,
+                        "realized_turnover": 0.24,
+                        "capacity_crowding": 0.18,
+                        "zero_signal_ratio": 0.0,
+                        "forward_window_coverage_ratio": 1.0,
+                        "promotion_ready_ratio": 1.0,
+                        "promotion_review_coverage_ratio": 1.0,
+                        "evidence_debt_ratio": 0.0,
+                    },
+                },
+            },
+        },
+    )
+
+    debt_plan = plan["plans"][id(evidence_debt_candidate)]
+    normal_plan = plan["plans"][id(normal_candidate)]
+
+    assert debt_plan["track"] == "deferred_budget_queue"
+    assert debt_plan["feedback_control_mode"] == "freeze"
+    assert "family_evidence_debt_freeze" in debt_plan["feedback_control_reasons"]
+    assert normal_plan["track"] in {"formal_incubation", "observe_incubation"}
+    assert plan["summary"]["feedback_controlled_count"] == 1
+    assert plan["summary"]["feedback_freeze_count"] == 1
+
+
 def test_incubation_budgeter_accepts_lifecycle_feedback_input_contract(monkeypatch):
     monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
     monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)

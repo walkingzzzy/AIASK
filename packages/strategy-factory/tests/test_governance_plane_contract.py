@@ -118,6 +118,16 @@ def test_governance_plane_contract_builds_gate_dedup_submission_and_evidence_art
                     "event_window_config": {"lookback_days": 3, "forward_days": 5},
                     "position_assumption": "single_name_full_notional",
                     "attempt_adjustment": {"attempt_count": 4, "selection_ratio": 0.25, "penalty": 0.03},
+                    "raw_validation_grade": "C",
+                    "effective_validation_grade": "B",
+                    "validation_grade_adjustment_reason": "committee_override_after_runtime_review",
+                    "raw_validation_total_score": 58.0,
+                    "validation_total_score": 62.0,
+                    "strict_incubation_ready": True,
+                    "live_candidate_ready": False,
+                    "trade_density": 0.84,
+                    "post_cost_sharpe": 1.12,
+                    "run_correction": {"deflated_sharpe_ratio": 0.16, "pbo": 0.42},
                     "candidate_family": "momentum",
                     "generator_mode": "external_llm",
                     "vector_profile_id": "vp_1",
@@ -160,8 +170,34 @@ def test_governance_plane_contract_builds_gate_dedup_submission_and_evidence_art
     assert artifact["submission_artifact"]["event_window_config_count"] == 1
     assert artifact["submission_artifact"]["attempt_adjustment_count"] == 1
     assert artifact["submission_artifact"]["task_signature_count"] == 1
+    assert artifact["submission_artifact"]["validation_grade_distribution"] == {"B": 1}
+    assert artifact["submission_artifact"]["raw_validation_grade_distribution"] == {"C": 1}
+    assert artifact["submission_artifact"]["effective_validation_grade_distribution"] == {"B": 1}
+    assert artifact["submission_artifact"]["raw_validation_total_score_mean"] == 58.0
+    assert artifact["submission_artifact"]["raw_validation_b_rate"] == 0.0
+    assert artifact["submission_artifact"]["strict_incubation_ready_count"] == 1
+    assert artifact["submission_artifact"]["strict_incubation_ready_rate"] == 1.0
+    assert artifact["submission_artifact"]["live_candidate_ready_count"] == 0
+    assert artifact["submission_artifact"]["raw_b_or_above_count"] == 0
+    assert artifact["submission_artifact"]["strict_ready_given_raw_b_rate"] == 0.0
+    assert artifact["submission_artifact"]["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+    assert (
+        artifact["submission_artifact"]["validation_family_quality_panel"][0]["raw_validation_grade_distribution"]
+        == {"C": 1}
+    )
+    assert (
+        artifact["submission_artifact"]["validation_family_quality_panel"][0]["family_mean_trade_density"]
+        == 0.84
+    )
+    assert artifact["submission_artifact"]["validation_family_quality_panel"][0]["family_mean_dsr"] == 0.16
     assert artifact["submission_artifact"]["strategy_briefs"][0]["primary_validation_layer"] == "target"
     assert artifact["submission_artifact"]["strategy_briefs"][0]["refresh_mode"] == "refresh_metrics_only"
+    assert artifact["submission_artifact"]["strategy_briefs"][0]["raw_validation_grade"] == "C"
+    assert artifact["submission_artifact"]["strategy_briefs"][0]["effective_validation_grade"] == "B"
+    assert (
+        artifact["submission_artifact"]["strategy_briefs"][0]["validation_grade_adjustment_reason"]
+        == "committee_override_after_runtime_review"
+    )
     assert (
         artifact["submission_artifact"]["strategy_briefs"][0]["validation_profile"]["profile"]
         == "event_trade_validation"
@@ -209,3 +245,112 @@ def test_governance_plane_contract_supports_empty_runs():
     assert artifact["dedup_artifact"]["available"] is False
     assert artifact["submission_artifact"]["available"] is False
     assert artifact["evidence_artifact"]["available"] is False
+
+
+def test_governance_plane_contract_aggregates_raw_family_panel_from_quality_summary():
+    artifact = build_governance_plane_artifact(
+        submit_result={
+            "created": 1,
+            "created_total": 1,
+            "created_strategy_pool": 1,
+            "created_audit_only": 0,
+            "refreshed": 0,
+            "gate_3_input": 1,
+            "submitted": 1,
+            "passed_quality_gate": 1,
+            "gate_3_passed": 1,
+            "gate_3_failed": 0,
+            "gate_3_provisional_passed": 0,
+            "strategies": [
+                {
+                    "strategy_id": "sid_quality_summary_only",
+                    "name": "只保留 quality summary 的候选",
+                    "status": "submitted",
+                    "submission_lane": "deferred_submission",
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "medium",
+                    "generator_mode": "rule",
+                    "quality_summary": {
+                        "validation_grade": "C",
+                        "raw_validation_grade": "B",
+                        "effective_validation_grade": "C",
+                        "raw_validation_total_score": 56.0,
+                        "candidate_family": "momentum",
+                        "holding_period_bucket": "medium",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert artifact["submission_artifact"]["validation_grade_distribution"] == {"C": 1}
+    assert artifact["submission_artifact"]["raw_validation_grade_distribution"] == {"B": 1}
+    assert artifact["submission_artifact"]["raw_validation_b_rate"] == 1.0
+    assert artifact["submission_artifact"]["raw_b_or_above_count"] == 1
+    assert artifact["submission_artifact"]["raw_b_or_above_rate"] == 1.0
+    assert artifact["submission_artifact"]["raw_validation_total_score_mean"] == 56.0
+    assert artifact["submission_artifact"]["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+    assert (
+        artifact["submission_artifact"]["validation_family_quality_panel"][0]["raw_validation_grade_distribution"]
+        == {"B": 1}
+    )
+    assert artifact["submission_artifact"]["validation_family_quality_panel"][0]["family_raw_b_rate"] == 1.0
+
+
+def test_governance_plane_contract_falls_back_to_gate_review_context_for_raw_panel():
+    artifact = build_governance_plane_artifact(
+        submit_result={
+            "created": 0,
+            "created_total": 0,
+            "created_strategy_pool": 0,
+            "created_audit_only": 0,
+            "refreshed": 0,
+            "gate_3_input": 1,
+            "submitted": 0,
+            "passed_quality_gate": 0,
+            "gate_3_passed": 0,
+            "gate_3_failed": 1,
+            "gate_3_provisional_passed": 0,
+            "strategies": [
+                {
+                    "strategy_id": "sid_gate_only",
+                    "name": "只保留 gate 的候选",
+                    "status": "rejected",
+                    "submission_lane": "rejected",
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "medium",
+                    "generator_mode": "rule",
+                    "gate_3": {
+                        "trade_density": 1.28,
+                        "post_cost_sharpe": 1.12,
+                        "deflated_sharpe_ratio": 0.08,
+                        "pbo": 0.41,
+                        "validation_focus": "candidate_target_only",
+                        "strict_incubation_ready": True,
+                        "cohort_effective_trials": 7.0,
+                        "admission_review_context": {"validation_grade": "D"},
+                        "admission_evaluations": {
+                            "incubation": {
+                                "review_context": {"validation_grade": "D"},
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    submission = artifact["submission_artifact"]
+    assert submission["raw_validation_grade_distribution"] == {"D": 1}
+    assert submission["validation_grade_distribution"] == {"D": 1}
+    assert submission["cohort_effective_trials"] == 7.0
+    panel = submission["validation_family_quality_panel"][0]
+    assert panel["strategy_family"] == "momentum"
+    assert panel["validation_focus"] == "candidate_target_only"
+    assert panel["raw_validation_grade_distribution"] == {"D": 1}
+    assert panel["strict_incubation_ready_count"] == 1
+    assert panel["strict_ready_given_raw_b_rate"] == 0.0
+    assert panel["mean_trade_density"] == 1.28
+    assert panel["mean_post_cost_sharpe"] == 1.12
+    assert panel["mean_deflated_sharpe_ratio"] == 0.08
+    assert panel["mean_pbo"] == 0.41

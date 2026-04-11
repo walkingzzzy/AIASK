@@ -42,7 +42,7 @@ async def test_candidate_generation_service_merges_and_deduplicates_specs():
 
     merged_specs = result["merged_specs"]
     assert len(merged_specs) == 3
-    assert [spec.strategy_type for spec in merged_specs] == ["momentum", "value_factor", "quality_factor"]
+    assert [spec.strategy_type for spec in merged_specs] == ["momentum", "quality_factor", "value_factor"]
     assert all(spec.metadata["research_task"]["task_id"] == "task_autonomy" for spec in merged_specs)
     assert result["llm_report"]["external_provider"]["status"] == "succeeded"
 
@@ -134,6 +134,55 @@ async def test_candidate_generation_service_can_skip_external_llm_when_scheduler
     assert [spec.strategy_type for spec in result["merged_specs"]] == ["momentum"]
     assert result["llm_report"]["external_provider"]["status"] == "skipped"
     assert result["llm_report"]["external_provider"]["skip_reason"] == "empty_200_false_success_detected"
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_service_replays_persisted_hypotheses_when_external_llm_is_blocked():
+    service = CandidateGenerationService()
+    db = MagicMock()
+    db.get_strategy = AsyncMock(
+        return_value={"id": "sid_parent_replay", "strategy_type": "momentum", "params": {"lookback": 12}}
+    )
+
+    service.rule_generator.generate = lambda *_args, **_kwargs: [
+        StrategySpec(strategy_type="momentum", params={"lookback": 20}, name="scheduler-blocked-rule")
+    ]
+    service.llm_generator.generate = AsyncMock(side_effect=AssertionError("scheduler-blocked task should skip llm"))
+    service.llm_generator.replay_persisted_specs = AsyncMock(
+        return_value={
+            "specs": [
+                StrategySpec(
+                    strategy_type="quality_factor",
+                    params={"lookback": 18},
+                    name="replayed-hypothesis",
+                    metadata={"generator_type": "hypothesis_replay"},
+                )
+            ],
+            "report": {
+                "status": "succeeded",
+                "trigger_reason": "empty_200_false_success_detected",
+                "selected_count": 1,
+            },
+        }
+    )
+    service.optimizer.evolve = AsyncMock(return_value=[])
+
+    result = await service.generate(
+        db,
+        snapshot={"date": "2026-04-03", "fear_greed_index": 58},
+        limit=3,
+        research_task={
+            "task_id": "task_provider_blocked_replay",
+            "disable_external_llm": True,
+            "external_llm_skip_reason": "empty_200_false_success_detected",
+        },
+        parent_strategy_id="sid_parent_replay",
+    )
+
+    assert [spec.strategy_type for spec in result["replay_specs"]] == ["quality_factor"]
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["quality_factor", "momentum"]
+    assert result["llm_report"]["replay_provider"]["status"] == "succeeded"
+    assert result["llm_report"]["replay_provider"]["selected_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -230,7 +279,7 @@ async def test_candidate_generation_service_can_enable_bulk_stock_matrix_llm_and
         },
     )
 
-    assert [spec.strategy_type for spec in result["merged_specs"]] == ["momentum", "quality_factor", "growth_factor"]
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["quality_factor", "growth_factor", "momentum"]
     assert result["llm_report"]["external_provider"]["status"] == "succeeded"
     assert db.list_strategies.await_count == 2
     assert service.llm_generator.generate.await_count == 1
@@ -580,6 +629,63 @@ async def test_experiment_recorder_summarizes_large_payload_without_writing_file
 
 
 @pytest.mark.asyncio
+async def test_experiment_recorder_persists_structured_hypothesis_artifact():
+    recorder = ExperimentRecorder()
+    db = MagicMock()
+    db.save_strategy_generation_experiment = AsyncMock(side_effect=lambda payload: dict(payload))
+
+    spec = StrategySpec(
+        strategy_type="rsi",
+        params={"lookback": 6},
+        name="l2-hypothesis",
+        description="legacy description should not win",
+        tags=["ai_generated"],
+        metadata={
+            "generator_type": "external_llm",
+            "research_task": {"task_id": "task_hypothesis_persist", "task_source": "snapshot"},
+            "hypothesis_artifact": {
+                "artifact_id": "hyp_persisted",
+                "alpha_hypothesis": "超跌修复在一周内兑现。",
+                "family_hint": "rsi",
+                "holding_rationale": "信号半衰期较短。",
+                "alpha_half_life": 8,
+                "position_model": "equal_weight",
+                "market_regime_assumption": {"preferred_regime": "short_term_dislocation_repair"},
+                "validation_focus": "target_plus_representative",
+            },
+            "hypothesis_lowering_audit": {
+                "source": "external_llm",
+                "target_symbols": ["603855"],
+            },
+            "holding_horizon": {"min_days": 2, "max_days": 8},
+            "trade_plan": {"entry_bias": "oversold_repair"},
+            "risk_rules": {"stop_loss_pct": 0.05, "max_holding_days": 8},
+            "position_sizing": {"mode": "equal_weight"},
+            "execution_notes": "focus on liquid names",
+            "rebalance_rule": {"mode": "signal_rebalance", "frequency_days": 2},
+            "portfolio_spec": {"target_weight_scheme": "single_name"},
+            "execution_assumptions": {"slippage_bps": 5, "tradability_filter": True},
+            "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+        },
+    )
+
+    payload = await recorder.record_experiment(
+        db,
+        spec,
+        source="test_component",
+        snapshot={"date": "2026-04-09"},
+        task_run={"id": 102},
+    )
+
+    assert payload["hypothesis"] == "超跌修复在一周内兑现。"
+    assert payload["strategy_spec"]["hypothesis_artifact"]["artifact_id"] == "hyp_persisted"
+    assert payload["strategy_spec"]["replay_contract"]["holding_horizon"]["max_days"] == 8
+    assert payload["strategy_spec"]["replay_contract"]["execution_assumptions"]["slippage_bps"] == 5
+    assert payload["evaluation"]["hypothesis_artifact"]["family_hint"] == "rsi"
+    assert payload["evaluation"]["hypothesis_lowering_audit"]["source"] == "external_llm"
+
+
+@pytest.mark.asyncio
 async def test_strategy_autonomy_service_continues_when_task_run_and_event_persistence_fail():
     service = StrategyAutonomyService()
 
@@ -676,7 +782,7 @@ def test_strategy_ai_mixin_large_generation_experiment_field_falls_back_to_safe_
     assert "blob" not in decoded
 
 
-def test_strategy_ai_mixin_large_factory_run_stages_fall_back_to_safe_summary(monkeypatch):
+def test_strategy_ai_mixin_large_factory_run_stages_compact_inline_before_field_fallback(monkeypatch):
     monkeypatch.setenv("STRATEGY_FACTORY_RUN_STAGES_MAX_BYTES", "32768")
 
     encoded = StrategyAIMixin._encode_factory_run_json(
@@ -731,14 +837,59 @@ def test_strategy_ai_mixin_large_factory_run_stages_fall_back_to_safe_summary(mo
     )
 
     decoded = json.loads(encoded)
-    assert decoded["storage_mode"] == "inline_fallback_summary"
-    assert decoded["field_name"] == "stages"
-    assert decoded["stage_count"] == 1
+    assert "storage_mode" not in decoded
+    assert decoded["autonomy"]["storage_mode"] == "inline_compact_stage"
+    assert decoded["autonomy"]["stage"] == "autonomy"
     assert decoded["autonomy"]["task_count"] == 139
     assert decoded["autonomy"]["task_result_count"] == 60
     assert decoded["autonomy"]["task_scan"]["summary"]["bulk_stock_matrix_enabled"] is True
     assert decoded["autonomy"]["task_results"][0]["task"]["task_id"] == "task_0"
+    assert decoded["autonomy"]["truncated"] is True
+    assert decoded["autonomy"]["original_size_bytes"] > 32768
     assert "blob" not in decoded["autonomy"]
+
+
+def test_strategy_ai_mixin_large_factory_run_stages_preserve_small_stage_payloads(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_RUN_STAGES_MAX_BYTES", "12288")
+
+    encoded = StrategyAIMixin._encode_factory_run_json(
+        "stages",
+        {
+            "collect": {
+                "stage": "collect",
+                "status": "completed",
+                "ok": True,
+                "fear_greed": 61,
+                "listed_count": 12,
+            },
+            "quality_gate": {
+                "stage": "quality_gate",
+                "status": "completed",
+                "ok": True,
+                "gate_0": {
+                    "passed_count": 120,
+                    "failed_count": 18,
+                    "passed": [{"name": f"passed_{idx}", "blob": "x" * 512} for idx in range(64)],
+                },
+                "gate_2": {
+                    "input_count": 42,
+                    "passed_count": 11,
+                    "failed_count": 31,
+                    "report": {
+                        "summary": {"failed_reason_counts": {"sharpe_below_threshold": 31}},
+                        "failed": [{"name": f"failed_{idx}", "blob": "x" * 512} for idx in range(48)],
+                    },
+                },
+            },
+        },
+    )
+
+    decoded = json.loads(encoded)
+    assert decoded["collect"]["stage"] == "collect"
+    assert decoded["collect"]["fear_greed"] == 61
+    assert decoded["quality_gate"]["storage_mode"] == "inline_compact_stage"
+    assert decoded["quality_gate"]["truncated"] is True
+    assert decoded["quality_gate"]["original_size_bytes"] > 12288
 
 
 def test_strategy_ai_mixin_large_factory_run_snapshot_summary_falls_back_to_safe_summary(monkeypatch):

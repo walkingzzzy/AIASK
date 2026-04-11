@@ -41,7 +41,7 @@ def _resolve_setting(name: str, default: str = "") -> str:
 
 # ============ Tushare 配置 ============
 TUSHARE_TOKEN = _resolve_setting('TUSHARE_TOKEN')
-TUSHARE_HTTP_URL = _resolve_setting('TUSHARE_HTTP_URL', 'http://lianghua.nanyangqiankun.top')
+TUSHARE_HTTP_URL = _resolve_setting('TUSHARE_HTTP_URL', 'http://api.tushare.pro')
 
 # ============ 测试股票 ============
 TEST_STOCKS = {

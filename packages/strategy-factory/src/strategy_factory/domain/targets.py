@@ -7,6 +7,257 @@ from typing import Any, Dict, List, Optional
 
 from .constants import REPRESENTATIVE_STOCKS
 
+_VALIDATION_PEER_CODES_BY_FAMILY: Dict[str, List[str]] = {
+    "momentum": ["300750", "601012", "002415", "300059", "002594", "601318"],
+    "ma_cross": ["300750", "601012", "002415", "300059", "002594", "601318"],
+    "volatility_breakout": ["300750", "601012", "002415", "300059", "002594", "601318"],
+    "quality_factor": ["600519", "000858", "600036", "000333", "600276", "601318"],
+    "value_factor": ["600519", "000858", "600036", "000333", "600276", "601318"],
+    "growth_factor": ["300750", "601012", "002594", "300124", "300308", "002415"],
+    "multi_factor": ["600519", "000858", "600036", "000333", "300750", "601318"],
+}
+
+_VALIDATION_PEER_UNIVERSE_BY_FAMILY: Dict[str, List[str]] = {
+    "momentum": [
+        "300750", "601012", "002415", "300059", "002594", "601318",
+        "002460", "300308", "300124", "603259", "600438", "000063",
+    ],
+    "ma_cross": [
+        "300750", "601012", "002415", "300059", "002594", "601318",
+        "002460", "300308", "300124", "603259", "600438", "000063",
+    ],
+    "volatility_breakout": [
+        "300750", "601012", "002415", "300059", "002594", "601318",
+        "300308", "002460", "603259", "000063", "688111", "300274",
+    ],
+    "quality_factor": [
+        "600519", "000858", "600036", "000333", "600276", "601318",
+        "600809", "600887", "002415", "603288", "601888", "600690",
+    ],
+    "value_factor": [
+        "600519", "000858", "600036", "000333", "600276", "601318",
+        "600887", "601166", "600309", "000651", "600690", "601888",
+    ],
+    "growth_factor": [
+        "300750", "601012", "002594", "300124", "300308", "002415",
+        "688111", "300274", "688981", "002460", "300059", "603986",
+    ],
+    "multi_factor": [
+        "600519", "000858", "600036", "000333", "300750", "601318",
+        "601012", "002594", "603288", "600276", "300059", "002415",
+    ],
+}
+
+
+def _primary_strategy_family(payload: Optional[dict]) -> str:
+    item = dict(payload or {})
+    for source in (
+        item.get("candidate_family"),
+        item.get("preferred_strategy_types"),
+        item.get("allowed_strategy_types"),
+        item.get("strategy_preferences"),
+    ):
+        values = _normalize_string_list(source, limit=1)
+        if values:
+            return str(values[0] or "").strip().lower()
+    return ""
+
+
+def _default_holding_window_for_family(
+    family: str,
+    *,
+    task_source: str,
+    horizon: str = "",
+) -> dict[str, Any]:
+    normalized_family = str(family or "").strip().lower()
+    normalized_horizon = str(horizon or "").strip().lower()
+    if any(token in normalized_horizon for token in ("1_5", "5d", "intraday")):
+        return {"max_days": 5}
+    if any(token in normalized_horizon for token in ("5_20", "20d", "swing")):
+        return {"max_days": 20}
+    if normalized_family == "quality_factor":
+        return {"min_days": 30, "max_days": 84}
+    if normalized_family == "ma_cross":
+        return {"min_days": 14, "max_days": 48}
+    if normalized_family == "momentum":
+        return {"min_days": 14, "max_days": 42}
+    if normalized_family == "growth_factor":
+        return {"min_days": 18, "max_days": 60}
+    if task_source == "event_driven":
+        return {"max_days": 10}
+    return {"max_days": 20}
+
+
+def _default_validation_profile_for_task(
+    *,
+    family: str,
+    task_source: str,
+    validation_focus: str,
+) -> dict[str, Any]:
+    normalized_family = str(family or "").strip().lower()
+    normalized_focus = _normalize_validation_focus(validation_focus) or (
+        "event_target_only" if task_source == "event_driven" else "target_plus_representative"
+    )
+    if normalized_family == "macro_timing":
+        profile = "macro_regime_validation"
+    elif task_source == "event_driven" or normalized_focus == "event_target_only":
+        profile = "event_trade_validation"
+        normalized_focus = "event_target_only"
+    elif normalized_family == "quality_factor" and normalized_focus in {
+        "candidate_target_only",
+        "target_only",
+        "target_plus_family_peer",
+    }:
+        profile = "trade_rule_validation"
+    elif normalized_family in {"value_factor", "quality_factor", "growth_factor", "multi_factor", "sentiment", "sentiment_factor"}:
+        profile = "factor_rank_validation"
+    else:
+        profile = "trade_rule_validation"
+    return {
+        "profile": profile,
+        "validation_focus": normalized_focus,
+        "primary_validation_layer": "target" if normalized_focus in {"candidate_target_only", "event_target_only", "target_only"} else "combined",
+    }
+
+
+def _normalize_validation_focus(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _resolve_validation_focus_layer(validation_focus: str) -> str:
+    focus = _normalize_validation_focus(validation_focus)
+    if focus in {"candidate_target_only", "event_target_only", "target_only"}:
+        return "target_only"
+    if focus in {"target_plus_family_peer", "family_peer", "target_plus_peer"}:
+        return "family_peer"
+    if focus in {"sector_peer", "target_plus_sector_peer"}:
+        return "sector_peer"
+    return "broad_market"
+
+
+def _code_board_bucket(code: str) -> str:
+    token = str(code or "").strip()
+    if token.startswith("688"):
+        return "star"
+    if token.startswith("300"):
+        return "chi_next"
+    if token.startswith(("600", "601", "603", "605")):
+        return "sh_main"
+    if token.startswith(("000", "001", "002", "003")):
+        return "sz_main"
+    return "other"
+
+
+def _code_prefix_bucket(code: str) -> str:
+    token = str(code or "").strip()
+    if len(token) >= 3:
+        return token[:3]
+    if len(token) >= 2:
+        return token[:2]
+    return token
+
+
+def _score_peer_candidate(target_codes: List[str], candidate_code: str) -> tuple[int, int, str]:
+    candidate = str(candidate_code or "").strip()
+    if not candidate:
+        return (0, 0, "")
+    if not target_codes:
+        return (0, 0, candidate)
+    target_boards = {_code_board_bucket(code) for code in target_codes}
+    target_prefixes = {_code_prefix_bucket(code) for code in target_codes}
+    board_score = 2 if _code_board_bucket(candidate) in target_boards else 0
+    prefix_score = 1 if _code_prefix_bucket(candidate) in target_prefixes else 0
+    return (board_score + prefix_score, board_score, candidate)
+
+
+def _resolve_dynamic_family_peers(
+    strategy_type: str,
+    target_codes: List[str],
+    *,
+    sample_size: int,
+) -> List[str]:
+    family = str(strategy_type or "").strip().lower()
+    anchor_peers = [
+        code for code in list(_VALIDATION_PEER_CODES_BY_FAMILY.get(family) or [])
+        if code not in set(target_codes)
+    ]
+    peer_universe = list(_VALIDATION_PEER_UNIVERSE_BY_FAMILY.get(family) or [])
+    if not peer_universe and not anchor_peers:
+        return []
+    deduped_universe = [
+        code for code in dict.fromkeys([*peer_universe, *anchor_peers])
+        if code not in set(target_codes) and code not in set(anchor_peers)
+    ]
+    ranked = sorted(
+        deduped_universe,
+        key=lambda code: _score_peer_candidate(target_codes, code),
+        reverse=True,
+    )
+    limit = max(sample_size * 2, 8)
+    return list(dict.fromkeys([*anchor_peers, *ranked]))[:limit]
+
+
+def _resolve_strategy_sample_selection(
+    strategy_type: str,
+    params: dict,
+    sample_size: int = 6,
+) -> dict[str, Any]:
+    validation_profile = dict(params.get("validation_profile") or {})
+    research_task = dict(params.get("research_task") or {})
+    validation_focus = str(
+        validation_profile.get("validation_focus")
+        or research_task.get("validation_focus")
+        or ""
+    ).strip().lower()
+    validation_focus_layer = _resolve_validation_focus_layer(validation_focus)
+    target_codes = _extract_target_codes_from_payload(
+        {"strategy_type": strategy_type, "params": params},
+        limit=max(sample_size, 12),
+    )
+    static_family_peers = list(
+        _VALIDATION_PEER_CODES_BY_FAMILY.get(str(strategy_type or "").strip().lower()) or []
+    )
+    dynamic_family_peers = _resolve_dynamic_family_peers(
+        strategy_type,
+        target_codes,
+        sample_size=sample_size,
+    )
+
+    sample_selection_mode = "representative_only"
+    sample_alignment_reason = "broad_market_representative_fallback"
+    if validation_focus_layer == "target_only" and target_codes:
+        combined = list(dict.fromkeys([*target_codes, *dynamic_family_peers, *REPRESENTATIVE_STOCKS]))
+        sample_selection_mode = "target_plus_dynamic_family_peer"
+        sample_alignment_reason = "target_only_with_family_aligned_dynamic_peers"
+    elif validation_focus_layer == "family_peer" and target_codes:
+        combined = list(dict.fromkeys([*target_codes, *dynamic_family_peers, *static_family_peers]))
+        sample_selection_mode = "family_peer_dynamic_panel"
+        sample_alignment_reason = "family_peer_panel_aligned_to_target_codes"
+    elif validation_focus_layer == "sector_peer" and target_codes:
+        combined = list(dict.fromkeys([*target_codes, *dynamic_family_peers, *REPRESENTATIVE_STOCKS]))
+        sample_selection_mode = "sector_peer_proxy_panel"
+        sample_alignment_reason = "sector_peer_proxy_via_family_and_representative_mix"
+    elif target_codes and dynamic_family_peers:
+        combined = list(dict.fromkeys([*target_codes, *dynamic_family_peers, *REPRESENTATIVE_STOCKS]))
+        validation_focus_layer = "family_peer"
+        sample_selection_mode = "target_plus_dynamic_family_peer"
+        sample_alignment_reason = "target_codes_present_promoted_to_family_peer_panel"
+    else:
+        combined = list(dict.fromkeys([*target_codes, *REPRESENTATIVE_STOCKS]))
+
+    requested_size = max(int(sample_size or 6), min(len(combined), max(sample_size, len(target_codes))))
+    sample_codes = combined[:requested_size]
+    return {
+        "sample_codes": sample_codes,
+        "target_codes": list(target_codes),
+        "family_peer_codes": list(dynamic_family_peers[: max(sample_size, 8)]),
+        "validation_focus": validation_focus or None,
+        "validation_focus_layer": validation_focus_layer,
+        "sample_selection_mode": sample_selection_mode,
+        "sample_alignment_reason": sample_alignment_reason,
+        "sample_code_count": int(len(sample_codes)),
+    }
+
 
 async def _update_strategy_status(db, strategy_id: str, status: str, **kwargs) -> None:
     try:
@@ -285,21 +536,22 @@ def _normalize_event_window_config(task: Optional[dict]) -> dict[str, Any]:
     estimation_window = dict(payload.get("estimation_window") or {})
     holding_window = dict(payload.get("holding_window") or {})
     horizon = str(payload.get("horizon") or "").strip().lower()
+    primary_family = _primary_strategy_family(payload)
+    task_source = str(payload.get("task_source") or "snapshot").strip().lower() or "snapshot"
 
     if not event_window:
-        if payload.get("task_source") == "event_driven":
+        if task_source == "event_driven":
             event_window = {"pre_days": 1, "post_days": 10}
         else:
             event_window = {"pre_days": 0, "post_days": 20}
     if not estimation_window:
         estimation_window = {"lookback_days": 60}
     if not holding_window:
-        if any(token in horizon for token in ("1_5", "5d", "intraday")):
-            holding_window = {"max_days": 5}
-        elif any(token in horizon for token in ("5_20", "20d", "swing")):
-            holding_window = {"max_days": 20}
-        else:
-            holding_window = {"max_days": 10 if payload.get("task_source") == "event_driven" else 20}
+        holding_window = _default_holding_window_for_family(
+            primary_family,
+            task_source=task_source,
+            horizon=horizon,
+        )
 
     return {
         "event_window": event_window,
@@ -430,10 +682,49 @@ def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
         payload.get("preference_reason")
         or _task_default_preference_reason(task_source, preferred_strategy_types)
     ).strip() or _task_default_preference_reason(task_source, preferred_strategy_types)
+    validation_focus_explicit = payload.get("validation_focus") is not None
     validation_focus = str(
         payload.get("validation_focus")
         or _task_default_validation_focus(task_source)
     ).strip().lower() or _task_default_validation_focus(task_source)
+    primary_family = _primary_strategy_family(
+        {
+            **payload,
+            "preferred_strategy_types": preferred_strategy_types,
+            "allowed_strategy_types": allowed_strategy_types,
+            "strategy_preferences": preferred_strategy_types,
+        }
+    )
+    if (
+        primary_family == "quality_factor"
+        and not validation_focus_explicit
+        and task_source != "event_driven"
+        and validation_focus == "target_plus_representative"
+    ):
+        validation_focus = "candidate_target_only"
+    validation_profile = dict(payload.get("validation_profile") or {})
+    if not validation_profile:
+        validation_profile = _default_validation_profile_for_task(
+            family=primary_family,
+            task_source=task_source,
+            validation_focus=validation_focus,
+        )
+    else:
+        merged_profile = _default_validation_profile_for_task(
+            family=primary_family,
+            task_source=task_source,
+            validation_focus=str(validation_profile.get("validation_focus") or validation_focus),
+        )
+        validation_profile = {
+            **merged_profile,
+            **validation_profile,
+        }
+        if (
+            primary_family == "quality_factor"
+            and str(validation_profile.get("validation_focus") or validation_focus).strip().lower()
+            in {"candidate_target_only", "target_only", "target_plus_family_peer"}
+        ):
+            validation_profile["profile"] = "trade_rule_validation"
     target_alignment_contract = _build_target_alignment_contract(
         {
             **payload,
@@ -469,6 +760,7 @@ def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
         "preference_strength": preference_strength,
         "preference_reason": preference_reason,
         "validation_focus": validation_focus,
+        "validation_profile": validation_profile,
         "target_alignment_contract": target_alignment_contract,
         **event_windows,
         "task_signature": task_signature,
@@ -731,12 +1023,12 @@ def _extract_target_codes_from_payload(payload: Optional[dict], limit: int = 12)
 
 
 def _resolve_strategy_sample_codes(strategy_type: str, params: dict, sample_size: int = 6) -> List[str]:
-    target_codes = _extract_target_codes_from_payload(
-        {"strategy_type": strategy_type, "params": params},
-        limit=max(sample_size, 12),
+    selection = _resolve_strategy_sample_selection(
+        strategy_type,
+        params,
+        sample_size=sample_size,
     )
-    combined = list(dict.fromkeys([*target_codes, *REPRESENTATIVE_STOCKS]))
-    return combined[: max(sample_size, min(len(combined), max(sample_size, len(target_codes))))]
+    return list(selection.get("sample_codes") or [])
 
 
 __all__ = [

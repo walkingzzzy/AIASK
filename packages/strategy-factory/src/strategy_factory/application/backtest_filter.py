@@ -778,6 +778,11 @@ class BacktestFilter:
             for metric in results
             if metric.get("turnover_proxy") is not None
         ]
+        curve_points = [
+            int(metric.get("curve_points") or len(metric.get("equity_curve") or []))
+            for metric in results
+            if int(metric.get("curve_points") or len(metric.get("equity_curve") or [])) > 0
+        ]
         return {
             "sharpe_ratio": float(median([metric["sharpe_ratio"] for metric in results])),
             "total_return": float(median([metric["total_return"] for metric in results])),
@@ -786,6 +791,7 @@ class BacktestFilter:
             "trades_count": float(median([metric["trades_count"] for metric in results])),
             "avg_holding_days": float(median(avg_holding_days)) if avg_holding_days else 0.0,
             "turnover_proxy": float(median(turnover_values)) if turnover_values else 0.0,
+            "curve_points": int(max(curve_points)) if curve_points else 0,
         }
 
     @staticmethod
@@ -1618,6 +1624,32 @@ class BacktestFilter:
         return build_factory_backtest_assumptions(candidate)
 
     @staticmethod
+    def _trade_density_observation_days(
+        *,
+        metrics: dict[str, Any],
+        target_metrics: dict[str, Any],
+        combined_metrics: dict[str, Any],
+        event_window_metrics: dict[str, Any],
+        lookback_days: float,
+        post_days: float,
+        trade_count: float,
+        avg_holding_days: float,
+    ) -> float:
+        candidates: list[float] = [max(1.0, lookback_days + post_days)]
+        for payload in (metrics, target_metrics, combined_metrics):
+            curve_points = float(payload.get("portfolio_curve_points") or payload.get("curve_points") or 0.0)
+            if curve_points > 0:
+                candidates.append(curve_points)
+        event_sample_days = float(event_window_metrics.get("estimation_days_used") or 0.0) + float(
+            event_window_metrics.get("post_days_used") or 0.0
+        )
+        if event_sample_days > 0:
+            candidates.append(event_sample_days)
+        if trade_count > 0 and avg_holding_days > 0:
+            candidates.append(float(lookback_days) + float(trade_count) * float(avg_holding_days))
+        return max(1.0, *candidates)
+
+    @staticmethod
     def _derive_trade_validation_metrics(candidate: dict, result: dict) -> dict[str, Any]:
         metrics = dict(result.get("metrics") or {})
         layers = dict(result.get("layers") or {})
@@ -1630,6 +1662,8 @@ class BacktestFilter:
         holding_window = dict(research_task.get("holding_window") or {})
         holding_horizon = dict(candidate.get("holding_horizon") or {})
         risk_rules = dict(candidate.get("risk_rules") or {})
+        execution_assumptions = dict(candidate.get("execution_assumptions") or {})
+        portfolio_spec = dict(candidate.get("portfolio_spec") or {})
 
         trade_count = float(metrics.get("trades_count") or metrics.get("trade_count") or 0.0)
         avg_holding_days = float(
@@ -1683,7 +1717,16 @@ class BacktestFilter:
 
         lookback_days = float((research_task.get("estimation_window") or {}).get("lookback_days") or 60.0)
         post_days = float(event_window.get("post_days") or holding_window.get("max_days") or avg_holding_days or 20.0)
-        observation_days = max(1.0, lookback_days + post_days)
+        observation_days = BacktestFilter._trade_density_observation_days(
+            metrics=metrics,
+            target_metrics=target_metrics,
+            combined_metrics=combined_metrics,
+            event_window_metrics=event_window_metrics,
+            lookback_days=lookback_days,
+            post_days=post_days,
+            trade_count=trade_count,
+            avg_holding_days=avg_holding_days,
+        )
         trade_density = round(trade_count / observation_days * 20.0, 4)
 
         target_sharpe = float(target_metrics.get("sharpe_ratio") or metrics.get("sharpe_ratio") or 0.0)
@@ -1692,6 +1735,30 @@ class BacktestFilter:
         stability_scale = max(abs(target_sharpe), abs(combined_sharpe), abs(representative_sharpe), 0.25)
         stability_dispersion = abs(target_sharpe - combined_sharpe) + abs(target_sharpe - representative_sharpe)
         parameter_stability = round(max(0.0, min(1.0, 1.0 - stability_dispersion / (stability_scale * 4.0))), 4)
+        expected_turnover_band = str(
+            candidate.get("expected_turnover_band")
+            or holding_horizon.get("expected_turnover_band")
+            or dict(candidate.get("rebalance_rule") or {}).get("expected_turnover_band")
+            or execution_assumptions.get("expected_turnover_band")
+            or ""
+        ).strip().lower() or None
+        capacity_bucket = str(
+            candidate.get("capacity_bucket")
+            or execution_assumptions.get("capacity_bucket")
+            or portfolio_spec.get("capacity_bucket")
+            or ""
+        ).strip().lower() or None
+        turnover_cost_class = str(
+            candidate.get("turnover_cost_class")
+            or execution_assumptions.get("turnover_cost_class")
+            or ""
+        ).strip().lower() or None
+        position_sizing_rationale = str(
+            candidate.get("position_sizing_rationale")
+            or dict(candidate.get("position_sizing") or {}).get("position_sizing_rationale")
+            or portfolio_spec.get("position_sizing_rationale")
+            or ""
+        ).strip() or None
 
         return {
             "avg_holding_days": round(avg_holding_days, 4),
@@ -1710,6 +1777,11 @@ class BacktestFilter:
             "event_time_anchors": list(event_window_metrics.get("event_time_anchors") or [])[:8],
             "traceable_to_event_samples": bool(event_window_metrics.get("traceable_to_event_samples")),
             "event_audit_incomplete": bool(event_window_metrics.get("event_audit_incomplete")),
+            "expected_turnover_band": expected_turnover_band,
+            "capacity_bucket": capacity_bucket,
+            "turnover_cost_class": turnover_cost_class,
+            "position_sizing_rationale": position_sizing_rationale,
+            "market_regime_assumption": candidate.get("market_regime_assumption"),
         }
 
     @staticmethod
@@ -2005,6 +2077,22 @@ class BacktestFilter:
             "implicit_cost_breakdown": dict(sample_audit.get("implicit_cost_breakdown") or {}),
             "tradability_summary": dict(sample_audit.get("tradability_summary") or {}),
             "capacity_summary": dict(sample_audit.get("capacity_summary") or {}),
+            "economic_semantics": {
+                "holding_rationale": candidate.get("holding_rationale"),
+                "alpha_half_life": candidate.get("alpha_half_life"),
+                "market_regime_assumption": candidate.get("market_regime_assumption"),
+                "position_sizing_rationale": candidate.get("position_sizing_rationale"),
+                "capacity_bucket": candidate.get("capacity_bucket")
+                or dict(candidate.get("execution_assumptions") or {}).get("capacity_bucket"),
+                "turnover_cost_class": candidate.get("turnover_cost_class")
+                or dict(candidate.get("execution_assumptions") or {}).get("turnover_cost_class"),
+                "expected_turnover_band": candidate.get("expected_turnover_band")
+                or dict(candidate.get("holding_horizon") or {}).get("expected_turnover_band"),
+                "economic_semantics_score": candidate.get("economic_semantics_score"),
+                "economic_semantics_missing_fields": list(
+                    candidate.get("economic_semantics_missing_fields") or []
+                ),
+            },
             "implementation_shortfall_model_source": sample_audit.get("implementation_shortfall_model_source"),
             "implementation_shortfall_components": dict(sample_audit.get("implementation_shortfall_components") or {}),
             "position_assumption": sample_audit.get("position_assumption"),

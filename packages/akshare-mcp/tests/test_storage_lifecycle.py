@@ -285,6 +285,32 @@ async def test_await_with_db_cleanup_closes_db(monkeypatch):
     flush_mock.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_close_shared_runtime_clients_closes_db_and_drains_callbacks(monkeypatch):
+    import akshare_mcp.services as services_mod
+    import akshare_mcp.storage as storage_mod
+
+    close_factor_mock = AsyncMock()
+    close_strategy_mock = AsyncMock()
+    close_embedding_mock = AsyncMock()
+    close_db_mock = AsyncMock()
+    drain_mock = AsyncMock()
+
+    monkeypatch.setattr(services_mod, 'close_factor_llm_provider', close_factor_mock)
+    monkeypatch.setattr(services_mod, 'close_strategy_llm_provider', close_strategy_mock)
+    monkeypatch.setattr(services_mod, 'close_strategy_text_embedding_service', close_embedding_mock)
+    monkeypatch.setattr(storage_mod, 'close_db', close_db_mock)
+    monkeypatch.setattr(storage_mod, 'drain_cleanup_callbacks', drain_mock)
+
+    await services_mod.close_shared_runtime_clients()
+
+    close_factor_mock.assert_awaited_once()
+    close_strategy_mock.assert_awaited_once()
+    close_embedding_mock.assert_awaited_once()
+    close_db_mock.assert_awaited_once()
+    drain_mock.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     ('script_path', 'entry_call'),
     [

@@ -62,7 +62,7 @@ def _parse_timeout_list(env_key: str, default: list[float]) -> list[float]:
 
 
 QUOTE_TIMEOUTS = _parse_timeout_list("AKSHARE_QUOTE_TIMEOUTS", [8.0, 15.0])
-KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_KLINE_TIMEOUTS", [20.0, 60.0])
+KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_KLINE_TIMEOUTS", [15.0, 25.0])
 
 
 # 缓存

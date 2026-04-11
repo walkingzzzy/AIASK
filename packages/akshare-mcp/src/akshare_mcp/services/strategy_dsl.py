@@ -171,10 +171,17 @@ def build_close_volume_frame(closes: np.ndarray, volumes: Optional[np.ndarray] =
 
 def normalize_strategy_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
     payload = dict(dsl or {})
-    entry = _normalize_condition(payload.get("entry"))
+    entry_payload = payload.get("entry")
+    exit_payload = payload.get("exit")
+    signals_payload = dict(payload.get("signals") or {})
+    if not entry_payload and isinstance(signals_payload, dict):
+        entry_payload = _coerce_open_dsl_signal(signals_payload.get("entry"))
+    if not exit_payload and isinstance(signals_payload, dict):
+        exit_payload = _coerce_open_dsl_signal(signals_payload.get("exit"))
+    entry = _normalize_condition(_coerce_open_dsl_signal(entry_payload))
     if not entry:
         raise ValueError("dsl.entry is required")
-    exit_rule = _normalize_condition(payload.get("exit") or {
+    exit_rule = _normalize_condition(_coerce_open_dsl_signal(exit_payload) or {
         "any": [{
             "op": "cross_below",
             "left": {"indicator": "sma", "field": "close", "window": 5},
@@ -189,6 +196,22 @@ def normalize_strategy_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
         "metadata": dict(payload.get("metadata") or {}),
         "risk_rules": dict(payload.get("risk_rules") or {}),
     }
+
+
+def _coerce_open_dsl_signal(node: Any) -> dict[str, Any]:
+    if not isinstance(node, dict):
+        return {}
+    op = str(node.get("op") or "").strip().lower()
+    conditions = list(node.get("conditions") or [])
+    if op in {"all", "any"} and conditions:
+        return {
+            op: [
+                _normalize_condition(dict(item or {}))
+                for item in conditions
+                if _normalize_condition(dict(item or {}))
+            ]
+        }
+    return dict(node)
 
 
 def compile_strategy_blueprint(

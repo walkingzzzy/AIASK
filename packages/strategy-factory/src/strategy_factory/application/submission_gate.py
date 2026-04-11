@@ -6,6 +6,7 @@ strategy_manager submit/recheck flows and strategy_factory submitter.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -17,7 +18,13 @@ from ..domain.constants import (
     RESEARCH_ADMISSION_THRESHOLDS,
     TRADE_GATE_PROFILE_THRESHOLDS,
 )
-from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
+from ..domain.strategy_profile import infer_candidate_strategy_profile
+from ..domain.targets import (
+    _build_task_signature,
+    _extract_target_codes_from_payload,
+    _normalize_research_task_contract,
+    _resolve_validation_focus_layer,
+)
 from ..infrastructure.mcp_services import get_normalize_klines, get_strategy_registry, get_validation_runtime
 from .candidate_contract import (
     apply_resolved_candidate_envelope,
@@ -63,7 +70,91 @@ _SUPPLEMENTAL_STATISTICAL_FIELDS = {
     "white_reality_check_pvalue",
     "hansen_spa_pvalue",
     "multiple_testing",
+    "multiple_testing_cohort_mode",
+    "multiple_testing_panel_symbols",
+    "multiple_testing_panel_size",
+    "cohort_effective_trials",
+    "batch_correlation_mode",
+    "batch_correlation_multiplier",
+    "batch_correlation_sibling_count",
 }
+_TARGET_ONLY_VALIDATION_FOCUSES = {"candidate_target_only", "event_target_only", "target_only"}
+_NON_PROMOTABLE_VALIDATION_GRADES = {"D"}
+_NON_PROMOTABLE_REVIEW_DECISIONS = {"reject", "revise", "retire", "drop", "defer", "watch", "observe", "paper"}
+_NON_PROMOTABLE_REVIEW_RECOMMENDATIONS = {"reject", "revise", "defer", "observe_only", "paper_only"}
+_LLM_CORRELATED_GENERATOR_MODES = {"external_llm", "pipeline_staged", "llm_proxy", "llm_proxy_fallback"}
+_TRADE_AWARE_VALIDATION_GRADE_FAMILIES = {"momentum", "ma_cross", "quality_factor"}
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_symbol_list(*values: Any, limit: int = 12) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    stack = list(values)
+    while stack:
+        value = stack.pop(0)
+        if isinstance(value, (list, tuple, set)):
+            stack[:0] = list(value)
+            continue
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+        if len(ordered) >= limit:
+            break
+    return ordered
+
+
+def _resolve_submission_generator_mode(
+    strategy: dict,
+    *,
+    research_task: Optional[dict[str, Any]] = None,
+    contract_snapshot: Optional[dict[str, Any]] = None,
+) -> str | None:
+    normalized_task = _normalize_research_task_contract(
+        dict(
+            research_task
+            or _strategy_payload_value(strategy, "research_task")
+            or strategy.get("research_task")
+            or {}
+        )
+    )
+    candidate_provenance = dict(
+        _strategy_payload_value(strategy, "candidate_provenance")
+        or strategy.get("candidate_provenance")
+        or {}
+    )
+    snapshot = dict(
+        contract_snapshot
+        or _strategy_payload_value(strategy, "candidate_contract_snapshot")
+        or strategy.get("candidate_contract_snapshot")
+        or {}
+    )
+    strategy_profile = dict(snapshot.get("strategy_profile") or {})
+    if not strategy_profile:
+        try:
+            strategy_profile = infer_candidate_strategy_profile(strategy, research_task=normalized_task)
+        except Exception:
+            strategy_profile = {}
+    explicit_generator_mode = str(
+        _strategy_payload_value(strategy, "generator_mode")
+        or strategy.get("generator_mode")
+        or candidate_provenance.get("generator_mode")
+        or normalized_task.get("generator_mode")
+        or normalized_task.get("generator_type")
+        or ""
+    ).strip().lower()
+    had_explicit_research_task = bool(
+        _strategy_payload_value(strategy, "had_explicit_research_task", strategy.get("research_task"))
+    )
+    generator_mode = explicit_generator_mode or str(strategy_profile.get("generator_mode") or "").strip().lower() or None
+    if generator_mode == "snapshot" and not explicit_generator_mode and not had_explicit_research_task:
+        generator_mode = "rule"
+    return generator_mode
 
 
 def _strategy_payload_value(strategy: dict, key: str, default: Any = None) -> Any:
@@ -84,8 +175,16 @@ def _should_route_single_target_bulk_factor_to_trade_profile(
     strategy_type = str(strategy.get("strategy_type") or "").strip().lower()
     if strategy_type not in _FACTOR_VALIDATION_TYPES:
         return False
+    raw_research_task = (
+        research_task
+        or _strategy_payload_value(strategy, "research_task")
+        or strategy.get("research_task")
+        or {}
+    )
+    if not raw_research_task:
+        return False
     normalized_task = _normalize_research_task_contract(
-        research_task or _strategy_payload_value(strategy, "research_task") or strategy.get("research_task") or {}
+        raw_research_task
     )
     resolved_validation_focus = str(
         validation_focus if validation_focus is not None else normalized_task.get("validation_focus") or ""
@@ -122,14 +221,32 @@ def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
 
 
 def _build_attempt_adjustment(strategy: dict) -> dict[str, Any]:
+    candidate_local_attempt_count = int(_strategy_payload_value(strategy, "candidate_local_attempt_count", 0) or 0)
+    candidate_local_selected_count = int(_strategy_payload_value(strategy, "candidate_local_selected_count", 0) or 0)
+    task_local_attempt_count = int(_strategy_payload_value(strategy, "task_local_attempt_count", 0) or 0)
+    task_local_selected_count = int(_strategy_payload_value(strategy, "task_local_selected_count", 0) or 0)
+    factory_global_attempt_count = int(_strategy_payload_value(strategy, "factory_global_attempt_count", 0) or 0)
+    factory_global_selected_count = int(_strategy_payload_value(strategy, "factory_global_selected_count", 0) or 0)
     factory_attempt_count = int(_strategy_payload_value(strategy, "factory_attempt_count", 0) or 0)
     factory_selected_count = int(_strategy_payload_value(strategy, "factory_selected_count", 0) or 0)
     task_attempt_count = int(_strategy_payload_value(strategy, "task_attempt_count", 0) or 0)
     task_selected_count = int(_strategy_payload_value(strategy, "task_selected_count", 0) or 0)
     external_attempt_count = int(_strategy_payload_value(strategy, "external_llm_attempt_count", 0) or 0)
     external_selected_count = int(_strategy_payload_value(strategy, "external_llm_selected_count", 0) or 0)
-    attempt_count = max(factory_attempt_count, task_attempt_count, external_attempt_count, 1)
-    selected_count = max(factory_selected_count, task_selected_count, external_selected_count, 0)
+    attempt_count = max(
+        candidate_local_attempt_count,
+        task_local_attempt_count,
+        task_attempt_count,
+        external_attempt_count,
+        1,
+    )
+    selected_count = max(
+        candidate_local_selected_count,
+        task_local_selected_count,
+        task_selected_count,
+        external_selected_count,
+        0,
+    )
     selection_ratio = selected_count / max(attempt_count, 1)
     penalty = 0.0
     if attempt_count >= 10:
@@ -140,12 +257,78 @@ def _build_attempt_adjustment(strategy: dict) -> dict[str, Any]:
         penalty += 0.05
     if selected_count > 0 and selection_ratio < 0.2:
         penalty += 0.03
-    return {
+    adjustment = {
         "attempt_count": attempt_count,
         "selected_count": selected_count,
         "selection_ratio": round(selection_ratio, 4),
         "penalty": round(penalty, 4),
         "applied": penalty > 0,
+        "candidate_local_attempt_count": candidate_local_attempt_count,
+        "candidate_local_selected_count": candidate_local_selected_count,
+        "task_local_attempt_count": task_local_attempt_count,
+        "task_local_selected_count": task_local_selected_count,
+        "factory_global_attempt_count": max(factory_global_attempt_count, factory_attempt_count, 0),
+        "factory_global_selected_count": max(factory_global_selected_count, factory_selected_count, 0),
+        "legacy_factory_attempt_count": factory_attempt_count,
+        "legacy_task_attempt_count": task_attempt_count,
+        "legacy_external_llm_attempt_count": external_attempt_count,
+    }
+    adjustment.update(_estimate_batch_correlation_adjustment(strategy, adjustment))
+    return adjustment
+
+
+def _estimate_batch_correlation_adjustment(
+    strategy: dict,
+    attempt_adjustment: dict[str, Any],
+) -> dict[str, Any]:
+    generator_mode = _resolve_submission_generator_mode(strategy)
+    attempt_count = max(1, int(attempt_adjustment.get("attempt_count") or 1))
+    selected_count = max(0, int(attempt_adjustment.get("selected_count") or 0))
+    task_local_selected_count = max(
+        0,
+        int(
+            attempt_adjustment.get("task_local_selected_count")
+            or _strategy_payload_value(strategy, "task_local_selected_count", 0)
+            or 0
+        ),
+    )
+    candidate_local_attempt_count = max(
+        0,
+        int(
+            attempt_adjustment.get("candidate_local_attempt_count")
+            or _strategy_payload_value(strategy, "candidate_local_attempt_count", 0)
+            or 0
+        ),
+    )
+    sibling_count = max(task_local_selected_count, selected_count, 1)
+    if generator_mode not in _LLM_CORRELATED_GENERATOR_MODES:
+        return {
+            "batch_correlation_mode": "independent_local_trials",
+            "batch_correlation_multiplier": 1.0,
+            "batch_correlation_sibling_count": sibling_count,
+            "batch_correlation_generator_mode": generator_mode,
+            "cohort_effective_trials": round(float(attempt_count), 4),
+        }
+    if sibling_count <= 1:
+        return {
+            "batch_correlation_mode": "llm_single_candidate_batch",
+            "batch_correlation_multiplier": 1.0,
+            "batch_correlation_sibling_count": sibling_count,
+            "batch_correlation_generator_mode": generator_mode,
+            "cohort_effective_trials": round(float(attempt_count), 4),
+        }
+    sibling_multiplier = math.sqrt(float(sibling_count))
+    effective_multiplier = 1.0 + (
+        (sibling_multiplier - 1.0)
+        * (max(candidate_local_attempt_count, 1) / max(float(attempt_count), 1.0))
+    )
+    effective_trials = max(float(attempt_count), float(attempt_count) * effective_multiplier)
+    return {
+        "batch_correlation_mode": "llm_same_batch_sibling_proxy",
+        "batch_correlation_multiplier": round(float(effective_multiplier), 4),
+        "batch_correlation_sibling_count": sibling_count,
+        "batch_correlation_generator_mode": generator_mode,
+        "cohort_effective_trials": round(float(effective_trials), 4),
     }
 
 
@@ -334,6 +517,28 @@ def _build_multiple_testing_registry(
             "hansen_spa_pvalue",
         )
     )
+    strategy_profile = dict(contract_snapshot.get("strategy_profile") or {})
+    if not strategy_profile:
+        strategy_profile = infer_candidate_strategy_profile(strategy, research_task=research_task)
+    holding_period_bucket = str(
+        strategy_profile.get("holding_period_bucket")
+        or _strategy_payload_value(strategy, "holding_period_bucket")
+        or strategy.get("holding_period_bucket")
+        or ""
+    ).strip().lower() or None
+    generator_mode = _resolve_submission_generator_mode(
+        strategy,
+        research_task=research_task,
+        contract_snapshot=contract_snapshot,
+    )
+    validation_profile_name = str(
+        dict(contract_snapshot.get("validation_profile") or {}).get("profile")
+        or strategy_profile.get("validation_profile")
+        or profile.get("profile")
+        or ""
+    ).strip().lower() or None
+    validation_focus = str(profile.get("validation_focus") or "").strip().lower() or None
+    primary_validation_layer = str(profile.get("primary_validation_layer") or "").strip().lower() or None
 
     def _axis_key(prefix: str, *parts: Any, fallback: str = "unknown") -> str:
         tokens = [str(part).strip() for part in parts if str(part or "").strip()]
@@ -342,6 +547,9 @@ def _build_multiple_testing_registry(
     task_key = _axis_key("task", task_signature)
     family_key = _axis_key("family", strategy_family_id or strategy_family, strategy_type)
     universe_key = _axis_key("universe", target_pool_id, target_symbols_signature)
+    holding_key = _axis_key("holding", holding_period_bucket)
+    generator_key = _axis_key("generator", generator_mode)
+    validation_key = _axis_key("validation", validation_profile_name, validation_focus, primary_validation_layer)
     template_key = _axis_key(
         "template",
         template_generation_profile,
@@ -350,7 +558,42 @@ def _build_multiple_testing_registry(
     )
     revision_key = _axis_key("revision", lineage_id, revision_mode, refresh_mode)
     tested_object_key = _axis_key("tested", tested_object_hash)
-    registry_key = "|".join((task_key, family_key, universe_key, template_key, revision_key, tested_object_key))
+    registry_key = "|".join(
+        (
+            task_key,
+            family_key,
+            universe_key,
+            holding_key,
+            generator_key,
+            validation_key,
+            template_key,
+            revision_key,
+            tested_object_key,
+        )
+    )
+    cohort_effective_trials = float(
+        normalized_gate.get("deflated_sharpe_effective_trials")
+        or normalized_gate.get("cohort_effective_trials")
+        or attempt_adjustment.get("cohort_effective_trials")
+        or dict(multiple_testing.get("deflated_sharpe") or {}).get("effective_trials")
+        or attempt_adjustment.get("attempt_count")
+        or 1.0
+    )
+    batch_correlation_mode = str(
+        normalized_gate.get("batch_correlation_mode")
+        or attempt_adjustment.get("batch_correlation_mode")
+        or ""
+    ).strip().lower() or None
+    batch_correlation_multiplier = float(
+        normalized_gate.get("batch_correlation_multiplier")
+        or attempt_adjustment.get("batch_correlation_multiplier")
+        or 1.0
+    )
+    batch_correlation_sibling_count = int(
+        normalized_gate.get("batch_correlation_sibling_count")
+        or attempt_adjustment.get("batch_correlation_sibling_count")
+        or 0
+    )
 
     return {
         "registry_key": registry_key,
@@ -363,9 +606,14 @@ def _build_multiple_testing_registry(
         "target_symbols_signature": target_symbols_signature,
         "target_pool_id": target_pool_id,
         "universe_key": universe_key,
-        "validation_profile": str(profile.get("profile") or "").strip().lower() or None,
-        "validation_focus": str(profile.get("validation_focus") or "").strip().lower() or None,
-        "primary_validation_layer": str(profile.get("primary_validation_layer") or "").strip().lower() or None,
+        "holding_period_bucket": holding_period_bucket,
+        "holding_key": holding_key,
+        "generator_mode": generator_mode,
+        "generator_key": generator_key,
+        "validation_profile": validation_profile_name,
+        "validation_focus": validation_focus,
+        "primary_validation_layer": primary_validation_layer,
+        "validation_key": validation_key,
         "template_generation_profile": template_generation_profile,
         "template_key": template_key,
         "lineage_id": lineage_id,
@@ -384,6 +632,21 @@ def _build_multiple_testing_registry(
         "attempt_count": int(attempt_adjustment.get("attempt_count") or 1),
         "selected_count": int(attempt_adjustment.get("selected_count") or 0),
         "selection_ratio": float(attempt_adjustment.get("selection_ratio") or 0.0),
+        "candidate_local_attempt_count": int(
+            attempt_adjustment.get("candidate_local_attempt_count")
+            or _strategy_payload_value(strategy, "candidate_local_attempt_count", 0)
+            or 0
+        ),
+        "task_local_attempt_count": int(
+            attempt_adjustment.get("task_local_attempt_count")
+            or _strategy_payload_value(strategy, "task_local_attempt_count", 0)
+            or 0
+        ),
+        "factory_global_attempt_count": int(
+            attempt_adjustment.get("factory_global_attempt_count")
+            or _strategy_payload_value(strategy, "factory_global_attempt_count", 0)
+            or 0
+        ),
         "factory_attempt_count": int(_strategy_payload_value(strategy, "factory_attempt_count", 0) or 0),
         "task_attempt_count": int(_strategy_payload_value(strategy, "task_attempt_count", 0) or 0),
         "external_llm_attempt_count": int(_strategy_payload_value(strategy, "external_llm_attempt_count", 0) or 0),
@@ -391,10 +654,20 @@ def _build_multiple_testing_registry(
         "formal_coverage": formal_coverage,
         "formal_runtime_ready": formal_coverage and str(normalized_gate.get("multiple_testing_mode") or "").strip().lower() == "formal_runtime",
         "multiple_testing_mode": normalized_gate.get("multiple_testing_mode"),
+        "multiple_testing_cohort_mode": normalized_gate.get("multiple_testing_cohort_mode"),
+        "multiple_testing_panel_size": int(normalized_gate.get("multiple_testing_panel_size") or 0),
+        "multiple_testing_panel_symbols": list(normalized_gate.get("multiple_testing_panel_symbols") or []),
+        "cohort_effective_trials": round(cohort_effective_trials, 4),
+        "batch_correlation_mode": batch_correlation_mode,
+        "batch_correlation_multiplier": round(batch_correlation_multiplier, 4),
+        "batch_correlation_sibling_count": batch_correlation_sibling_count,
         "registry_axes": {
             "task": task_key,
             "family": family_key,
             "universe": universe_key,
+            "holding": holding_key,
+            "generator": generator_key,
+            "validation": validation_key,
             "template": template_key,
             "revision": revision_key,
             "tested_object": tested_object_key,
@@ -428,6 +701,14 @@ def _multiple_testing_thresholds(admission_level: str) -> dict[str, float]:
         "pbo_max": float(base.get("pbo_max", 0.75)),
         "white_reality_check_pvalue_max": float(base.get("white_reality_check_pvalue_max", 0.35)),
         "hansen_spa_pvalue_max": float(base.get("hansen_spa_pvalue_max", 0.35)),
+    }
+
+
+def _review_gate_thresholds(admission_level: str) -> dict[str, float]:
+    base = dict(_admission_threshold_bundle(admission_level).get("review") or {})
+    return {
+        "committee_final_score_min": float(base.get("committee_final_score_min", 0.0)),
+        "promotion_review_score_min": float(base.get("promotion_review_score_min", 0.0)),
     }
 
 
@@ -494,6 +775,78 @@ def _live_multiple_testing_reasons(payload: Optional[dict], thresholds: dict[str
             f"hansen_spa_pvalue {spa_pvalue:.3f} > {thresholds['hansen_spa_pvalue_max']:.3f}"
         )
     return reasons
+
+
+def _target_only_live_trade_family(
+    strategy: dict,
+    profile: dict[str, Any],
+    payload: Optional[dict] = None,
+) -> str | None:
+    profile_name = _normalize_text(profile.get("profile"))
+    validation_focus = _normalize_text(
+        profile.get("validation_focus") or dict(payload or {}).get("validation_focus")
+    )
+    multiple_testing_cohort_mode = _normalize_text(dict(payload or {}).get("multiple_testing_cohort_mode"))
+    if profile_name != "trade_rule_validation":
+        return None
+    if validation_focus not in _TARGET_ONLY_VALIDATION_FOCUSES:
+        return None
+    if multiple_testing_cohort_mode and multiple_testing_cohort_mode != "target_only":
+        return None
+    family = _normalize_text(
+        _strategy_payload_value(strategy, "candidate_family")
+        or _strategy_payload_value(strategy, "candidate_family_id")
+        or strategy.get("strategy_type")
+    )
+    if family in _TRADE_AWARE_VALIDATION_GRADE_FAMILIES:
+        return family
+    return None
+
+
+def _effective_live_multiple_testing_thresholds(
+    strategy: dict,
+    profile: dict[str, Any],
+    payload: Optional[dict],
+) -> dict[str, float]:
+    thresholds = dict(_multiple_testing_thresholds("live"))
+    family = _target_only_live_trade_family(strategy, profile, payload)
+    if not family:
+        return thresholds
+    thresholds["deflated_sharpe_ratio_min"] = min(
+        thresholds["deflated_sharpe_ratio_min"],
+        0.0,
+    )
+    if family == "quality_factor":
+        thresholds["pbo_max"] = max(thresholds["pbo_max"], 0.80)
+        thresholds["white_reality_check_pvalue_max"] = max(
+            thresholds["white_reality_check_pvalue_max"],
+            0.20,
+        )
+        thresholds["hansen_spa_pvalue_max"] = max(
+            thresholds["hansen_spa_pvalue_max"],
+            0.20,
+        )
+    elif family == "ma_cross":
+        thresholds["pbo_max"] = max(thresholds["pbo_max"], 0.75)
+        thresholds["white_reality_check_pvalue_max"] = max(
+            thresholds["white_reality_check_pvalue_max"],
+            0.30,
+        )
+        thresholds["hansen_spa_pvalue_max"] = max(
+            thresholds["hansen_spa_pvalue_max"],
+            0.30,
+        )
+    elif family == "momentum":
+        thresholds["pbo_max"] = max(thresholds["pbo_max"], 0.70)
+        thresholds["white_reality_check_pvalue_max"] = max(
+            thresholds["white_reality_check_pvalue_max"],
+            0.25,
+        )
+        thresholds["hansen_spa_pvalue_max"] = max(
+            thresholds["hansen_spa_pvalue_max"],
+            0.25,
+        )
+    return thresholds
 
 
 def _observed_sharpe_proxy(series: Optional[np.ndarray], fallback_score: float) -> float:
@@ -580,15 +933,26 @@ def _estimate_run_correction_metrics(
     validation_runtime: Any = None,
 ) -> dict[str, Any]:
     attempt_count = max(1, int(attempt_adjustment.get("attempt_count") or 1))
+    cohort_effective_trials = max(
+        1.0,
+        float(attempt_adjustment.get("cohort_effective_trials") or attempt_count or 1.0),
+    )
     selection_ratio = float(attempt_adjustment.get("selection_ratio") or 0.0)
     penalty = float(attempt_adjustment.get("penalty") or 0.0)
     observed_score = float(observed_score or 0.0)
+    batch_correlation_mode = str(attempt_adjustment.get("batch_correlation_mode") or "").strip().lower() or None
+    batch_correlation_multiplier = float(attempt_adjustment.get("batch_correlation_multiplier") or 1.0)
+    batch_correlation_sibling_count = int(attempt_adjustment.get("batch_correlation_sibling_count") or 0)
 
     arr = np.asarray(score_series if score_series is not None else [], dtype=float)
     arr = arr[np.isfinite(arr)]
     raw_sharpe_proxy = _observed_sharpe_proxy(arr, observed_score)
     sample_size = int(arr.size)
-    dsr_hurdle = float(np.sqrt(max(0.0, 2.0 * np.log(max(attempt_count, 1)) / max(sample_size, 1)))) if sample_size else penalty
+    dsr_hurdle = (
+        float(np.sqrt(max(0.0, 2.0 * np.log(max(cohort_effective_trials, 1.0)) / max(sample_size, 1))))
+        if sample_size
+        else penalty
+    )
     deflated_sharpe_proxy = float(raw_sharpe_proxy - dsr_hurdle)
 
     # PBO 的正式实现需要 CSCV / family-level ranking；当前先给出 run-level proxy，
@@ -606,8 +970,9 @@ def _estimate_run_correction_metrics(
         observed_mean = float(np.mean(arr))
         observed_std = float(np.std(arr, ddof=1))
         observed_t = observed_mean / (observed_std / np.sqrt(sample_size)) if observed_std > 1e-9 else 0.0
-        bootstrap_rounds = min(96, max(32, attempt_count * 4))
-        candidate_family = min(16, max(2, attempt_count))
+        effective_trial_count = max(1, int(math.ceil(cohort_effective_trials)))
+        bootstrap_rounds = min(96, max(32, effective_trial_count * 4))
+        candidate_family = min(16, max(2, effective_trial_count))
         rc_samples: list[float] = []
         spa_samples: list[float] = []
         for _ in range(bootstrap_rounds):
@@ -654,7 +1019,7 @@ def _estimate_run_correction_metrics(
             dsr_result = runtime_dsr(
                 arr,
                 observed_sharpe=raw_sharpe_proxy,
-                n_trials=max(attempt_count, int(family_arr.shape[1] or 1)),
+                n_trials=max(int(math.ceil(cohort_effective_trials)), int(family_arr.shape[1] or 1)),
                 sharpe_trials=trial_sharpes,
                 periods_per_year=252.0,
             )
@@ -673,10 +1038,16 @@ def _estimate_run_correction_metrics(
     if callable(runtime_pbo) and callable(runtime_rc) and callable(runtime_spa) and family_arr.shape[0] >= 12 and family_arr.shape[1] >= 2:
         try:
             pbo_result = runtime_pbo(family_arr, n_splits=8, metric="sharpe", periods_per_year=252.0, seed=42)
-            rc_result = runtime_rc(family_arr, n_bootstrap=min(512, max(200, attempt_count * 8)), stationary_bootstrap_p=0.1, seed=42)
+            bootstrap_trials = max(1, int(math.ceil(cohort_effective_trials)))
+            rc_result = runtime_rc(
+                family_arr,
+                n_bootstrap=min(512, max(200, bootstrap_trials * 8)),
+                stationary_bootstrap_p=0.1,
+                seed=42,
+            )
             spa_result = runtime_spa(
                 family_arr,
-                n_bootstrap=min(512, max(200, attempt_count * 8)),
+                n_bootstrap=min(512, max(200, bootstrap_trials * 8)),
                 stationary_bootstrap_p=0.1,
                 seed=42,
                 center="consistent",
@@ -712,12 +1083,17 @@ def _estimate_run_correction_metrics(
         "pbo_proxy": round(pbo_proxy, 4),
         "reality_check_pvalue_proxy": round(reality_check_pvalue_proxy, 4),
         "spa_pvalue_proxy": round(spa_pvalue_proxy, 4),
+        "cohort_effective_trials": round(cohort_effective_trials, 4),
+        "batch_correlation_mode": batch_correlation_mode,
+        "batch_correlation_multiplier": round(batch_correlation_multiplier, 4),
+        "batch_correlation_sibling_count": batch_correlation_sibling_count,
         **formal_fields,
         "warnings": warnings,
     }
 
 
 def _trade_gate_thresholds(
+    strategy: dict,
     profile: dict[str, Any],
     attempt_adjustment: dict[str, Any],
     *,
@@ -728,6 +1104,12 @@ def _trade_gate_thresholds(
     is_event = str(profile.get("profile") or "") == "event_trade_validation" or validation_focus == "event_target_only"
     trade_profiles = dict(_admission_threshold_bundle(admission_level).get("trade_profiles") or TRADE_GATE_PROFILE_THRESHOLDS)
     base = dict(trade_profiles.get("event_trade_validation" if is_event else "default") or TRADE_GATE_PROFILE_THRESHOLDS["default"])
+    if admission_level == "live":
+        family = _target_only_live_trade_family(strategy, profile)
+        if family == "quality_factor":
+            base["trade_count_min"] = min(float(base.get("trade_count_min", 8.0)), 4.0)
+        elif family in {"ma_cross", "momentum"}:
+            base["trade_count_min"] = min(float(base.get("trade_count_min", 8.0)), 6.0)
     return {
         "post_cost_sharpe_min": float(base.get("post_cost_sharpe_min", 0.10)) + penalty,
         "trade_count_min": float(base.get("trade_count_min", 4.0)),
@@ -782,6 +1164,7 @@ def _evaluate_trade_profile(
     metrics = dict(backtest_metrics or {})
     attempt_adjustment = resolve_attempt_adjustment(strategy, attempt_adjustment=attempt_adjustment)
     thresholds = _trade_gate_thresholds(
+        strategy,
         profile,
         attempt_adjustment,
         admission_level=admission_level,
@@ -838,14 +1221,20 @@ def _evaluate_trade_profile(
             f"post_event_decay {post_event_decay:.3f} < {thresholds['post_event_decay_min']:.3f}"
         )
     if trade_density > thresholds["trade_density_max"]:
-        warnings.append(
-            f"trade_density {trade_density:.3f} > {thresholds['trade_density_max']:.3f}"
-        )
+        density_reason = f"trade_density {trade_density:.3f} > {thresholds['trade_density_max']:.3f}"
+        if admission_level in {"incubation", "live"}:
+            reasons.append(density_reason)
+        else:
+            warnings.append(density_reason)
     if parameter_stability and parameter_stability < thresholds["parameter_perturbation_trade_stability_min"]:
-        warnings.append(
+        stability_reason = (
             "parameter_perturbation_trade_stability "
             f"{parameter_stability:.3f} < {thresholds['parameter_perturbation_trade_stability_min']:.3f}"
         )
+        if admission_level in {"incubation", "live"}:
+            reasons.append(stability_reason)
+        else:
+            warnings.append(stability_reason)
     if is_event:
         if event_sample_count <= 0:
             reasons.append("event_sample_count_missing")
@@ -864,7 +1253,7 @@ def _evaluate_trade_profile(
         reasons.append(f"stress_loss_percent {stress_loss_percent:.2f} <= -25.00")
 
     if admission_level == "live":
-        mt_thresholds = _multiple_testing_thresholds(admission_level)
+        mt_thresholds = _effective_live_multiple_testing_thresholds(strategy, profile, metrics)
         reasons.extend(_live_multiple_testing_reasons(metrics, mt_thresholds))
 
     return normalize_quality_gate_result(
@@ -899,6 +1288,31 @@ def _evaluate_trade_profile(
             "event_audit_incomplete": bool(event_audit_incomplete),
         }
     )
+
+
+def _evaluate_trade_profile_for_admission(
+    strategy: dict,
+    profile: dict[str, Any],
+    gate_payload: Optional[dict],
+    risk_report: Optional[dict],
+    *,
+    admission_level: str,
+    attempt_adjustment: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    try:
+        return _evaluate_trade_profile(
+            strategy,
+            profile,
+            gate_payload,
+            risk_report,
+            admission_level=admission_level,
+            attempt_adjustment=attempt_adjustment,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword argument" not in message:
+            raise
+        return _evaluate_trade_profile(strategy, profile, gate_payload, risk_report)
 
 
 def _evaluate_statistical_admission(
@@ -1019,12 +1433,232 @@ def _merge_trade_primary_gate(
     return normalize_quality_gate_result(merged)
 
 
+def _committee_review_snapshot(strategy: dict) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    candidate_provenance = dict(_strategy_payload_value(payload, "candidate_provenance") or payload.get("candidate_provenance") or {})
+    summary = dict(_strategy_payload_value(payload, "quality_summary") or payload.get("quality_summary") or {})
+    review_report = dict(_strategy_payload_value(payload, "quality_report") or payload.get("quality_report") or payload.get("review_report") or {})
+    return dict(
+        payload.get("committee_review")
+        or params.get("committee_review")
+        or candidate_provenance.get("committee_review")
+        or review_report.get("committee_review")
+        or summary.get("committee_review")
+        or {}
+    )
+
+
+def _derive_trade_aware_validation_grade(
+    strategy: dict,
+    gate: Optional[dict[str, Any]],
+    *,
+    raw_validation_grade: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    grade = str(raw_validation_grade or "").strip().upper() or None
+    if grade != "D":
+        return grade, None
+    payload = dict(strategy or {})
+    strategy_profile = dict(_strategy_payload_value(payload, "strategy_profile") or payload.get("strategy_profile") or {})
+    candidate_provenance = dict(
+        _strategy_payload_value(payload, "candidate_provenance") or payload.get("candidate_provenance") or {}
+    )
+    task_preference = dict(gate or {}).get("task_preference") if isinstance(gate, dict) else {}
+    preferred_strategy_types = list(dict(task_preference or {}).get("preferred_strategy_types") or [])
+    strategy_type = str(
+        payload.get("strategy_type")
+        or _strategy_payload_value(payload, "candidate_family")
+        or candidate_provenance.get("candidate_family")
+        or strategy_profile.get("strategy_family")
+        or (preferred_strategy_types[0] if preferred_strategy_types else "")
+        or ""
+    ).strip().lower()
+    if strategy_type not in _TRADE_AWARE_VALIDATION_GRADE_FAMILIES:
+        return grade, None
+    normalized_gate = dict(gate or {})
+    profile_name = str(normalized_gate.get("profile") or "").strip().lower()
+    validation_focus = str(
+        normalized_gate.get("validation_focus")
+        or dict(payload.get("params") or {}).get("validation_focus")
+        or dict(dict(payload.get("params") or {}).get("validation_profile") or {}).get("validation_focus")
+        or dict(payload.get("research_task") or {}).get("validation_focus")
+        or ""
+    ).strip().lower()
+    if profile_name not in _TRADE_PRIMARY_PROFILES:
+        return grade, None
+    if validation_focus not in _TARGET_ONLY_VALIDATION_FOCUSES:
+        return grade, None
+
+    trade_density = safe_metric_value(normalized_gate, "trade_density")
+    post_cost_sharpe = safe_metric_value(normalized_gate, "post_cost_sharpe")
+    target_layer_oos_return = safe_metric_value(normalized_gate, "target_layer_oos_return")
+    trade_stability = safe_metric_value(normalized_gate, "parameter_perturbation_trade_stability")
+    dsr = safe_metric_value(normalized_gate, "deflated_sharpe_ratio")
+    pbo = safe_metric_value(normalized_gate, "pbo")
+    rc_pvalue = safe_metric_value(normalized_gate, "white_reality_check_pvalue")
+    spa_pvalue = safe_metric_value(normalized_gate, "hansen_spa_pvalue")
+
+    if trade_density <= 0 or trade_density > 1.2:
+        return grade, None
+
+    evidence_score = 0.0
+    if trade_density <= 1.0:
+        evidence_score += 2.0
+    elif trade_density <= 1.2:
+        evidence_score += 1.0
+    if post_cost_sharpe >= 1.0:
+        evidence_score += 2.0
+    elif post_cost_sharpe >= 0.8:
+        evidence_score += 1.0
+    if target_layer_oos_return >= 0.18:
+        evidence_score += 1.5
+    elif target_layer_oos_return >= 0.08:
+        evidence_score += 1.0
+    if trade_stability >= 0.5:
+        evidence_score += 1.0
+    elif trade_stability >= 0.25:
+        evidence_score += 0.5
+    if dsr >= 0.1:
+        evidence_score += 1.0
+    elif dsr >= 0.03:
+        evidence_score += 0.5
+    if pbo <= 0.7:
+        evidence_score += 1.0
+    elif pbo <= 0.85:
+        evidence_score += 0.5
+    if rc_pvalue <= 0.2 and spa_pvalue <= 0.2:
+        evidence_score += 0.5
+
+    if evidence_score < 5.0:
+        return grade, None
+    return "C", f"trade_aware_validation_grade_upgrade:{strategy_type}:score={evidence_score:.2f}"
+
+
+def _resolve_admission_review_context(
+    strategy: dict,
+    *,
+    validation_report: Optional[dict] = None,
+    gate: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    quality_summary = dict(_strategy_payload_value(payload, "quality_summary") or payload.get("quality_summary") or {})
+    review_report = dict(_strategy_payload_value(payload, "quality_report") or payload.get("quality_report") or payload.get("review_report") or {})
+    committee_review = _committee_review_snapshot(payload)
+    validation = dict(validation_report or {})
+    rating = dict(validation.get("rating") or {})
+    trade_quality_adjustment = dict(validation.get("trade_quality_adjustment") or {})
+    validation_profile = dict(validation.get("validation_profile") or {})
+    reported_validation_grade = str(
+        rating.get("grade")
+        or _strategy_payload_value(payload, "validation_grade")
+        or quality_summary.get("validation_grade")
+        or dict(review_report.get("summary") or {}).get("validation_grade")
+        or ""
+    ).strip().upper() or None
+    baseline_validation_grade = str(
+        rating.get("base_grade")
+        or reported_validation_grade
+        or ""
+    ).strip().upper() or None
+    raw_validation_grade = reported_validation_grade
+    validation_grade, validation_grade_adjustment_reason = _derive_trade_aware_validation_grade(
+        payload,
+        gate,
+        raw_validation_grade=raw_validation_grade,
+    )
+    if not validation_grade_adjustment_reason and bool(trade_quality_adjustment.get("applied")):
+        validation_grade_adjustment_reason = str(
+            trade_quality_adjustment.get("adjustment_reason") or ""
+        ).strip() or None
+    committee_decision = _normalize_text(
+        committee_review.get("decision")
+        or _strategy_payload_value(payload, "promotion_review_recommendation")
+        or payload.get("promotion_review_recommendation")
+    ) or None
+    committee_final_score = committee_review.get("final_score")
+    try:
+        committee_final_score = None if committee_final_score is None else round(float(committee_final_score), 4)
+    except Exception:
+        committee_final_score = None
+    promotion_review_score = (
+        _strategy_payload_value(payload, "promotion_review_score")
+        or quality_summary.get("promotion_review_score")
+        or payload.get("promotion_review_score")
+    )
+    try:
+        promotion_review_score = None if promotion_review_score is None else round(float(promotion_review_score), 4)
+    except Exception:
+        promotion_review_score = None
+    accept_blockers = [
+        str(item or "").strip()
+        for item in list(committee_review.get("accept_blockers") or [])
+        if str(item or "").strip()
+    ]
+    validation_focus = str(
+        dict(gate or {}).get("validation_focus")
+        or dict(params.get("validation_profile") or {}).get("validation_focus")
+        or dict(params.get("research_task") or {}).get("validation_focus")
+        or validation_profile.get("validation_focus")
+        or ""
+    ).strip().lower() or None
+    return {
+        "validation_grade": validation_grade,
+        "raw_validation_grade": raw_validation_grade,
+        "validation_baseline_grade": baseline_validation_grade,
+        "effective_validation_grade": validation_grade,
+        "validation_grade_adjustment_reason": validation_grade_adjustment_reason,
+        "validation_focus": validation_focus,
+        "validation_focus_layer": _resolve_validation_focus_layer(validation_focus or ""),
+        "committee_decision": committee_decision,
+        "committee_final_score": committee_final_score,
+        "promotion_review_score": promotion_review_score,
+        "accept_blockers": accept_blockers,
+    }
+
+
+def _review_stage_blockers(
+    strategy: dict,
+    *,
+    admission_level: str,
+    validation_report: Optional[dict] = None,
+    gate: Optional[dict[str, Any]] = None,
+) -> tuple[list[str], dict[str, Any]]:
+    if admission_level == "research":
+        return [], _resolve_admission_review_context(strategy, validation_report=validation_report, gate=gate)
+    context = _resolve_admission_review_context(strategy, validation_report=validation_report, gate=gate)
+    thresholds = _review_gate_thresholds(admission_level)
+    blockers: list[str] = []
+    validation_grade = str(context.get("validation_grade") or "").strip().upper()
+    committee_decision = _normalize_text(context.get("committee_decision"))
+    committee_final_score = context.get("committee_final_score")
+    promotion_review_score = context.get("promotion_review_score")
+    accept_blockers = list(context.get("accept_blockers") or [])
+
+    if validation_grade in _NON_PROMOTABLE_VALIDATION_GRADES:
+        blockers.append(f"validation_grade_{validation_grade.lower()}_not_allowed_for_{admission_level}")
+    if committee_decision in _NON_PROMOTABLE_REVIEW_DECISIONS or committee_decision in _NON_PROMOTABLE_REVIEW_RECOMMENDATIONS:
+        blockers.append(f"committee_review_{committee_decision}_not_allowed_for_{admission_level}")
+    if committee_final_score is not None and committee_final_score < thresholds["committee_final_score_min"]:
+        blockers.append(
+            f"committee_final_score {committee_final_score:.3f} < {thresholds['committee_final_score_min']:.3f}"
+        )
+    if promotion_review_score is not None and promotion_review_score < thresholds["promotion_review_score_min"]:
+        blockers.append(
+            f"promotion_review_score {promotion_review_score:.3f} < {thresholds['promotion_review_score_min']:.3f}"
+        )
+    if accept_blockers:
+        blockers.extend(f"committee_accept_blocker:{item}" for item in accept_blockers)
+    return blockers, context
+
+
 def _attach_admission_evaluations(
     strategy: dict,
     profile: dict[str, Any],
     gate: dict[str, Any],
     *,
     risk_report: Optional[dict] = None,
+    validation_report: Optional[dict] = None,
 ) -> dict[str, Any]:
     normalized_gate = normalize_quality_gate_result(gate)
     attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized_gate)
@@ -1034,7 +1668,7 @@ def _attach_admission_evaluations(
 
     for admission_level in _ADMISSION_LEVEL_ORDER:
         if profile_name in _TRADE_PRIMARY_PROFILES:
-            stage_result = _evaluate_trade_profile(
+            stage_result = _evaluate_trade_profile_for_admission(
                 strategy,
                 profile,
                 normalized_gate,
@@ -1050,11 +1684,19 @@ def _attach_admission_evaluations(
                 admission_level=admission_level,
                 attempt_adjustment=attempt_adjustment,
             )
+        review_blockers, review_context = _review_stage_blockers(
+            strategy,
+            admission_level=admission_level,
+            validation_report=validation_report,
+            gate=normalized_gate,
+        )
+        stage_reasons = _merge_text_items(stage_result.get("reasons"), review_blockers)
         evaluations[admission_level] = {
-            "passed": bool(stage_result.get("passed")),
-            "reasons": list(stage_result.get("reasons") or []),
+            "passed": len(stage_reasons) == 0 and bool(stage_result.get("passed")),
+            "reasons": stage_reasons,
             "warnings": list(stage_result.get("warnings") or []),
             "thresholds": dict(stage_result.get("thresholds") or {}),
+            "review_context": dict(review_context or {}),
         }
 
     if research_only_due_to_trade_audit_gap:
@@ -1091,7 +1733,8 @@ def _attach_admission_evaluations(
             block_reasons = list(base_reasons or (evaluations.get("incubation") or {}).get("reasons") or [])
     else:
         strict_incubation_ready = bool((evaluations.get("incubation") or {}).get("passed"))
-        incubation_candidate_ready = bool(normalized_gate.get("passed"))
+        strict_incubation_blocked = bool((evaluations.get("incubation") or {}).get("reasons") or []) and bool(normalized_gate.get("passed"))
+        incubation_candidate_ready = bool(normalized_gate.get("passed")) and not strict_incubation_blocked
         live_candidate_ready = bool(
             incubation_candidate_ready
             and not normalized_gate.get("provisional_pass")
@@ -1128,8 +1771,54 @@ def _attach_admission_evaluations(
             "admission_evaluations": evaluations,
             "admission_block_reasons": block_reasons,
             "research_only_due_to_trade_audit_gap": research_only_due_to_trade_audit_gap,
+            "strict_incubation_ready": strict_incubation_ready,
+            "strict_incubation_blocked": bool((evaluations.get("incubation") or {}).get("reasons") or [])
+            and bool(normalized_gate.get("passed")),
+            "admission_review_context": dict((evaluations.get("incubation") or {}).get("review_context") or {}),
+            "validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("validation_grade"),
+            "raw_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("raw_validation_grade"),
+            "effective_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("effective_validation_grade"),
+            "validation_grade_adjustment_reason": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("validation_grade_adjustment_reason"),
         }
     )
+
+
+def _resolve_multiple_testing_panel(
+    strategy: dict,
+    profile: dict[str, Any],
+    contract_snapshot: Optional[dict[str, Any]] = None,
+) -> tuple[list[str], str]:
+    payload = dict(strategy or {})
+    contract = dict(contract_snapshot or {})
+    research_task = dict(profile.get("research_task") or {})
+    target_codes = _extract_target_codes_from_payload(payload)
+    targeting = dict(contract.get("targeting") or {})
+    stock_pool = dict(targeting.get("stock_pool") or {})
+    candidate_provenance = dict(_strategy_payload_value(payload, "candidate_provenance") or payload.get("candidate_provenance") or {})
+    strategy_profile = dict(contract.get("strategy_profile") or {})
+    if not strategy_profile:
+        strategy_profile = infer_candidate_strategy_profile(payload, research_task=research_task)
+    validation_focus = _normalize_text(profile.get("validation_focus"))
+    if validation_focus in _TARGET_ONLY_VALIDATION_FOCUSES or len(target_codes) <= 1:
+        return list(dict.fromkeys(target_codes)), "target_only"
+
+    pool_symbols = _normalize_symbol_list(
+        research_task.get("target_pool_symbols"),
+        research_task.get("peer_symbols"),
+        research_task.get("same_theme_symbols"),
+        research_task.get("theme_members"),
+        stock_pool.get("symbols"),
+        stock_pool.get("codes"),
+        candidate_provenance.get("peer_symbols"),
+        limit=8,
+    )
+    if pool_symbols:
+        return list(dict.fromkeys([*target_codes, *pool_symbols]))[:8], "task_pool"
+
+    if _normalize_text(strategy_profile.get("generator_mode")) in {"bulk_stock_matrix", "snapshot"} and len(target_codes) <= 2:
+        return list(dict.fromkeys(target_codes)), "target_only"
+
+    return list(dict.fromkeys([*target_codes, "600519", "000858", "601318"]))[:6], "representative_fallback"
 
 
 async def _run_statistical_gate(
@@ -1146,11 +1835,12 @@ async def _run_statistical_gate(
     strategy_params = strategy.get("params") or {}
     instance.set_parameters(strategy_params)
 
-    target_codes = _extract_target_codes_from_payload(strategy)
-    if profile.get("validation_focus") == "event_target_only" and target_codes:
-        codes = list(target_codes)
-    else:
-        codes = list(dict.fromkeys([*target_codes, "600519", "000858", "601318", "600036", "000333"]))
+    contract_snapshot = {}
+    try:
+        contract_snapshot = build_portfolio_candidate_contract(strategy)
+    except Exception:
+        contract_snapshot = {}
+    codes, cohort_mode = _resolve_multiple_testing_panel(strategy, profile, contract_snapshot)
     all_closes = []
     for code in codes:
         klines = await db.get_klines(code, limit=500)
@@ -1308,7 +1998,20 @@ async def _run_statistical_gate(
             "period_robustness": period_robustness,
             "reasons": reasons,
             "warnings": warnings,
+            "multiple_testing_cohort_mode": cohort_mode,
+            "multiple_testing_panel_symbols": list(codes),
+            "multiple_testing_panel_size": len(codes),
             **run_correction,
+            "cohort_effective_trials": round(
+                float(
+                    run_correction.get("deflated_sharpe_effective_trials")
+                    or run_correction.get("cohort_effective_trials")
+                    or attempt_adjustment.get("cohort_effective_trials")
+                    or attempt_adjustment.get("attempt_count")
+                    or 1.0
+                ),
+                4,
+            ),
         }
     )
 
@@ -1443,6 +2146,12 @@ async def run_submission_quality_gate(
             {
                 **normalized,
                 "attempt_adjustment": resolve_attempt_adjustment(strategy, gate=normalized),
+                "cohort_effective_trials": float(
+                    normalized.get("deflated_sharpe_effective_trials")
+                    or normalized.get("cohort_effective_trials")
+                    or dict(normalized.get("attempt_adjustment") or {}).get("cohort_effective_trials")
+                    or 0.0
+                ),
                 "multiple_testing_registry": _build_multiple_testing_registry(
                     strategy,
                     profile,
@@ -1455,6 +2164,7 @@ async def run_submission_quality_gate(
             profile,
             normalized,
             risk_report=risk_report,
+            validation_report=validation_report,
         )
     except Exception as e:
         return normalize_quality_gate_result(

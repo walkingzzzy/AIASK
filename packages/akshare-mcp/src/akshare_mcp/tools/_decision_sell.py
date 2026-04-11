@@ -144,6 +144,38 @@ async def should_i_sell(
             elif latest_close > ma20_last > ma60_last:
                 _apply_sell_signal('technical', '多头排列，趋势向上', -15, source=ma_source)
 
+        # 5b. 布林带位置
+        highs = [float(k.get('high', 0) or 0) for k in klines]
+        lows_list = [float(k.get('low', 0) or 0) for k in klines]
+        boll = technical_analysis.calculate_bollinger_bands(closes)
+        if boll:
+            boll_upper = boll.get('upper', [])
+            boll_lower = boll.get('lower', [])
+            boll_upper_val = float(boll_upper[-1]) if boll_upper and boll_upper[-1] else None
+            boll_lower_val = float(boll_lower[-1]) if boll_lower and boll_lower[-1] else None
+            if boll_upper_val and current_price >= boll_upper_val * 0.99:
+                _apply_sell_signal('technical', f'触及布林上轨({boll_upper_val:.1f})，短期超买', 10, source='boll')
+            elif boll_lower_val and current_price <= boll_lower_val * 1.01:
+                _apply_sell_signal('technical', f'触及布林下轨({boll_lower_val:.1f})，可能反弹', -10, source='boll')
+
+        # 5c. ATR 动态止损评估
+        atr_series = technical_analysis.calculate_atr(highs, lows_list, closes, period=14)
+        atr_stop_price = None
+        if atr_series and has_buy_price:
+            atr_val = float(atr_series[-1]) if atr_series[-1] else 0
+            if atr_val > 0:
+                atr_stop_price = round(buy_price - atr_val * 2, 2)
+                if current_price < atr_stop_price:
+                    _apply_sell_signal('risk', f'已跌破 ATR 止损位({atr_stop_price:.1f})，建议止损', 30, source='atr_stop')
+
+        # 5d. 支撑/阻力位
+        support_60d = min(lows_list[-60:]) if len(lows_list) >= 60 else None
+        resistance_60d = max(highs[-60:]) if len(highs) >= 60 else None
+        if support_60d and current_price < support_60d:
+            _apply_sell_signal('risk', f'已跌破 60 日支撑位({support_60d:.1f})', 15, source='key_level')
+        if resistance_60d and current_price >= resistance_60d * 0.98:
+            _apply_sell_signal('technical', f'接近 60 日阻力位({resistance_60d:.1f})，上行空间有限', 10, source='key_level')
+
         # 6. 持仓时间分析
         if holding_days > 0:
             if holding_days < 7:
@@ -188,8 +220,10 @@ async def should_i_sell(
         if recommendation in ['sell', 'reduce']:
             if not has_buy_price or profit_pct > 0:
                 target_sell_price = current_price
+            elif atr_stop_price and atr_stop_price > 0:
+                target_sell_price = atr_stop_price
             else:
-                target_sell_price = buy_price * 0.95  # 回本95%
+                target_sell_price = buy_price * 0.95
 
         payload = {
             'code': code,

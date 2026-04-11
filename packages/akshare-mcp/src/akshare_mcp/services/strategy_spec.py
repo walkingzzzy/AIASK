@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -122,18 +122,217 @@ def _task_source(research_task: dict[str, Any], event_context: dict[str, Any]) -
     return "event_driven" if event_context else "snapshot"
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _normalize_turnover_band(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"very_high", "high", "medium", "low"}:
+        return token
+    return ""
+
+
+def _derive_half_life_semantics(alpha_half_life: Any) -> dict[str, Any]:
+    half_life = _safe_float(alpha_half_life, 0.0)
+    if half_life <= 0:
+        return {}
+    if half_life <= 3:
+        return {
+            "min_days": 1,
+            "max_days": max(2, _safe_int(round(half_life * 1.5), 2)),
+            "rebalance_interval_days": 1,
+            "cooldown_window_days": 1,
+            "expected_turnover_band": "very_high",
+        }
+    if half_life <= 8:
+        min_days = max(2, _safe_int(round(half_life * 0.75), 2))
+        max_days = max(min_days + 1, _safe_int(round(half_life * 1.5), min_days + 1))
+        return {
+            "min_days": min_days,
+            "max_days": max_days,
+            "rebalance_interval_days": max(2, _safe_int(round(half_life / 2.0), 2)),
+            "cooldown_window_days": max(1, _safe_int(round(half_life / 3.0), 1)),
+            "expected_turnover_band": "high",
+        }
+    if half_life <= 16:
+        min_days = max(3, _safe_int(round(half_life * 0.8), 3))
+        max_days = max(min_days + 1, _safe_int(round(half_life * 1.8), min_days + 1))
+        return {
+            "min_days": min_days,
+            "max_days": max_days,
+            "rebalance_interval_days": max(3, _safe_int(round(half_life * 0.75), 3)),
+            "cooldown_window_days": max(2, _safe_int(round(half_life / 2.0), 2)),
+            "expected_turnover_band": "medium",
+        }
+    min_days = max(5, _safe_int(round(half_life), 5))
+    max_days = max(min_days + 1, _safe_int(round(half_life * 2.2), min_days + 1))
+    return {
+        "min_days": min_days,
+        "max_days": max_days,
+        "rebalance_interval_days": max(5, _safe_int(round(half_life), 5)),
+        "cooldown_window_days": max(3, _safe_int(round(half_life * 0.75), 3)),
+        "expected_turnover_band": "low",
+    }
+
+
+def _merge_holding_semantics(
+    holding_horizon: dict[str, Any],
+    *,
+    holding_rationale: Any = None,
+    alpha_half_life: Any = None,
+) -> dict[str, Any]:
+    result = dict(holding_horizon or {})
+    derived = _derive_half_life_semantics(alpha_half_life)
+    if result.get("rationale") in (None, "", [], {}) and holding_rationale not in (None, "", [], {}):
+        result["rationale"] = holding_rationale
+    if result.get("alpha_half_life") in (None, "", [], {}) and alpha_half_life not in (None, "", [], {}):
+        result["alpha_half_life"] = _safe_float(alpha_half_life)
+    for key in ("min_days", "max_days", "cooldown_window_days", "expected_turnover_band"):
+        if result.get(key) in (None, "", [], {}) and derived.get(key) not in (None, "", [], {}):
+            result[key] = derived.get(key)
+    return result
+
+
+def _merge_rebalance_semantics(
+    rebalance_rule: dict[str, Any],
+    *,
+    task_source: str,
+    holding_horizon: dict[str, Any],
+    alpha_half_life: Any = None,
+) -> dict[str, Any]:
+    result = dict(rebalance_rule or {})
+    derived = _derive_half_life_semantics(alpha_half_life)
+    max_days = _safe_int(holding_horizon.get("max_days"), 0)
+    rebalance_interval_days = max(
+        1,
+        _safe_int(
+            result.get("rebalance_interval_days") or derived.get("rebalance_interval_days"),
+            max(1, min(max_days or 10, max(1, (max_days or 10) // 2))),
+        ),
+    )
+    if result.get("mode") in (None, "", [], {}):
+        result["mode"] = (
+            "event_driven_hold"
+            if task_source == "event_driven"
+            else ("periodic_rebalance" if rebalance_interval_days >= 3 else "signal_rebalance")
+        )
+    if task_source != "event_driven":
+        result.setdefault("frequency_days", max(1, min(max_days or rebalance_interval_days, rebalance_interval_days)))
+    result.setdefault("rebalance_interval_days", rebalance_interval_days)
+    if result.get("cooldown_window_days") in (None, "", [], {}):
+        result["cooldown_window_days"] = _safe_int(
+            holding_horizon.get("cooldown_window_days") or derived.get("cooldown_window_days"),
+            0,
+        )
+    if result.get("expected_turnover_band") in (None, "", [], {}):
+        result["expected_turnover_band"] = (
+            _normalize_turnover_band(holding_horizon.get("expected_turnover_band"))
+            or derived.get("expected_turnover_band")
+        )
+    return result
+
+
+def _resolve_capacity_bucket(
+    capacity_assumption: dict[str, Any],
+    *,
+    target_symbols: list[str],
+    position_model: str,
+) -> str:
+    explicit = str(
+        capacity_assumption.get("capacity_bucket")
+        or capacity_assumption.get("bucket")
+        or ""
+    ).strip().lower()
+    if explicit:
+        return explicit
+    max_position_pct = _safe_float(capacity_assumption.get("max_position_pct"), 0.0)
+    participation = _safe_float(capacity_assumption.get("capacity_participation_rate"), 0.0)
+    symbol_count = max(_safe_int(capacity_assumption.get("symbol_count"), 0), len(target_symbols))
+    normalized_model = str(position_model or "").strip().lower()
+    if symbol_count <= 1 or "single" in normalized_model or max_position_pct >= 0.3 or participation >= 0.15:
+        return "small"
+    if symbol_count >= 8 and max_position_pct <= 0.12 and participation <= 0.08:
+        return "large"
+    return "mid"
+
+
+def _resolve_turnover_cost_class(
+    *,
+    execution_assumptions: dict[str, Any],
+    expected_turnover_band: str,
+    capacity_bucket: str,
+) -> str:
+    slippage_bps = _safe_float(execution_assumptions.get("slippage_bps"), 0.0)
+    market_impact_bps = _safe_float(execution_assumptions.get("market_impact_bps"), 0.0)
+    if expected_turnover_band == "very_high" or slippage_bps >= 10 or market_impact_bps >= 4:
+        return "high_touch"
+    if expected_turnover_band == "high" or slippage_bps >= 5 or capacity_bucket == "small":
+        return "medium_touch"
+    return "low_touch"
+
+
+def _resolve_position_sizing_rationale(
+    *,
+    position_model: str,
+    target_symbols: list[str],
+    capacity_bucket: str,
+    expected_turnover_band: str,
+) -> str:
+    normalized_model = str(position_model or "").strip().lower()
+    if "volatility" in normalized_model:
+        return "volatility_budgeted_across_target_basket"
+    if "single" in normalized_model or len(target_symbols) <= 1:
+        return (
+            "single_name_conviction_capped_by_capacity"
+            if capacity_bucket in {"small", "mid"}
+            else "single_name_conviction_with_liquidity_buffer"
+        )
+    if expected_turnover_band in {"high", "very_high"}:
+        return "equal_weight_diversified_basket_to_limit_turnover_drag"
+    return "equal_weight_diversified_basket"
+
+
 def _default_holding_horizon(
     strategy_type: str,
     research_task: dict[str, Any],
     task_source: str,
+    *,
+    alpha_half_life: Any = None,
 ) -> dict[str, Any]:
     holding_window = dict(research_task.get("holding_window") or {})
     if holding_window:
-        return holding_window
+        return _merge_holding_semantics(
+            holding_window,
+            alpha_half_life=alpha_half_life,
+        )
+    derived = _derive_half_life_semantics(alpha_half_life)
+    if derived:
+        return _merge_holding_semantics(derived, alpha_half_life=alpha_half_life)
     if task_source == "event_driven":
         return {"max_days": 10}
+    if strategy_type == "quality_factor":
+        return {"min_days": 30, "max_days": 84}
     if strategy_type in _FACTOR_VALIDATION_TYPES or strategy_type in {"macro_timing", "sector_rotation"}:
-        return {"max_days": 20}
+        return {"min_days": 5, "max_days": 24}
+    if task_source in {"snapshot", "bulk_stock_matrix"}:
+        if strategy_type == "momentum":
+            return {"min_days": 14, "max_days": 42}
+        if strategy_type in {"ma_cross", "volatility_breakout", "north_capital_track", "margin_divergence"}:
+            return {"min_days": 14, "max_days": 48}
+        if strategy_type in {"gap_fill", "mean_reversion_short", "rsi"}:
+            return {"min_days": 3, "max_days": 12}
+        return {"min_days": 4, "max_days": 15}
     return {"max_days": 10}
 
 
@@ -148,6 +347,21 @@ def _default_trade_plan(strategy_type: str, task_source: str) -> dict[str, Any]:
             "entry_bias": "cross_sectional_rank",
             "exit_bias": "rank_decay_or_periodic_rebalance",
         }
+    if strategy_type == "momentum":
+        return {
+            "entry_bias": "trend_persistence_confirmation",
+            "exit_bias": "false_breakout_or_momentum_decay",
+        }
+    if strategy_type == "quality_factor":
+        return {
+            "entry_bias": "quality_stability_with_trend_confirmation",
+            "exit_bias": "quality_drift_or_rank_decay",
+        }
+    if strategy_type == "ma_cross":
+        return {
+            "entry_bias": "adaptive_cross_with_volume_confirmation",
+            "exit_bias": "range_reentry_or_cross_failure",
+        }
     if strategy_type == "macro_timing":
         return {
             "entry_bias": "regime_confirmed",
@@ -156,6 +370,50 @@ def _default_trade_plan(strategy_type: str, task_source: str) -> dict[str, Any]:
     return {
         "entry_bias": "signal_confirmed",
         "exit_bias": "signal_or_time_stop",
+    }
+
+
+def _default_market_regime_assumption(strategy_type: str, task_source: str) -> dict[str, Any]:
+    if task_source == "event_driven":
+        return {
+            "summary": "事件催化后的短窗口延续阶段更有效。",
+            "preferred_regime": "event_follow_through",
+            "avoid_regime": "post_event_mean_reversion",
+        }
+    if strategy_type == "momentum":
+        return {
+            "summary": "趋势扩张且龙头相对强度保持的阶段更有效，需要避免无量假突破与快速反抽。",
+            "preferred_regime": "trend_expansion_with_persistence",
+            "avoid_regime": "false_breakout_range_reversion",
+        }
+    if strategy_type == "ma_cross":
+        return {
+            "summary": "需要均线张口扩大并伴随量能确认，横盘噪声区间的频繁穿越应过滤。",
+            "preferred_regime": "trend_expansion_with_volume_confirmation",
+            "avoid_regime": "range_bound_chop",
+        }
+    if strategy_type in {"volatility_breakout"}:
+        return {
+            "summary": "趋势扩张或强势股持续领跑阶段更有效。",
+            "preferred_regime": "trend_expansion",
+            "avoid_regime": "range_bound_chop",
+        }
+    if strategy_type == "quality_factor":
+        return {
+            "summary": "基本面稳定扩散并与中期价格趋势共振时更有效，风格急切换和质量漂移阶段要回避。",
+            "preferred_regime": "quality_stability_with_trend_resonance",
+            "avoid_regime": "quality_drift_high_noise_rotation",
+        }
+    if strategy_type in {"value_factor", "growth_factor", "multi_factor"}:
+        return {
+            "summary": "慢变量扩散、基本面驱动占优的稳定阶段更有效。",
+            "preferred_regime": "slow_factor_diffusion",
+            "avoid_regime": "high_noise_rotation",
+        }
+    return {
+        "summary": "流动性正常、成本可控的中性市场环境更有效。",
+        "preferred_regime": "neutral_liquid_cn_equity",
+        "avoid_regime": "illiquid_stressed_market",
     }
 
 
@@ -176,14 +434,78 @@ def _default_position_sizing(target_symbols: list[str]) -> dict[str, Any]:
     }
 
 
-def _default_rebalance_rule(strategy_type: str, task_source: str) -> dict[str, Any]:
+def _default_rebalance_rule(
+    strategy_type: str,
+    task_source: str,
+    *,
+    holding_horizon: Optional[dict[str, Any]] = None,
+    alpha_half_life: Any = None,
+) -> dict[str, Any]:
+    derived = _derive_half_life_semantics(alpha_half_life)
+    if derived:
+        return _merge_rebalance_semantics(
+            {},
+            task_source=task_source,
+            holding_horizon=_merge_holding_semantics(dict(holding_horizon or {}), alpha_half_life=alpha_half_life),
+            alpha_half_life=alpha_half_life,
+        )
     if task_source == "event_driven":
         return {"mode": "event_driven_hold"}
+    if strategy_type == "quality_factor":
+        return {"mode": "periodic_rebalance", "frequency_days": 28}
     if strategy_type in _FACTOR_VALIDATION_TYPES or strategy_type == "sector_rotation":
-        return {"mode": "periodic_rebalance", "frequency_days": 5}
+        return {"mode": "periodic_rebalance", "frequency_days": 10}
     if strategy_type == "macro_timing":
         return {"mode": "regime_rebalance", "frequency_days": 10}
+    if task_source in {"snapshot", "bulk_stock_matrix"}:
+        if strategy_type == "momentum":
+            return {"mode": "periodic_rebalance", "frequency_days": 14}
+        if strategy_type in {"ma_cross", "volatility_breakout", "north_capital_track", "margin_divergence"}:
+            return {"mode": "periodic_rebalance", "frequency_days": 12}
+        if strategy_type in {"gap_fill", "mean_reversion_short", "rsi"}:
+            return {"mode": "periodic_rebalance", "frequency_days": 4}
     return {"mode": "signal_rebalance"}
+
+
+def _default_family_specialization(
+    strategy_type: str,
+    task_source: str,
+    *,
+    holding_horizon: Optional[dict[str, Any]] = None,
+    rebalance_rule: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    family = str(strategy_type or "").strip().lower()
+    holding = dict(holding_horizon or {})
+    rebalance = dict(rebalance_rule or {})
+    max_days = max(1, _safe_int(holding.get("max_days"), 0) or 1)
+    frequency_days = max(1, _safe_int(rebalance.get("frequency_days"), 0) or max(1, max_days // 2))
+    if family == "momentum":
+        return {
+            "trend_persistence_regime": "trend_expansion_with_relative_strength_persistence",
+            "false_breakout_filter": "prefer_volume_confirmed_breakout_and_positive_trend_slope",
+            "peer_selection_mode": "target_plus_dynamic_family_peer",
+            "holding_bias": f"hold_for_{max_days}_days_or_until_momentum_decay",
+            "rebalance_bias": f"periodic_rebalance_every_{frequency_days}_days",
+        }
+    if family == "quality_factor":
+        return {
+            "rebalance_bias": "low_frequency_quality_refresh",
+            "quality_trend_resonance": "require_fundamental_stability_and_price_trend_alignment",
+            "quality_drift_detection": "monitor_rank_margin_cashflow_stability_deterioration",
+            "peer_selection_mode": "target_plus_dynamic_family_peer",
+            "compounding_window": "prefer_slow_compounding_validation_window",
+            "holding_bias": f"slow_factor_diffusion_hold_{max_days}_days",
+            "task_source": task_source or None,
+        }
+    if family == "ma_cross":
+        return {
+            "adaptive_span_logic": "fast_slow_span_scaled_by_regime_and_noise_level",
+            "range_filter": "avoid_crosses_when_long_ma_is_flat_and_price_is_range_bound",
+            "volume_confirmation": "prefer_crosses_with_volume_ratio_confirmation",
+            "holding_bias": f"trend_follow_hold_{max_days}_days",
+            "rebalance_bias": f"periodic_rebalance_every_{frequency_days}_days",
+        }
+    return {}
 
 
 def _default_portfolio_spec(target_symbols: list[str]) -> dict[str, Any]:
@@ -208,11 +530,22 @@ def _default_validation_profile(
     research_task: dict[str, Any],
     task_source: str,
 ) -> dict[str, Any]:
+    default_focus = (
+        "event_target_only"
+        if task_source == "event_driven"
+        else "candidate_target_only" if strategy_type == "quality_factor"
+        else "target_plus_representative"
+    )
     validation_focus = str(
-        research_task.get("validation_focus")
-        or ("event_target_only" if task_source == "event_driven" else "target_plus_representative")
+        research_task.get("validation_focus") or default_focus
     ).strip().lower()
-    if strategy_type in _FACTOR_VALIDATION_TYPES:
+    if strategy_type == "quality_factor" and validation_focus in {
+        "candidate_target_only",
+        "target_only",
+        "target_plus_family_peer",
+    }:
+        profile = "trade_rule_validation"
+    elif strategy_type in _FACTOR_VALIDATION_TYPES:
         profile = "factor_rank_validation"
     elif strategy_type == "macro_timing":
         profile = "macro_regime_validation"
@@ -345,7 +678,26 @@ class StrategySpec:
             metadata.get("research_scope"),
             source_candidate.get("research_scope"),
         )
+        hypothesis_artifact = _dict_value(
+            metadata.get("hypothesis_artifact"),
+            source_candidate.get("hypothesis_artifact"),
+        )
         task_source = _task_source(research_task, event_context)
+        holding_rationale = _scalar_value(
+            metadata.get("holding_rationale"),
+            source_candidate.get("holding_rationale"),
+            hypothesis_artifact.get("holding_rationale"),
+        )
+        alpha_half_life = _scalar_value(
+            metadata.get("alpha_half_life"),
+            source_candidate.get("alpha_half_life"),
+            hypothesis_artifact.get("alpha_half_life"),
+        )
+        market_regime_assumption = _scalar_value(
+            metadata.get("market_regime_assumption"),
+            source_candidate.get("market_regime_assumption"),
+            hypothesis_artifact.get("market_regime_assumption"),
+        )
         holding_horizon = _dict_value(
             metadata.get("holding_horizon"),
             source_candidate.get("holding_horizon"),
@@ -353,7 +705,24 @@ class StrategySpec:
             source_candidate_params.get("holding_horizon"),
         )
         if not holding_horizon:
-            holding_horizon = _default_holding_horizon(self.strategy_type, research_task, task_source)
+            holding_horizon = _default_holding_horizon(
+                self.strategy_type,
+                research_task,
+                task_source,
+                alpha_half_life=alpha_half_life,
+            )
+        if alpha_half_life in (None, "", [], {}):
+            alpha_half_life = holding_horizon.get("alpha_half_life") or holding_horizon.get("max_days")
+        if market_regime_assumption in (None, "", [], {}):
+            market_regime_assumption = _default_market_regime_assumption(
+                self.strategy_type,
+                task_source,
+            )
+        holding_horizon = _merge_holding_semantics(
+            holding_horizon,
+            holding_rationale=holding_rationale,
+            alpha_half_life=alpha_half_life,
+        )
         trade_plan = _dict_value(
             metadata.get("trade_plan"),
             source_candidate.get("trade_plan"),
@@ -385,7 +754,18 @@ class StrategySpec:
             source_candidate_params.get("rebalance_rule"),
         )
         if not rebalance_rule:
-            rebalance_rule = _default_rebalance_rule(self.strategy_type, task_source)
+            rebalance_rule = _default_rebalance_rule(
+                self.strategy_type,
+                task_source,
+                holding_horizon=holding_horizon,
+                alpha_half_life=alpha_half_life,
+            )
+        rebalance_rule = _merge_rebalance_semantics(
+            rebalance_rule,
+            task_source=task_source,
+            holding_horizon=holding_horizon,
+            alpha_half_life=alpha_half_life,
+        )
         portfolio_spec = _dict_value(
             metadata.get("portfolio_spec"),
             source_candidate.get("portfolio_spec"),
@@ -430,6 +810,92 @@ class StrategySpec:
                 research_task=research_task,
                 targeting_policy=targeting_policy,
             )
+        position_model = _scalar_value(
+            metadata.get("position_model"),
+            source_candidate.get("position_model"),
+            hypothesis_artifact.get("position_model"),
+            position_sizing.get("mode"),
+            portfolio_spec.get("position_assumption"),
+        )
+        capacity_assumption = _dict_value(
+            metadata.get("capacity_assumption"),
+            source_candidate.get("capacity_assumption"),
+            hypothesis_artifact.get("capacity_assumption"),
+        )
+        cost_sensitivity_grid = _dict_value(
+            metadata.get("cost_sensitivity_grid"),
+            source_candidate.get("cost_sensitivity_grid"),
+            hypothesis_artifact.get("cost_sensitivity_grid"),
+        )
+        family_specialization = _default_family_specialization(
+            self.strategy_type,
+            task_source,
+            holding_horizon=holding_horizon,
+            rebalance_rule=rebalance_rule,
+        )
+        family_specialization.update(
+            _dict_value(
+                metadata.get("family_specialization"),
+                source_candidate.get("family_specialization"),
+                dict(self.params or {}).get("family_specialization"),
+                source_candidate_params.get("family_specialization"),
+                hypothesis_artifact.get("family_specific_hypothesis"),
+            )
+        )
+        expected_turnover_band = (
+            _normalize_turnover_band(
+                holding_horizon.get("expected_turnover_band")
+                or rebalance_rule.get("expected_turnover_band")
+            )
+            or _derive_half_life_semantics(alpha_half_life).get("expected_turnover_band")
+        )
+        capacity_bucket = _resolve_capacity_bucket(
+            dict(capacity_assumption),
+            target_symbols=list(target_symbols),
+            position_model=str(position_model or ""),
+        )
+        if not capacity_assumption:
+            capacity_assumption = {
+                "max_position_pct": portfolio_spec.get("max_position_pct"),
+                "symbol_count": len(target_symbols),
+                "capacity_bucket": capacity_bucket,
+            }
+        if not cost_sensitivity_grid:
+            cost_sensitivity_grid = {
+                "base_case": {
+                    "commission_rate": execution_assumptions.get("commission_rate"),
+                    "slippage_bps": execution_assumptions.get("slippage_bps"),
+                    "tradability_filter": execution_assumptions.get("tradability_filter"),
+                    "slippage_model": execution_assumptions.get("slippage_model"),
+                    "market_impact_bps": execution_assumptions.get("market_impact_bps"),
+                },
+                "source": "strategy_spec_execution_defaults",
+            }
+        position_sizing_rationale = _resolve_position_sizing_rationale(
+            position_model=str(position_model or ""),
+            target_symbols=list(target_symbols),
+            capacity_bucket=capacity_bucket,
+            expected_turnover_band=expected_turnover_band or "medium",
+        )
+        position_sizing.setdefault("capacity_bucket", capacity_bucket or None)
+        position_sizing.setdefault("expected_turnover_band", expected_turnover_band or None)
+        position_sizing.setdefault("position_sizing_rationale", position_sizing_rationale)
+        portfolio_spec.setdefault("capacity_bucket", capacity_bucket or None)
+        portfolio_spec.setdefault("expected_turnover_band", expected_turnover_band or None)
+        portfolio_spec.setdefault("position_sizing_rationale", position_sizing_rationale)
+        execution_assumptions.setdefault("capacity_bucket", capacity_bucket or None)
+        execution_assumptions.setdefault(
+            "turnover_cost_class",
+            _resolve_turnover_cost_class(
+                execution_assumptions=execution_assumptions,
+                expected_turnover_band=expected_turnover_band or "medium",
+                capacity_bucket=capacity_bucket,
+            ),
+        )
+        execution_assumptions.setdefault("expected_turnover_band", expected_turnover_band or None)
+        trade_plan.setdefault("cooldown_window_days", holding_horizon.get("cooldown_window_days"))
+        trade_plan.setdefault("expected_turnover_band", expected_turnover_band or None)
+        risk_rules.setdefault("cooldown_window_days", holding_horizon.get("cooldown_window_days"))
         candidate_params = {
             **dict(self.params or {}),
             "target_symbols": list(target_symbols),
@@ -446,6 +912,34 @@ class StrategySpec:
             "validation_profile": dict(validation_profile),
             "targeting_policy": dict(targeting_policy),
             "constraint_check": dict(constraint_check),
+            "hypothesis_artifact": dict(hypothesis_artifact),
+            "holding_rationale": holding_rationale,
+            "alpha_half_life": alpha_half_life,
+            "cost_sensitivity_grid": dict(cost_sensitivity_grid),
+            "position_model": position_model,
+            "capacity_assumption": dict(capacity_assumption),
+            "market_regime_assumption": market_regime_assumption,
+            "position_sizing_rationale": position_sizing_rationale,
+            "capacity_bucket": capacity_bucket,
+            "turnover_cost_class": execution_assumptions.get("turnover_cost_class"),
+            "expected_turnover_band": expected_turnover_band,
+            "family_specialization": dict(family_specialization),
+            "economic_semantics_score": _scalar_value(
+                metadata.get("economic_semantics_score"),
+                source_candidate.get("economic_semantics_score"),
+                hypothesis_artifact.get("economic_semantics_score"),
+            ),
+            "economic_semantics_missing_fields": _list_value(
+                metadata.get("economic_semantics_missing_fields"),
+                source_candidate.get("economic_semantics_missing_fields"),
+                hypothesis_artifact.get("economic_semantics_missing_fields"),
+            ),
+            "validation_focus": _scalar_value(
+                metadata.get("validation_focus"),
+                source_candidate.get("validation_focus"),
+                hypothesis_artifact.get("validation_focus"),
+                validation_profile.get("validation_focus"),
+            ),
         }
         return {
             'name': self.name or str(source_candidate.get('name') or ''),
@@ -465,6 +959,45 @@ class StrategySpec:
             'validation_profile': dict(validation_profile),
             'targeting_policy': dict(targeting_policy),
             'constraint_check': dict(constraint_check),
+            'hypothesis_artifact': dict(hypothesis_artifact),
+            'hypothesis_artifact_id': _scalar_value(
+                metadata.get('hypothesis_artifact_id'),
+                source_candidate.get('hypothesis_artifact_id'),
+                hypothesis_artifact.get('artifact_id'),
+            ),
+            'hypothesis_lowering_audit': _dict_value(
+                metadata.get('hypothesis_lowering_audit'),
+                source_candidate.get('hypothesis_lowering_audit'),
+            ),
+            'holding_rationale': holding_rationale,
+            'alpha_half_life': alpha_half_life,
+            'cost_sensitivity_grid': _dict_value(
+                cost_sensitivity_grid,
+            ),
+            'position_model': position_model,
+            'capacity_assumption': dict(capacity_assumption),
+            'market_regime_assumption': market_regime_assumption,
+            'position_sizing_rationale': position_sizing_rationale,
+            'capacity_bucket': capacity_bucket,
+            'turnover_cost_class': execution_assumptions.get('turnover_cost_class'),
+            'expected_turnover_band': expected_turnover_band,
+            'family_specialization': dict(family_specialization),
+            'economic_semantics_score': _scalar_value(
+                metadata.get('economic_semantics_score'),
+                source_candidate.get('economic_semantics_score'),
+                hypothesis_artifact.get('economic_semantics_score'),
+            ),
+            'economic_semantics_missing_fields': _list_value(
+                metadata.get('economic_semantics_missing_fields'),
+                source_candidate.get('economic_semantics_missing_fields'),
+                hypothesis_artifact.get('economic_semantics_missing_fields'),
+            ),
+            'validation_focus': _scalar_value(
+                metadata.get('validation_focus'),
+                source_candidate.get('validation_focus'),
+                hypothesis_artifact.get('validation_focus'),
+                validation_profile.get('validation_focus'),
+            ),
             'generation_reason': _dict_value(metadata.get('generation_reason'), source_candidate.get('generation_reason')),
             'committee_review': _dict_value(metadata.get('committee_review'), source_candidate.get('committee_review')),
             'generator_type': _scalar_value(metadata.get('generator_type'), source_candidate.get('generator_type'), source) or source,

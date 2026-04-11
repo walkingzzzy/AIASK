@@ -436,6 +436,7 @@ def build_quality_report(
     event_window_metrics = dict(backtest.get("event_window_metrics") or {})
     cost_assumptions = dict(backtest.get("cost_assumptions") or {})
     backtest_assumptions = dict(backtest.get("backtest_assumptions") or {})
+    economic_semantics = dict(backtest.get("economic_semantics") or {})
     execution_reality = {
         "market_ruleset": cost_assumptions.get("market_ruleset") or backtest_assumptions.get("market_ruleset"),
         "sell_tax_rate": (
@@ -471,6 +472,11 @@ def build_quality_report(
         "target_weight_scheme": backtest_assumptions.get("target_weight_scheme"),
         "position_assumption": backtest.get("position_assumption") or backtest_assumptions.get("position_assumption"),
         "tradability_filter": backtest_assumptions.get("tradability_filter"),
+        "capacity_bucket": backtest_assumptions.get("capacity_bucket") or economic_semantics.get("capacity_bucket"),
+        "turnover_cost_class": backtest_assumptions.get("turnover_cost_class") or economic_semantics.get("turnover_cost_class"),
+        "position_sizing_rationale": backtest_assumptions.get("position_sizing_rationale") or economic_semantics.get("position_sizing_rationale"),
+        "expected_turnover_band": backtest_assumptions.get("expected_turnover_band") or economic_semantics.get("expected_turnover_band"),
+        "market_regime_assumption": backtest_assumptions.get("market_regime_assumption") or economic_semantics.get("market_regime_assumption"),
     }
     submission_lane = audit.get("submission_lane")
     direct_trade_candidate = bool(audit.get("direct_trade_candidate"))
@@ -495,11 +501,38 @@ def build_quality_report(
     committee_review = _normalize_committee_review(
         audit.get("committee_review") or snapshot.get("committee_review")
     )
+    trade_quality_adjustment = dict(validation.get("trade_quality_adjustment") or {})
+    effective_validation_grade = (
+        normalized_gate.get("effective_validation_grade")
+        or normalized_gate.get("validation_grade")
+        or rating.get("grade")
+    )
+    raw_validation_grade = normalized_gate.get("raw_validation_grade") or rating.get("grade")
+    validation_total_score = safe_metric_value(rating, "total_score")
+    raw_validation_total_score = (
+        safe_metric_value(rating, "total_score")
+        if trade_quality_adjustment.get("applied")
+        else safe_metric_value(rating, "base_total_score", "total_score")
+    )
+    raw_validation_baseline_total_score = safe_metric_value(
+        rating,
+        "base_total_score",
+        "total_score",
+    )
     summary = {
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
         "status_after_review": status_after_review,
-        "validation_grade": rating.get("grade"),
+        "validation_grade": effective_validation_grade,
+        "raw_validation_grade": raw_validation_grade,
+        "effective_validation_grade": effective_validation_grade,
+        "validation_grade_adjustment_reason": (
+            normalized_gate.get("validation_grade_adjustment_reason")
+            or trade_quality_adjustment.get("adjustment_reason")
+        ),
+        "validation_total_score": validation_total_score,
+        "raw_validation_total_score": raw_validation_total_score,
+        "raw_validation_baseline_total_score": raw_validation_baseline_total_score,
         "review_source": review_source,
         "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
         "admission_stage": normalized_gate.get("admission_stage"),
@@ -537,8 +570,21 @@ def build_quality_report(
         "market_ruleset": execution_reality.get("market_ruleset"),
         "target_weight_scheme": execution_reality.get("target_weight_scheme"),
         "position_assumption": execution_reality.get("position_assumption"),
+        "capacity_bucket": execution_reality.get("capacity_bucket"),
+        "turnover_cost_class": execution_reality.get("turnover_cost_class"),
+        "position_sizing_rationale": execution_reality.get("position_sizing_rationale"),
+        "expected_turnover_band": execution_reality.get("expected_turnover_band"),
+        "market_regime_assumption": execution_reality.get("market_regime_assumption"),
         "committee_decision": committee_review.get("decision"),
         "committee_final_score": committee_review.get("final_score"),
+        "strict_incubation_ready": bool(normalized_gate.get("strict_incubation_ready")),
+        "strict_incubation_blocked": bool(normalized_gate.get("strict_incubation_blocked")),
+        "cohort_effective_trials": normalized_gate.get("cohort_effective_trials"),
+        "batch_correlation_mode": normalized_gate.get("batch_correlation_mode"),
+        "batch_correlation_sibling_count": normalized_gate.get("batch_correlation_sibling_count"),
+        "multiple_testing_cohort_mode": dict(normalized_gate.get("multiple_testing_registry") or {}).get(
+            "multiple_testing_cohort_mode"
+        ),
     }
     if spawn_reason:
         summary["spawn_reason"] = spawn_reason
@@ -584,6 +630,20 @@ def build_quality_report(
         "submission_action_completed": submission_action_completed,
         "admission_block_reasons": list(normalized_gate.get("admission_block_reasons") or []),
         "admission_evaluations": dict(normalized_gate.get("admission_evaluations") or {}),
+        "strict_incubation_ready": bool(normalized_gate.get("strict_incubation_ready")),
+        "strict_incubation_blocked": bool(normalized_gate.get("strict_incubation_blocked")),
+        "validation_grade": effective_validation_grade,
+        "raw_validation_grade": raw_validation_grade,
+        "effective_validation_grade": effective_validation_grade,
+        "validation_grade_adjustment_reason": (
+            normalized_gate.get("validation_grade_adjustment_reason")
+            or trade_quality_adjustment.get("adjustment_reason")
+        ),
+        "validation_total_score": validation_total_score,
+        "raw_validation_total_score": raw_validation_total_score,
+        "raw_validation_baseline_total_score": raw_validation_baseline_total_score,
+        "admission_review_context": dict(normalized_gate.get("admission_review_context") or {}),
+        "cohort_effective_trials": normalized_gate.get("cohort_effective_trials"),
         "event_window_config": dict(backtest.get("event_window_config") or {}),
         "event_window_metrics": event_window_metrics,
         "position_assumption": backtest.get("position_assumption"),
@@ -608,6 +668,9 @@ def build_quality_report(
             "deflated_sharpe_ratio": normalized_gate.get("deflated_sharpe_ratio"),
             "deflated_sharpe_reference_sharpe": normalized_gate.get("deflated_sharpe_reference_sharpe"),
             "deflated_sharpe_effective_trials": normalized_gate.get("deflated_sharpe_effective_trials"),
+            "batch_correlation_mode": normalized_gate.get("batch_correlation_mode"),
+            "batch_correlation_multiplier": normalized_gate.get("batch_correlation_multiplier"),
+            "batch_correlation_sibling_count": normalized_gate.get("batch_correlation_sibling_count"),
             "pbo": normalized_gate.get("pbo"),
             "white_reality_check_pvalue": normalized_gate.get("white_reality_check_pvalue"),
             "hansen_spa_pvalue": normalized_gate.get("hansen_spa_pvalue"),

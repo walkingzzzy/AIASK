@@ -21,10 +21,12 @@ def _get_strategy_factory_imports():
         extract_event_context as _extract_event_context,
         preferred_strategy_types_for_factor,
     )
+    from strategy_factory.application.hypothesis_lowering_compiler import HypothesisLoweringCompiler
     from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
     from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
+        "HypothesisLoweringCompiler": HypothesisLoweringCompiler,
         "LLM_FAN_OUT_COUNT": LLM_FAN_OUT_COUNT,
         "PIPELINE_MODE": PIPELINE_MODE,
         "PIPELINE_STAGE_TIMEOUTS": PIPELINE_STAGE_TIMEOUTS,
@@ -59,6 +61,7 @@ def __getattr__(name):
         "LLM_FAN_OUT_COUNT": "LLM_FAN_OUT_COUNT",
         "PIPELINE_MODE": "PIPELINE_MODE",
         "_extract_event_context": "extract_event_context",
+        "HypothesisLoweringCompiler": "HypothesisLoweringCompiler",
         "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
         "_apply_target_symbol_policy": "apply_target_symbol_policy",
         "_normalize_research_task_contract": "normalize_research_task_contract",
@@ -70,6 +73,7 @@ def __getattr__(name):
 
 
 CATEGORY_MINIMUMS = _sf()["CATEGORY_MINIMUMS"]
+HypothesisLoweringCompiler = _sf()["HypothesisLoweringCompiler"]
 LLM_FAN_OUT_COUNT = _sf()["LLM_FAN_OUT_COUNT"]
 PIPELINE_MODE = _sf()["PIPELINE_MODE"]
 _extract_event_context = _sf()["extract_event_context"]
@@ -81,7 +85,12 @@ validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_co
 from .llm_alpha import LLMAlphaMiner
 from .data_pipeline import normalize_klines
 from .strategy_dsl import compile_strategy_blueprint
-from .strategy_llm_provider import StrategyLLMProvider, get_strategy_llm_provider
+from .strategy_hypothesis_generator import LLMHypothesisGenerator
+from .strategy_llm_provider import get_strategy_llm_provider
+from .strategy_open_dsl import (
+    compile_open_dsl_candidate,
+    is_open_dsl_candidate,
+)
 from .strategy_pipeline import get_strategy_pipeline
 from .strategy_spec import (
     DEFAULT_CODES,
@@ -92,13 +101,250 @@ from .strategy_spec import (
     RESEARCH_UNIVERSE_PAGE_SIZE,
     RESEARCH_UNIVERSE_SCAN_LIMIT,
     StrategySpec,
+    _default_holding_horizon,
+    _default_rebalance_rule,
+    _default_risk_rules,
 )
 
 logger = logging.getLogger(__name__)
 
 
+def _enrich_rule_template_contract(
+    strategy_type: str,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = deepcopy(contract or {})
+    if not enriched:
+        return {}
+    holding_horizon = dict(enriched.get("holding_horizon") or {})
+    execution_assumptions = dict(enriched.get("execution_assumptions") or {})
+    portfolio_spec = dict(enriched.get("portfolio_spec") or {})
+    position_sizing = dict(enriched.get("position_sizing") or {})
+    max_days = int(holding_horizon.get("max_days") or 10)
+    alpha_half_life = float(enriched.get("alpha_half_life") or max(2, round(max_days * 0.75)))
+    expected_turnover_band = str(
+        holding_horizon.get("expected_turnover_band")
+        or ("low" if max_days >= 24 else "medium" if max_days >= 12 else "high")
+    ).strip().lower()
+    capacity_bucket = str(
+        execution_assumptions.get("capacity_bucket")
+        or ("mid" if max_days >= 10 else "small")
+    ).strip().lower()
+    enriched.setdefault(
+        "holding_rationale",
+        (
+            "围绕目标信号的半衰期持有，避免在信号尚未衰减前过早换手。"
+            if strategy_type in {"momentum", "ma_cross", "volatility_breakout"}
+            else "围绕慢变量扩散或修复窗口持有，在预期兑现后再做再平衡。"
+        ),
+    )
+    enriched.setdefault("alpha_half_life", alpha_half_life)
+    enriched.setdefault(
+        "cost_sensitivity_grid",
+        {
+            "base_case": {
+                "commission_rate": execution_assumptions.get("commission_rate", 0.00025),
+                "slippage_bps": execution_assumptions.get("slippage_bps", 5),
+                "tradability_filter": execution_assumptions.get("tradability_filter", True),
+                "slippage_model": execution_assumptions.get("slippage_model", "fixed"),
+                "market_impact_bps": execution_assumptions.get("market_impact_bps", 0.0),
+            },
+            "source": "rule_template_contract",
+        },
+    )
+    enriched.setdefault(
+        "position_model",
+        position_sizing.get("mode")
+        or portfolio_spec.get("position_assumption")
+        or "equal_weight",
+    )
+    enriched.setdefault(
+        "capacity_assumption",
+        {
+            "max_position_pct": portfolio_spec.get("max_position_pct"),
+            "capacity_bucket": capacity_bucket,
+            "symbol_count": 4,
+        },
+    )
+    enriched.setdefault(
+        "market_regime_assumption",
+        {
+            "summary": (
+                "趋势扩张阶段更容易兑现。"
+                if strategy_type in {"momentum", "ma_cross", "volatility_breakout"}
+                else "中低噪声、流动性正常阶段更容易兑现。"
+            ),
+            "preferred_regime": (
+                "trend_expansion"
+                if strategy_type in {"momentum", "ma_cross", "volatility_breakout"}
+                else "stable_liquid_cn_equity"
+            ),
+            "avoid_regime": "illiquid_stressed_market",
+        },
+    )
+    holding_horizon.setdefault("alpha_half_life", alpha_half_life)
+    holding_horizon.setdefault("expected_turnover_band", expected_turnover_band)
+    holding_horizon.setdefault("cooldown_window_days", max(1, int(round(alpha_half_life / 3.0))))
+    enriched["holding_horizon"] = holding_horizon
+    position_sizing.setdefault("capacity_bucket", capacity_bucket)
+    position_sizing.setdefault(
+        "position_sizing_rationale",
+        "equal_weight_diversified_basket"
+        if position_sizing.get("mode") != "single_name"
+        else "single_name_conviction_capped_by_capacity",
+    )
+    position_sizing.setdefault("expected_turnover_band", expected_turnover_band)
+    enriched["position_sizing"] = position_sizing
+    execution_assumptions.setdefault("capacity_bucket", capacity_bucket)
+    execution_assumptions.setdefault(
+        "turnover_cost_class",
+        "medium_touch" if expected_turnover_band in {"high", "very_high"} else "low_touch",
+    )
+    execution_assumptions.setdefault("expected_turnover_band", expected_turnover_band)
+    enriched["execution_assumptions"] = execution_assumptions
+    portfolio_spec.setdefault(
+        "position_sizing_rationale",
+        position_sizing.get("position_sizing_rationale"),
+    )
+    portfolio_spec.setdefault("capacity_bucket", capacity_bucket)
+    portfolio_spec.setdefault("expected_turnover_band", expected_turnover_band)
+    enriched["portfolio_spec"] = portfolio_spec
+    return enriched
+
+
 def _rule_template_contract(strategy_type: str) -> dict[str, Any]:
     contracts: dict[str, dict[str, Any]] = {
+        'momentum': {
+            'template_generation_profile': 'conservative_momentum',
+            'holding_horizon': {'min_days': 14, 'max_days': 42},
+            'trade_plan': {'entry_bias': 'trend_persistence_confirmation', 'exit_bias': 'false_breakout_or_momentum_decay'},
+            'risk_rules': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.2, 'max_holding_days': 42, 'max_position_pct': 0.16},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'periodic_rebalance', 'frequency_days': 14},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'trend_score_tilt',
+                'max_position_pct': 0.16,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'family_specialization': {
+                'trend_persistence_regime': 'trend_expansion_with_relative_strength_persistence',
+                'false_breakout_filter': 'prefer_volume_confirmed_breakout_and_positive_trend_slope',
+                'peer_selection_mode': 'target_plus_dynamic_family_peer',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'dynamic_signal_universe',
+                'universe_scope': 'trend_leaders_liquid',
+                'universe_expansion_policy': 'trend_leaders_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_momentum',
+                'applicable_universe': {'market_cap': 'mid_large', 'liquidity': 'high', 'style_bias': 'trend_expansion'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.2, 'max_holding_days': 36, 'max_position_pct': 0.16},
+                'portfolio_weight_method': 'trend_score_tilt',
+            },
+        },
+        'ma_cross': {
+            'template_generation_profile': 'conservative_ma_cross',
+            'holding_horizon': {'min_days': 14, 'max_days': 48},
+            'trade_plan': {'entry_bias': 'adaptive_cross_with_volume_confirmation', 'exit_bias': 'range_reentry_or_cross_failure'},
+            'risk_rules': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.18, 'max_holding_days': 48, 'max_position_pct': 0.14},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'periodic_rebalance', 'frequency_days': 12},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'cross_strength_tilt',
+                'max_position_pct': 0.14,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'family_specialization': {
+                'adaptive_span_logic': 'fast_slow_span_scaled_by_regime_and_noise_level',
+                'range_filter': 'avoid_crosses_when_long_ma_is_flat_and_price_is_range_bound',
+                'volume_confirmation': 'prefer_crosses_with_volume_ratio_confirmation',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'dynamic_signal_universe',
+                'universe_scope': 'trend_followers_liquid',
+                'universe_expansion_policy': 'trend_leaders_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_ma_cross',
+                'applicable_universe': {'market_cap': 'mid_large', 'liquidity': 'high', 'style_bias': 'trend_following'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.18, 'max_holding_days': 48, 'max_position_pct': 0.14},
+                'portfolio_weight_method': 'cross_strength_tilt',
+            },
+        },
+        'quality_factor': {
+            'template_generation_profile': 'conservative_quality',
+            'holding_horizon': {'min_days': 30, 'max_days': 84},
+            'trade_plan': {'entry_bias': 'quality_stability_with_trend_confirmation', 'exit_bias': 'quality_drift_or_rank_decay'},
+            'risk_rules': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 84, 'max_position_pct': 0.12},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'periodic_rebalance', 'frequency_days': 28},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'quality_rank_weight',
+                'max_position_pct': 0.12,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'candidate_target_only',
+                'primary_validation_layer': 'target',
+            },
+            'family_specialization': {
+                'rebalance_bias': 'low_frequency_quality_refresh',
+                'quality_trend_resonance': 'require_fundamental_stability_and_price_trend_alignment',
+                'quality_drift_detection': 'monitor_rank_margin_cashflow_stability_deterioration',
+                'peer_selection_mode': 'target_plus_dynamic_family_peer',
+                'compounding_window': 'prefer_slow_compounding_validation_window',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'quality_leaders_focus',
+                'universe_scope': 'liquid_quality_bluechips',
+                'universe_expansion_policy': 'quality_peers_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_quality',
+                'applicable_universe': {'market_cap': 'mid_large', 'liquidity': 'high', 'style_bias': 'quality_compounders'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 84, 'max_position_pct': 0.14},
+                'portfolio_weight_method': 'quality_rank_weight',
+            },
+        },
         'volatility_breakout': {
             'template_generation_profile': 'conservative_breakout',
             'holding_horizon': {'min_days': 3, 'max_days': 15},
@@ -328,7 +574,11 @@ def _rule_template_contract(strategy_type: str) -> dict[str, Any]:
             },
         },
     }
-    return deepcopy(contracts.get(str(strategy_type or '').strip().lower()) or {})
+    strategy_key = str(strategy_type or '').strip().lower()
+    return _enrich_rule_template_contract(
+        strategy_key,
+        deepcopy(contracts.get(strategy_key) or {}),
+    )
 
 
 class RuleStrategyGenerator:
@@ -358,14 +608,14 @@ class RuleStrategyGenerator:
     ) -> Optional[StrategySpec]:
         templates: dict[str, dict[str, Any]] = {
             'momentum': {
-                'params': {'lookback': 15, 'threshold': 0.018},
+                'params': {'lookback': 20, 'threshold': 0.013},
                 'name': 'AI 动量强化',
-                'description': '高情绪或因子偏强阶段偏向动量追随。',
+                'description': '趋势持续且量价确认阶段偏向动量追随，并过滤假突破。',
             },
             'ma_cross': {
-                'params': {'short_period': 6, 'long_period': 24},
+                'params': {'short_period': 8, 'long_period': 34},
                 'name': 'AI 均线趋势',
-                'description': '趋势确认阶段用均线结构过滤噪音。',
+                'description': '趋势确认阶段用自适应均线跨度、横盘过滤和量能确认过滤噪音。',
             },
             'rsi': {
                 'params': {'rsi_period': 14, 'oversold': 28, 'overbought': 72},
@@ -378,9 +628,9 @@ class RuleStrategyGenerator:
                 'description': '估值修复阶段偏向价值/反转组合。',
             },
             'quality_factor': {
-                'params': {'lookback': 50, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
+                'params': {'lookback': 72, 'buy_quantile': 0.82, 'sell_quantile': 0.18},
                 'name': 'AI 质量精选',
-                'description': '质量因子占优阶段偏向盈利能力与稳健性筛选。',
+                'description': '质量因子占优阶段偏向低频再平衡、质量稳定与价格趋势共振筛选。',
             },
             'growth_factor': {
                 'params': {'lookback': 40, 'buy_quantile': 0.78, 'sell_quantile': 0.22},
@@ -453,6 +703,13 @@ class RuleStrategyGenerator:
             'execution_assumptions',
             'validation_profile',
             'targeting_policy',
+            'family_specialization',
+            'holding_rationale',
+            'alpha_half_life',
+            'cost_sensitivity_grid',
+            'position_model',
+            'capacity_assumption',
+            'market_regime_assumption',
             'rule_template_contract',
         ):
             value = template_contract.get(key)
@@ -581,12 +838,12 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
         ) -> Optional[tuple[str, dict[str, Any]]]:
             templates = {
                 'momentum': {'lookback': 20, 'threshold': 0.02},
-                'ma_cross': {'short_period': 5, 'long_period': 20},
+                'ma_cross': {'short_period': 8, 'long_period': 34},
                 'rsi': {'rsi_period': 14, 'oversold': 30, 'overbought': 70},
                 'gap_fill': {'rsi_period': 6, 'oversold': 24, 'overbought': 58},
                 'mean_reversion_short': {'rsi_period': 8, 'oversold': 28, 'overbought': 62},
                 'value_factor': {'lookback': 60, 'buy_quantile': 0.8, 'sell_quantile': 0.2},
-                'quality_factor': {'lookback': 50, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
+                'quality_factor': {'lookback': 120, 'buy_quantile': 0.88, 'sell_quantile': 0.12},
                 'growth_factor': {'lookback': 40, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
                 'multi_factor': {'factor_weights': {'quality': 0.4, 'value': 0.35, 'momentum': 0.25}, 'lookback': 36},
                 'volatility_breakout': {'lookback': 12, 'threshold': 0.018},
@@ -623,18 +880,18 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
 
             if strategy_type == 'momentum':
                 lookback_map = {
-                    'sector_breakout': [8, 10, 12, 15, 18],
-                    'rotation_balanced': [14, 18, 20, 24, 30],
-                    'industry_leadership': [10, 12, 16, 20, 24],
-                    'factor_acceleration': [6, 8, 10, 12, 15],
-                    'default': [10, 14, 18, 20, 24],
+                    'sector_breakout': [22, 26, 30, 36, 42],
+                    'rotation_balanced': [26, 30, 36, 42, 48],
+                    'industry_leadership': [24, 28, 32, 36, 42],
+                    'factor_acceleration': [18, 22, 26, 30, 36],
+                    'default': [22, 26, 30, 36, 42],
                 }
                 threshold_map = {
-                    'sector_breakout': [0.008, 0.01, 0.012, 0.015, 0.018],
-                    'rotation_balanced': [0.006, 0.008, 0.01, 0.012, 0.015],
-                    'industry_leadership': [0.007, 0.009, 0.011, 0.013, 0.016],
-                    'factor_acceleration': [0.005, 0.007, 0.009, 0.011, 0.013],
-                    'default': [0.008, 0.01, 0.012, 0.015, 0.018],
+                    'sector_breakout': [0.011, 0.013, 0.015, 0.017, 0.019],
+                    'rotation_balanced': [0.01, 0.012, 0.014, 0.016, 0.018],
+                    'industry_leadership': [0.011, 0.013, 0.015, 0.017, 0.019],
+                    'factor_acceleration': [0.009, 0.011, 0.013, 0.015, 0.017],
+                    'default': [0.01, 0.012, 0.014, 0.016, 0.018],
                 }
                 lookbacks = lookback_map.get(opportunity_type, lookback_map['default'])
                 thresholds = threshold_map.get(opportunity_type, threshold_map['default'])
@@ -642,21 +899,21 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 adapted['threshold'] = round(float(thresholds[(bucket + symbol_count) % len(thresholds)]), 4)
             elif strategy_type == 'ma_cross':
                 short_map = {
-                    'sector_breakout': [4, 5, 6, 8, 10],
-                    'rotation_balanced': [5, 6, 8, 10, 12],
-                    'industry_leadership': [4, 6, 7, 9, 11],
-                    'default': [5, 6, 8, 10, 12],
+                    'sector_breakout': [6, 8, 10, 12, 14],
+                    'rotation_balanced': [8, 10, 12, 14, 16],
+                    'industry_leadership': [6, 8, 10, 12, 14],
+                    'default': [8, 10, 12, 14, 16],
                 }
                 long_map = {
-                    'sector_breakout': [18, 20, 24, 30, 34],
-                    'rotation_balanced': [24, 30, 36, 40, 48],
-                    'industry_leadership': [20, 24, 28, 32, 40],
-                    'default': [20, 24, 30, 36, 40],
+                    'sector_breakout': [28, 34, 40, 48, 56],
+                    'rotation_balanced': [34, 40, 48, 56, 64],
+                    'industry_leadership': [30, 36, 42, 50, 58],
+                    'default': [32, 38, 46, 54, 62],
                 }
                 shorts = short_map.get(opportunity_type, short_map['default'])
                 longs = long_map.get(opportunity_type, long_map['default'])
                 adapted['short_period'] = int(shorts[bucket])
-                adapted['long_period'] = int(max(longs[(bucket + 1) % len(longs)], adapted['short_period'] + 6))
+                adapted['long_period'] = int(max(longs[(bucket + 1) % len(longs)], adapted['short_period'] + 18))
             elif strategy_type == 'rsi':
                 adapted['rsi_period'] = int([6, 8, 10, 12, 14][bucket])
                 adapted['oversold'] = int([24, 26, 28, 30, 32][bucket])
@@ -666,9 +923,14 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 adapted['oversold'] = int([20, 22, 24, 26, 28][bucket])
                 adapted['overbought'] = int([56, 58, 60, 62, 64][bucket])
             elif strategy_type in {'quality_factor', 'value_factor', 'growth_factor'}:
-                lookbacks = [24, 30, 36, 45, 60] if opportunity_type == 'sector_breakout' else [30, 40, 50, 60, 72]
-                buy_quantiles = [0.58, 0.62, 0.66, 0.7, 0.75]
-                sell_quantiles = [0.22, 0.26, 0.3, 0.34, 0.38]
+                if strategy_type == 'quality_factor':
+                    lookbacks = [84, 96, 120, 144, 180] if opportunity_type == 'sector_breakout' else [96, 120, 144, 180, 216]
+                    buy_quantiles = [0.82, 0.86, 0.88, 0.9, 0.92]
+                    sell_quantiles = [0.06, 0.08, 0.1, 0.12, 0.14]
+                else:
+                    lookbacks = [24, 30, 36, 45, 60] if opportunity_type == 'sector_breakout' else [30, 40, 50, 60, 72]
+                    buy_quantiles = [0.58, 0.62, 0.66, 0.7, 0.75]
+                    sell_quantiles = [0.22, 0.26, 0.3, 0.34, 0.38]
                 adapted['lookback'] = int(lookbacks[bucket])
                 adapted['buy_quantile'] = round(float(buy_quantiles[bucket]), 4)
                 adapted['sell_quantile'] = round(float(sell_quantiles[(bucket + 2) % len(sell_quantiles)]), 4)
@@ -745,6 +1007,100 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             return adapted, profile
 
         @classmethod
+        def _conservative_execution_profile(
+            cls,
+            strategy_type: str,
+            task: dict[str, Any],
+            *,
+            template_contract: Optional[dict[str, Any]] = None,
+        ) -> dict[str, Any]:
+            task_source = str(task.get('task_source') or '').strip().lower()
+            template = dict(template_contract or {})
+            if task_source == 'event_driven' and not dict(task.get('holding_window') or {}):
+                holding_horizon = {'min_days': 1, 'max_days': 10}
+            else:
+                holding_horizon = dict(
+                    task.get('holding_window')
+                    or template.get('holding_horizon')
+                    or _default_holding_horizon(strategy_type, task, task_source)
+                )
+            max_days = int(holding_horizon.get('max_days') or 0)
+            min_days = int(holding_horizon.get('min_days') or 0)
+
+            if task_source != 'event_driven':
+                if strategy_type == 'momentum':
+                    max_days = max(max_days, 24)
+                elif strategy_type in {'ma_cross', 'volatility_breakout', 'north_capital_track', 'margin_divergence'}:
+                    max_days = max(max_days, 20)
+                elif strategy_type in {'gap_fill', 'mean_reversion_short', 'rsi'}:
+                    max_days = max(max_days, 12)
+                elif strategy_type == 'quality_factor':
+                    max_days = max(max_days, 30)
+                elif strategy_type in {'value_factor', 'growth_factor', 'multi_factor', 'sector_rotation', 'macro_timing'}:
+                    max_days = max(max_days, 24)
+                else:
+                    max_days = max(max_days, 15)
+                min_days = max(min_days, max(1, min(max_days - 1, max_days // 4)))
+            else:
+                max_days = max(max_days, 10)
+                if min_days <= 0:
+                    min_days = 1
+
+            holding_horizon['max_days'] = int(max_days)
+            if min_days > 0:
+                holding_horizon['min_days'] = int(min(min_days, max_days))
+
+            risk_rules = dict(template.get('risk_rules') or _default_risk_rules(task_source, holding_horizon))
+            if task_source == 'event_driven':
+                risk_rules['max_holding_days'] = int(holding_horizon.get('max_days') or 10)
+            else:
+                risk_rules['max_holding_days'] = max(
+                    int(risk_rules.get('max_holding_days') or 0),
+                    int(holding_horizon.get('max_days') or 0),
+                )
+
+            rebalance_rule = dict(template.get('rebalance_rule') or _default_rebalance_rule(strategy_type, task_source))
+            if task_source == 'event_driven':
+                rebalance_rule = {'mode': 'event_driven_hold'}
+            else:
+                mode = str(rebalance_rule.get('mode') or '').strip().lower()
+                frequency_days = int(rebalance_rule.get('frequency_days') or 0)
+                base_frequency = max(4, min(int(holding_horizon.get('max_days') or 10), max(1, int(holding_horizon.get('max_days') or 10) // 2)))
+                if strategy_type == 'momentum':
+                    base_frequency = max(base_frequency, 8)
+                elif strategy_type == 'ma_cross':
+                    base_frequency = max(base_frequency, 7)
+                elif strategy_type == 'quality_factor':
+                    base_frequency = max(base_frequency, 12)
+                if mode in {'', 'signal_rebalance'}:
+                    rebalance_rule = {'mode': 'periodic_rebalance', 'frequency_days': max(4, frequency_days or base_frequency)}
+                elif mode == 'periodic_rebalance':
+                    rebalance_rule['frequency_days'] = max(4, frequency_days or base_frequency)
+                elif mode == 'regime_rebalance':
+                    rebalance_rule['frequency_days'] = max(8, frequency_days or max(base_frequency, 8))
+
+            trade_plan = dict(template.get('trade_plan') or {})
+            if task_source == 'event_driven':
+                trade_plan = {
+                    'entry_bias': 'event_follow_through',
+                    'exit_bias': 'time_stop_or_signal_reversal',
+                }
+            elif not trade_plan:
+                trade_plan = {
+                    'entry_bias': 'signal_confirmed',
+                    'exit_bias': 'time_stop_or_signal_reversal',
+                }
+            elif task_source != 'event_driven' and not str(trade_plan.get('exit_bias') or '').strip():
+                trade_plan['exit_bias'] = 'periodic_rebalance_or_signal_reversal'
+
+            return {
+                'holding_horizon': holding_horizon,
+                'risk_rules': risk_rules,
+                'rebalance_rule': rebalance_rule,
+                'trade_plan': trade_plan,
+            }
+
+        @classmethod
         def _local_category_rank(cls, category: str, research_task: Optional[dict[str, Any]] = None) -> tuple[int, int]:
             task = _normalize_research_task_contract(research_task)
             opportunity_type = str(task.get('opportunity_type') or '').strip().lower()
@@ -798,26 +1154,43 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             task = _normalize_research_task_contract(research_task)
             event_context = _extract_event_context(task)
             task_source = str(task.get('task_source') or '').strip().lower()
-            target_resolution = _apply_target_symbol_policy([
+            candidate_target_inputs = [
                 candidate.get('target_symbols'),
                 candidate.get('stock_pool'),
-            ], task, fallback_symbols=[task.get('target_symbols'), task.get('stock_pool')], limit=8)
+            ]
+            if not cls._normalize_code_list(
+                candidate.get('target_symbols'),
+                candidate.get('stock_pool'),
+            ):
+                candidate_target_inputs = [
+                    task.get('target_symbols'),
+                    task.get('stock_pool'),
+                ]
+            target_resolution = _apply_target_symbol_policy(
+                candidate_target_inputs,
+                task,
+                fallback_symbols=[task.get('target_symbols'), task.get('stock_pool')],
+                limit=8,
+            )
             target_symbols = list(target_resolution.get('target_symbols') or [])
             stock_pool = cls._normalize_stock_pool(candidate.get('stock_pool'), target_symbols)
             strategy_type, params = target
             params, fallback_profile = cls._adapt_local_fallback_params(strategy_type, params, task, candidate, target_symbols)
             template_contract = _rule_template_contract(strategy_type)
+            execution_profile = cls._conservative_execution_profile(
+                strategy_type,
+                task,
+                template_contract=template_contract,
+            )
             validation_profile = {
                 'profile': 'event_trade_validation' if task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
                 'validation_focus': task.get('validation_focus'),
                 'primary_validation_layer': 'target' if task.get('validation_focus') == 'event_target_only' else 'combined',
             }
-            holding_horizon = dict(task.get('holding_window') or {})
-            risk_rules = {
-                'stop_loss_pct': 0.08 if task_source == 'event_driven' else 0.1,
-                'take_profit_pct': 0.18 if task_source == 'event_driven' else 0.2,
-                'max_holding_days': int(holding_horizon.get('max_days') or 20),
-            }
+            holding_horizon = dict(execution_profile.get('holding_horizon') or {})
+            risk_rules = dict(execution_profile.get('risk_rules') or {})
+            rebalance_rule = dict(execution_profile.get('rebalance_rule') or {})
+            trade_plan = dict(execution_profile.get('trade_plan') or {})
             tags = ['local_rule_v1', 'llm_proxy_fallback', category]
             if target_symbols:
                 tags.append('targeted_universe')
@@ -882,17 +1255,14 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                     'event_context': event_context,
                     'hypothesis': str(candidate.get('rationale') or candidate.get('description') or task.get('rationale') or ''),
                     'holding_horizon': holding_horizon,
-                    'trade_plan': {
-                        'entry_bias': 'event_follow_through' if task_source == 'event_driven' else 'signal_confirmed',
-                        'exit_bias': 'time_stop_or_signal_reversal',
-                    },
+                    'trade_plan': trade_plan,
                     'risk_rules': risk_rules,
                     'position_sizing': {
                         'mode': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
                         'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
                     },
                     'execution_notes': 'use liquid names and respect tradability filter',
-                    'rebalance_rule': {'mode': 'event_driven_hold' if task_source == 'event_driven' else 'signal_rebalance'},
+                    'rebalance_rule': rebalance_rule,
                     'portfolio_spec': dict(precompile_validation.portfolio_spec),
                     'execution_assumptions': dict(precompile_validation.execution_assumptions),
                     'validation_profile': dict(precompile_validation.validation_profile),
@@ -901,6 +1271,12 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                         'universe_expansion_policy': task.get('universe_expansion_policy'),
                         'validation_focus': task.get('validation_focus'),
                     },
+                    'holding_rationale': template_contract.get('holding_rationale'),
+                    'alpha_half_life': template_contract.get('alpha_half_life'),
+                    'cost_sensitivity_grid': dict(template_contract.get('cost_sensitivity_grid') or {}),
+                    'position_model': template_contract.get('position_model'),
+                    'capacity_assumption': dict(template_contract.get('capacity_assumption') or {}),
+                    'market_regime_assumption': template_contract.get('market_regime_assumption'),
                     'constraint_check': dict(precompile_validation.constraint_check),
                     'fallback_profile': fallback_profile,
                     'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
@@ -927,21 +1303,53 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
 
         @classmethod
         def _external_candidate_to_spec(cls, candidate: dict, provider_payload: dict, market_frame: Optional[pd.DataFrame] = None) -> Optional[StrategySpec]:
-            normalized_candidate = StrategyLLMProvider._normalize_candidate_payload(
-                candidate,
-                research_task=provider_payload.get('research_task') or {},
-            )
-            if not normalized_candidate:
-                return None
-            candidate = {
-                **candidate,
-                **normalized_candidate,
-                'dsl': normalized_candidate.get('dsl') or candidate.get('dsl'),
-            }
-            try:
-                compiled = compile_strategy_blueprint(candidate, market_frame=market_frame, tune_for_factory=True)
-            except Exception:
-                return None
+            open_dsl_result = compile_open_dsl_candidate(candidate, market_frame=market_frame)
+            lowered = None
+            hypothesis_artifact: dict[str, Any] = {}
+            hypothesis_lowering_audit: dict[str, Any] = {}
+            if open_dsl_result.accepted:
+                compiled = dict(open_dsl_result.compiled or {})
+                hypothesis_artifact = dict(candidate.get('hypothesis_artifact') or {})
+                hypothesis_lowering_audit = {
+                    **dict(open_dsl_result.audit or {}),
+                    'mode': 'l3_open_dsl',
+                    'accepted': True,
+                }
+            else:
+                if open_dsl_result.attempted:
+                    candidate["_open_dsl_reject_reasons"] = list(open_dsl_result.reject_reasons)
+                    candidate["_open_dsl_audit"] = dict(open_dsl_result.audit or {})
+                    if is_open_dsl_candidate(candidate):
+                        return None
+                hypothesis_result = LLMHypothesisGenerator.build(
+                    candidate,
+                    research_task=provider_payload.get('research_task') or {},
+                    provider_payload=provider_payload,
+                )
+                if hypothesis_result.accepted:
+                    lowered = HypothesisLoweringCompiler.lower(
+                        candidate,
+                        hypothesis=hypothesis_result.to_artifact(),
+                        research_task=provider_payload.get('research_task') or {},
+                        source='external_llm',
+                    )
+                    if lowered.accepted:
+                        candidate = dict(lowered.candidate)
+                        hypothesis_artifact = dict(lowered.hypothesis_artifact or {})
+                        hypothesis_lowering_audit = dict(lowered.audit or {})
+                    else:
+                        candidate["_hypothesis_compile_reject_reasons"] = list(lowered.reject_reasons)
+                        candidate["_hypothesis_compile_audit"] = dict(lowered.audit or {})
+                else:
+                    candidate["_hypothesis_reject_reasons"] = list(hypothesis_result.reject_reasons)
+
+                if lowered is None or not lowered.accepted:
+                    if not bool(candidate.get("_legacy_contract_defaults_applied")):
+                        return None
+                try:
+                    compiled = compile_strategy_blueprint(candidate, market_frame=market_frame, tune_for_factory=True)
+                except Exception:
+                    return None
             compiled_meta = dict(compiled.get('metadata') or {})
             activity = dict(compiled_meta.get('dsl_activity') or {})
             analysis = dict(provider_payload.get('analysis') or {})
@@ -985,8 +1393,18 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 params['dsl'] = dsl
             metadata = {
                 **compiled_meta,
-                'generator_type': 'external_llm',
+                'generator_type': 'external_llm_open_dsl' if open_dsl_result.accepted else 'external_llm',
+                'candidate_lane': 'l3_open_dsl' if open_dsl_result.accepted else 'l2_hypothesis_lowering',
                 'hypothesis': str(candidate.get('hypothesis') or candidate.get('rationale') or candidate.get('description') or ''),
+                'hypothesis_artifact': dict(hypothesis_artifact or {}),
+                'hypothesis_artifact_id': hypothesis_artifact.get('artifact_id'),
+                'hypothesis_lowering_audit': dict(hypothesis_lowering_audit or {}),
+                'holding_rationale': candidate.get('holding_rationale'),
+                'alpha_half_life': candidate.get('alpha_half_life'),
+                'cost_sensitivity_grid': dict(candidate.get('cost_sensitivity_grid') or {}),
+                'position_model': candidate.get('position_model'),
+                'capacity_assumption': candidate.get('capacity_assumption'),
+                'validation_focus': candidate.get('validation_focus'),
                 'holding_horizon': dict(candidate.get('holding_horizon') or research_task.get('holding_window') or {}),
                 'trade_plan': dict(candidate.get('trade_plan') or {}),
                 'risk_rules': dict(candidate.get('risk_rules') or ((params.get('dsl') or {}).get('risk_rules') or {})),
@@ -1031,6 +1449,8 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 'llm_prompt': provider_payload.get('prompt') or {},
                 'llm_analysis': analysis,
                 'llm_research_context': research_context,
+                'open_dsl_audit': dict(open_dsl_result.audit or {}),
+                'open_dsl_reject_reasons': list(candidate.get('_open_dsl_reject_reasons') or []),
                 'llm_response': {
                     'provider': provider_payload.get('provider'),
                     'model': provider_payload.get('model'),
@@ -1049,6 +1469,8 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 'source_candidate': candidate,
             }
             tags = ['external_llm', *(compiled.get('tags') or []), *(candidate.get('tags') or [])]
+            if open_dsl_result.accepted:
+                tags.extend(['open_dsl', 'llm_defined'])
             if target_symbols:
                 tags.append('targeted_universe')
             return StrategySpec(
@@ -1089,6 +1511,12 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             for row in rows[:12]:
                 evaluation = dict(row.get('evaluation') or {})
                 committee_review = dict(evaluation.get('committee_review') or {})
+                strategy_spec = dict(row.get('strategy_spec') or {})
+                hypothesis_artifact = dict(
+                    strategy_spec.get('hypothesis_artifact')
+                    or evaluation.get('hypothesis_artifact')
+                    or {}
+                )
                 summary.append({
                     'parent_strategy_id': row.get('parent_strategy_id') or row.get('strategy_id'),
                     'generator_type': row.get('generator_type'),
@@ -1096,5 +1524,9 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                     'final_score': committee_review.get('final_score'),
                     'decision': committee_review.get('decision'),
                     'parameters': row.get('parameters') or {},
+                    'target_symbols': list(strategy_spec.get('target_symbols') or [])[:6],
+                    'family_hint': hypothesis_artifact.get('family_hint'),
+                    'validation_focus': hypothesis_artifact.get('validation_focus'),
+                    'replay_ready': bool(strategy_spec.get('replay_contract') or hypothesis_artifact),
                 })
             return summary

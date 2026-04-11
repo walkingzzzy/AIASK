@@ -108,11 +108,50 @@ class StrategyLLMConfig:
 
 
 class _StrategyLLMProviderRuntimeMixin:
+        @staticmethod
+        def _runtime_client_is_customized(client: Any) -> bool:
+            if client is None:
+                return False
+            if not isinstance(client, httpx.AsyncClient):
+                return True
+            client_dict = getattr(client, "__dict__", {}) or {}
+            return "post" in client_dict or "stream" in client_dict
+
+        async def _ensure_runtime_async_state(self) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop_id = id(loop)
+            if getattr(self, "_runtime_loop_id", None) == loop_id:
+                return
+            client = getattr(self, "_client", None)
+            client_is_customized = self._runtime_client_is_customized(client)
+            if client is not None and not client_is_customized:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+            self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
+            if client is None or not client_is_customized:
+                self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+            self._runtime_loop_id = loop_id
+
         def _timeout_for_attempt(self, attempt: int, total_attempts: int) -> float:
             base = max(float(self.config.timeout_sec or 0), 5.0)
             if total_attempts <= 1:
-                return min(base, 25.0)
-            schedule = [min(base, 12.0), min(base, 20.0), min(base, 30.0)]
+                return base
+            if total_attempts == 2:
+                schedule = [
+                    min(base, max(12.0, round(base * 0.6, 4))),
+                    base,
+                ]
+            else:
+                schedule = [
+                    min(base, max(12.0, round(base * 0.5, 4))),
+                    min(base, max(20.0, round(base * 0.75, 4))),
+                    base,
+                ]
             timeout_sec = schedule[min(max(attempt - 1, 0), len(schedule) - 1)]
             return max(5.0, timeout_sec)
 
@@ -125,7 +164,8 @@ class _StrategyLLMProviderRuntimeMixin:
         def _request_limit_for_attempt(self, limit: int, attempt: int, *, initial_compact_level: int = 0) -> int:
             requested_limit = self._normalize_limit(limit)
             base_reduction = 1 if initial_compact_level >= 1 and requested_limit > 1 else 0
-            return max(1, requested_limit - base_reduction - max(0, attempt - 1))
+            minimum_limit = 2 if requested_limit >= 2 else 1
+            return max(minimum_limit, requested_limit - base_reduction - max(0, attempt - 1))
 
         @staticmethod
         def _compact_level_for_attempt(attempt: int, total_attempts: int) -> int:
@@ -335,9 +375,33 @@ class _StrategyLLMProviderRuntimeMixin:
         def _should_retry_with_stream(self, exc: StrategyLLMProviderCompatibilityError) -> bool:
             metrics = dict(getattr(exc, "metrics", {}) or {})
             content_type = str(metrics.get("response_content_type") or "").strip().lower()
+            error_text = self._error_text(exc).lower()
+            if "missing extractable content" in error_text:
+                return True
             if "text/event-stream" not in content_type:
                 return False
-            return "missing extractable content" in self._error_text(exc).lower()
+            return False
+
+        def _should_retry_without_response_format(
+            self,
+            exc: StrategyLLMProviderCompatibilityError,
+            *,
+            request_payload: Optional[dict[str, Any]],
+        ) -> bool:
+            if not isinstance(request_payload, dict):
+                return False
+            if "response_format" not in request_payload:
+                return False
+            metrics = dict(getattr(exc, "metrics", {}) or {})
+            content_type = str(metrics.get("response_content_type") or "").strip().lower()
+            if "application/json" not in content_type:
+                return False
+            return self._is_empty_200_compatibility_metrics(
+                {
+                    **metrics,
+                    "last_error": metrics.get("last_error") or self._error_text(exc),
+                }
+            )
 
         async def _stream_parse_response_payload(
             self,
@@ -347,6 +411,7 @@ class _StrategyLLMProviderRuntimeMixin:
             request_kind: str,
             timeout: httpx.Timeout,
         ) -> tuple[Any, Any, str]:
+            await self._ensure_runtime_async_state()
             stream_method = getattr(self._client, "stream", None)
             if not callable(stream_method):
                 self._raise_compatibility_error(
@@ -489,7 +554,9 @@ class _StrategyLLMProviderRuntimeMixin:
             request_payload: dict[str, Any],
             request_kind: str,
             timeout: httpx.Timeout,
+            allow_response_format_replay: bool = True,
         ) -> tuple[Any, Any, str, str]:
+            await self._ensure_runtime_async_state()
             response = await self._client.post(
                 self._endpoint(),
                 headers=headers,
@@ -504,15 +571,42 @@ class _StrategyLLMProviderRuntimeMixin:
                 )
                 return parsed, body, content, "direct"
             except StrategyLLMProviderCompatibilityError as exc:
-                if not self._should_retry_with_stream(exc):
-                    raise
-                parsed, body, content = await self._stream_parse_response_payload(
-                    headers=headers,
+                if self._should_retry_with_stream(exc):
+                    try:
+                        parsed, body, content = await self._stream_parse_response_payload(
+                            headers=headers,
+                            request_payload=request_payload,
+                            request_kind=request_kind,
+                            timeout=timeout,
+                        )
+                        return parsed, body, content, "chat_stream_replay"
+                    except StrategyLLMProviderCompatibilityError:
+                        pass
+                if allow_response_format_replay and self._should_retry_without_response_format(
+                    exc,
                     request_payload=request_payload,
-                    request_kind=request_kind,
-                    timeout=timeout,
-                )
-                return parsed, body, content, "chat_stream_replay"
+                ):
+                    replay_payload = dict(request_payload or {})
+                    replay_payload.pop("response_format", None)
+                    parsed, body, content, inner_mode = await self._request_and_parse_payload(
+                        headers=headers,
+                        request_payload=replay_payload,
+                        request_kind=f"{request_kind}: no-response-format replay",
+                        timeout=timeout,
+                        allow_response_format_replay=False,
+                    )
+                    replay_mode = (
+                        "chat_no_response_format_replay"
+                        if inner_mode == "direct"
+                        else f"chat_no_response_format_{inner_mode}"
+                    )
+                    if isinstance(body, dict):
+                        body = {
+                            **body,
+                            "compatibility_mode": replay_mode,
+                        }
+                    return parsed, body, content, replay_mode
+                raise
 
         def _append_recent_request_outcome(
             self,
@@ -565,11 +659,14 @@ class _StrategyLLMProviderRuntimeMixin:
             elif empty_200_response_count > 0 and effective_response_ratio < 0.34:
                 scheduler_should_disable = True
                 scheduler_skip_reason = "empty_200_false_success_detected"
-            health_status = (
-                "blocked"
-                if scheduler_should_disable
-                else ("degraded" if compatibility_failure_count > 0 or effective_response_ratio < 1.0 else "healthy")
-            )
+            if scheduler_should_disable:
+                health_status = "blocked"
+            elif recent_request_count <= 0 and active_compatibility is None and not self._last_failure_type:
+                health_status = "unknown"
+            elif compatibility_failure_count > 0 or effective_response_ratio < 1.0:
+                health_status = "degraded"
+            else:
+                health_status = "healthy"
             return {
                 "health_status": health_status,
                 "recent_request_count": recent_request_count,
@@ -717,6 +814,7 @@ class _StrategyLLMProviderRuntimeMixin:
         ) -> Optional[dict[str, Any]]:
             if not self.is_enabled():
                 return None
+            await self._ensure_runtime_async_state()
 
             started_at = time.perf_counter()
             compatibility_metrics = self._active_compatibility_failure()
@@ -791,11 +889,13 @@ class _StrategyLLMProviderRuntimeMixin:
                     analysis = self._normalize_analysis(data.get("analysis") if isinstance(data, dict) else {})
                     candidates = []
                     for item in raw_candidates:
-                        normalized_candidate = self._normalize_candidate_payload(item, research_task=research_task)
+                        normalized_candidate = self._normalize_candidate_payload(
+                            item,
+                            research_task=research_task,
+                            allow_legacy_contract_defaults=True,
+                        )
                         if normalized_candidate is not None:
                             candidates.append(normalized_candidate)
-                    if not candidates:
-                        raise ValueError("external llm response missing executable candidates")
                     selected_candidates = candidates[:requested_limit]
                     self._record_request_success()
                     request_metrics = {
@@ -815,6 +915,7 @@ class _StrategyLLMProviderRuntimeMixin:
                         "raw_candidate_count": len(raw_candidates),
                         "returned_candidate_count": len(candidates),
                         "selected_candidate_count": len(selected_candidates),
+                        "non_executable_candidate_count": max(0, len(raw_candidates) - len(candidates)),
                         "analysis_present": bool(analysis),
                         "analysis_keys": sorted(list(analysis.keys())),
                         "compatibility_mode": compatibility_mode,
@@ -830,6 +931,7 @@ class _StrategyLLMProviderRuntimeMixin:
                             "elapsed_seconds": round(time.perf_counter() - request_started_at, 4),
                             "raw_candidate_count": len(raw_candidates),
                             "returned_candidate_count": len(candidates),
+                            "non_executable_candidate_count": max(0, len(raw_candidates) - len(candidates)),
                             "analysis_present": bool(analysis),
                             "compatibility_mode": compatibility_mode,
                         }],
@@ -842,6 +944,7 @@ class _StrategyLLMProviderRuntimeMixin:
                             "user": user_prompt,
                             "profile": prompt_profile,
                         },
+                        "raw_candidates": [dict(item or {}) for item in raw_candidates],
                         "raw_response": body,
                         "content": content,
                         "analysis": analysis,
@@ -961,6 +1064,7 @@ class _StrategyLLMProviderRuntimeMixin:
                     f"call_stage({stage_id}): LLM provider not enabled",
                     metrics={"stage_id": stage_id, "status": "disabled"},
                 )
+            await self._ensure_runtime_async_state()
 
             started_at = time.perf_counter()
             stage_timeout = float(timeout_sec or 10.0)

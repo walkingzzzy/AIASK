@@ -71,6 +71,16 @@ def get_strategy_runtime_control_service():
     return import_module("akshare_mcp.services.runtime_control").get_strategy_runtime_control_service()
 
 
+def get_strategy_lifecycle_shared_runtime():
+    try:
+        module = import_module("akshare_mcp.services.strategy_lifecycle_shared")
+    except ModuleNotFoundError:
+        return SimpleNamespace(build_incubation_overview=None)
+    return SimpleNamespace(
+        build_incubation_overview=getattr(module, "build_incubation_overview", None),
+    )
+
+
 def get_event_context_builder():
     return import_module("akshare_mcp.services.decision_event_builder").build_event_context
 
@@ -143,6 +153,7 @@ __all__ = [
     "get_financial_semantic_service_factory",
     "get_quant_manager_callable",
     "get_runtime_warmup_runner",
+    "get_strategy_lifecycle_shared_runtime",
     "get_strategy_promotion_pipeline_service",
     "get_strategy_runtime_control_service",
     "get_index_kline_provider",

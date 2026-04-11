@@ -216,12 +216,133 @@ async def test_quant_manager_factor_candidate_registry_active_pool_falls_back_to
     assert pool["strict_count"] == 0
     assert pool["provisional_count"] == 1
     assert pool["count"] == 1
+    assert pool["provisional_spillover_policy"]["status"] == "provisional_pool_only"
+    assert pool["provisional_spillover_policy"]["decision"] == "provisional_only"
+    assert pool["pending_excluded_count"] == 0
+    assert pool["ineligible_excluded_count"] == 1
+    assert pool["ineligible_exclusion_reason_counts"]["recommendation_reject"] == 1
+    assert pool["ineligible_exclusion_reason_counts"]["score_below_provisional_threshold"] == 1
     assert pool["top_candidates"][0]["artifact_id"] == "factor_validation_registry_watch_candidate"
     assert pool["top_candidates"][0]["registry_stage"] == "validated"
     assert pool["top_candidates"][0]["pool_entry_mode"] == "provisional_validated_watch"
 
     excluded = {str(item.get("artifact_id") or ""): item for item in pool["excluded_candidates"]}
     assert "recommendation_reject" in excluded["factor_validation_registry_reject_candidate"]["reasons"]
+    assert excluded["factor_validation_registry_reject_candidate"]["exclusion_bucket"] == "ineligible"
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_factor_candidate_registry_active_pool_adds_provisional_spillover_when_strict_pool_thin(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["601661", "601662", "601663", "601664"]
+    _register_validation_artifact(
+        "factor_validation_registry_strict_candidate",
+        registry_codes,
+        name="strict_candidate",
+        recommendation="review",
+        total_score=71.5,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_spillover_watch",
+        registry_codes,
+        name="spillover_watch",
+        recommendation="watch",
+        total_score=58.0,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    active_pool = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "active_pool", "codes": registry_codes, "limit": 20, "market_codes_only": True},
+    )
+
+    assert active_pool["success"] is True
+    pool = active_pool["data"]["active_pool"]
+    assert pool["active_pool_mode"] == "strict_governed"
+    assert pool["strict_count"] == 1
+    assert pool["provisional_count"] == 1
+    assert pool["provisional_spillover_count"] == 1
+    assert pool["provisional_spillover_enabled"] is True
+    assert pool["provisional_spillover_policy"]["status"] == "spillover_applied"
+    assert pool["provisional_spillover_policy"]["decision"] == "spillover_applied"
+    assert pool["provisional_spillover_policy"]["strict_shortfall_count"] == 5
+    assert pool["provisional_spillover_policy"]["pending_provisional_count"] == 0
+    assert pool["count"] == 2
+
+    top_candidates = {str(item.get("artifact_id") or ""): item for item in pool["top_candidates"]}
+    assert top_candidates["factor_validation_registry_strict_candidate"]["pool_entry_mode"] == "strict_governed"
+    assert top_candidates["factor_validation_registry_spillover_watch"]["pool_entry_mode"] == "provisional_validated_watch"
+    assert pool["provisional_spillover_artifact_ids"] == ["factor_validation_registry_spillover_watch"]
+    assert pool["pending_excluded_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_factor_candidate_registry_active_pool_counts_only_unselected_provisional_candidates_as_pending(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["601771", "601772", "601773", "601774"]
+    _register_validation_artifact(
+        "factor_validation_registry_pending_strict",
+        registry_codes,
+        name="pending_strict",
+        recommendation="review",
+        total_score=70.0,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+    for idx, score in enumerate([59.0, 57.5, 56.0, 55.5], start=1):
+        _register_validation_artifact(
+            f"factor_validation_registry_pending_watch_{idx}",
+            registry_codes,
+            name=f"pending_watch_{idx}",
+            recommendation="watch",
+            total_score=score,
+            lookahead_risk="low",
+            multiple_testing_risk="low",
+        )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    active_pool = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "active_pool", "codes": registry_codes, "limit": 20, "market_codes_only": True},
+    )
+
+    assert active_pool["success"] is True
+    pool = active_pool["data"]["active_pool"]
+    assert pool["active_pool_mode"] == "strict_governed"
+    assert pool["strict_count"] == 1
+    assert pool["provisional_count"] == 4
+    assert pool["provisional_spillover_count"] == 3
+    assert pool["count"] == 4
+    assert pool["pending_excluded_count"] == 1
+    assert pool["provisional_spillover_policy"]["status"] == "spillover_capacity_exhausted"
+    assert pool["provisional_spillover_policy"]["decision"] == "spillover_capped"
+    assert pool["provisional_spillover_policy"]["strict_shortfall_count"] == 5
+    assert pool["provisional_spillover_policy"]["pending_provisional_count"] == 1
+    assert pool["provisional_spillover_policy"]["pending_reason_code"] == "spillover_capacity_exhausted"
+    assert pool["pending_exclusion_reason_counts"] == {"spillover_capacity_exhausted": 1}
+    assert pool["ineligible_excluded_count"] == 0
+
+    excluded = {str(item.get("artifact_id") or ""): item for item in pool["excluded_candidates"]}
+    assert excluded["factor_validation_registry_pending_watch_4"]["exclusion_bucket"] == "pending"
+    assert excluded["factor_validation_registry_pending_watch_4"]["reasons"] == ["spillover_capacity_exhausted"]
 
 
 @pytest.mark.asyncio

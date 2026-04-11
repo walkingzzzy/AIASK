@@ -37,6 +37,8 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "candidate_contract_hash",
     "candidate_contract_snapshot",
     "candidate_identity_signature",
+    "candidate_local_attempt_count",
+    "candidate_local_selected_count",
     "candidate_lineage_contract",
     "candidate_provenance",
     "constraint_check",
@@ -45,6 +47,8 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "execution_assumptions",
     "factor_signature",
     "factory_attempt_count",
+    "factory_global_attempt_count",
+    "factory_global_selected_count",
     "factory_selected_count",
     "had_explicit_research_task",
     "holding_horizon",
@@ -68,6 +72,8 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "target_symbols",
     "targeting_policy",
     "task_signature",
+    "task_local_attempt_count",
+    "task_local_selected_count",
     "tested_object_hash",
     "trade_plan",
     "validation_profile",
@@ -459,7 +465,28 @@ def resolve_candidate_validation_profile(
     payload = dict(candidate or {})
     normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
     strategy_type = _string(payload.get("strategy_type")).lower()
-    explicit_profile = _as_dict(candidate_contract_value(payload, "validation_profile", {}))
+    explicit_profile = {}
+    for source in (
+        payload,
+        _as_dict(payload.get("params")),
+        _as_dict(payload.get("lineage")),
+        _as_dict(payload.get("candidate_provenance")),
+    ):
+        explicit_profile = _as_dict(source.get("validation_profile"))
+        if explicit_profile:
+            break
+    task_validation_profile = _as_dict(normalized_task.get("validation_profile"))
+    use_task_validation_profile = bool(
+        task_validation_profile
+        and (
+            bool(candidate_contract_value(payload, "had_explicit_research_task", False))
+            or _string(normalized_task.get("task_source")).lower() in {"bulk_stock_matrix", "event_driven"}
+            or _string(task_validation_profile.get("validation_focus")).lower()
+            in {"candidate_target_only", "event_target_only", "target_only"}
+        )
+    )
+    if not explicit_profile and use_task_validation_profile:
+        explicit_profile = dict(task_validation_profile)
     profile_name = _string(explicit_profile.get("profile")).lower()
     validation_focus = _string(
         explicit_profile.get("validation_focus")
@@ -622,6 +649,119 @@ def _resolve_lineage(
         "run_id": run_id or None,
         "task_signature": task_signature or None,
         "parent_strategy_ids": parent_strategy_ids,
+    }
+
+
+def _derive_turnover_cost_class(
+    *,
+    expected_turnover_band: str,
+    capacity_bucket: str,
+    slippage_bps: float,
+    market_impact_bps: float,
+) -> Optional[str]:
+    if expected_turnover_band == "very_high" or slippage_bps >= 10.0 or market_impact_bps >= 4.0:
+        return "high_touch"
+    if expected_turnover_band == "high" or slippage_bps >= 5.0 or capacity_bucket == "small":
+        return "medium_touch"
+    if expected_turnover_band in {"medium", "low"} or capacity_bucket:
+        return "low_touch"
+    return None
+
+
+def _resolve_economic_semantics(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    holding_horizon = _as_dict(candidate_contract_value(payload, "holding_horizon", {}))
+    rebalance_rule = _as_dict(candidate_contract_value(payload, "rebalance_rule", {}))
+    portfolio_spec = _as_dict(candidate_contract_value(payload, "portfolio_spec", {}))
+    execution_assumptions = _as_dict(candidate_contract_value(payload, "execution_assumptions", {}))
+    position_sizing = _as_dict(candidate_contract_value(payload, "position_sizing", {}))
+    capacity_assumption = _as_dict(candidate_contract_value(payload, "capacity_assumption", {}))
+    cost_sensitivity_grid = _as_dict(candidate_contract_value(payload, "cost_sensitivity_grid", {}))
+    cost_base_case = _as_dict(cost_sensitivity_grid.get("base_case"))
+
+    expected_turnover_band = _string(
+        candidate_contract_value(payload, "expected_turnover_band")
+        or execution_assumptions.get("expected_turnover_band")
+        or portfolio_spec.get("expected_turnover_band")
+        or holding_horizon.get("expected_turnover_band")
+        or rebalance_rule.get("expected_turnover_band")
+        or position_sizing.get("expected_turnover_band")
+    ).lower()
+    capacity_bucket = _string(
+        candidate_contract_value(payload, "capacity_bucket")
+        or execution_assumptions.get("capacity_bucket")
+        or portfolio_spec.get("capacity_bucket")
+        or capacity_assumption.get("capacity_bucket")
+        or capacity_assumption.get("bucket")
+    ).lower()
+    slippage_bps = _safe_float(
+        execution_assumptions.get("slippage_bps"),
+        _safe_float(cost_base_case.get("slippage_bps"), 0.0),
+    )
+    market_impact_bps = _safe_float(
+        execution_assumptions.get("market_impact_bps"),
+        _safe_float(cost_base_case.get("market_impact_bps"), 0.0),
+    )
+    position_model = _string(
+        candidate_contract_value(payload, "position_model")
+        or position_sizing.get("mode")
+        or portfolio_spec.get("position_assumption")
+    )
+    return {
+        "holding_rationale": _string(
+            candidate_contract_value(payload, "holding_rationale")
+            or holding_horizon.get("rationale")
+        ) or None,
+        "cost_sensitivity_grid": dict(cost_sensitivity_grid),
+        "position_model": position_model or None,
+        "capacity_assumption": dict(capacity_assumption),
+        "market_regime_assumption": (
+            candidate_contract_value(payload, "market_regime_assumption")
+            if candidate_contract_value(payload, "market_regime_assumption") not in _EMPTY_VALUES
+            else None
+        ),
+        "expected_turnover_band": expected_turnover_band or None,
+        "capacity_bucket": capacity_bucket or None,
+        "position_sizing_rationale": _string(
+            portfolio_spec.get("position_sizing_rationale")
+            or execution_assumptions.get("position_sizing_rationale")
+            or position_sizing.get("position_sizing_rationale")
+            or candidate_contract_value(payload, "position_sizing_rationale")
+        ) or None,
+        "turnover_cost_class": _string(
+            execution_assumptions.get("turnover_cost_class")
+            or _derive_turnover_cost_class(
+                expected_turnover_band=expected_turnover_band,
+                capacity_bucket=capacity_bucket,
+                slippage_bps=slippage_bps,
+                market_impact_bps=market_impact_bps,
+            )
+        ) or None,
+        "slippage_bps": slippage_bps,
+        "market_impact_bps": market_impact_bps,
+        "capacity_participation_rate": _safe_float(
+            execution_assumptions.get("capacity_participation_rate"),
+            _safe_float(
+                cost_base_case.get("capacity_participation_rate"),
+                _safe_float(capacity_assumption.get("capacity_participation_rate"), 0.0),
+            ),
+        ),
+        "adv_ratio_limit": _safe_float(
+            execution_assumptions.get("adv_ratio_limit"),
+            _safe_float(
+                cost_base_case.get("adv_ratio_limit"),
+                _safe_float(capacity_assumption.get("adv_ratio_limit"), 0.0),
+            ),
+        ),
+        "max_position_pct": (
+            _safe_float(portfolio_spec.get("max_position_pct"))
+            if portfolio_spec.get("max_position_pct") is not None
+            else (
+                _safe_float(capacity_assumption.get("max_position_pct"))
+                if capacity_assumption.get("max_position_pct") is not None
+                else None
+            )
+        ),
     }
 
 
@@ -830,6 +970,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         or normalized_task.get("task_source")
         or payload.get("source")
     ).lower()
+    economic_semantics = _resolve_economic_semantics(payload)
     targeting = {
         "target_symbols": list(target_symbols),
         "stock_pool": stock_pool,
@@ -859,6 +1000,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         "rebalance_rule": candidate_contract_value(payload, "rebalance_rule", {}),
         "portfolio_spec": _as_dict(candidate_contract_value(payload, "portfolio_spec", {})),
         "execution_assumptions": _as_dict(candidate_contract_value(payload, "execution_assumptions", {})),
+        "economic_semantics": economic_semantics,
         "validation_profile": validation_profile,
         "lineage": _resolve_lineage(payload, research_task=normalized_task),
     }
@@ -1139,6 +1281,7 @@ def build_factory_backtest_assumptions(candidate: Optional[Mapping[str, Any]]) -
     execution_assumptions = dict(contract.get("execution_assumptions") or {})
     portfolio_spec = dict(contract.get("portfolio_spec") or {})
     validation_profile = dict(contract.get("validation_profile") or {})
+    economic_semantics = dict(contract.get("economic_semantics") or {})
     target_symbols = list((contract.get("targeting") or {}).get("target_symbols") or [])
     target_weight_scheme = _string(
         portfolio_spec.get("target_weight_scheme")
@@ -1149,28 +1292,72 @@ def build_factory_backtest_assumptions(candidate: Optional[Mapping[str, Any]]) -
         commission_rate=_safe_float(execution_assumptions.get("commission_rate"), 0.00025),
         slippage_bps=_safe_float(
             execution_assumptions.get("slippage_bps"),
-            _safe_float(execution_assumptions.get("slippage"), 0.0) * 10000.0,
+            _safe_float(
+                execution_assumptions.get("slippage"),
+                _safe_float(economic_semantics.get("slippage_bps"), 0.0) / 10000.0,
+            ) * 10000.0,
         ),
-        market_impact_bps=_safe_float(execution_assumptions.get("market_impact_bps"), 0.0),
+        market_impact_bps=_safe_float(
+            execution_assumptions.get("market_impact_bps"),
+            _safe_float(economic_semantics.get("market_impact_bps"), 0.0),
+        ),
         arrival_price_policy=_string(execution_assumptions.get("arrival_price_policy") or "next_open_proxy") or "next_open_proxy",
         implementation_shortfall_proxy=_safe_float(execution_assumptions.get("implementation_shortfall_proxy"), 0.0),
         tradability_filter=_safe_bool(execution_assumptions.get("tradability_filter"), True),
         slippage_model=_string(execution_assumptions.get("slippage_model") or "fixed") or "fixed",
         max_position_pct=(
-            None
-            if portfolio_spec.get("max_position_pct") is None
-            else _safe_float(portfolio_spec.get("max_position_pct"))
+            _safe_float(portfolio_spec.get("max_position_pct"))
+            if portfolio_spec.get("max_position_pct") is not None
+            else (
+                _safe_float(economic_semantics.get("max_position_pct"))
+                if economic_semantics.get("max_position_pct") is not None
+                else None
+            )
         ),
-        capacity_participation_rate=_safe_float(execution_assumptions.get("capacity_participation_rate"), 0.0),
-        adv_ratio_limit=_safe_float(execution_assumptions.get("adv_ratio_limit"), 0.0),
-        capacity_bucket=_string(execution_assumptions.get("capacity_bucket")) or None,
+        capacity_participation_rate=_safe_float(
+            execution_assumptions.get("capacity_participation_rate"),
+            _safe_float(economic_semantics.get("capacity_participation_rate"), 0.0),
+        ),
+        adv_ratio_limit=_safe_float(
+            execution_assumptions.get("adv_ratio_limit"),
+            _safe_float(economic_semantics.get("adv_ratio_limit"), 0.0),
+        ),
+        capacity_bucket=_string(
+            execution_assumptions.get("capacity_bucket")
+            or economic_semantics.get("capacity_bucket")
+        ) or None,
         position_assumption=_string(
             portfolio_spec.get("position_assumption")
+            or economic_semantics.get("position_model")
             or ("equal_weight_proxy" if len(target_symbols) > 1 else "single_name_full_notional")
         )
         or ("equal_weight_proxy" if len(target_symbols) > 1 else "single_name_full_notional"),
         target_weight_scheme=target_weight_scheme,
         target_weight_map=_as_dict(portfolio_spec.get("target_weight_map")),
+        turnover_cost_class=_string(
+            execution_assumptions.get("turnover_cost_class")
+            or economic_semantics.get("turnover_cost_class")
+        ) or None,
+        position_sizing_rationale=_string(
+            portfolio_spec.get("position_sizing_rationale")
+            or execution_assumptions.get("position_sizing_rationale")
+            or economic_semantics.get("position_sizing_rationale")
+            or candidate_contract_value(candidate, "position_sizing_rationale")
+        )
+        or None,
+        expected_turnover_band=_string(
+            execution_assumptions.get("expected_turnover_band")
+            or portfolio_spec.get("expected_turnover_band")
+            or economic_semantics.get("expected_turnover_band")
+            or dict(contract.get("holding_horizon") or {}).get("expected_turnover_band")
+            or candidate_contract_value(candidate, "expected_turnover_band")
+        )
+        or None,
+        market_regime_assumption=(
+            economic_semantics.get("market_regime_assumption")
+            if economic_semantics.get("market_regime_assumption") not in _EMPTY_VALUES
+            else None
+        ),
         market_ruleset=_string(execution_assumptions.get("market_ruleset") or "cn_equity") or "cn_equity",
         sell_tax_rate=_safe_float(execution_assumptions.get("sell_tax_rate"), 0.001),
         min_trade_lot=max(1, _safe_int(execution_assumptions.get("min_trade_lot"), 100)),

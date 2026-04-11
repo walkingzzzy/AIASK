@@ -22,6 +22,22 @@ from .market_data import MarketDataMixin
 logger = logging.getLogger(__name__)
 
 
+def _bypass_proxy_for_url(url: str) -> None:
+    """将 URL 的主机名加入 NO_PROXY，避免被系统 HTTP 代理拦截。"""
+    try:
+        from urllib.parse import urlparse
+        hostname = urlparse(url).hostname
+        if not hostname:
+            return
+        no_proxy = os.getenv("NO_PROXY", "")
+        if hostname not in no_proxy:
+            updated = f"{no_proxy},{hostname}" if no_proxy else hostname
+            os.environ["NO_PROXY"] = updated
+            os.environ["no_proxy"] = updated
+    except Exception:
+        pass
+
+
 class DataSourceManager(QuotesMixin, MarketDataMixin):
     """
     数据源管理器 — 单例模式
@@ -58,10 +74,14 @@ class DataSourceManager(QuotesMixin, MarketDataMixin):
         try:
             ts.set_token(self.tushare_token)
             self.ts_pro = ts.pro_api(self.tushare_token)
+            tushare_timeout = int(os.getenv("TUSHARE_TIMEOUT", "8"))
+            if hasattr(self.ts_pro, "_DataApi__timeout"):
+                self.ts_pro._DataApi__timeout = tushare_timeout
             if self.tushare_http_url:
                 try:
                     self.ts_pro._DataApi__token = self.tushare_token
                     self.ts_pro._DataApi__http_url = self.tushare_http_url.rstrip("/")
+                    _bypass_proxy_for_url(self.tushare_http_url)
                 except Exception:
                     pass
         except Exception as e:

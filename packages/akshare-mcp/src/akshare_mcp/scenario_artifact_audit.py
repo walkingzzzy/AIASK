@@ -5,6 +5,17 @@ from pathlib import Path
 from typing import Any
 
 
+def _resolve_artifact_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    if path.parent.name != "real_world_scenarios":
+        return path
+    archive_path = path.parent.parent / "archive" / "real_world_scenarios" / path.name
+    if archive_path.exists():
+        return archive_path
+    return path
+
+
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
@@ -55,9 +66,17 @@ def audit_scenario_artifacts(
     expected_tool_count: int,
     runtime_tool_count: int,
 ) -> dict[str, Any]:
-    report_text = _read_text(report_path)
-    readme_text = _read_text(readme_path)
-    evaluation_text = _read_text(evaluation_path) if evaluation_path and evaluation_path.exists() else ""
+    resolved_report_path = _resolve_artifact_path(report_path)
+    resolved_readme_path = _resolve_artifact_path(readme_path)
+    resolved_evaluation_path = _resolve_artifact_path(evaluation_path) if evaluation_path else None
+
+    report_text = _read_text(resolved_report_path)
+    readme_text = _read_text(resolved_readme_path)
+    evaluation_text = (
+        _read_text(resolved_evaluation_path)
+        if resolved_evaluation_path and resolved_evaluation_path.exists()
+        else ""
+    )
 
     report_counts = _extract_counts(report_text)
     readme_counts = _extract_counts(readme_text)
@@ -91,16 +110,16 @@ def audit_scenario_artifacts(
         "runtime_tool_count": runtime_tool_count,
         "expected_tool_count": expected_tool_count,
         "report": {
-            "path": str(report_path),
+            "path": str(resolved_report_path),
             "baseline_counts": report_counts,
             "step_summary": step_summary,
         },
         "readme": {
-            "path": str(readme_path),
+            "path": str(resolved_readme_path),
             "baseline_counts": readme_counts,
         },
         "evaluation": {
-            "path": str(evaluation_path) if evaluation_path else None,
+            "path": str(resolved_evaluation_path) if resolved_evaluation_path else None,
             "baseline_counts": evaluation_counts,
         },
         "warnings": warnings,

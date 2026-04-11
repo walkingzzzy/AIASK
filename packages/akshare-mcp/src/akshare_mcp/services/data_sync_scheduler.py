@@ -57,6 +57,7 @@ class DataSyncScheduler:
         sync_on_startup: bool = True,
         batch_size: int = 50,
         concurrency: int = 5,
+        inter_batch_delay: float = 1.0,
     ):
         # 从环境变量读取配置
         env_time = os.getenv("DATA_SYNC_TIME", "").strip()
@@ -73,11 +74,16 @@ class DataSyncScheduler:
         elif env_startup in ("true", "1", "yes"):
             sync_on_startup = True
 
+        concurrency = int(os.getenv("DATA_SYNC_CONCURRENCY", str(concurrency)))
+        batch_size = int(os.getenv("DATA_SYNC_BATCH_SIZE", str(batch_size)))
+        inter_batch_delay = float(os.getenv("DATA_SYNC_BATCH_DELAY", str(inter_batch_delay)))
+
         self.sync_time = sync_time
         self.universe = universe or list(DEFAULT_UNIVERSE)
         self.sync_on_startup = sync_on_startup
         self.batch_size = batch_size
-        self.concurrency = concurrency
+        self.concurrency = min(concurrency, 3)
+        self.inter_batch_delay = inter_batch_delay
 
         self._task: Optional[asyncio.Task] = None
         self._startup_task: Optional[asyncio.Task] = None
@@ -242,10 +248,12 @@ class DataSyncScheduler:
 
         # ---- Phase 1: K线同步 (并发抓取 + 串行写库) ----
         #
-        # 之前这里在同一批次内并发调用 save_klines，会让多个 asyncpg 连接同时执行
-        # ON CONFLICT upsert，启动期高并发时容易出现死锁。这里保留并发抓取外部数据，
-        # 但统一改为串行落库，优先保证启动同步稳定性。
-        for i in range(0, len(self.universe), self.batch_size):
+        # 并发抓取外部数据但串行落库，避免 upsert 死锁。
+        # 每只股票的抓取有 30s 超时，防止单个失败源阻塞整批。
+        # 批间增加延迟，减轻对外部 API 的压力。
+        _per_stock_timeout = float(os.getenv("DATA_SYNC_PER_STOCK_TIMEOUT", "30"))
+        total_batches = max((len(self.universe) + self.batch_size - 1) // self.batch_size, 1)
+        for batch_idx, i in enumerate(range(0, len(self.universe), self.batch_size)):
             batch = self.universe[i:i + self.batch_size]
 
             semaphore = asyncio.Semaphore(self.concurrency)
@@ -253,10 +261,13 @@ class DataSyncScheduler:
             async def _fetch_kline(code: str):
                 async with semaphore:
                     try:
-                        klines = await asyncio.to_thread(
-                            data_source.get_kline, code, "daily", 250
+                        klines = await asyncio.wait_for(
+                            asyncio.to_thread(data_source.get_kline, code, "daily", 250),
+                            timeout=_per_stock_timeout,
                         )
                         return code, klines, None
+                    except asyncio.TimeoutError:
+                        return code, None, TimeoutError(f">{_per_stock_timeout}s")
                     except Exception as e:
                         return code, None, e
 
@@ -292,9 +303,13 @@ class DataSyncScheduler:
                     if len(errors) < 10:
                         errors.append(f"kline_save:{code}:{e}")
 
-        # ---- Phase 2: 财务数据同步 (分批) ----
+            if batch_idx < total_batches - 1 and self.inter_batch_delay > 0:
+                await asyncio.sleep(self.inter_batch_delay)
+
+        # ---- Phase 2: 财务数据同步 (分批 + 批间延迟) ----
         try:
-            for i in range(0, len(self.universe), self.batch_size):
+            fin_batches = list(range(0, len(self.universe), self.batch_size))
+            for fin_bi, i in enumerate(fin_batches):
                 batch = self.universe[i:i + self.batch_size]
 
                 semaphore = asyncio.Semaphore(self.concurrency)
@@ -318,6 +333,9 @@ class DataSyncScheduler:
                     *[_sync_financial(code) for code in batch],
                     return_exceptions=True,
                 )
+
+                if fin_bi < len(fin_batches) - 1 and self.inter_batch_delay > 0:
+                    await asyncio.sleep(self.inter_batch_delay)
         except Exception as e:
             logger.warning("[DataSyncScheduler] financial sync phase error: %s", e)
 

@@ -65,14 +65,38 @@ from .run_models import (
 )
 from ._budget_feedback import (
     CONTROL_MODE_SEVERITY,
-    apply_feedback_controls_to_task,
     collect_generator_mode_feedback_controls,
     extract_feedback_root,
     normalize_text as _normalize_feedback_text,
     summarize_task_feedback_controls,
 )
+from ._autonomy_task_selection import (
+    apply_scheduler_planning_controls as _apply_scheduler_planning_controls_payload,
+    build_scan_only_task_budget_meta as _build_scan_only_task_budget_meta_payload,
+    merge_autonomy_tasks_with_budget as _merge_autonomy_tasks_with_budget_payload,
+)
+from ._autonomy_task_executor import (
+    AutonomyTaskExecutionContext as _AutonomyTaskExecutionContext,
+    execute_autonomy_task as _execute_autonomy_task_payload,
+)
+from ._autonomy_stage_artifacts import (
+    attach_autonomy_stage_artifacts as _attach_autonomy_stage_artifacts_payload,
+)
+from ._autonomy_stage_summary import (
+    build_autonomy_stage_summary as _build_autonomy_stage_summary_payload,
+)
+from ._bulk_planner_summary import (
+    build_bulk_planner_error_report as _build_bulk_planner_error_report_payload,
+    build_default_bulk_report as _build_default_bulk_report_payload,
+    normalize_bulk_report_summary as _normalize_bulk_report_summary_payload,
+)
+from ._combined_scan_report import build_combined_scan_report as _build_combined_scan_report_payload
+from ._bulk_cursor import (
+    extract_bulk_stock_cursor as _extract_bulk_stock_cursor_payload,
+    resolve_bulk_stock_matrix_cursor as _resolve_bulk_stock_matrix_cursor_payload,
+)
 from .utils import _extract_event_context as _local_extract_event_context
-from .stock_strategy_matrix import StockStrategyMatrixPlanner
+from .research.matrix import StockStrategyMatrixPlanner
 from .research_plane_contract import (
     build_candidate_artifact,
     build_research_evidence_artifact,
@@ -479,6 +503,10 @@ class _StrategyFactorySchedulerLoopMixin:
                                 "compiled_candidate_count",
                                 "non_executable_candidate_count",
                                 "viable_candidate_count",
+                                "open_dsl_candidate_count",
+                                "open_dsl_compiled_candidate_count",
+                                "open_dsl_viable_candidate_count",
+                                "open_dsl_rejected_count",
                                 "error_type",
                                 "error",
                             ),
@@ -673,13 +701,6 @@ class _StrategyFactorySchedulerLoopMixin:
                 return float(FACTORY_MARKET_HOURS_INTERVAL_SEC)
             return float(FACTORY_OFF_HOURS_INTERVAL_SEC)
 
-        @staticmethod
-        def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
-            try:
-                return max(0, int(value))
-            except Exception:
-                return max(0, int(default))
-
         @classmethod
         def _extract_bulk_stock_cursor(
             cls,
@@ -688,137 +709,19 @@ class _StrategyFactorySchedulerLoopMixin:
             source: str,
             run_id: Optional[str] = None,
         ) -> dict[str, Any]:
-            payload = dict(summary or {})
-            known_keys = {
-                "bulk_stock_matrix_enabled",
-                "bulk_stock_matrix_universe_limit",
-                "bulk_stock_matrix_requested_universe_offset",
-                "bulk_stock_matrix_effective_universe_offset",
-                "bulk_stock_matrix_universe_offset_fallback",
-                "bulk_stock_matrix_eligible_stock_count",
-                "bulk_stock_matrix_next_universe_offset",
-                "bulk_stock_matrix_cursor_wrapped",
-                "bulk_stock_matrix_requested_task_offset",
-                "bulk_stock_matrix_effective_task_offset",
-                "bulk_stock_matrix_task_offset_fallback",
-                "bulk_stock_matrix_next_task_offset",
-                "bulk_stock_matrix_task_cursor_wrapped",
-                "bulk_stock_matrix_planned_task_count",
-            }
-            available = any(key in payload for key in known_keys)
-            universe_limit = max(
-                1,
-                cls._coerce_non_negative_int(
-                    payload.get("bulk_stock_matrix_universe_limit"),
-                    STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
-                ),
+            return _extract_bulk_stock_cursor_payload(
+                summary,
+                source=source,
+                run_id=run_id,
             )
-            enabled = bool(payload.get("bulk_stock_matrix_enabled"))
-            requested_offset = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_requested_universe_offset"),
-            )
-            effective_offset = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_effective_universe_offset"),
-            )
-            offset_fallback = bool(payload.get("bulk_stock_matrix_universe_offset_fallback"))
-            eligible_stock_count = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_eligible_stock_count"),
-            )
-            next_offset_raw = payload.get("bulk_stock_matrix_next_universe_offset")
-            if next_offset_raw is None:
-                if not enabled or eligible_stock_count <= 0:
-                    next_universe_offset = 0
-                    cursor_wrapped = False
-                elif offset_fallback:
-                    next_universe_offset = universe_limit
-                    cursor_wrapped = True
-                elif eligible_stock_count < universe_limit:
-                    next_universe_offset = 0
-                    cursor_wrapped = True
-                else:
-                    next_universe_offset = effective_offset + universe_limit
-                    cursor_wrapped = False
-            else:
-                next_universe_offset = cls._coerce_non_negative_int(next_offset_raw)
-                if "bulk_stock_matrix_cursor_wrapped" in payload:
-                    cursor_wrapped = bool(payload.get("bulk_stock_matrix_cursor_wrapped"))
-                else:
-                    cursor_wrapped = bool(
-                        enabled and eligible_stock_count > 0 and (offset_fallback or next_universe_offset == 0)
-                    )
-            requested_task_offset = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_requested_task_offset"),
-                requested_offset,
-            )
-            effective_task_offset = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_effective_task_offset"),
-                effective_offset,
-            )
-            task_offset_fallback = bool(
-                payload.get("bulk_stock_matrix_task_offset_fallback")
-                if "bulk_stock_matrix_task_offset_fallback" in payload
-                else offset_fallback
-            )
-            planned_task_count = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_planned_task_count"),
-            )
-            next_task_offset = cls._coerce_non_negative_int(
-                payload.get("bulk_stock_matrix_next_task_offset"),
-                next_universe_offset,
-            )
-            task_cursor_wrapped = bool(
-                payload.get("bulk_stock_matrix_task_cursor_wrapped")
-                if "bulk_stock_matrix_task_cursor_wrapped" in payload
-                else cursor_wrapped
-            )
-            return {
-                "available": available,
-                "source": str(source or "default"),
-                "resume_from_run_id": str(run_id or "").strip() or None,
-                "enabled": enabled,
-                "universe_limit": universe_limit,
-                "requested_universe_offset": requested_offset,
-                "effective_universe_offset": effective_offset,
-                "universe_offset_fallback": offset_fallback,
-                "eligible_stock_count": eligible_stock_count,
-                "next_universe_offset": next_universe_offset,
-                "cursor_wrapped": cursor_wrapped,
-                "cursor_mode": str(payload.get("bulk_stock_matrix_cursor_mode") or "task_offset").strip() or "task_offset",
-                "requested_task_offset": requested_task_offset,
-                "effective_task_offset": effective_task_offset,
-                "task_offset_fallback": task_offset_fallback,
-                "planned_task_count": planned_task_count,
-                "next_task_offset": next_task_offset,
-                "task_cursor_wrapped": task_cursor_wrapped,
-            }
 
         async def _resolve_bulk_stock_matrix_cursor(self, db) -> dict[str, Any]:
-            last_result = dict(self.last_result or {})
-            last_cursor = self._extract_bulk_stock_cursor(
-                (last_result.get("summary") or {}),
-                source="last_result",
-                run_id=last_result.get("run_id"),
+            return await _resolve_bulk_stock_matrix_cursor_payload(
+                last_result=self.last_result,
+                db=db,
+                logger_=logger,
+                call_optional_async=_call_optional_async,
             )
-            if last_cursor.get("available"):
-                return last_cursor
-
-            try:
-                latest_run = await _call_optional_async(db, "get_latest_strategy_factory_run", default=None)
-            except Exception as exc:
-                logger.warning(
-                    "StrategyFactory: failed to resolve persisted bulk cursor, falling back to default: %s",
-                    exc,
-                )
-                latest_run = None
-            latest_cursor = self._extract_bulk_stock_cursor(
-                ((latest_run or {}).get("summary") or {}),
-                source="persisted_run",
-                run_id=(latest_run or {}).get("run_id"),
-            )
-            if latest_cursor.get("available"):
-                return latest_cursor
-
-            return self._extract_bulk_stock_cursor({}, source="default")
 
         async def _loop(self):
             while self._running:
@@ -875,22 +778,47 @@ class _StrategyFactorySchedulerLoopMixin:
             source = f"strategy_factory:{effective_task.get('opportunity_type') or 'general'}"
             gateway_db = self._adapt_gateway_repository(db)
             timeout_sec = self._resolve_research_task_timeout_sec()
-            try:
+            task_id = str(effective_task.get("task_id") or effective_task.get("task_key") or source).strip() or source
+
+            async def _run_generation(task_payload: dict[str, Any]) -> dict:
                 return await asyncio.wait_for(
                     autonomy_gateway.generate_factory_candidates(
                         gateway_db,
                         snapshot,
                         limit=limit,
-                        research_task=effective_task,
+                        research_task=task_payload,
                         source=source,
                     ),
                     timeout=timeout_sec,
                 )
+
+            try:
+                return await _run_generation(effective_task)
             except asyncio.TimeoutError as exc:
-                task_id = str(effective_task.get("task_id") or effective_task.get("task_key") or source).strip() or source
-                raise RuntimeError(
-                    f"research task {task_id} timed out after {timeout_sec:g}s"
-                ) from exc
+                retry_task = dict(effective_task)
+                retry_applied = False
+                if not retry_task.get("disable_external_llm"):
+                    retry_task["disable_external_llm"] = True
+                    retry_task["external_llm_skip_reason"] = "task_timeout_local_fallback"
+                    retry_applied = True
+                if not retry_task.get("disable_pipeline_staged"):
+                    retry_task["disable_pipeline_staged"] = True
+                    retry_task["pipeline_staged_skip_reason"] = "task_timeout_local_fallback"
+                    retry_applied = True
+                if not retry_applied:
+                    raise RuntimeError(
+                        f"research task {task_id} timed out after {timeout_sec:g}s"
+                    ) from exc
+                retry_task["task_timeout_local_fallback"] = True
+                retry_task["task_timeout_local_fallback_attempts"] = int(
+                    retry_task.get("task_timeout_local_fallback_attempts") or 0
+                ) + 1
+                try:
+                    return await _run_generation(retry_task)
+                except asyncio.TimeoutError as retry_exc:
+                    raise RuntimeError(
+                        f"research task {task_id} timed out after {timeout_sec:g}s even after local fallback retry"
+                    ) from retry_exc
 
         async def _persist_run_result(
             self,
@@ -1294,56 +1222,12 @@ class _StrategyFactorySchedulerLoopMixin:
             provider_control: Optional[dict[str, Any]] = None,
             generator_mode_controls: Optional[dict[str, dict[str, Any]]] = None,
         ) -> list[dict[str, Any]]:
-            provider = dict(provider_control or {})
-            mode_controls = {
-                _normalize_feedback_text(key): dict(value or {})
-                for key, value in dict(generator_mode_controls or {}).items()
-                if _normalize_feedback_text(key)
-            }
-            provider_mode = _normalize_feedback_text(provider.get("control_mode")) or "normal"
-            provider_reason = (
-                (list(provider.get("control_reasons") or []) or [provider.get("scheduler_skip_reason")])[0]
-                if provider_mode != "normal"
-                else None
+            return _apply_scheduler_planning_controls_payload(
+                list(tasks or []),
+                feedback_root=feedback_root,
+                provider_control=provider_control or {},
+                generator_mode_controls=generator_mode_controls or {},
             )
-            resolved: list[dict[str, Any]] = []
-            for item in list(tasks or []):
-                task = apply_feedback_controls_to_task(item, feedback_root)
-                task_source = _normalize_feedback_text(task.get("task_source"))
-                task["external_llm_provider_control_mode"] = provider_mode
-                if provider_mode in {"suppress", "freeze"}:
-                    task["disable_external_llm"] = True
-                    task["external_llm_skip_reason"] = provider_reason or "provider_control_suppress"
-                elif provider_mode == "cooldown" and task_source == "bulk_stock_matrix":
-                    task["disable_external_llm"] = True
-                    task["external_llm_skip_reason"] = provider_reason or "provider_control_cooldown"
-
-                external_mode_control = dict(mode_controls.get("external_llm") or {})
-                external_mode = _normalize_feedback_text(external_mode_control.get("control_mode")) or "normal"
-                if external_mode != "normal":
-                    task["disable_external_llm"] = True
-                    task["external_llm_skip_reason"] = (
-                        (list(external_mode_control.get("control_reasons") or []) or ["external_llm_mode_control"])[0]
-                    )
-
-                pipeline_mode_control = dict(mode_controls.get("pipeline_staged") or {})
-                pipeline_mode = _normalize_feedback_text(pipeline_mode_control.get("control_mode")) or "normal"
-                if pipeline_mode != "normal":
-                    task["disable_pipeline_staged"] = True
-                    task["pipeline_staged_skip_reason"] = (
-                        (list(pipeline_mode_control.get("control_reasons") or []) or ["pipeline_staged_mode_control"])[0]
-                    )
-
-                optimizer_mode_control = dict(mode_controls.get("rl_bandit") or {})
-                optimizer_mode = _normalize_feedback_text(optimizer_mode_control.get("control_mode")) or "normal"
-                if optimizer_mode != "normal":
-                    task["disable_optimizer"] = True
-                    task["optimizer_skip_reason"] = (
-                        (list(optimizer_mode_control.get("control_reasons") or []) or ["rl_bandit_mode_control"])[0]
-                    )
-
-                resolved.append(task)
-            return resolved
 
         @classmethod
         def _merge_autonomy_tasks_with_budget(
@@ -1352,195 +1236,11 @@ class _StrategyFactorySchedulerLoopMixin:
             scan_tasks: list[dict[str, Any]],
             bulk_tasks: list[dict[str, Any]],
         ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-            """Keep scan and bulk lanes on separate task budgets."""
-
-            def _task_family_key(task: dict[str, Any]) -> str:
-                payload = dict(task or {})
-                research_task = dict(payload.get("research_task") or {})
-                for source in (payload, research_task):
-                    for key in ("candidate_family", "candidate_family_id", "strategy_family", "family"):
-                        value = str(source.get(key) or "").strip().lower()
-                        if value:
-                            return value
-                return str(
-                    payload.get("opportunity_type")
-                    or payload.get("strategy_type")
-                    or payload.get("task_source")
-                    or "unknown"
-                ).strip().lower() or "unknown"
-
-            def _interleave_by_family(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                buckets: dict[str, list[dict[str, Any]]] = {}
-                order: list[str] = []
-                for task in list(tasks or []):
-                    family = _task_family_key(task)
-                    if family not in buckets:
-                        buckets[family] = []
-                        order.append(family)
-                    buckets[family].append(task)
-                if len(order) <= 1:
-                    return list(tasks or [])
-                interleaved: list[dict[str, Any]] = []
-                remaining = sum(len(bucket) for bucket in buckets.values())
-                while remaining > 0:
-                    progressed = False
-                    for family in order:
-                        bucket = buckets.get(family) or []
-                        if not bucket:
-                            continue
-                        interleaved.append(bucket.pop(0))
-                        remaining -= 1
-                        progressed = True
-                    if not progressed:
-                        break
-                return interleaved
-
-            def _safe_int(value: Any) -> int:
-                try:
-                    return int(value or 0)
-                except Exception:
-                    return 0
-
-            def _safe_float(value: Any) -> float:
-                try:
-                    return float(value or 0.0)
-                except Exception:
-                    return 0.0
-
-            def _feedback_blocked(task: dict[str, Any]) -> bool:
-                return bool(
-                    dict(task or {}).get("feedback_generation_blocked")
-                    or _normalize_feedback_text(dict(task or {}).get("feedback_control_mode")) in {"suppress", "freeze"}
-                )
-
-            def _uses_bulk_matrix_plan(task: dict[str, Any]) -> bool:
-                payload = dict(task or {})
-                if str(payload.get("task_source") or "").strip().lower() != "bulk_stock_matrix":
-                    return False
-                if any(
-                    _safe_int(payload.get(key)) > 0
-                    for key in (
-                        "matrix_budget_slot",
-                        "matrix_plan_slot",
-                        "matrix_allocation_pass",
-                        "matrix_family_rank",
-                        "matrix_stock_rank",
-                        "matrix_shard_id",
-                        "matrix_batch_id",
-                    )
-                ):
-                    return True
-                return (
-                    _safe_float(payload.get("stock_family_priority")) > 0.0
-                    or bool(payload.get("stock_family_allocation_source"))
-                )
-
-            def _bulk_task_plan_key(task: dict[str, Any]) -> tuple[Any, ...]:
-                payload = dict(task or {})
-                if _uses_bulk_matrix_plan(payload):
-                    return (
-                        0,
-                        _safe_int(payload.get("matrix_budget_slot")) or 10**9,
-                        _safe_int(payload.get("matrix_plan_slot")) or 10**9,
-                        _safe_int(payload.get("matrix_allocation_pass")) or 10**9,
-                        _safe_int(payload.get("matrix_family_rank")) or 10**9,
-                        _safe_int(payload.get("matrix_stock_rank")) or 10**9,
-                        _safe_int(payload.get("matrix_shard_id")) or 10**9,
-                        _safe_int(payload.get("matrix_batch_id")) or 10**9,
-                        -_safe_float(payload.get("stock_family_priority")),
-                        -_safe_float(payload.get("matrix_priority_score")),
-                        -_safe_float(payload.get("priority")),
-                        str(payload.get("task_id") or payload.get("task_key") or ""),
-                    )
-                return (
-                    1,
-                    -_safe_float(scanner._task_sort_key(payload)),
-                    str(payload.get("task_id") or payload.get("task_key") or ""),
-                )
-
-            planning_feedback_summary = summarize_task_feedback_controls([*list(scan_tasks or []), *list(bulk_tasks or [])])
-
-            normalized_scan_tasks = [
-                task
-                for task in scanner._deduplicate_tasks(list(scan_tasks or []))
-                if not _feedback_blocked(task)
-            ]
-            normalized_scan_tasks.sort(key=scanner._task_sort_key, reverse=True)
-            normalized_bulk_tasks = [
-                task
-                for task in scanner._deduplicate_tasks(list(bulk_tasks or []))
-                if not _feedback_blocked(task)
-            ]
-            bulk_selection_mode = "family_interleave"
-            if any(_uses_bulk_matrix_plan(task) for task in normalized_bulk_tasks):
-                normalized_bulk_tasks.sort(key=_bulk_task_plan_key)
-                bulk_selection_mode = "matrix_plan_slot"
-            else:
-                normalized_bulk_tasks.sort(key=scanner._task_sort_key, reverse=True)
-            scan_task_budget = max(0, int(AUTONOMY_MAX_RESEARCH_TASKS))
-            bulk_task_budget = 0
-            if normalized_bulk_tasks:
-                bulk_task_budget = min(
-                    len(normalized_bulk_tasks),
-                    max(0, int(AUTONOMY_MAX_BULK_RESEARCH_TASKS)),
-                )
-            if len(normalized_scan_tasks) > scan_task_budget:
-                normalized_scan_tasks = normalized_scan_tasks[:scan_task_budget]
-            selected_bulk_tasks = list(normalized_bulk_tasks[:bulk_task_budget])
-            if bulk_selection_mode == "family_interleave":
-                selected_bulk_tasks = _interleave_by_family(selected_bulk_tasks)
-
-            merged_tasks = scanner._deduplicate_tasks([*normalized_scan_tasks, *selected_bulk_tasks])
-            selected_feedback_summary = summarize_task_feedback_controls(merged_tasks)
-
-            selected_bulk_count = len(
-                [
-                    task
-                    for task in merged_tasks
-                    if str((task or {}).get("task_source") or "").strip().lower() == "bulk_stock_matrix"
-                ]
+            return _merge_autonomy_tasks_with_budget_payload(
+                scanner,
+                scan_tasks,
+                bulk_tasks,
             )
-            selected_scan_count = max(0, len(merged_tasks) - selected_bulk_count)
-            planned_bulk_count = len(normalized_bulk_tasks)
-            return merged_tasks, {
-                "max_research_tasks": int(scan_task_budget),
-                "max_bulk_research_tasks": int(bulk_task_budget),
-                "combined_research_task_budget": int(scan_task_budget + bulk_task_budget),
-                "scan_research_task_budget": int(scan_task_budget),
-                "reserved_bulk_task_budget": int(bulk_task_budget or AUTONOMY_RESERVED_BULK_RESEARCH_TASKS),
-                "selected_scan_task_count": int(selected_scan_count),
-                "selected_bulk_task_count": int(selected_bulk_count),
-                "planned_bulk_task_count": int(planned_bulk_count),
-                "clipped_bulk_task_count": int(max(0, planned_bulk_count - selected_bulk_count)),
-                "bulk_selection_mode": bulk_selection_mode,
-                "planned_feedback_control_mode_counts": dict(
-                    planning_feedback_summary.get("feedback_control_mode_counts") or {}
-                ),
-                "planned_feedback_target_pool_control_mode_counts": dict(
-                    planning_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
-                ),
-                "planned_feedback_generator_mode_control_mode_counts": dict(
-                    planning_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
-                ),
-                "planned_feedback_cooldown_task_count": int(
-                    planning_feedback_summary.get("feedback_cooldown_task_count") or 0
-                ),
-                "blocked_feedback_task_count": int(
-                    planning_feedback_summary.get("feedback_blocked_task_count") or 0
-                ),
-                "suppressed_families": list(planning_feedback_summary.get("suppressed_families") or []),
-                "suppressed_target_pools": list(planning_feedback_summary.get("suppressed_target_pools") or []),
-                "suppressed_generator_modes": list(planning_feedback_summary.get("suppressed_generator_modes") or []),
-                "selected_feedback_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_control_mode_counts") or {}
-                ),
-                "selected_feedback_target_pool_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
-                ),
-                "selected_feedback_generator_mode_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
-                ),
-            }
 
         async def _run_autonomy_batches(self, db, snapshot: dict) -> dict:
             factory_pkg = get_strategy_factory_package()
@@ -1577,6 +1277,9 @@ class _StrategyFactorySchedulerLoopMixin:
                     "feedback_control_mode_counts": dict(scan_feedback_summary.get("feedback_control_mode_counts") or {}),
                     "feedback_target_pool_control_mode_counts": dict(
                         scan_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "feedback_holding_bucket_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_holding_bucket_control_mode_counts") or {}
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         scan_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
@@ -1633,45 +1336,10 @@ class _StrategyFactorySchedulerLoopMixin:
                     "run_window_active": True,
                     "skip_reason": None,
                 }
-            bulk_report: dict[str, Any] = {
-                "summary": {
-                    "enabled": bool(bulk_window_state.get("run_window_active")),
-                    "configured_enabled": bool(bulk_window_state.get("configured_enabled")),
-                    "task_count": 0,
-                    "stock_count": 0,
-                    "family_counts": {},
-                    "planned_family_counts": {},
-                    "universe_limit": STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
-                    "batch_size": STOCK_STRATEGY_MATRIX_BATCH_SIZE,
-                    "bulk_concurrency": STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY,
-                    "requested_universe_offset": int(bulk_cursor.get("next_universe_offset") or 0),
-                    "effective_universe_offset": 0,
-                    "universe_offset_fallback": False,
-                    "next_universe_offset": 0,
-                    "cursor_wrapped": False,
-                    "cursor_mode": bulk_cursor.get("cursor_mode") or "task_offset",
-                    "requested_task_offset": int(bulk_cursor.get("next_task_offset") or 0),
-                    "effective_task_offset": 0,
-                    "task_offset_fallback": False,
-                    "next_task_offset": 0,
-                    "task_cursor_wrapped": False,
-                    "planned_task_count": int(bulk_cursor.get("planned_task_count") or 0),
-                    "planned_candidate_count": 0,
-                    "loaded_stock_count": 0,
-                    "pages_loaded": 0,
-                    "analysis_complete": False,
-                    "analysis_stock_coverage_ratio": 0.0,
-                    "cursor_source": bulk_cursor.get("source"),
-                    "cursor_resume_from_run_id": bulk_cursor.get("resume_from_run_id"),
-                    "run_window": bulk_window_state.get("run_window"),
-                    "run_window_active": bool(bulk_window_state.get("run_window_active")),
-                    "run_window_current_period": bulk_window_state.get("current_period"),
-                    "skip_reason": bulk_window_state.get("skip_reason"),
-                    "selected_shard_count": 0,
-                    "selected_shard_ids": [],
-                },
-                "tasks": [],
-            }
+            bulk_report: dict[str, Any] = _build_default_bulk_report_payload(
+                bulk_window_state,
+                bulk_cursor,
+            )
             if bool(bulk_window_state.get("run_window_active")):
                 try:
                     bulk_report = await StockStrategyMatrixPlanner().plan(
@@ -1687,78 +1355,17 @@ class _StrategyFactorySchedulerLoopMixin:
                     )
                 except Exception as exc:
                     logger.warning("StrategyFactory: bulk stock-strategy matrix planning failed: %s", exc)
-                    bulk_report = {
-                        "summary": {
-                            "enabled": False,
-                            "configured_enabled": bool(bulk_window_state.get("configured_enabled")),
-                            "task_count": 0,
-                            "stock_count": 0,
-                            "family_counts": {},
-                            "planned_family_counts": {},
-                            "universe_limit": STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
-                            "batch_size": STOCK_STRATEGY_MATRIX_BATCH_SIZE,
-                            "bulk_concurrency": STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY,
-                            "requested_universe_offset": int(bulk_cursor.get("next_universe_offset") or 0),
-                            "effective_universe_offset": 0,
-                            "universe_offset_fallback": False,
-                            "next_universe_offset": 0,
-                            "cursor_wrapped": False,
-                            "cursor_mode": bulk_cursor.get("cursor_mode") or "task_offset",
-                            "requested_task_offset": int(bulk_cursor.get("next_task_offset") or 0),
-                            "effective_task_offset": 0,
-                            "task_offset_fallback": False,
-                            "next_task_offset": 0,
-                            "task_cursor_wrapped": False,
-                            "planned_task_count": int(bulk_cursor.get("planned_task_count") or 0),
-                            "planned_candidate_count": 0,
-                            "loaded_stock_count": 0,
-                            "pages_loaded": 0,
-                            "analysis_complete": False,
-                            "analysis_stock_coverage_ratio": 0.0,
-                            "cursor_source": bulk_cursor.get("source"),
-                            "cursor_resume_from_run_id": bulk_cursor.get("resume_from_run_id"),
-                            "run_window": bulk_window_state.get("run_window"),
-                            "run_window_active": bool(bulk_window_state.get("run_window_active")),
-                            "run_window_current_period": bulk_window_state.get("current_period"),
-                            "skip_reason": "planner_error",
-                            "selected_shard_count": 0,
-                            "selected_shard_ids": [],
-                            "error": str(exc),
-                        },
-                        "tasks": [],
-                    }
+                    bulk_report = _build_bulk_planner_error_report_payload(
+                        bulk_window_state,
+                        bulk_cursor,
+                        exc,
+                    )
+            bulk_report = _normalize_bulk_report_summary_payload(
+                bulk_report,
+                bulk_window_state,
+                bulk_cursor,
+            )
             bulk_summary = dict(bulk_report.get("summary") or {})
-            bulk_summary.setdefault("configured_enabled", bool(bulk_window_state.get("configured_enabled")))
-            bulk_summary.setdefault("universe_limit", STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT)
-            bulk_summary.setdefault("batch_size", STOCK_STRATEGY_MATRIX_BATCH_SIZE)
-            bulk_summary.setdefault("bulk_concurrency", STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY)
-            bulk_summary.setdefault("requested_universe_offset", int(bulk_cursor.get("next_universe_offset") or 0))
-            bulk_summary.setdefault("effective_universe_offset", 0)
-            bulk_summary.setdefault("universe_offset_fallback", False)
-            bulk_summary.setdefault("next_universe_offset", 0)
-            bulk_summary.setdefault("cursor_wrapped", False)
-            bulk_summary.setdefault("cursor_mode", bulk_cursor.get("cursor_mode") or "task_offset")
-            bulk_summary.setdefault("requested_task_offset", int(bulk_cursor.get("next_task_offset") or 0))
-            bulk_summary.setdefault("effective_task_offset", 0)
-            bulk_summary.setdefault("task_offset_fallback", False)
-            bulk_summary.setdefault("next_task_offset", 0)
-            bulk_summary.setdefault("task_cursor_wrapped", False)
-            bulk_summary.setdefault("planned_task_count", int(bulk_cursor.get("planned_task_count") or 0))
-            bulk_summary.setdefault("planned_candidate_count", 0)
-            bulk_summary.setdefault("loaded_stock_count", 0)
-            bulk_summary.setdefault("pages_loaded", 0)
-            bulk_summary.setdefault("analysis_complete", False)
-            bulk_summary.setdefault("analysis_stock_coverage_ratio", 0.0)
-            bulk_summary.setdefault("planned_family_counts", {})
-            bulk_summary.setdefault("selected_shard_count", 0)
-            bulk_summary.setdefault("selected_shard_ids", [])
-            bulk_summary.setdefault("cursor_source", bulk_cursor.get("source"))
-            bulk_summary.setdefault("cursor_resume_from_run_id", bulk_cursor.get("resume_from_run_id"))
-            bulk_summary.setdefault("run_window", bulk_window_state.get("run_window"))
-            bulk_summary.setdefault("run_window_active", bool(bulk_window_state.get("run_window_active")))
-            bulk_summary.setdefault("run_window_current_period", bulk_window_state.get("current_period"))
-            bulk_summary.setdefault("skip_reason", bulk_window_state.get("skip_reason"))
-            bulk_report = {**bulk_report, "summary": bulk_summary}
             bulk_tasks = self._apply_scheduler_planning_controls(
                 list(bulk_report.get("tasks") or []),
                 feedback_root=feedback_root,
@@ -1771,6 +1378,9 @@ class _StrategyFactorySchedulerLoopMixin:
                     "feedback_control_mode_counts": dict(bulk_feedback_summary.get("feedback_control_mode_counts") or {}),
                     "feedback_target_pool_control_mode_counts": dict(
                         bulk_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "feedback_holding_bucket_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_holding_bucket_control_mode_counts") or {}
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         bulk_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
@@ -1826,160 +1436,24 @@ class _StrategyFactorySchedulerLoopMixin:
                     if not bool(dict(task or {}).get("feedback_generation_blocked"))
                     and _normalize_feedback_text(dict(task or {}).get("feedback_control_mode")) not in {"suppress", "freeze"}
                 ]
-                planning_feedback_summary = summarize_task_feedback_controls(scan_tasks)
-                selected_feedback_summary = summarize_task_feedback_controls(tasks)
-                task_budget_meta = {
-                    "max_research_tasks": int(AUTONOMY_MAX_RESEARCH_TASKS),
-                    "max_bulk_research_tasks": 0,
-                    "combined_research_task_budget": int(AUTONOMY_MAX_RESEARCH_TASKS),
-                    "scan_research_task_budget": int(AUTONOMY_MAX_RESEARCH_TASKS),
-                    "reserved_bulk_task_budget": 0,
-                    "selected_scan_task_count": int(len(tasks)),
-                    "selected_bulk_task_count": 0,
-                    "planned_bulk_task_count": 0,
-                    "clipped_bulk_task_count": 0,
-                    "planned_feedback_control_mode_counts": dict(
-                        planning_feedback_summary.get("feedback_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_target_pool_control_mode_counts": dict(
-                        planning_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_generator_mode_control_mode_counts": dict(
-                        planning_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_cooldown_task_count": int(
-                        planning_feedback_summary.get("feedback_cooldown_task_count") or 0
-                    ),
-                    "blocked_feedback_task_count": int(
-                        planning_feedback_summary.get("feedback_blocked_task_count") or 0
-                    ),
-                    "suppressed_families": list(planning_feedback_summary.get("suppressed_families") or []),
-                    "suppressed_target_pools": list(
-                        planning_feedback_summary.get("suppressed_target_pools") or []
-                    ),
-                    "suppressed_generator_modes": list(
-                        planning_feedback_summary.get("suppressed_generator_modes") or []
-                    ),
-                    "selected_feedback_control_mode_counts": dict(
-                        selected_feedback_summary.get("feedback_control_mode_counts") or {}
-                    ),
-                    "selected_feedback_target_pool_control_mode_counts": dict(
-                        selected_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
-                    ),
-                    "selected_feedback_generator_mode_control_mode_counts": dict(
-                        selected_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
-                    ),
-                }
+                task_budget_meta = _build_scan_only_task_budget_meta_payload(scan_tasks, tasks)
             task_source_counts = dict(scan_summary.get("task_sources") or scanner._build_task_source_counts(tasks))
             if bulk_tasks:
                 task_source_counts = scanner._build_task_source_counts(tasks)
             event_task_count = int(scan_summary.get("event_task_count") or task_source_counts.get("event_driven", 0))
-            task_type_counts: Dict[str, int] = {}
-            for task in tasks:
-                opportunity_type = str(task.get("opportunity_type") or "unknown")
-                task_type_counts[opportunity_type] = task_type_counts.get(opportunity_type, 0) + 1
-            combined_scan_report = {
-                "summary": {
-                    **scan_summary,
-                    "task_count": len(tasks),
-                    "task_types": task_type_counts,
-                    "task_sources": dict(task_source_counts),
-                    "event_task_count": event_task_count,
-                    "bulk_stock_task_count": len(bulk_tasks),
-                    "bulk_stock_matrix_enabled": bool((bulk_report.get("summary") or {}).get("enabled")),
-                    "bulk_stock_matrix_configured_enabled": bool((bulk_report.get("summary") or {}).get("configured_enabled")),
-                    "bulk_stock_matrix_stock_count": int((bulk_report.get("summary") or {}).get("stock_count") or 0),
-                    "bulk_stock_matrix_eligible_stock_count": int((bulk_report.get("summary") or {}).get("eligible_stock_count") or 0),
-                    "bulk_stock_matrix_loaded_stock_count": int((bulk_report.get("summary") or {}).get("loaded_stock_count") or 0),
-                    "bulk_stock_matrix_pages_loaded": int((bulk_report.get("summary") or {}).get("pages_loaded") or 0),
-                    "bulk_stock_matrix_analysis_complete": bool((bulk_report.get("summary") or {}).get("analysis_complete")),
-                    "bulk_stock_matrix_analysis_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("analysis_stock_coverage_ratio"),
-                    "bulk_stock_matrix_family_counts": dict((bulk_report.get("summary") or {}).get("family_counts") or {}),
-                    "bulk_stock_matrix_planned_family_counts": dict((bulk_report.get("summary") or {}).get("planned_family_counts") or {}),
-                    "bulk_stock_matrix_universe_limit": int((bulk_report.get("summary") or {}).get("universe_limit") or STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT),
-                    "bulk_stock_matrix_batch_size": int((bulk_report.get("summary") or {}).get("batch_size") or STOCK_STRATEGY_MATRIX_BATCH_SIZE),
-                    "bulk_stock_matrix_batch_count": int((bulk_report.get("summary") or {}).get("batch_count") or 0),
-                    "bulk_stock_matrix_selected_batch_count": int((bulk_report.get("summary") or {}).get("selected_batch_count") or 0),
-                    "bulk_stock_matrix_bulk_concurrency": int((bulk_report.get("summary") or {}).get("bulk_concurrency") or STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY),
-                    "bulk_stock_matrix_run_window": (bulk_report.get("summary") or {}).get("run_window"),
-                    "bulk_stock_matrix_run_window_active": bool((bulk_report.get("summary") or {}).get("run_window_active")),
-                    "bulk_stock_matrix_run_window_current_period": (bulk_report.get("summary") or {}).get("run_window_current_period"),
-                    "bulk_stock_matrix_skip_reason": (bulk_report.get("summary") or {}).get("skip_reason"),
-                    "bulk_stock_matrix_requested_universe_offset": int((bulk_report.get("summary") or {}).get("requested_universe_offset") or 0),
-                    "bulk_stock_matrix_effective_universe_offset": int((bulk_report.get("summary") or {}).get("effective_universe_offset") or 0),
-                    "bulk_stock_matrix_universe_offset_fallback": bool((bulk_report.get("summary") or {}).get("universe_offset_fallback")),
-                    "bulk_stock_matrix_next_universe_offset": int((bulk_report.get("summary") or {}).get("next_universe_offset") or 0),
-                    "bulk_stock_matrix_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("cursor_wrapped")),
-                    "bulk_stock_matrix_cursor_mode": (bulk_report.get("summary") or {}).get("cursor_mode") or "task_offset",
-                    "bulk_stock_matrix_requested_task_offset": int((bulk_report.get("summary") or {}).get("requested_task_offset") or 0),
-                    "bulk_stock_matrix_effective_task_offset": int((bulk_report.get("summary") or {}).get("effective_task_offset") or 0),
-                    "bulk_stock_matrix_task_offset_fallback": bool((bulk_report.get("summary") or {}).get("task_offset_fallback")),
-                    "bulk_stock_matrix_next_task_offset": int((bulk_report.get("summary") or {}).get("next_task_offset") or 0),
-                    "bulk_stock_matrix_task_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("task_cursor_wrapped")),
-                    "bulk_stock_matrix_cursor_source": (bulk_report.get("summary") or {}).get("cursor_source") or bulk_cursor.get("source"),
-                    "bulk_stock_matrix_cursor_resume_from_run_id": (bulk_report.get("summary") or {}).get("cursor_resume_from_run_id") or bulk_cursor.get("resume_from_run_id"),
-                    "bulk_stock_matrix_effective_task_budget": int((bulk_report.get("summary") or {}).get("effective_task_budget") or 0),
-                    "bulk_stock_matrix_max_candidates_per_run": int((bulk_report.get("summary") or {}).get("max_candidates_per_run") or 0),
-                    "bulk_stock_matrix_estimated_candidate_count": int((bulk_report.get("summary") or {}).get("estimated_candidate_count") or 0),
-                    "bulk_stock_matrix_planned_task_count": int((bulk_report.get("summary") or {}).get("planned_task_count") or 0),
-                    "bulk_stock_matrix_planned_candidate_count": int((bulk_report.get("summary") or {}).get("planned_candidate_count") or 0),
-                    "bulk_stock_matrix_tasks_per_shard": int((bulk_report.get("summary") or {}).get("tasks_per_shard") or 0),
-                    "bulk_stock_matrix_shard_count": int((bulk_report.get("summary") or {}).get("shard_count") or 0),
-                    "bulk_stock_matrix_selected_shard_count": int((bulk_report.get("summary") or {}).get("selected_shard_count") or 0),
-                    "bulk_stock_matrix_selected_shard_ids": list((bulk_report.get("summary") or {}).get("selected_shard_ids") or []),
-                    "bulk_stock_matrix_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("stock_coverage_ratio"),
-                    "bulk_stock_matrix_allocation_mode": (bulk_report.get("summary") or {}).get("allocation_mode"),
-                    "bulk_stock_matrix_allocation_pass_counts": dict((bulk_report.get("summary") or {}).get("allocation_pass_counts") or {}),
-                    "bulk_stock_matrix_planned_allocation_pass_counts": dict((bulk_report.get("summary") or {}).get("planned_allocation_pass_counts") or {}),
-                    "bulk_stock_matrix_overflow_task_count": int((bulk_report.get("summary") or {}).get("overflow_task_count") or 0),
-                    "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
-                    "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
-                    "combined_research_task_budget": int(
-                        task_budget_meta.get("combined_research_task_budget")
-                        or task_budget_meta.get("max_research_tasks")
-                        or AUTONOMY_MAX_RESEARCH_TASKS
-                    ),
-                    "scan_research_task_budget": int(task_budget_meta.get("scan_research_task_budget") or AUTONOMY_MAX_RESEARCH_TASKS),
-                    "reserved_bulk_task_budget": int(task_budget_meta.get("reserved_bulk_task_budget") or 0),
-                    "selected_scan_task_count": int(task_budget_meta.get("selected_scan_task_count") or 0),
-                    "selected_bulk_task_count": int(task_budget_meta.get("selected_bulk_task_count") or 0),
-                    "planned_bulk_task_count": int(task_budget_meta.get("planned_bulk_task_count") or 0),
-                    "clipped_bulk_task_count": int(task_budget_meta.get("clipped_bulk_task_count") or 0),
-                    "planned_feedback_control_mode_counts": dict(
-                        task_budget_meta.get("planned_feedback_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_target_pool_control_mode_counts": dict(
-                        task_budget_meta.get("planned_feedback_target_pool_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_generator_mode_control_mode_counts": dict(
-                        task_budget_meta.get("planned_feedback_generator_mode_control_mode_counts") or {}
-                    ),
-                    "planned_feedback_cooldown_task_count": int(
-                        task_budget_meta.get("planned_feedback_cooldown_task_count") or 0
-                    ),
-                    "blocked_feedback_task_count": int(task_budget_meta.get("blocked_feedback_task_count") or 0),
-                    "suppressed_families": list(task_budget_meta.get("suppressed_families") or []),
-                    "suppressed_target_pools": list(task_budget_meta.get("suppressed_target_pools") or []),
-                    "suppressed_generator_modes": list(task_budget_meta.get("suppressed_generator_modes") or []),
-                    "selected_feedback_control_mode_counts": dict(
-                        task_budget_meta.get("selected_feedback_control_mode_counts") or {}
-                    ),
-                    "selected_feedback_target_pool_control_mode_counts": dict(
-                        task_budget_meta.get("selected_feedback_target_pool_control_mode_counts") or {}
-                    ),
-                    "selected_feedback_generator_mode_control_mode_counts": dict(
-                        task_budget_meta.get("selected_feedback_generator_mode_control_mode_counts") or {}
-                    ),
-                    "external_llm_provider_control_mode": external_provider_control.get("control_mode"),
-                    "external_llm_provider_control_reasons": list(
-                        external_provider_control.get("control_reasons") or []
-                    ),
-                    "generator_mode_controls": dict(generator_mode_controls or {}),
-                },
-                "tasks": tasks,
-                "opportunity_scan": scan_report,
-                "bulk_stock_matrix": bulk_report,
-            }
+            combined_scan_report = _build_combined_scan_report_payload(
+                scan_summary=scan_summary,
+                tasks=tasks,
+                task_source_counts=task_source_counts,
+                event_task_count=event_task_count,
+                bulk_tasks=bulk_tasks,
+                bulk_report=bulk_report,
+                bulk_cursor=bulk_cursor,
+                task_budget_meta=task_budget_meta,
+                external_provider_control=external_provider_control,
+                generator_mode_controls=generator_mode_controls,
+                opportunity_scan=scan_report,
+            )
             autonomy_gateway = self._get_autonomy_gateway()
             generated_candidates: List[dict] = []
             all_experiments: List[dict] = []
@@ -2024,262 +1498,86 @@ class _StrategyFactorySchedulerLoopMixin:
                 nonlocal total_compatibility_failure_count, total_effective_response_count, total_empty_200_response_count
                 nonlocal total_selected_count, total_evidence_count
                 nonlocal last_error_type, last_error, elapsed_seconds
-                evidence_rows: List[dict] = []
-                task_run: dict[str, Any] = {"id": None}
-                enriched_task = dict(task or {})
-                failed_phase = "preparing"
-                task_source = str(enriched_task.get("task_source") or "").strip().lower()
+                task_source = str(dict(task or {}).get("task_source") or "").strip().lower()
                 task_sem = bulk_sem if task_source == "bulk_stock_matrix" else sem
-                async with task_sem:
-                    try:
-                        try:
-                            evidence_rows = await self._persist_task_evidence(
-                                db,
-                                {**task, "snapshot_date": snapshot.get("date")},
-                            )
-                        except Exception as exc:
-                            async with _agg_lock:
-                                self._record_persistence_failure(
-                                    persistence_failures,
-                                    "save_factory_task_evidence",
-                                    exc,
-                                    stage="autonomy",
-                                )
-                            evidence_rows = []
-                        event_context = _extract_event_context(task)
-                        try:
-                            task_run = (
-                                await _call_optional_async(
-                                    db,
-                                    "save_strategy_task_run",
-                                    {
-                                        "strategy_id": None,
-                                        "task_name": "strategy_research_task",
-                                        "task_scope": "strategy_factory",
-                                        "task_key": task.get("task_key") or task.get("task_id"),
-                                        "status": "running",
-                                        "trace_id": uuid4().hex[:12],
-                                        "payload": {
-                                            "research_task": task,
-                                            "event_context": event_context,
-                                            "task_source": task.get("task_source"),
-                                            "evidence_count": len(evidence_rows),
-                                            "snapshot_date": snapshot.get("date"),
-                                        },
-                                    },
-                                    default={"id": None},
-                                )
-                                or {"id": None}
-                            )
-                        except Exception as exc:
-                            async with _agg_lock:
-                                self._record_persistence_failure(
-                                    persistence_failures,
-                                    "save_strategy_task_run",
-                                    exc,
-                                    stage="autonomy",
-                                )
-                            task_run = {"id": None}
-                        enriched_task = {
-                            **task,
-                            "task_run_id": task_run.get("id"),
-                            "event_context": event_context,
-                            "evidence_count": len(evidence_rows),
-                            "evidence_refs": [
-                                {
-                                    "id": item.get("id"),
-                                    "evidence_type": item.get("evidence_type"),
-                                    "symbol": item.get("symbol"),
-                                    "weight": item.get("weight"),
-                                }
-                                for item in evidence_rows
-                            ],
-                        }
-                        failed_phase = "generating"
-                        cycle = await self._generate_for_research_task(autonomy_gateway, db, snapshot, enriched_task)
-                        llm_generation = self._extract_cycle_llm_generation(cycle)
-                        lifecycle = self._extract_cycle_lifecycle(cycle)
-                        lifecycle_summary = summarize_autonomy_lifecycle(lifecycle)
-                        external_provider = dict(llm_generation.get("external_provider") or {})
-                        status = str(external_provider.get("status") or "unknown")
-                        task_result = {
-                            "task": enriched_task,
-                            "task_run_id": task_run.get("id"),
-                            "task_source": enriched_task.get("task_source"),
-                            "event_id": enriched_task.get("event_id"),
-                            "theme_code": enriched_task.get("theme_code"),
-                            "evidence_count": len(evidence_rows),
-                            "status": "completed",
-                            "generated_count": self._extract_cycle_generated_count(cycle),
-                            "reviewed_count": self._extract_cycle_reviewed_count(cycle),
-                            "external_llm_status": status,
-                            "external_llm_attempt_count": 0,
-                            "external_llm_network_request_count": 0,
-                            "external_llm_compatibility_skip_count": 0,
-                            "external_llm_cooldown_skip_count": 0,
-                            "external_llm_request_status_counts": {},
-                            "llm_generation": llm_generation,
-                            "lifecycle": lifecycle,
-                            "lifecycle_summary": lifecycle_summary,
-                        }
-                        task_requests = list(external_provider.get("requests") or [])
-                        task_level_attempt = len(task_requests)
-                        task_level_request_status_counts = self._summarize_external_request_status_counts(task_requests)
-                        task_level_network_request_count = self._count_external_network_requests(task_requests)
-                        task_level_real_request_count = self._count_external_real_requests(task_requests)
-                        task_level_compatibility_skip_count = int(task_level_request_status_counts.get("compatibility_skip", 0))
-                        task_level_cooldown_skip_count = int(task_level_request_status_counts.get("cooldown_skip", 0))
-                        task_level_compatibility_failure_count = sum(
-                            1 for item in task_requests if self._request_is_compatibility_failure(item)
+                def _record_task_persistence_failure(operation: str, exc: Exception) -> None:
+                    logger.warning("StrategyFactory: %s failed: %s", operation, exc)
+                    self._record_persistence_failure(
+                        persistence_failures,
+                        operation,
+                        exc,
+                        stage="autonomy",
+                    )
+
+                execution = await _execute_autonomy_task_payload(
+                    _AutonomyTaskExecutionContext(
+                        task=dict(task or {}),
+                        task_semaphore=task_sem,
+                        db=db,
+                        snapshot=snapshot,
+                        autonomy_gateway=autonomy_gateway,
+                        persist_task_evidence=self._persist_task_evidence,
+                        extract_event_context=_extract_event_context,
+                        call_optional_async=_call_optional_async,
+                        record_persistence_failure=_record_task_persistence_failure,
+                        generate_for_research_task=self._generate_for_research_task,
+                        extract_cycle_llm_generation=self._extract_cycle_llm_generation,
+                        extract_cycle_lifecycle=self._extract_cycle_lifecycle,
+                        extract_cycle_generated_count=self._extract_cycle_generated_count,
+                        extract_cycle_reviewed_count=self._extract_cycle_reviewed_count,
+                        extract_cycle_candidates=self._extract_cycle_candidates,
+                        extract_cycle_experiments=self._extract_cycle_experiments,
+                        enrich_candidate_targeting=self._enrich_candidate_targeting,
+                        build_research_task_run_result_summary=self._build_research_task_run_result_summary,
+                        summarize_request_status_counts=self._summarize_external_request_status_counts,
+                        count_network_requests=self._count_external_network_requests,
+                        count_real_requests=self._count_external_real_requests,
+                        request_is_compatibility_failure=self._request_is_compatibility_failure,
+                        request_is_empty_200_response=self._request_is_empty_200_response,
+                        normalize_external_request_status=self._normalize_external_request_status,
+                        summarize_autonomy_lifecycle=summarize_autonomy_lifecycle,
+                        autonomy_phase_order=AUTONOMY_PHASE_ORDER,
+                    )
+                )
+                async with _agg_lock:
+                    generated_candidates.extend(execution.generated_candidates)
+                    all_experiments.extend(execution.experiments)
+                    external_status_counts[execution.external_status] = (
+                        external_status_counts.get(execution.external_status, 0) + 1
+                    )
+                    total_attempt_count += int(execution.request_metrics.get("attempt_count") or 0)
+                    total_network_request_count += int(
+                        execution.request_metrics.get("network_request_count") or 0
+                    )
+                    total_real_request_count += int(execution.request_metrics.get("real_request_count") or 0)
+                    total_compatibility_skip_count += int(
+                        execution.request_metrics.get("compatibility_skip_count") or 0
+                    )
+                    total_cooldown_skip_count += int(
+                        execution.request_metrics.get("cooldown_skip_count") or 0
+                    )
+                    total_compatibility_failure_count += int(
+                        execution.request_metrics.get("compatibility_failure_count") or 0
+                    )
+                    total_effective_response_count += int(
+                        execution.request_metrics.get("effective_response_count") or 0
+                    )
+                    total_empty_200_response_count += int(
+                        execution.request_metrics.get("empty_200_response_count") or 0
+                    )
+                    for request_status, count in dict(
+                        execution.request_metrics.get("request_status_counts") or {}
+                    ).items():
+                        total_request_status_counts[request_status] = (
+                            total_request_status_counts.get(request_status, 0) + int(count or 0)
                         )
-                        task_level_effective_response_count = sum(
-                            1
-                            for item in task_requests
-                            if self._normalize_external_request_status(dict(item or {}).get("status")) == "succeeded"
-                        )
-                        task_level_empty_200_response_count = sum(
-                            1 for item in task_requests if self._request_is_empty_200_response(item)
-                        )
-                        task_level_selected = int(external_provider.get("selected_count") or 0)
-                        task_result["external_llm_attempt_count"] = task_level_attempt
-                        task_result["external_llm_network_request_count"] = task_level_network_request_count
-                        task_result["external_llm_real_request_count"] = task_level_real_request_count
-                        task_result["external_llm_compatibility_skip_count"] = task_level_compatibility_skip_count
-                        task_result["external_llm_cooldown_skip_count"] = task_level_cooldown_skip_count
-                        task_result["external_llm_compatibility_failure_count"] = task_level_compatibility_failure_count
-                        task_result["external_llm_effective_response_count"] = task_level_effective_response_count
-                        task_result["external_llm_empty_200_response_count"] = task_level_empty_200_response_count
-                        task_result["external_llm_compatibility_failure_ratio"] = (
-                            round(task_level_compatibility_failure_count / task_level_real_request_count, 4)
-                            if task_level_real_request_count
-                            else 0.0
-                        )
-                        task_result["external_llm_effective_response_ratio"] = (
-                            round(task_level_effective_response_count / task_level_real_request_count, 4)
-                            if task_level_real_request_count
-                            else 0.0
-                        )
-                        task_result["external_llm_request_status_counts"] = task_level_request_status_counts
-                        task_result_summary = self._build_research_task_run_result_summary(task_result)
-                        async with _agg_lock:
-                            for candidate in self._extract_cycle_candidates(cycle):
-                                enriched = self._enrich_candidate_targeting(candidate, enriched_task)
-                                params = dict(enriched.get("params") or {})
-                                params["task_attempt_count"] = task_level_attempt
-                                params["task_stage_attempt_count"] = task_level_attempt
-                                params["task_network_request_count"] = task_level_network_request_count
-                                params["task_real_request_count"] = task_level_real_request_count
-                                params["task_compatibility_skip_count"] = task_level_compatibility_skip_count
-                                params["task_cooldown_skip_count"] = task_level_cooldown_skip_count
-                                params["task_compatibility_failure_count"] = task_level_compatibility_failure_count
-                                params["task_effective_response_count"] = task_level_effective_response_count
-                                params["task_empty_200_response_count"] = task_level_empty_200_response_count
-                                params["task_compatibility_failure_ratio"] = (
-                                    round(task_level_compatibility_failure_count / task_level_real_request_count, 4)
-                                    if task_level_real_request_count
-                                    else 0.0
-                                )
-                                params["task_effective_response_ratio"] = (
-                                    round(task_level_effective_response_count / task_level_real_request_count, 4)
-                                    if task_level_real_request_count
-                                    else 0.0
-                                )
-                                params["task_selected_count"] = task_level_selected
-                                enriched["params"] = params
-                                generated_candidates.append(enriched)
-                            all_experiments.extend(self._extract_cycle_experiments(cycle))
-                            external_status_counts[status] = external_status_counts.get(status, 0) + 1
-                            total_attempt_count += task_level_attempt
-                            total_network_request_count += task_level_network_request_count
-                            total_real_request_count += task_level_real_request_count
-                            total_compatibility_skip_count += task_level_compatibility_skip_count
-                            total_cooldown_skip_count += task_level_cooldown_skip_count
-                            total_compatibility_failure_count += task_level_compatibility_failure_count
-                            total_effective_response_count += task_level_effective_response_count
-                            total_empty_200_response_count += task_level_empty_200_response_count
-                            for request_status, count in task_level_request_status_counts.items():
-                                total_request_status_counts[request_status] = (
-                                    total_request_status_counts.get(request_status, 0) + int(count or 0)
-                                )
-                            total_selected_count += task_level_selected
-                            total_evidence_count += len(evidence_rows)
-                            if external_provider.get("last_error_type"):
-                                last_error_type = external_provider.get("last_error_type")
-                                last_error = external_provider.get("last_error")
-                            elapsed_seconds += float(external_provider.get("elapsed_seconds") or 0.0)
-                            task_results.append(task_result_summary)
-                        if task_run.get("id") is not None:
-                            try:
-                                await _call_optional_async(
-                                    db,
-                                    "update_strategy_task_run",
-                                    task_run["id"],
-                                    status="completed",
-                                    result=task_result_summary,
-                                )
-                            except Exception as exc:
-                                logger.warning("StrategyFactory: update task_run completed failed: %s", exc)
-                                async with _agg_lock:
-                                    self._record_persistence_failure(
-                                        persistence_failures,
-                                        "update_strategy_task_run",
-                                        exc,
-                                        stage="autonomy",
-                                    )
-                    except Exception as exc:
-                        failure_lifecycle = dict(getattr(exc, "autonomy_lifecycle", {}) or {})
-                        if not failure_lifecycle:
-                            failure_lifecycle = {
-                                "state": "failed",
-                                "current_phase": failed_phase,
-                                "failed_phase": failed_phase,
-                                "terminal_phase": "failed",
-                                "phase_order": list(AUTONOMY_PHASE_ORDER),
-                                "phase_status_counts": {"failed": 1},
-                                "completed_phase_count": 0,
-                                "event_count": 0,
-                                "events": [],
-                            }
-                        lifecycle_summary = summarize_autonomy_lifecycle(failure_lifecycle)
-                        task_result = {
-                            "task": enriched_task,
-                            "task_run_id": getattr(exc, "autonomy_task_run_id", None) or task_run.get("id"),
-                            "task_source": enriched_task.get("task_source"),
-                            "event_id": enriched_task.get("event_id"),
-                            "theme_code": enriched_task.get("theme_code"),
-                            "evidence_count": len(evidence_rows),
-                            "status": "failed",
-                            "generated_count": 0,
-                            "error": str(exc),
-                            "lifecycle": failure_lifecycle,
-                            "lifecycle_summary": lifecycle_summary,
-                        }
-                        task_result_summary = self._build_research_task_run_result_summary(task_result)
-                        async with _agg_lock:
-                            task_results.append(task_result_summary)
-                            external_status_counts["failed"] = external_status_counts.get("failed", 0) + 1
-                            total_evidence_count += len(evidence_rows)
-                            last_error_type = exc.__class__.__name__
-                            last_error = str(exc)
-                        if task_run.get("id") is not None:
-                            try:
-                                await _call_optional_async(
-                                    db,
-                                    "update_strategy_task_run",
-                                    task_run["id"],
-                                    status="failed",
-                                    error=str(exc),
-                                    result=task_result_summary,
-                                )
-                            except Exception as update_exc:
-                                logger.warning("StrategyFactory: update task_run failed failed: %s", update_exc)
-                                async with _agg_lock:
-                                    self._record_persistence_failure(
-                                        persistence_failures,
-                                        "update_strategy_task_run",
-                                        update_exc,
-                                        stage="autonomy",
-                                    )
+                    total_selected_count += int(execution.selected_count or 0)
+                    total_evidence_count += int(execution.evidence_count or 0)
+                    if execution.last_error_type:
+                        last_error_type = execution.last_error_type
+                        last_error = execution.last_error
+                    elapsed_seconds += float(execution.elapsed_seconds or 0.0)
+                    task_results.append(execution.task_result_summary)
 
             # 有界并发执行所有研究任务
             if tasks:
@@ -2289,196 +1587,55 @@ class _StrategyFactorySchedulerLoopMixin:
                 )
                 await asyncio.gather(*[_run_one_task(t) for t in tasks])
 
-            completed_task_count = len([item for item in task_results if item.get("status") == "completed"])
-            failed_task_count = len([item for item in task_results if item.get("status") == "failed"])
-            positive_provider = sum(external_status_counts.get(key, 0) for key in ("succeeded", "fallback_only"))
-            failed_provider = int(external_status_counts.get("failed", 0))
-            skipped_provider = int(external_status_counts.get("skipped", 0))
-            if not task_results:
-                overall_status = "skipped"
-            elif positive_provider > 0 and failed_provider == 0 and failed_task_count == 0:
-                overall_status = "succeeded"
-            elif failed_provider > 0 and positive_provider == 0 and skipped_provider == 0:
-                overall_status = "failed"
-            elif failed_provider > 0 or failed_task_count > 0:
-                overall_status = "partial" if completed_task_count > 0 else "failed"
-            elif skipped_provider == len(task_results) and failed_task_count == 0:
-                overall_status = "succeeded"
-            else:
-                overall_status = "partial" if completed_task_count else "failed"
             lifecycle_metrics = self._aggregate_task_lifecycle_metrics(task_results)
             selected_feedback_summary = summarize_task_feedback_controls(tasks)
-            stage = {
-                "task_count": len(tasks),
-                "task_source_counts": task_source_counts,
-                "event_task_count": event_task_count,
-                "snapshot_task_count": int(task_source_counts.get("snapshot", 0)),
-                "bulk_stock_task_count": int(task_source_counts.get("bulk_stock_matrix", 0)),
-                "bulk_stock_matrix_eligible_stock_count": int((bulk_report.get("summary") or {}).get("eligible_stock_count") or 0),
-                "bulk_stock_matrix_loaded_stock_count": int((bulk_report.get("summary") or {}).get("loaded_stock_count") or 0),
-                "bulk_stock_matrix_pages_loaded": int((bulk_report.get("summary") or {}).get("pages_loaded") or 0),
-                "bulk_stock_matrix_analysis_complete": bool((bulk_report.get("summary") or {}).get("analysis_complete")),
-                "bulk_stock_matrix_analysis_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("analysis_stock_coverage_ratio"),
-                "bulk_stock_matrix_universe_limit": int((bulk_report.get("summary") or {}).get("universe_limit") or STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT),
-                "bulk_stock_matrix_batch_count": int((bulk_report.get("summary") or {}).get("batch_count") or 0),
-                "bulk_stock_matrix_selected_batch_count": int((bulk_report.get("summary") or {}).get("selected_batch_count") or 0),
-                "bulk_stock_matrix_requested_universe_offset": int((bulk_report.get("summary") or {}).get("requested_universe_offset") or 0),
-                "bulk_stock_matrix_effective_universe_offset": int((bulk_report.get("summary") or {}).get("effective_universe_offset") or 0),
-                "bulk_stock_matrix_universe_offset_fallback": bool((bulk_report.get("summary") or {}).get("universe_offset_fallback")),
-                "bulk_stock_matrix_next_universe_offset": int((bulk_report.get("summary") or {}).get("next_universe_offset") or 0),
-                "bulk_stock_matrix_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("cursor_wrapped")),
-                "bulk_stock_matrix_cursor_mode": (bulk_report.get("summary") or {}).get("cursor_mode") or "task_offset",
-                "bulk_stock_matrix_requested_task_offset": int((bulk_report.get("summary") or {}).get("requested_task_offset") or 0),
-                "bulk_stock_matrix_effective_task_offset": int((bulk_report.get("summary") or {}).get("effective_task_offset") or 0),
-                "bulk_stock_matrix_task_offset_fallback": bool((bulk_report.get("summary") or {}).get("task_offset_fallback")),
-                "bulk_stock_matrix_next_task_offset": int((bulk_report.get("summary") or {}).get("next_task_offset") or 0),
-                "bulk_stock_matrix_task_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("task_cursor_wrapped")),
-                "bulk_stock_matrix_cursor_source": (bulk_report.get("summary") or {}).get("cursor_source") or bulk_cursor.get("source"),
-                "bulk_stock_matrix_cursor_resume_from_run_id": (bulk_report.get("summary") or {}).get("cursor_resume_from_run_id") or bulk_cursor.get("resume_from_run_id"),
-                "bulk_stock_matrix_effective_task_budget": int((bulk_report.get("summary") or {}).get("effective_task_budget") or 0),
-                "bulk_stock_matrix_estimated_candidate_count": int((bulk_report.get("summary") or {}).get("estimated_candidate_count") or 0),
-                "bulk_stock_matrix_planned_task_count": int((bulk_report.get("summary") or {}).get("planned_task_count") or 0),
-                "bulk_stock_matrix_planned_candidate_count": int((bulk_report.get("summary") or {}).get("planned_candidate_count") or 0),
-                "bulk_stock_matrix_shard_count": int((bulk_report.get("summary") or {}).get("shard_count") or 0),
-                "bulk_stock_matrix_selected_shard_count": int((bulk_report.get("summary") or {}).get("selected_shard_count") or 0),
-                "bulk_stock_matrix_selected_shard_ids": list((bulk_report.get("summary") or {}).get("selected_shard_ids") or []),
-                "event_evidence_count": total_evidence_count,
-                "completed_task_count": completed_task_count,
-                "failed_task_count": failed_task_count,
-                "task_scan": combined_scan_report,
-                "task_results": task_results,
-                "generated_count": len(generated_candidates),
-                "experiment_count": len(all_experiments),
-                "task_run_ids": [item.get("task_run_id") for item in task_results if item.get("task_run_id") is not None],
-                "external_llm_status": overall_status,
-                "external_llm_status_counts": external_status_counts,
-                "external_llm_attempt_count": total_attempt_count,
-                "external_llm_stage_attempt_count": total_attempt_count,
-                "external_llm_network_request_count": total_network_request_count,
-                "external_llm_real_request_count": total_real_request_count,
-                "external_llm_compatibility_skip_count": total_compatibility_skip_count,
-                "external_llm_cooldown_skip_count": total_cooldown_skip_count,
-                "external_llm_compatibility_failure_count": total_compatibility_failure_count,
-                "external_llm_compatibility_failure_ratio": round(
-                    total_compatibility_failure_count / total_real_request_count,
-                    4,
-                )
-                if total_real_request_count
-                else 0.0,
-                "external_llm_effective_response_count": total_effective_response_count,
-                "external_llm_effective_response_ratio": round(
-                    total_effective_response_count / total_real_request_count,
-                    4,
-                )
-                if total_real_request_count
-                else 0.0,
-                "external_llm_empty_200_response_count": total_empty_200_response_count,
-                "external_llm_request_status_counts": total_request_status_counts,
-                "external_llm_selected_count": total_selected_count,
-                "external_llm_last_error_type": last_error_type,
-                "external_llm_last_error": last_error,
-                "external_llm_elapsed_seconds": round(elapsed_seconds, 4),
-                "external_llm_provider_health_status": external_provider_health.get("health_status"),
-                "external_llm_provider_scheduler_should_disable": bool(
-                    external_provider_health.get("scheduler_should_disable")
-                ),
-                "external_llm_provider_scheduler_skip_reason": external_provider_health.get("scheduler_skip_reason"),
-                "external_llm_provider_cooldown_active": bool(
-                    external_provider_health.get("compatibility_cooldown_active")
-                ),
-                "research_task_concurrency": effective_research_concurrency,
-                "configured_research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
-                "bulk_task_concurrency": effective_bulk_research_concurrency if has_bulk_tasks else 0,
-                "configured_bulk_task_concurrency": int(STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY) if has_bulk_tasks else 0,
-                "bulk_tasks_use_external_llm": bool(self._bulk_tasks_use_external_llm(autonomy_gateway)) if has_bulk_tasks else False,
-                "research_task_timeout_sec": round(self._resolve_research_task_timeout_sec(), 4),
-                "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
-                "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
-                "combined_research_task_budget": int(
-                    task_budget_meta.get("combined_research_task_budget")
-                    or task_budget_meta.get("max_research_tasks")
-                    or AUTONOMY_MAX_RESEARCH_TASKS
-                ),
-                "scan_research_task_budget": int(task_budget_meta.get("scan_research_task_budget") or AUTONOMY_MAX_RESEARCH_TASKS),
-                "reserved_bulk_task_budget": int(task_budget_meta.get("reserved_bulk_task_budget") or 0),
-                "selected_scan_task_count": int(task_budget_meta.get("selected_scan_task_count") or 0),
-                "selected_bulk_task_count": int(task_budget_meta.get("selected_bulk_task_count") or 0),
-                "planned_bulk_task_count": int(task_budget_meta.get("planned_bulk_task_count") or 0),
-                "clipped_bulk_task_count": int(task_budget_meta.get("clipped_bulk_task_count") or 0),
-                "planned_feedback_control_mode_counts": dict(
-                    task_budget_meta.get("planned_feedback_control_mode_counts") or {}
-                ),
-                "planned_feedback_target_pool_control_mode_counts": dict(
-                    task_budget_meta.get("planned_feedback_target_pool_control_mode_counts") or {}
-                ),
-                "planned_feedback_generator_mode_control_mode_counts": dict(
-                    task_budget_meta.get("planned_feedback_generator_mode_control_mode_counts") or {}
-                ),
-                "planned_feedback_cooldown_task_count": int(
-                    task_budget_meta.get("planned_feedback_cooldown_task_count") or 0
-                ),
-                "blocked_feedback_task_count": int(task_budget_meta.get("blocked_feedback_task_count") or 0),
-                "suppressed_families": list(task_budget_meta.get("suppressed_families") or []),
-                "suppressed_target_pools": list(task_budget_meta.get("suppressed_target_pools") or []),
-                "suppressed_generator_modes": list(task_budget_meta.get("suppressed_generator_modes") or []),
-                "selected_feedback_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_control_mode_counts") or {}
-                ),
-                "selected_feedback_target_pool_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
-                ),
-                "selected_feedback_generator_mode_control_mode_counts": dict(
-                    selected_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
-                ),
-                "external_llm_provider_control_mode": external_provider_control.get("control_mode"),
-                "external_llm_provider_control_reasons": list(
-                    external_provider_control.get("control_reasons") or []
-                ),
-                "external_llm_provider_control_metrics": {
-                    key: external_provider_control.get(key)
-                    for key in (
-                        "stage_attempt_count",
-                        "real_request_count",
-                        "compatibility_skip_count",
-                        "compatibility_skip_ratio",
-                        "compatibility_failure_count",
-                        "compatibility_failure_ratio",
-                        "effective_response_count",
-                        "effective_response_ratio",
-                        "empty_200_response_count",
-                        "empty_200_response_ratio",
-                    )
-                },
-                "generator_mode_controls": dict(generator_mode_controls or {}),
-                "shared_generation_context_preloaded": shared_generation_context_preloaded,
-                "persistence_failures": persistence_failures,
-                "persistence_failure_count": len(persistence_failures),
-                **lifecycle_metrics,
-            }
-            task_artifact = build_task_artifact(stage)
-            candidate_artifact = build_candidate_artifact(generated_candidates)
-            evidence_artifact = build_research_evidence_artifact(
-                stage,
-                experiments=all_experiments,
+            stage = _build_autonomy_stage_summary_payload(
+                task_results=task_results,
+                task_source_counts=task_source_counts,
+                event_task_count=event_task_count,
+                bulk_report=bulk_report,
+                bulk_cursor=bulk_cursor,
+                generated_candidates=generated_candidates,
+                all_experiments=all_experiments,
+                external_status_counts=external_status_counts,
+                total_attempt_count=total_attempt_count,
+                total_network_request_count=total_network_request_count,
+                total_real_request_count=total_real_request_count,
+                total_compatibility_skip_count=total_compatibility_skip_count,
+                total_cooldown_skip_count=total_cooldown_skip_count,
+                total_compatibility_failure_count=total_compatibility_failure_count,
+                total_effective_response_count=total_effective_response_count,
+                total_empty_200_response_count=total_empty_200_response_count,
+                total_request_status_counts=total_request_status_counts,
+                total_selected_count=total_selected_count,
+                total_evidence_count=total_evidence_count,
+                last_error_type=last_error_type,
+                last_error=last_error,
+                elapsed_seconds=elapsed_seconds,
+                external_provider_health=external_provider_health,
+                effective_research_concurrency=effective_research_concurrency,
+                has_bulk_tasks=has_bulk_tasks,
+                effective_bulk_research_concurrency=effective_bulk_research_concurrency,
+                bulk_tasks_use_external_llm=self._bulk_tasks_use_external_llm(autonomy_gateway),
+                research_task_timeout_sec=self._resolve_research_task_timeout_sec(),
+                task_budget_meta=task_budget_meta,
+                selected_feedback_summary=selected_feedback_summary,
+                external_provider_control=external_provider_control,
+                generator_mode_controls=generator_mode_controls,
+                shared_generation_context_preloaded=shared_generation_context_preloaded,
+                persistence_failures=persistence_failures,
+                lifecycle_metrics=lifecycle_metrics,
+                combined_scan_report=combined_scan_report,
             )
-            stage.update(
-                {
-                    "scan_task_artifact": scan_task_artifact,
-                    "bulk_task_artifact": bulk_task_artifact,
-                    "task_artifact": task_artifact,
-                    "candidate_artifact": candidate_artifact,
-                    "evidence_artifact": evidence_artifact,
-                    "scan_task_artifact_contract_version": scan_task_artifact.get("contract_version"),
-                    "scan_task_artifact_available": bool(scan_task_artifact.get("available")),
-                    "bulk_task_artifact_contract_version": bulk_task_artifact.get("contract_version"),
-                    "bulk_task_artifact_available": bool(bulk_task_artifact.get("available")),
-                    "task_artifact_contract_version": task_artifact.get("contract_version"),
-                    "task_artifact_available": bool(task_artifact.get("available")),
-                    "candidate_artifact_contract_version": candidate_artifact.get("contract_version"),
-                    "candidate_artifact_available": bool(candidate_artifact.get("available")),
-                    "evidence_artifact_contract_version": evidence_artifact.get("contract_version"),
-                    "evidence_artifact_available": bool(evidence_artifact.get("available")),
-                }
+            stage = _attach_autonomy_stage_artifacts_payload(
+                stage=stage,
+                scan_task_artifact=scan_task_artifact,
+                bulk_task_artifact=bulk_task_artifact,
+                generated_candidates=generated_candidates,
+                all_experiments=all_experiments,
+                build_task_artifact=build_task_artifact,
+                build_candidate_artifact=build_candidate_artifact,
+                build_research_evidence_artifact=build_research_evidence_artifact,
             )
             return {"stage": stage, "candidates": generated_candidates, "experiments": all_experiments}
 

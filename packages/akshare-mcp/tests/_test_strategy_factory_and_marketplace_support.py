@@ -43,6 +43,68 @@ def _type_name(value):
     return type(value).__name__
 
 
+def _mock_governed_factor_research(
+    monkeypatch,
+    *,
+    factor_names=None,
+    preferred_strategy_types=None,
+):
+    resolved_factor_names = [str(item) for item in (factor_names or ["quality"]) if str(item).strip()]
+    resolved_preferred = [
+        str(item) for item in (preferred_strategy_types or ["sector_breakout"]) if str(item).strip()
+    ]
+    candidate_families = list(resolved_preferred[: len(resolved_factor_names)])
+    if len(candidate_families) < len(resolved_factor_names):
+        fill_value = resolved_preferred[-1] if resolved_preferred else "sector_breakout"
+        candidate_families.extend([fill_value] * (len(resolved_factor_names) - len(candidate_families)))
+    monkeypatch.setattr(
+        "strategy_factory.infrastructure.mcp_adapters.MCPFactorResearchGatewayImpl.build_artifact",
+        AsyncMock(
+            return_value={
+                "active_factors": [{"factor_name": name} for name in resolved_factor_names],
+                "active_candidates": [
+                    {"factor_name": name, "family": family}
+                    for name, family in zip(resolved_factor_names, candidate_families)
+                ],
+                "active_family_summary": [{"family": family, "count": 1} for family in resolved_preferred],
+                "active_regime_summary": [{"regime": "neutral", "count": len(resolved_factor_names) or 1}],
+                "preferred_strategy_types": list(resolved_preferred),
+                "source_chain": ["governed_candidate_pool"],
+                "research_rationale": ["mock governed pool ready"],
+                "degraded": False,
+                "summary": {
+                    "active_factor_count": len(resolved_factor_names),
+                    "active_candidate_count": len(resolved_factor_names),
+                    "ranked_factor_count": len(resolved_factor_names),
+                    "top_factor_names": list(resolved_factor_names),
+                    "top_candidate_names": list(candidate_families),
+                    "preferred_strategy_types": list(resolved_preferred),
+                    "factor_source_mode": "governed_candidate_pool",
+                    "governed_candidate_pool_mode": "strict_governed",
+                    "governed_candidate_pool_provisional": False,
+                    "governed_candidate_pool_active": True,
+                    "governed_candidate_pool_runtime_state": "active",
+                    "governed_source_candidate_count": len(resolved_factor_names),
+                    "governed_blocked_candidate_count": 0,
+                    "governed_pending_candidate_count": 0,
+                    "governed_blocked_ratio": 0.0,
+                    "governed_pending_ratio": 0.0,
+                    "governed_freshness_days": 0.0,
+                    "scheduler_recent_success": True,
+                    "scheduler_llm_validation_status": "success",
+                    "quality_flags": [],
+                },
+                "freshness_repair": {
+                    "auto_refresh_enabled": True,
+                    "refresh_attempted": False,
+                    "refresh_status": "not_needed",
+                    "refresh_trigger": None,
+                },
+            }
+        ),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # 8. 策略管理器 (strategy_manager) 测试
 # ═══════════════════════════════════════════════════════════════

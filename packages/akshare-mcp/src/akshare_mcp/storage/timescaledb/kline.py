@@ -30,16 +30,17 @@ class KlineMixin:
             code: 股票代码
             start_date: 开始日期 (YYYY-MM-DD 或 YYYY)
             end_date: 结束日期 (YYYY-MM-DD 或 YYYY)
-            limit: 限制返回条数
+            limit: 限制返回条数；当设置时返回“最近 N 根”，但结果仍按时间升序
         """
         async with self.acquire() as conn:
-            query = """
+            base_query = """
                 SELECT
                     time, code, open, high, low, close,
                     volume, amount, turnover, change_pct
                 FROM kline_1d
                 WHERE code = $1
             """
+            query = base_query
             params: list = [code]
             param_idx = 2
 
@@ -61,11 +62,21 @@ class KlineMixin:
                     params.append(end_date_obj)
                     param_idx += 1
 
-            query += " ORDER BY time ASC"
-
             if limit:
-                query += f" LIMIT ${param_idx}"
                 params.append(limit)
+                query = f"""
+                    SELECT
+                        time, code, open, high, low, close,
+                        volume, amount, turnover, change_pct
+                    FROM (
+                        {query}
+                        ORDER BY time DESC
+                        LIMIT ${param_idx}
+                    ) recent_bars
+                    ORDER BY time ASC
+                """
+            else:
+                query += " ORDER BY time ASC"
 
             rows = await conn.fetch(query, *params)
 

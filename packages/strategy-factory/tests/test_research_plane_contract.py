@@ -19,9 +19,15 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
             "active_regime_names": ["trend"],
             "top_factor_names": ["momentum_20d", "value_rank"],
             "top_candidate_names": ["candidate_alpha"],
+            "family_preference_order": ["momentum", "value_factor", "ma_cross"],
+            "family_preference_source_mode": "stock_family_allocation",
             "governed_candidate_pool_mode": "strict_governed",
             "governed_candidate_pool_provisional": False,
+            "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+            "governed_candidate_pool_provisional_pending_count": 0,
+            "governed_candidate_pool_strict_shortfall_count": 2,
             "stock_family_allocation_count": 8,
+            "stock_family_allocation_source_mode": "stock_universe_projection",
             "factor_llm_provider_health_status": "healthy",
             "factor_llm_provider_ready": True,
         },
@@ -30,6 +36,39 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
             "contract_version": "strategy_factory.lifecycle_feedback_input.v1",
             "available": True,
         },
+        "family_reward_table": {
+            "momentum": {
+                "budget_weight": 0.62,
+                "feedback_budget_multiplier": 1.1,
+                "feedback_priority_adjustment": 0.08,
+                "promotion_ready_ratio": 0.4,
+                "forward_window_coverage_ratio": 0.55,
+                "family_route_action": "family_explore",
+            }
+        },
+        "family_debt_table": {
+            "momentum": {
+                "zero_signal_ratio": 0.2,
+                "low_signal_ratio": 0.3,
+                "evidence_debt_ratio": 0.15,
+                "control_mode": "normal",
+                "control_reasons": [],
+                "family_freeze_active": False,
+                "family_route_action": "family_explore",
+            }
+        },
+        "search_route_actions": [
+            {
+                "family": "momentum",
+                "scope": "family",
+                "action": "family_explore",
+                "control_mode": "normal",
+                "budget_weight": 0.62,
+                "budget_multiplier": 1.1,
+                "priority_adjustment": 0.08,
+                "reasons": [],
+            }
+        ],
         "top_candidate_lineage": [
             {
                 "artifact_id": "candidate_alpha",
@@ -126,9 +165,9 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
             "name": "candidate_alpha",
             "strategy_type": "momentum",
             "target_symbols": ["600519"],
-            "experiment_id": "exp_alpha",
+            "spawn_reason": "fear_greed local rule",
+            "generation_reason": {"source": "fear_greed"},
             "candidate_contract_snapshot": {"targeting": {"target_pool_id": "explicit:600519"}},
-            "research_task": {"task_source": "snapshot", "candidate_family": "momentum"},
             "params": {"candidate_provenance": {"generator_mode": "rule"}},
             "candidate_evidence_status": {"required_audits_complete": True},
         },
@@ -164,16 +203,32 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
         == RESEARCH_EVIDENCE_ARTIFACT_CONTRACT_VERSION
     )
     assert artifact["research_artifact"]["active_candidate_count"] == 3
+    assert artifact["research_artifact"]["family_preference_order"] == ["momentum", "value_factor", "ma_cross"]
+    assert artifact["research_artifact"]["family_preference_source_mode"] == "stock_family_allocation"
+    assert artifact["research_artifact"]["governed_candidate_pool_provisional_spillover_policy_status"] == "spillover_applied"
+    assert artifact["research_artifact"]["governed_candidate_pool_strict_shortfall_count"] == 2
     assert artifact["research_artifact"]["lifecycle_feedback_input_contract_version"] == "strategy_factory.lifecycle_feedback_input.v1"
     assert artifact["research_artifact"]["lifecycle_feedback_input_available"] is True
+    assert artifact["research_artifact"]["family_reward_table"]["momentum"]["budget_weight"] == 0.62
+    assert artifact["research_artifact"]["family_debt_table"]["momentum"]["control_mode"] == "normal"
+    assert artifact["research_artifact"]["search_route_actions"][0]["action"] == "family_explore"
+    assert artifact["research_artifact"]["search_route_action_counts"] == {"family_explore": 1}
     assert artifact["task_artifact"]["planned_task_count"] == 2
     assert artifact["task_artifact"]["task_source_counts"] == {"snapshot": 1, "event_driven": 1}
+    assert artifact["task_artifact"]["task_origin_counts"] == {"open_research": 2}
     assert artifact["candidate_artifact"]["candidate_count"] == 2
+    assert artifact["candidate_artifact"]["candidate_origin_counts"] == {
+        "local_rule": 1,
+        "external_autonomy": 1,
+    }
+    assert artifact["candidate_artifact"]["local_rule_candidate_count"] == 1
+    assert artifact["candidate_artifact"]["external_autonomy_candidate_count"] == 1
     assert artifact["candidate_artifact"]["generator_type_counts"] == {"rule": 1, "external_llm": 1}
     assert artifact["candidate_artifact"]["family_counts"] == {"momentum": 1, "value_factor": 1}
     assert artifact["evidence_artifact"]["task_evidence_count"] == 3
     assert artifact["evidence_artifact"]["experiment_count"] == 2
     assert artifact["evidence_artifact"]["external_llm_status"] == "succeeded"
+    assert artifact["evidence_artifact"]["task_origin_counts"] == {"open_research": 2}
 
 
 def test_research_plane_contract_exposes_lifecycle_feedback_summary_counts():
@@ -184,11 +239,26 @@ def test_research_plane_contract_exposes_lifecycle_feedback_summary_counts():
                 "budget_feedback_family_count": 3,
                 "budget_feedback_strategy_count": 12,
                 "budget_feedback_target_pool_scope_count": 2,
+                "budget_feedback_holding_bucket_scope_count": 2,
                 "budget_feedback_generator_mode_scope_count": 1,
                 "budget_feedback_runtime_alert_count": 4,
                 "budget_feedback_runtime_risk_event_count": 5,
                 "budget_feedback_promotion_review_count": 2,
                 "budget_feedback_promotion_review_status_counts": {"watch": 1, "approved": 1},
+                "budget_feedback_signal_count_total": 24,
+                "budget_feedback_zero_signal_strategy_count": 5,
+                "budget_feedback_zero_signal_ratio": 0.4167,
+                "budget_feedback_low_signal_strategy_count": 8,
+                "budget_feedback_low_signal_ratio": 0.6667,
+                "budget_feedback_observed_forward_window_count": 18,
+                "budget_feedback_missing_forward_window_count": 30,
+                "budget_feedback_expected_forward_window_count": 48,
+                "budget_feedback_forward_window_coverage_ratio": 0.375,
+                "budget_feedback_promotion_ready_count": 2,
+                "budget_feedback_promotion_ready_ratio": 0.1667,
+                "budget_feedback_promotion_review_coverage_ratio": 0.1667,
+                "budget_feedback_evidence_debt_strategy_count": 9,
+                "budget_feedback_evidence_debt_ratio": 0.5896,
             },
             "lifecycle_feedback_input": {
                 "contract_version": "strategy_factory.lifecycle_feedback_input.v1",
@@ -201,6 +271,7 @@ def test_research_plane_contract_exposes_lifecycle_feedback_summary_counts():
     assert research_artifact["lifecycle_feedback_family_count"] == 3
     assert research_artifact["lifecycle_feedback_strategy_count"] == 12
     assert research_artifact["lifecycle_feedback_target_pool_scope_count"] == 2
+    assert research_artifact["lifecycle_feedback_holding_bucket_scope_count"] == 2
     assert research_artifact["lifecycle_feedback_generator_mode_scope_count"] == 1
     assert research_artifact["lifecycle_feedback_runtime_alert_count"] == 4
     assert research_artifact["lifecycle_feedback_runtime_risk_event_count"] == 5
@@ -209,6 +280,23 @@ def test_research_plane_contract_exposes_lifecycle_feedback_summary_counts():
         "watch": 1,
         "approved": 1,
     }
+    assert research_artifact["lifecycle_feedback_signal_count_total"] == 24
+    assert research_artifact["lifecycle_feedback_zero_signal_strategy_count"] == 5
+    assert research_artifact["lifecycle_feedback_zero_signal_ratio"] == 0.4167
+    assert research_artifact["lifecycle_feedback_low_signal_strategy_count"] == 8
+    assert research_artifact["lifecycle_feedback_low_signal_ratio"] == 0.6667
+    assert research_artifact["lifecycle_feedback_observed_forward_window_count"] == 18
+    assert research_artifact["lifecycle_feedback_missing_forward_window_count"] == 30
+    assert research_artifact["lifecycle_feedback_expected_forward_window_count"] == 48
+    assert research_artifact["lifecycle_feedback_forward_window_coverage_ratio"] == 0.375
+    assert research_artifact["lifecycle_feedback_promotion_ready_count"] == 2
+    assert research_artifact["lifecycle_feedback_promotion_ready_ratio"] == 0.1667
+    assert research_artifact["lifecycle_feedback_promotion_review_coverage_ratio"] == 0.1667
+    assert research_artifact["lifecycle_feedback_evidence_debt_strategy_count"] == 9
+    assert research_artifact["lifecycle_feedback_evidence_debt_ratio"] == 0.5896
+    assert research_artifact["family_reward_table"] == {}
+    assert research_artifact["family_debt_table"] == {}
+    assert research_artifact["search_route_actions"] == []
 
 
 def test_research_plane_contract_supports_factor_only_runs():
@@ -234,8 +322,60 @@ def test_research_plane_contract_supports_factor_only_runs():
     assert artifact["task_artifact"]["available"] is False
     assert artifact["candidate_artifact"]["available"] is False
     assert artifact["evidence_artifact"]["available"] is False
-    assert artifact["research_artifact"]["readiness_reference"]["decision"] == "blocked"
-    assert artifact["research_artifact"]["readiness_reference"]["can_proceed"] is False
+
+
+def test_research_plane_contract_marks_governed_candidate_activation_candidates():
+    artifact = build_research_plane_artifact(
+        autonomy_stage={
+            "task_scan": {
+                "tasks": [
+                    {
+                        "task_id": "governed_1",
+                        "task_source": "bulk_stock_matrix",
+                        "source_candidate_artifact_id": "candidate_alpha",
+                    }
+                ]
+            },
+            "task_results": [
+                {
+                    "task": {
+                        "task_id": "governed_1",
+                        "task_source": "bulk_stock_matrix",
+                        "source_candidate_artifact_id": "candidate_alpha",
+                    },
+                    "status": "completed",
+                    "generated_count": 1,
+                    "evidence_count": 1,
+                }
+            ],
+        },
+        candidates=[
+            {
+                "name": "candidate_gamma",
+                "strategy_type": "momentum",
+                "research_task": {
+                    "task_source": "bulk_stock_matrix",
+                    "source_candidate_artifact_id": "candidate_alpha",
+                },
+                "params": {"generator_type": "external_llm"},
+            }
+        ],
+    )
+
+    assert artifact["candidate_artifact"]["candidate_origin_counts"] == {
+        "governed_candidate_activation": 1
+    }
+    assert artifact["candidate_artifact"]["governed_candidate_activation_count"] == 1
+    assert artifact["candidate_artifact"]["candidate_briefs"][0]["research_candidate_origin"] == (
+        "governed_candidate_activation"
+    )
+    assert artifact["task_artifact"]["task_origin_counts"] == {
+        "governed_candidate_activation": 1
+    }
+    assert artifact["task_artifact"]["governed_candidate_activation_task_count"] == 1
+    assert artifact["evidence_artifact"]["task_origin_counts"] == {
+        "governed_candidate_activation": 1
+    }
 
 
 def test_research_plane_contract_prefers_prebuilt_stage_artifacts():
@@ -287,3 +427,43 @@ def test_research_plane_contract_prefers_prebuilt_stage_artifacts():
     assert artifact["task_artifact"] == prebuilt_task_artifact
     assert artifact["candidate_artifact"] == prebuilt_candidate_artifact
     assert artifact["evidence_artifact"] == prebuilt_evidence_artifact
+
+
+def test_research_plane_contract_backfills_prebuilt_research_artifact_with_derived_fields():
+    artifact = build_research_plane_artifact(
+        factor_research={
+            "summary": {
+                "factor_source_mode": "governed_candidate_pool",
+                "active_factor_count": 2,
+                "family_preference_order": ["momentum", "quality_factor"],
+                "family_preference_source_mode": "stock_family_allocation",
+                "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                "governed_candidate_pool_strict_shortfall_count": 2,
+                "stock_family_allocation_count": 18,
+                "stock_family_allocation_source_mode": "stock_universe_projection",
+            },
+            "research_artifact": {
+                "contract_version": RESEARCH_ARTIFACT_CONTRACT_VERSION,
+                "available": True,
+                "active_factor_count": 1,
+            },
+            "source_chain": ["snapshot.factor_ic", "artifact_v2"],
+        },
+        readiness={
+            "decision": "proceed",
+            "readiness_score": 0.9,
+            "can_proceed": True,
+            "blocking_reason_codes": [],
+        },
+    )
+
+    research_artifact = artifact["research_artifact"]
+    assert research_artifact["available"] is True
+    assert research_artifact["active_factor_count"] == 1
+    assert research_artifact["family_preference_order"] == ["momentum", "quality_factor"]
+    assert research_artifact["family_preference_source_mode"] == "stock_family_allocation"
+    assert research_artifact["governed_candidate_pool_provisional_spillover_policy_status"] == "spillover_applied"
+    assert research_artifact["governed_candidate_pool_strict_shortfall_count"] == 2
+    assert research_artifact["stock_family_allocation_count"] == 18
+    assert research_artifact["stock_family_allocation_source_mode"] == "stock_universe_projection"
+    assert research_artifact["source_chain"] == ["snapshot.factor_ic", "artifact_v2"]

@@ -8,9 +8,14 @@
 import datetime
 import io
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
 
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
+
+_EFINANCE_TIMEOUT = float(os.getenv("EFINANCE_TIMEOUT", "12"))
+_efinance_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="efinance")
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +140,11 @@ class QuotesMixin:
         except Exception as e:
             safe_stderr_print(f"[DataSource] Tushare legacy quote failed: {e}")
 
-        # 3. eFinance
+        # 3. eFinance（限制超时）
         if ef is not None:
             try:
-                df = ef.stock.get_latest_quote([code])
+                future = _efinance_executor.submit(ef.stock.get_latest_quote, [code])
+                df = future.result(timeout=_EFINANCE_TIMEOUT)
                 if df is not None and not df.empty:
                     row = df.iloc[0]
                     name = row.get('名称') or row.get('股票名称') or ''
@@ -156,6 +162,8 @@ class QuotesMixin:
                         "amount": safe_float(row.get('成交额')),
                         "source": "efinance"
                     }
+            except FuturesTimeoutError:
+                safe_stderr_print(f"[DataSource] eFinance quote timed out (>{_EFINANCE_TIMEOUT}s) for {code}")
             except Exception as e:
                 safe_stderr_print(f"[DataSource] eFinance quote failed: {e}")
 
@@ -248,10 +256,11 @@ class QuotesMixin:
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Baostock KLine failed: {e}")
 
-        # 4. eFinance
+        # 4. eFinance（限制超时，防止内部 5 次 HTTP 重试阻塞过久）
         if ef is not None:
             try:
-                df = ef.stock.get_quote_history(code)
+                future = _efinance_executor.submit(ef.stock.get_quote_history, code)
+                df = future.result(timeout=_EFINANCE_TIMEOUT)
                 if df is not None and not df.empty:
                     results = []
                     for _, row in df.tail(limit).iterrows():
@@ -266,6 +275,8 @@ class QuotesMixin:
                             "source": "efinance"
                         })
                     return results
+            except FuturesTimeoutError:
+                safe_stderr_print(f"[DataSource] eFinance KLine timed out (>{_EFINANCE_TIMEOUT}s) for {code}")
             except Exception as e:
                 safe_stderr_print(f"[DataSource] eFinance KLine failed: {e}")
 

@@ -82,6 +82,10 @@ from .llm_alpha import LLMAlphaMiner
 from .data_pipeline import normalize_klines
 from .strategy_dsl import compile_strategy_blueprint
 from .strategy_llm_provider import StrategyLLMProvider, get_strategy_llm_provider
+from .strategy_open_dsl import (
+    is_open_dsl_spec_metadata,
+    open_dsl_max_candidates_per_run,
+)
 from .strategy_pipeline import get_strategy_pipeline
 from .strategy_spec import (
     DEFAULT_CODES,
@@ -223,6 +227,24 @@ def _finalize_external_provider_report(external_provider: Optional[dict[str, Any
     )
     if status_counts:
         summary["request_status_counts"] = status_counts
+    requests = list(summary.get("requests") or [])
+    if requests:
+        summary["open_dsl_candidate_count"] = int(
+            summary.get("open_dsl_candidate_count")
+            or sum(int(dict(item or {}).get("open_dsl_candidate_count") or 0) for item in requests)
+        )
+        summary["open_dsl_compiled_candidate_count"] = int(
+            summary.get("open_dsl_compiled_candidate_count")
+            or sum(int(dict(item or {}).get("open_dsl_compiled_candidate_count") or 0) for item in requests)
+        )
+        summary["open_dsl_viable_candidate_count"] = int(
+            summary.get("open_dsl_viable_candidate_count")
+            or sum(int(dict(item or {}).get("open_dsl_viable_candidate_count") or 0) for item in requests)
+        )
+        summary["open_dsl_rejected_count"] = int(
+            summary.get("open_dsl_rejected_count")
+            or sum(int(dict(item or {}).get("open_dsl_rejected_count") or 0) for item in requests)
+        )
     return summary
 
 
@@ -675,6 +697,261 @@ class RuleStrategyGenerator:
 
 
 class _LLMProxyStrategyGeneratorGenerateMixin:
+        @staticmethod
+        def _l2_hypothesis_replay_enabled() -> bool:
+            raw = os.getenv("STRATEGY_FACTORY_L2_HYPOTHESIS_REPLAY_ENABLED")
+            if raw is None:
+                raw = os.getenv("STRATEGY_FACTORY_L2_REPLAY_ENABLED")
+            if raw is None:
+                return True
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+        @classmethod
+        def _replay_strategy_spec_from_experiment(
+            cls,
+            row: dict[str, Any],
+            *,
+            research_task: Optional[dict[str, Any]] = None,
+        ) -> Optional[StrategySpec]:
+            payload = dict(row or {})
+            strategy_spec = dict(payload.get("strategy_spec") or {})
+            evaluation = dict(payload.get("evaluation") or {})
+            replay_contract = dict(strategy_spec.get("replay_contract") or {})
+            contract = dict(replay_contract or strategy_spec)
+            strategy_type = str(contract.get("strategy_type") or strategy_spec.get("strategy_type") or "").strip()
+            if not strategy_type:
+                return None
+            params = dict(contract.get("params") or {})
+            name = str(contract.get("name") or strategy_spec.get("name") or "").strip() or "历史回放候选"
+            description = str(
+                contract.get("description")
+                or strategy_spec.get("description")
+                or payload.get("hypothesis")
+                or ""
+            ).strip()
+            target_symbols = cls._normalize_code_list(
+                [
+                    contract.get("target_symbols"),
+                    strategy_spec.get("target_symbols"),
+                    evaluation.get("target_symbols"),
+                ]
+            )
+            normalized_task = _normalize_research_task_contract(research_task or {})
+            requested_targets = set(cls._normalize_code_list(normalized_task.get("target_symbols")))
+            if requested_targets and target_symbols and not requested_targets.intersection(target_symbols):
+                return None
+            allowed_strategy_types = {
+                str(item or "").strip().lower()
+                for item in list(normalized_task.get("allowed_strategy_types") or [])
+                if str(item or "").strip()
+            }
+            if allowed_strategy_types and strategy_type.strip().lower() not in allowed_strategy_types:
+                return None
+
+            hypothesis_artifact = dict(
+                contract.get("hypothesis_artifact")
+                or strategy_spec.get("hypothesis_artifact")
+                or evaluation.get("hypothesis_artifact")
+                or {}
+            )
+            metadata = {
+                "generator_type": "hypothesis_replay",
+                "hypothesis": str(
+                    hypothesis_artifact.get("alpha_hypothesis")
+                    or payload.get("hypothesis")
+                    or description
+                    or name
+                ).strip(),
+                "holding_horizon": dict(contract.get("holding_horizon") or {}),
+                "trade_plan": dict(contract.get("trade_plan") or {}),
+                "risk_rules": dict(contract.get("risk_rules") or {}),
+                "position_sizing": dict(contract.get("position_sizing") or {}),
+                "execution_notes": contract.get("execution_notes"),
+                "rebalance_rule": dict(contract.get("rebalance_rule") or {}),
+                "portfolio_spec": dict(contract.get("portfolio_spec") or {}),
+                "execution_assumptions": dict(contract.get("execution_assumptions") or {}),
+                "validation_profile": dict(contract.get("validation_profile") or {}),
+                "targeting_policy": dict(contract.get("targeting_policy") or {}),
+                "constraint_check": dict(contract.get("constraint_check") or {}),
+                "target_symbols": list(target_symbols),
+                "stock_pool": dict(contract.get("stock_pool") or {}),
+                "selection_logic": list(contract.get("selection_logic") or []),
+                "research_task": dict(contract.get("research_task") or strategy_spec.get("research_task") or normalized_task),
+                "event_context": dict(contract.get("event_context") or strategy_spec.get("event_context") or {}),
+                "hypothesis_artifact": hypothesis_artifact,
+                "hypothesis_lowering_audit": dict(
+                    contract.get("hypothesis_lowering_audit")
+                    or evaluation.get("hypothesis_lowering_audit")
+                    or {}
+                ),
+                "holding_rationale": hypothesis_artifact.get("holding_rationale"),
+                "alpha_half_life": hypothesis_artifact.get("alpha_half_life"),
+                "cost_sensitivity_grid": hypothesis_artifact.get("cost_sensitivity_grid"),
+                "position_model": hypothesis_artifact.get("position_model"),
+                "capacity_assumption": hypothesis_artifact.get("capacity_assumption"),
+                "market_regime_assumption": hypothesis_artifact.get("market_regime_assumption"),
+                "economic_semantics_score": hypothesis_artifact.get("economic_semantics_score"),
+                "economic_semantics_missing_fields": list(
+                    hypothesis_artifact.get("economic_semantics_missing_fields") or []
+                ),
+                "validation_focus": (
+                    hypothesis_artifact.get("validation_focus")
+                    or dict(contract.get("validation_profile") or {}).get("validation_focus")
+                ),
+                "replay_source": {
+                    "experiment_id": payload.get("experiment_id"),
+                    "generator_type": payload.get("generator_type"),
+                    "status": payload.get("status"),
+                    "source": payload.get("source"),
+                },
+                "committee_review": dict(evaluation.get("committee_review") or {}),
+                "llm_analysis": dict(evaluation.get("llm_analysis") or {}),
+                "llm_research_context": dict(evaluation.get("llm_research_context") or {}),
+                "source_candidate": {
+                    "name": name,
+                    "description": description,
+                    "strategy_type": strategy_type,
+                    "params": dict(params),
+                    "target_symbols": list(target_symbols),
+                    "stock_pool": dict(contract.get("stock_pool") or {}),
+                    "selection_logic": list(contract.get("selection_logic") or []),
+                    "research_task": dict(contract.get("research_task") or strategy_spec.get("research_task") or normalized_task),
+                    "event_context": dict(contract.get("event_context") or strategy_spec.get("event_context") or {}),
+                    "hypothesis_artifact": hypothesis_artifact,
+                },
+            }
+            tags = list(
+                dict.fromkeys(
+                    [
+                        "hypothesis_replay",
+                        *(list(contract.get("tags") or strategy_spec.get("tags") or [])[:8]),
+                    ]
+                )
+            )
+            return StrategySpec(
+                strategy_type=strategy_type,
+                params=params,
+                name=name,
+                description=description,
+                tags=tags,
+                metadata=metadata,
+            )
+
+        async def replay_persisted_specs(
+            self,
+            db,
+            *,
+            limit: int = 3,
+            snapshot: Optional[dict[str, Any]] = None,
+            parent_strategies: Optional[list[dict[str, Any]]] = None,
+            research_task: Optional[dict[str, Any]] = None,
+            trigger_reason: str = "provider_health_blocked",
+        ) -> dict[str, Any]:
+            del snapshot
+            if not self._l2_hypothesis_replay_enabled() or not hasattr(db, "list_strategy_generation_experiments"):
+                return {
+                    "specs": [],
+                    "report": {
+                        "status": "disabled",
+                        "trigger_reason": trigger_reason,
+                        "selected_count": 0,
+                    },
+                }
+
+            requested_limit = max(1, min(int(limit or 3), 10))
+            rows: list[dict[str, Any]] = []
+            for parent in list(parent_strategies or [])[:3]:
+                parent_id = str((parent or {}).get("id") or "").strip()
+                if not parent_id:
+                    continue
+                try:
+                    rows.extend(
+                        await db.list_strategy_generation_experiments(
+                            parent_strategy_id=parent_id,
+                            limit=max(6, requested_limit * 4),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "LLMProxyStrategyGenerator: replay experiment lookup failed for %s: %s",
+                        parent_id,
+                        exc,
+                    )
+            replay_specs: list[tuple[tuple[float, int, int], StrategySpec, dict[str, Any]]] = []
+            seen_ids: set[str] = set()
+            for row in rows:
+                row_payload = dict(row or {})
+                experiment_id = str(row_payload.get("experiment_id") or "").strip()
+                if experiment_id and experiment_id in seen_ids:
+                    continue
+                if experiment_id:
+                    seen_ids.add(experiment_id)
+                spec = self._replay_strategy_spec_from_experiment(row_payload, research_task=research_task)
+                if spec is None:
+                    continue
+                evaluation = dict(row_payload.get("evaluation") or {})
+                review = dict(evaluation.get("committee_review") or {})
+                decision = str(review.get("decision") or "").strip().lower()
+                status = str(row_payload.get("status") or "").strip().lower()
+                decision_rank = {
+                    "accept": 4,
+                    "accepted": 4,
+                    "revise": 3,
+                    "retry": 2,
+                    "generated": 2,
+                    "review": 1,
+                    "reject": 0,
+                    "rejected": 0,
+                }.get(decision, 1 if status in {"generated", "accepted"} else 0)
+                try:
+                    score = float(review.get("final_score") or 0.0)
+                except Exception:
+                    score = 0.0
+                target_symbols = set(self._normalize_code_list(spec.metadata.get("target_symbols")))
+                requested_targets = set(
+                    self._normalize_code_list((research_task or {}).get("target_symbols"))
+                )
+                overlap = len(target_symbols.intersection(requested_targets)) if requested_targets else 0
+                replay_specs.append(((score, overlap, decision_rank), spec, row_payload))
+
+            replay_specs.sort(key=lambda item: item[0], reverse=True)
+            deduped_specs = self._dedupe_specs([item[1] for item in replay_specs])
+            selected_specs = deduped_specs[:requested_limit]
+            selected_ids: list[str] = []
+            selected_status_counts: dict[str, int] = {}
+            for _rank, _spec, row_payload in replay_specs:
+                if len(selected_ids) >= len(selected_specs):
+                    break
+                candidate_key = (
+                    str(_spec.strategy_type or ""),
+                    json.dumps(_spec.params or {}, sort_keys=True, ensure_ascii=False, default=str),
+                )
+                if candidate_key not in {
+                    (
+                        str(spec.strategy_type or ""),
+                        json.dumps(spec.params or {}, sort_keys=True, ensure_ascii=False, default=str),
+                    )
+                    for spec in selected_specs
+                }:
+                    continue
+                experiment_id = str(row_payload.get("experiment_id") or "").strip()
+                if experiment_id:
+                    selected_ids.append(experiment_id)
+                status = str(row_payload.get("status") or "unknown").strip().lower() or "unknown"
+                selected_status_counts[status] = selected_status_counts.get(status, 0) + 1
+
+            return {
+                "specs": selected_specs,
+                "report": {
+                    "status": "succeeded" if selected_specs else "empty",
+                    "trigger_reason": trigger_reason,
+                    "available_count": len(replay_specs),
+                    "selected_count": len(selected_specs),
+                    "experiment_ids": selected_ids,
+                    "status_counts": selected_status_counts,
+                },
+            }
+
         async def _generate_via_pipeline(
             self,
             db,
@@ -929,6 +1206,13 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 'validation_profile': dict(precompile_validation.validation_profile),
                 'targeting_policy': dict(candidate.get('targeting_policy') or {}),
                 'constraint_check': dict(precompile_validation.constraint_check),
+                'market_regime_assumption': candidate.get('market_regime_assumption'),
+                'position_sizing_rationale': candidate.get('position_sizing_rationale'),
+                'capacity_bucket': candidate.get('capacity_bucket'),
+                'turnover_cost_class': candidate.get('turnover_cost_class'),
+                'expected_turnover_band': candidate.get('expected_turnover_band'),
+                'economic_semantics_score': candidate.get('economic_semantics_score'),
+                'economic_semantics_missing_fields': list(candidate.get('economic_semantics_missing_fields') or []),
                 'target_symbols': list(target_symbols),
                 'stock_pool': dict(
                     candidate.get('stock_pool')
@@ -978,6 +1262,21 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 task_target_context.get('targeted_task')
                 or self._normalize_code_list((research_task or {}).get('target_symbols'))
             )
+            allowed_strategy_types = {
+                str(item).strip().lower()
+                for item in list((research_task or {}).get('allowed_strategy_types') or [])
+                if str(item).strip()
+            }
+            allow_target_context_recovery = bool(
+                self.external_provider.is_enabled()
+                and (
+                    'dsl_rule' in allowed_strategy_types
+                    or 'open_dsl' in allowed_strategy_types
+                    or 'llm_defined' in allowed_strategy_types
+                )
+            )
+            recovered_target_frame: Optional[pd.DataFrame] = None
+            recovered_target_context = False
             # 多阶段 pipeline 路径
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
@@ -987,6 +1286,31 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             pipeline_disable_reason = str(
                 (research_task or {}).get('pipeline_staged_skip_reason') or 'generator_mode_cooldown'
             ).strip()
+            if targeted_research and target_context_blocked and allow_target_context_recovery:
+                recovered_target_frame = await self._build_market_frame(db, research_task=research_task)
+                if recovered_target_frame is not None and not recovered_target_frame.empty:
+                    recovered_target_context = True
+                    target_context_blocked = False
+                    task_target_context = {
+                        **task_target_context,
+                        'status': 'recovered_from_explicit_target_frame',
+                        'blocked_by_target_universe': False,
+                        'matched_target_symbols': list(
+                            self._normalize_code_list((research_task or {}).get('target_symbols'))
+                        ),
+                        'candidate_universe_symbols': list(
+                            self._normalize_code_list((research_task or {}).get('target_symbols'))
+                        ),
+                    }
+                    research_context = {
+                        **research_context,
+                        'blocked_by_target_universe': False,
+                        'target_context_status': 'recovered_from_explicit_target_frame',
+                        'task_target_context': task_target_context,
+                    }
+                    research_context_summary = self._summarize_research_context(research_context)
+                else:
+                    recovered_target_frame = None
             if targeted_research and target_context_blocked:
                 if pipeline_mode == 'staged':
                     _pipeline_fallback_reason = 'target_context_blocked'
@@ -1052,8 +1376,15 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                     _pipeline_fallback_reason = f'{type(exc).__name__}: {exc}'
                     logger.warning('Pipeline staged mode failed: %s, falling back to monolithic', exc)
 
-            frame = await self._build_market_frame(db, research_task=research_task)
-            frame_source = 'primary_market_frame' if frame is not None and not frame.empty else 'none'
+            frame = recovered_target_frame
+            frame_source = (
+                'recovered_explicit_target_frame'
+                if recovered_target_context and frame is not None and not frame.empty
+                else 'none'
+            )
+            if frame is None or frame.empty:
+                frame = await self._build_market_frame(db, research_task=research_task)
+                frame_source = 'primary_market_frame' if frame is not None and not frame.empty else 'none'
             frame_cache = await self._build_symbol_frame_cache(db, research_context=research_context, research_task=research_task)
             if (frame is None or frame.empty) and frame_cache:
                 for cached_frame in frame_cache.values():
@@ -1136,6 +1467,29 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                         last_exc = result.get('exception')
                 aggregated_viable_specs = self._dedupe_specs(sorted(aggregated_viable_specs, key=self._spec_preflight_score, reverse=True))
                 aggregated_all_specs = self._dedupe_specs(sorted(aggregated_all_specs, key=self._spec_preflight_score, reverse=True))
+                open_dsl_cap = open_dsl_max_candidates_per_run()
+
+                def _apply_open_dsl_cap(specs: list[StrategySpec]) -> tuple[list[StrategySpec], int, int]:
+                    if open_dsl_cap < 0:
+                        return list(specs), 0, 0
+                    capped: list[StrategySpec] = []
+                    selected_open_dsl = 0
+                    overflow = 0
+                    for spec in list(specs or []):
+                        if is_open_dsl_spec_metadata(dict(spec.metadata or {})):
+                            if selected_open_dsl >= open_dsl_cap:
+                                overflow += 1
+                                continue
+                            selected_open_dsl += 1
+                        capped.append(spec)
+                    return capped, selected_open_dsl, overflow
+
+                aggregated_viable_specs, open_dsl_viable_selected_count, open_dsl_viable_overflow_count = _apply_open_dsl_cap(
+                    aggregated_viable_specs
+                )
+                aggregated_all_specs, _open_dsl_all_selected_count, open_dsl_all_overflow_count = _apply_open_dsl_cap(
+                    aggregated_all_specs
+                )
                 if aggregated_viable_specs:
                     external_specs = aggregated_viable_specs[:limit]
                     selected_keys = {
@@ -1154,6 +1508,16 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 report['external_provider']['elapsed_seconds'] = round(time.perf_counter() - external_started_at, 4)
                 report['external_provider']['viable_selected_count'] = len(external_specs)
                 report['external_provider']['fallback_count'] = len(fallback_external_specs)
+                report['external_provider']['open_dsl_max_candidates_per_run'] = open_dsl_cap
+                report['external_provider']['open_dsl_viable_selected_count'] = open_dsl_viable_selected_count
+                report['external_provider']['open_dsl_selected_count'] = sum(
+                    1 for spec in [*external_specs, *fallback_external_specs]
+                    if is_open_dsl_spec_metadata(dict(spec.metadata or {}))
+                )
+                report['external_provider']['open_dsl_overflow_count'] = max(
+                    open_dsl_viable_overflow_count,
+                    open_dsl_all_overflow_count,
+                )
                 if external_specs:
                     report['external_provider']['status'] = 'succeeded'
                 elif fallback_external_specs:

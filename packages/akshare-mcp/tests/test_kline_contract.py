@@ -30,7 +30,7 @@ class _FakeDB(KlineMixin):
 
 
 @pytest.mark.asyncio
-async def test_get_klines_queries_ascending_time_order():
+async def test_get_klines_limit_returns_latest_rows_but_keeps_ascending_order():
     rows = [
         {
             "time": datetime(2026, 3, 19, tzinfo=timezone.utc),
@@ -61,5 +61,6 @@ async def test_get_klines_queries_ascending_time_order():
 
     data = await db.get_klines("600519", limit=2)
 
+    assert "ORDER BY time DESC" in db._conn.last_query
     assert "ORDER BY time ASC" in db._conn.last_query
     assert [row["date"] for row in data] == ["2026-03-19", "2026-03-20"]

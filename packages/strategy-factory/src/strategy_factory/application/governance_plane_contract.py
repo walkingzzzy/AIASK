@@ -131,6 +131,499 @@ def _committee_decision(item: dict[str, Any]) -> str:
     return _string(committee_review.get("decision"))
 
 
+def _candidate_family(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    candidate_provenance = dict(payload.get("candidate_provenance") or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    return _string(
+        payload.get("candidate_family")
+        or candidate_provenance.get("candidate_family")
+        or quality_summary.get("candidate_family")
+        or payload.get("strategy_type")
+    )
+
+
+def _holding_bucket(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    candidate_provenance = dict(payload.get("candidate_provenance") or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    return _string(
+        payload.get("holding_period_bucket")
+        or candidate_provenance.get("holding_period_bucket")
+        or quality_summary.get("holding_period_bucket")
+    )
+
+
+def _target_universe_key(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    contract_snapshot = dict(payload.get("candidate_contract_snapshot") or {})
+    targeting = dict(contract_snapshot.get("targeting") or {})
+    target_pool_id = _string(payload.get("target_pool_id") or targeting.get("target_pool_id"))
+    if target_pool_id:
+        return target_pool_id
+    target_symbols = _compact_list(
+        payload.get("target_symbols") or targeting.get("target_symbols"),
+        limit=12,
+    )
+    return ",".join(target_symbols)
+
+
+def _validation_grade(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    admission_review_context = dict(gate.get("admission_review_context") or {})
+    incubation_review_context = dict(
+        dict((gate.get("admission_evaluations") or {}).get("incubation") or {}).get("review_context") or {}
+    )
+    return (
+        _string(
+            payload.get("validation_grade")
+            or quality_summary.get("validation_grade")
+            or gate.get("validation_grade")
+            or admission_review_context.get("validation_grade")
+            or incubation_review_context.get("validation_grade")
+        ).upper()
+    )
+
+
+def _raw_validation_grade(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    admission_review_context = dict(gate.get("admission_review_context") or {})
+    incubation_review_context = dict(
+        dict((gate.get("admission_evaluations") or {}).get("incubation") or {}).get("review_context") or {}
+    )
+    return (
+        _string(
+            payload.get("raw_validation_grade")
+            or quality_summary.get("raw_validation_grade")
+            or gate.get("raw_validation_grade")
+            or admission_review_context.get("validation_grade")
+            or incubation_review_context.get("validation_grade")
+            or payload.get("validation_grade")
+            or quality_summary.get("validation_grade")
+            or gate.get("validation_grade")
+        ).upper()
+    )
+
+
+def _effective_validation_grade(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    admission_review_context = dict(gate.get("admission_review_context") or {})
+    incubation_review_context = dict(
+        dict((gate.get("admission_evaluations") or {}).get("incubation") or {}).get("review_context") or {}
+    )
+    return (
+        _string(
+            payload.get("effective_validation_grade")
+            or quality_summary.get("effective_validation_grade")
+            or gate.get("effective_validation_grade")
+            or payload.get("validation_grade")
+            or quality_summary.get("validation_grade")
+            or gate.get("validation_grade")
+            or admission_review_context.get("validation_grade")
+            or incubation_review_context.get("validation_grade")
+        ).upper()
+    )
+
+
+def _validation_grade_adjustment_reason(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    trade_quality_adjustment = dict(payload.get("trade_quality_adjustment") or {})
+    admission_review_context = dict(gate.get("admission_review_context") or {})
+    incubation_review_context = dict(
+        dict((gate.get("admission_evaluations") or {}).get("incubation") or {}).get("review_context")
+        or {}
+    )
+    return _string(
+        payload.get("validation_grade_adjustment_reason")
+        or quality_summary.get("validation_grade_adjustment_reason")
+        or gate.get("validation_grade_adjustment_reason")
+        or admission_review_context.get("validation_grade_adjustment_reason")
+        or incubation_review_context.get("validation_grade_adjustment_reason")
+        or trade_quality_adjustment.get("adjustment_reason")
+    )
+
+
+def _validation_focus(item: dict[str, Any]) -> str:
+    payload = dict(item or {})
+    validation_profile = dict(payload.get("validation_profile") or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    return _string(
+        payload.get("validation_focus")
+        or validation_profile.get("validation_focus")
+        or quality_summary.get("validation_focus")
+        or gate.get("validation_focus")
+    )
+
+
+def _validation_total_score(item: dict[str, Any], *, raw: bool) -> float | None:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    keys = (
+        (
+            "raw_validation_total_score",
+            "validation_total_score",
+            "raw_total_score",
+            "total_score",
+            "candidate_validation_score",
+        )
+        if raw
+        else ("validation_total_score", "effective_validation_total_score", "total_score")
+    )
+    for source in (payload, quality_summary, gate):
+        for key in keys:
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except Exception:
+                continue
+    return None
+
+
+def _bool_payload(item: dict[str, Any], *keys: str) -> bool:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    gate = dict(payload.get("gate_3") or {})
+    for source in (payload, quality_summary, gate):
+        for key in keys:
+            if key in source and source.get(key) is not None:
+                return bool(source.get(key))
+    return False
+
+
+def _metric_payload(item: dict[str, Any], *keys: str) -> float | None:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    run_correction = dict(payload.get("run_correction") or {})
+    gate = dict(payload.get("gate_3") or {})
+    for source in (payload, quality_summary, run_correction, gate):
+        for key in keys:
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except Exception:
+                continue
+    return None
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return round(ordered[0], 4)
+    p = max(0.0, min(float(percentile), 1.0))
+    index = p * (len(ordered) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    result = ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+    return round(result, 4)
+
+
+def _grade_rates(distribution: dict[str, int], total: int) -> dict[str, float]:
+    denominator = max(int(total or 0), 1)
+    return {
+        "raw_validation_a_rate": round(int(distribution.get("A") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_b_rate": round(int(distribution.get("B") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_c_rate": round(int(distribution.get("C") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_d_rate": round(int(distribution.get("D") or 0) / denominator, 4) if total else 0.0,
+    }
+
+
+def _rate(count: int, total: int) -> float:
+    return round(int(count or 0) / int(total or 0), 4) if total else 0.0
+
+
+def _is_raw_b_or_above(grade: str) -> bool:
+    return str(grade or "").strip().upper() in {"A", "B"}
+
+
+def _aggregate_family_quality_panel(strategies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in list(strategies or []):
+        family = _candidate_family(item) or "unknown"
+        holding_bucket = _holding_bucket(item) or "unknown"
+        validation_focus = _validation_focus(item) or "unknown"
+        key = (family, holding_bucket, validation_focus)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "strategy_family": family,
+                "holding_period_bucket": holding_bucket,
+                "validation_focus": validation_focus,
+                "strategy_count": 0,
+                "raw_validation_grade_distribution": {},
+                "effective_validation_grade_distribution": {},
+                "raw_validation_total_scores": [],
+                "strict_incubation_ready_count": 0,
+                "live_candidate_ready_count": 0,
+                "raw_b_or_above_count": 0,
+                "strict_ready_given_raw_b_count": 0,
+                "live_ready_given_raw_b_count": 0,
+                "trade_density_values": [],
+                "post_cost_sharpe_values": [],
+                "deflated_sharpe_ratio_values": [],
+                "pbo_values": [],
+            },
+        )
+        bucket["strategy_count"] += 1
+        raw_grade = _raw_validation_grade(item)
+        effective_grade = _effective_validation_grade(item)
+        if raw_grade:
+            bucket["raw_validation_grade_distribution"][raw_grade] = (
+                bucket["raw_validation_grade_distribution"].get(raw_grade, 0) + 1
+            )
+        if effective_grade:
+            bucket["effective_validation_grade_distribution"][effective_grade] = (
+                bucket["effective_validation_grade_distribution"].get(effective_grade, 0) + 1
+            )
+        raw_score = _validation_total_score(item, raw=True)
+        if raw_score is not None:
+            bucket["raw_validation_total_scores"].append(float(raw_score))
+        strict_ready = _bool_payload(item, "strict_incubation_ready")
+        live_ready = _bool_payload(item, "live_candidate_ready")
+        if strict_ready:
+            bucket["strict_incubation_ready_count"] += 1
+        if live_ready:
+            bucket["live_candidate_ready_count"] += 1
+        if _is_raw_b_or_above(raw_grade):
+            bucket["raw_b_or_above_count"] += 1
+            if strict_ready:
+                bucket["strict_ready_given_raw_b_count"] += 1
+            if live_ready:
+                bucket["live_ready_given_raw_b_count"] += 1
+        trade_density = _metric_payload(item, "trade_density")
+        if trade_density is not None:
+            bucket["trade_density_values"].append(float(trade_density))
+        post_cost_sharpe = _metric_payload(item, "post_cost_sharpe")
+        if post_cost_sharpe is not None:
+            bucket["post_cost_sharpe_values"].append(float(post_cost_sharpe))
+        dsr = _metric_payload(item, "deflated_sharpe_ratio")
+        if dsr is not None:
+            bucket["deflated_sharpe_ratio_values"].append(float(dsr))
+        pbo = _metric_payload(item, "pbo")
+        if pbo is not None:
+            bucket["pbo_values"].append(float(pbo))
+
+    panel: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        strategy_count = int(bucket.get("strategy_count") or 0)
+        raw_distribution = dict(bucket.get("raw_validation_grade_distribution") or {})
+        raw_scores = list(bucket.get("raw_validation_total_scores") or [])
+        trade_density_values = list(bucket.get("trade_density_values") or [])
+        post_cost_sharpe_values = list(bucket.get("post_cost_sharpe_values") or [])
+        dsr_values = list(bucket.get("deflated_sharpe_ratio_values") or [])
+        pbo_values = list(bucket.get("pbo_values") or [])
+        raw_b_or_above_count = int(bucket.get("raw_b_or_above_count") or 0)
+        strict_ready_given_raw_b_count = int(
+            bucket.get("strict_ready_given_raw_b_count") or 0
+        )
+        live_ready_given_raw_b_count = int(bucket.get("live_ready_given_raw_b_count") or 0)
+        item = {
+            "strategy_family": bucket.get("strategy_family"),
+            "holding_period_bucket": bucket.get("holding_period_bucket"),
+            "validation_focus": bucket.get("validation_focus"),
+            "strategy_count": strategy_count,
+            "raw_validation_grade_distribution": raw_distribution,
+            "effective_validation_grade_distribution": dict(
+                bucket.get("effective_validation_grade_distribution") or {}
+            ),
+            "raw_validation_total_score_mean": round(sum(raw_scores) / len(raw_scores), 4) if raw_scores else 0.0,
+            "strict_incubation_ready_count": int(bucket.get("strict_incubation_ready_count") or 0),
+            "strict_incubation_ready_rate": round(
+                int(bucket.get("strict_incubation_ready_count") or 0) / strategy_count,
+                4,
+            ) if strategy_count else 0.0,
+            "live_candidate_ready_count": int(bucket.get("live_candidate_ready_count") or 0),
+            "live_candidate_ready_rate": round(
+                int(bucket.get("live_candidate_ready_count") or 0) / strategy_count,
+                4,
+            ) if strategy_count else 0.0,
+            "raw_b_or_above_count": raw_b_or_above_count,
+            "raw_b_or_above_rate": _rate(raw_b_or_above_count, strategy_count),
+            "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+            "strict_ready_given_raw_b_rate": _rate(
+                strict_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "live_ready_given_raw_b_count": live_ready_given_raw_b_count,
+            "live_ready_given_raw_b_rate": _rate(
+                live_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "mean_trade_density": round(sum(trade_density_values) / len(trade_density_values), 4)
+            if trade_density_values else 0.0,
+            "mean_post_cost_sharpe": round(sum(post_cost_sharpe_values) / len(post_cost_sharpe_values), 4)
+            if post_cost_sharpe_values else 0.0,
+            "mean_deflated_sharpe_ratio": round(sum(dsr_values) / len(dsr_values), 4)
+            if dsr_values else 0.0,
+            "mean_pbo": round(sum(pbo_values) / len(pbo_values), 4) if pbo_values else 0.0,
+        }
+        item.update(_grade_rates(raw_distribution, strategy_count))
+        item.update(
+            {
+                "family_raw_a_rate": item.get("raw_validation_a_rate", 0.0),
+                "family_raw_b_rate": item.get("raw_validation_b_rate", 0.0),
+                "family_raw_c_rate": item.get("raw_validation_c_rate", 0.0),
+                "family_raw_d_rate": item.get("raw_validation_d_rate", 0.0),
+                "family_strict_incubation_ready_rate": item.get(
+                    "strict_incubation_ready_rate",
+                    0.0,
+                ),
+                "family_live_candidate_ready_rate": item.get(
+                    "live_candidate_ready_rate",
+                    0.0,
+                ),
+                "family_mean_trade_density": item.get("mean_trade_density", 0.0),
+                "family_mean_post_cost_sharpe": item.get("mean_post_cost_sharpe", 0.0),
+                "family_mean_dsr": item.get("mean_deflated_sharpe_ratio", 0.0),
+                "family_mean_pbo": item.get("mean_pbo", 0.0),
+            }
+        )
+        panel.append(item)
+    panel.sort(
+        key=lambda item: (
+            int(item.get("strategy_count") or 0),
+            float(item.get("raw_validation_b_rate") or 0.0),
+            float(item.get("raw_validation_a_rate") or 0.0),
+            str(item.get("strategy_family") or ""),
+        ),
+        reverse=True,
+    )
+    return panel[:24]
+
+
+def _attempt_adjustment_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return dict(dict(item or {}).get("attempt_adjustment") or {})
+
+
+def _multiple_testing_registry_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return dict(dict(item or {}).get("multiple_testing_registry") or {})
+
+
+def _run_correction_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return dict(dict(item or {}).get("run_correction") or {})
+
+
+def _candidate_local_attempt_count(item: dict[str, Any]) -> int:
+    payload = dict(item or {})
+    attempt_adjustment = _attempt_adjustment_payload(payload)
+    registry = _multiple_testing_registry_payload(payload)
+    return _safe_int(
+        payload.get("candidate_local_attempt_count")
+        or attempt_adjustment.get("attempt_count")
+        or registry.get("attempt_count")
+    )
+
+
+def _task_local_attempt_count(item: dict[str, Any]) -> int:
+    payload = dict(item or {})
+    registry = _multiple_testing_registry_payload(payload)
+    return _safe_int(
+        payload.get("task_local_attempt_count")
+        or registry.get("task_attempt_count")
+        or payload.get("task_attempt_count")
+    )
+
+
+def _cohort_effective_trials(item: dict[str, Any]) -> float:
+    payload = dict(item or {})
+    run_correction = _run_correction_payload(payload)
+    registry = _multiple_testing_registry_payload(payload)
+    multiple_testing = dict(registry.get("multiple_testing") or {})
+    gate = dict(payload.get("gate_3") or {})
+    return _safe_float(
+        payload.get("cohort_effective_trials")
+        or gate.get("cohort_effective_trials")
+        or run_correction.get("deflated_sharpe_effective_trials")
+        or multiple_testing.get("deflated_sharpe_effective_trials")
+    )
+
+
+def _research_only(item: dict[str, Any]) -> bool:
+    payload = dict(item or {})
+    return bool(payload.get("research_candidate_ready")) and not bool(
+        payload.get("incubation_candidate_ready")
+    )
+
+
+def _economic_semantics_missing(item: dict[str, Any]) -> bool:
+    payload = dict(item or {})
+    quality_summary = dict(payload.get("quality_summary") or {})
+    execution_reality = dict(payload.get("execution_reality") or {})
+    backtest_assumptions = dict(payload.get("backtest_assumptions") or {})
+    cost_assumptions = dict(payload.get("cost_assumptions") or {})
+    candidate_provenance = dict(payload.get("candidate_provenance") or {})
+
+    holding_rationale = _string(
+        payload.get("holding_rationale")
+        or quality_summary.get("holding_rationale")
+        or candidate_provenance.get("holding_rationale")
+    )
+    alpha_half_life = payload.get("alpha_half_life") or quality_summary.get("alpha_half_life")
+    cost_sensitivity_grid = (
+        payload.get("cost_sensitivity_grid")
+        or quality_summary.get("cost_sensitivity_grid")
+        or cost_assumptions.get("cost_sensitivity_grid")
+    )
+    position_model = _string(
+        payload.get("position_model")
+        or quality_summary.get("position_model")
+        or execution_reality.get("position_model")
+        or payload.get("position_assumption")
+        or quality_summary.get("position_assumption")
+        or execution_reality.get("position_assumption")
+        or backtest_assumptions.get("position_assumption")
+        or backtest_assumptions.get("target_weight_scheme")
+    )
+    capacity_assumption = (
+        payload.get("capacity_assumption")
+        or quality_summary.get("capacity_assumption")
+        or backtest_assumptions.get("capacity_participation_rate")
+        or backtest_assumptions.get("capacity_bucket")
+    )
+    market_regime_assumption = (
+        payload.get("market_regime_assumption")
+        or quality_summary.get("market_regime_assumption")
+        or execution_reality.get("market_regime_assumption")
+    )
+
+    holding_present = bool(holding_rationale or alpha_half_life or _holding_bucket(payload))
+    position_present = bool(position_model)
+    cost_present = bool(cost_sensitivity_grid) or bool(
+        cost_assumptions.get("slippage_bps") is not None
+        or cost_assumptions.get("market_impact_bps") is not None
+        or payload.get("explicit_cost_breakdown")
+        or payload.get("implicit_cost_breakdown")
+    )
+    capacity_present = bool(capacity_assumption)
+    regime_present = bool(market_regime_assumption)
+    default_position = _normalized_text(position_model) in {
+        "single_name_full_notional",
+        "single_name",
+        "equal_weight",
+        "equal_weight_proxy",
+    }
+    return (
+        not (holding_present and position_present and cost_present and capacity_present and regime_present)
+        or (default_position and not bool(cost_sensitivity_grid) and not capacity_present)
+    )
+
+
 def _compact_committee_review(value: Any) -> dict[str, Any]:
     payload = dict(value or {})
     if not payload:
@@ -194,6 +687,10 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
     position_assumption = _string(payload.get("position_assumption")) or None
     task_signature = _string(payload.get("task_signature")) or None
     committee_review = _compact_committee_review(payload.get("committee_review"))
+    validation_grade = _effective_validation_grade(payload) or None
+    raw_validation_grade = _raw_validation_grade(payload) or None
+    effective_validation_grade = _effective_validation_grade(payload) or None
+    validation_grade_adjustment_reason = _validation_grade_adjustment_reason(payload) or None
     return {
         "strategy_id": _string(payload.get("strategy_id")) or None,
         "name": _string(payload.get("name")) or None,
@@ -209,6 +706,14 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
             or _string(candidate_provenance.get("candidate_family"))
             or None
         ),
+        "holding_period_bucket": _holding_bucket(payload) or None,
+        "validation_grade": validation_grade,
+        "raw_validation_grade": raw_validation_grade,
+        "effective_validation_grade": effective_validation_grade,
+        "validation_grade_adjustment_reason": validation_grade_adjustment_reason,
+        "raw_validation_total_score": _validation_total_score(payload, raw=True),
+        "validation_total_score": _validation_total_score(payload, raw=False),
+        "raw_b_or_above": _is_raw_b_or_above(raw_validation_grade),
         "generator_mode": (
             _string(payload.get("generator_mode"))
             or _string(candidate_provenance.get("generator_mode"))
@@ -228,6 +733,10 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
         "implicit_cost_breakdown": implicit_cost_breakdown,
         "attempt_adjustment": attempt_adjustment,
         "committee_review": committee_review,
+        "candidate_local_attempt_count": _candidate_local_attempt_count(payload),
+        "task_local_attempt_count": _task_local_attempt_count(payload),
+        "cohort_effective_trials": round(_cohort_effective_trials(payload), 4),
+        "economic_semantics_missing": _economic_semantics_missing(payload),
         "has_constraint_check": bool(constraint_check),
         "has_validation_profile": bool(validation_profile),
         "has_event_window_config": bool(event_window_config),
@@ -371,6 +880,74 @@ def build_submission_artifact(
     )
     attempt_adjustment_count = sum(1 for item in strategies if _has_mapping(item, "attempt_adjustment"))
     task_signature_count = sum(1 for item in strategies if _has_text(item, "task_signature"))
+    research_only_count = sum(1 for item in strategies if _research_only(item))
+    deferred_submission_count = sum(
+        1
+        for item in strategies
+        if _normalized_text(item.get("submission_lane")) == "deferred_submission"
+    )
+    validation_grade_distribution: dict[str, int] = {}
+    raw_validation_grade_distribution: dict[str, int] = {}
+    effective_validation_grade_distribution: dict[str, int] = {}
+    raw_validation_total_scores: list[float] = []
+    strict_incubation_ready_count = 0
+    live_candidate_ready_count = 0
+    raw_b_or_above_count = 0
+    strict_ready_given_raw_b_count = 0
+    live_ready_given_raw_b_count = 0
+    for item in strategies:
+        effective_grade = _effective_validation_grade(item)
+        raw_grade = _raw_validation_grade(item)
+        strict_ready = _bool_payload(item, "strict_incubation_ready")
+        live_ready = _bool_payload(item, "live_candidate_ready")
+        if effective_grade:
+            validation_grade_distribution[effective_grade] = (
+                validation_grade_distribution.get(effective_grade, 0) + 1
+            )
+            effective_validation_grade_distribution[effective_grade] = (
+                effective_validation_grade_distribution.get(effective_grade, 0) + 1
+            )
+        if raw_grade:
+            raw_validation_grade_distribution[raw_grade] = (
+                raw_validation_grade_distribution.get(raw_grade, 0) + 1
+            )
+        raw_score = _validation_total_score(item, raw=True)
+        if raw_score is not None:
+            raw_validation_total_scores.append(float(raw_score))
+        if strict_ready:
+            strict_incubation_ready_count += 1
+        if live_ready:
+            live_candidate_ready_count += 1
+        if _is_raw_b_or_above(raw_grade):
+            raw_b_or_above_count += 1
+            if strict_ready:
+                strict_ready_given_raw_b_count += 1
+            if live_ready:
+                live_ready_given_raw_b_count += 1
+    candidate_local_attempt_count = sum(_candidate_local_attempt_count(item) for item in strategies)
+    task_local_attempt_count = sum(_task_local_attempt_count(item) for item in strategies)
+    cohort_effective_trials = round(
+        sum(_cohort_effective_trials(item) for item in strategies),
+        4,
+    )
+    unique_family_holding_universe_count = len(
+        {
+            (
+                _candidate_family(item) or "unknown",
+                _holding_bucket(item) or "unknown",
+                _target_universe_key(item) or "unknown",
+            )
+            for item in strategies
+        }
+    )
+    economic_semantics_missing_count = sum(
+        1 for item in strategies if _economic_semantics_missing(item)
+    )
+    family_quality_panel = _aggregate_family_quality_panel(strategies)
+    raw_validation_total_score_mean = round(
+        sum(raw_validation_total_scores) / len(raw_validation_total_scores),
+        4,
+    ) if raw_validation_total_scores else 0.0
     return {
         "contract_version": SUBMISSION_ARTIFACT_CONTRACT_VERSION,
         "available": bool(payload),
@@ -406,6 +983,37 @@ def build_submission_artifact(
         "implicit_cost_breakdown_count": implicit_cost_breakdown_count,
         "attempt_adjustment_count": attempt_adjustment_count,
         "task_signature_count": task_signature_count,
+        "research_only_count": research_only_count,
+        "deferred_submission_count": deferred_submission_count,
+        "validation_grade_distribution": validation_grade_distribution,
+        "raw_validation_grade_distribution": raw_validation_grade_distribution,
+        "effective_validation_grade_distribution": effective_validation_grade_distribution,
+        "raw_validation_total_score_mean": raw_validation_total_score_mean,
+        "raw_validation_total_score_p50": _percentile(raw_validation_total_scores, 0.5),
+        "raw_validation_total_score_p90": _percentile(raw_validation_total_scores, 0.9),
+        **_grade_rates(raw_validation_grade_distribution, len(strategies)),
+        "strict_incubation_ready_count": strict_incubation_ready_count,
+        "strict_incubation_ready_rate": _rate(strict_incubation_ready_count, len(strategies)),
+        "live_candidate_ready_count": live_candidate_ready_count,
+        "live_candidate_ready_rate": _rate(live_candidate_ready_count, len(strategies)),
+        "raw_b_or_above_count": raw_b_or_above_count,
+        "raw_b_or_above_rate": _rate(raw_b_or_above_count, len(strategies)),
+        "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+        "strict_ready_given_raw_b_rate": _rate(
+            strict_ready_given_raw_b_count,
+            raw_b_or_above_count,
+        ),
+        "live_ready_given_raw_b_count": live_ready_given_raw_b_count,
+        "live_ready_given_raw_b_rate": _rate(
+            live_ready_given_raw_b_count,
+            raw_b_or_above_count,
+        ),
+        "validation_family_quality_panel": family_quality_panel,
+        "candidate_local_attempt_count": candidate_local_attempt_count,
+        "task_local_attempt_count": task_local_attempt_count,
+        "cohort_effective_trials": cohort_effective_trials,
+        "unique_family_holding_universe_count": unique_family_holding_universe_count,
+        "economic_semantics_missing_count": economic_semantics_missing_count,
         "strategy_briefs": [_strategy_brief(item) for item in strategies[:12]],
     }
 

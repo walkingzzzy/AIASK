@@ -111,6 +111,59 @@ _SAMPLE_RUN_RESULT = {
         "eliminated": 1,
         "factory_readiness_score": 0.92,
         "factory_readiness_can_proceed": True,
+        "stock_family_allocation_count": 128,
+        "family_preference_order": ["momentum", "quality_factor"],
+        "family_preference_source_mode": "stock_family_allocation",
+        "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+        "governed_pending_candidate_count": 0,
+        "external_llm_provider_health_status": "degraded",
+        "external_llm_provider_control_mode": "suppress",
+        "candidate_local_attempt_count": 6,
+        "task_local_attempt_count": 4,
+        "cohort_effective_trials": 9.5,
+        "refresh_existing_count": 1,
+        "spawn_revision_from_existing_count": 2,
+        "unique_family_holding_universe_count": 5,
+        "economic_semantics_missing_count": 2,
+        "research_only_count": 1,
+        "deferred_submission_count": 1,
+        "validation_grade_distribution": {"D": 1, "C": 2},
+        "raw_validation_grade_distribution": {"D": 2, "C": 1},
+        "effective_validation_grade_distribution": {"C": 3},
+        "raw_validation_total_score_mean": 46.5,
+        "raw_validation_total_score_p50": 45.0,
+        "raw_validation_total_score_p90": 54.0,
+        "raw_validation_a_rate": 0.0,
+        "raw_validation_b_rate": 0.0,
+        "raw_validation_c_rate": 0.3333,
+        "raw_validation_d_rate": 0.6667,
+        "strict_incubation_ready_count": 2,
+        "strict_incubation_ready_rate": 0.6667,
+        "live_candidate_ready_count": 1,
+        "live_candidate_ready_rate": 0.3333,
+        "raw_b_or_above_count": 1,
+        "raw_b_or_above_rate": 0.3333,
+        "strict_ready_given_raw_b_count": 1,
+        "strict_ready_given_raw_b_rate": 1.0,
+        "live_ready_given_raw_b_count": 0,
+        "live_ready_given_raw_b_rate": 0.0,
+        "validation_family_quality_panel": [
+            {
+                "strategy_family": "momentum",
+                "holding_period_bucket": "swing",
+                "validation_focus": "target_only",
+                "strategy_count": 3,
+                "raw_validation_grade_distribution": {"D": 2, "C": 1},
+                "effective_validation_grade_distribution": {"C": 3},
+                "raw_validation_total_score_mean": 46.5,
+                "family_raw_a_rate": 0.0,
+                "family_raw_b_rate": 0.0,
+                "family_mean_trade_density": 0.84,
+                "family_mean_post_cost_sharpe": 1.12,
+                "family_mean_dsr": 0.16,
+                "family_mean_pbo": 0.42,
+            }
+        ],
         "research_summary": {"research_plane_contract_version": "strategy_factory.research_plane.v1"},
         "feedback_summary": {"family_count": 2, "feedback_available": True},
         "incubation_summary": {"gate_3_passed": 2},
@@ -138,6 +191,13 @@ class TestFactoryRunSummaryDTO:
         assert dto.candidates_spawned == 12
         assert dto.submitted == 3
         assert dto.elapsed_seconds == pytest.approx(300.0)
+        assert dto.stock_family_allocation_count == 128
+        assert dto.family_preference_source_mode == "stock_family_allocation"
+        assert dto.governed_candidate_pool_provisional_spillover_policy_status == "spillover_applied"
+        assert dto.external_llm_provider_health_status == "degraded"
+        assert dto.external_llm_provider_control_mode == "suppress"
+        assert dto.candidate_local_attempt_count == 6
+        assert dto.cohort_effective_trials == pytest.approx(9.5)
 
     def test_from_dict_partial(self):
         data = {**_SAMPLE_RUN_RESULT, "status": "partial"}
@@ -178,6 +238,67 @@ class TestFactoryRunSummaryDTO:
         dto = FactoryRunSummaryDTO.from_dict(_SAMPLE_RUN_RESULT)
         assert dto.readiness_score == pytest.approx(0.92)
         assert dto.readiness_can_proceed is True
+        assert dto.family_preference_order == ["momentum", "quality_factor"]
+        assert dto.governed_pending_candidate_count == 0
+        assert dto.refresh_existing_count == 1
+        assert dto.spawn_revision_from_existing_count == 2
+        assert dto.unique_family_holding_universe_count == 5
+        assert dto.economic_semantics_missing_count == 2
+        assert dto.research_only_count == 1
+        assert dto.deferred_submission_count == 1
+        assert dto.validation_grade_distribution == {"D": 1, "C": 2}
+        assert dto.raw_validation_grade_distribution == {"D": 2, "C": 1}
+        assert dto.effective_validation_grade_distribution == {"C": 3}
+        assert dto.raw_validation_total_score_mean == pytest.approx(46.5)
+        assert dto.raw_validation_total_score_p50 == pytest.approx(45.0)
+        assert dto.raw_validation_total_score_p90 == pytest.approx(54.0)
+        assert dto.raw_validation_d_rate == pytest.approx(0.6667)
+        assert dto.strict_incubation_ready_count == 2
+        assert dto.live_candidate_ready_rate == pytest.approx(0.3333)
+        assert dto.raw_b_or_above_count == 1
+        assert dto.strict_ready_given_raw_b_rate == pytest.approx(1.0)
+        assert dto.validation_family_quality_panel[0]["strategy_family"] == "momentum"
+        assert dto.validation_family_quality_panel[0]["family_mean_dsr"] == pytest.approx(0.16)
+
+    def test_from_dict_falls_back_to_submission_artifact_quality_panel(self):
+        data = {
+            **_SAMPLE_RUN_RESULT,
+            "summary": {
+                "trace_id": "trace_001",
+                "candidates_spawned": 4,
+                "submitted": 2,
+                "eliminated": 0,
+            },
+            "stages": {
+                **_SAMPLE_RUN_RESULT["stages"],
+                "submit": {
+                    "status": "completed",
+                    "ok": True,
+                    "strategies": [
+                        {
+                            "strategy_id": "sid_fallback_1",
+                            "candidate_family": "momentum",
+                            "holding_period_bucket": "medium",
+                            "submission_lane": "deferred_submission",
+                            "quality_summary": {
+                                "validation_grade": "C",
+                                "raw_validation_grade": "B",
+                                "effective_validation_grade": "C",
+                                "raw_validation_total_score": 56.0,
+                                "candidate_family": "momentum",
+                                "holding_period_bucket": "medium",
+                            },
+                        }
+                    ],
+                },
+            },
+        }
+
+        dto = FactoryRunSummaryDTO.from_dict(data)
+
+        assert dto.raw_validation_grade_distribution == {"B": 1}
+        assert dto.raw_validation_b_rate == pytest.approx(1.0)
+        assert dto.validation_family_quality_panel[0]["strategy_family"] == "momentum"
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +350,37 @@ class TestFactoryRunDetailDTO:
         assert d["incubation_summary"]["gate_3_passed"] == 2
         assert d["live_ready_summary"]["live_ready_review_count"] == 1
 
+    def test_from_dict_ignores_fallback_stage_metadata_entries(self):
+        data = {
+            **_SAMPLE_RUN_RESULT,
+            "stages": {
+                **_SAMPLE_RUN_RESULT["stages"],
+                "truncated": True,
+                "field_name": "stages",
+                "stage_count": 4,
+                "stage_names": ["collect", "readiness", "spawn", "submit"],
+            },
+        }
+
+        dto = FactoryRunDetailDTO.from_dict(data)
+
+        assert {stage.stage for stage in dto.stages} == {"collect", "readiness", "spawn", "submit"}
+
     def test_from_dict_reconstructs_research_plane_from_stage_artifacts(self):
         data = {
             **_SAMPLE_RUN_RESULT,
             "research_plane": {},
+            "factor_research": {
+                "summary": {
+                    "factor_source_mode": "governed_candidate_pool",
+                    "family_preference_order": ["momentum", "quality_factor"],
+                    "family_preference_source_mode": "stock_family_allocation",
+                    "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                    "governed_candidate_pool_strict_shortfall_count": 2,
+                    "stock_family_allocation_count": 48,
+                    "stock_family_allocation_source_mode": "stock_universe_projection",
+                },
+            },
             "stages": {
                 "factor_research": {
                     "status": "completed",
@@ -270,6 +418,8 @@ class TestFactoryRunDetailDTO:
 
         assert d["research_plane"]["contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
         assert d["research_artifact"]["contract_version"] == RESEARCH_ARTIFACT_CONTRACT_VERSION
+        assert d["research_artifact"]["family_preference_order"] == ["momentum", "quality_factor"]
+        assert d["research_artifact"]["family_preference_source_mode"] == "stock_family_allocation"
         assert d["task_artifact"]["planned_task_count"] == 3
         assert d["candidate_artifact"]["candidate_count"] == 4
         assert d["evidence_artifact"]["experiment_count"] == 2
@@ -418,13 +568,70 @@ class TestFactoryStatusDTO:
             "runtime_enabled": True,
             "event_runtime_mode": "live",
             "last_run": "2026-01-01T10:00:00",
-            "last_result": {"status": "success"},
+            "last_result": {
+                "status": "success",
+                "summary": {
+                    "stock_family_allocation_count": 64,
+                    "family_preference_order": ["momentum", "ma_cross"],
+                "family_preference_source_mode": "stock_family_allocation",
+                "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                "governed_pending_candidate_count": 1,
+                "external_llm_provider_health_status": "degraded",
+                "external_llm_provider_control_mode": "suppress",
+                "candidate_local_attempt_count": 7,
+                "task_local_attempt_count": 5,
+                "cohort_effective_trials": 10.5,
+                "refresh_existing_count": 2,
+                "spawn_revision_from_existing_count": 1,
+                "unique_family_holding_universe_count": 4,
+                "economic_semantics_missing_count": 3,
+                "research_only_count": 2,
+                "deferred_submission_count": 1,
+                "validation_grade_distribution": {"D": 2},
+                "raw_validation_grade_distribution": {"D": 1, "C": 1},
+                "effective_validation_grade_distribution": {"C": 2},
+                "raw_validation_total_score_mean": 43.5,
+                "raw_validation_total_score_p50": 43.0,
+                "raw_validation_total_score_p90": 47.0,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.0,
+                "raw_validation_c_rate": 0.5,
+                "raw_validation_d_rate": 0.5,
+                "strict_incubation_ready_count": 1,
+                "strict_incubation_ready_rate": 0.5,
+                "live_candidate_ready_count": 1,
+                "live_candidate_ready_rate": 0.5,
+                "raw_b_or_above_count": 0,
+                "raw_b_or_above_rate": 0.0,
+                "strict_ready_given_raw_b_count": 0,
+                "strict_ready_given_raw_b_rate": 0.0,
+                "live_ready_given_raw_b_count": 0,
+                "live_ready_given_raw_b_rate": 0.0,
+                "validation_family_quality_panel": [
+                    {
+                        "strategy_family": "momentum",
+                        "holding_period_bucket": "swing",
+                        "validation_focus": "target_only",
+                        "strategy_count": 2,
+                        "raw_validation_grade_distribution": {"D": 1, "C": 1},
+                    }
+                ],
+            },
+        },
             "daily_run_count": 1,
             "max_daily_runs": 3,
             "cycle_count": 42,
             "factor_auto_refresh_enabled": True,
             "readiness_hard_block_enabled": False,
             "readiness_min_score": 0.6,
+            "quality_baseline": {
+                "contract_version": "strategy_factory.quality_baseline.v1",
+                "submitted_strategy_cohort": {
+                    "factory_strategy_count": 2,
+                    "validation_grade_distribution": {"D": 2},
+                    "raw_validation_grade_distribution": {"D": 1, "C": 1},
+                },
+            },
         }
 
     def test_from_dict_basic(self):
@@ -433,6 +640,22 @@ class TestFactoryStatusDTO:
         assert dto.schedule_mode == "continuous"
         assert dto.cycle_count == 42
         assert dto.last_status == "success"
+        assert dto.last_stock_family_allocation_count == 64
+        assert dto.last_family_preference_order == ["momentum", "ma_cross"]
+        assert dto.last_family_preference_source_mode == "stock_family_allocation"
+        assert dto.last_governed_candidate_pool_provisional_spillover_policy_status == "spillover_applied"
+        assert dto.last_external_llm_provider_health_status == "degraded"
+        assert dto.last_external_llm_provider_control_mode == "suppress"
+        assert dto.last_candidate_local_attempt_count == 7
+        assert dto.last_cohort_effective_trials == pytest.approx(10.5)
+        assert dto.last_validation_grade_distribution == {"D": 2}
+        assert dto.last_raw_validation_grade_distribution == {"D": 1, "C": 1}
+        assert dto.last_effective_validation_grade_distribution == {"C": 2}
+        assert dto.last_raw_validation_total_score_mean == pytest.approx(43.5)
+        assert dto.last_strict_incubation_ready_count == 1
+        assert dto.last_live_candidate_ready_rate == pytest.approx(0.5)
+        assert dto.last_raw_b_or_above_count == 0
+        assert dto.quality_baseline["contract_version"] == "strategy_factory.quality_baseline.v1"
 
     def test_last_status_none_when_no_last_result(self):
         data = {**self._sample_status(), "last_result": None}
@@ -444,6 +667,54 @@ class TestFactoryStatusDTO:
         d = dto.to_dict()
         for key in ["running", "schedule_mode", "runtime_enabled", "cycle_count"]:
             assert key in d
+        assert d["last_stock_family_allocation_count"] == 64
+        assert d["last_family_preference_order"] == ["momentum", "ma_cross"]
+        assert d["last_candidate_local_attempt_count"] == 7
+        assert d["last_research_only_count"] == 2
+        assert d["last_validation_grade_distribution"] == {"D": 2}
+        assert d["last_raw_validation_grade_distribution"] == {"D": 1, "C": 1}
+        assert d["last_strict_incubation_ready_rate"] == pytest.approx(0.5)
+        assert d["last_live_candidate_ready_count"] == 1
+        assert d["last_validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert d["quality_baseline"]["submitted_strategy_cohort"]["factory_strategy_count"] == 2
+
+    def test_from_dict_falls_back_to_last_submission_artifact_quality_panel(self):
+        data = self._sample_status()
+        data["last_result"] = {
+            "status": "success",
+            "summary": {
+                "stock_family_allocation_count": 64,
+                "family_preference_order": ["momentum", "ma_cross"],
+            },
+            "stages": {
+                "submit": {
+                    "status": "completed",
+                    "ok": True,
+                    "strategies": [
+                        {
+                            "strategy_id": "sid_last_fallback_1",
+                            "candidate_family": "momentum",
+                            "holding_period_bucket": "medium",
+                            "submission_lane": "deferred_submission",
+                            "quality_summary": {
+                                "validation_grade": "C",
+                                "raw_validation_grade": "B",
+                                "effective_validation_grade": "C",
+                                "raw_validation_total_score": 55.0,
+                                "candidate_family": "momentum",
+                                "holding_period_bucket": "medium",
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+
+        dto = FactoryStatusDTO.from_dict(data)
+
+        assert dto.last_raw_validation_grade_distribution == {"B": 1}
+        assert dto.last_raw_validation_b_rate == pytest.approx(1.0)
+        assert dto.last_validation_family_quality_panel[0]["strategy_family"] == "momentum"
 
 
 # ---------------------------------------------------------------------------

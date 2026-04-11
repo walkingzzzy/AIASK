@@ -2,11 +2,29 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+import sys
 from typing import Any
 
 
+def _ensure_monorepo_package_path(package_name: str) -> None:
+    if package_name != "strategy_factory":
+        return
+    current = Path(__file__).resolve()
+    candidate = current.parents[3] / "strategy-factory" / "src"
+    if candidate.exists():
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+
 def _load_mcp_and_helpers():
-    from akshare_mcp.server import mcp
+    try:
+        from akshare_mcp.server import mcp
+    except ModuleNotFoundError as exc:
+        if exc.name != "strategy_factory":
+            raise
+        _ensure_monorepo_package_path(exc.name)
+        from akshare_mcp.server import mcp
     from akshare_mcp.tools.search import _infer_tool_category, _iter_registered_tools
 
     return mcp, _iter_registered_tools, _infer_tool_category

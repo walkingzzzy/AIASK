@@ -156,7 +156,24 @@ async def test_submitter_applies_incubation_budget_tracks(monkeypatch):
     monkeypatch.setattr(
         legacy_submission_gate,
         "run_submission_quality_gate",
-        AsyncMock(return_value={"passed": True, "reasons": [], "reason_codes": []}),
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "incubation_pass_mode": "strict",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "admission_stage": "incubation",
+                "admission_block_reasons": [],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": False},
+                },
+                "reasons": [],
+                "reason_codes": [],
+            }
+        ),
     )
     monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
     monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
@@ -199,6 +216,73 @@ async def test_submitter_applies_incubation_budget_tracks(monkeypatch):
     assert result["incubation_budget_summary"]["track_counts"]["observe_incubation"] == 1
     assert incubation_gateway.ensure_account.await_count == 2
     incubation_gateway.run_pipeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submitter_requires_strict_gate_for_formal_incubation_track(monkeypatch):
+    import strategy_factory.application.incubation_budgeter as budgeter_mod
+
+    incubation_gateway = MagicMock()
+    incubation_gateway.ensure_account = AsyncMock(return_value={"account": {"id": "acct_formal_1"}})
+    incubation_gateway.run_pipeline = AsyncMock(return_value={"snapshot": {}, "task_run_id": 101})
+    submitter = StrategySubmitter(incubation_gateway=incubation_gateway)
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 0)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "provisional_pass": True,
+                "incubation_pass_mode": "provisional",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "admission_stage": "incubation",
+                "admission_block_reasons": ["validation_grade_d_not_allowed_for_incubation"],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": False},
+                    "live": {"passed": False},
+                },
+                "reasons": [],
+                "reason_codes": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "provisional_formal_candidate",
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "spawn_reason": "formal-budget",
+                "research_task": {"priority": 80, "candidate_family": "momentum"},
+                "backtest_metrics": {"sharpe_ratio": 1.1, "total_return": 0.16, "max_drawdown": 0.10, "trades_count": 6},
+            }
+        ],
+        {"date": "2026-04-02", "fg_level": "neutral", "fear_greed_index": 55},
+        db,
+    )
+
+    strategy_item = result["strategies"][0]
+    assert strategy_item["status"] == "submitted"
+    assert strategy_item["submission_lane"] == "deferred_submission"
+    assert strategy_item["incubation_budget_track"] == "formal_incubation"
+    incubation_gateway.ensure_account.assert_not_awaited()
+    incubation_gateway.run_pipeline.assert_not_awaited()
 
 
 @pytest.mark.asyncio

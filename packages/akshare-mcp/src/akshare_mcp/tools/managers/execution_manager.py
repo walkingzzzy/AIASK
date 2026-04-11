@@ -35,6 +35,7 @@ from ._execution_manager_support import (
     _persist_runtime_config,
     _persist_task,
     _profile_distribution,
+    _reset_runtime_config_state,
     _refresh_and_persist_tasks,
     _run_pretrade_gate,
     _set_config_impl,
@@ -105,6 +106,7 @@ def _sync_execution_support_overrides() -> None:
 
 def register_execution_manager(mcp):
     """Register execution manager tool."""
+    _reset_runtime_config_state()
 
     @mcp.tool()
     async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None, dry_run: bool = False) -> dict:

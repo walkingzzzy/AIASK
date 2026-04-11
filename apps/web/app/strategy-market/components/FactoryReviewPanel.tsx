@@ -216,12 +216,44 @@ export function FactoryReviewPanel({
     <div className="mt-4 space-y-4">
       <KpiGrid cols={6}>
         <KpiCard title="质量门禁" value={review == null ? '-' : review.passed ? '通过' : '未通过'} />
-        <KpiCard title="验证评级" value={review?.summary?.validation_grade ?? incubation?.validation_grade ?? '-'} />
+        <KpiCard
+          title="验证评级"
+          value={
+            review?.summary?.effective_validation_grade
+            ?? review?.summary?.validation_grade
+            ?? incubation?.effective_validation_grade
+            ?? incubation?.validation_grade
+            ?? '-'
+          }
+        />
         <KpiCard title="Walk-Forward IC IR" value={fmtNum(review?.quality_gate?.wf_ic_ir, 4)} />
         <KpiCard title="Purged K-Fold IC" value={fmtNum(review?.quality_gate?.pkf_ic, 4)} />
         <KpiCard title="孵化信号数" value={incubation?.total_signals ?? latestMetric?.total_signals ?? '-'} />
         <KpiCard title="5日命中率" value={fmtPct(incubation?.hit_rate_5d ?? latestMetric?.hit_rate_5d)} />
       </KpiGrid>
+
+      {(
+        review?.summary?.raw_validation_grade
+        || review?.summary?.effective_validation_grade
+        || incubation?.raw_validation_grade
+        || incubation?.effective_validation_grade
+      ) ? (
+        <SectionCard className="p-3">
+          <div className="flex gap-2 flex-wrap text-sm">
+            <Badge variant="neutral">
+              Raw: {review?.summary?.raw_validation_grade ?? incubation?.raw_validation_grade ?? '-'}
+            </Badge>
+            <Badge variant="info">
+              Effective: {review?.summary?.effective_validation_grade ?? review?.summary?.validation_grade ?? incubation?.effective_validation_grade ?? incubation?.validation_grade ?? '-'}
+            </Badge>
+            {(review?.summary?.validation_grade_adjustment_reason ?? incubation?.validation_grade_adjustment_reason) ? (
+              <Badge variant="warning">
+                调整原因: {shortText(review?.summary?.validation_grade_adjustment_reason ?? incubation?.validation_grade_adjustment_reason, 28)}
+              </Badge>
+            ) : null}
+          </div>
+        </SectionCard>
+      ) : null}
 
       <div className="overflow-x-auto">
         <TabBar tabs={FACTORY_SECTION_TABS} active={activeSection} onChange={onSectionChange} />
@@ -336,7 +368,7 @@ export function FactoryReviewPanel({
                 <ul className="m-0 pl-5">
                   {review.reports.map((item, index) => (
                     <li key={`${item.report_type ?? 'report'}-${item.updated_at ?? index}`}>
-                      {item.report_type ?? '-'} / {item.summary?.review_source ?? '-'} / {item.summary?.validation_grade ?? '-'}
+                      {item.report_type ?? '-'} / {item.summary?.review_source ?? '-'} / {item.summary?.raw_validation_grade ?? item.summary?.validation_grade ?? '-'} → {item.summary?.effective_validation_grade ?? item.summary?.validation_grade ?? '-'}
                     </li>
                   ))}
                 </ul>

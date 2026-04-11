@@ -273,9 +273,15 @@ def candidate_signature(candidate: Optional[dict[str, Any]]) -> str:
     item = dict(candidate or {})
     params = dict(item.get("params") or {})
     for key in (
+        "candidate_local_attempt_count",
+        "candidate_local_selected_count",
         "factory_attempt_count",
+        "factory_global_attempt_count",
+        "factory_global_selected_count",
         "factory_selected_count",
         "task_attempt_count",
+        "task_local_attempt_count",
+        "task_local_selected_count",
         "task_selected_count",
         "research_task",
         "requested_target_symbols",

@@ -112,6 +112,7 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
             self._last_compatibility_failure_metrics: dict[str, Any] = {}
             self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
             self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
+            self._runtime_loop_id: Optional[int] = None
 
         async def close(self) -> None:
             """关闭共享 HTTP 连接池。"""
@@ -119,6 +120,7 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
                 await self._client.aclose()
             except Exception:
                 pass
+            self._runtime_loop_id = None
 
         def is_enabled(self) -> bool:
             return bool(self.config.enabled and self.config.base_url and self.config.api_key and self.config.model)

@@ -390,12 +390,32 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 "count": int(active_pool.get("count") or 0),
                 "strict_count": int(active_pool.get("strict_count") or 0),
                 "provisional_count": int(active_pool.get("provisional_count") or 0),
+                "provisional_spillover_count": int(active_pool.get("provisional_spillover_count") or 0),
                 "excluded_count": int(active_pool.get("excluded_count") or 0),
+                "blocked_excluded_count": int(active_pool.get("blocked_excluded_count") or 0),
+                "pending_excluded_count": int(active_pool.get("pending_excluded_count") or 0),
+                "ineligible_excluded_count": int(active_pool.get("ineligible_excluded_count") or 0),
+                "provisional_spillover_policy": dict(active_pool.get("provisional_spillover_policy") or {}),
                 "top_candidates": top_candidates,
                 "excluded_candidates": excluded_candidates,
                 "exclusion_reason_counts": {
                     str(key): int(value or 0)
                     for key, value in dict(active_pool.get("exclusion_reason_counts") or {}).items()
+                    if str(key).strip()
+                },
+                "blocked_exclusion_reason_counts": {
+                    str(key): int(value or 0)
+                    for key, value in dict(active_pool.get("blocked_exclusion_reason_counts") or {}).items()
+                    if str(key).strip()
+                },
+                "pending_exclusion_reason_counts": {
+                    str(key): int(value or 0)
+                    for key, value in dict(active_pool.get("pending_exclusion_reason_counts") or {}).items()
+                    if str(key).strip()
+                },
+                "ineligible_exclusion_reason_counts": {
+                    str(key): int(value or 0)
+                    for key, value in dict(active_pool.get("ineligible_exclusion_reason_counts") or {}).items()
                     if str(key).strip()
                 },
                 "family_summary": family_summary,
@@ -415,8 +435,15 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "active_factor_count": int(summary.get("active_factor_count") or 0),
                     "active_candidate_count": int(summary.get("active_candidate_count") or 0),
                     "governed_source_candidate_count": int(summary.get("governed_source_candidate_count") or 0),
+                    "governed_active_registry_candidate_count": int(
+                        summary.get("governed_active_registry_candidate_count") or 0
+                    ),
                     "governed_blocked_candidate_count": int(summary.get("governed_blocked_candidate_count") or 0),
                     "governed_blocked_ratio": summary.get("governed_blocked_ratio"),
+                    "governed_pending_candidate_count": int(summary.get("governed_pending_candidate_count") or 0),
+                    "governed_pending_ratio": summary.get("governed_pending_ratio"),
+                    "governed_ineligible_candidate_count": int(summary.get("governed_ineligible_candidate_count") or 0),
+                    "governed_ineligible_ratio": summary.get("governed_ineligible_ratio"),
                     "governed_latest_candidate_at": summary.get("governed_latest_candidate_at"),
                     "governed_freshness_days": summary.get("governed_freshness_days"),
                     "ranked_factor_count": int(summary.get("ranked_factor_count") or 0),
@@ -425,6 +452,8 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "active_family_names": list(summary.get("active_family_names") or []),
                     "active_regime_names": list(summary.get("active_regime_names") or []),
                     "preferred_strategy_types": list(summary.get("preferred_strategy_types") or []),
+                    "family_preference_order": list(summary.get("family_preference_order") or []),
+                    "family_preference_source_mode": summary.get("family_preference_source_mode"),
                     "factor_source_mode": summary.get("factor_source_mode"),
                     "governed_candidate_pool_mode": summary.get("governed_candidate_pool_mode"),
                     "governed_candidate_pool_provisional": bool(summary.get("governed_candidate_pool_provisional")),
@@ -432,11 +461,29 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "governed_candidate_pool_provisional_count": int(
                         summary.get("governed_candidate_pool_provisional_count") or 0
                     ),
+                    "governed_candidate_pool_provisional_spillover_count": int(
+                        summary.get("governed_candidate_pool_provisional_spillover_count") or 0
+                    ),
+                    "governed_candidate_pool_provisional_spillover_policy": dict(
+                        summary.get("governed_candidate_pool_provisional_spillover_policy") or {}
+                    ),
+                    "governed_candidate_pool_provisional_spillover_policy_status": summary.get(
+                        "governed_candidate_pool_provisional_spillover_policy_status"
+                    ),
+                    "governed_candidate_pool_provisional_pending_count": int(
+                        summary.get("governed_candidate_pool_provisional_pending_count") or 0
+                    ),
+                    "governed_candidate_pool_strict_shortfall_count": int(
+                        summary.get("governed_candidate_pool_strict_shortfall_count") or 0
+                    ),
                     "scheduler_last_run": summary.get("scheduler_last_run"),
                     "scheduler_freshness_sec": summary.get("scheduler_freshness_sec"),
                     "scheduler_recent_success": bool(summary.get("scheduler_recent_success")),
                     "scheduler_llm_validation_status": summary.get("scheduler_llm_validation_status"),
                     "governed_exclusion_reason_counts": dict(summary.get("governed_exclusion_reason_counts") or {}),
+                    "governed_blocking_reason_counts": dict(summary.get("governed_blocking_reason_counts") or {}),
+                    "governed_pending_reason_counts": dict(summary.get("governed_pending_reason_counts") or {}),
+                    "governed_ineligible_reason_counts": dict(summary.get("governed_ineligible_reason_counts") or {}),
                     "governed_registry_stage_counts": dict(summary.get("governed_registry_stage_counts") or {}),
                     "top_candidate_lineage": list(summary.get("top_candidate_lineage") or []),
                     "governed_risk_counts": dict(summary.get("governed_risk_counts") or {}),
@@ -826,17 +873,26 @@ class _StrategyFactorySchedulerAnalysisMixin:
 
             planned_bulk = cls._safe_int(summary.get("planned_bulk_task_count"))
             selected_bulk = cls._safe_int(summary.get("selected_bulk_task_count"))
+            configured_bulk_budget = max(
+                cls._safe_int(summary.get("max_bulk_research_tasks")),
+                cls._safe_int(summary.get("reserved_bulk_task_budget")),
+            )
             selected_batch_count = cls._safe_int(summary.get("bulk_stock_matrix_selected_batch_count"))
             batch_count = cls._safe_int(summary.get("bulk_stock_matrix_batch_count"))
-            bulk_fill_ratio = cls._safe_ratio(selected_bulk, planned_bulk) if planned_bulk > 0 else 1.0
-            batch_fill_ratio = cls._safe_ratio(selected_batch_count, batch_count) if batch_count > 0 else 1.0
+            budgeted_bulk_target = (
+                min(planned_bulk, configured_bulk_budget)
+                if planned_bulk > 0 and configured_bulk_budget > 0
+                else planned_bulk
+            )
+            bulk_fill_ratio = cls._safe_ratio(selected_bulk, budgeted_bulk_target) if budgeted_bulk_target > 0 else 1.0
+            planner_batch_coverage_ratio = cls._safe_ratio(selected_batch_count, batch_count) if batch_count > 0 else 1.0
             bulk_imbalance_value = round(
-                max(0.0, 1.0 - min(bulk_fill_ratio, batch_fill_ratio)),
+                max(0.0, 1.0 - bulk_fill_ratio),
                 4,
-            ) if planned_bulk > 0 or batch_count > 0 else 0.0
+            ) if budgeted_bulk_target > 0 else 0.0
             bulk_imbalance_status = cls._governance_status(
-                critical=(planned_bulk > 0 or batch_count > 0) and min(bulk_fill_ratio, batch_fill_ratio) < 0.35,
-                warning=(planned_bulk > 0 or batch_count > 0) and min(bulk_fill_ratio, batch_fill_ratio) < 0.8,
+                critical=budgeted_bulk_target > 0 and bulk_fill_ratio < 0.35,
+                warning=budgeted_bulk_target > 0 and bulk_fill_ratio < 0.8,
             )
             if bulk_imbalance_status != "healthy":
                 _append_alert(
@@ -846,6 +902,7 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     value=bulk_imbalance_value,
                     selected_bulk_task_count=selected_bulk,
                     planned_bulk_task_count=planned_bulk,
+                    budgeted_bulk_task_target=budgeted_bulk_target,
                     selected_batch_count=selected_batch_count,
                     batch_count=batch_count,
                 )
@@ -889,6 +946,20 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     governed_blocked_ratio=round(governed_blocked_ratio, 4),
                     factor_source_mode=factor_source_mode or None,
                 )
+            governed_pending_ratio = cls._safe_float(summary.get("governed_pending_ratio"))
+            if governed_pool_active and governed_pending_ratio >= 0.5:
+                _append_alert(
+                    "governed_pool_promotion_backlog",
+                    "warning",
+                    "A large share of candidates remain pending promotion into the governed active pool.",
+                    governed_pending_ratio=round(governed_pending_ratio, 4),
+                    governed_pending_candidate_count=cls._safe_int(
+                        summary.get("governed_pending_candidate_count")
+                    ),
+                    governed_source_candidate_count=cls._safe_int(
+                        summary.get("governed_source_candidate_count")
+                    ),
+                )
 
             overall_status = "healthy"
             if any(str(item.get("severity")) == "critical" for item in alerts):
@@ -929,11 +1000,26 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "status": bulk_imbalance_status,
                     "value": bulk_imbalance_value,
                     "bulk_fill_ratio": round(bulk_fill_ratio, 4),
-                    "batch_fill_ratio": round(batch_fill_ratio, 4),
+                    "budgeted_bulk_task_target": budgeted_bulk_target,
+                    "planner_batch_coverage_ratio": round(planner_batch_coverage_ratio, 4),
                     "selected_bulk_task_count": selected_bulk,
                     "planned_bulk_task_count": planned_bulk,
                     "selected_batch_count": selected_batch_count,
                     "batch_count": batch_count,
+                },
+                "governed_pool_promotion_backlog": {
+                    "status": (
+                        "warning"
+                        if governed_pool_active and governed_pending_ratio >= 0.5
+                        else "healthy"
+                    ),
+                    "governed_pending_ratio": round(governed_pending_ratio, 4),
+                    "governed_pending_candidate_count": cls._safe_int(
+                        summary.get("governed_pending_candidate_count")
+                    ),
+                    "governed_source_candidate_count": cls._safe_int(
+                        summary.get("governed_source_candidate_count")
+                    ),
                 },
             }
 
@@ -1231,6 +1317,7 @@ class _StrategyFactorySchedulerAnalysisMixin:
             contract_reject_reason_counts: dict[str, int] = {}
             feedback_control_mode_counts: dict[str, int] = {}
             feedback_target_pool_control_mode_counts: dict[str, int] = {}
+            feedback_holding_bucket_control_mode_counts: dict[str, int] = {}
             feedback_generator_mode_control_mode_counts: dict[str, int] = {}
             trade_validation_audit_missing_count = 0
             gate_3_event_audit_incomplete_count = 0
@@ -1448,6 +1535,19 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     feedback_target_pool_control_mode_counts[feedback_target_pool_control_mode] = (
                         feedback_target_pool_control_mode_counts.get(feedback_target_pool_control_mode, 0) + 1
                     )
+                feedback_holding_bucket_control_mode = str(
+                    summary.get("feedback_holding_bucket_control_mode")
+                    or feedback_metrics.get("holding_bucket_control_mode")
+                    or ""
+                ).strip().lower()
+                if feedback_holding_bucket_control_mode:
+                    feedback_holding_bucket_control_mode_counts[feedback_holding_bucket_control_mode] = (
+                        feedback_holding_bucket_control_mode_counts.get(
+                            feedback_holding_bucket_control_mode,
+                            0,
+                        )
+                        + 1
+                    )
                 feedback_generator_mode_control_mode = str(
                     summary.get("feedback_generator_mode_control_mode")
                     or feedback_metrics.get("generator_mode_control_mode")
@@ -1569,6 +1669,9 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 "target_expansion_source_counts": target_expansion_source_counts,
                 "feedback_control_mode_counts": feedback_control_mode_counts,
                 "feedback_target_pool_control_mode_counts": feedback_target_pool_control_mode_counts,
+                "feedback_holding_bucket_control_mode_counts": (
+                    feedback_holding_bucket_control_mode_counts
+                ),
                 "feedback_generator_mode_control_mode_counts": feedback_generator_mode_control_mode_counts,
                 "feedback_controlled_count": feedback_controlled_count,
                 "feedback_cooldown_count": feedback_cooldown_count,
@@ -1732,8 +1835,22 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "autonomy_task_count": int(base.get("autonomy_task_count") or 0),
                     "research_task_count": int(base.get("research_task_count") or 0),
                     "research_candidate_count": int(base.get("research_candidate_count") or 0),
+                    "candidate_origin_counts": dict(base.get("research_candidate_origin_counts") or {}),
+                    "local_rule_candidate_count": int(
+                        base.get("research_local_rule_candidate_count") or 0
+                    ),
+                    "external_autonomy_candidate_count": int(
+                        base.get("research_external_autonomy_candidate_count") or 0
+                    ),
+                    "governed_candidate_activation_count": int(
+                        base.get("research_governed_candidate_activation_count") or 0
+                    ),
                     "research_experiment_count": int(base.get("research_experiment_count") or 0),
                     "research_task_evidence_count": int(base.get("research_task_evidence_count") or 0),
+                    "task_origin_counts": dict(base.get("research_task_origin_counts") or {}),
+                    "governed_candidate_activation_task_count": int(
+                        base.get("research_governed_candidate_activation_task_count") or 0
+                    ),
                     "snapshot_task_count": int(base.get("snapshot_task_count") or 0),
                     "bulk_stock_task_count": int(base.get("bulk_stock_task_count") or 0),
                     "gate_0_passed": int(base.get("gate_0_passed") or 0),
@@ -1786,6 +1903,44 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "promotion_review_status_counts": dict(
                         base.get("budget_feedback_promotion_review_status_counts") or {}
                     ),
+                    "signal_count_total": int(base.get("budget_feedback_signal_count_total") or 0),
+                    "zero_signal_strategy_count": int(
+                        base.get("budget_feedback_zero_signal_strategy_count") or 0
+                    ),
+                    "zero_signal_ratio": float(
+                        base.get("budget_feedback_zero_signal_ratio") or 0.0
+                    ),
+                    "low_signal_strategy_count": int(
+                        base.get("budget_feedback_low_signal_strategy_count") or 0
+                    ),
+                    "low_signal_ratio": float(base.get("budget_feedback_low_signal_ratio") or 0.0),
+                    "observed_forward_window_count": int(
+                        base.get("budget_feedback_observed_forward_window_count") or 0
+                    ),
+                    "missing_forward_window_count": int(
+                        base.get("budget_feedback_missing_forward_window_count") or 0
+                    ),
+                    "expected_forward_window_count": int(
+                        base.get("budget_feedback_expected_forward_window_count") or 0
+                    ),
+                    "forward_window_coverage_ratio": float(
+                        base.get("budget_feedback_forward_window_coverage_ratio") or 1.0
+                    ),
+                    "promotion_ready_count": int(
+                        base.get("budget_feedback_promotion_ready_count") or 0
+                    ),
+                    "promotion_ready_ratio": float(
+                        base.get("budget_feedback_promotion_ready_ratio") or 1.0
+                    ),
+                    "promotion_review_coverage_ratio": float(
+                        base.get("budget_feedback_promotion_review_coverage_ratio") or 1.0
+                    ),
+                    "evidence_debt_strategy_count": int(
+                        base.get("budget_feedback_evidence_debt_strategy_count") or 0
+                    ),
+                    "evidence_debt_ratio": float(
+                        base.get("budget_feedback_evidence_debt_ratio") or 0.0
+                    ),
                     "blocked_task_count": int(base.get("blocked_feedback_task_count") or 0),
                     "planned_cooldown_task_count": int(
                         base.get("planned_feedback_cooldown_task_count") or 0
@@ -1796,6 +1951,9 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "planned_target_pool_control_mode_counts": dict(
                         base.get("planned_feedback_target_pool_control_mode_counts") or {}
                     ),
+                    "planned_holding_bucket_control_mode_counts": dict(
+                        base.get("planned_feedback_holding_bucket_control_mode_counts") or {}
+                    ),
                     "planned_generator_mode_control_mode_counts": dict(
                         base.get("planned_feedback_generator_mode_control_mode_counts") or {}
                     ),
@@ -1805,6 +1963,9 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "selected_target_pool_control_mode_counts": dict(
                         base.get("selected_feedback_target_pool_control_mode_counts") or {}
                     ),
+                    "selected_holding_bucket_control_mode_counts": dict(
+                        base.get("selected_feedback_holding_bucket_control_mode_counts") or {}
+                    ),
                     "selected_generator_mode_control_mode_counts": dict(
                         base.get("selected_feedback_generator_mode_control_mode_counts") or {}
                     ),
@@ -1813,6 +1974,9 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     ),
                     "submission_target_pool_control_mode_counts": dict(
                         base.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "submission_holding_bucket_control_mode_counts": dict(
+                        base.get("feedback_holding_bucket_control_mode_counts") or {}
                     ),
                     "submission_generator_mode_control_mode_counts": dict(
                         base.get("feedback_generator_mode_control_mode_counts") or {}
@@ -1850,6 +2014,9 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "feedback_control_mode_counts": dict(base.get("feedback_control_mode_counts") or {}),
                     "feedback_target_pool_control_mode_counts": dict(
                         base.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "feedback_holding_bucket_control_mode_counts": dict(
+                        base.get("feedback_holding_bucket_control_mode_counts") or {}
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         base.get("feedback_generator_mode_control_mode_counts") or {}

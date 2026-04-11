@@ -244,6 +244,147 @@ def test_deduplicator_exposes_revision_trigger_and_existing_contract_availabilit
     assert decision["existing_tested_object_available"] is True
 
 
+def test_deduplicator_requires_refresh_improvement_for_same_tested_object():
+    candidate = apply_resolved_candidate_envelope({
+        "strategy_type": "dsl_rule",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "portfolio_spec": {
+            "position_assumption": "single_name_full_notional",
+            "target_weight_scheme": "single_name",
+        },
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_plus_representative",
+        },
+        "candidate_evidence_status": {
+            "validation_grade": "C",
+            "promotion_ready": False,
+            "total_signals": 6,
+            "minimum_signal_count": 10,
+            "observed_forward_days": [1],
+            "missing_forward_days": [5, 10, 20],
+        },
+        "promotion_review": {"score": 0.32, "status": "watch", "recommendation": "observe"},
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_plus_representative",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            }
+        },
+    })
+    existing = apply_resolved_candidate_envelope({
+        "id": "stg_existing",
+        "status": "listed",
+        "strategy_type": "dsl_rule",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "portfolio_spec": {
+            "position_assumption": "single_name_full_notional",
+            "target_weight_scheme": "single_name",
+        },
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_plus_representative",
+        },
+        "candidate_evidence_status": {
+            "validation_grade": "B",
+            "promotion_ready": True,
+            "total_signals": 18,
+            "minimum_signal_count": 10,
+            "observed_forward_days": [1, 5, 10, 20],
+            "missing_forward_days": [],
+        },
+        "promotion_review": {"score": 0.71, "status": "approved", "recommendation": "promote"},
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_plus_representative",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            }
+        },
+    })
+    match = {
+        "matched_status": "listed",
+        "matched_strategy_id": "stg_existing",
+        "target_overlap": 1.0,
+    }
+
+    decision = Deduplicator._evaluate_existing_match_decision(candidate, match, existing)
+
+    assert decision["refresh_existing"] is False
+    assert decision["spawn_revision_from_existing"] is False
+    assert decision["refresh_decision_basis"] == "same_tested_object_without_improvement"
+    assert decision["refresh_improvement_required"] is True
+    assert decision["refresh_improvement_passed"] is False
+
+
+def test_deduplicator_blocks_revision_when_lineage_limit_reached():
+    candidate = {
+        "strategy_type": "dsl_rule",
+        "parent_strategy_id": "stg_existing",
+        "candidate_lineage_contract": {"revision_count": 3},
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_plus_representative",
+        },
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_plus_representative",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 12}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 10}},
+            }
+        },
+    }
+    existing = {
+        "id": "stg_existing",
+        "status": "listed",
+        "target_symbols": ["600519"],
+        "params": {
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+            "research_task": {
+                "task_source": "snapshot",
+                "target_symbols": ["600519"],
+                "validation_focus": "target_plus_representative",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_representative",
+            },
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            },
+        },
+    }
+    match = {
+        "matched_status": "listed",
+        "matched_strategy_id": "stg_existing",
+        "target_overlap": 1.0,
+    }
+
+    decision = Deduplicator._evaluate_existing_match_decision(candidate, match, existing)
+
+    assert decision["spawn_revision_from_existing"] is False
+    assert decision["revision_lineage_limit_reached"] is True
+    assert decision["refresh_decision_basis"] == "revision_limit_reached"
+
+
 @pytest.mark.asyncio
 async def test_deduplicator_refreshes_semantic_same_tested_object_below_threshold(monkeypatch):
     candidate = apply_resolved_candidate_envelope({
@@ -371,3 +512,133 @@ async def test_deduplicator_spawns_semantic_revision_below_threshold_when_alpha_
     assert detail["match_type"] == "semantic"
     assert detail["refresh_mode"] == "spawn_revision_from_existing"
     assert detail["refresh_decision_basis"] == "tested_object_changed"
+
+
+def test_deduplicator_blocks_refresh_for_repeated_raw_d_lineage_without_structural_shift():
+    candidate = apply_resolved_candidate_envelope({
+        "strategy_type": "momentum",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "strategy_profile": {"holding_period_bucket": "short", "generator_mode": "rule"},
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_only",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            }
+        },
+    })
+    candidate["candidate_lineage_contract"]["consecutive_raw_validation_d_count"] = 2
+    candidate["params"]["candidate_lineage_contract"]["consecutive_raw_validation_d_count"] = 2
+    existing = apply_resolved_candidate_envelope({
+        "id": "stg_existing",
+        "status": "listed",
+        "strategy_type": "momentum",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "strategy_profile": {"holding_period_bucket": "short", "generator_mode": "rule"},
+        "candidate_evidence_status": {
+            "raw_validation_grade": "D",
+            "validation_grade": "D",
+            "promotion_ready": False,
+            "total_signals": 4,
+            "minimum_signal_count": 10,
+            "observed_forward_days": [1],
+            "missing_forward_days": [5, 10, 20],
+        },
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_only",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            }
+        },
+    })
+    match = {
+        "matched_status": "listed",
+        "matched_strategy_id": "stg_existing",
+        "target_overlap": 1.0,
+    }
+
+    decision = Deduplicator._evaluate_existing_match_decision(candidate, match, existing)
+
+    assert decision["refresh_existing"] is False
+    assert decision["spawn_revision_from_existing"] is False
+    assert decision["refresh_decision_basis"] == "low_quality_lineage_refresh_blocked"
+    assert decision["lineage_structural_shift_required"] is True
+    assert decision["lineage_structural_shift_applied"] is False
+    assert decision["recommended_holding_bucket_shift"] == "medium"
+    assert decision["recommended_generator_mode_shift"] == "external_llm"
+    assert decision["recommended_universe_shift"] is True
+
+
+def test_deduplicator_allows_revision_for_repeated_raw_d_lineage_after_structural_shift():
+    candidate = apply_resolved_candidate_envelope({
+        "strategy_type": "momentum",
+        "parent_strategy_id": "stg_existing",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "strategy_profile": {"holding_period_bucket": "medium", "generator_mode": "rule"},
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_only",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 12}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 10}},
+            }
+        },
+    })
+    candidate["candidate_lineage_contract"]["consecutive_raw_validation_d_count"] = 2
+    candidate["params"]["candidate_lineage_contract"]["consecutive_raw_validation_d_count"] = 2
+    existing = apply_resolved_candidate_envelope({
+        "id": "stg_existing",
+        "status": "listed",
+        "strategy_type": "momentum",
+        "target_symbols": ["600519"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+        "strategy_profile": {"holding_period_bucket": "short", "generator_mode": "rule"},
+        "candidate_evidence_status": {
+            "raw_validation_grade": "D",
+            "validation_grade": "D",
+            "promotion_ready": False,
+            "total_signals": 4,
+            "minimum_signal_count": 10,
+            "observed_forward_days": [1],
+            "missing_forward_days": [5, 10, 20],
+        },
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "validation_focus": "target_only",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"indicator": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"indicator": "close"}, "right": {"value": 9}},
+            }
+        },
+    })
+    match = {
+        "matched_status": "listed",
+        "matched_strategy_id": "stg_existing",
+        "target_overlap": 1.0,
+    }
+
+    decision = Deduplicator._evaluate_existing_match_decision(candidate, match, existing)
+
+    assert decision["refresh_existing"] is False
+    assert decision["spawn_revision_from_existing"] is True
+    assert decision["revision_trigger_reason"] == "tested_object_changed"
+    assert decision["lineage_structural_shift_required"] is True
+    assert decision["lineage_structural_shift_applied"] is True

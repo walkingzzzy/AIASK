@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import httpx
 import pandas as pd
+from strategy_factory.application.candidate_contract import resolve_candidate_validation_profile
 from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
 from strategy_factory.domain.targets import (
     _apply_target_symbol_policy,
@@ -20,6 +21,7 @@ from strategy_factory.domain.targets import (
 )
 
 from ..env_loader import load_mcp_env
+from .strategy_open_dsl import compile_open_dsl_candidate, is_open_dsl_candidate
 from .strategy_spec import (
     _default_holding_horizon,
     _default_position_sizing,
@@ -88,6 +90,10 @@ class StrategyLLMConfig:
 
 
 class _StrategyLLMProviderNormalizeMixin:
+        _LEGACY_PORTFOLIO_REQUIRED_KEYS = ("position_assumption", "target_weight_scheme")
+        _LEGACY_EXECUTION_REQUIRED_KEYS = ("commission_rate", "slippage_bps", "tradability_filter", "slippage_model")
+        _LEGACY_VALIDATION_REQUIRED_KEYS = ("profile", "validation_focus", "primary_validation_layer")
+
         def _endpoint(self) -> str:
             base = self.config.base_url.rstrip("/")
             if base.endswith("/chat/completions"):
@@ -238,6 +244,188 @@ class _StrategyLLMProviderNormalizeMixin:
             return value in (None, "", [], {})
 
         @classmethod
+        def _has_required_contract_keys(
+            cls,
+            payload: Any,
+            *,
+            required_keys: tuple[str, ...],
+        ) -> bool:
+            if not isinstance(payload, dict) or not payload:
+                return False
+            return all(not cls._contract_value_missing(payload.get(key)) for key in required_keys)
+
+        @classmethod
+        def _canonicalize_validation_profile(
+            cls,
+            candidate: dict[str, Any],
+            *,
+            strategy_type: str,
+            normalized_task: dict[str, Any],
+            validation_profile: Any,
+        ) -> dict[str, Any]:
+            explicit_profile = dict(validation_profile or {}) if isinstance(validation_profile, dict) else {}
+            canonical_profile = resolve_candidate_validation_profile(
+                {
+                    "strategy_type": strategy_type,
+                    "research_task": dict(normalized_task),
+                },
+                research_task=normalized_task,
+            )
+            if not cls._has_required_contract_keys(
+                explicit_profile,
+                required_keys=cls._LEGACY_VALIDATION_REQUIRED_KEYS,
+            ):
+                return dict(canonical_profile)
+            actual_profile = str(explicit_profile.get("profile") or "").strip().lower()
+            actual_focus = str(explicit_profile.get("validation_focus") or "").strip().lower()
+            actual_layer = str(explicit_profile.get("primary_validation_layer") or "").strip().lower()
+            expected_profile = str(canonical_profile.get("profile") or "").strip().lower()
+            expected_focus = str(canonical_profile.get("validation_focus") or "").strip().lower()
+            expected_layer = str(canonical_profile.get("primary_validation_layer") or "").strip().lower()
+            if (
+                actual_profile == expected_profile
+                and actual_focus == expected_focus
+                and actual_layer == expected_layer
+            ):
+                return explicit_profile
+            return {
+                **explicit_profile,
+                **canonical_profile,
+            }
+
+        @staticmethod
+        def _normalize_targeting_policy_payload(
+            payload: Any,
+            *,
+            fallback: dict[str, Any],
+        ) -> dict[str, Any]:
+            if isinstance(payload, dict) and payload:
+                return dict(payload)
+            if payload not in (None, "", [], {}):
+                return {"mode": str(payload).strip()}
+            return dict(fallback)
+
+        @classmethod
+        def _normalize_open_dsl_candidate_contract(
+            cls,
+            candidate: dict[str, Any],
+            *,
+            normalized_task: dict[str, Any],
+        ) -> Optional[dict[str, Any]]:
+            if not is_open_dsl_candidate(candidate):
+                return None
+            compilation = compile_open_dsl_candidate(candidate)
+            if compilation.attempted and not compilation.accepted:
+                candidate["_open_dsl_reject_reasons"] = list(compilation.reject_reasons)
+                candidate["_open_dsl_audit"] = dict(compilation.audit or {})
+                return None
+            compiled = dict(compilation.compiled or {})
+            params = dict(compiled.get("params") or {})
+            compiled_dsl = dict(params.get("dsl") or {})
+            if not compiled_dsl:
+                candidate["_open_dsl_reject_reasons"] = ["open_dsl_missing:compiled_dsl"]
+                candidate["_open_dsl_audit"] = dict(compilation.audit or {})
+                return None
+            compiled_meta = dict(compiled.get("metadata") or {})
+            target_symbols = cls._normalize_code_list(
+                [
+                    candidate.get("target_symbols"),
+                    candidate.get("stock_pool"),
+                    compiled_meta.get("target_symbols"),
+                    (compiled_dsl.get("metadata") or {}).get("target_symbols"),
+                ],
+                limit=8,
+            )
+            stock_pool_payload = candidate.get("stock_pool")
+            stock_pool = {
+                "selection_mode": "explicit" if target_symbols else "screened",
+                "symbols": list(target_symbols),
+            }
+            if isinstance(stock_pool_payload, dict):
+                stock_pool = {
+                    "selection_mode": str(
+                        stock_pool_payload.get("selection_mode")
+                        or stock_pool_payload.get("mode")
+                        or stock_pool.get("selection_mode")
+                        or ""
+                    ).strip()
+                    or stock_pool.get("selection_mode")
+                    or "screened",
+                    "symbols": cls._normalize_code_list(
+                        stock_pool_payload.get("symbols")
+                        or stock_pool_payload.get("codes")
+                        or target_symbols,
+                        limit=8,
+                    ),
+                    "filters": dict(stock_pool_payload.get("filters") or {}),
+                    "rationale": stock_pool_payload.get("rationale"),
+                }
+            strategy_type = str(candidate.get("strategy_type") or compiled.get("strategy_type") or "dsl_rule").strip() or "dsl_rule"
+            holding_horizon = dict(candidate.get("holding_horizon") or compiled_meta.get("holding_horizon") or {})
+            if not holding_horizon:
+                holding_horizon = _default_holding_horizon(strategy_type, normalized_task, str(normalized_task.get("task_source") or ""))
+            trade_plan = candidate.get("trade_plan")
+            normalized_trade_plan = dict(trade_plan) if isinstance(trade_plan, dict) and trade_plan else _default_trade_plan(strategy_type, str(normalized_task.get("task_source") or ""))
+            risk_rules = dict(candidate.get("risk_rules") or compiled_meta.get("risk_rules") or compiled_dsl.get("risk_rules") or {})
+            if not risk_rules:
+                risk_rules = _default_risk_rules(str(normalized_task.get("task_source") or ""), holding_horizon)
+            position_sizing = candidate.get("position_sizing")
+            normalized_position_sizing = dict(position_sizing) if isinstance(position_sizing, dict) and position_sizing else _default_position_sizing(target_symbols)
+            rebalance_rule = candidate.get("rebalance_rule")
+            normalized_rebalance_rule = dict(rebalance_rule) if isinstance(rebalance_rule, dict) and rebalance_rule else _default_rebalance_rule(strategy_type, str(normalized_task.get("task_source") or ""))
+            portfolio_spec = dict(candidate.get("portfolio_spec") or {})
+            if not cls._has_required_contract_keys(portfolio_spec, required_keys=cls._LEGACY_PORTFOLIO_REQUIRED_KEYS):
+                portfolio_spec = {
+                    "position_assumption": "single_name_full_notional" if len(target_symbols) <= 1 else "equal_weight_proxy",
+                    "target_weight_scheme": "single_name" if len(target_symbols) <= 1 else "equal_weight",
+                }
+            execution_assumptions = dict(candidate.get("execution_assumptions") or {})
+            if not cls._has_required_contract_keys(execution_assumptions, required_keys=cls._LEGACY_EXECUTION_REQUIRED_KEYS):
+                execution_assumptions = {
+                    "commission_rate": 0.00025,
+                    "slippage_bps": 5,
+                    "tradability_filter": True,
+                    "slippage_model": "fixed",
+                }
+            validation_profile = cls._canonicalize_validation_profile(
+                candidate,
+                strategy_type=strategy_type,
+                normalized_task=normalized_task,
+                validation_profile=candidate.get("validation_profile"),
+            )
+            dsl_metadata = dict(compiled_dsl.get("metadata") or {})
+            dsl_metadata.update(
+                {
+                    "target_symbols": list(target_symbols),
+                    "stock_pool": dict(stock_pool),
+                    "portfolio_spec": dict(portfolio_spec),
+                    "execution_assumptions": dict(execution_assumptions),
+                    "validation_profile": dict(validation_profile),
+                    "open_dsl_audit": dict(compilation.audit or {}),
+                    "open_dsl_source_mode": "provider_normalize_bridge",
+                }
+            )
+            compiled_dsl["metadata"] = dsl_metadata
+            return {
+                **dict(candidate or {}),
+                "strategy_type": strategy_type,
+                "dsl": compiled_dsl,
+                "target_symbols": list(target_symbols),
+                "stock_pool": dict(stock_pool),
+                "holding_horizon": dict(holding_horizon),
+                "trade_plan": dict(normalized_trade_plan),
+                "risk_rules": dict(risk_rules),
+                "position_sizing": dict(normalized_position_sizing),
+                "execution_notes": candidate.get("execution_notes") or compiled_meta.get("execution_notes") or "prefer liquid session execution with tradability filter",
+                "rebalance_rule": dict(normalized_rebalance_rule),
+                "portfolio_spec": dict(portfolio_spec),
+                "execution_assumptions": dict(execution_assumptions),
+                "validation_profile": dict(validation_profile),
+                "_open_dsl_audit": dict(compilation.audit or {}),
+                "_open_dsl_compiled": True,
+            }
+
+        @classmethod
         def _require_explicit_contract_dict(
             cls,
             candidate: dict[str, Any],
@@ -259,10 +447,22 @@ class _StrategyLLMProviderNormalizeMixin:
             return normalized, []
 
         @classmethod
-        def _normalize_candidate_payload(cls, candidate: Any, research_task: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        def _normalize_candidate_payload(
+            cls,
+            candidate: Any,
+            research_task: Optional[dict[str, Any]] = None,
+            *,
+            allow_legacy_contract_defaults: bool = False,
+        ) -> Optional[dict[str, Any]]:
             if not isinstance(candidate, dict):
                 return None
             normalized_task = _normalize_research_task_contract(research_task)
+            open_dsl_normalized = cls._normalize_open_dsl_candidate_contract(
+                candidate,
+                normalized_task=normalized_task,
+            )
+            if open_dsl_normalized is not None:
+                candidate = open_dsl_normalized
             task_source = str(normalized_task.get('task_source') or '').strip().lower()
             research_symbols = cls._normalize_code_list(normalized_task.get('target_symbols'), limit=8)
             target_alignment_contract = dict(
@@ -359,47 +559,7 @@ class _StrategyLLMProviderNormalizeMixin:
             constraint_check['coverage_ratio'] = coverage_ratio
             constraint_check['intersection_ratio'] = intersection_ratio
             constraint_check['target_overlap_count'] = int(overlap_count)
-            validation = validate_precompile_candidate_contract(
-                {
-                    **candidate,
-                    'research_task': dict(normalized_task),
-                    'strategy_type': str(candidate.get('strategy_type') or 'dsl_rule').strip() or 'dsl_rule',
-                    'target_symbols': list(target_symbols),
-                    'stock_pool': dict(stock_pool),
-                    'constraint_check': dict(constraint_check),
-                    'portfolio_spec': dict(candidate.get('portfolio_spec') or {}),
-                    'execution_assumptions': dict(candidate.get('execution_assumptions') or {}),
-                    'validation_profile': dict(candidate.get('validation_profile') or {}),
-                },
-                research_task=normalized_task,
-                source='external_llm',
-            )
-            constraint_check = dict(validation.constraint_check)
-            if not validation.accepted:
-                candidate["_normalize_reject_reasons"] = list(validation.reject_reasons)
-                candidate["_normalize_precompile_validation"] = validation.to_dict()
-                return None
-            portfolio_spec = dict(validation.portfolio_spec)
-            execution_assumptions = dict(validation.execution_assumptions)
-            validation_profile = dict(validation.validation_profile)
-            metadata['target_symbols'] = list(target_symbols)
-            metadata['stock_pool'] = stock_pool
-            metadata['constraint_check'] = constraint_check
-            targeting_policy = dict(metadata.get('targeting_policy') or _default_targeting_policy(normalized_task))
-            metadata['targeting_policy'] = targeting_policy
-            metadata['target_alignment_contract'] = dict(target_alignment_contract)
-            dsl['metadata'] = metadata
-            dsl = cls._sanitize_dsl_for_candidate(dsl)
-            tags = candidate.get('tags') or []
-            if not isinstance(tags, list):
-                tags = [tags]
             strategy_type = str(candidate.get('strategy_type') or 'dsl_rule').strip() or 'dsl_rule'
-            hypothesis = str(
-                candidate.get('hypothesis')
-                or candidate.get('rationale')
-                or candidate.get('description')
-                or ''
-            ).strip()
             holding_horizon = dict(candidate.get('holding_horizon') or {})
             if not holding_horizon:
                 holding_horizon = dict(normalized_task.get('holding_window') or {})
@@ -408,7 +568,6 @@ class _StrategyLLMProviderNormalizeMixin:
             risk_rules = dict(candidate.get('risk_rules') or dsl.get('risk_rules') or {})
             if not risk_rules:
                 risk_rules = _default_risk_rules(task_source, holding_horizon)
-            dsl['risk_rules'] = dict(risk_rules)
             rebalance_rule = dict(candidate.get('rebalance_rule') or {})
             if not rebalance_rule:
                 rebalance_rule = _default_rebalance_rule(strategy_type, task_source)
@@ -419,13 +578,6 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_trade_plan = {'summary': str(trade_plan)}
             else:
                 normalized_trade_plan = _default_trade_plan(strategy_type, task_source)
-            execution_notes = candidate.get('execution_notes')
-            if execution_notes in (None, '', [], {}):
-                normalized_execution_notes = 'prefer liquid session execution with tradability filter'
-            elif isinstance(execution_notes, list):
-                normalized_execution_notes = [str(item) for item in execution_notes[:3] if str(item or '').strip()]
-            else:
-                normalized_execution_notes = str(execution_notes)
             position_sizing = candidate.get('position_sizing')
             if isinstance(position_sizing, dict):
                 normalized_position_sizing = dict(position_sizing)
@@ -433,6 +585,107 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_position_sizing = {'summary': str(position_sizing)}
             else:
                 normalized_position_sizing = _default_position_sizing(target_symbols)
+            if allow_legacy_contract_defaults:
+                portfolio_spec = dict(candidate.get('portfolio_spec') or {})
+                if not cls._has_required_contract_keys(portfolio_spec, required_keys=cls._LEGACY_PORTFOLIO_REQUIRED_KEYS):
+                    portfolio_spec = {
+                        'position_assumption': 'single_name_full_notional' if len(target_symbols) <= 1 else 'equal_weight_proxy',
+                        'target_weight_scheme': 'single_name' if len(target_symbols) <= 1 else 'equal_weight',
+                    }
+                execution_assumptions = dict(candidate.get('execution_assumptions') or {})
+                if not cls._has_required_contract_keys(execution_assumptions, required_keys=cls._LEGACY_EXECUTION_REQUIRED_KEYS):
+                    execution_assumptions = {
+                        'commission_rate': 0.00025,
+                        'slippage_bps': 5,
+                        'tradability_filter': True,
+                        'slippage_model': 'fixed',
+                    }
+                validation_profile = cls._canonicalize_validation_profile(
+                    candidate,
+                    strategy_type=strategy_type,
+                    normalized_task=normalized_task,
+                    validation_profile=candidate.get('validation_profile'),
+                )
+            else:
+                portfolio_spec, portfolio_reject_reasons = cls._require_explicit_contract_dict(
+                    candidate,
+                    'portfolio_spec',
+                    required_keys=('position_assumption', 'target_weight_scheme'),
+                )
+                execution_assumptions, execution_reject_reasons = cls._require_explicit_contract_dict(
+                    candidate,
+                    'execution_assumptions',
+                    required_keys=('commission_rate', 'slippage_bps', 'tradability_filter', 'slippage_model'),
+                )
+                validation_profile, validation_reject_reasons = cls._require_explicit_contract_dict(
+                    candidate,
+                    'validation_profile',
+                    required_keys=('profile', 'validation_focus', 'primary_validation_layer'),
+                )
+                explicit_contract_reject_reasons = [
+                    *portfolio_reject_reasons,
+                    *execution_reject_reasons,
+                    *validation_reject_reasons,
+                ]
+                if explicit_contract_reject_reasons:
+                    candidate["_normalize_reject_reasons"] = list(dict.fromkeys(explicit_contract_reject_reasons))
+                    return None
+            validation = validate_precompile_candidate_contract(
+                {
+                    **candidate,
+                    'research_task': dict(normalized_task),
+                    'strategy_type': strategy_type,
+                    'target_symbols': list(target_symbols),
+                    'stock_pool': dict(stock_pool),
+                    'constraint_check': dict(constraint_check),
+                    'holding_horizon': dict(holding_horizon),
+                    'trade_plan': dict(normalized_trade_plan),
+                    'risk_rules': dict(risk_rules),
+                    'position_sizing': dict(normalized_position_sizing),
+                    'rebalance_rule': dict(rebalance_rule),
+                    'portfolio_spec': dict(portfolio_spec),
+                    'execution_assumptions': dict(execution_assumptions),
+                    'validation_profile': dict(validation_profile),
+                },
+                research_task=normalized_task,
+                source='external_llm',
+            )
+            constraint_check = dict(validation.constraint_check)
+            if not validation.accepted:
+                candidate["_normalize_reject_reasons"] = list(validation.reject_reasons)
+                candidate["_normalize_precompile_validation"] = validation.to_dict()
+                return None
+            portfolio_spec = dict(validation.portfolio_spec or portfolio_spec)
+            execution_assumptions = dict(validation.execution_assumptions or execution_assumptions)
+            validation_profile = dict(validation.validation_profile or validation_profile)
+            metadata['target_symbols'] = list(target_symbols)
+            metadata['stock_pool'] = stock_pool
+            metadata['constraint_check'] = constraint_check
+            targeting_policy = cls._normalize_targeting_policy_payload(
+                metadata.get('targeting_policy'),
+                fallback=_default_targeting_policy(normalized_task),
+            )
+            metadata['targeting_policy'] = targeting_policy
+            metadata['target_alignment_contract'] = dict(target_alignment_contract)
+            dsl['metadata'] = metadata
+            dsl = cls._sanitize_dsl_for_candidate(dsl)
+            tags = candidate.get('tags') or []
+            if not isinstance(tags, list):
+                tags = [tags]
+            hypothesis = str(
+                candidate.get('hypothesis')
+                or candidate.get('rationale')
+                or candidate.get('description')
+                or ''
+            ).strip()
+            dsl['risk_rules'] = dict(risk_rules)
+            execution_notes = candidate.get('execution_notes')
+            if execution_notes in (None, '', [], {}):
+                normalized_execution_notes = 'prefer liquid session execution with tradability filter'
+            elif isinstance(execution_notes, list):
+                normalized_execution_notes = [str(item) for item in execution_notes[:3] if str(item or '').strip()]
+            else:
+                normalized_execution_notes = str(execution_notes)
             metadata['portfolio_spec'] = dict(portfolio_spec)
             metadata['execution_assumptions'] = dict(execution_assumptions)
             metadata['validation_profile'] = dict(validation_profile)
@@ -478,6 +731,26 @@ class _StrategyLLMProviderNormalizeMixin:
                 'constraint_check': constraint_check,
                 'tags': [str(item) for item in [*tags, 'target_contract_enforced'] if str(item or '').strip()][:8],
             }
+            if allow_legacy_contract_defaults:
+                normalized["_legacy_contract_defaults_applied"] = True
+            if isinstance(candidate.get('hypothesis_artifact'), dict) and candidate.get('hypothesis_artifact'):
+                normalized['hypothesis_artifact'] = dict(candidate.get('hypothesis_artifact') or {})
+            elif isinstance(candidate.get('hypothesis_structured'), dict) and candidate.get('hypothesis_structured'):
+                normalized['hypothesis_artifact'] = dict(candidate.get('hypothesis_structured') or {})
+            for key in (
+                'holding_rationale',
+                'alpha_half_life',
+                'cost_sensitivity_grid',
+                'position_model',
+                'capacity_assumption',
+                'market_regime_assumption',
+                'economic_semantics_score',
+                'economic_semantics_missing_fields',
+                'validation_focus',
+                'hypothesis_artifact_id',
+            ):
+                if candidate.get(key) not in (None, '', [], {}):
+                    normalized[key] = candidate.get(key)
             description = candidate.get('description')
             if description not in (None, ''):
                 normalized['description'] = str(description)
@@ -506,6 +779,38 @@ class _StrategyLLMProviderNormalizeMixin:
                     'name': 'single_stock_trend_follow',
                     'strategy_type': 'dsl_rule',
                     'hypothesis': '目标股票在中短期趋势延续中更容易产生顺势机会。',
+                    'hypothesis_artifact': {
+                        'alpha_hypothesis': '目标股票在中短期趋势延续中更容易产生顺势机会。',
+                        'failure_mode': {
+                            'primary_failure_mode': 'trend_break_or_time_stop',
+                            'stop_loss_pct': 0.08,
+                        },
+                        'target_universe_hypothesis': {
+                            'target_symbols': list(symbols),
+                            'stock_pool': stock_pool,
+                            'target_symbol_policy': 'prefer_intersection',
+                        },
+                        'family_hint': 'dsl_rule',
+                        'holding_rationale': '趋势确认后持有 10 天以内，直到趋势衰减或时间止损。',
+                        'alpha_half_life': 10,
+                        'cost_sensitivity_grid': {
+                            'base_case': {
+                                'commission_rate': 0.00025,
+                                'slippage_bps': 5,
+                            },
+                        },
+                        'position_model': 'single_name',
+                        'capacity_assumption': {
+                            'max_position_pct': 1.0,
+                            'symbol_count': len(symbols),
+                        },
+                        'market_regime_assumption': {
+                            'summary': '趋势延续需要市场流动性正常且目标股仍保持相对强势。',
+                            'preferred_regime': 'trend_expansion',
+                            'avoid_regime': 'range_bound_chop',
+                        },
+                        'validation_focus': 'target_plus_representative',
+                    },
                     'holding_horizon': {'max_days': 10},
                     'trade_plan': {'entry_bias': 'trend_follow', 'exit_bias': 'signal_or_time_stop'},
                     'risk_rules': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 10},
@@ -699,13 +1004,23 @@ class _StrategyLLMProviderNormalizeMixin:
         def _compact_history_summary(cls, history_summary: list[dict[str, Any]], compact_level: int = 0) -> list[dict[str, Any]]:
             rows = []
             for item in list(history_summary or [])[: max(2, 6 - compact_level * 2)]:
-                rows.append({
+                payload = {
                     "parent_strategy_id": item.get("parent_strategy_id"),
                     "generator_type": item.get("generator_type"),
                     "status": item.get("status"),
                     "decision": item.get("decision"),
                     "final_score": cls._round_number(item.get("final_score"), digits=4),
-                })
+                }
+                if item.get("family_hint") not in (None, "", [], {}):
+                    payload["family_hint"] = item.get("family_hint")
+                if item.get("validation_focus") not in (None, "", [], {}):
+                    payload["validation_focus"] = item.get("validation_focus")
+                if item.get("replay_ready") is not None:
+                    payload["replay_ready"] = bool(item.get("replay_ready"))
+                target_symbols = list(item.get("target_symbols") or [])
+                if target_symbols:
+                    payload["target_symbols"] = target_symbols[: max(1, 4 - compact_level)]
+                rows.append(payload)
             return rows
 
         @classmethod

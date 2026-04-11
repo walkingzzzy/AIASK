@@ -117,6 +117,10 @@ class FactoryBacktestAssumptions:
     position_assumption: str = "single_name_full_notional"
     target_weight_scheme: str = "single_name"
     target_weight_map: JSONDict = field(default_factory=dict)
+    turnover_cost_class: Optional[str] = None
+    position_sizing_rationale: Optional[str] = None
+    expected_turnover_band: Optional[str] = None
+    market_regime_assumption: Optional[JSONLike] = None
     market_ruleset: str = "cn_equity"
     sell_tax_rate: float = 0.001
     min_trade_lot: int = 100
@@ -164,6 +168,10 @@ class FactoryBacktestAssumptions:
             "position_assumption": str(self.position_assumption or "single_name_full_notional"),
             "target_weight_scheme": str(self.target_weight_scheme or "single_name"),
             "target_weight_map": dict(self.target_weight_map or {}),
+            "turnover_cost_class": self.turnover_cost_class,
+            "position_sizing_rationale": self.position_sizing_rationale,
+            "expected_turnover_band": self.expected_turnover_band,
+            "market_regime_assumption": self.market_regime_assumption,
             "market_ruleset": str(self.market_ruleset or "cn_equity"),
             "sell_tax_rate": float(self.sell_tax_rate),
             "min_trade_lot": int(self.min_trade_lot),

@@ -478,6 +478,33 @@ class StrategyTextEmbeddingService:
             vector[bucket] += sign
         return vector
 
+    async def _embed_with_provider(self, provider: str, normalized: str, *, model: str) -> list[float]:
+        if provider in {"openai_compatible", "ollama"}:
+            await self.ensure_client()
+        if provider == "openai_compatible":
+            return await self._embed_openai_compatible(normalized, model=model)
+        if provider == "ollama":
+            return await self._embed_ollama(normalized, model=model)
+        if provider == "sentence_transformers":
+            return await self._embed_sentence_transformers(normalized)
+        if provider == "hash_fallback":
+            return self._embed_hash_fallback(normalized)
+        raise StrategyTextEmbeddingError(f"unsupported embedding provider: {provider}")
+
+    async def _embed_with_runtime_fallback(
+        self,
+        provider: str,
+        normalized: str,
+        *,
+        model: str,
+    ) -> tuple[list[float], str, Optional[str]]:
+        try:
+            return await self._embed_with_provider(provider, normalized, model=model), provider, None
+        except Exception as exc:
+            if provider != "hash_fallback" and self.config.allow_hash_fallback:
+                return self._embed_hash_fallback(normalized), "hash_fallback", self._error_text(exc)
+            raise
+
     async def smoke_check(self, *, force: bool = False) -> dict[str, Any]:
         if not self.is_enabled():
             return {"status": "disabled"}
@@ -504,16 +531,11 @@ class StrategyTextEmbeddingService:
         normalized = self._normalize_text("strategy text embedding smoke check")
         started = time.perf_counter()
         try:
-            if provider in {"openai_compatible", "ollama"}:
-                await self.ensure_client()
-            if provider == "openai_compatible":
-                values = await self._embed_openai_compatible(normalized, model=resolved_model)
-            elif provider == "ollama":
-                values = await self._embed_ollama(normalized, model=resolved_model)
-            elif provider == "sentence_transformers":
-                values = await self._embed_sentence_transformers(normalized)
-            else:
-                values = self._embed_hash_fallback(normalized)
+            values, used_provider, fallback_error = await self._embed_with_runtime_fallback(
+                provider,
+                normalized,
+                model=resolved_model,
+            )
             normalized_values = self._normalize_vector(values)
             latency_ms = (time.perf_counter() - started) * 1000
             self._mark_success(latency_ms=latency_ms)
@@ -522,10 +544,13 @@ class StrategyTextEmbeddingService:
             self._last_smoke_check_error = None
             return {
                 "status": "passed",
-                "provider": provider,
+                "provider": used_provider,
+                "requested_provider": provider,
                 "model": resolved_model or None,
                 "vector_length": len(normalized_values),
                 "latency_ms": round(latency_ms, 2),
+                "fallback_used": used_provider != provider,
+                "fallback_error": fallback_error,
             }
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
@@ -553,18 +578,11 @@ class StrategyTextEmbeddingService:
             return list(cached)
         started = time.perf_counter()
         try:
-            if provider in {"openai_compatible", "ollama"}:
-                await self.ensure_client()
-            if provider == "openai_compatible":
-                values = await self._embed_openai_compatible(normalized, model=resolved_model)
-            elif provider == "ollama":
-                values = await self._embed_ollama(normalized, model=resolved_model)
-            elif provider == "sentence_transformers":
-                values = await self._embed_sentence_transformers(normalized)
-            elif provider == "hash_fallback":
-                values = self._embed_hash_fallback(normalized)
-            else:
-                raise StrategyTextEmbeddingError(f"unsupported embedding provider: {provider}")
+            values, _used_provider, _fallback_error = await self._embed_with_runtime_fallback(
+                provider,
+                normalized,
+                model=resolved_model,
+            )
             normalized_values = self._normalize_vector(values)
             self._cache[cache_key] = normalized_values
             self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)

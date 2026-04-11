@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable
 
 import numpy as np
@@ -24,6 +25,44 @@ PROVISIONAL_ACTIVE_REGISTRY_STAGE = "validated"
 PROVISIONAL_ACTIVE_RECOMMENDATIONS = {"watch"}
 PROVISIONAL_ACTIVE_RISK_LEVELS = {"low", "medium"}
 PROVISIONAL_ACTIVE_MIN_SCORE = 45.0
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except Exception:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    token = str(raw).strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+STRICT_ACTIVE_POOL_SPILLOVER_ENABLED = _env_bool("STRATEGY_FACTORY_ACTIVE_POOL_SPILLOVER_ENABLED", True)
+STRICT_ACTIVE_POOL_MIN_COUNT = _env_int(
+    "STRATEGY_FACTORY_ACTIVE_POOL_MIN_COUNT",
+    6,
+    minimum=1,
+    maximum=20,
+)
+STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT = _env_int(
+    "STRATEGY_FACTORY_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT",
+    3,
+    minimum=0,
+    maximum=10,
+)
 _REGISTRY_STAGE_RANK = {
     "draft": 0,
     "validated": 1,
@@ -514,11 +553,40 @@ def _evaluate_active_pool_eligibility(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _classify_active_pool_exclusion(entry: dict[str, Any]) -> str:
+    item = dict(entry.get("item") or {})
+    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
+    admission_blocked = bool(item.get("admission_blocked")) or bool(risk_audit.get("blocked"))
+    if admission_blocked:
+        return "blocked"
+    if bool(entry.get("provisional_eligible")):
+        return "pending"
+    return "ineligible"
+
+
+def _resolve_active_pool_exclusion_reasons(entry: dict[str, Any], classification: str) -> list[str]:
+    item = dict(entry.get("item") or {})
+    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
+    if classification == "blocked":
+        return _dedupe_tokens(
+            item.get("admission_block_reasons")
+            or risk_audit.get("block_reasons")
+            or ["admission_blocked"]
+        )
+    if classification == "pending":
+        pending_reason_code = str(entry.get("pending_reason_code") or "").strip().lower()
+        if pending_reason_code:
+            return [pending_reason_code]
+        return _dedupe_tokens(entry.get("strict_reasons") or entry.get("provisional_reasons"))
+    return _dedupe_tokens(entry.get("provisional_reasons") or entry.get("strict_reasons"))
+
+
 def _build_active_pool_candidate_entry(
     item: dict[str, Any],
     *,
     pool_entry_mode: str | None = None,
     reasons: list[str] | None = None,
+    exclusion_bucket: str | None = None,
 ) -> dict[str, Any]:
     candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
     rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
@@ -557,6 +625,8 @@ def _build_active_pool_candidate_entry(
         payload["pool_entry_mode"] = pool_entry_mode
     if reasons is not None:
         payload["reasons"] = list(reasons)
+    if exclusion_bucket:
+        payload["exclusion_bucket"] = exclusion_bucket
     return payload
 
 
@@ -583,18 +653,119 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
 
     strict_candidates = [entry for entry in evaluated_items if bool(entry.get("strict_eligible"))]
     provisional_candidates = [entry for entry in evaluated_items if bool(entry.get("provisional_eligible"))]
+    provisional_spillover_candidates: list[dict[str, Any]] = []
+    provisional_only_candidates: list[dict[str, Any]] = []
+    provisional_spillover_policy: dict[str, Any] = {
+        "enabled": bool(STRICT_ACTIVE_POOL_SPILLOVER_ENABLED),
+        "min_strict_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+        "spillover_limit": int(STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT),
+        "status": "empty",
+        "decision": "empty",
+        "strict_count": len(strict_candidates),
+        "provisional_count": len(provisional_candidates),
+        "provisional_only_count": 0,
+        "selected_spillover_count": 0,
+        "pending_provisional_count": 0,
+        "strict_shortfall_count": 0,
+        "pending_reason_code": None,
+    }
     if strict_candidates:
         active_pool_mode = STRICT_ACTIVE_POOL_MODE
-        selected_candidates = strict_candidates
-        excluded_source = [
+        selected_candidates = list(strict_candidates)
+        provisional_only_candidates = [
             entry
-            for entry in evaluated_items
+            for entry in provisional_candidates
             if not bool(entry.get("strict_eligible"))
         ]
+        provisional_only_candidates.sort(
+            key=lambda entry: (
+                _safe_float(
+                    (
+                        dict((entry.get("item") or {}).get("rating") or {}).get("total_score")
+                    ),
+                    0.0,
+                ),
+                str(entry.get("updated_at") or ""),
+                str(dict(entry.get("item") or {}).get("artifact_id") or ""),
+            ),
+            reverse=True,
+        )
+        spillover_budget = 0
+        strict_shortfall_count = max(STRICT_ACTIVE_POOL_MIN_COUNT - len(strict_candidates), 0)
+        if STRICT_ACTIVE_POOL_SPILLOVER_ENABLED:
+            spillover_budget = min(
+                strict_shortfall_count,
+                len(provisional_only_candidates),
+                STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT,
+            )
+        if spillover_budget > 0:
+            provisional_spillover_candidates = provisional_only_candidates[:spillover_budget]
+            selected_candidates.extend(provisional_spillover_candidates)
+        pending_reason_code = None
+        pending_provisional_count = max(
+            len(provisional_only_candidates) - len(provisional_spillover_candidates),
+            0,
+        )
+        if len(provisional_only_candidates) > 0:
+            if strict_shortfall_count <= 0:
+                policy_status = "awaiting_governed_promotion"
+                policy_decision = "strict_only"
+                pending_reason_code = "awaiting_governed_promotion"
+            elif not STRICT_ACTIVE_POOL_SPILLOVER_ENABLED:
+                policy_status = "spillover_disabled"
+                policy_decision = "strict_only"
+                pending_reason_code = "spillover_disabled"
+            elif pending_provisional_count > 0:
+                policy_status = "spillover_capacity_exhausted"
+                policy_decision = "spillover_capped"
+                pending_reason_code = "spillover_capacity_exhausted"
+            else:
+                policy_status = "spillover_applied"
+                policy_decision = "spillover_applied"
+        else:
+            if strict_shortfall_count > 0:
+                policy_status = "strict_pool_shortfall_without_provisional_supply"
+                policy_decision = "strict_only"
+            else:
+                policy_status = "strict_pool_sufficient"
+                policy_decision = "strict_only"
+        provisional_spillover_policy = {
+            "enabled": bool(STRICT_ACTIVE_POOL_SPILLOVER_ENABLED),
+            "min_strict_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+            "spillover_limit": int(STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT),
+            "status": policy_status,
+            "decision": policy_decision,
+            "strict_count": len(strict_candidates),
+            "provisional_count": len(provisional_candidates),
+            "provisional_only_count": len(provisional_only_candidates),
+            "selected_spillover_count": len(provisional_spillover_candidates),
+            "pending_provisional_count": pending_provisional_count,
+            "strict_shortfall_count": strict_shortfall_count,
+            "pending_reason_code": pending_reason_code,
+        }
+        if pending_reason_code:
+            for entry in provisional_only_candidates[len(provisional_spillover_candidates):]:
+                entry["pending_reason_code"] = pending_reason_code
+        selected_entry_ids = {id(entry) for entry in selected_candidates}
+        excluded_source = [entry for entry in evaluated_items if id(entry) not in selected_entry_ids]
         exclusion_reason_key = "strict_reasons"
     elif provisional_candidates:
         active_pool_mode = PROVISIONAL_ACTIVE_POOL_MODE
         selected_candidates = provisional_candidates
+        provisional_spillover_policy = {
+            "enabled": bool(STRICT_ACTIVE_POOL_SPILLOVER_ENABLED),
+            "min_strict_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+            "spillover_limit": int(STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT),
+            "status": "provisional_pool_only",
+            "decision": "provisional_only",
+            "strict_count": 0,
+            "provisional_count": len(provisional_candidates),
+            "provisional_only_count": len(provisional_candidates),
+            "selected_spillover_count": 0,
+            "pending_provisional_count": 0,
+            "strict_shortfall_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+            "pending_reason_code": None,
+        }
         excluded_source = [
             entry
             for entry in evaluated_items
@@ -604,11 +775,26 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
     else:
         active_pool_mode = EMPTY_ACTIVE_POOL_MODE
         selected_candidates = []
+        provisional_spillover_policy = {
+            "enabled": bool(STRICT_ACTIVE_POOL_SPILLOVER_ENABLED),
+            "min_strict_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+            "spillover_limit": int(STRICT_ACTIVE_POOL_PROVISIONAL_SPILLOVER_LIMIT),
+            "status": "empty",
+            "decision": "empty",
+            "strict_count": 0,
+            "provisional_count": 0,
+            "provisional_only_count": 0,
+            "selected_spillover_count": 0,
+            "pending_provisional_count": 0,
+            "strict_shortfall_count": int(STRICT_ACTIVE_POOL_MIN_COUNT),
+            "pending_reason_code": None,
+        }
         excluded_source = list(evaluated_items)
         exclusion_reason_key = "provisional_reasons"
 
     top_candidates = []
     latest_active_candidate_updated_at = None
+    provisional_spillover_ids = {id(entry) for entry in provisional_spillover_candidates}
     for entry in selected_candidates:
         item = dict(entry.get("item") or {})
         candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
@@ -639,7 +825,14 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
             regime_counts[regime] = int(regime_counts.get(regime, 0)) + 1
 
         top_candidates.append(
-            _build_active_pool_candidate_entry(item, pool_entry_mode=active_pool_mode)
+            _build_active_pool_candidate_entry(
+                item,
+                pool_entry_mode=(
+                    PROVISIONAL_ACTIVE_POOL_MODE
+                    if id(entry) in provisional_spillover_ids
+                    else active_pool_mode
+                ),
+            )
         )
         updated_at = entry.get("updated_at")
         if updated_at and (
@@ -649,14 +842,35 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
 
     excluded_candidates = []
     exclusion_reason_counts = {}
+    blocked_excluded_count = 0
+    blocked_exclusion_reason_counts = {}
+    pending_excluded_count = 0
+    pending_exclusion_reason_counts = {}
+    ineligible_excluded_count = 0
+    ineligible_exclusion_reason_counts = {}
     latest_blocked_candidate_updated_at = None
     for entry in excluded_source:
-        reasons = _dedupe_tokens(entry.get(exclusion_reason_key))
+        item = dict(entry.get("item") or {})
+        classification = _classify_active_pool_exclusion(entry)
+        reasons = _resolve_active_pool_exclusion_reasons(entry, classification)
+        if classification == "blocked":
+            target_reason_counts = blocked_exclusion_reason_counts
+            blocked_excluded_count += 1
+        elif classification == "pending":
+            target_reason_counts = pending_exclusion_reason_counts
+            pending_excluded_count += 1
+        else:
+            target_reason_counts = ineligible_exclusion_reason_counts
+            ineligible_excluded_count += 1
         for reason in reasons:
             exclusion_reason_counts[reason] = int(exclusion_reason_counts.get(reason, 0)) + 1
-        item = dict(entry.get("item") or {})
+            target_reason_counts[reason] = int(target_reason_counts.get(reason, 0)) + 1
         excluded_candidates.append(
-            _build_active_pool_candidate_entry(item, reasons=reasons)
+            _build_active_pool_candidate_entry(
+                item,
+                reasons=reasons,
+                exclusion_bucket=classification,
+            )
         )
         updated_at = entry.get("updated_at")
         if updated_at and (
@@ -695,6 +909,9 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
         "count": len(top_candidates),
         "strict_count": len(strict_candidates),
         "provisional_count": len(provisional_candidates),
+        "provisional_spillover_count": len(provisional_spillover_candidates),
+        "provisional_spillover_enabled": bool(STRICT_ACTIVE_POOL_SPILLOVER_ENABLED),
+        "provisional_spillover_policy": provisional_spillover_policy,
         "excluded_count": len(excluded_candidates),
         "family_summary": family_summary,
         "regime_summary": regime_summary,
@@ -702,8 +919,19 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
         "latest_active_candidate_updated_at": latest_active_candidate_updated_at,
         "latest_blocked_candidate_updated_at": latest_blocked_candidate_updated_at,
         "top_candidates": top_candidates[:20],
+        "provisional_spillover_artifact_ids": [
+            str(dict(entry.get("item") or {}).get("artifact_id") or "")
+            for entry in provisional_spillover_candidates
+            if str(dict(entry.get("item") or {}).get("artifact_id") or "")
+        ],
         "excluded_candidates": excluded_candidates[:20],
         "exclusion_reason_counts": exclusion_reason_counts,
+        "blocked_excluded_count": blocked_excluded_count,
+        "blocked_exclusion_reason_counts": blocked_exclusion_reason_counts,
+        "pending_excluded_count": pending_excluded_count,
+        "pending_exclusion_reason_counts": pending_exclusion_reason_counts,
+        "ineligible_excluded_count": ineligible_excluded_count,
+        "ineligible_exclusion_reason_counts": ineligible_exclusion_reason_counts,
     }
 
 

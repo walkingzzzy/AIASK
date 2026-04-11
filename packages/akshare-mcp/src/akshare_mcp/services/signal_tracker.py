@@ -16,13 +16,15 @@ import logging
 from contextlib import suppress
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 FORWARD_DAYS = [1, 5, 10, 20]
+FORWARD_RETURN_BATCH_LIMIT = 2000
+FORWARD_RETURN_MAX_ROUNDS = 100
 
 
 class SignalTracker:
@@ -158,43 +160,16 @@ class SignalTracker:
         except Exception as e:
             results["errors"].append(f"Phase A: {e}")
 
-        # Phase B: Compute forward returns for past signals
+        # Phase B: Compute forward returns for past signals and historical backlog
         try:
-            for fd in FORWARD_DAYS:
-                pending = await db.get_pending_forward_returns(fd)
-                for rec in pending:
-                    try:
-                        code = rec["code"]
-                        signal_date = rec["signal_date"]
-                        klines = await self._get_klines_with_fallback(db, code, limit=fd + 5)
-                        if not klines:
-                            continue
-                        # Find the close on signal_date and fd days later
-                        by_date = {}
-                        for k in klines:
-                            kd = k.get("date")
-                            if isinstance(kd, str):
-                                kd = date.fromisoformat(kd[:10])
-                            elif isinstance(kd, datetime):
-                                kd = kd.date()
-                            if kd:
-                                by_date[kd] = float(k.get("close", 0))
-
-                        if signal_date not in by_date:
-                            continue
-                        base_close = by_date[signal_date]
-                        if base_close <= 0:
-                            continue
-                        # Find the close fd trading days after signal_date
-                        sorted_dates = sorted(d for d in by_date if d > signal_date)
-                        if len(sorted_dates) < fd:
-                            continue
-                        future_close = by_date[sorted_dates[fd - 1]]
-                        actual_return = (future_close - base_close) / base_close
-                        await db.save_forward_returns(rec["id"], fd, actual_return)
-                        results["forward_returns_computed"] += 1
-                    except Exception as e:
-                        results["errors"].append(f"Fwd return {rec.get('id')}: {e}")
+            backfill_result = await self.backfill_forward_returns(
+                db,
+                forward_days_list=FORWARD_DAYS,
+                batch_limit=FORWARD_RETURN_BATCH_LIMIT,
+                max_rounds=FORWARD_RETURN_MAX_ROUNDS,
+            )
+            results["forward_returns_computed"] = int(backfill_result.get("computed") or 0)
+            results["forward_returns_backfill"] = backfill_result
         except Exception as e:
             results["errors"].append(f"Phase B: {e}")
 
@@ -285,15 +260,216 @@ class SignalTracker:
         )
         return self.last_result
 
-    async def _get_klines_with_fallback(self, db, code: str, limit: int = 200) -> list:
-        """从DB获取K线，数据不足时回退到数据源"""
-        klines = await db.get_klines(code, limit=limit)
-        if klines and len(klines) >= 20:
+    async def backfill_forward_returns(
+        self,
+        db=None,
+        *,
+        forward_days_list: Optional[List[int]] = None,
+        batch_limit: int = FORWARD_RETURN_BATCH_LIMIT,
+        max_rounds: int = FORWARD_RETURN_MAX_ROUNDS,
+    ) -> dict:
+        """批量回填历史前向收益，支持在日常 Phase B 中复用。"""
+        from ..storage import get_db
+
+        database = db or get_db()
+        windows = [int(item) for item in list(forward_days_list or FORWARD_DAYS) if int(item) > 0]
+        per_window: dict[str, Any] = {}
+        total_computed = 0
+
+        for forward_days in windows:
+            window_key = f"{forward_days}D"
+            rounds = 0
+            computed = 0
+            pending_seen = 0
+            cursor_signal_date: Optional[date] = None
+            cursor_id = 0
+            truncated = False
+
+            while rounds < max(1, int(max_rounds or 1)):
+                rounds += 1
+                pending = await database.get_pending_forward_returns(
+                    forward_days,
+                    limit=batch_limit,
+                    after_signal_date=cursor_signal_date,
+                    after_id=cursor_id,
+                )
+                if not pending:
+                    break
+                pending_seen += len(pending)
+                saved = await self._compute_forward_returns_batch(
+                    database,
+                    pending,
+                    forward_days=forward_days,
+                )
+                computed += saved
+                total_computed += saved
+                last_record = dict(pending[-1] or {})
+                cursor_signal_date = self._coerce_trade_date(last_record.get("signal_date"))
+                cursor_id = int(last_record.get("id") or 0)
+            else:
+                truncated = True
+                logger.warning(
+                    "SignalTracker: forward-return backfill truncated for %s after %d rounds",
+                    window_key,
+                    rounds,
+                )
+
+            per_window[window_key] = {
+                "rounds": rounds,
+                "pending_seen": pending_seen,
+                "computed": computed,
+                "stalled": truncated,
+            }
+
+        return {
+            "computed": total_computed,
+            "batch_limit": max(1, int(batch_limit or FORWARD_RETURN_BATCH_LIMIT)),
+            "max_rounds": max(1, int(max_rounds or FORWARD_RETURN_MAX_ROUNDS)),
+            "windows": per_window,
+        }
+
+    async def _compute_forward_returns_batch(
+        self,
+        db,
+        pending: List[dict],
+        *,
+        forward_days: int,
+    ) -> int:
+        if not pending:
+            return 0
+
+        pending_by_code: Dict[str, List[dict]] = {}
+        for record in list(pending or []):
+            code = str(record.get("code") or "").strip()
+            if not code:
+                continue
+            pending_by_code.setdefault(code, []).append(record)
+
+        rows_to_save: list[dict[str, Any]] = []
+        for code, records in pending_by_code.items():
+            signal_dates = [self._coerce_trade_date(item.get("signal_date")) for item in records]
+            signal_dates = [item for item in signal_dates if item is not None]
+            if not signal_dates:
+                continue
+            earliest_signal_date = min(signal_dates)
+            klines = await self._get_klines_with_fallback(
+                db,
+                code,
+                start_date=earliest_signal_date,
+                limit=None,
+                allow_data_source_fallback=False,
+            )
+            close_series = self._build_close_series(klines)
+            if not close_series:
+                continue
+            index_by_date = {trade_date: idx for idx, (trade_date, _close) in enumerate(close_series)}
+            closes = [close for _trade_date, close in close_series]
+            for record in records:
+                signal_date = self._coerce_trade_date(record.get("signal_date"))
+                if signal_date is None:
+                    continue
+                base_index = index_by_date.get(signal_date)
+                if base_index is None:
+                    continue
+                future_index = base_index + int(forward_days)
+                if future_index >= len(closes):
+                    continue
+                base_close = float(closes[base_index] or 0.0)
+                future_close = float(closes[future_index] or 0.0)
+                if base_close <= 0:
+                    continue
+                rows_to_save.append(
+                    {
+                        "signal_id": int(record["id"]),
+                        "forward_days": int(forward_days),
+                        "actual_return": (future_close - base_close) / base_close,
+                    }
+                )
+
+        if not rows_to_save:
+            return 0
+
+        if hasattr(db, "save_forward_returns_batch"):
+            return int(await db.save_forward_returns_batch(rows_to_save) or 0)
+
+        saved = 0
+        for row in rows_to_save:
+            await db.save_forward_returns(
+                row["signal_id"],
+                row["forward_days"],
+                row["actual_return"],
+            )
+            saved += 1
+        return saved
+
+    @staticmethod
+    def _coerce_trade_date(value: Any) -> Optional[date]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text[:10])
+        except Exception:
+            return None
+
+    def _build_close_series(self, klines: List[dict]) -> List[tuple[date, float]]:
+        close_by_date: dict[date, float] = {}
+        for kline in list(klines or []):
+            trade_date = self._coerce_trade_date(kline.get("date") or kline.get("time"))
+            if trade_date is None:
+                continue
+            try:
+                close = float(kline.get("close") or 0.0)
+            except Exception:
+                continue
+            if close <= 0:
+                continue
+            close_by_date[trade_date] = close
+        return sorted(close_by_date.items(), key=lambda item: item[0])
+
+    async def _get_klines_with_fallback(
+        self,
+        db,
+        code: str,
+        limit: Optional[int] = 200,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        allow_data_source_fallback: bool = True,
+    ) -> list:
+        """从DB获取K线，数据不足时回退到数据源。"""
+        kwargs: dict[str, Any] = {}
+        if start_date is not None:
+            kwargs["start_date"] = start_date.isoformat()
+        if end_date is not None:
+            kwargs["end_date"] = end_date.isoformat()
+        if limit is not None:
+            kwargs["limit"] = limit
+
+        klines = await db.get_klines(code, **kwargs)
+        minimum_bars = 1 if start_date is not None or end_date is not None else 20
+        if klines and len(klines) >= minimum_bars:
             return klines
+        if not allow_data_source_fallback:
+            return klines or []
         try:
             from ..data_source import data_source
-            raw = data_source.get_kline(code, period="daily", limit=limit)
-            if raw and len(raw) >= 20:
+            fallback_limit = limit if limit is not None else 2000
+            raw = data_source.get_kline(code, period="daily", limit=fallback_limit)
+            if raw and (start_date is not None or end_date is not None):
+                raw = [
+                    item for item in list(raw or [])
+                    if (
+                        (start_date is None or (self._coerce_trade_date(item.get("date")) or date.min) >= start_date)
+                        and (end_date is None or (self._coerce_trade_date(item.get("date")) or date.max) <= end_date)
+                    )
+                ]
+            if raw and len(raw) >= minimum_bars:
                 logger.info("SignalTracker: fallback to data_source for %s (%d bars)", code, len(raw))
                 return raw
         except Exception as e:

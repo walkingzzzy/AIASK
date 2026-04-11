@@ -125,7 +125,24 @@ async def test_submitter_prefers_explicit_gateways_over_legacy_patch_points(monk
     )
     monkeypatch.setattr(
         "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
-        AsyncMock(return_value={"passed": True, "reasons": [], "reason_codes": []}),
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "incubation_pass_mode": "strict",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "admission_stage": "incubation",
+                "admission_block_reasons": [],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": False},
+                },
+                "reasons": [],
+                "reason_codes": [],
+            }
+        ),
     )
 
     class _DummyVectorPlatform:

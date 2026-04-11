@@ -42,11 +42,12 @@ def test_normalize_research_task_contract_for_snapshot_task():
     assert task["target_symbol_policy"] == "strict_intersection"
     assert task["universe_expansion_policy"] == "forbid"
     assert task["preference_strength"] == "soft"
-    assert task["validation_focus"] == "target_plus_representative"
+    assert task["validation_focus"] == "candidate_target_only"
     assert task["preferred_strategy_types"] == ["quality_factor"]
     assert task["strategy_preferences"] == ["quality_factor"]
     assert task["target_symbols"] == ["601398", "601288"]
-    assert task["holding_window"]["max_days"] == 20
+    assert task["holding_window"] == {"min_days": 30, "max_days": 84}
+    assert task["validation_profile"]["profile"] == "trade_rule_validation"
     assert task["preference_reason"] == "snapshot_regime_bias:quality_factor"
     assert task["target_alignment_contract"]["profile"] == "snapshot_targeted"
     assert task["target_alignment_contract"]["market_fallback_allowed"] is False
@@ -70,6 +71,22 @@ def test_normalize_research_task_contract_for_single_target_snapshot_task():
     assert task["target_alignment_contract"]["market_fallback_allowed"] is False
     assert task["target_alignment_contract"]["min_required_overlap_count"] == 1
     assert task["target_alignment_contract"]["min_target_sample_count"] == 1
+    assert task["holding_window"] == {"min_days": 14, "max_days": 48}
+
+
+def test_normalize_research_task_contract_promotes_quality_target_only_to_trade_rule_validation():
+    task = _normalize_research_task_contract(
+        {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "preferred_strategy_types": ["quality_factor"],
+            "validation_focus": "candidate_target_only",
+        }
+    )
+
+    assert task["holding_window"] == {"min_days": 30, "max_days": 84}
+    assert task["validation_profile"]["profile"] == "trade_rule_validation"
+    assert task["validation_profile"]["validation_focus"] == "candidate_target_only"
 
 
 def test_normalize_research_task_contract_compacts_factor_research_metadata():

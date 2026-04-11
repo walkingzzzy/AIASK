@@ -74,6 +74,35 @@ class StrategyLLMConfig:
         )
 
 
+def _family_hypothesis_requirements() -> dict[str, dict[str, Any]]:
+    return {
+        "momentum": {
+            "required_fields": [
+                "trend_persistence_logic",
+                "failure_scenario",
+                "false_breakout_filter",
+            ],
+            "note": "必须说明趋势持续逻辑、失效情景，以及如何过滤假突破。",
+        },
+        "quality_factor": {
+            "required_fields": [
+                "quality_metrics",
+                "holding_consistency_explanation",
+                "quality_drift_detection",
+            ],
+            "note": "必须说明核心质量指标、持有期为何与质量扩散一致，以及如何识别质量漂移。",
+        },
+        "ma_cross": {
+            "required_fields": [
+                "trend_noise_separation",
+                "range_filter",
+                "volume_confirmation",
+            ],
+            "note": "必须说明如何区分趋势与噪声、如何过滤横盘，以及如何做量能确认。",
+        },
+    }
+
+
 class _StrategyLLMProviderPromptMixin:
         @classmethod
         def _build_prompt(
@@ -144,6 +173,7 @@ class _StrategyLLMProviderPromptMixin:
             )
             disallow_market_fallback = strict_snapshot_target_pool and not target_alignment_contract.get('market_fallback_allowed', True)
             focus_strategy_families = list(target_alignment_contract.get('focus_strategy_families') or [])
+            family_hypothesis_requirements = _family_hypothesis_requirements()
             strict_snapshot_rule = ''
             if strict_snapshot_target_pool:
                 strict_snapshot_rule = (
@@ -185,12 +215,15 @@ class _StrategyLLMProviderPromptMixin:
                     'execution_assumptions',
                     'validation_profile',
                 ]
+                compact_candidate_limit = 1 if requested_limit <= 1 else min(requested_limit, 2)
                 output_contract = {
                     'root': 'json_object',
                     'required': ['candidates'],
                     'analysis_fields': [],
-                    'candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
-                    'required_candidate_fields': ['name', 'strategy_type', 'target_symbols', 'stock_pool', 'dsl', *required_contract_fields],
+                    'candidate_fields': ['name', 'strategy_type', 'generator_mode', 'hypothesis', 'hypothesis_artifact', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
+                    'required_candidate_fields': ['name', 'strategy_type', 'hypothesis_artifact', 'target_symbols', 'stock_pool', 'dsl', *required_contract_fields],
+                    'hypothesis_required_fields': ['alpha_hypothesis', 'failure_mode', 'target_universe_hypothesis', 'family_hint', 'holding_rationale', 'alpha_half_life', 'cost_sensitivity_grid', 'position_model', 'capacity_assumption', 'market_regime_assumption', 'validation_focus'],
+                    'family_hypothesis_requirements': family_hypothesis_requirements,
                     'dsl_required_fields': ['version', 'timeframe', 'entry', 'exit', 'metadata'],
                     'contract_required_fields': required_contract_fields,
                     'target_symbol_rule': prompt_target_symbol_rule,
@@ -202,16 +235,23 @@ class _StrategyLLMProviderPromptMixin:
                         'disallow_market_fallback': disallow_market_fallback,
                     },
                     'prefer_single_high_confidence_candidate': True,
-                    'candidate_limit': 1,
+                    'candidate_limit': compact_candidate_limit,
+                    'generation_mode': 'hypothesis_first_lowering_with_optional_open_dsl',
                 }
                 system_prompt = ''.join([
                     '你是量化策略助手，只返回严格 JSON。',
-                    '基于 target_symbols 生成 1 个可执行股票日频 DSL candidate。',
+                    f'先构造 hypothesis_artifact，再把 hypothesis lower 成最多 {compact_candidate_limit} 个可执行股票日频 DSL candidate。',
+                    '允许最多 1 个 candidate 走 open DSL 直出模式；只有在 hypothesis 与经济语义已经完整时才允许这样做。',
                     '如果 research_task 提供了 event_id/theme_code/direction/evidence_summary，必须围绕该事件证据输出。',
                     '不要 analysis，不要解释，不要 markdown。',
                     '返回根对象 {"candidates":[...]}。',
-                    'candidate 必须包含 name,strategy_type,hypothesis,holding_horizon,trade_plan,risk_rules,position_sizing,execution_notes,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,target_symbols,stock_pool,dsl,tags。',
+                    'candidate 必须包含 name,strategy_type,generator_mode,hypothesis,hypothesis_artifact,holding_horizon,trade_plan,risk_rules,position_sizing,execution_notes,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,target_symbols,stock_pool,dsl,tags。',
+                    'hypothesis_artifact 必须包含 alpha_hypothesis,failure_mode,target_universe_hypothesis,family_hint,holding_rationale,alpha_half_life,cost_sensitivity_grid,position_model,capacity_assumption,market_regime_assumption,validation_focus。',
+                    '如果 strategy_type 是 momentum / quality_factor / ma_cross，hypothesis_artifact 还必须包含 family_specific_hypothesis，并满足 family_hypothesis_requirements。',
+                    '先保证 hypothesis_artifact 的经济含义完整，再输出 candidate；不要把自己退化成 DSL 填空器。',
+                    '如果走 open DSL 直出模式，generator_mode 必须是 llm_defined，tags 必须包含 open_dsl 和 llm_defined；且 holding_horizon,trade_plan,risk_rules,position_sizing,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,holding_rationale,cost_sensitivity_grid,position_model,capacity_assumption,market_regime_assumption 全都不能缺。',
                     'portfolio_spec / execution_assumptions / validation_profile 必须给出完整对象，不得省略，也不得依赖系统回填默认值。',
+                    'validation_profile 必须使用工厂标准口径，不要自造 profile 名称或 layer；target-only / candidate_target_only 任务默认应回到 trade_rule_validation + target 这一类 canonical 合同。',
                     target_context_only_rule,
                     explicit_same_theme_rule,
                     'dsl 必须是对象，且必须包含 version,timeframe,entry,exit,metadata。',
@@ -223,9 +263,9 @@ class _StrategyLLMProviderPromptMixin:
                     'volume_ratio 右侧优先用 value≈1.0；rsi 右侧优先用 value 40/60；不要把 volume_ratio/rsi/roc 直接和 open/high/low/close/volume 比较。',
                 ])
                 user_payload = {
-                    'task': 'generate_one_stock_dsl_candidate',
+                    'task': 'generate_compact_hypotheses_then_candidates',
                     'prompt_profile': profile_name,
-                    'limit': 1,
+                    'limit': compact_candidate_limit,
                     'research_task': compact_task,
                     'research_context': prompt_research_context,
                     'market_hint': dict(compact_research_context.get('market_regime') or {}) if not targeted_context_only else {},
@@ -265,7 +305,7 @@ class _StrategyLLMProviderPromptMixin:
             event_rule = '如果 research_task 提供 event_id/theme_code/direction/evidence_summary，必须优先围绕该事件主题、方向和证据构建候选。'
             system_prompt = ''.join([
                 '你是量化策略研究员。必须输出严格 JSON，不要输出解释文本。',
-                '先基于输入的市场研究上下文给出结构化 analysis，再给出可执行的股票日频策略 DSL 候选。',
+                '先基于输入的市场研究上下文给出结构化 analysis，并先形成 hypothesis_artifact，再 lower 为可执行的股票日频策略 DSL 候选。',
                 (
                     '你拿到的是程序整理后的定向研究上下文，必须只使用 research_context.task_target_context 中的真实标的证据。'
                     if targeted_context_only
@@ -287,8 +327,14 @@ class _StrategyLLMProviderPromptMixin:
                     candidate_priority_rule,
                     f"analysis 必须包含: {', '.join(analysis_fields)}。",
                     '根对象只允许包含 analysis 与 candidates。',
-                '每个 candidate 必须包含: name, description, rationale, hypothesis, holding_horizon, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
+                '每个 candidate 必须包含: name, description, rationale, strategy_type, generator_mode, hypothesis, hypothesis_artifact, holding_horizon, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
+                'hypothesis_artifact 必须包含: alpha_hypothesis, failure_mode, target_universe_hypothesis, family_hint, holding_rationale, alpha_half_life, cost_sensitivity_grid, position_model, capacity_assumption, market_regime_assumption, validation_focus。',
+                '如果 strategy_type 是 momentum / quality_factor / ma_cross，hypothesis_artifact 还必须包含 family_specific_hypothesis，并满足 family_hypothesis_requirements。',
+                '如果直接输出 open DSL candidate，generator_mode 必须是 llm_defined，tags 必须包含 open_dsl,llm_defined；并且完整给出 holding_horizon,trade_plan,risk_rules,position_sizing,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,holding_rationale,cost_sensitivity_grid,position_model,capacity_assumption,market_regime_assumption。',
                 'holding_horizon / trade_plan / risk_rules / position_sizing / rebalance_rule / portfolio_spec / execution_assumptions / validation_profile 必须是完整对象，不得留空，不得依赖系统回填默认值。',
+                'portfolio_spec 必须至少包含 position_assumption,target_weight_scheme；execution_assumptions 必须至少包含 commission_rate,slippage_bps,tradability_filter,slippage_model；validation_profile 必须至少包含 profile,validation_focus,primary_validation_layer。',
+                'validation_profile 必须使用工厂标准口径，不要自造 profile 名称或 layer；target-only / candidate_target_only 任务默认应回到 trade_rule_validation + target 这一类 canonical 合同。',
+                'open DSL 候选的 dsl 优先使用标准 entry/exit 结构；如果使用 signals.entry/signals.exit，也必须保持 {"op":"all|any","conditions":[...]} 的对象格式。',
                 'DSL 条件节点必须使用标准对象格式 {"op":...,"left":...,"right":...}，不要使用 {"gt":[...]} 这类简写。',
                 f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
                 '不要生成 Python 代码，不要生成自然语言规则，只能生成 JSON DSL。',
@@ -297,7 +343,7 @@ class _StrategyLLMProviderPromptMixin:
                 'root': 'json_object',
                 'required': ['analysis', 'candidates'],
                 'analysis_fields': analysis_fields,
-                'required_candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl'],
+                'required_candidate_fields': ['name', 'strategy_type', 'generator_mode', 'hypothesis', 'hypothesis_artifact', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl'],
                 'target_symbol_rule': prompt_target_symbol_rule,
                 'target_alignment_contract': {
                     'max_target_symbols': max_target_symbols,
@@ -307,8 +353,10 @@ class _StrategyLLMProviderPromptMixin:
                     'disallow_market_fallback': disallow_market_fallback,
                     'focus_strategy_families': focus_strategy_families[:4],
                 },
+                'family_hypothesis_requirements': family_hypothesis_requirements,
                 'prefer_single_high_confidence_candidate': compact_level >= 1,
-                'candidate_fields': ['name', 'description', 'rationale', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'selection_logic', 'dsl', 'tags'],
+                'candidate_fields': ['name', 'description', 'rationale', 'strategy_type', 'generator_mode', 'hypothesis', 'hypothesis_artifact', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'selection_logic', 'dsl', 'tags'],
+                'hypothesis_required_fields': ['alpha_hypothesis', 'failure_mode', 'target_universe_hypothesis', 'family_hint', 'holding_rationale', 'alpha_half_life', 'cost_sensitivity_grid', 'position_model', 'capacity_assumption', 'market_regime_assumption', 'validation_focus'],
                 'task_alignment': ['research_task.theme', 'research_task.opportunity_type', 'research_task.target_symbols', 'research_task.preferred_strategy_types', 'research_task.validation_focus'],
                 'max_selection_logic_items': 2 if compact_level >= 1 else 3,
                 'max_conditions_per_side': 3,

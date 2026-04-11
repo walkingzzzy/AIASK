@@ -14,6 +14,8 @@ from ...domain.constants import (
     is_factory_factor_auto_refresh_enabled,
     is_factory_readiness_hard_block_enabled,
     is_factory_runtime_enabled,
+    resolve_factory_readiness_min_governed_active_candidates,
+    resolve_factory_readiness_min_governed_active_families,
     resolve_event_runtime_mode,
 )
 
@@ -211,11 +213,79 @@ class ReadinessService:
         governed_pool_state = resolve_governed_pool_state(factor_summary)
         governed_candidate_pool_mode = governed_pool_state.get("mode")
         governed_candidate_pool_provisional = bool(governed_pool_state.get("provisional"))
+        governed_candidate_pool_provisional_spillover_policy = dict(
+            factor_summary.get("governed_candidate_pool_provisional_spillover_policy") or {}
+        )
         governed_blocked_candidate_count = int(
             factor_summary.get("governed_blocked_candidate_count") or 0
         )
+        governed_pending_candidate_count = int(
+            factor_summary.get("governed_pending_candidate_count") or 0
+        )
+        governed_ineligible_candidate_count = int(
+            factor_summary.get("governed_ineligible_candidate_count") or 0
+        )
+        governed_candidate_pool_provisional_pending_count = int(
+            factor_summary.get("governed_candidate_pool_provisional_pending_count") or 0
+        )
+        governed_candidate_pool_strict_shortfall_count = int(
+            factor_summary.get("governed_candidate_pool_strict_shortfall_count") or 0
+        )
+        family_preference_order = [
+            str(item or "").strip().lower()
+            for item in list(factor_summary.get("family_preference_order") or [])
+            if str(item or "").strip()
+        ]
+        family_preference_source_mode = (
+            str(factor_summary.get("family_preference_source_mode") or "").strip().lower() or None
+        )
+        stock_family_allocation_count = int(
+            factor_summary.get("stock_family_allocation_count") or 0
+        )
+        stock_family_allocation_source_mode = (
+            str(factor_summary.get("stock_family_allocation_source_mode") or "").strip().lower() or None
+        )
         governed_blocked_ratio = self._safe_float(
             factor_summary.get("governed_blocked_ratio"),
+            default=0.0,
+        )
+        governed_pending_ratio = self._safe_float(
+            factor_summary.get("governed_pending_ratio"),
+            default=0.0,
+        )
+        budget_feedback_strategy_count = int(
+            factor_summary.get("budget_feedback_strategy_count") or 0
+        )
+        budget_feedback_zero_signal_strategy_count = int(
+            factor_summary.get("budget_feedback_zero_signal_strategy_count") or 0
+        )
+        budget_feedback_zero_signal_ratio = self._safe_float(
+            factor_summary.get("budget_feedback_zero_signal_ratio"),
+            default=0.0,
+        )
+        budget_feedback_forward_window_coverage_ratio = self._safe_float(
+            factor_summary.get("budget_feedback_forward_window_coverage_ratio"),
+            default=1.0,
+        )
+        budget_feedback_promotion_ready_count = int(
+            factor_summary.get("budget_feedback_promotion_ready_count") or 0
+        )
+        budget_feedback_promotion_ready_ratio = self._safe_float(
+            factor_summary.get("budget_feedback_promotion_ready_ratio"),
+            default=1.0,
+        )
+        budget_feedback_promotion_review_count = int(
+            factor_summary.get("budget_feedback_promotion_review_count") or 0
+        )
+        budget_feedback_promotion_review_coverage_ratio = self._safe_float(
+            factor_summary.get("budget_feedback_promotion_review_coverage_ratio"),
+            default=1.0,
+        )
+        budget_feedback_evidence_debt_strategy_count = int(
+            factor_summary.get("budget_feedback_evidence_debt_strategy_count") or 0
+        )
+        budget_feedback_evidence_debt_ratio = self._safe_float(
+            factor_summary.get("budget_feedback_evidence_debt_ratio"),
             default=0.0,
         )
         governed_freshness_days = factor_summary.get("governed_freshness_days")
@@ -224,7 +294,23 @@ class ReadinessService:
         governed_exclusion_reason_counts = dict(
             factor_summary.get("governed_exclusion_reason_counts") or {}
         )
+        governed_blocking_reason_counts = dict(
+            factor_summary.get("governed_blocking_reason_counts") or {}
+        )
+        governed_pending_reason_counts = dict(
+            factor_summary.get("governed_pending_reason_counts") or {}
+        )
+        governed_ineligible_reason_counts = dict(
+            factor_summary.get("governed_ineligible_reason_counts") or {}
+        )
         governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
+        active_family_count = len(list(factor_summary.get("active_family_names") or []))
+        min_governed_active_candidate_count = (
+            resolve_factory_readiness_min_governed_active_candidates()
+        )
+        min_governed_active_family_count = (
+            resolve_factory_readiness_min_governed_active_families()
+        )
         governed_candidate_pool_active = bool(governed_pool_state.get("active"))
         governed_pool_missing_after_scheduler_success = bool(
             factor_source_mode == "governed_pool_missing_after_scheduler_success"
@@ -242,6 +328,14 @@ class ReadinessService:
         event_state = dict(snapshot.get("event_driven") or {})
         completion = dict(snapshot.get("completeness") or {})
         completion_ratio = self._safe_float(completion.get("completion_ratio"), default=1.0)
+        hard_block = is_factory_readiness_hard_block_enabled()
+        governed_supply_viable = bool(
+            governed_candidate_pool_active
+            and active_candidate_count >= min_governed_active_candidate_count
+            and active_family_count >= min_governed_active_family_count
+            and governed_pool_runtime_state
+            not in {"blocked_by_governed_pool", "governed_pool_missing_after_scheduler_success"}
+        )
 
         warnings: list[str] = []
         blockers: list[str] = []
@@ -281,10 +375,67 @@ class ReadinessService:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
             warnings.append("governed_candidate_pool_blocked_ratio_high")
+            if hard_block and not governed_supply_viable:
+                blockers.append("governed_candidate_pool_blocked_ratio_high")
             score -= 0.12
         elif governed_blocked_ratio >= 0.40:
             warnings.append("governed_candidate_pool_blocked_ratio_elevated")
             score -= 0.06
+        if governed_pending_ratio >= 0.75:
+            warnings.append("governed_candidate_pool_promotion_backlog_high")
+            if hard_block and not governed_supply_viable:
+                blockers.append("governed_candidate_pool_promotion_backlog_high")
+            score -= 0.06
+        elif governed_pending_ratio >= 0.40:
+            warnings.append("governed_candidate_pool_promotion_backlog_elevated")
+            if hard_block and not governed_supply_viable:
+                blockers.append("governed_candidate_pool_promotion_backlog_elevated")
+            score -= 0.03
+        if budget_feedback_zero_signal_ratio >= 0.75:
+            warnings.append("incubating_zero_signal_backlog_high")
+            score -= 0.10
+        elif budget_feedback_zero_signal_ratio >= 0.40:
+            warnings.append("incubating_zero_signal_backlog_elevated")
+            score -= 0.05
+        if budget_feedback_forward_window_coverage_ratio <= 0.25:
+            warnings.append("incubating_forward_window_coverage_low")
+            score -= 0.08
+        elif budget_feedback_forward_window_coverage_ratio <= 0.50:
+            warnings.append("incubating_forward_window_coverage_elevated")
+            score -= 0.04
+        if budget_feedback_promotion_ready_ratio <= 0.10 and budget_feedback_strategy_count >= 4:
+            warnings.append("incubating_promotion_ready_gap_high")
+            score -= 0.05
+        elif budget_feedback_promotion_ready_ratio <= 0.25 and budget_feedback_strategy_count >= 3:
+            warnings.append("incubating_promotion_ready_gap_elevated")
+            score -= 0.03
+        if (
+            budget_feedback_promotion_review_coverage_ratio <= 0.10
+            and budget_feedback_strategy_count >= 4
+        ):
+            warnings.append("incubating_promotion_review_gap_high")
+            score -= 0.04
+        elif (
+            budget_feedback_promotion_review_coverage_ratio <= 0.25
+            and budget_feedback_strategy_count >= 3
+        ):
+            warnings.append("incubating_promotion_review_gap_elevated")
+            score -= 0.02
+        if (
+            budget_feedback_evidence_debt_ratio >= 0.82
+            and budget_feedback_strategy_count >= 6
+        ):
+            warnings.append("incubating_evidence_debt_high")
+            severe_governance_drag = (
+                governed_pending_ratio >= 0.25
+                or governed_blocked_ratio >= 0.25
+            )
+            if hard_block and severe_governance_drag and not governed_supply_viable:
+                blockers.append("incubating_evidence_debt_high")
+            score -= 0.12
+        elif budget_feedback_evidence_debt_ratio >= 0.45 and budget_feedback_strategy_count >= 3:
+            warnings.append("incubating_evidence_debt_elevated")
+            score -= 0.05
         if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
             blockers.append("governed_candidate_pool_missing_after_scheduler_success")
@@ -321,7 +472,6 @@ class ReadinessService:
             score -= 0.08
 
         score = max(min(round(score, 4), 1.0), 0.0)
-        hard_block = is_factory_readiness_hard_block_enabled()
         can_proceed = not critical_blockers and (
             not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
         )
@@ -362,18 +512,47 @@ class ReadinessService:
             "factor_source_mode": factor_summary.get("factor_source_mode"),
             "governed_candidate_pool_active": governed_candidate_pool_active,
             "governed_candidate_pool_runtime_state": governed_pool_runtime_state,
+            "governed_supply_viable": governed_supply_viable,
             "governed_candidate_pool_mode": governed_candidate_pool_mode,
             "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
+            "governed_candidate_pool_provisional_spillover_policy": governed_candidate_pool_provisional_spillover_policy,
+            "governed_candidate_pool_provisional_spillover_policy_status": factor_summary.get(
+                "governed_candidate_pool_provisional_spillover_policy_status"
+            ),
             "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
             "active_candidate_count": active_candidate_count,
+            "family_preference_order": family_preference_order,
+            "family_preference_source_mode": family_preference_source_mode,
             "governed_source_candidate_count": governed_source_candidate_count,
             "governed_blocked_candidate_count": governed_blocked_candidate_count,
             "governed_blocked_ratio": governed_blocked_ratio,
+            "governed_pending_candidate_count": governed_pending_candidate_count,
+            "governed_pending_ratio": governed_pending_ratio,
+            "governed_ineligible_candidate_count": governed_ineligible_candidate_count,
+            "governed_candidate_pool_provisional_pending_count": governed_candidate_pool_provisional_pending_count,
+            "governed_candidate_pool_strict_shortfall_count": governed_candidate_pool_strict_shortfall_count,
+            "budget_feedback_strategy_count": budget_feedback_strategy_count,
+            "budget_feedback_zero_signal_strategy_count": budget_feedback_zero_signal_strategy_count,
+            "budget_feedback_zero_signal_ratio": budget_feedback_zero_signal_ratio,
+            "budget_feedback_forward_window_coverage_ratio": budget_feedback_forward_window_coverage_ratio,
+            "budget_feedback_promotion_ready_count": budget_feedback_promotion_ready_count,
+            "budget_feedback_promotion_ready_ratio": budget_feedback_promotion_ready_ratio,
+            "budget_feedback_promotion_review_count": budget_feedback_promotion_review_count,
+            "budget_feedback_promotion_review_coverage_ratio": budget_feedback_promotion_review_coverage_ratio,
+            "budget_feedback_evidence_debt_strategy_count": budget_feedback_evidence_debt_strategy_count,
+            "budget_feedback_evidence_debt_ratio": budget_feedback_evidence_debt_ratio,
             "governed_freshness_days": governed_freshness_days,
             "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
+            "governed_blocking_reason_counts": governed_blocking_reason_counts,
+            "governed_pending_reason_counts": governed_pending_reason_counts,
+            "governed_ineligible_reason_counts": governed_ineligible_reason_counts,
             "governed_risk_counts": governed_risk_counts,
-            "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
+            "active_family_count": active_family_count,
             "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
+            "min_governed_active_candidate_count": min_governed_active_candidate_count,
+            "min_governed_active_family_count": min_governed_active_family_count,
+            "stock_family_allocation_count": stock_family_allocation_count,
+            "stock_family_allocation_source_mode": stock_family_allocation_source_mode,
             "scheduler_recent_success": scheduler_recent_success,
             "scheduler_llm_validation_status": scheduler_llm_validation_status,
             "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),

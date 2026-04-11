@@ -7,18 +7,35 @@ from typing import Optional
 
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
+    build_factory_recent_run_diagnostics,
+    build_factory_quality_baseline,
     build_incubation_overview,
     build_quality_report,
     get_latest_quality_report,
+    list_quality_reports,
+    merge_factory_run_summary_observability,
     normalize_factory_run_detail_contract,
     normalize_factory_run_summary_contract,
     normalize_quality_gate_result,
+    refresh_factory_run_detail_quality_contract,
+    refresh_factory_run_summary_quality_contract,
     save_quality_report,
     update_status,
     validate_transition,
 )
 
 logger = logging.getLogger(__name__)
+
+_TRADE_AUDIT_BACKTEST_KEYS = (
+    "post_cost_sharpe",
+    "target_layer_oos_return",
+    "target_layer_abnormal_return",
+    "event_window_hit_ratio",
+    "post_event_decay",
+    "trade_density",
+    "parameter_perturbation_trade_stability",
+    "primary_validation_layer",
+)
 
 
 def _quality_report_submission_audit(report: Optional[dict]) -> dict:
@@ -75,6 +92,121 @@ def _run_once_accepts_db_arg(run_once) -> bool:
     )
 
 
+def _select_latest_backtest_metrics(
+    metrics_list: list[dict] | None,
+    fallback: Optional[dict] = None,
+) -> dict:
+    items = list(metrics_list or [])
+    fallback_payload = dict(fallback or {})
+    preferred_periods = ("backtest", "all")
+    for period in preferred_periods:
+        matched = next((item for item in items if str(item.get("period") or "").strip().lower() == period), None)
+        if matched:
+            return {
+                **fallback_payload,
+                **dict(matched),
+            }
+    return fallback_payload
+
+
+def _trade_audit_backtest_score(metrics: Optional[dict]) -> int:
+    payload = dict(metrics or {})
+    if not payload:
+        return 0
+    present_keys = sum(1 for key in _TRADE_AUDIT_BACKTEST_KEYS if payload.get(key) is not None)
+    return present_keys * 100 + len(payload)
+
+
+def _select_rich_backtest_metrics_from_reports(
+    reports: list[dict] | None,
+    fallback: Optional[dict] = None,
+) -> dict:
+    fallback_payload = dict(fallback or {})
+    best_payload = dict(fallback_payload)
+    best_score = _trade_audit_backtest_score(best_payload)
+    for report in list(reports or []):
+        candidate = dict((report or {}).get("backtest_metrics") or {})
+        candidate_score = _trade_audit_backtest_score(candidate)
+        if candidate_score > best_score:
+            best_payload = candidate
+            best_score = candidate_score
+    if not best_payload:
+        return fallback_payload
+    merged = dict(best_payload)
+    for key, value in fallback_payload.items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+async def _run_recheck_validation_report(db, strategy: dict) -> dict:
+    from strategy_factory.application import _run_validation_report
+
+    return (
+        await _run_validation_report(
+            str(strategy.get("strategy_type") or ""),
+            dict(strategy.get("params") or {}),
+            db,
+        )
+    ) or {}
+
+
+async def _run_recheck_risk_report(db, strategy: dict) -> dict:
+    from strategy_factory.application import _run_risk_report
+
+    return (
+        await _run_risk_report(
+            str(strategy.get("strategy_type") or ""),
+            dict(strategy.get("params") or {}),
+            db,
+        )
+    ) or {}
+
+
+async def _build_recheck_quality_inputs(db, strategy: dict, latest_report: Optional[dict]) -> tuple[dict, dict, dict]:
+    strategy_id = str(strategy.get("id") or "")
+    recent_reports = await list_quality_reports(db, strategy_id, limit=12)
+    submission_report = None
+    if strategy_id and hasattr(db, "get_strategy_quality_report"):
+        submission_report = await db.get_strategy_quality_report(strategy_id, "submission")
+    validation_report = dict((latest_report or {}).get("validation_report") or {})
+    risk_report = dict((latest_report or {}).get("risk_report") or {})
+    backtest_metrics = dict((latest_report or {}).get("backtest_metrics") or {})
+    backtest_metrics = _select_rich_backtest_metrics_from_reports(
+        [dict(latest_report or {}), dict(submission_report or {}), *list(recent_reports or [])],
+        backtest_metrics,
+    )
+
+    metrics_list = await db.get_strategy_metrics(strategy["id"]) if hasattr(db, "get_strategy_metrics") else []
+    backtest_metrics = _select_latest_backtest_metrics(metrics_list, backtest_metrics)
+
+    try:
+        fresh_validation_report = await _run_recheck_validation_report(db, strategy)
+    except Exception as exc:
+        logger.warning(
+            "strategy_manager.review_report_recheck validation recompute failed for %s: %s",
+            strategy.get("id"),
+            exc,
+        )
+        fresh_validation_report = {}
+    if fresh_validation_report:
+        validation_report = fresh_validation_report
+
+    try:
+        fresh_risk_report = await _run_recheck_risk_report(db, strategy)
+    except Exception as exc:
+        logger.warning(
+            "strategy_manager.review_report_recheck risk recompute failed for %s: %s",
+            strategy.get("id"),
+            exc,
+        )
+        fresh_risk_report = {}
+    if fresh_risk_report:
+        risk_report = fresh_risk_report
+
+    return validation_report, risk_report, backtest_metrics
+
+
 async def handle_review_report_recheck(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
@@ -83,22 +215,23 @@ async def handle_review_report_recheck(db, params: dict) -> dict:
     if not strategy:
         return fail(f"Strategy not found: {sid}")
     latest_report = await get_latest_quality_report(db, sid)
+    validation_report, risk_report, backtest_metrics = await _build_recheck_quality_inputs(db, strategy, latest_report)
     gate_result = await run_quality_gate(
         db,
         strategy,
-        validation_report=(latest_report or {}).get("validation_report") or {},
-        risk_report=(latest_report or {}).get("risk_report") or {},
-        backtest_metrics=(latest_report or {}).get("backtest_metrics") or {},
+        validation_report=validation_report,
+        risk_report=risk_report,
+        backtest_metrics=backtest_metrics,
     )
     report_type = f"recheck:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
     report = build_quality_report(
         strategy_id=sid,
         strategy_type=strategy.get("strategy_type"),
         quality_gate=gate_result,
-        validation_report=(latest_report or {}).get("validation_report") or {},
-        risk_report=(latest_report or {}).get("risk_report") or {},
+        validation_report=validation_report,
+        risk_report=risk_report,
         dedup_report=(latest_report or {}).get("dedup_report") or {},
-        backtest_metrics=(latest_report or {}).get("backtest_metrics") or {},
+        backtest_metrics=backtest_metrics,
         snapshot=(latest_report or {}).get("snapshot") or {},
         status_after_review=strategy.get("status"),
         review_source="review_report_recheck",
@@ -197,10 +330,22 @@ async def handle_incubation_overview(db, params: dict) -> dict:
 
 async def handle_factory_status(db, params: dict) -> dict:
     from strategy_factory import get_factory_constants, get_strategy_factory_scheduler
+    from strategy_factory.application._bulk_cursor import extract_bulk_stock_cursor
+    from strategy_factory.api import FactoryStatusDTO
 
     scheduler = get_strategy_factory_scheduler()
-    status = scheduler.status()
-    extract_bulk_cursor = getattr(scheduler, "_extract_bulk_stock_cursor", None)
+    status = dict(scheduler.status() or {})
+    current_last_result = dict(status.get("last_result") or {})
+    current_last_summary = dict(status.get("last_summary") or {})
+    if current_last_result:
+        if current_last_summary and not current_last_result.get("summary"):
+            current_last_result["summary"] = current_last_summary
+        normalized_last_result = normalize_factory_run_summary_contract(current_last_result)
+        status["last_result"] = normalized_last_result
+        status["last_summary"] = merge_factory_run_summary_observability(
+            normalized_last_result.get("summary") or current_last_summary,
+            normalized_last_result,
+        )
     factory_constants = get_factory_constants()
 
     def _default_bulk_config() -> dict:
@@ -218,79 +363,33 @@ async def handle_factory_status(db, params: dict) -> dict:
             "pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
         }
 
-    def _fallback_bulk_cursor(summary: dict | None, *, run_id: str | None) -> dict:
-        payload = dict(summary or {})
-        universe_limit = max(1, int(payload.get("bulk_stock_matrix_universe_limit") or 500))
-        enabled = bool(payload.get("bulk_stock_matrix_enabled"))
-        eligible_stock_count = int(payload.get("bulk_stock_matrix_eligible_stock_count") or 0)
-        offset_fallback = bool(payload.get("bulk_stock_matrix_universe_offset_fallback"))
-        effective_offset = int(payload.get("bulk_stock_matrix_effective_universe_offset") or 0)
-        next_offset = payload.get("bulk_stock_matrix_next_universe_offset")
-        if next_offset is None:
-            if not enabled or eligible_stock_count <= 0:
-                next_offset = 0
-            elif offset_fallback:
-                next_offset = universe_limit
-            elif eligible_stock_count < universe_limit:
-                next_offset = 0
-            else:
-                next_offset = effective_offset + universe_limit
-        next_offset = max(0, int(next_offset or 0))
-        requested_task_offset = max(
-            0,
-            int(
-                payload.get("bulk_stock_matrix_requested_task_offset")
-                or payload.get("bulk_stock_matrix_requested_universe_offset")
-                or 0
-            ),
+    def _coerce_status_timestamp(value) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            ts = value
+        else:
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            if raw.endswith("Z"):
+                raw = f"{raw[:-1]}+00:00"
+            try:
+                ts = datetime.fromisoformat(raw)
+            except ValueError:
+                return None
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+
+    def _current_status_timestamp(payload: dict) -> Optional[datetime]:
+        last_result = dict(payload.get("last_result") or {})
+        last_summary = dict(payload.get("last_summary") or {})
+        return (
+            _coerce_status_timestamp(last_result.get("completed_at"))
+            or _coerce_status_timestamp(last_result.get("started_at"))
+            or _coerce_status_timestamp(payload.get("last_run"))
+            or _coerce_status_timestamp(last_summary.get("completed_at"))
+            or _coerce_status_timestamp(last_summary.get("started_at"))
         )
-        effective_task_offset = max(
-            0,
-            int(
-                payload.get("bulk_stock_matrix_effective_task_offset")
-                or payload.get("bulk_stock_matrix_effective_universe_offset")
-                or 0
-            ),
-        )
-        next_task_offset = max(
-            0,
-            int(
-                payload.get("bulk_stock_matrix_next_task_offset")
-                or payload.get("bulk_stock_matrix_next_universe_offset")
-                or 0
-            ),
-        )
-        return {
-            "available": any(
-                key in payload
-                for key in (
-                    "bulk_stock_matrix_enabled",
-                    "bulk_stock_matrix_requested_universe_offset",
-                    "bulk_stock_matrix_effective_universe_offset",
-                    "bulk_stock_matrix_next_universe_offset",
-                    "bulk_stock_matrix_requested_task_offset",
-                    "bulk_stock_matrix_effective_task_offset",
-                    "bulk_stock_matrix_next_task_offset",
-                )
-            ),
-            "source": "persisted_run",
-            "resume_from_run_id": str(run_id or "").strip() or None,
-            "enabled": enabled,
-            "universe_limit": universe_limit,
-            "requested_universe_offset": max(0, int(payload.get("bulk_stock_matrix_requested_universe_offset") or 0)),
-            "effective_universe_offset": effective_offset,
-            "universe_offset_fallback": offset_fallback,
-            "eligible_stock_count": eligible_stock_count,
-            "next_universe_offset": next_offset,
-            "cursor_wrapped": bool(payload.get("bulk_stock_matrix_cursor_wrapped")) if "bulk_stock_matrix_cursor_wrapped" in payload else bool(enabled and eligible_stock_count > 0 and (offset_fallback or next_offset == 0)),
-            "cursor_mode": str(payload.get("bulk_stock_matrix_cursor_mode") or "task_offset").strip() or "task_offset",
-            "requested_task_offset": requested_task_offset,
-            "effective_task_offset": effective_task_offset,
-            "task_offset_fallback": bool(payload.get("bulk_stock_matrix_task_offset_fallback")) if "bulk_stock_matrix_task_offset_fallback" in payload else offset_fallback,
-            "planned_task_count": max(0, int(payload.get("bulk_stock_matrix_planned_task_count") or 0)),
-            "next_task_offset": next_task_offset,
-            "task_cursor_wrapped": bool(payload.get("bulk_stock_matrix_task_cursor_wrapped")) if "bulk_stock_matrix_task_cursor_wrapped" in payload else bool(enabled and eligible_stock_count > 0 and next_task_offset == 0),
-        }
 
     status["bulk_stock_matrix_config"] = {
         **_default_bulk_config(),
@@ -298,27 +397,57 @@ async def handle_factory_status(db, params: dict) -> dict:
     }
     latest_run = await db.get_latest_strategy_factory_run() if hasattr(db, "get_latest_strategy_factory_run") else None
     if latest_run:
+        latest_run_summary = await refresh_factory_run_summary_quality_contract(db, latest_run)
+        latest_run_timestamp = (
+            _coerce_status_timestamp(latest_run_summary.get("completed_at"))
+            or _coerce_status_timestamp(latest_run_summary.get("started_at"))
+        )
+        current_status_timestamp = _current_status_timestamp(status)
+        prefer_persisted_run = not status.get("last_result") or (
+            latest_run_timestamp is not None
+            and (current_status_timestamp is None or latest_run_timestamp >= current_status_timestamp)
+        )
         status["last_persisted_run"] = latest_run
-        if not status.get("last_result"):
-            status["last_run"] = latest_run.get("completed_at") or latest_run.get("started_at")
-            status["last_result"] = {
-                "run_id": latest_run.get("run_id"),
-                "status": latest_run.get("status"),
-                "error": latest_run.get("error"),
-            }
-            status["last_summary"] = latest_run.get("summary") or {}
+        if prefer_persisted_run:
+            status["last_run"] = latest_run_summary.get("completed_at") or latest_run_summary.get("started_at")
+            status["last_result"] = latest_run_summary
+            status["last_summary"] = merge_factory_run_summary_observability(
+                latest_run_summary.get("summary") or {},
+                latest_run_summary,
+            )
         if not (status.get("bulk_stock_matrix_cursor") or {}).get("available"):
-            if callable(extract_bulk_cursor):
-                status["bulk_stock_matrix_cursor"] = extract_bulk_cursor(
-                    latest_run.get("summary") or {},
-                    source="persisted_run",
-                    run_id=latest_run.get("run_id"),
-                )
-            else:
-                status["bulk_stock_matrix_cursor"] = _fallback_bulk_cursor(
-                    latest_run.get("summary") or {},
-                    run_id=latest_run.get("run_id"),
-                )
+            status["bulk_stock_matrix_cursor"] = extract_bulk_stock_cursor(
+                latest_run.get("summary") or {},
+                source="persisted_run",
+                run_id=latest_run.get("run_id"),
+            )
+    status["quality_baseline"] = await build_factory_quality_baseline(
+        db,
+        latest_run=status.get("last_result") or latest_run,
+    )
+    recent_run_limit = min(max(int(params.get("recent_run_limit", 5)), 1), 10)
+    recent_run_rows = (
+        await db.list_strategy_factory_runs(limit=recent_run_limit)
+        if hasattr(db, "list_strategy_factory_runs")
+        else []
+    )
+    recent_run_items = [
+        await refresh_factory_run_summary_quality_contract(db, row)
+        for row in recent_run_rows
+    ]
+    status["recent_run_diagnostics"] = build_factory_recent_run_diagnostics(
+        recent_run_items,
+        limit=recent_run_limit,
+    )
+    if isinstance(status.get("quality_baseline"), dict):
+        status["quality_baseline"] = {
+            **dict(status.get("quality_baseline") or {}),
+            "recent_run_diagnostics": dict(status.get("recent_run_diagnostics") or {}),
+        }
+    status = {
+        **status,
+        **FactoryStatusDTO.from_dict(status).to_dict(),
+    }
     return ok(status)
 
 
@@ -335,7 +464,8 @@ async def handle_factory_run_once(db, params: dict) -> dict:
 async def handle_factory_runs(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 10)), 1), 100)
     rows = await db.list_strategy_factory_runs(limit=limit) if hasattr(db, "list_strategy_factory_runs") else []
-    return ok({"items": [normalize_factory_run_summary_contract(row) for row in rows], "count": len(rows)})
+    items = [await refresh_factory_run_summary_quality_contract(db, row) for row in rows]
+    return ok({"items": items, "count": len(rows)})
 
 
 async def handle_factory_run_detail(db, params: dict) -> dict:
@@ -345,7 +475,7 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     row = await db.get_strategy_factory_run(run_id) if hasattr(db, "get_strategy_factory_run") else None
     if not row:
         return fail(f"Factory run not found: {run_id}")
-    return ok(normalize_factory_run_detail_contract(row))
+    return ok(await refresh_factory_run_detail_quality_contract(db, row))
 
 
 # ── Quality gate runner ──────────────────────────────────────────────────────

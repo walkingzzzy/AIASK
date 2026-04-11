@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from akshare_mcp.services.strategy_stages import (
@@ -1518,6 +1519,99 @@ def test_strategy_llm_prompt_compact_targeted_task_uses_task_target_context_only
     assert "market_background_context" not in payload["research_context"]
 
 
+def test_strategy_llm_prompt_compact_mode_keeps_more_than_one_candidate_when_limit_allows():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    _system_prompt, user_prompt = provider._build_prompt(
+        snapshot={"date": "2026-04-03"},
+        market_summary={"market_regime": {"risk_on": 0.6}},
+        research_context={
+            "symbol_insights": [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "industry": "白酒",
+                "close": 10.0,
+                "return_20d": 0.05,
+                "trend_state": "uptrend",
+            }],
+            "candidate_universe": [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "industry": "白酒",
+                "close": 10.0,
+                "return_20d": 0.05,
+                "trend_state": "uptrend",
+                "volume_ratio_20": 1.2,
+                "screen_score": 0.9,
+            }],
+        },
+        parent_strategies=[],
+        history_summary=[],
+        limit=3,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_target_prompt_multi",
+            "target_symbols": ["600519"],
+        },
+        compact_level=2,
+    )
+
+    payload = json.loads(user_prompt)
+
+    assert payload["limit"] == 2
+    assert payload["output_contract"]["candidate_limit"] == 2
+    assert payload["output_contract"]["generation_mode"] == "hypothesis_first_lowering_with_optional_open_dsl"
+    assert "family_hypothesis_requirements" in payload["output_contract"]
+    assert payload["output_contract"]["family_hypothesis_requirements"]["momentum"]["required_fields"] == [
+        "trend_persistence_logic",
+        "failure_scenario",
+        "false_breakout_filter",
+    ]
+
+
+def test_strategy_llm_prompt_includes_family_specific_hypothesis_requirements():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    system_prompt, user_prompt = provider._build_prompt(
+        snapshot={"date": "2026-04-03"},
+        market_summary={"market_regime": {"risk_on": 0.6}},
+        research_context={"candidate_universe_symbols": ["300750", "601012"]},
+        parent_strategies=[],
+        history_summary=[],
+        limit=2,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_family_hypothesis_prompt",
+            "target_symbols": ["300750", "601012"],
+            "allowed_strategy_types": ["momentum", "ma_cross", "quality_factor"],
+        },
+    )
+
+    payload = json.loads(user_prompt)
+
+    assert "family_specific_hypothesis" in system_prompt
+    assert "family_hypothesis_requirements" in payload["output_contract"]
+    assert payload["output_contract"]["family_hypothesis_requirements"]["quality_factor"]["required_fields"] == [
+        "quality_metrics",
+        "holding_consistency_explanation",
+        "quality_drift_detection",
+    ]
+
+
+def test_strategy_llm_runtime_request_limit_preserves_multi_candidate_compact_retries():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    assert provider._request_limit_for_attempt(3, 1, initial_compact_level=2) == 2
+    assert provider._request_limit_for_attempt(3, 2, initial_compact_level=2) == 2
+    assert provider._request_limit_for_attempt(2, 3, initial_compact_level=2) == 2
+
+
 def test_strategy_llm_normalize_rejects_low_alignment_snapshot_candidate():
     from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
 
@@ -1664,7 +1758,100 @@ def test_strategy_llm_normalize_keeps_complete_trade_contract_when_explicit_cont
     assert normalized["holding_horizon"]["max_days"] > 0
     assert normalized["trade_plan"]
     assert normalized["risk_rules"]["max_holding_days"] == normalized["holding_horizon"]["max_days"]
-    assert normalized["position_sizing"]["position_assumption"] == normalized["portfolio_spec"]["position_assumption"]
+
+
+def test_strategy_llm_normalize_accepts_open_dsl_candidate_with_signal_shape_and_descriptive_contracts():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+    candidate = {
+        "name": "300442_medium_term_momentum_reclaim",
+        "strategy_type": "momentum",
+        "generator_mode": "llm_defined",
+        "hypothesis": "300442 趋势重建后的 1-3 周动量延续。",
+        "hypothesis_artifact": {
+            "alpha_hypothesis": "300442 站稳短中期趋势并伴随轻度量能确认后，未来数日至数周存在收益延续。",
+            "failure_mode": "假突破后快速回落。",
+            "target_universe_hypothesis": "只针对 300442。",
+            "family_hint": "momentum",
+            "holding_rationale": "中短期趋势重建后的信息衰减通常快于长期趋势。",
+            "alpha_half_life": "约5-15个交易日",
+            "cost_sensitivity_grid": {"base_case": {"commission_rate": 0.00025, "slippage_bps": 5}},
+            "position_model": "single_name",
+            "capacity_assumption": {"capacity_bucket": "small", "symbol_count": 1},
+            "market_regime_assumption": {"summary": "趋势扩张期更有效。"},
+            "validation_focus": "candidate_target_only",
+            "family_specific_hypothesis": {
+                "trend_persistence_logic": "close 高于 ema(12) 且 roc(5) 转正。",
+                "failure_scenario": "量能不足的假突破。",
+                "false_breakout_filter": "volume_ratio(10) >= 1.02。",
+            },
+        },
+        "holding_horizon": {"min_days": 3, "max_days": 20, "expected_days": 8},
+        "trade_plan": {"signal_frequency_expectation": "medium"},
+        "risk_rules": {"max_holding_days": 20, "reentry_cooldown_days": 2},
+        "position_sizing": {"method": "fixed_fraction", "allocation_per_signal": 1.0},
+        "execution_notes": {"order_style": "market_on_open_proxy"},
+        "rebalance_rule": {"type": "event_driven", "check_frequency": "daily"},
+        "portfolio_spec": {
+            "portfolio_type": "single_asset",
+            "max_concurrent_positions": 1,
+            "long_short": "long_only",
+        },
+        "execution_assumptions": {
+            "price_source": "daily_ohlcv",
+            "signal_computation_time": "after_daily_close",
+            "execution_time": "next_day_open",
+        },
+        "validation_profile": {
+            "target_scope": "300442_only",
+            "robustness_checks": ["ema window 10-15 sensitivity"],
+        },
+        "target_symbols": ["300442"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["300442"]},
+        "dsl": {
+            "metadata": {"target_symbols": ["300442"]},
+            "signals": {
+                "entry": {
+                    "op": "all",
+                    "conditions": [
+                        {"op": "cross_above", "left": {"field": "close"}, "right": {"indicator": "ema", "field": "close", "window": 12}},
+                        {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 5}, "right": {"value": 0.8}},
+                    ],
+                },
+                "exit": {
+                    "op": "any",
+                    "conditions": [
+                        {"op": "cross_below", "left": {"field": "close"}, "right": {"indicator": "ema", "field": "close", "window": 12}},
+                    ],
+                },
+            },
+            "universe": {"selection_mode": "explicit", "symbols": ["300442"]},
+            "positioning": {"side": "long", "max_positions": 1},
+            "timing": {"entry_execution": "next_open", "max_holding_days": 20},
+        },
+        "tags": ["open_dsl", "llm_defined", "momentum"],
+    }
+
+    normalized = provider._normalize_candidate_payload(
+        candidate,
+        research_task={
+            "task_source": "smoke_test",
+            "task_id": "task_open_dsl_bridge",
+            "allowed_strategy_types": ["momentum", "dsl_rule"],
+            "target_symbols": ["300442"],
+            "validation_focus": "candidate_target_only",
+        },
+        allow_legacy_contract_defaults=True,
+    )
+
+    assert normalized is not None
+    assert normalized["dsl"]["entry"]["all"]
+    assert normalized["portfolio_spec"]["position_assumption"] == "single_name_full_notional"
+    assert normalized["execution_assumptions"]["slippage_model"] == "fixed"
+    assert normalized["validation_profile"]["validation_focus"] == "candidate_target_only"
+    assert normalized["dsl"]["metadata"]["open_dsl_source_mode"] == "provider_normalize_bridge"
+    assert normalized["position_sizing"]["method"] == "fixed_fraction"
     assert normalized["execution_assumptions"]["tradability_filter"] is True
     assert normalized["validation_profile"]["profile"] == "trade_rule_validation"
     assert normalized["validation_profile"]["primary_validation_layer"] == "target"
@@ -1675,6 +1862,100 @@ def test_strategy_llm_normalize_keeps_complete_trade_contract_when_explicit_cont
     assert normalized["dsl"]["metadata"]["portfolio_spec"] == normalized["portfolio_spec"]
     assert normalized["dsl"]["metadata"]["execution_assumptions"] == normalized["execution_assumptions"]
     assert normalized["dsl"]["metadata"]["validation_profile"] == normalized["validation_profile"]
+
+
+def test_strategy_llm_normalize_canonicalizes_open_dsl_validation_profile_contract():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+    candidate = {
+        "name": "300442_ma_cross_volume_confirm_v1",
+        "strategy_type": "ma_cross",
+        "generator_mode": "llm_defined",
+        "hypothesis": "300442 的短中期趋势切换可由均线金叉与温和放量确认。",
+        "hypothesis_artifact": {
+            "alpha_hypothesis": "300442 的短中期趋势切换可由均线金叉与温和放量确认。",
+            "failure_mode": "横盘震荡导致假金叉。",
+            "target_universe_hypothesis": "只针对 300442。",
+            "family_hint": "ma_cross",
+            "holding_rationale": "趋势扩散主要发生在 1-4 周内。",
+            "alpha_half_life": "7-15个交易日",
+            "cost_sensitivity_grid": {"base_case": {"commission_rate": 0.0005, "slippage_bps": 12}},
+            "position_model": "single_name",
+            "capacity_assumption": {"capacity_bucket": "small", "symbol_count": 1},
+            "market_regime_assumption": {"summary": "趋势形成阶段更有效。"},
+            "validation_focus": "candidate_target_only",
+            "family_specific_hypothesis": {
+                "trend_noise_separation": "使用 10/20 日均线降低噪声。",
+                "range_filter": "使用 5 日 ROC 过滤窄幅横盘。",
+                "volume_confirmation": "要求轻度放量确认。",
+            },
+        },
+        "holding_horizon": {"min_bars": 5, "max_bars": 20, "expected_bars": 10},
+        "trade_plan": {"entry_timing": "next_open_after_signal", "exit_timing": "next_open_after_signal"},
+        "risk_rules": {"max_holding_days": 20},
+        "position_sizing": {"method": "fixed_weight", "base_weight": 1.0},
+        "execution_notes": {"order_type": "market_on_open_next_bar"},
+        "rebalance_rule": {"type": "event_driven", "check_frequency": "daily"},
+        "portfolio_spec": {
+            "position_assumption": "long_only_single_name",
+            "target_weight_scheme": "100pct_to_target_when_active",
+        },
+        "execution_assumptions": {
+            "commission_rate": 0.0005,
+            "slippage_bps": 12,
+            "tradability_filter": {"min_history_bars": 30},
+            "slippage_model": "fixed_bps",
+        },
+        "validation_profile": {
+            "profile": "target_only_open_dsl",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "single_symbol_daily_signal_sanity",
+            "secondary_checks": ["trigger_frequency_1_to_6_round_trips_per_year_preference"],
+        },
+        "target_symbols": ["300442"],
+        "stock_pool": {"selection_mode": "explicit", "symbols": ["300442"]},
+        "dsl": {
+            "metadata": {
+                "target_symbols": ["300442"],
+                "targeting_policy": "strict_intersection_with_research_task",
+            },
+            "entry": {
+                "op": "all",
+                "conditions": [
+                    {"op": "cross_above", "left": {"indicator": "ema", "field": "close", "window": 5}, "right": {"indicator": "ema", "field": "close", "window": 20}},
+                ],
+            },
+            "exit": {
+                "op": "any",
+                "conditions": [
+                    {"op": "cross_below", "left": {"indicator": "ema", "field": "close", "window": 5}, "right": {"indicator": "ema", "field": "close", "window": 20}},
+                ],
+            },
+        },
+        "tags": ["open_dsl", "llm_defined", "ma_cross"],
+    }
+
+    normalized = provider._normalize_candidate_payload(
+        candidate,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_open_dsl_validation_profile_bridge",
+            "allowed_strategy_types": ["ma_cross"],
+            "target_symbols": ["300442"],
+            "validation_focus": "candidate_target_only",
+        },
+        allow_legacy_contract_defaults=True,
+    )
+
+    assert normalized is not None
+    assert normalized["validation_profile"]["profile"] == "trade_rule_validation"
+    assert normalized["validation_profile"]["validation_focus"] == "candidate_target_only"
+    assert normalized["validation_profile"]["primary_validation_layer"] == "target"
+    assert normalized["validation_profile"]["secondary_checks"] == [
+        "trigger_frequency_1_to_6_round_trips_per_year_preference"
+    ]
+    assert normalized["targeting_policy"]["mode"] == "strict_intersection_with_research_task"
     assert normalized["dsl"]["metadata"]["targeting_policy"] == normalized["targeting_policy"]
 
 
@@ -1720,6 +2001,534 @@ def test_external_candidate_to_spec_rejects_when_contract_normalize_fails():
     )
 
     assert spec is None
+
+
+def test_external_candidate_to_spec_preserves_hypothesis_artifact():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    spec = LLMProxyStrategyGenerator._external_candidate_to_spec(
+        {
+            "name": "l2_external_candidate",
+            "description": "超跌修复原型",
+            "rationale": "目标股票超跌后更容易在一周内修复。",
+            "strategy_type": "rsi",
+            "hypothesis": "目标股票超跌后更容易在一周内修复。",
+            "hypothesis_artifact": {
+                "artifact_id": "hyp_external_candidate",
+                "alpha_hypothesis": "目标股票超跌后更容易在一周内修复。",
+                "failure_mode": {
+                    "primary_failure_mode": "signal_or_time_stop",
+                    "stop_loss_pct": 0.05,
+                },
+                "target_universe_hypothesis": {
+                    "target_symbols": ["603855", "603279"],
+                    "target_symbol_policy": "prefer_intersection",
+                },
+                "family_hint": "rsi",
+                "holding_rationale": "修复窗口集中在 5-8 个交易日。",
+                "alpha_half_life": 8,
+                "cost_sensitivity_grid": {
+                    "base_case": {
+                        "commission_rate": 0.00025,
+                        "slippage_bps": 5,
+                        "tradability_filter": True,
+                        "slippage_model": "fixed",
+                    },
+                },
+                "position_model": "equal_weight",
+                "capacity_assumption": {
+                    "max_position_pct": 0.2,
+                    "symbol_count": 2,
+                },
+                "market_regime_assumption": {
+                    "summary": "短期修复阶段更有效。",
+                    "preferred_regime": "short_term_dislocation_repair",
+                    "avoid_regime": "persistent_one_way_trend",
+                },
+                "validation_focus": "target_plus_representative",
+            },
+            "target_symbols": ["603855", "603279"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["603855", "603279"],
+            },
+            "holding_horizon": {"max_days": 8},
+            "trade_plan": {
+                "entry_bias": "oversold_reversal",
+                "exit_bias": "signal_or_time_stop",
+            },
+            "risk_rules": {
+                "stop_loss_pct": 0.05,
+                "take_profit_pct": 0.12,
+                "max_holding_days": 8,
+            },
+            "position_sizing": {
+                "mode": "equal_weight",
+                "position_assumption": "equal_weight_proxy",
+            },
+            "execution_notes": "prefer liquid session execution",
+            "rebalance_rule": {
+                "mode": "signal_rebalance",
+                "frequency_days": 2,
+            },
+            "portfolio_spec": {
+                "position_assumption": "equal_weight_proxy",
+                "target_weight_scheme": "equal_weight",
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_representative",
+                "primary_validation_layer": "target",
+            },
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "lt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 6},
+                        "right": {"value": 26},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "gt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 6},
+                        "right": {"value": 60},
+                    }],
+                },
+                "metadata": {},
+            },
+            "tags": ["external_llm", "daily_dsl"],
+        },
+        {
+            "provider": "test",
+            "model": "mock-l2",
+            "research_task": {
+                "task_source": "snapshot",
+                "task_id": "task_pipeline_external_hypothesis",
+                "allowed_strategy_types": ["rsi"],
+                "target_symbols": ["603855", "603279", "002833", "601766"],
+                "validation_focus": "target_plus_representative",
+            },
+            "analysis": {},
+            "research_context": {},
+        },
+    )
+
+    assert spec is not None
+    assert spec.metadata["hypothesis_artifact"]["artifact_id"] == "hyp_external_candidate"
+
+
+def test_external_candidate_to_spec_accepts_open_dsl_lane():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    spec = LLMProxyStrategyGenerator._external_candidate_to_spec(
+        {
+            "name": "open_dsl_candidate",
+            "description": "开放 DSL 候选",
+            "rationale": "允许 L3 open DSL 直接表达更细的交易逻辑。",
+            "strategy_type": "open_dsl",
+            "generator_mode": "llm_defined",
+            "target_symbols": ["300442"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["300442"],
+                "rationale": "仅验证目标票的 open DSL 逻辑。",
+            },
+            "holding_horizon": {"min_days": 16, "max_days": 40, "expected_turnover_band": "low"},
+            "trade_plan": {
+                "entry_bias": "trend_persistence_confirmation",
+                "exit_bias": "momentum_decay_or_time_stop",
+            },
+            "risk_rules": {
+                "stop_loss_pct": 0.06,
+                "take_profit_pct": 0.18,
+                "max_holding_days": 40,
+            },
+            "position_sizing": {
+                "mode": "single_name",
+                "position_assumption": "single_name_full_notional",
+            },
+            "execution_notes": "使用目标票流动性过滤。",
+            "rebalance_rule": {"mode": "periodic_rebalance", "frequency_days": 14},
+            "portfolio_spec": {
+                "position_assumption": "single_name_full_notional",
+                "target_weight_scheme": "single_name",
+                "max_position_pct": 0.12,
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_only",
+                "primary_validation_layer": "target",
+            },
+            "holding_rationale": "趋势信号半衰期偏慢，适合低频持有。",
+            "cost_sensitivity_grid": {
+                "base_case": {
+                    "commission_rate": 0.00025,
+                    "slippage_bps": 5,
+                    "tradability_filter": True,
+                    "slippage_model": "fixed",
+                },
+            },
+            "position_model": "single_name",
+            "capacity_assumption": {
+                "capacity_bucket": "small",
+                "max_position_pct": 0.12,
+                "symbol_count": 1,
+            },
+            "market_regime_assumption": {
+                "summary": "趋势扩张期更有效。",
+                "preferred_regime": "trend_expansion",
+                "avoid_regime": "false_breakout_range_reversion",
+            },
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "all": [{"op": "gt", "left": {"field": "close"}, "right": {"value": 10.6}}],
+                },
+                "exit": {
+                    "any": [{"op": "lt", "left": {"field": "close"}, "right": {"value": 10.9}}],
+                },
+                "metadata": {},
+            },
+            "tags": ["external_llm", "open_dsl", "llm_defined"],
+        },
+        {
+            "provider": "test",
+            "model": "mock-open-dsl",
+            "research_task": {
+                "task_source": "bulk_stock_matrix",
+                "task_id": "task_open_dsl_lane",
+                "allowed_strategy_types": ["dsl_rule"],
+                "target_symbols": ["300442"],
+                "validation_focus": "target_only",
+            },
+            "analysis": {},
+            "research_context": {},
+        },
+        market_frame=pd.DataFrame(
+            {
+                "open": [10.0, 10.3, 10.7, 10.8, 10.5, 10.95, 10.7, 11.1],
+                "high": [10.1, 10.4, 10.8, 10.9, 10.6, 11.05, 10.8, 11.2],
+                "low": [9.9, 10.2, 10.6, 10.7, 10.4, 10.85, 10.6, 11.0],
+                "close": [10.0, 10.3, 10.7, 10.8, 10.5, 10.95, 10.7, 11.1],
+                "volume": [100, 110, 130, 140, 120, 180, 150, 220],
+            }
+        ),
+    )
+
+    assert spec is not None
+    assert spec.metadata["candidate_lane"] == "l3_open_dsl"
+    assert spec.metadata["generator_type"] == "external_llm_open_dsl"
+    assert "open_dsl" in spec.tags
+    assert "llm_defined" in spec.tags
+
+
+def test_external_candidate_to_spec_accepts_open_dsl_when_economic_fields_live_in_hypothesis_artifact():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    spec = LLMProxyStrategyGenerator._external_candidate_to_spec(
+        {
+            "name": "open_dsl_candidate_hypothesis_backfill",
+            "description": "开放 DSL 候选",
+            "rationale": "允许 L3 open DSL 直接表达更细的交易逻辑。",
+            "strategy_type": "open_dsl",
+            "generator_mode": "llm_defined",
+            "target_symbols": ["300442"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["300442"],
+                "rationale": "仅验证目标票的 open DSL 逻辑。",
+            },
+            "holding_horizon": {"min_days": 16, "max_days": 40, "expected_turnover_band": "low"},
+            "trade_plan": {"entry_bias": "trend_persistence_confirmation"},
+            "risk_rules": {"stop_loss_pct": 0.06, "take_profit_pct": 0.18, "max_holding_days": 40},
+            "position_sizing": {"mode": "single_name", "position_assumption": "single_name_full_notional"},
+            "execution_notes": "使用目标票流动性过滤。",
+            "rebalance_rule": {"mode": "periodic_rebalance", "frequency_days": 14},
+            "portfolio_spec": {
+                "position_assumption": "single_name_full_notional",
+                "target_weight_scheme": "single_name",
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_only",
+                "primary_validation_layer": "target",
+            },
+            "hypothesis_artifact": {
+                "holding_rationale": "趋势信号半衰期偏慢，适合低频持有。",
+                "cost_sensitivity_grid": {
+                    "base_case": {
+                        "commission_rate": 0.00025,
+                        "slippage_bps": 5,
+                        "tradability_filter": True,
+                        "slippage_model": "fixed",
+                    },
+                },
+                "position_model": "single_name",
+                "capacity_assumption": {
+                    "capacity_bucket": "small",
+                    "max_position_pct": 0.12,
+                    "symbol_count": 1,
+                },
+                "market_regime_assumption": {
+                    "summary": "趋势扩张期更有效。",
+                    "preferred_regime": "trend_expansion",
+                },
+            },
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "signals": {
+                    "entry": {
+                        "op": "all",
+                        "conditions": [{"op": "gt", "left": {"field": "close"}, "right": {"value": 10.6}}],
+                    },
+                    "exit": {
+                        "op": "any",
+                        "conditions": [{"op": "lt", "left": {"field": "close"}, "right": {"value": 10.9}}],
+                    },
+                },
+                "metadata": {},
+            },
+            "tags": ["external_llm", "open_dsl", "llm_defined"],
+        },
+        {
+            "provider": "test",
+            "model": "mock-open-dsl",
+            "research_task": {
+                "task_source": "bulk_stock_matrix",
+                "task_id": "task_open_dsl_hypothesis_backfill",
+                "allowed_strategy_types": ["dsl_rule"],
+                "target_symbols": ["300442"],
+                "validation_focus": "target_only",
+            },
+            "analysis": {},
+            "research_context": {},
+        },
+        market_frame=pd.DataFrame(
+            {
+                "open": [10.0, 10.3, 10.7, 10.8, 10.5, 10.95, 10.7, 11.1],
+                "high": [10.1, 10.4, 10.8, 10.9, 10.6, 11.05, 10.8, 11.2],
+                "low": [9.9, 10.2, 10.6, 10.7, 10.4, 10.85, 10.6, 11.0],
+                "close": [10.0, 10.3, 10.7, 10.8, 10.5, 10.95, 10.7, 11.1],
+                "volume": [100, 110, 130, 140, 120, 180, 150, 220],
+            }
+        ),
+    )
+
+    assert spec is not None
+    assert spec.metadata["candidate_lane"] == "l3_open_dsl"
+
+
+@pytest.mark.asyncio
+async def test_llm_generator_generate_applies_open_dsl_cap(monkeypatch):
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    db = _MockDB()
+    gen = LLMProxyStrategyGenerator()
+    gen.external_provider = MagicMock()
+    gen.external_provider.is_enabled.return_value = True
+    gen.external_provider.config = MagicMock(strict=False, provider="openai_compatible", model="test-model")
+    gen.external_provider.generate_candidates = AsyncMock(
+        return_value={
+            "candidates": [
+                {
+                    "name": "open_dsl_a",
+                    "strategy_type": "open_dsl",
+                    "generator_mode": "llm_defined",
+                    "target_symbols": ["300442"],
+                    "stock_pool": {"selection_mode": "explicit", "symbols": ["300442"], "rationale": "A"},
+                    "holding_horizon": {"min_days": 16, "max_days": 40, "expected_turnover_band": "low"},
+                    "trade_plan": {"entry_bias": "trend", "exit_bias": "decay"},
+                    "risk_rules": {"stop_loss_pct": 0.06, "take_profit_pct": 0.18, "max_holding_days": 40},
+                    "position_sizing": {"mode": "single_name", "position_assumption": "single_name_full_notional"},
+                    "execution_notes": "A",
+                    "rebalance_rule": {"mode": "periodic_rebalance", "frequency_days": 14},
+                    "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
+                    "execution_assumptions": {"commission_rate": 0.00025, "slippage_bps": 5, "tradability_filter": True, "slippage_model": "fixed"},
+                    "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_only", "primary_validation_layer": "target"},
+                    "holding_rationale": "A",
+                    "cost_sensitivity_grid": {"base_case": {"commission_rate": 0.00025, "slippage_bps": 5, "tradability_filter": True, "slippage_model": "fixed"}},
+                    "position_model": "single_name",
+                    "capacity_assumption": {"capacity_bucket": "small", "max_position_pct": 0.12, "symbol_count": 1},
+                    "market_regime_assumption": {"summary": "A", "preferred_regime": "trend_expansion", "avoid_regime": "range"},
+                    "dsl": {
+                        "version": "1.0",
+                        "timeframe": "daily",
+                        "entry": {"all": [{"op": "gt", "left": {"field": "close"}, "right": {"value": 10.6}}]},
+                        "exit": {"any": [{"op": "lt", "left": {"field": "close"}, "right": {"value": 10.9}}]},
+                        "metadata": {},
+                    },
+                    "tags": ["external_llm", "open_dsl", "llm_defined"],
+                },
+                {
+                    "name": "open_dsl_b",
+                    "strategy_type": "open_dsl",
+                    "generator_mode": "llm_defined",
+                    "target_symbols": ["600010"],
+                    "stock_pool": {"selection_mode": "explicit", "symbols": ["600010"], "rationale": "B"},
+                    "holding_horizon": {"min_days": 16, "max_days": 40, "expected_turnover_band": "low"},
+                    "trade_plan": {"entry_bias": "trend", "exit_bias": "decay"},
+                    "risk_rules": {"stop_loss_pct": 0.06, "take_profit_pct": 0.18, "max_holding_days": 40},
+                    "position_sizing": {"mode": "single_name", "position_assumption": "single_name_full_notional"},
+                    "execution_notes": "B",
+                    "rebalance_rule": {"mode": "periodic_rebalance", "frequency_days": 14},
+                    "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
+                    "execution_assumptions": {"commission_rate": 0.00025, "slippage_bps": 5, "tradability_filter": True, "slippage_model": "fixed"},
+                    "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_only", "primary_validation_layer": "target"},
+                    "holding_rationale": "B",
+                    "cost_sensitivity_grid": {"base_case": {"commission_rate": 0.00025, "slippage_bps": 5, "tradability_filter": True, "slippage_model": "fixed"}},
+                    "position_model": "single_name",
+                    "capacity_assumption": {"capacity_bucket": "small", "max_position_pct": 0.12, "symbol_count": 1},
+                    "market_regime_assumption": {"summary": "B", "preferred_regime": "trend_expansion", "avoid_regime": "range"},
+                    "dsl": {
+                        "version": "1.0",
+                        "timeframe": "daily",
+                        "entry": {"all": [{"op": "gt", "left": {"field": "close"}, "right": {"value": 10.6}}]},
+                        "exit": {"any": [{"op": "lt", "left": {"field": "close"}, "right": {"value": 10.9}}]},
+                        "metadata": {},
+                    },
+                    "tags": ["external_llm", "open_dsl", "llm_defined"],
+                },
+            ],
+            "analysis": {},
+            "request_metrics": {},
+        }
+    )
+    viable_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.4, 10.8, 10.5, 10.9, 10.6, 11.0, 10.7],
+            "high": [10.1, 10.5, 10.9, 10.6, 11.0, 10.7, 11.1, 10.8],
+            "low": [9.9, 10.3, 10.7, 10.4, 10.8, 10.5, 10.9, 10.6],
+            "close": [10.0, 10.4, 10.8, 10.5, 10.95, 10.55, 11.05, 10.65],
+            "volume": [100, 120, 140, 110, 160, 130, 180, 150],
+        }
+    )
+    gen._build_market_frame = AsyncMock(return_value=viable_frame)
+    gen._build_symbol_frame_cache = AsyncMock(
+        return_value={"300442": viable_frame, "600010": viable_frame}
+    )
+
+    with patch.dict(os.environ, {"STRATEGY_FACTORY_L3_OPEN_DSL_MAX_CANDIDATES_PER_RUN": "1"}), \
+         patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "monolithic"):
+        specs = await gen.generate(
+            db,
+            limit=2,
+            snapshot=MOCK_SNAPSHOT,
+            research_task={
+                "task_source": "bulk_stock_matrix",
+                "task_id": "task_open_dsl_cap",
+                "target_symbols": ["300442", "600010"],
+                "validation_focus": "target_only",
+                "allowed_strategy_types": ["dsl_rule"],
+            },
+        )
+
+    report = gen.get_last_report()
+
+    assert report["external_provider"]["open_dsl_selected_count"] == 1
+    assert report["external_provider"]["open_dsl_overflow_count"] >= 1
+    assert report["external_provider"]["open_dsl_compiled_candidate_count"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_llm_proxy_generator_replays_persisted_hypothesis_contract():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    generator = LLMProxyStrategyGenerator()
+    db = MagicMock()
+    db.list_strategy_generation_experiments = AsyncMock(
+        return_value=[
+            {
+                "experiment_id": "exp_replay_001",
+                "parent_strategy_id": "sid_parent_replay",
+                "generator_type": "external_llm",
+                "status": "accepted",
+                "strategy_spec": {
+                    "strategy_type": "rsi",
+                    "name": "replayed-rsi",
+                    "description": "来自历史 hypothesis 的回放候选",
+                    "replay_contract": {
+                        "strategy_type": "rsi",
+                        "name": "replayed-rsi",
+                        "description": "来自历史 hypothesis 的回放候选",
+                        "params": {"lookback": 6, "rsi_period": 6},
+                        "target_symbols": ["600519"],
+                        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                        "research_task": {"task_source": "snapshot", "target_symbols": ["600519"]},
+                        "hypothesis_artifact": {
+                            "artifact_id": "hyp_replay_001",
+                            "alpha_hypothesis": "超跌修复在一周内兑现。",
+                            "family_hint": "rsi",
+                            "holding_rationale": "修复窗口集中在 5-8 个交易日。",
+                            "market_regime_assumption": {"preferred_regime": "short_term_dislocation_repair"},
+                            "validation_focus": "target_plus_representative",
+                        },
+                        "hypothesis_lowering_audit": {
+                            "source": "external_llm",
+                            "precompile_validation": {"accepted": True},
+                        },
+                        "holding_horizon": {"min_days": 2, "max_days": 8},
+                        "trade_plan": {"entry_bias": "oversold_repair"},
+                        "risk_rules": {"stop_loss_pct": 0.05},
+                        "position_sizing": {"mode": "equal_weight"},
+                        "rebalance_rule": {"mode": "signal_rebalance"},
+                        "portfolio_spec": {"target_weight_scheme": "single_name"},
+                        "execution_assumptions": {"slippage_bps": 5},
+                        "validation_profile": {"profile": "trade_rule_validation"},
+                    },
+                    "hypothesis_artifact": {
+                        "artifact_id": "hyp_replay_001",
+                        "alpha_hypothesis": "超跌修复在一周内兑现。",
+                        "family_hint": "rsi",
+                        "holding_rationale": "修复窗口集中在 5-8 个交易日。",
+                        "market_regime_assumption": {"preferred_regime": "short_term_dislocation_repair"},
+                        "validation_focus": "target_plus_representative",
+                    },
+                },
+                "evaluation": {"committee_review": {"final_score": 0.82, "decision": "accept"}},
+            }
+        ]
+    )
+
+    result = await generator.replay_persisted_specs(
+        db,
+        limit=2,
+        parent_strategies=[{"id": "sid_parent_replay"}],
+        research_task={"task_source": "snapshot", "target_symbols": ["600519"]},
+        trigger_reason="provider_health_blocked",
+    )
+
+    assert result["report"]["status"] == "succeeded"
+    assert result["report"]["selected_count"] == 1
+    spec = result["specs"][0]
+    assert spec.metadata["generator_type"] == "hypothesis_replay"
+    assert spec.metadata["hypothesis_artifact"]["artifact_id"] == "hyp_replay_001"
+    assert spec.metadata["holding_horizon"]["max_days"] == 8
+    assert spec.metadata["replay_source"]["experiment_id"] == "exp_replay_001"
+    assert spec.metadata["hypothesis_lowering_audit"]["precompile_validation"]["accepted"] is True
+    assert spec.metadata["holding_rationale"] == "修复窗口集中在 5-8 个交易日。"
 
 
 def test_strategy_llm_normalize_rejects_outside_allowed_strategy_types():

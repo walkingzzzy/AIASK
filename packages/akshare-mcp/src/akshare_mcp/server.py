@@ -51,6 +51,7 @@ _core_tool_names = (
     "search", "semantic", "data_warmup", "alerts", "ai_workflows",
     "governance_workflow", "adapter_tools",
     "market_blocks", "basic_data", "managers", "research",
+    "key_levels", "stop_levels", "trade_plan",
 )
 try:
     from .tools import (
@@ -59,6 +60,7 @@ try:
         search, semantic, data_warmup, alerts, ai_workflows,
         governance_workflow, adapter_tools,
         market_blocks, basic_data, managers, research,
+        key_levels, stop_levels, trade_plan, db_freshness,
     )
 except UnicodeDecodeError as e:
     for _n in _core_tool_names:
@@ -131,6 +133,8 @@ _started_background_services: list[tuple[str, object]] = []
 _shutdown_lock = threading.Lock()
 _shutdown_completed = False
 _background_services_lock_handle = None
+_bg_shutdown_signal = threading.Event()
+_bg_thread: threading.Thread | None = None
 
 
 def _remember_started_service(name: str, service: object) -> object:
@@ -268,8 +272,14 @@ async def _shutdown_services_async() -> None:
     from .services.data_sync import data_sync_service
     from .storage import close_db, drain_cleanup_callbacks
 
+    _bg_shutdown_signal.set()
+    bg = _bg_thread
+    if bg is not None and bg.is_alive():
+        for _ in range(100):
+            if not bg.is_alive():
+                break
+            await asyncio.sleep(0.1)
     await _stop_started_background_services()
-    # 给取消后的任务一次排空连接释放/close 回调的机会，避免残留 transport 警告。
     await asyncio.sleep(0)
     await asyncio.sleep(0.05)
     try:
@@ -366,6 +376,10 @@ def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
     governance_workflow.register(app)
     adapter_tools.register(app)
     basic_data.register(app)
+    key_levels.register(app)
+    stop_levels.register(app)
+    trade_plan.register(app)
+    db_freshness.register(app)
     managers.register(
         app,
         exclude=_tool_only_manager_excludes if startup_profile == "tool-only" else None,
@@ -499,8 +513,71 @@ async def _run_mcp_transport_async(transport: str, mount_path: str | None) -> No
     raise RuntimeError(f"Unsupported MCP transport: {transport}")
 
 
+def _launch_sync_background_services(logger: logging.Logger) -> None:
+    """在守护线程中启动所有后台服务（含 StartupValidator）。
+
+    创建独立的 asyncio 事件循环，使各服务的 asyncio.create_task() 能正常工作。
+    服务任务在该循环中持续运行，直到收到 _bg_shutdown_signal 后优雅退出。
+    """
+    import time
+    time.sleep(0.5)
+
+    def _try_start(name: str, get_fn, enabled_env: str) -> None:
+        if not _as_bool(os.getenv(enabled_env, "true")):
+            return
+        try:
+            svc = _remember_started_service(name, get_fn())
+            svc.start()
+            logger.info("[Server] %s started", name)
+        except Exception as exc:
+            logger.warning("[Server] %s failed to start: %s", name, exc)
+
+    async def _bg_main() -> None:
+        _try_start("FactorScheduler", get_factor_scheduler, "FACTOR_SCHEDULER_ENABLED")
+        _try_start("MatchingEngine", get_matching_engine, "MATCHING_ENGINE_ENABLED")
+        _try_start("NavEngine", get_nav_engine, "NAV_ENGINE_ENABLED")
+        _try_start("SignalTracker", get_signal_tracker, "SIGNAL_TRACKER_ENABLED")
+
+        if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
+            try:
+                from strategy_factory import get_strategy_factory_scheduler  # noqa: PLC0415
+                factory = _remember_started_service("StrategyFactory", get_strategy_factory_scheduler())
+                factory.start()
+                logger.info("[Server] StrategyFactory started")
+            except Exception as exc:
+                logger.warning("[Server] StrategyFactory failed to start: %s", exc)
+
+        if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
+            try:
+                from .services.data_sync_scheduler import get_data_sync_scheduler  # noqa: PLC0415
+                sync_scheduler = _remember_started_service("DataSyncScheduler", get_data_sync_scheduler())
+                sync_scheduler.start()
+                logger.info("[Server] DataSyncScheduler started")
+            except Exception as exc:
+                logger.warning("[Server] DataSyncScheduler failed to start: %s", exc)
+
+        if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
+            try:
+                from .services.startup_validator import get_startup_validator  # noqa: PLC0415
+                validator = get_startup_validator()
+                await validator.run_async()
+                logger.info("[Server] StartupValidator completed")
+            except Exception as exc:
+                logger.warning("[Server] StartupValidator failed: %s", exc)
+
+        while not _bg_shutdown_signal.is_set():
+            await asyncio.sleep(1.0)
+
+        await _stop_started_background_services()
+
+    try:
+        asyncio.run(_bg_main())
+    except Exception as exc:
+        logger.warning("[Server] background services loop exited: %s", exc)
+
+
 async def _main_async(transport: str, mount_path: str | None) -> None:
-    global _shutdown_completed
+    global _shutdown_completed, _bg_thread
     with _shutdown_lock:
         _shutdown_completed = False
     startup_profile = _resolve_startup_profile()
@@ -514,51 +591,21 @@ async def _main_async(transport: str, mount_path: str | None) -> None:
     elif not _acquire_background_services_leader():
         logger.info("[Server] full profile active, but this process is not the background-services leader; autonomous services stay disabled")
     else:
-        # Start factor scheduler if enabled (default: enabled)
-        if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):
-            scheduler = _remember_started_service("FactorScheduler", get_factor_scheduler())
-            scheduler.start()
-            logger.info("[Server] FactorScheduler started")
-
-        # Start matching engine for paper trading
-        if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
-            engine = _remember_started_service("MatchingEngine", get_matching_engine())
-            engine.start()
-            logger.info("[Server] MatchingEngine started")
-
-        # Start NAV engine for daily account valuation
-        if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
-            nav = _remember_started_service("NavEngine", get_nav_engine())
-            nav.start()
-            logger.info("[Server] NavEngine started")
-
-        # Start signal tracker for forward signal generation & verification
-        if _as_bool(os.getenv("SIGNAL_TRACKER_ENABLED", "true")):
-            tracker = _remember_started_service("SignalTracker", get_signal_tracker())
-            tracker.start()
-            logger.info("[Server] SignalTracker started")
-
-        # Start strategy factory for daily auto-generation & elimination
-        if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
-            from strategy_factory import get_strategy_factory_scheduler
-            factory = _remember_started_service("StrategyFactory", get_strategy_factory_scheduler())
-            factory.start()
-            logger.info("[Server] StrategyFactory started")
-
-        # Run startup validation (DB connectivity, schema, data freshness, coverage)
-        if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
-            _remember_started_service("StartupValidator", _start_startup_validator_background())
-            logger.info("[Server] StartupValidator scheduled")
-
-        # Start data sync scheduler for automatic DB sync on startup & daily after market close
-        if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
-            from .services.data_sync_scheduler import get_data_sync_scheduler
-            sync_scheduler = _remember_started_service("DataSyncScheduler", get_data_sync_scheduler())
-            sync_scheduler.start()
-            logger.info("[Server] DataSyncScheduler started")
+        _bg_thread = threading.Thread(
+            target=_launch_sync_background_services,
+            args=(logger,),
+            daemon=True,
+            name="background-services-launcher",
+        )
+        _bg_thread.start()
+        logger.info("[Server] background services daemon thread started")
 
     try:
         await _run_mcp_transport_async(transport, mount_path)
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        logger.info("[Server] transport closed: %s", exc)
     finally:
         await _shutdown_services_async()
 

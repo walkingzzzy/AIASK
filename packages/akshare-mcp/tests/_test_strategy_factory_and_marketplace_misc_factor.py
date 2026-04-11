@@ -176,6 +176,8 @@ class TestFactorSchedulerAndBatchFactors:
         from akshare_mcp.tools.managers import quant_manager as quant_manager_module
 
         calls = []
+        monkeypatch.setenv("FACTOR_LLM_ENABLED", "0")
+        monkeypatch.setenv("FACTOR_SCHEDULER_LLM_MINING", "0")
 
         async def _fake_quant_manager(*, action, code=None, **kwargs):
             calls.append({"action": action, "code": code, "kwargs": kwargs})

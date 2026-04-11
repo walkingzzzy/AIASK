@@ -340,6 +340,77 @@ class StrategyAIMixin:
         return summary
 
     @classmethod
+    def _compact_factory_stage_payload(cls, stage_name: str, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        original_size_bytes = len(
+            json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        ) if payload else 0
+        compacted = cls._summarize_factory_stage_payload(stage_name, payload)
+        if not compacted:
+            compacted = {
+                "stage": str(stage_name or "").strip() or None,
+                "truncated": True,
+            }
+        compacted["storage_mode"] = "inline_compact_stage"
+        compacted["truncated"] = True
+        compacted["original_size_bytes"] = int(original_size_bytes)
+        return compacted
+
+    @classmethod
+    def _compact_factory_run_stages_to_fit(
+        cls,
+        value: Any,
+        *,
+        max_bytes: int,
+    ) -> tuple[dict[str, Any], bool]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        if not payload:
+            return payload, False
+
+        compacted: dict[str, Any] = {
+            str(stage_name): stage_payload
+            for stage_name, stage_payload in payload.items()
+        }
+        changed = False
+
+        def _encoded_size(current: dict[str, Any]) -> int:
+            return len(json.dumps(current, ensure_ascii=False, default=str).encode("utf-8"))
+
+        current_size = _encoded_size(compacted)
+        if current_size <= max_bytes:
+            return compacted, False
+
+        stage_sizes: list[tuple[str, int]] = []
+        for stage_name, stage_payload in compacted.items():
+            if not isinstance(stage_payload, dict):
+                continue
+            stage_size = len(
+                json.dumps(stage_payload, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            stage_sizes.append((str(stage_name), stage_size))
+        stage_sizes.sort(key=lambda item: item[1], reverse=True)
+
+        for stage_name, original_stage_size in stage_sizes:
+            if current_size <= max_bytes:
+                break
+            stage_payload = compacted.get(stage_name)
+            if not isinstance(stage_payload, dict):
+                continue
+            if str(stage_payload.get("storage_mode") or "").strip().lower() == "inline_compact_stage":
+                continue
+            compact_stage = cls._compact_factory_stage_payload(stage_name, stage_payload)
+            compact_stage_size = len(
+                json.dumps(compact_stage, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            if compact_stage_size >= original_stage_size:
+                continue
+            compacted[stage_name] = compact_stage
+            current_size = _encoded_size(compacted)
+            changed = True
+
+        return compacted, changed
+
+    @classmethod
     def _summarize_large_factory_run_field(
         cls,
         field_name: str,
@@ -469,6 +540,23 @@ class StrategyAIMixin:
         limit = cls._factory_run_field_max_bytes(field_name)
         if size_bytes <= limit:
             return encoded
+        if str(field_name or "").strip().lower() == "stages":
+            compacted, changed = cls._compact_factory_run_stages_to_fit(
+                value,
+                max_bytes=limit,
+            )
+            if changed:
+                compacted_json = json.dumps(compacted, ensure_ascii=False, default=str)
+                compacted_size = len(compacted_json.encode("utf-8"))
+                if compacted_size <= limit:
+                    logger.info(
+                        "strategy_factory_runs.%s compacted inline (%s bytes -> %s bytes, limit=%s)",
+                        field_name,
+                        size_bytes,
+                        compacted_size,
+                        limit,
+                    )
+                    return compacted_json
         logger.warning(
             "strategy_factory_runs.%s exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
             field_name,

@@ -298,6 +298,13 @@ async def test_stock_strategy_matrix_planner_prefers_factor_research_stock_famil
     assert tasks[0]["validation_profile"]["validation_focus"] == "candidate_target_only"
 
 
+def test_stock_strategy_matrix_momentum_uses_medium_holding_bucket():
+    assert StockStrategyMatrixPlanner._holding_bucket_for_family("momentum") == "medium"
+    assert StockStrategyMatrixPlanner._holding_bucket_for_family("rsi") == "short"
+    assert StockStrategyMatrixPlanner._holding_window_for_family("ma_cross") == {"min_days": 14, "max_days": 48}
+    assert StockStrategyMatrixPlanner._holding_window_for_family("quality_factor") == {"min_days": 24, "max_days": 72}
+
+
 @pytest.mark.asyncio
 async def test_stock_strategy_matrix_planner_uses_allocation_family_plan_as_primary_driver(monkeypatch):
     monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
@@ -381,9 +388,61 @@ async def test_stock_strategy_matrix_planner_uses_allocation_family_plan_as_prim
     assert [task["matrix_family_rank"] for task in tasks] == [1, 2]
     assert tasks[0]["stock_family_budget_weight"] == pytest.approx(0.68)
     assert tasks[1]["stock_family_budget_weight"] == pytest.approx(0.32)
-    assert tasks[0]["validation_profile"]["profile"] == "factor_rank_validation"
+    assert tasks[0]["validation_profile"]["profile"] == "trade_rule_validation"
     assert tasks[1]["validation_profile"]["profile"] == "trade_rule_validation"
+    assert tasks[0]["holding_window"] == {"min_days": 24, "max_days": 72}
+    assert tasks[1]["holding_window"] == {"min_days": 14, "max_days": 42}
     assert all(task["candidate_family"] != "growth_factor" for task in tasks)
+
+
+@pytest.mark.asyncio
+async def test_stock_strategy_matrix_planner_uses_factor_research_family_preference_order(monkeypatch):
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK", 1)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD", 10)
+
+    class _DB:
+        async def list_stock_universe(self, limit=500, offset=0):
+            del limit, offset
+            return [
+                {
+                    "code": "300001",
+                    "name": "算力成长A",
+                    "industry": "算力",
+                    "sector": "算力",
+                    "market_cap": 120_000_000_000,
+                    "pe_ratio": 42,
+                    "pb_ratio": 4.2,
+                },
+            ]
+
+    report = await StockStrategyMatrixPlanner().plan(
+        _DB(),
+        {
+            "date": "2026-04-02",
+            "fear_greed_index": 55,
+            "fg_level": "neutral",
+            "hot_sectors": [],
+            "cold_sectors": [],
+            "factor_research": {
+                "active_factors": [],
+                "family_preference_order": ["gap_fill", "mean_reversion_short", "ma_cross"],
+                "summary": {
+                    "family_preference_order": ["gap_fill", "mean_reversion_short", "ma_cross"],
+                    "family_preference_source_mode": "preferred_strategy_types",
+                },
+            },
+        },
+    )
+
+    tasks = list(report["tasks"])
+    assert [task["candidate_family"] for task in tasks] == ["gap_fill", "mean_reversion_short"]
+    assert report["summary"]["family_preference_order"][:3] == ["gap_fill", "mean_reversion_short", "ma_cross"]
+    assert report["summary"]["family_preference_source"] == "preferred_strategy_types"
+    assert report["summary"]["allocation_mode"] == "stock_round_robin_by_family_rank"
 
 
 @pytest.mark.asyncio

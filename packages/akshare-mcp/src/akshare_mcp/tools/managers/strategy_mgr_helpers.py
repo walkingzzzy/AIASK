@@ -1,5 +1,6 @@
 """Strategy manager helpers: NAV calculation, state management, quality report, incubation overview."""
 
+import asyncio
 import logging
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -32,6 +33,558 @@ from ...services.strategy_lifecycle_shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+_FACTORY_SUMMARY_OBSERVABILITY_FIELDS = (
+    "external_llm_provider_health_status",
+    "external_llm_provider_control_mode",
+    "candidate_local_attempt_count",
+    "task_local_attempt_count",
+    "cohort_effective_trials",
+    "refresh_existing_count",
+    "spawn_revision_from_existing_count",
+    "unique_family_holding_universe_count",
+    "economic_semantics_missing_count",
+    "research_only_count",
+    "deferred_submission_count",
+    "validation_grade_distribution",
+    "raw_validation_grade_distribution",
+    "effective_validation_grade_distribution",
+    "raw_validation_total_score_mean",
+    "raw_validation_total_score_p50",
+    "raw_validation_total_score_p90",
+    "raw_validation_a_rate",
+    "raw_validation_b_rate",
+    "raw_validation_c_rate",
+    "raw_validation_d_rate",
+    "strict_incubation_ready_count",
+    "strict_incubation_ready_rate",
+    "live_candidate_ready_count",
+    "live_candidate_ready_rate",
+    "raw_b_or_above_count",
+    "raw_b_or_above_rate",
+    "strict_ready_given_raw_b_count",
+    "strict_ready_given_raw_b_rate",
+    "live_ready_given_raw_b_count",
+    "live_ready_given_raw_b_rate",
+    "strict_live_alignment_gap_count",
+    "strict_live_alignment_gap_rate",
+    "strict_live_alignment_status_counts",
+    "validation_family_quality_panel",
+)
+
+_FACTORY_BASELINE_FORWARD_DAYS = (1, 5, 10, 20)
+_FACTORY_GENERATION_LANE_DEFINITION = (
+    "按持久化的 generator_mode / candidate_lane / quota_fill 证据切分生成层级；"
+    "若 submitted 策略未保留 historical_guided 痕迹，L1 会并入 L0 规则层。"
+)
+_FACTORY_GENERATION_LANE_SORT_ORDER = {
+    "l0_local_rule": 0,
+    "l1_historical_guided": 1,
+    "l2_external_known_type": 2,
+    "l2_hypothesis_lowering": 3,
+    "l3_open_dsl": 4,
+    "unknown": 99,
+}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return round(ordered[0], 4)
+    p = max(0.0, min(float(percentile), 1.0))
+    index = p * (len(ordered) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    result = ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+    return round(result, 4)
+
+
+def _grade_rates(distribution: dict[str, int], total: int) -> dict[str, float]:
+    denominator = max(int(total or 0), 1)
+    return {
+        "raw_validation_a_rate": round(int(distribution.get("A") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_b_rate": round(int(distribution.get("B") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_c_rate": round(int(distribution.get("C") or 0) / denominator, 4) if total else 0.0,
+        "raw_validation_d_rate": round(int(distribution.get("D") or 0) / denominator, 4) if total else 0.0,
+    }
+
+
+def _rate(count: int, total: int) -> float:
+    return round(int(count or 0) / int(total or 0), 4) if total else 0.0
+
+
+def _mean(values: list[float]) -> float:
+    return round(sum(values) / len(values), 4) if values else 0.0
+
+
+def _is_raw_b_or_above(grade: str) -> bool:
+    return str(grade or "").strip().upper() in {"A", "B"}
+
+
+def _normalized_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _brief_holding_bucket(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("holding_period_bucket")
+        or payload.get("holding_bucket")
+        or "unknown"
+    ).strip().lower() or "unknown"
+
+
+def _brief_target_universe_key(payload: dict[str, Any]) -> str:
+    target_pool_id = str(payload.get("target_pool_id") or "").strip()
+    if target_pool_id:
+        return target_pool_id
+    task_signature = str(payload.get("task_signature") or "").strip()
+    if task_signature:
+        return task_signature
+    validation_focus = str(
+        payload.get("validation_focus")
+        or dict(payload.get("validation_profile") or {}).get("validation_focus")
+        or ""
+    ).strip()
+    if validation_focus:
+        return f"focus:{validation_focus}"
+    return "unknown"
+
+
+def _build_family_quality_panel(overviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for overview in list(overviews or []):
+        payload = dict(overview or {})
+        family = str(payload.get("candidate_family") or payload.get("strategy_type") or "unknown").strip().lower() or "unknown"
+        holding_bucket = str(payload.get("holding_period_bucket") or "unknown").strip().lower() or "unknown"
+        validation_focus = str(payload.get("validation_focus") or "unknown").strip().lower() or "unknown"
+        key = (family, holding_bucket, validation_focus)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "strategy_family": family,
+                "holding_period_bucket": holding_bucket,
+                "validation_focus": validation_focus,
+                "strategy_count": 0,
+                "raw_validation_grade_distribution": {},
+                "effective_validation_grade_distribution": {},
+                "raw_validation_total_scores": [],
+                "strict_incubation_ready_count": 0,
+                "live_candidate_ready_count": 0,
+                "raw_b_or_above_count": 0,
+                "strict_ready_given_raw_b_count": 0,
+                "live_ready_given_raw_b_count": 0,
+                "trade_density_values": [],
+                "post_cost_sharpe_values": [],
+                "deflated_sharpe_ratio_values": [],
+                "pbo_values": [],
+            },
+        )
+        bucket["strategy_count"] += 1
+        raw_grade = str(payload.get("raw_validation_grade") or payload.get("validation_grade") or "").strip().upper()
+        effective_grade = str(
+            payload.get("effective_validation_grade") or payload.get("validation_grade") or ""
+        ).strip().upper()
+        if raw_grade:
+            bucket["raw_validation_grade_distribution"][raw_grade] = (
+                bucket["raw_validation_grade_distribution"].get(raw_grade, 0) + 1
+            )
+        if effective_grade:
+            bucket["effective_validation_grade_distribution"][effective_grade] = (
+                bucket["effective_validation_grade_distribution"].get(effective_grade, 0) + 1
+            )
+        if payload.get("raw_validation_total_score") is not None:
+            bucket["raw_validation_total_scores"].append(_safe_float(payload.get("raw_validation_total_score")))
+        strict_ready = payload.get("strict_incubation_ready") is True
+        live_ready = payload.get("live_candidate_ready") is True
+        if strict_ready:
+            bucket["strict_incubation_ready_count"] += 1
+        if live_ready:
+            bucket["live_candidate_ready_count"] += 1
+        if _is_raw_b_or_above(raw_grade):
+            bucket["raw_b_or_above_count"] += 1
+            if strict_ready:
+                bucket["strict_ready_given_raw_b_count"] += 1
+            if live_ready:
+                bucket["live_ready_given_raw_b_count"] += 1
+        for metric_key, bucket_key in (
+            ("trade_density", "trade_density_values"),
+            ("post_cost_sharpe", "post_cost_sharpe_values"),
+            ("deflated_sharpe_ratio", "deflated_sharpe_ratio_values"),
+            ("pbo", "pbo_values"),
+        ):
+            if payload.get(metric_key) is not None:
+                bucket[bucket_key].append(_safe_float(payload.get(metric_key)))
+
+    panel: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        strategy_count = int(bucket.get("strategy_count") or 0)
+        raw_distribution = dict(bucket.get("raw_validation_grade_distribution") or {})
+        raw_scores = list(bucket.get("raw_validation_total_scores") or [])
+        trade_density_values = list(bucket.get("trade_density_values") or [])
+        post_cost_sharpe_values = list(bucket.get("post_cost_sharpe_values") or [])
+        dsr_values = list(bucket.get("deflated_sharpe_ratio_values") or [])
+        pbo_values = list(bucket.get("pbo_values") or [])
+        raw_b_or_above_count = int(bucket.get("raw_b_or_above_count") or 0)
+        strict_ready_given_raw_b_count = int(
+            bucket.get("strict_ready_given_raw_b_count") or 0
+        )
+        live_ready_given_raw_b_count = int(bucket.get("live_ready_given_raw_b_count") or 0)
+        item = {
+            "strategy_family": bucket.get("strategy_family"),
+            "holding_period_bucket": bucket.get("holding_period_bucket"),
+            "validation_focus": bucket.get("validation_focus"),
+            "strategy_count": strategy_count,
+            "raw_validation_grade_distribution": raw_distribution,
+            "effective_validation_grade_distribution": dict(
+                bucket.get("effective_validation_grade_distribution") or {}
+            ),
+            "raw_validation_total_score_mean": round(sum(raw_scores) / len(raw_scores), 4) if raw_scores else 0.0,
+            "strict_incubation_ready_count": int(bucket.get("strict_incubation_ready_count") or 0),
+            "strict_incubation_ready_rate": round(
+                int(bucket.get("strict_incubation_ready_count") or 0) / strategy_count,
+                4,
+            ) if strategy_count else 0.0,
+            "live_candidate_ready_count": int(bucket.get("live_candidate_ready_count") or 0),
+            "live_candidate_ready_rate": round(
+                int(bucket.get("live_candidate_ready_count") or 0) / strategy_count,
+                4,
+            ) if strategy_count else 0.0,
+            "raw_b_or_above_count": raw_b_or_above_count,
+            "raw_b_or_above_rate": _rate(raw_b_or_above_count, strategy_count),
+            "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+            "strict_ready_given_raw_b_rate": _rate(
+                strict_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "live_ready_given_raw_b_count": live_ready_given_raw_b_count,
+            "live_ready_given_raw_b_rate": _rate(
+                live_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "mean_trade_density": round(sum(trade_density_values) / len(trade_density_values), 4)
+            if trade_density_values else 0.0,
+            "mean_post_cost_sharpe": round(sum(post_cost_sharpe_values) / len(post_cost_sharpe_values), 4)
+            if post_cost_sharpe_values else 0.0,
+            "mean_deflated_sharpe_ratio": round(sum(dsr_values) / len(dsr_values), 4)
+            if dsr_values else 0.0,
+            "mean_pbo": round(sum(pbo_values) / len(pbo_values), 4) if pbo_values else 0.0,
+        }
+        item.update(_grade_rates(raw_distribution, strategy_count))
+        item.update(
+            {
+                "family_raw_a_rate": item.get("raw_validation_a_rate", 0.0),
+                "family_raw_b_rate": item.get("raw_validation_b_rate", 0.0),
+                "family_raw_c_rate": item.get("raw_validation_c_rate", 0.0),
+                "family_raw_d_rate": item.get("raw_validation_d_rate", 0.0),
+                "family_strict_incubation_ready_rate": item.get(
+                    "strict_incubation_ready_rate",
+                    0.0,
+                ),
+                "family_live_candidate_ready_rate": item.get(
+                    "live_candidate_ready_rate",
+                    0.0,
+                ),
+                "family_mean_trade_density": item.get("mean_trade_density", 0.0),
+                "family_mean_post_cost_sharpe": item.get("mean_post_cost_sharpe", 0.0),
+                "family_mean_dsr": item.get("mean_deflated_sharpe_ratio", 0.0),
+                "family_mean_pbo": item.get("mean_pbo", 0.0),
+            }
+        )
+        panel.append(item)
+    panel.sort(
+        key=lambda item: (
+            int(item.get("strategy_count") or 0),
+            float(item.get("raw_validation_b_rate") or 0.0),
+            float(item.get("raw_validation_a_rate") or 0.0),
+            str(item.get("strategy_family") or ""),
+        ),
+        reverse=True,
+    )
+    return panel[:24]
+
+
+def _extract_generation_lane(payload: dict[str, Any]) -> dict[str, str]:
+    data = dict(payload or {})
+    params = dict(data.get("params") or {})
+    candidate_provenance = dict(
+        data.get("candidate_provenance")
+        or params.get("candidate_provenance")
+        or {}
+    )
+    quota_fill = dict(data.get("quota_fill") or params.get("quota_fill") or {})
+    tags = {
+        _normalized_text(tag)
+        for tag in [*list(data.get("tags") or []), *list(params.get("tags") or [])]
+        if _normalized_text(tag)
+    }
+
+    generator_mode = (
+        _normalized_text(data.get("generator_mode"))
+        or _normalized_text(data.get("generator_type"))
+        or _normalized_text(params.get("generator_mode"))
+        or _normalized_text(params.get("generator_type"))
+        or _normalized_text(candidate_provenance.get("generator_mode"))
+        or _normalized_text(candidate_provenance.get("generator_type"))
+    )
+    candidate_lane = (
+        _normalized_text(data.get("candidate_lane"))
+        or _normalized_text(params.get("candidate_lane"))
+        or _normalized_text(candidate_provenance.get("candidate_lane"))
+    )
+    parameter_source = (
+        _normalized_text(data.get("parameter_source"))
+        or _normalized_text(params.get("parameter_source"))
+        or _normalized_text(quota_fill.get("parameter_source"))
+    )
+    fill_source_mode = (
+        _normalized_text(data.get("fill_source_mode"))
+        or _normalized_text(params.get("fill_source_mode"))
+        or _normalized_text(quota_fill.get("fill_source_mode"))
+    )
+
+    if (
+        candidate_lane == "l3_open_dsl"
+        or generator_mode in {"llm_defined", "open_dsl", "llm_defined_dsl"}
+        or "llm_defined" in tags
+        or "open_dsl" in tags
+    ):
+        return {
+            "lane_key": "l3_open_dsl",
+            "lane_label": "L3 Open DSL",
+            "generation_tier": "L3",
+            "generator_mode": generator_mode or "llm_defined",
+        }
+    if (
+        candidate_lane == "l2_hypothesis_lowering"
+        or generator_mode in {"llm_hypothesis_compiler", "hypothesis_replay"}
+    ):
+        return {
+            "lane_key": "l2_hypothesis_lowering",
+            "lane_label": "L2 Hypothesis Lowering",
+            "generation_tier": "L2",
+            "generator_mode": generator_mode or "llm_hypothesis_compiler",
+        }
+    if parameter_source == "historical_distribution" or fill_source_mode == "historical_guided":
+        return {
+            "lane_key": "l1_historical_guided",
+            "lane_label": "L1 Historical Guided Rule",
+            "generation_tier": "L1",
+            "generator_mode": generator_mode or "rule",
+        }
+    if (
+        generator_mode in {
+            "external_llm",
+            "pipeline_staged",
+            "llm_proxy",
+            "llm_proxy_fallback",
+            "external_llm_open_dsl",
+            "rl_bandit",
+        }
+        or "external_llm" in tags
+        or "ai_generated" in tags
+    ):
+        return {
+            "lane_key": "l2_external_known_type",
+            "lane_label": "L2 External Known-Type",
+            "generation_tier": "L2",
+            "generator_mode": generator_mode or "external_llm",
+        }
+    if (
+        generator_mode in {"bulk_stock_matrix", "rule", "local_rule", "local_rule_v1"}
+        or "rule" in tags
+        or data.get("generation_reason")
+        or data.get("spawn_reason")
+    ):
+        return {
+            "lane_key": "l0_local_rule",
+            "lane_label": "L0 Local Rule",
+            "generation_tier": "L0",
+            "generator_mode": generator_mode or "rule",
+        }
+    return {
+        "lane_key": "unknown",
+        "lane_label": "Unknown / Unlabeled",
+        "generation_tier": "unknown",
+        "generator_mode": generator_mode or "unknown",
+    }
+
+
+def _build_generation_lane_quality_panel(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    generator_mode_counts: dict[str, int] = {}
+    for record in list(records or []):
+        payload = dict(record or {})
+        lane = _extract_generation_lane(payload)
+        lane_key = lane["lane_key"]
+        generator_mode = lane["generator_mode"]
+        generator_mode_counts[generator_mode] = generator_mode_counts.get(generator_mode, 0) + 1
+        bucket = buckets.setdefault(
+            lane_key,
+            {
+                "lane_key": lane_key,
+                "lane_label": lane["lane_label"],
+                "generation_tier": lane["generation_tier"],
+                "strategy_count": 0,
+                "status_counts": {},
+                "generator_mode_counts": {},
+                "strategy_family_counts": {},
+                "raw_validation_grade_distribution": {},
+                "effective_validation_grade_distribution": {},
+                "raw_validation_total_scores": [],
+                "strict_incubation_ready_count": 0,
+                "live_candidate_ready_count": 0,
+                "promotion_ready_count": 0,
+                "quality_passed_count": 0,
+                "raw_b_or_above_count": 0,
+                "strict_ready_given_raw_b_count": 0,
+                "live_ready_given_raw_b_count": 0,
+            },
+        )
+        bucket["strategy_count"] += 1
+        bucket["generator_mode_counts"][generator_mode] = (
+            bucket["generator_mode_counts"].get(generator_mode, 0) + 1
+        )
+
+        status_key = normalize_status_alias(payload.get("status"))
+        if status_key:
+            bucket["status_counts"][status_key] = bucket["status_counts"].get(status_key, 0) + 1
+
+        family = str(
+            payload.get("candidate_family")
+            or payload.get("strategy_type")
+            or "unknown"
+        ).strip().lower() or "unknown"
+        bucket["strategy_family_counts"][family] = (
+            bucket["strategy_family_counts"].get(family, 0) + 1
+        )
+
+        raw_grade = str(
+            payload.get("raw_validation_grade")
+            or payload.get("validation_grade")
+            or ""
+        ).strip().upper()
+        effective_grade = str(
+            payload.get("effective_validation_grade")
+            or payload.get("validation_grade")
+            or ""
+        ).strip().upper()
+        if raw_grade:
+            bucket["raw_validation_grade_distribution"][raw_grade] = (
+                bucket["raw_validation_grade_distribution"].get(raw_grade, 0) + 1
+            )
+        if effective_grade:
+            bucket["effective_validation_grade_distribution"][effective_grade] = (
+                bucket["effective_validation_grade_distribution"].get(effective_grade, 0) + 1
+            )
+        if payload.get("raw_validation_total_score") is not None:
+            bucket["raw_validation_total_scores"].append(
+                _safe_float(payload.get("raw_validation_total_score"))
+            )
+
+        strict_ready = payload.get("strict_incubation_ready") is True
+        live_ready = payload.get("live_candidate_ready") is True
+        if strict_ready:
+            bucket["strict_incubation_ready_count"] += 1
+        if live_ready:
+            bucket["live_candidate_ready_count"] += 1
+        if payload.get("promotion_ready"):
+            bucket["promotion_ready_count"] += 1
+        if payload.get("quality_passed"):
+            bucket["quality_passed_count"] += 1
+        if _is_raw_b_or_above(raw_grade):
+            bucket["raw_b_or_above_count"] += 1
+            if strict_ready:
+                bucket["strict_ready_given_raw_b_count"] += 1
+            if live_ready:
+                bucket["live_ready_given_raw_b_count"] += 1
+
+    panel: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        strategy_count = int(bucket.get("strategy_count") or 0)
+        raw_distribution = dict(bucket.get("raw_validation_grade_distribution") or {})
+        raw_scores = list(bucket.get("raw_validation_total_scores") or [])
+        raw_b_or_above_count = int(bucket.get("raw_b_or_above_count") or 0)
+        panel.append(
+            {
+                "lane_key": bucket.get("lane_key"),
+                "lane_label": bucket.get("lane_label"),
+                "generation_tier": bucket.get("generation_tier"),
+                "strategy_count": strategy_count,
+                "status_counts": dict(bucket.get("status_counts") or {}),
+                "generator_mode_counts": dict(bucket.get("generator_mode_counts") or {}),
+                "strategy_family_counts": dict(bucket.get("strategy_family_counts") or {}),
+                "raw_validation_grade_distribution": raw_distribution,
+                "effective_validation_grade_distribution": dict(
+                    bucket.get("effective_validation_grade_distribution") or {}
+                ),
+                "raw_validation_total_score_mean": round(
+                    sum(raw_scores) / len(raw_scores),
+                    4,
+                ) if raw_scores else 0.0,
+                **_grade_rates(raw_distribution, strategy_count),
+                "strict_incubation_ready_count": int(
+                    bucket.get("strict_incubation_ready_count") or 0
+                ),
+                "strict_incubation_ready_rate": _rate(
+                    int(bucket.get("strict_incubation_ready_count") or 0),
+                    strategy_count,
+                ),
+                "live_candidate_ready_count": int(
+                    bucket.get("live_candidate_ready_count") or 0
+                ),
+                "live_candidate_ready_rate": _rate(
+                    int(bucket.get("live_candidate_ready_count") or 0),
+                    strategy_count,
+                ),
+                "promotion_ready_count": int(bucket.get("promotion_ready_count") or 0),
+                "promotion_ready_rate": _rate(
+                    int(bucket.get("promotion_ready_count") or 0),
+                    strategy_count,
+                ),
+                "quality_passed_count": int(bucket.get("quality_passed_count") or 0),
+                "quality_pass_rate": _rate(
+                    int(bucket.get("quality_passed_count") or 0),
+                    strategy_count,
+                ),
+                "raw_b_or_above_count": raw_b_or_above_count,
+                "raw_b_or_above_rate": _rate(raw_b_or_above_count, strategy_count),
+                "strict_ready_given_raw_b_count": int(
+                    bucket.get("strict_ready_given_raw_b_count") or 0
+                ),
+                "strict_ready_given_raw_b_rate": _rate(
+                    int(bucket.get("strict_ready_given_raw_b_count") or 0),
+                    raw_b_or_above_count,
+                ),
+                "live_ready_given_raw_b_count": int(
+                    bucket.get("live_ready_given_raw_b_count") or 0
+                ),
+                "live_ready_given_raw_b_rate": _rate(
+                    int(bucket.get("live_ready_given_raw_b_count") or 0),
+                    raw_b_or_above_count,
+                ),
+            }
+        )
+    panel.sort(
+        key=lambda item: (
+            _FACTORY_GENERATION_LANE_SORT_ORDER.get(
+                str(item.get("lane_key") or ""),
+                _FACTORY_GENERATION_LANE_SORT_ORDER["unknown"],
+            ),
+            -int(item.get("strategy_count") or 0),
+            str(item.get("lane_label") or ""),
+        )
+    )
+    return panel, generator_mode_counts
 
 
 # ── NAV calculation ──────────────────────────────────────────────────────────
@@ -94,6 +647,356 @@ async def compute_nav_series(db, strategy_id: str, max_points: int = 30) -> list
 async def save_quality_report(db, strategy_id: str, report: dict, report_type: str = "submission") -> None:
     if hasattr(db, "save_strategy_quality_report"):
         await db.save_strategy_quality_report(strategy_id, report_type, report)
+
+
+def is_factory_generated_strategy(strategy: Optional[dict]) -> bool:
+    payload = dict(strategy or {})
+    tags = {str(tag or "").strip().lower() for tag in list(payload.get("tags") or [])}
+    author_id = str(payload.get("author_id") or "").strip().lower()
+    source = str(payload.get("source") or "").strip().lower()
+    if "factory" in tags or "auto_generated" in tags:
+        return True
+    if author_id == "strategy_factory":
+        return True
+    return source.startswith("strategy_factory")
+
+
+async def build_factory_quality_baseline(
+    db,
+    *,
+    latest_run: Optional[dict] = None,
+    limit_per_status: int = 200,
+) -> dict:
+    captured_at = datetime.now(timezone.utc).isoformat()
+    latest_run_summary = normalize_factory_run_summary_contract(latest_run or {})
+    latest_run_submission_artifact = dict(latest_run_summary.get("submission_artifact") or {})
+    latest_run_strategy_briefs = [
+        dict(item or {})
+        for item in list(latest_run_submission_artifact.get("strategy_briefs") or [])
+        if isinstance(item, dict)
+    ]
+    latest_run_generation_lane_panel, latest_run_generation_mode_counts = (
+        _build_generation_lane_quality_panel(latest_run_strategy_briefs)
+    )
+    latest_run_payload = {
+        "run_id": str(latest_run_summary.get("run_id") or "").strip() or None,
+        "status": str(latest_run_summary.get("status") or "").strip() or None,
+        "started_at": latest_run_summary.get("started_at"),
+        "completed_at": latest_run_summary.get("completed_at"),
+        "candidates_spawned": int(latest_run_summary.get("candidates_spawned") or 0),
+        "submitted": int(latest_run_summary.get("submitted") or 0),
+        "research_only_count": int(latest_run_summary.get("research_only_count") or 0),
+        "deferred_submission_count": int(latest_run_summary.get("deferred_submission_count") or 0),
+        "validation_grade_distribution": dict(latest_run_summary.get("validation_grade_distribution") or {}),
+        "raw_validation_grade_distribution": dict(
+            latest_run_summary.get("raw_validation_grade_distribution")
+            or latest_run_summary.get("validation_grade_distribution")
+            or {}
+        ),
+        "effective_validation_grade_distribution": dict(
+            latest_run_summary.get("effective_validation_grade_distribution")
+            or latest_run_summary.get("validation_grade_distribution")
+            or {}
+        ),
+        "raw_validation_total_score_mean": _safe_float(
+            latest_run_summary.get("raw_validation_total_score_mean"),
+            0.0,
+        ),
+        "raw_validation_total_score_p50": _safe_float(
+            latest_run_summary.get("raw_validation_total_score_p50"),
+            0.0,
+        ),
+        "raw_validation_total_score_p90": _safe_float(
+            latest_run_summary.get("raw_validation_total_score_p90"),
+            0.0,
+        ),
+        "raw_validation_a_rate": _safe_float(latest_run_summary.get("raw_validation_a_rate"), 0.0),
+        "raw_validation_b_rate": _safe_float(latest_run_summary.get("raw_validation_b_rate"), 0.0),
+        "raw_validation_c_rate": _safe_float(latest_run_summary.get("raw_validation_c_rate"), 0.0),
+        "raw_validation_d_rate": _safe_float(latest_run_summary.get("raw_validation_d_rate"), 0.0),
+        "strict_incubation_ready_count": int(
+            latest_run_summary.get("strict_incubation_ready_count") or 0
+        ),
+        "strict_incubation_ready_rate": _safe_float(
+            latest_run_summary.get("strict_incubation_ready_rate"),
+            0.0,
+        ),
+        "live_candidate_ready_count": int(
+            latest_run_summary.get("live_candidate_ready_count") or 0
+        ),
+        "live_candidate_ready_rate": _safe_float(
+            latest_run_summary.get("live_candidate_ready_rate"),
+            0.0,
+        ),
+        "raw_b_or_above_count": int(latest_run_summary.get("raw_b_or_above_count") or 0),
+        "raw_b_or_above_rate": _safe_float(latest_run_summary.get("raw_b_or_above_rate"), 0.0),
+        "strict_ready_given_raw_b_count": int(
+            latest_run_summary.get("strict_ready_given_raw_b_count") or 0
+        ),
+        "strict_ready_given_raw_b_rate": _safe_float(
+            latest_run_summary.get("strict_ready_given_raw_b_rate"),
+            0.0,
+        ),
+        "live_ready_given_raw_b_count": int(
+            latest_run_summary.get("live_ready_given_raw_b_count") or 0
+        ),
+        "live_ready_given_raw_b_rate": _safe_float(
+            latest_run_summary.get("live_ready_given_raw_b_rate"),
+            0.0,
+        ),
+        "validation_family_quality_panel": list(
+            latest_run_summary.get("validation_family_quality_panel") or []
+        ),
+        "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
+        "generation_lane_quality_panel": latest_run_generation_lane_panel,
+        "generation_mode_counts": latest_run_generation_mode_counts,
+        "external_llm_provider_health_status": latest_run_summary.get("external_llm_provider_health_status"),
+        "external_llm_provider_control_mode": latest_run_summary.get("external_llm_provider_control_mode"),
+    }
+
+    if not hasattr(db, "list_strategies"):
+        return {
+            "contract_version": "strategy_factory.quality_baseline.v1",
+            "captured_at": captured_at,
+            "latest_run": latest_run_payload,
+            "submitted_strategy_cohort": {
+                "statuses": ["submitted", "incubating", "listed"],
+                "factory_strategy_count": 0,
+                "status_counts": {},
+                "validation_grade_distribution": {},
+                "raw_validation_grade_distribution": {},
+                "effective_validation_grade_distribution": {},
+                "raw_validation_total_score_mean": 0.0,
+                "raw_validation_total_score_p50": 0.0,
+                "raw_validation_total_score_p90": 0.0,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.0,
+                "raw_validation_c_rate": 0.0,
+                "raw_validation_d_rate": 0.0,
+                "zero_signal_count": 0,
+                "zero_signal_rate": 0.0,
+                "forward_coverage_count": 0,
+                "forward_coverage_rate": 0.0,
+                "promotion_ready_count": 0,
+                "promotion_ready_rate": 0.0,
+                "quality_passed_count": 0,
+                "quality_pass_rate": 0.0,
+                "baseline_forward_days": list(_FACTORY_BASELINE_FORWARD_DAYS),
+                "quality_report_missing_count": 0,
+                "zero_signal_definition": "raw_signal_count <= 0",
+                "forward_coverage_definition": "observed all baseline forward days",
+                "strict_incubation_ready_count": 0,
+                "strict_incubation_ready_rate": 0.0,
+                "live_candidate_ready_count": 0,
+                "live_candidate_ready_rate": 0.0,
+                "live_gate_ready_count": 0,
+                "live_gate_ready_rate": 0.0,
+                "raw_b_or_above_count": 0,
+                "raw_b_or_above_rate": 0.0,
+                "strict_ready_given_raw_b_count": 0,
+                "strict_ready_given_raw_b_rate": 0.0,
+                "live_ready_given_raw_b_count": 0,
+                "live_ready_given_raw_b_rate": 0.0,
+                "strict_live_alignment_gap_count": 0,
+                "strict_live_alignment_gap_rate": 0.0,
+                "strict_live_alignment_status_counts": {},
+                "validation_grade_d_strict_incubation_pass_count": 0,
+                "validation_grade_d_strict_incubation_pass_rate": 0.0,
+                "validation_grade_d_promotion_ready_count": 0,
+                "validation_grade_d_promotion_ready_rate": 0.0,
+                "validation_family_quality_panel": [],
+                "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
+                "generation_lane_quality_panel": [],
+                "generation_mode_counts": {},
+            },
+        }
+
+    cohort_statuses = ("submitted", "incubating", "listed")
+    listed_rows, incubating_rows, submitted_rows = await asyncio.gather(
+        db.list_strategies("listed", limit=limit_per_status),
+        db.list_strategies("incubating", limit=limit_per_status),
+        db.list_strategies("submitted", limit=limit_per_status),
+    )
+    strategies_by_id: dict[str, dict] = {}
+    status_counts: dict[str, int] = {}
+    for row in [*submitted_rows, *incubating_rows, *listed_rows]:
+        strategy = dict(row or {})
+        strategy_id = str(strategy.get("id") or "").strip()
+        if not strategy_id or not is_factory_generated_strategy(strategy):
+            continue
+        strategies_by_id[strategy_id] = strategy
+        status_key = normalize_status_alias(strategy.get("status"))
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+
+    cohort = list(strategies_by_id.values())
+    overviews = await asyncio.gather(
+        *(build_incubation_overview(db, strategy) for strategy in cohort),
+        return_exceptions=True,
+    )
+    validation_grade_distribution: dict[str, int] = {}
+    raw_validation_grade_distribution: dict[str, int] = {}
+    effective_validation_grade_distribution: dict[str, int] = {}
+    raw_validation_total_scores: list[float] = []
+    zero_signal_count = 0
+    forward_coverage_count = 0
+    promotion_ready_count = 0
+    quality_passed_count = 0
+    quality_report_missing_count = 0
+    strict_incubation_ready_count = 0
+    live_gate_ready_count = 0
+    raw_b_or_above_count = 0
+    strict_ready_given_raw_b_count = 0
+    live_ready_given_raw_b_count = 0
+    strict_live_alignment_gap_count = 0
+    strict_live_alignment_status_counts: dict[str, int] = {}
+    validation_grade_d_strict_incubation_pass_count = 0
+    validation_grade_d_promotion_ready_count = 0
+    processed_count = 0
+    cohort_records: list[dict[str, Any]] = []
+
+    for strategy, overview in zip(cohort, overviews):
+        if isinstance(overview, Exception):
+            logger.warning("factory quality baseline skipped strategy due to overview error: %s", overview)
+            continue
+        cohort_records.append(
+            {
+                **dict(strategy or {}),
+                **dict(overview or {}),
+                "params": dict(strategy.get("params") or {}),
+                "tags": list(strategy.get("tags") or []),
+            }
+        )
+        processed_count += 1
+        validation_grade = str(overview.get("validation_grade") or "UNKNOWN").strip().upper()
+        raw_validation_grade = str(
+            overview.get("raw_validation_grade") or validation_grade or "UNKNOWN"
+        ).strip().upper()
+        effective_validation_grade = str(
+            overview.get("effective_validation_grade") or validation_grade or "UNKNOWN"
+        ).strip().upper()
+        validation_grade_distribution[validation_grade] = (
+            validation_grade_distribution.get(validation_grade, 0) + 1
+        )
+        raw_validation_grade_distribution[raw_validation_grade] = (
+            raw_validation_grade_distribution.get(raw_validation_grade, 0) + 1
+        )
+        effective_validation_grade_distribution[effective_validation_grade] = (
+            effective_validation_grade_distribution.get(effective_validation_grade, 0) + 1
+        )
+        if overview.get("raw_validation_total_score") is not None:
+            raw_validation_total_scores.append(_safe_float(overview.get("raw_validation_total_score")))
+        raw_signal_count = int(overview.get("raw_signal_count") or overview.get("total_signals") or 0)
+        if raw_signal_count <= 0:
+            zero_signal_count += 1
+        observed_forward_days = {
+            int(item)
+            for item in list(overview.get("observed_forward_days") or [])
+            if str(item).strip()
+        }
+        if set(_FACTORY_BASELINE_FORWARD_DAYS).issubset(observed_forward_days):
+            forward_coverage_count += 1
+        if overview.get("promotion_ready"):
+            promotion_ready_count += 1
+        if overview.get("quality_passed"):
+            quality_passed_count += 1
+        strict_ready = overview.get("strict_incubation_ready") is True
+        live_ready = overview.get("live_candidate_ready") is True
+        if strict_ready:
+            strict_incubation_ready_count += 1
+        if live_ready:
+            live_gate_ready_count += 1
+        if raw_validation_grade in {"A", "B"}:
+            raw_b_or_above_count += 1
+            if strict_ready:
+                strict_ready_given_raw_b_count += 1
+            if live_ready:
+                live_ready_given_raw_b_count += 1
+        if overview.get("strict_live_alignment_gap"):
+            strict_live_alignment_gap_count += 1
+        alignment_status = str(overview.get("strict_live_alignment_status") or "").strip().lower()
+        if alignment_status:
+            strict_live_alignment_status_counts[alignment_status] = (
+                strict_live_alignment_status_counts.get(alignment_status, 0) + 1
+            )
+        if raw_validation_grade == "D" and overview.get("strict_incubation_ready") is True:
+            validation_grade_d_strict_incubation_pass_count += 1
+        if raw_validation_grade == "D" and overview.get("promotion_ready"):
+            validation_grade_d_promotion_ready_count += 1
+        if validation_grade == "UNKNOWN":
+            quality_report_missing_count += 1
+
+    denominator = max(processed_count, 1)
+    family_quality_panel = _build_family_quality_panel(cohort_records)
+    generation_lane_quality_panel, generation_mode_counts = _build_generation_lane_quality_panel(
+        cohort_records
+    )
+    return {
+        "contract_version": "strategy_factory.quality_baseline.v1",
+        "captured_at": captured_at,
+        "latest_run": latest_run_payload,
+        "submitted_strategy_cohort": {
+            "statuses": list(cohort_statuses),
+            "factory_strategy_count": processed_count,
+            "status_counts": status_counts,
+            "validation_grade_distribution": validation_grade_distribution,
+            "raw_validation_grade_distribution": raw_validation_grade_distribution,
+            "effective_validation_grade_distribution": effective_validation_grade_distribution,
+            "raw_validation_total_score_mean": round(
+                sum(raw_validation_total_scores) / len(raw_validation_total_scores),
+                4,
+            ) if raw_validation_total_scores else 0.0,
+            "raw_validation_total_score_p50": _percentile(raw_validation_total_scores, 0.5),
+            "raw_validation_total_score_p90": _percentile(raw_validation_total_scores, 0.9),
+            **_grade_rates(raw_validation_grade_distribution, processed_count),
+            "zero_signal_count": zero_signal_count,
+            "zero_signal_rate": round(zero_signal_count / denominator, 4) if processed_count else 0.0,
+            "forward_coverage_count": forward_coverage_count,
+            "forward_coverage_rate": round(forward_coverage_count / denominator, 4) if processed_count else 0.0,
+            "promotion_ready_count": promotion_ready_count,
+            "promotion_ready_rate": round(promotion_ready_count / denominator, 4) if processed_count else 0.0,
+            "quality_passed_count": quality_passed_count,
+            "quality_pass_rate": round(quality_passed_count / denominator, 4) if processed_count else 0.0,
+            "strict_incubation_ready_count": strict_incubation_ready_count,
+            "strict_incubation_ready_rate": round(strict_incubation_ready_count / denominator, 4) if processed_count else 0.0,
+            "live_candidate_ready_count": live_gate_ready_count,
+            "live_candidate_ready_rate": round(live_gate_ready_count / denominator, 4) if processed_count else 0.0,
+            "live_gate_ready_count": live_gate_ready_count,
+            "live_gate_ready_rate": round(live_gate_ready_count / denominator, 4) if processed_count else 0.0,
+            "raw_b_or_above_count": raw_b_or_above_count,
+            "raw_b_or_above_rate": round(raw_b_or_above_count / denominator, 4) if processed_count else 0.0,
+            "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+            "strict_ready_given_raw_b_rate": _rate(
+                strict_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "live_ready_given_raw_b_count": live_ready_given_raw_b_count,
+            "live_ready_given_raw_b_rate": _rate(
+                live_ready_given_raw_b_count,
+                raw_b_or_above_count,
+            ),
+            "strict_live_alignment_gap_count": strict_live_alignment_gap_count,
+            "strict_live_alignment_gap_rate": round(strict_live_alignment_gap_count / denominator, 4) if processed_count else 0.0,
+            "strict_live_alignment_status_counts": strict_live_alignment_status_counts,
+            "validation_grade_d_strict_incubation_pass_count": validation_grade_d_strict_incubation_pass_count,
+            "validation_grade_d_strict_incubation_pass_rate": round(
+                validation_grade_d_strict_incubation_pass_count / denominator,
+                4,
+            ) if processed_count else 0.0,
+            "validation_grade_d_promotion_ready_count": validation_grade_d_promotion_ready_count,
+            "validation_grade_d_promotion_ready_rate": round(
+                validation_grade_d_promotion_ready_count / denominator,
+                4,
+            ) if processed_count else 0.0,
+            "validation_family_quality_panel": family_quality_panel,
+            "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
+            "generation_lane_quality_panel": generation_lane_quality_panel,
+            "generation_mode_counts": generation_mode_counts,
+            "baseline_forward_days": list(_FACTORY_BASELINE_FORWARD_DAYS),
+            "quality_report_missing_count": quality_report_missing_count,
+            "zero_signal_definition": "raw_signal_count <= 0",
+            "forward_coverage_definition": "observed all baseline forward days",
+        },
+    }
 
 
 # metric_bucket_value imported from strategy_lifecycle_shared
@@ -476,7 +1379,28 @@ def normalize_factory_run_summary_contract(row: Optional[dict]) -> dict:
     if not raw:
         return {}
     dto = normalize_run_result_to_summary(raw).to_dict()
-    return {**raw, **dto}
+    detail_dto = normalize_run_result_to_detail(raw).to_dict()
+    return {
+        **raw,
+        **dto,
+        "submission_artifact": dict(
+            raw.get("submission_artifact") or detail_dto.get("submission_artifact") or {}
+        ),
+    }
+
+
+def merge_factory_run_summary_observability(
+    summary: Optional[dict],
+    payload: Optional[dict],
+) -> dict:
+    merged = dict(summary or {})
+    source = dict(payload or {})
+    for field in _FACTORY_SUMMARY_OBSERVABILITY_FIELDS:
+        value = source.get(field)
+        if value in (None, "", [], {}):
+            continue
+        merged[field] = value
+    return merged
 
 
 def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
@@ -484,11 +1408,33 @@ def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
     if not raw:
         return {}
     dto = normalize_run_result_to_detail(raw).to_dict()
+    raw_submission_artifact = dict(raw.get("submission_artifact") or {})
+    submission_artifact = dict(dto.get("submission_artifact") or {})
+    if raw_submission_artifact:
+        for key, value in raw_submission_artifact.items():
+            if value in (None, "", [], {}):
+                continue
+            submission_artifact[key] = deepcopy(value)
+    raw_stages = dict(raw.get("stages") or {})
+    stage_payloads = {
+        name: dict(payload or {})
+        for name, payload in raw_stages.items()
+        if isinstance(payload, dict)
+    }
+    stage_storage_meta = {
+        name: payload
+        for name, payload in raw_stages.items()
+        if not isinstance(payload, dict)
+    }
     return {
         **raw,
         **dto,
-        "summary": dict(raw.get("summary") or {}),
-        "stages": dict(raw.get("stages") or {}),
+        "summary": merge_factory_run_summary_observability(
+            raw.get("summary") or {},
+            dto,
+        ),
+        "stages": stage_payloads or dict(dto.get("stages") or {}),
+        "stage_storage_meta": stage_storage_meta,
         "snapshot_summary": dict(raw.get("snapshot_summary") or dto.get("snapshot_summary") or {}),
         "quality_gate": dict(raw.get("quality_gate") or raw.get("gate_report") or dto.get("quality_gate") or {}),
         "research_summary": dict(dto.get("research_summary") or {}),
@@ -500,12 +1446,474 @@ def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
         "governance_plane": dict(dto.get("governance_plane") or raw.get("governance_plane") or {}),
         "gate_artifact": dict(dto.get("gate_artifact") or {}),
         "dedup_artifact": dict(dto.get("dedup_artifact") or {}),
-        "submission_artifact": dict(dto.get("submission_artifact") or {}),
+        "submission_artifact": submission_artifact,
         "governance_evidence_artifact": dict(dto.get("governance_evidence_artifact") or {}),
         "feedback_summary": dict(dto.get("feedback_summary") or {}),
         "incubation_summary": dict(dto.get("incubation_summary") or {}),
         "live_ready_summary": dict(dto.get("live_ready_summary") or {}),
     }
+
+
+def _summarize_factory_submission_briefs(strategy_briefs: list[dict[str, Any]]) -> dict[str, Any]:
+    briefs = [dict(item or {}) for item in list(strategy_briefs or []) if isinstance(item, dict)]
+    strategy_count = len(briefs)
+    validation_grade_distribution: dict[str, int] = {}
+    raw_validation_grade_distribution: dict[str, int] = {}
+    effective_validation_grade_distribution: dict[str, int] = {}
+    raw_validation_total_scores: list[float] = []
+    strict_incubation_ready_count = 0
+    live_candidate_ready_count = 0
+    raw_b_or_above_count = 0
+    strict_ready_given_raw_b_count = 0
+    live_ready_given_raw_b_count = 0
+    strict_live_alignment_gap_count = 0
+    strict_live_alignment_status_counts: dict[str, int] = {}
+    candidate_local_attempt_count = 0
+    task_local_attempt_count = 0
+    cohort_effective_trials = 0.0
+    economic_semantics_missing_count = 0
+    unique_family_holding_universe: set[tuple[str, str, str]] = set()
+    for brief in briefs:
+        validation_grade = str(brief.get("validation_grade") or "").strip().upper()
+        raw_validation_grade = str(
+            brief.get("raw_validation_grade") or validation_grade or ""
+        ).strip().upper()
+        effective_validation_grade = str(
+            brief.get("effective_validation_grade") or validation_grade or ""
+        ).strip().upper()
+        strict_ready = brief.get("strict_incubation_ready") is True
+        live_ready = brief.get("live_candidate_ready") is True
+        if strict_ready and live_ready:
+            alignment_status = "aligned_live_ready"
+        elif strict_ready:
+            alignment_status = "strict_only_gap"
+        elif live_ready:
+            alignment_status = "live_ready_without_strict"
+        else:
+            alignment_status = "aligned_blocked"
+        strict_live_alignment_status_counts[alignment_status] = (
+            strict_live_alignment_status_counts.get(alignment_status, 0) + 1
+        )
+        if validation_grade:
+            validation_grade_distribution[validation_grade] = (
+                validation_grade_distribution.get(validation_grade, 0) + 1
+            )
+        if raw_validation_grade:
+            raw_validation_grade_distribution[raw_validation_grade] = (
+                raw_validation_grade_distribution.get(raw_validation_grade, 0) + 1
+            )
+        if effective_validation_grade:
+            effective_validation_grade_distribution[effective_validation_grade] = (
+                effective_validation_grade_distribution.get(effective_validation_grade, 0) + 1
+            )
+        if brief.get("raw_validation_total_score") is not None:
+            raw_validation_total_scores.append(_safe_float(brief.get("raw_validation_total_score")))
+        if strict_ready:
+            strict_incubation_ready_count += 1
+        if live_ready:
+            live_candidate_ready_count += 1
+        if strict_ready and not live_ready:
+            strict_live_alignment_gap_count += 1
+        if _is_raw_b_or_above(raw_validation_grade):
+            raw_b_or_above_count += 1
+            if strict_ready:
+                strict_ready_given_raw_b_count += 1
+            if live_ready:
+                live_ready_given_raw_b_count += 1
+        candidate_local_attempt_count += int(brief.get("candidate_local_attempt_count") or 0)
+        task_local_attempt_count += int(brief.get("task_local_attempt_count") or 0)
+        cohort_effective_trials += _safe_float(brief.get("cohort_effective_trials"), 0.0)
+        if brief.get("economic_semantics_missing") is True:
+            economic_semantics_missing_count += 1
+        unique_family_holding_universe.add(
+            (
+                str(brief.get("candidate_family") or brief.get("strategy_type") or "unknown").strip().lower() or "unknown",
+                _brief_holding_bucket(brief),
+                _brief_target_universe_key(brief),
+            )
+        )
+
+    summary = {
+        "strategy_count": strategy_count,
+        "validation_grade_distribution": validation_grade_distribution,
+        "raw_validation_grade_distribution": raw_validation_grade_distribution,
+        "effective_validation_grade_distribution": effective_validation_grade_distribution,
+        "raw_validation_total_score_mean": round(
+            sum(raw_validation_total_scores) / len(raw_validation_total_scores),
+            4,
+        ) if raw_validation_total_scores else 0.0,
+        "raw_validation_total_score_p50": _percentile(raw_validation_total_scores, 0.5),
+        "raw_validation_total_score_p90": _percentile(raw_validation_total_scores, 0.9),
+        "strict_incubation_ready_count": strict_incubation_ready_count,
+        "strict_incubation_ready_rate": _rate(strict_incubation_ready_count, strategy_count),
+        "live_candidate_ready_count": live_candidate_ready_count,
+        "live_candidate_ready_rate": _rate(live_candidate_ready_count, strategy_count),
+        "raw_b_or_above_count": raw_b_or_above_count,
+        "raw_b_or_above_rate": _rate(raw_b_or_above_count, strategy_count),
+        "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+        "strict_ready_given_raw_b_rate": _rate(
+            strict_ready_given_raw_b_count,
+            raw_b_or_above_count,
+        ),
+        "live_ready_given_raw_b_count": live_ready_given_raw_b_count,
+        "live_ready_given_raw_b_rate": _rate(
+            live_ready_given_raw_b_count,
+            raw_b_or_above_count,
+        ),
+        "strict_live_alignment_gap_count": strict_live_alignment_gap_count,
+        "strict_live_alignment_gap_rate": _rate(
+            strict_live_alignment_gap_count,
+            strategy_count,
+        ),
+        "strict_live_alignment_status_counts": strict_live_alignment_status_counts,
+        "validation_family_quality_panel": _build_family_quality_panel(briefs),
+        "candidate_local_attempt_count": candidate_local_attempt_count,
+        "task_local_attempt_count": task_local_attempt_count,
+        "cohort_effective_trials": round(cohort_effective_trials, 4),
+        "unique_family_holding_universe_count": len(unique_family_holding_universe),
+        "economic_semantics_missing_count": economic_semantics_missing_count,
+    }
+    summary.update(_grade_rates(raw_validation_grade_distribution, strategy_count))
+    return summary
+
+
+def _normalize_reason_codes(values: Any) -> list[str]:
+    if values in (None, "", [], {}):
+        return []
+    items = values if isinstance(values, (list, tuple, set)) else [values]
+    codes: list[str] = []
+    for value in items:
+        code = str(value or "").strip()
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _top_reason_counts(reason_counts: dict[str, int], *, limit: int = 5) -> list[dict[str, Any]]:
+    items = [
+        {"reason_code": str(reason_code or ""), "count": int(count or 0)}
+        for reason_code, count in dict(reason_counts or {}).items()
+        if str(reason_code or "").strip() and int(count or 0) > 0
+    ]
+    items.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason_code") or "")))
+    return items[: max(1, int(limit or 5))]
+
+
+def _extract_run_metric_value(payload: Optional[dict], field: str) -> Any:
+    data = dict(payload or {})
+    summary = dict(data.get("summary") or {})
+    for container in (data, summary):
+        if field not in container:
+            continue
+        value = container.get(field)
+        if value in (None, "", [], {}):
+            continue
+        return value
+    return None
+
+
+def _extract_factory_run_readiness_snapshot(payload: Optional[dict]) -> dict[str, Any]:
+    data = dict(payload or {})
+    summary = dict(data.get("summary") or {})
+    stages = dict(data.get("stages") or {})
+    readiness_stage = dict(stages.get("readiness") or {})
+    can_proceed = summary.get("factory_readiness_can_proceed")
+    if can_proceed is None:
+        can_proceed = readiness_stage.get("can_proceed")
+    decision = str(
+        summary.get("factory_readiness_decision")
+        or readiness_stage.get("decision")
+        or ""
+    ).strip().lower()
+    if decision not in {"proceed", "blocked"}:
+        if can_proceed is False or str(data.get("status") or "").strip().lower() == "skipped":
+            decision = "blocked"
+        else:
+            decision = "proceed"
+    blocker_codes = _normalize_reason_codes(
+        summary.get("factory_readiness_blocking_reason_codes")
+        or readiness_stage.get("blocking_reason_codes")
+        or readiness_stage.get("blockers")
+    )
+    warning_codes = _normalize_reason_codes(
+        readiness_stage.get("warning_reason_codes")
+        or readiness_stage.get("warnings")
+    )
+    return {
+        "decision": decision,
+        "can_proceed": bool(can_proceed) if can_proceed is not None else decision != "blocked",
+        "score": _extract_run_metric_value(data, "factory_readiness_score"),
+        "blocking_stage": summary.get("factory_readiness_blocking_stage") or readiness_stage.get("blocking_stage"),
+        "skip_reason": summary.get("skip_reason") or readiness_stage.get("skip_reason"),
+        "blocker_count": int(
+            summary.get("factory_readiness_blocker_count")
+            or readiness_stage.get("blocker_count")
+            or len(blocker_codes)
+            or 0
+        ),
+        "warning_count": int(
+            summary.get("factory_readiness_warning_count")
+            or readiness_stage.get("warning_count")
+            or len(warning_codes)
+            or 0
+        ),
+        "blocking_reason_codes": blocker_codes,
+        "warning_reason_codes": warning_codes,
+    }
+
+
+def build_factory_recent_run_diagnostics(
+    run_rows: list[dict[str, Any]] | None,
+    *,
+    limit: int = 5,
+) -> dict[str, Any]:
+    rows = [dict(item or {}) for item in list(run_rows or []) if isinstance(item, dict)]
+    requested_limit = max(1, int(limit or 5))
+    items = rows[:requested_limit]
+    status_counts: dict[str, int] = {}
+    readiness_decision_counts: dict[str, int] = {}
+    blocker_reason_counts: dict[str, int] = {}
+    warning_reason_counts: dict[str, int] = {}
+    blocked_count = 0
+    submit_stage_entered_count = 0
+    submitted_positive_count = 0
+    raw_b_or_above_rates: list[float] = []
+    strict_ready_given_raw_b_rates: list[float] = []
+    live_ready_given_raw_b_rates: list[float] = []
+    strict_live_alignment_gap_rates: list[float] = []
+    strict_live_gap_run_count = 0
+    run_briefs: list[dict[str, Any]] = []
+
+    for row in items:
+        summary = dict(row.get("summary") or {})
+        stages = dict(row.get("stages") or {})
+        readiness = _extract_factory_run_readiness_snapshot(row)
+        def _summary_metric(field: str) -> Any:
+            if field not in summary:
+                return None
+            value = summary.get(field)
+            return None if value in (None, "", [], {}) else value
+
+        status_key = str(row.get("status") or "").strip().lower() or "unknown"
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+        decision = str(readiness.get("decision") or "unknown").strip().lower() or "unknown"
+        readiness_decision_counts[decision] = readiness_decision_counts.get(decision, 0) + 1
+        if decision == "blocked":
+            blocked_count += 1
+        for reason_code in list(readiness.get("blocking_reason_codes") or []):
+            blocker_reason_counts[reason_code] = blocker_reason_counts.get(reason_code, 0) + 1
+        for reason_code in list(readiness.get("warning_reason_codes") or []):
+            warning_reason_counts[reason_code] = warning_reason_counts.get(reason_code, 0) + 1
+
+        submit_stage = dict(stages.get("submit") or {})
+        submit_stage_entered = bool(submit_stage) or any(
+            int(_summary_metric(key) or 0) > 0
+            for key in ("submitted", "research_only_count", "deferred_submission_count")
+        )
+        if submit_stage_entered:
+            submit_stage_entered_count += 1
+        submitted = int(_summary_metric("submitted") or 0)
+        if submitted > 0:
+            submitted_positive_count += 1
+
+        raw_b_or_above_rate_value = _summary_metric("raw_b_or_above_rate")
+        strict_ready_given_raw_b_rate_value = _summary_metric("strict_ready_given_raw_b_rate")
+        live_ready_given_raw_b_rate_value = _summary_metric("live_ready_given_raw_b_rate")
+        gap_rate_value = _summary_metric("strict_live_alignment_gap_rate")
+        gap_count_value = _summary_metric("strict_live_alignment_gap_count")
+        gap_status_counts = _summary_metric("strict_live_alignment_status_counts")
+        if gap_count_value is None and isinstance(gap_status_counts, dict):
+            gap_count_value = int(dict(gap_status_counts).get("strict_only_gap") or 0)
+
+        raw_b_or_above_rate = (
+            _safe_float(raw_b_or_above_rate_value)
+            if raw_b_or_above_rate_value not in (None, "", [], {})
+            else None
+        )
+        strict_ready_given_raw_b_rate = (
+            _safe_float(strict_ready_given_raw_b_rate_value)
+            if strict_ready_given_raw_b_rate_value not in (None, "", [], {})
+            else None
+        )
+        live_ready_given_raw_b_rate = (
+            _safe_float(live_ready_given_raw_b_rate_value)
+            if live_ready_given_raw_b_rate_value not in (None, "", [], {})
+            else None
+        )
+        strict_live_alignment_gap_rate = (
+            _safe_float(gap_rate_value)
+            if gap_rate_value not in (None, "", [], {})
+            else None
+        )
+        strict_live_alignment_gap_count = (
+            int(gap_count_value or 0)
+            if gap_count_value not in (None, "", [], {})
+            else None
+        )
+        if submit_stage_entered and raw_b_or_above_rate is not None:
+            raw_b_or_above_rates.append(raw_b_or_above_rate)
+        if submit_stage_entered and strict_ready_given_raw_b_rate is not None:
+            strict_ready_given_raw_b_rates.append(strict_ready_given_raw_b_rate)
+        if submit_stage_entered and live_ready_given_raw_b_rate is not None:
+            live_ready_given_raw_b_rates.append(live_ready_given_raw_b_rate)
+        if submit_stage_entered and strict_live_alignment_gap_rate is not None:
+            strict_live_alignment_gap_rates.append(strict_live_alignment_gap_rate)
+        if submit_stage_entered and strict_live_alignment_gap_count and strict_live_alignment_gap_count > 0:
+            strict_live_gap_run_count += 1
+
+        run_briefs.append(
+            {
+                "run_id": str(row.get("run_id") or "").strip() or None,
+                "status": status_key,
+                "started_at": row.get("started_at"),
+                "completed_at": row.get("completed_at"),
+                "readiness_decision": decision,
+                "readiness_score": _safe_float(readiness.get("score"), 0.0)
+                if readiness.get("score") is not None
+                else None,
+                "submit_stage_entered": submit_stage_entered,
+                "submitted": submitted,
+                "research_only_count": int(_summary_metric("research_only_count") or 0),
+                "deferred_submission_count": int(_summary_metric("deferred_submission_count") or 0),
+                "blocking_reason_codes": list(readiness.get("blocking_reason_codes") or []),
+                "warning_reason_codes": list(readiness.get("warning_reason_codes") or []),
+                "raw_b_or_above_rate": raw_b_or_above_rate,
+                "strict_ready_given_raw_b_rate": strict_ready_given_raw_b_rate,
+                "live_ready_given_raw_b_rate": live_ready_given_raw_b_rate,
+                "strict_live_alignment_gap_count": strict_live_alignment_gap_count,
+                "strict_live_alignment_gap_rate": strict_live_alignment_gap_rate,
+            }
+        )
+
+    latest_run = run_briefs[0] if run_briefs else {}
+    return {
+        "contract_version": "strategy_factory.recent_run_diagnostics.v1",
+        "window_size": requested_limit,
+        "analyzed_run_count": len(run_briefs),
+        "status_counts": status_counts,
+        "readiness_decision_counts": readiness_decision_counts,
+        "readiness_blocked_count": blocked_count,
+        "readiness_blocked_rate": _rate(blocked_count, len(run_briefs)),
+        "submit_stage_entered_count": submit_stage_entered_count,
+        "submit_stage_entered_rate": _rate(submit_stage_entered_count, len(run_briefs)),
+        "submitted_positive_count": submitted_positive_count,
+        "submitted_positive_rate": _rate(submitted_positive_count, len(run_briefs)),
+        "blocker_reason_topn": _top_reason_counts(blocker_reason_counts),
+        "warning_reason_topn": _top_reason_counts(warning_reason_counts),
+        "quality_progress": {
+            "quality_measurement_run_count": len(raw_b_or_above_rates),
+            "latest_raw_b_or_above_rate": latest_run.get("raw_b_or_above_rate") or 0.0,
+            "recent_raw_b_or_above_rate_mean": _mean(raw_b_or_above_rates),
+            "latest_strict_ready_given_raw_b_rate": latest_run.get("strict_ready_given_raw_b_rate") or 0.0,
+            "recent_strict_ready_given_raw_b_rate_mean": _mean(strict_ready_given_raw_b_rates),
+            "latest_live_ready_given_raw_b_rate": latest_run.get("live_ready_given_raw_b_rate") or 0.0,
+            "recent_live_ready_given_raw_b_rate_mean": _mean(live_ready_given_raw_b_rates),
+            "strict_live_gap_measurement_run_count": len(strict_live_alignment_gap_rates),
+            "latest_strict_live_alignment_gap_rate": latest_run.get("strict_live_alignment_gap_rate") or 0.0,
+            "recent_strict_live_alignment_gap_rate_mean": _mean(strict_live_alignment_gap_rates),
+            "strict_live_gap_run_count": strict_live_gap_run_count,
+            "strict_live_gap_run_rate": _rate(
+                strict_live_gap_run_count,
+                len(strict_live_alignment_gap_rates),
+            ),
+        },
+        "recent_runs": run_briefs,
+    }
+
+
+async def refresh_factory_run_detail_quality_contract(db, row: Optional[dict]) -> dict:
+    detail = normalize_factory_run_detail_contract(row)
+    if not detail or not db:
+        return detail
+    submission_artifact = dict(detail.get("submission_artifact") or {})
+    strategy_briefs = [
+        dict(item or {})
+        for item in list(submission_artifact.get("strategy_briefs") or [])
+        if isinstance(item, dict)
+    ]
+    if not strategy_briefs:
+        return detail
+
+    refreshed_briefs: list[dict[str, Any]] = []
+    refreshed = False
+    for brief in strategy_briefs:
+        strategy_id = str(brief.get("strategy_id") or "").strip()
+        if not strategy_id:
+            refreshed_briefs.append(brief)
+            continue
+        latest_report = await get_latest_quality_report(db, strategy_id)
+        if not latest_report:
+            refreshed_briefs.append(brief)
+            continue
+        normalized_report = normalize_quality_report_contract(
+            latest_report,
+            strategy_id=strategy_id,
+            strategy_type=brief.get("candidate_family") or brief.get("strategy_type"),
+        )
+        latest_summary = dict(normalized_report.get("summary") or {})
+        raw_latest_summary = dict(latest_report.get("summary") or {})
+        latest_quality_gate = dict(latest_report.get("quality_gate") or {})
+        latest_validation_profile = dict(latest_report.get("validation_profile") or {})
+        merged_brief = dict(brief)
+        for key, value in raw_latest_summary.items():
+            if value in (None, "", [], {}):
+                continue
+            latest_summary[key] = deepcopy(value)
+        if latest_validation_profile.get("validation_focus") not in (None, "", [], {}):
+            latest_summary["validation_focus"] = deepcopy(latest_validation_profile.get("validation_focus"))
+        for metric_key in (
+            "trade_density",
+            "post_cost_sharpe",
+            "deflated_sharpe_ratio",
+            "pbo",
+            "strict_incubation_ready",
+            "live_candidate_ready",
+        ):
+            if latest_quality_gate.get(metric_key) not in (None, "", [], {}):
+                latest_summary[metric_key] = deepcopy(latest_quality_gate.get(metric_key))
+        for key, value in latest_summary.items():
+            if value in (None, "", [], {}):
+                continue
+            merged_brief[key] = deepcopy(value)
+        refreshed_briefs.append(merged_brief)
+        refreshed = True
+
+    if not refreshed:
+        return detail
+
+    refreshed_summary = _summarize_factory_submission_briefs(refreshed_briefs)
+    submission_artifact["strategy_briefs"] = refreshed_briefs
+    for key, value in refreshed_summary.items():
+        submission_artifact[key] = deepcopy(value)
+
+    detail["submission_artifact"] = submission_artifact
+    for key, value in refreshed_summary.items():
+        detail[key] = deepcopy(value)
+
+    summary = dict(detail.get("summary") or {})
+    for key, value in refreshed_summary.items():
+        summary[key] = deepcopy(value)
+    detail["summary"] = summary
+    return detail
+
+
+async def refresh_factory_run_summary_quality_contract(db, row: Optional[dict]) -> dict:
+    detail = await refresh_factory_run_detail_quality_contract(db, row)
+    if not detail:
+        return {}
+    summary = normalize_factory_run_summary_contract(detail)
+    submission_artifact = dict(detail.get("submission_artifact") or summary.get("submission_artifact") or {})
+    summary["submission_artifact"] = submission_artifact
+    for field in _FACTORY_SUMMARY_OBSERVABILITY_FIELDS:
+        value = detail.get(field)
+        if value in (None, "", [], {}):
+            continue
+        summary[field] = deepcopy(value)
+    summary["summary"] = merge_factory_run_summary_observability(
+        summary.get("summary") or {},
+        detail,
+    )
+    return summary
 
 
 # list_quality_reports, get_latest_quality_report imported from strategy_lifecycle_shared

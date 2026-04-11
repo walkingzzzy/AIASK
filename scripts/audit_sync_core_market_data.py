@@ -36,6 +36,10 @@ INDEX_TS_MAP = {
 }
 
 DEFAULT_STOCK_CODES = ["600519", "000858", "601318", "000001"]
+TUSHARE_IP_LIMIT_ERROR_HINTS = (
+    "IP数量超限",
+    "最大数量为2个",
+)
 
 def _parse_codes(raw: str | None, *, default: Iterable[str]) -> list[str]:
     if not raw:
@@ -64,6 +68,30 @@ def _stock_ts_code(code: str) -> str:
 def _print_section(title: str, payload) -> None:
     print(f"\n## {title}")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _is_tushare_ip_limit_error(exc: Exception | str) -> bool:
+    text = str(exc or "").strip()
+    if not text:
+        return False
+    return any(hint in text for hint in TUSHARE_IP_LIMIT_ERROR_HINTS)
+
+
+def _all_failures_are_tushare_ip_limit(failures: list[dict]) -> bool:
+    if not failures:
+        return False
+    return all(_is_tushare_ip_limit_error((item or {}).get("error", "")) for item in failures)
+
+
+def _audit_has_existing_rows(audit_rows: list[dict], codes: Iterable[str]) -> bool:
+    normalized_codes = [str(code).strip() for code in codes if str(code).strip()]
+    if not normalized_codes:
+        return False
+    row_map = {
+        str((item or {}).get("code") or "").strip(): int((item or {}).get("count") or 0)
+        for item in list(audit_rows or [])
+    }
+    return all(row_map.get(code, 0) > 0 for code in normalized_codes)
 
 
 async def _audit_codes(db, codes: list[str]) -> list[dict]:
@@ -292,7 +320,19 @@ async def _sync_north_fund(db, *, days: int) -> dict:
         raise RuntimeError("Tushare Pro unavailable")
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=max(int(days), 1))).strftime("%Y%m%d")
-    df = ts_pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
+    try:
+        df = ts_pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
+    except Exception as exc:
+        if _is_tushare_ip_limit_error(exc):
+            return {
+                "days": days,
+                "rows": 0,
+                "start_date": start_date,
+                "end_date": end_date,
+                "skipped": True,
+                "skip_reason": str(exc),
+            }
+        raise
     rows = 0
     async with db.acquire() as conn:
         for _, row in (df.iloc[::-1].iterrows() if df is not None and not df.empty else []):
@@ -326,7 +366,14 @@ async def _sync_north_fund(db, *, days: int) -> dict:
                 float(row.get("sgt")) if row.get("sgt") is not None else None,
             )
             rows += 1
-    return {"days": days, "rows": rows, "start_date": start_date, "end_date": end_date}
+    return {
+        "days": days,
+        "rows": rows,
+        "start_date": start_date,
+        "end_date": end_date,
+        "skipped": False,
+        "skip_reason": None,
+    }
 
 
 async def _sync_margin(db, *, days: int) -> dict:
@@ -345,6 +392,8 @@ async def _sync_margin(db, *, days: int) -> dict:
         "failed_dates": [],
         "start_date": start_date,
         "end_date": end_date,
+        "skipped": False,
+        "skip_reason": None,
     }
     async with db.acquire() as conn:
         for trade_date in trading_dates:
@@ -432,6 +481,11 @@ async def _sync_margin(db, *, days: int) -> dict:
                             detail_params,
                         )
             except Exception as exc:
+                if _is_tushare_ip_limit_error(exc):
+                    result["skipped"] = True
+                    result["skip_reason"] = str(exc)
+                    result["failed_dates"] = []
+                    return result
                 result["failed_dates"].append({"trade_date": trade_date, "error": str(exc)})
     return result
 
@@ -467,6 +521,15 @@ async def _main(args) -> int:
     _print_section("audit_after", after)
     _print_section("market_aux_after", await _audit_market_aux(db))
 
+    index_skipped = _all_failures_are_tushare_ip_limit(index_result["failed"]) and _audit_has_existing_rows(
+        after,
+        INDEX_TS_MAP.keys(),
+    )
+    stock_skipped = _all_failures_are_tushare_ip_limit(stock_result["failed"]) and _audit_has_existing_rows(
+        after,
+        stock_codes,
+    )
+
     summary = {
         "years": args.years,
         "start_date": start_date,
@@ -474,15 +537,25 @@ async def _main(args) -> int:
         "index_saved_rows": index_result["saved_rows"],
         "stock_saved_rows": stock_result["saved_rows"],
         "index_failures": len(index_result["failed"]),
+        "index_skipped": index_skipped,
+        "index_skip_reason": index_result["failed"][0]["error"] if index_skipped else None,
         "stock_failures": len(stock_result["failed"]),
+        "stock_skipped": stock_skipped,
+        "stock_skip_reason": stock_result["failed"][0]["error"] if stock_skipped else None,
         "north_fund_rows": north_result["rows"],
+        "north_fund_skipped": bool(north_result.get("skipped")),
+        "north_fund_skip_reason": north_result.get("skip_reason"),
         "margin_market_rows": margin_result["market_rows"],
         "margin_detail_rows": margin_result["detail_rows"],
         "margin_failed_dates": len(margin_result["failed_dates"]),
+        "margin_skipped": bool(margin_result.get("skipped")),
+        "margin_skip_reason": margin_result.get("skip_reason"),
         "target_stock_codes": stock_codes,
     }
     _print_section("summary", summary)
-    return 0 if not index_result["failed"] and not stock_result["failed"] else 1
+    index_ok = not index_result["failed"] or index_skipped
+    stock_ok = not stock_result["failed"] or stock_skipped
+    return 0 if index_ok and stock_ok else 1
 
 
 def main() -> int:

@@ -15,6 +15,7 @@ from .constants import (
     SPAWNER_TARGET_TOTAL,
     preferred_strategy_types_for_factor,
 )
+from .parameter_distribution_registry import ParameterDistributionRegistry
 
 
 class StrategySpawner:
@@ -29,6 +30,14 @@ class StrategySpawner:
                 "quota_fill_count": 0,
                 "signal_trigger_count": 0,
                 "threshold_hit_count": 0,
+                "parameter_source_counts": {},
+                "quota_fill_mode_counts": {},
+                "quota_fill_quality_counts": {},
+                "historical_distribution_count": 0,
+                "historical_guided_quota_fill_count": 0,
+                "signal_aligned_quota_fill_count": 0,
+                "no_signal_quota_fill_count": 0,
+                "effective_quota_fill_count": 0,
             }
         }
 
@@ -81,15 +90,37 @@ class StrategySpawner:
         quota_fill_count = 0
         signal_trigger_count = 0
         threshold_hit_count = 0
+        parameter_source_counts: Dict[str, int] = {}
+        quota_fill_mode_counts: Dict[str, int] = {}
+        quota_fill_quality_counts: Dict[str, int] = {}
+        historical_quota_fill_count = 0
+        signal_aligned_quota_fill_count = 0
+        no_signal_quota_fill_count = 0
         for candidate in candidates:
             generation_reason = candidate.get("generation_reason") or {}
             source = str(generation_reason.get("source") or "unknown")
             strategy_type = str(candidate.get("strategy_type") or "unknown")
+            parameter_source = str(candidate.get("parameter_source") or "").strip()
             source_counts[source] = source_counts.get(source, 0) + 1
             strategy_type_counts[strategy_type] = strategy_type_counts.get(strategy_type, 0) + 1
+            if parameter_source:
+                parameter_source_counts[parameter_source] = parameter_source_counts.get(parameter_source, 0) + 1
             threshold_hit_count += len(candidate.get("trigger_thresholds") or [])
             if candidate.get("quota_fill"):
                 quota_fill_count += 1
+                fill_meta = dict(candidate.get("quota_fill") or {})
+                fill_mode = str(fill_meta.get("fill_source_mode") or "unknown").strip()
+                fill_quality = str(fill_meta.get("fill_quality_tier") or "unknown").strip()
+                if fill_mode:
+                    quota_fill_mode_counts[fill_mode] = quota_fill_mode_counts.get(fill_mode, 0) + 1
+                if fill_quality:
+                    quota_fill_quality_counts[fill_quality] = quota_fill_quality_counts.get(fill_quality, 0) + 1
+                if fill_mode == "historical_guided":
+                    historical_quota_fill_count += 1
+                elif fill_mode == "signal_aligned":
+                    signal_aligned_quota_fill_count += 1
+                elif fill_mode == "no_signal_fallback":
+                    no_signal_quota_fill_count += 1
             else:
                 signal_trigger_count += 1
         raw_counts = dict(source_raw_counts or {})
@@ -113,6 +144,14 @@ class StrategySpawner:
                 "source_budget_caps": budget_caps,
                 "source_budget_weights": budget_weights,
                 "source_trimmed_count": trimmed_count,
+                "parameter_source_counts": parameter_source_counts,
+                "historical_distribution_count": int(parameter_source_counts.get("historical_distribution") or 0),
+                "quota_fill_mode_counts": quota_fill_mode_counts,
+                "quota_fill_quality_counts": quota_fill_quality_counts,
+                "historical_guided_quota_fill_count": historical_quota_fill_count,
+                "signal_aligned_quota_fill_count": signal_aligned_quota_fill_count,
+                "no_signal_quota_fill_count": no_signal_quota_fill_count,
+                "effective_quota_fill_count": max(quota_fill_count - no_signal_quota_fill_count, 0),
             }
         }
 
@@ -371,6 +410,7 @@ class StrategySpawner:
         completeness = dict(snapshot.get("completeness") or {})
         completion_ratio = float(completeness.get("completion_ratio") or 1.0)
         event_ready = StrategySpawner._event_research_ready(snapshot)
+        has_historical_distribution = ParameterDistributionRegistry.from_snapshot(snapshot).has_any_distribution()
         target_total = SPAWNER_TARGET_TOTAL
         if completion_ratio < 1.0:
             target_total = min(target_total, max(4, int(round(SPAWNER_TARGET_TOTAL * 0.75))))
@@ -379,6 +419,8 @@ class StrategySpawner:
             if signal_candidate_count <= 0 or not StrategySpawner._event_ready_supports_local_fill(snapshot):
                 return 0
             return min(budget, SPAWNER_EVENT_FILL_BUDGET_MAX)
+        if signal_candidate_count <= 0 and not has_historical_distribution:
+            return min(budget, 1)
         return min(budget, SPAWNER_FILL_BUDGET_MAX)
 
     @staticmethod
@@ -401,6 +443,7 @@ class StrategySpawner:
         expansion_budget = self._signal_expansion_budget(snapshot, len(signal_candidates))
         if expansion_budget <= 0:
             return []
+        parameter_registry = ParameterDistributionRegistry.from_snapshot(snapshot)
 
         current_counts = self._generated_type_counts(signal_candidates)
         threshold_hits: Dict[str, int] = {}
@@ -447,34 +490,41 @@ class StrategySpawner:
                 if len(out) >= expansion_budget:
                     break
                 slot_index = int(current_counts.get(strategy_type) or 0) + int(variation_counts.get(strategy_type) or 0)
-                params = self._varied_defaults(strategy_type, slot_index)
+                params, parameter_source, parameter_sample_count = self._resolved_varied_defaults(
+                    strategy_type,
+                    slot_index,
+                    snapshot=snapshot,
+                    registry=parameter_registry,
+                )
                 key = (strategy_type, json.dumps(params or {}, sort_keys=True, ensure_ascii=False, default=str))
                 if key in existing_keys:
                     continue
                 existing_keys.add(key)
                 variation_counts[strategy_type] = int(variation_counts.get(strategy_type) or 0) + 1
-                out.append(
-                    self._make(
-                        strategy_type,
-                        params,
-                        f"{strategy_type} 强信号延展参数变体#{variation_counts[strategy_type]}",
-                        source="signal_variation",
-                        trigger_signal={
-                            "field": f"signal_type_counts.{strategy_type}",
-                            "value": int(current_counts.get(strategy_type) or 0),
-                            "threshold_hits": int(threshold_hits.get(strategy_type) or 0),
-                        },
-                        trigger_thresholds=[
-                            self._threshold(
-                                f"signal_type_counts.{strategy_type}",
-                                ">=",
-                                1,
-                                int(current_counts.get(strategy_type) or 0),
-                                "强信号变体扩容",
-                            )
-                        ],
-                    )
+                candidate = self._make(
+                    strategy_type,
+                    params,
+                    f"{strategy_type} 强信号延展参数变体#{variation_counts[strategy_type]}",
+                    source="signal_variation",
+                    trigger_signal={
+                        "field": f"signal_type_counts.{strategy_type}",
+                        "value": int(current_counts.get(strategy_type) or 0),
+                        "threshold_hits": int(threshold_hits.get(strategy_type) or 0),
+                        "parameter_source": parameter_source,
+                    },
+                    trigger_thresholds=[
+                        self._threshold(
+                            f"signal_type_counts.{strategy_type}",
+                            ">=",
+                            1,
+                            int(current_counts.get(strategy_type) or 0),
+                            "强信号变体扩容",
+                        )
+                    ],
                 )
+                candidate["parameter_source"] = parameter_source
+                candidate["parameter_sample_count"] = parameter_sample_count
+                out.append(candidate)
         return out
 
     def _from_fear_greed(self, snapshot: dict) -> List[dict]:
@@ -568,8 +618,16 @@ class StrategySpawner:
         fill_budget = self._quota_fill_budget(snapshot, len(current_candidates))
         if fill_budget <= 0:
             return []
+        parameter_registry = ParameterDistributionRegistry.from_snapshot(snapshot)
 
         preferred_types = self._preferred_fill_types(snapshot, current_counts)
+        preferred_types = sorted(
+            preferred_types,
+            key=lambda strategy_type: (
+                -int(parameter_registry.sample_count(strategy_type) or 0),
+                preferred_types.index(strategy_type),
+            ),
+        )
         out: List[dict] = []
         fill_counts: Dict[str, int] = {}
 
@@ -579,7 +637,20 @@ class StrategySpawner:
             if current >= desired_generated_count:
                 return False
             slot_index = int(fill_counts.get(strategy_type) or 0) + 1
-            params = self._varied_defaults(strategy_type, slot_index - 1)
+            params, parameter_source, parameter_sample_count = self._resolved_varied_defaults(
+                strategy_type,
+                slot_index - 1,
+                snapshot=snapshot,
+                registry=parameter_registry,
+            )
+            fill_source_mode = self._quota_fill_source_mode(
+                strategy_type,
+                snapshot=snapshot,
+                current_candidates=current_candidates,
+                parameter_source=parameter_source,
+                parameter_sample_count=parameter_sample_count,
+            )
+            fill_quality_tier = self._quota_fill_quality_tier(fill_source_mode)
             quota_fill = {
                 "strategy_type": strategy_type,
                 "current_count": int(current_counts.get(strategy_type) or 0),
@@ -588,27 +659,37 @@ class StrategySpawner:
                 "fill_budget": fill_budget,
                 "preferred_rank": preferred_rank,
                 "slot_index": slot_index,
+                "parameter_source": parameter_source,
+                "parameter_sample_count": parameter_sample_count,
+                "fill_source_mode": fill_source_mode,
+                "fill_quality_tier": fill_quality_tier,
             }
-            out.append(
-                self._make(
-                    strategy_type,
-                    params,
-                    f"{strategy_type}研究信号不足，按市场状态补位#{slot_index}",
-                    source="quota_fill",
-                    trigger_signal={"field": f"generated_type_counts.{strategy_type}", "value": int(current_counts.get(strategy_type) or 0)},
-                    trigger_thresholds=[
-                        self._threshold(
-                            f"generated_type_counts.{strategy_type}",
-                            "<",
-                            desired_generated_count,
-                            int(current_counts.get(strategy_type) or 0),
-                            "研究候选补位阈值",
-                        )
-                    ],
-                    quota_fill=quota_fill,
-                    kind="quota_fill",
-                )
+            candidate = self._make(
+                strategy_type,
+                params,
+                f"{strategy_type}研究信号不足，按市场状态补位#{slot_index}",
+                source="quota_fill",
+                trigger_signal={
+                    "field": f"generated_type_counts.{strategy_type}",
+                    "value": int(current_counts.get(strategy_type) or 0),
+                    "parameter_source": parameter_source,
+                    "fill_source_mode": fill_source_mode,
+                },
+                trigger_thresholds=[
+                    self._threshold(
+                        f"generated_type_counts.{strategy_type}",
+                        "<",
+                        desired_generated_count,
+                        int(current_counts.get(strategy_type) or 0),
+                        "研究候选补位阈值",
+                    )
+                ],
+                quota_fill=quota_fill,
+                kind="quota_fill",
             )
+            candidate["parameter_source"] = parameter_source
+            candidate["parameter_sample_count"] = parameter_sample_count
+            out.append(candidate)
             fill_counts[strategy_type] = slot_index
             return True
 
@@ -634,7 +715,7 @@ class StrategySpawner:
         delta = max(0.01, base * 0.15)
         return round(max(lo, min(hi, base + random.uniform(-delta, delta))), 2)
 
-    def _varied_defaults(self, strategy_type: str, idx: int) -> dict:
+    def _legacy_varied_defaults(self, strategy_type: str, idx: int) -> dict:
         if strategy_type == "momentum":
             lookbacks = [10, 20, 30]
             lookback = lookbacks[idx % len(lookbacks)]
@@ -682,6 +763,52 @@ class StrategySpawner:
         if strategy_type == "margin_divergence":
             return {"fear_threshold": self._jitter(40, 30, 50), "greed_threshold": self._jitter(60, 50, 70), "lookback": self._jitter(15, 8, 25)}
         return {}
+
+    def _resolved_varied_defaults(
+        self,
+        strategy_type: str,
+        idx: int,
+        *,
+        snapshot: Optional[dict] = None,
+        registry: Optional[ParameterDistributionRegistry] = None,
+    ) -> tuple[dict, str, int]:
+        parameter_registry = registry or ParameterDistributionRegistry.from_snapshot(snapshot)
+        sampled = parameter_registry.sample(strategy_type, idx)
+        if sampled:
+            return (
+                dict(sampled.get("params") or {}),
+                str(sampled.get("source") or "historical_distribution"),
+                int(sampled.get("sample_count") or 0),
+            )
+        return self._legacy_varied_defaults(strategy_type, idx), "fixed_defaults", 0
+
+    def _varied_defaults(self, strategy_type: str, idx: int, snapshot: Optional[dict] = None) -> dict:
+        params, _, _ = self._resolved_varied_defaults(strategy_type, idx, snapshot=snapshot)
+        return params
+
+    def _quota_fill_source_mode(
+        self,
+        strategy_type: str,
+        *,
+        snapshot: Optional[dict] = None,
+        current_candidates: Optional[list[dict]] = None,
+        parameter_source: str,
+        parameter_sample_count: int,
+    ) -> str:
+        if parameter_source == "historical_distribution" and parameter_sample_count >= 3:
+            return "historical_guided"
+        if current_candidates:
+            return "signal_aligned"
+        return "no_signal_fallback"
+
+    @staticmethod
+    def _quota_fill_quality_tier(fill_source_mode: str) -> str:
+        if fill_source_mode == "historical_guided":
+            return "oos_validated_history"
+        if fill_source_mode == "signal_aligned":
+            return "market_signal_aligned"
+        return "fallback_only"
+
 
     @staticmethod
     def _make(

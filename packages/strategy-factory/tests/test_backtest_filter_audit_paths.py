@@ -827,3 +827,55 @@ async def test_backtest_filter_prefers_portfolio_engine_for_multi_name_candidate
     assert result["portfolio_backtest_mode"] == "portfolio_engine_shared_cash"
     assert result["portfolio_backtest_coverage"] == pytest.approx(1.0)
     assert target_layer["metrics_source"] == "portfolio_engine"
+
+
+def test_trade_density_uses_effective_observation_horizon():
+    candidate = {
+        "strategy_type": "momentum",
+        "holding_horizon": {"max_days": 20, "expected_turnover_band": "medium"},
+        "market_regime_assumption": {"preferred_regime": "trend_expansion"},
+        "position_sizing_rationale": "equal_weight_diversified_basket",
+        "capacity_bucket": "mid",
+        "turnover_cost_class": "medium_touch",
+        "research_task": {
+            "task_source": "snapshot",
+            "estimation_window": {"lookback_days": 60},
+            "holding_window": {"max_days": 20},
+        },
+        "execution_assumptions": {
+            "commission_rate": 0.00025,
+            "slippage_bps": 5,
+            "tradability_filter": True,
+            "capacity_bucket": "mid",
+            "turnover_cost_class": "medium_touch",
+        },
+        "portfolio_spec": {
+            "position_assumption": "single_name_full_notional",
+            "target_weight_scheme": "single_name",
+            "position_sizing_rationale": "equal_weight_diversified_basket",
+        },
+    }
+    result = {
+        "metrics": {
+            "trades_count": 18,
+            "avg_holding_days": 14,
+            "total_return": 0.31,
+            "max_drawdown": 0.12,
+            "sharpe_ratio": 1.08,
+        },
+        "layers": {
+            "target": {"metrics": {"total_return": 0.34, "sharpe_ratio": 1.08, "curve_points": 276}},
+            "representative": {"metrics": {"total_return": 0.12, "sharpe_ratio": 0.41}},
+            "combined": {"metrics": {"total_return": 0.30, "sharpe_ratio": 0.81, "curve_points": 276}},
+        },
+        "event_window_metrics": {},
+    }
+
+    metrics = BacktestFilter._derive_trade_validation_metrics(candidate, result)
+
+    assert metrics["trade_density"] == pytest.approx(1.1538)
+    assert metrics["avg_holding_days"] == pytest.approx(14.0)
+    assert metrics["expected_turnover_band"] == "medium"
+    assert metrics["capacity_bucket"] == "mid"
+    assert metrics["turnover_cost_class"] == "medium_touch"
+    assert metrics["position_sizing_rationale"] == "equal_weight_diversified_basket"

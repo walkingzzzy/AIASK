@@ -395,6 +395,63 @@ class TestStrategyManager:
         assert incubation["data"]["risk_flags_by_period"] == {}
 
     @pytest.mark.asyncio
+    async def test_incubation_overview_and_promotion_review_block_grade_d_and_live_gate_gap(self, setup):
+        mcp, db = setup
+        cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "D级阻断策略", "strategy_type": "momentum", "params": {"lookback": 20},
+        }))
+        sid = cr["data"]["strategy_id"]
+        await db.update_strategy_status(sid, "incubating", actor_id="test", reason="seed")
+        await db.save_strategy_metrics(sid, "all", {"sharpe_ratio": 1.15, "max_drawdown": 0.06})
+        await db.save_strategy_quality_report(sid, "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "D",
+                "strict_incubation_ready": False,
+                "strict_incubation_blocked": True,
+                "admission_stage": "research",
+                "incubation_pass_mode": "failed",
+            },
+            "quality_gate": {
+                "strict_incubation_ready": False,
+                "strict_incubation_blocked": True,
+                "incubation_candidate_ready": False,
+                "live_candidate_ready": False,
+                "admission_stage": "research",
+                "incubation_pass_mode": "failed",
+                "admission_block_reasons": [
+                    "validation_grade_d_not_allowed_for_incubation",
+                    "formal_multiple_testing_mode_required_for_live_admission",
+                ],
+            },
+        })
+        db._signal_stats[sid] = {
+            "hit_rate": {1: 0.54, 5: 0.58, 10: 0.55, 20: 0.51},
+            "forward_ic": {1: 0.03, 5: 0.08, 10: 0.06, 20: 0.04},
+            "forward_sharpe": {1: 0.10, 5: 0.70, 10: 0.46, 20: 0.18},
+            "total_signals": 24,
+        }
+
+        incubation = await mcp.strategy_manager(action="incubation_overview", kwargs=json.dumps({"strategy_id": sid}))
+        review = await mcp.strategy_manager(action="promotion_review_run", kwargs=json.dumps({"strategy_id": sid}))
+
+        assert incubation["success"] is True
+        assert incubation["data"]["promotion_ready"] is False
+        assert incubation["data"]["validation_grade"] == "D"
+        assert incubation["data"]["strict_incubation_ready"] is False
+        assert incubation["data"]["live_candidate_ready"] is False
+        assert incubation["data"]["strict_live_alignment_status"] == "aligned_blocked"
+        assert "validation_grade_d_not_allowed_for_promotion" in incubation["data"]["blockers"]
+        assert "strict_incubation_gate_not_ready" in incubation["data"]["blockers"]
+        assert "live_gate_not_ready" in incubation["data"]["blockers"]
+        assert review["success"] is True
+        assert review["data"]["review"]["recommendation"] != "promote"
+        assert review["data"]["review"]["summary"]["promotion_ready"] is False
+        assert review["data"]["review"]["summary"]["validation_grade"] == "D"
+        assert review["data"]["review"]["summary"]["strict_incubation_ready"] is False
+        assert review["data"]["review"]["summary"]["live_candidate_ready"] is False
+
+    @pytest.mark.asyncio
     async def test_lifecycle_scan_uses_multi_period_forward_returns(self, setup):
         mcp, db = setup
 
@@ -533,6 +590,41 @@ class TestStrategyManager:
                 "bulk_stock_matrix_eligible_stock_count": 500,
                 "bulk_stock_matrix_next_universe_offset": 1000,
                 "bulk_stock_matrix_cursor_wrapped": False,
+                "stock_family_allocation_count": 5485,
+                "family_preference_order": ["mean_reversion_short", "momentum", "ma_cross"],
+                "family_preference_source_mode": "stock_family_allocation",
+                "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                "governed_pending_candidate_count": 0,
+                "external_llm_provider_health_status": "degraded",
+                "external_llm_provider_control_mode": "suppress",
+                "candidate_local_attempt_count": 6,
+                "task_local_attempt_count": 4,
+                "cohort_effective_trials": 9.5,
+                "refresh_existing_count": 1,
+                "spawn_revision_from_existing_count": 1,
+                "unique_family_holding_universe_count": 4,
+                "economic_semantics_missing_count": 1,
+                "research_only_count": 1,
+                "deferred_submission_count": 1,
+                "validation_grade_distribution": {"D": 1},
+                "raw_validation_grade_distribution": {"D": 1},
+                "effective_validation_grade_distribution": {"D": 1},
+                "raw_validation_total_score_mean": 38.0,
+                "raw_validation_total_score_p50": 38.0,
+                "raw_validation_total_score_p90": 38.0,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.0,
+                "raw_validation_c_rate": 0.0,
+                "raw_validation_d_rate": 1.0,
+                "validation_family_quality_panel": [
+                    {
+                        "strategy_family": "momentum",
+                        "holding_period_bucket": "swing",
+                        "validation_focus": "event_target_only",
+                        "strategy_count": 1,
+                        "raw_validation_grade_distribution": {"D": 1},
+                    }
+                ],
                 "task_source_counts": {"event_driven": 1, "snapshot": 1},
                 "scanner_task_types": {"sector_breakout": 1, "rotation_balanced": 1},
                 "event_snapshot_mixed": True,
@@ -549,6 +641,23 @@ class TestStrategyManager:
                         "generated_count": 6,
                     }
                 ],
+            },
+            "factor_research": {
+                "summary": {
+                    "factor_source_mode": "governed_candidate_pool",
+                    "active_factor_count": 2,
+                    "family_preference_order": [
+                        "mean_reversion_short",
+                        "momentum",
+                        "ma_cross",
+                    ],
+                    "family_preference_source_mode": "stock_family_allocation",
+                    "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                    "governed_candidate_pool_strict_shortfall_count": 3,
+                    "stock_family_allocation_count": 5485,
+                    "stock_family_allocation_source_mode": "stock_universe_projection",
+                },
+                "source_chain": ["snapshot.factor_ic", "artifact_v2"],
             },
             "quality_gate": {
                 "gate_0": {"passed_count": 2, "failed_count": 0},
@@ -631,8 +740,10 @@ class TestStrategyManager:
                         {
                             "strategy_id": "sid_factory_1",
                             "name": "工厂治理策略",
+                            "strategy_type": "momentum",
+                            "candidate_family": "momentum",
                             "status": "submitted",
-                            "submission_lane": "paper",
+                            "submission_lane": "deferred_submission",
                             "submission_action_type": "create",
                             "primary_validation_layer": "target",
                             "refresh_mode": "refresh_metrics_only",
@@ -660,17 +771,38 @@ class TestStrategyManager:
                             "event_window_config": {"lookback_days": 3, "forward_days": 5},
                             "position_assumption": "single_name_full_notional",
                             "attempt_adjustment": {"attempt_count": 4, "selection_ratio": 0.25, "penalty": 0.03},
+                            "task_local_attempt_count": 4,
+                            "cohort_effective_trials": 9.5,
+                            "validation_grade": "D",
+                            "raw_validation_grade": "D",
+                            "effective_validation_grade": "D",
+                            "raw_validation_total_score": 38.0,
+                            "validation_total_score": 38.0,
                             "vector_profile_id": "vp_factory_1",
-                            "multiple_testing_registry": {"available": True},
+                            "multiple_testing_registry": {"available": True, "task_attempt_count": 4},
                             "multiple_testing_registry_record_id": "mt_factory_1",
                             "candidate_lineage_contract": {"lineage_id": "lineage_factory_1"},
                             "cost_assumptions": {"commission_bps": 8},
                             "explicit_cost_breakdown": {"commission_cost": 120.0},
                             "implicit_cost_breakdown": {"slippage_cost": 36.0},
                             "execution_reality": {"tradability_filter": True},
+                            "quality_summary": {"validation_grade": "D"},
+                            "research_candidate_ready": True,
+                            "incubation_candidate_ready": False,
+                            "run_correction": {"deflated_sharpe_effective_trials": 9.5},
                         }
                     ],
                 },
+                "truncated": True,
+                "field_name": "stages",
+                "stage_count": 5,
+                "stage_names": [
+                    "factor_research",
+                    "autonomy",
+                    "backtest",
+                    "deduplicate",
+                    "submit",
+                ],
             },
             "snapshot_summary": {},
             "error": None,
@@ -723,6 +855,37 @@ class TestStrategyManager:
         assert status_resp["data"]["last_summary"]["snapshot_task_count"] == 1
         assert status_resp["data"]["last_summary"]["task_source_counts"]["snapshot"] == 1
         assert status_resp["data"]["last_summary"]["event_snapshot_mixed"] is True
+        assert status_resp["data"]["last_result"]["family_preference_source_mode"] == "stock_family_allocation"
+        assert status_resp["data"]["last_result"]["governed_candidate_pool_provisional_spillover_policy_status"] == "spillover_applied"
+        assert status_resp["data"]["last_result"]["stock_family_allocation_count"] == 5485
+        assert status_resp["data"]["last_status"] == "success"
+        assert status_resp["data"]["last_stock_family_allocation_count"] == 5485
+        assert status_resp["data"]["last_family_preference_order"][:2] == ["mean_reversion_short", "momentum"]
+        assert status_resp["data"]["last_family_preference_source_mode"] == "stock_family_allocation"
+        assert (
+            status_resp["data"]["last_governed_candidate_pool_provisional_spillover_policy_status"]
+            == "spillover_applied"
+        )
+        assert status_resp["data"]["last_governed_pending_candidate_count"] == 0
+        assert status_resp["data"]["last_external_llm_provider_health_status"] == "degraded"
+        assert status_resp["data"]["last_external_llm_provider_control_mode"] == "suppress"
+        assert status_resp["data"]["last_candidate_local_attempt_count"] == 6
+        assert status_resp["data"]["last_task_local_attempt_count"] == 4
+        assert status_resp["data"]["last_cohort_effective_trials"] == 9.5
+        assert status_resp["data"]["last_refresh_existing_count"] == 1
+        assert status_resp["data"]["last_spawn_revision_from_existing_count"] == 1
+        assert status_resp["data"]["last_unique_family_holding_universe_count"] == 4
+        assert status_resp["data"]["last_economic_semantics_missing_count"] == 1
+        assert status_resp["data"]["last_research_only_count"] == 1
+        assert status_resp["data"]["last_deferred_submission_count"] == 1
+        assert status_resp["data"]["last_validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_raw_validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_effective_validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_raw_validation_total_score_mean"] == 38.0
+        assert status_resp["data"]["last_validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert status_resp["data"]["last_summary"]["candidate_local_attempt_count"] == 6
+        assert status_resp["data"]["last_summary"]["validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_summary"]["raw_validation_grade_distribution"] == {"D": 1}
         assert status_resp["data"]["last_summary"]["autonomy_task_briefs"][0]["task_id"] == "event_demo_1"
         assert status_resp["data"]["bulk_stock_matrix_config"]["enabled"] is True
         assert status_resp["data"]["bulk_stock_matrix_config"]["families_per_stock"] == 3
@@ -739,17 +902,51 @@ class TestStrategyManager:
         assert runs_resp["data"]["count"] == 1
         assert runs_resp["data"]["items"][0]["run_id"] == "run_hist_1"
         assert runs_resp["data"]["items"][0]["candidates_spawned"] == 2
+        assert runs_resp["data"]["items"][0]["family_preference_order"][:2] == ["mean_reversion_short", "momentum"]
+        assert runs_resp["data"]["items"][0]["family_preference_source_mode"] == "stock_family_allocation"
+        assert runs_resp["data"]["items"][0]["candidate_local_attempt_count"] == 6
+        assert runs_resp["data"]["items"][0]["validation_grade_distribution"] == {"D": 1}
+        assert runs_resp["data"]["items"][0]["raw_validation_grade_distribution"] == {"D": 1}
+        assert runs_resp["data"]["items"][0]["raw_validation_total_score_mean"] == 38.0
         assert runs_resp["data"]["items"][0]["summary"]["event_task_count"] == 1
         assert runs_resp["data"]["items"][0]["summary"]["event_snapshot_mixed"] is True
         assert detail_resp["data"]["run_id"] == "run_hist_1"
+        assert detail_resp["data"]["candidate_local_attempt_count"] == 6
+        assert detail_resp["data"]["task_local_attempt_count"] == 4
+        assert detail_resp["data"]["cohort_effective_trials"] == 9.5
+        assert detail_resp["data"]["refresh_existing_count"] == 1
+        assert detail_resp["data"]["spawn_revision_from_existing_count"] == 1
+        assert detail_resp["data"]["unique_family_holding_universe_count"] == 4
+        assert detail_resp["data"]["economic_semantics_missing_count"] == 1
+        assert detail_resp["data"]["research_only_count"] == 1
+        assert detail_resp["data"]["deferred_submission_count"] == 1
+        assert detail_resp["data"]["validation_grade_distribution"] == {"D": 1}
+        assert detail_resp["data"]["raw_validation_grade_distribution"] == {"D": 1}
+        assert detail_resp["data"]["raw_validation_total_score_mean"] == 38.0
+        assert detail_resp["data"]["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert detail_resp["data"]["summary"]["candidate_local_attempt_count"] == 6
+        assert detail_resp["data"]["summary"]["validation_grade_distribution"] == {"D": 1}
+        assert detail_resp["data"]["summary"]["raw_validation_grade_distribution"] == {"D": 1}
         assert detail_resp["data"]["summary"]["snapshot_task_count"] == 1
         assert detail_resp["data"]["summary"]["autonomy_task_briefs"][0]["task_source"] == "event_driven"
         assert detail_resp["data"]["research_summary"]["research_plane_contract_version"] == "strategy_factory.research_plane.v1"
         assert detail_resp["data"]["research_plane"]["contract_version"] == "strategy_factory.research_plane.v1"
         assert detail_resp["data"]["research_artifact"]["contract_version"] == "strategy_factory.research_artifact.v1"
+        assert detail_resp["data"]["research_artifact"]["family_preference_source_mode"] == "stock_family_allocation"
+        assert detail_resp["data"]["research_artifact"]["family_preference_order"][:2] == [
+            "mean_reversion_short",
+            "momentum",
+        ]
+        assert (
+            detail_resp["data"]["research_artifact"]["governed_candidate_pool_provisional_spillover_policy_status"]
+            == "spillover_applied"
+        )
         assert detail_resp["data"]["task_artifact"]["planned_task_count"] == 2
         assert detail_resp["data"]["candidate_artifact"]["candidate_count"] == 2
         assert detail_resp["data"]["evidence_artifact"]["experiment_count"] == 1
+        assert "truncated" not in detail_resp["data"]["stages"]
+        assert detail_resp["data"]["stage_storage_meta"]["truncated"] is True
+        assert detail_resp["data"]["stage_storage_meta"]["field_name"] == "stages"
         assert detail_resp["data"]["governance_plane"]["contract_version"] == "strategy_factory.governance_plane.v1"
         assert detail_resp["data"]["gate_artifact"]["contract_version"] == "strategy_factory.gate_artifact.v1"
         assert detail_resp["data"]["gate_artifact"]["gate_3_passed"] == 1
@@ -758,11 +955,25 @@ class TestStrategyManager:
         assert detail_resp["data"]["submission_artifact"]["committee_review_count"] == 1
         assert detail_resp["data"]["submission_artifact"]["committee_decision_counts"]["revise"] == 1
         assert detail_resp["data"]["submission_artifact"]["constraint_check_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["research_only_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["deferred_submission_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["validation_grade_distribution"] == {"D": 1}
+        assert detail_resp["data"]["submission_artifact"]["raw_validation_grade_distribution"] == {"D": 1}
+        assert detail_resp["data"]["submission_artifact"]["raw_validation_total_score_mean"] == 38.0
+        assert detail_resp["data"]["submission_artifact"]["candidate_local_attempt_count"] == 4
+        assert detail_resp["data"]["submission_artifact"]["task_local_attempt_count"] == 4
+        assert detail_resp["data"]["submission_artifact"]["cohort_effective_trials"] == 9.5
+        assert detail_resp["data"]["submission_artifact"]["economic_semantics_missing_count"] == 1
+        assert (
+            detail_resp["data"]["submission_artifact"]["validation_family_quality_panel"][0]["strategy_family"]
+            == "momentum"
+        )
         assert detail_resp["data"]["submission_artifact"]["primary_validation_layer_counts"]["target"] == 1
         assert (
             detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["validation_profile"]["profile"]
             == "event_trade_validation"
         )
+        assert detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["validation_grade"] == "D"
         assert (
             detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["committee_review"]["decision"]
             == "revise"
@@ -785,7 +996,1058 @@ class TestStrategyManager:
         assert snapshots_resp["data"]["count"] == 1
         assert snapshots_resp["data"]["items"][0]["snapshot_date"] == "2026-03-06"
         assert snapshot_resp["data"]["degraded"] is True
-        assert snapshot_resp["data"]["completeness"]["completion_ratio"] == 0.67
+
+    @pytest.mark.asyncio
+    async def test_factory_run_detail_refreshes_run_level_quality_panel_from_latest_reports(self, setup):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_refresh_quality_1",
+            "status": "success",
+            "started_at": "2026-03-08T10:00:00Z",
+            "completed_at": "2026-03-08T10:00:12Z",
+            "elapsed_seconds": 12.0,
+            "summary": {
+                "submitted": 1,
+                "validation_grade_distribution": {"C": 1},
+                "raw_validation_grade_distribution": {"C": 1},
+                "effective_validation_grade_distribution": {"C": 1},
+                "raw_validation_total_score_mean": 45.0,
+                "raw_validation_total_score_p50": 45.0,
+                "raw_validation_total_score_p90": 45.0,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.0,
+                "raw_validation_c_rate": 1.0,
+                "raw_validation_d_rate": 0.0,
+                "validation_family_quality_panel": [
+                    {
+                        "strategy_family": "momentum",
+                        "holding_period_bucket": "swing",
+                        "validation_focus": "target_only",
+                        "strategy_count": 1,
+                        "raw_validation_grade_distribution": {"C": 1},
+                    }
+                ],
+            },
+            "submission_artifact": {
+                "strategy_briefs": [
+                    {
+                        "strategy_id": "factory_momentum_refresh_1",
+                        "strategy_name": "Momentum Refresh Candidate",
+                        "candidate_family": "momentum",
+                        "strategy_type": "momentum",
+                        "holding_period_bucket": "swing",
+                        "target_pool_id": "explicit:300442",
+                        "validation_focus": "target_only",
+                        "validation_grade": "C",
+                        "raw_validation_grade": "C",
+                        "effective_validation_grade": "C",
+                        "raw_validation_total_score": 45.0,
+                        "strict_incubation_ready": False,
+                        "live_candidate_ready": False,
+                        "trade_density": 0.72,
+                        "post_cost_sharpe": 1.18,
+                        "deflated_sharpe_ratio": 0.14,
+                        "pbo": 0.22,
+                    }
+                ],
+            },
+        })
+        await db.save_strategy_quality_report("factory_momentum_refresh_1", "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "raw_validation_total_score": 55.0,
+                "validation_total_score": 55.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+                "strict_incubation_ready": True,
+                "live_candidate_ready": False,
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {
+                "trade_density": 0.72,
+                "post_cost_sharpe": 1.18,
+                "deflated_sharpe_ratio": 0.14,
+                "pbo": 0.22,
+            },
+        })
+
+        detail_resp = await mcp.strategy_manager(
+            action="factory_run_detail",
+            kwargs=json.dumps({"run_id": "run_refresh_quality_1"}),
+        )
+        runs_resp = await mcp.strategy_manager(
+            action="factory_runs",
+            kwargs=json.dumps({"limit": 1}),
+        )
+
+        assert detail_resp["success"] is True
+        assert detail_resp["data"]["raw_validation_grade_distribution"] == {"B": 1}
+        assert detail_resp["data"]["validation_grade_distribution"] == {"B": 1}
+        assert detail_resp["data"]["effective_validation_grade_distribution"] == {"B": 1}
+        assert detail_resp["data"]["raw_validation_total_score_mean"] == 55.0
+        assert detail_resp["data"]["summary"]["raw_validation_grade_distribution"] == {"B": 1}
+        assert detail_resp["data"]["summary"]["raw_validation_total_score_mean"] == 55.0
+        assert detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["raw_validation_grade"] == "B"
+        assert detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["raw_validation_total_score"] == 55.0
+        assert detail_resp["data"]["unique_family_holding_universe_count"] == 1
+        assert detail_resp["data"]["summary"]["unique_family_holding_universe_count"] == 1
+        assert detail_resp["data"]["strict_live_alignment_gap_count"] == 1
+        assert detail_resp["data"]["strict_live_alignment_gap_rate"] == pytest.approx(1.0)
+        assert detail_resp["data"]["summary"]["strict_live_alignment_gap_count"] == 1
+        assert detail_resp["data"]["summary"]["strict_live_alignment_status_counts"] == {
+            "strict_only_gap": 1,
+        }
+        assert detail_resp["data"]["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert detail_resp["data"]["validation_family_quality_panel"][0]["raw_validation_grade_distribution"] == {"B": 1}
+        assert detail_resp["data"]["validation_family_quality_panel"][0]["raw_validation_b_rate"] == 1.0
+        assert runs_resp["success"] is True
+        assert runs_resp["data"]["items"][0]["raw_validation_grade_distribution"] == {"B": 1}
+        assert runs_resp["data"]["items"][0]["raw_validation_total_score_mean"] == 55.0
+        assert runs_resp["data"]["items"][0]["unique_family_holding_universe_count"] == 1
+        assert runs_resp["data"]["items"][0]["strict_live_alignment_gap_count"] == 1
+        assert runs_resp["data"]["items"][0]["strict_live_alignment_gap_rate"] == pytest.approx(1.0)
+        assert runs_resp["data"]["items"][0]["validation_family_quality_panel"][0]["raw_validation_b_rate"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_factory_status_surfaces_quality_baseline_for_factory_generated_cohort(self, setup, monkeypatch):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_baseline_1",
+            "status": "success",
+            "started_at": "2026-03-07T10:00:00",
+            "completed_at": "2026-03-07T10:00:08",
+            "elapsed_seconds": 8.0,
+            "summary": {
+                "candidates_spawned": 6,
+                "submitted": 2,
+                "research_only_count": 1,
+                "deferred_submission_count": 1,
+                "validation_grade_distribution": {"D": 1, "B": 1},
+                "raw_validation_grade_distribution": {"D": 1, "B": 1},
+                "effective_validation_grade_distribution": {"D": 1, "B": 1},
+                "raw_validation_total_score_mean": 56.0,
+                "raw_validation_total_score_p50": 56.0,
+                "raw_validation_total_score_p90": 61.0,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.5,
+                "raw_validation_c_rate": 0.0,
+                "raw_validation_d_rate": 0.5,
+                "external_llm_provider_health_status": "degraded",
+                "external_llm_provider_control_mode": "limited",
+            },
+        })
+        await db.save_strategy({
+            "id": "factory_zero_signal",
+            "name": "零信号工厂策略",
+            "author_id": "strategy_factory",
+            "strategy_type": "momentum",
+            "status": "submitted",
+            "tags": ["factory", "auto_generated"],
+            "params": {"lookback": 20},
+        })
+        await db.save_strategy_quality_report("factory_zero_signal", "submission", {
+            "passed": False,
+            "summary": {
+                "validation_grade": "D",
+                "raw_validation_grade": "D",
+                "effective_validation_grade": "D",
+                "raw_validation_total_score": 34.0,
+                "validation_total_score": 34.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {"trade_density": 1.1, "post_cost_sharpe": 0.4, "deflated_sharpe_ratio": 0.0, "pbo": 0.9},
+        })
+        db._signal_stats["factory_zero_signal"] = {
+            "hit_rate": {},
+            "forward_ic": {},
+            "forward_sharpe": {},
+            "total_signals": 0,
+        }
+
+        await db.save_strategy({
+            "id": "factory_promotion_ready",
+            "name": "晋级工厂策略",
+            "author_id": "strategy_factory",
+            "strategy_type": "momentum",
+            "status": "incubating",
+            "tags": ["factory", "auto_generated"],
+            "params": {"lookback": 30},
+        })
+        await db.save_strategy_quality_report("factory_promotion_ready", "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "raw_validation_total_score": 78.0,
+                "validation_total_score": 78.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+                "strict_incubation_ready": True,
+                "live_candidate_ready": True,
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {"trade_density": 0.72, "post_cost_sharpe": 1.25, "deflated_sharpe_ratio": 0.18, "pbo": 0.32},
+        })
+        await db.save_strategy_metrics("factory_promotion_ready", "all", {
+            "sharpe_ratio": 1.25,
+            "max_drawdown": 0.06,
+        })
+        db._signal_stats["factory_promotion_ready"] = {
+            "hit_rate": {1: 0.53, 5: 0.56, 10: 0.54, 20: 0.5},
+            "forward_ic": {1: 0.02, 5: 0.08, 10: 0.06, 20: 0.03},
+            "forward_sharpe": {1: 0.11, 5: 0.72, 10: 0.44, 20: 0.16},
+            "total_signals": 18,
+        }
+
+        await db.save_strategy({
+            "id": "manual_strategy",
+            "name": "人工策略",
+            "author_id": "analyst",
+            "strategy_type": "momentum",
+            "status": "submitted",
+            "tags": [],
+            "params": {"lookback": 10},
+        })
+        await db.save_strategy_quality_report("manual_strategy", "submission", {
+            "passed": True,
+            "summary": {"validation_grade": "A"},
+        })
+        db._signal_stats["manual_strategy"] = {
+            "hit_rate": {1: 0.6, 5: 0.6, 10: 0.6, 20: 0.6},
+            "forward_ic": {1: 0.1, 5: 0.1, 10: 0.1, 20: 0.1},
+            "forward_sharpe": {1: 1.0, 5: 1.0, 10: 1.0, 20: 1.0},
+            "total_signals": 25,
+        }
+
+        class _DummyScheduler:
+            def status(self):
+                return {"running": False, "last_run": None, "last_result": None, "last_summary": None}
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+                "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK": 3,
+                "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK": 1,
+                "STOCK_STRATEGY_MATRIX_RUN_WINDOW": "always",
+                "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD": 24,
+                "FACTORY_PRE_GATE_ENABLED": True,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        baseline = status_resp["data"]["quality_baseline"]
+        assert baseline["contract_version"] == "strategy_factory.quality_baseline.v1"
+        assert baseline["latest_run"]["run_id"] == "run_baseline_1"
+        assert baseline["latest_run"]["validation_grade_distribution"] == {"D": 1, "B": 1}
+        assert baseline["latest_run"]["raw_validation_grade_distribution"] == {"D": 1, "B": 1}
+        assert baseline["latest_run"]["raw_validation_b_rate"] == 0.5
+        assert baseline["latest_run"]["external_llm_provider_control_mode"] == "limited"
+        cohort = baseline["submitted_strategy_cohort"]
+        assert cohort["statuses"] == ["submitted", "incubating", "listed"]
+        assert cohort["factory_strategy_count"] == 2
+        assert cohort["status_counts"] == {"submitted": 1, "incubating": 1}
+        assert cohort["validation_grade_distribution"] == {"D": 1, "B": 1}
+        assert cohort["raw_validation_grade_distribution"] == {"D": 1, "B": 1}
+        assert cohort["raw_validation_total_score_mean"] == pytest.approx(56.0)
+        assert cohort["raw_validation_total_score_p50"] == pytest.approx(56.0)
+        assert cohort["raw_validation_total_score_p90"] == pytest.approx(73.6)
+        assert cohort["raw_validation_b_rate"] == pytest.approx(0.5)
+        assert cohort["raw_b_or_above_count"] == 1
+        assert cohort["raw_b_or_above_rate"] == pytest.approx(0.5)
+        assert cohort["strict_ready_given_raw_b_rate"] == pytest.approx(1.0)
+        assert cohort["live_ready_given_raw_b_rate"] == pytest.approx(1.0)
+        assert cohort["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert cohort["validation_family_quality_panel"][0]["family_raw_b_rate"] == pytest.approx(0.5)
+        assert cohort["zero_signal_count"] == 1
+        assert cohort["zero_signal_rate"] == 0.5
+        assert cohort["forward_coverage_count"] == 1
+        assert cohort["forward_coverage_rate"] == 0.5
+        assert cohort["promotion_ready_count"] == 1
+        assert cohort["promotion_ready_rate"] == 0.5
+        assert cohort["quality_passed_count"] == 1
+        assert cohort["quality_pass_rate"] == 0.5
+        assert cohort["quality_report_missing_count"] == 0
+        assert cohort["baseline_forward_days"] == [1, 5, 10, 20]
+
+    @pytest.mark.asyncio
+    async def test_factory_status_quality_baseline_exposes_generation_lane_comparison(self, setup, monkeypatch):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_lane_baseline_1",
+            "status": "success",
+            "started_at": "2026-03-07T11:00:00Z",
+            "completed_at": "2026-03-07T11:00:08Z",
+            "elapsed_seconds": 8.0,
+            "summary": {
+                "submitted": 3,
+                "validation_grade_distribution": {"B": 2, "D": 1},
+                "raw_validation_grade_distribution": {"B": 2, "D": 1},
+                "effective_validation_grade_distribution": {"B": 2, "D": 1},
+            },
+            "submission_artifact": {
+                "strategy_briefs": [
+                    {
+                        "strategy_id": "run_local_rule_1",
+                        "strategy_type": "momentum",
+                        "candidate_family": "momentum",
+                        "generator_mode": "rule",
+                        "raw_validation_grade": "B",
+                        "effective_validation_grade": "B",
+                        "raw_validation_total_score": 62.0,
+                        "strict_incubation_ready": True,
+                    },
+                    {
+                        "strategy_id": "run_hypothesis_1",
+                        "strategy_type": "momentum",
+                        "candidate_family": "momentum",
+                        "generator_mode": "llm_hypothesis_compiler",
+                        "candidate_lane": "l2_hypothesis_lowering",
+                        "raw_validation_grade": "B",
+                        "effective_validation_grade": "B",
+                        "raw_validation_total_score": 74.0,
+                        "strict_incubation_ready": True,
+                        "live_candidate_ready": True,
+                    },
+                    {
+                        "strategy_id": "run_open_dsl_1",
+                        "strategy_type": "dsl_rule",
+                        "candidate_family": "capital_flow",
+                        "generator_mode": "llm_defined",
+                        "candidate_lane": "l3_open_dsl",
+                        "raw_validation_grade": "D",
+                        "effective_validation_grade": "D",
+                        "raw_validation_total_score": 39.0,
+                    },
+                ],
+            },
+        })
+
+        strategy_rows = [
+            {
+                "id": "factory_lane_l0",
+                "name": "规则层策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "momentum",
+                "status": "submitted",
+                "tags": ["factory", "auto_generated", "rule"],
+                "params": {"lookback": 20, "generator_mode": "rule"},
+            },
+            {
+                "id": "factory_lane_l1",
+                "name": "历史引导策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "mean_reversion",
+                "status": "submitted",
+                "tags": ["factory", "auto_generated"],
+                "params": {
+                    "lookback": 12,
+                    "quota_fill": {
+                        "fill_source_mode": "historical_guided",
+                        "parameter_source": "historical_distribution",
+                    },
+                },
+            },
+            {
+                "id": "factory_lane_l2",
+                "name": "Hypothesis 编译策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "momentum",
+                "status": "incubating",
+                "tags": ["factory", "auto_generated", "external_llm"],
+                "params": {
+                    "generator_mode": "llm_hypothesis_compiler",
+                    "candidate_lane": "l2_hypothesis_lowering",
+                    "candidate_provenance": {"generator_mode": "llm_hypothesis_compiler"},
+                },
+            },
+            {
+                "id": "factory_lane_l3",
+                "name": "Open DSL 策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "dsl_rule",
+                "status": "listed",
+                "tags": ["factory", "auto_generated", "external_llm", "open_dsl", "llm_defined"],
+                "params": {
+                    "generator_mode": "llm_defined",
+                    "candidate_lane": "l3_open_dsl",
+                    "candidate_provenance": {"generator_mode": "llm_defined"},
+                },
+            },
+        ]
+        quality_reports = {
+            "factory_lane_l0": {
+                "passed": True,
+                "summary": {
+                    "validation_grade": "B",
+                    "raw_validation_grade": "B",
+                    "effective_validation_grade": "B",
+                    "raw_validation_total_score": 66.0,
+                    "validation_total_score": 66.0,
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "swing",
+                    "strict_incubation_ready": True,
+                },
+                "validation_profile": {"validation_focus": "target_only"},
+            },
+            "factory_lane_l1": {
+                "passed": False,
+                "summary": {
+                    "validation_grade": "C",
+                    "raw_validation_grade": "C",
+                    "effective_validation_grade": "C",
+                    "raw_validation_total_score": 57.0,
+                    "validation_total_score": 57.0,
+                    "candidate_family": "mean_reversion",
+                    "holding_period_bucket": "short",
+                },
+                "validation_profile": {"validation_focus": "target_only"},
+            },
+            "factory_lane_l2": {
+                "passed": True,
+                "summary": {
+                    "validation_grade": "B",
+                    "raw_validation_grade": "B",
+                    "effective_validation_grade": "B",
+                    "raw_validation_total_score": 78.0,
+                    "validation_total_score": 78.0,
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "swing",
+                    "strict_incubation_ready": True,
+                    "live_candidate_ready": True,
+                },
+                "validation_profile": {"validation_focus": "target_only"},
+            },
+            "factory_lane_l3": {
+                "passed": False,
+                "summary": {
+                    "validation_grade": "D",
+                    "raw_validation_grade": "D",
+                    "effective_validation_grade": "D",
+                    "raw_validation_total_score": 41.0,
+                    "validation_total_score": 41.0,
+                    "candidate_family": "capital_flow",
+                    "holding_period_bucket": "medium",
+                },
+                "validation_profile": {"validation_focus": "target_only"},
+            },
+        }
+        for row in strategy_rows:
+            await db.save_strategy(row)
+            await db.save_strategy_metrics(row["id"], "all", {"sharpe_ratio": 1.1, "max_drawdown": 0.08})
+            await db.save_strategy_quality_report(row["id"], "submission", quality_reports[row["id"]])
+            db._signal_stats[row["id"]] = {
+                "hit_rate": {1: 0.52, 5: 0.55, 10: 0.53, 20: 0.51},
+                "forward_ic": {1: 0.02, 5: 0.05, 10: 0.04, 20: 0.03},
+                "forward_sharpe": {1: 0.08, 5: 0.40, 10: 0.25, 20: 0.12},
+                "total_signals": 16,
+            }
+
+        class _DummyScheduler:
+            def status(self):
+                return {"running": False, "last_run": None, "last_result": None, "last_summary": None}
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+                "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK": 3,
+                "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK": 1,
+                "STOCK_STRATEGY_MATRIX_RUN_WINDOW": "always",
+                "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD": 24,
+                "FACTORY_PRE_GATE_ENABLED": True,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        baseline = status_resp["data"]["quality_baseline"]
+        cohort = baseline["submitted_strategy_cohort"]
+        assert cohort["generation_lane_definition"].startswith("按持久化的 generator_mode")
+        assert cohort["generation_mode_counts"] == {
+            "rule": 2,
+            "llm_hypothesis_compiler": 1,
+            "llm_defined": 1,
+        }
+        lane_panel = {
+            item["lane_key"]: item
+            for item in cohort["generation_lane_quality_panel"]
+        }
+        assert lane_panel["l0_local_rule"]["strategy_count"] == 1
+        assert lane_panel["l1_historical_guided"]["strategy_count"] == 1
+        assert lane_panel["l2_hypothesis_lowering"]["strategy_count"] == 1
+        assert lane_panel["l2_hypothesis_lowering"]["raw_validation_b_rate"] == pytest.approx(1.0)
+        assert lane_panel["l2_hypothesis_lowering"]["live_candidate_ready_rate"] == pytest.approx(1.0)
+        assert lane_panel["l3_open_dsl"]["generation_tier"] == "L3"
+        assert lane_panel["l3_open_dsl"]["raw_validation_grade_distribution"] == {"D": 1}
+
+        latest_lane_panel = {
+            item["lane_key"]: item
+            for item in baseline["latest_run"]["generation_lane_quality_panel"]
+        }
+        assert baseline["latest_run"]["generation_mode_counts"] == {
+            "rule": 1,
+            "llm_hypothesis_compiler": 1,
+            "llm_defined": 1,
+        }
+        assert latest_lane_panel["l0_local_rule"]["strategy_count"] == 1
+        assert latest_lane_panel["l2_hypothesis_lowering"]["strategy_count"] == 1
+        assert latest_lane_panel["l3_open_dsl"]["strategy_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_factory_status_quality_baseline_tracks_strict_live_alignment_and_grade_d_pass_rates(self, setup, monkeypatch):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_gate3_acceptance_1",
+            "status": "success",
+            "started_at": "2026-03-05T10:00:00Z",
+            "completed_at": "2026-03-05T10:00:08Z",
+            "elapsed_seconds": 8.0,
+            "summary": {
+                "candidates_spawned": 3,
+                "submitted": 1,
+                "validation_grade_distribution": {"D": 1, "B": 2},
+                "raw_validation_grade_distribution": {"D": 1, "B": 2},
+                "effective_validation_grade_distribution": {"D": 1, "B": 2},
+                "external_llm_provider_health_status": "degraded",
+                "external_llm_provider_control_mode": "limited",
+            },
+        })
+
+        strategy_rows = [
+            {
+                "id": "factory_grade_d_blocked",
+                "name": "D级阻断工厂策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "momentum",
+                "status": "submitted",
+                "tags": ["factory", "auto_generated"],
+                "params": {"lookback": 10},
+            },
+            {
+                "id": "factory_strict_only_gap",
+                "name": "仅严格孵化工厂策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "momentum",
+                "status": "incubating",
+                "tags": ["factory", "auto_generated"],
+                "params": {"lookback": 20},
+            },
+            {
+                "id": "factory_live_ready",
+                "name": "Live就绪工厂策略",
+                "author_id": "strategy_factory",
+                "strategy_type": "momentum",
+                "status": "incubating",
+                "tags": ["factory", "auto_generated"],
+                "params": {"lookback": 30},
+            },
+        ]
+        for row in strategy_rows:
+            await db.save_strategy(row)
+            await db.save_strategy_metrics(row["id"], "all", {"sharpe_ratio": 1.2, "max_drawdown": 0.06})
+            db._signal_stats[row["id"]] = {
+                "hit_rate": {1: 0.54, 5: 0.58, 10: 0.55, 20: 0.51},
+                "forward_ic": {1: 0.03, 5: 0.08, 10: 0.06, 20: 0.04},
+                "forward_sharpe": {1: 0.10, 5: 0.70, 10: 0.46, 20: 0.18},
+                "total_signals": 24,
+            }
+
+        await db.save_strategy_quality_report("factory_grade_d_blocked", "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "D",
+                "raw_validation_grade": "D",
+                "effective_validation_grade": "D",
+                "raw_validation_total_score": 36.0,
+                "validation_total_score": 36.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {
+                "strict_incubation_ready": False,
+                "strict_incubation_blocked": True,
+                "incubation_candidate_ready": False,
+                "live_candidate_ready": False,
+                "admission_stage": "research",
+                "incubation_pass_mode": "failed",
+                "admission_block_reasons": ["validation_grade_d_not_allowed_for_incubation"],
+                "trade_density": 1.3,
+                "post_cost_sharpe": 0.55,
+                "deflated_sharpe_ratio": 0.0,
+                "pbo": 0.91,
+            },
+        })
+        await db.save_strategy_quality_report("factory_strict_only_gap", "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "raw_validation_total_score": 63.0,
+                "validation_total_score": 63.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {
+                "strict_incubation_ready": True,
+                "strict_incubation_blocked": False,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "admission_stage": "incubation",
+                "incubation_pass_mode": "strict",
+                "admission_block_reasons": ["formal_multiple_testing_mode_required_for_live_admission"],
+                "trade_density": 0.82,
+                "post_cost_sharpe": 1.08,
+                "deflated_sharpe_ratio": 0.14,
+                "pbo": 0.34,
+            },
+        })
+        await db.save_strategy_quality_report("factory_live_ready", "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "raw_validation_total_score": 68.0,
+                "validation_total_score": 68.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "swing",
+            },
+            "validation_profile": {"validation_focus": "target_only"},
+            "quality_gate": {
+                "strict_incubation_ready": True,
+                "strict_incubation_blocked": False,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": True,
+                "admission_stage": "live",
+                "incubation_pass_mode": "strict",
+                "admission_block_reasons": [],
+                "trade_density": 0.64,
+                "post_cost_sharpe": 1.21,
+                "deflated_sharpe_ratio": 0.18,
+                "pbo": 0.28,
+            },
+        })
+
+        class _DummyScheduler:
+            def status(self):
+                return {"running": False, "last_run": None, "last_result": None, "last_summary": None}
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+                "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK": 3,
+                "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK": 1,
+                "STOCK_STRATEGY_MATRIX_RUN_WINDOW": "always",
+                "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD": 24,
+                "FACTORY_PRE_GATE_ENABLED": True,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        cohort = status_resp["data"]["quality_baseline"]["submitted_strategy_cohort"]
+        assert cohort["factory_strategy_count"] == 3
+        assert cohort["promotion_ready_count"] == 1
+        assert cohort["promotion_ready_rate"] == pytest.approx(0.3333)
+        assert cohort["raw_validation_grade_distribution"] == {"D": 1, "B": 2}
+        assert cohort["raw_validation_total_score_mean"] == pytest.approx(55.6667)
+        assert cohort["raw_validation_b_rate"] == pytest.approx(0.6667)
+        assert cohort["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
+        assert cohort["strict_incubation_ready_count"] == 2
+        assert cohort["strict_incubation_ready_rate"] == pytest.approx(0.6667)
+        assert cohort["live_candidate_ready_count"] == 1
+        assert cohort["live_candidate_ready_rate"] == pytest.approx(0.3333)
+        assert cohort["live_gate_ready_count"] == 1
+        assert cohort["live_gate_ready_rate"] == pytest.approx(0.3333)
+        assert cohort["raw_b_or_above_count"] == 2
+        assert cohort["raw_b_or_above_rate"] == pytest.approx(0.6667)
+        assert cohort["strict_ready_given_raw_b_count"] == 2
+        assert cohort["strict_ready_given_raw_b_rate"] == pytest.approx(1.0)
+        assert cohort["live_ready_given_raw_b_count"] == 1
+        assert cohort["live_ready_given_raw_b_rate"] == pytest.approx(0.5)
+        assert cohort["strict_live_alignment_gap_count"] == 1
+        assert cohort["strict_live_alignment_gap_rate"] == pytest.approx(0.3333)
+        assert cohort["strict_live_alignment_status_counts"] == {
+            "aligned_blocked": 1,
+            "strict_only_gap": 1,
+            "aligned_live_ready": 1,
+        }
+        assert cohort["validation_grade_d_strict_incubation_pass_count"] == 0
+        assert cohort["validation_grade_d_strict_incubation_pass_rate"] == 0.0
+        assert cohort["validation_grade_d_promotion_ready_count"] == 0
+        assert cohort["validation_grade_d_promotion_ready_rate"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_factory_status_exposes_recent_run_diagnostics_for_readiness_and_quality_trends(self, setup, monkeypatch):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_diag_success_gap",
+            "status": "success",
+            "started_at": "2026-03-04T10:00:00Z",
+            "completed_at": "2026-03-04T10:00:10Z",
+            "elapsed_seconds": 10.0,
+            "summary": {
+                "factory_readiness_decision": "proceed",
+                "factory_readiness_can_proceed": True,
+                "factory_readiness_score": 0.78,
+                "submitted": 1,
+                "deferred_submission_count": 1,
+                "raw_b_or_above_rate": 1.0,
+                "strict_ready_given_raw_b_rate": 1.0,
+                "live_ready_given_raw_b_rate": 0.0,
+                "strict_live_alignment_gap_count": 1,
+                "strict_live_alignment_gap_rate": 1.0,
+            },
+            "stages": {
+                "readiness": {
+                    "status": "partial",
+                    "decision": "proceed",
+                    "can_proceed": True,
+                    "warnings": ["budget_feedback_evidence_debt_elevated"],
+                },
+                "submit": {"status": "completed", "ok": True},
+            },
+        })
+        await db.save_strategy_factory_run({
+            "run_id": "run_diag_blocked",
+            "status": "skipped",
+            "started_at": "2026-03-05T10:00:00Z",
+            "completed_at": "2026-03-05T10:00:03Z",
+            "elapsed_seconds": 3.0,
+            "summary": {
+                "factory_readiness_decision": "blocked",
+                "factory_readiness_can_proceed": False,
+                "factory_readiness_score": 0.34,
+                "skip_reason": "readiness_blocked",
+            },
+            "stages": {
+                "readiness": {
+                    "status": "failed",
+                    "decision": "blocked",
+                    "can_proceed": False,
+                    "blockers": ["governed_candidate_pool_missing_after_scheduler_success"],
+                    "warnings": ["factor_scheduler_recent_success_without_governed_pool"],
+                    "skip_reason": "readiness_blocked",
+                },
+            },
+        })
+        await db.save_strategy_factory_run({
+            "run_id": "run_diag_success_latest",
+            "status": "success",
+            "started_at": "2026-03-06T10:00:00Z",
+            "completed_at": "2026-03-06T10:00:08Z",
+            "elapsed_seconds": 8.0,
+            "summary": {
+                "factory_readiness_decision": "proceed",
+                "factory_readiness_can_proceed": True,
+                "factory_readiness_score": 0.91,
+                "submitted": 1,
+                "raw_b_or_above_rate": 0.5,
+                "strict_ready_given_raw_b_rate": 0.5,
+                "live_ready_given_raw_b_rate": 0.5,
+                "strict_live_alignment_gap_count": 0,
+                "strict_live_alignment_gap_rate": 0.0,
+            },
+            "stages": {
+                "readiness": {
+                    "status": "completed",
+                    "decision": "proceed",
+                    "can_proceed": True,
+                    "warnings": ["budget_feedback_evidence_debt_elevated"],
+                },
+                "submit": {"status": "completed", "ok": True},
+            },
+        })
+
+        class _DummyScheduler:
+            def status(self):
+                return {"running": False, "last_run": None, "last_result": None, "last_summary": None}
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+                "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK": 3,
+                "FACTORY_PRE_GATE_ENABLED": True,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        diagnostics = status_resp["data"]["recent_run_diagnostics"]
+        assert diagnostics["contract_version"] == "strategy_factory.recent_run_diagnostics.v1"
+        assert diagnostics["analyzed_run_count"] == 3
+        assert diagnostics["status_counts"] == {"success": 2, "skipped": 1}
+        assert diagnostics["readiness_decision_counts"] == {"proceed": 2, "blocked": 1}
+        assert diagnostics["readiness_blocked_count"] == 1
+        assert diagnostics["readiness_blocked_rate"] == pytest.approx(0.3333)
+        assert diagnostics["submit_stage_entered_count"] == 2
+        assert diagnostics["submit_stage_entered_rate"] == pytest.approx(0.6667)
+        assert diagnostics["submitted_positive_count"] == 2
+        assert diagnostics["submitted_positive_rate"] == pytest.approx(0.6667)
+        assert diagnostics["blocker_reason_topn"] == [
+            {
+                "reason_code": "governed_candidate_pool_missing_after_scheduler_success",
+                "count": 1,
+            }
+        ]
+        assert diagnostics["warning_reason_topn"][0] == {
+            "reason_code": "budget_feedback_evidence_debt_elevated",
+            "count": 2,
+        }
+        quality_progress = diagnostics["quality_progress"]
+        assert quality_progress["quality_measurement_run_count"] == 2
+        assert quality_progress["latest_raw_b_or_above_rate"] == pytest.approx(0.5)
+        assert quality_progress["recent_raw_b_or_above_rate_mean"] == pytest.approx(0.75)
+        assert quality_progress["recent_strict_ready_given_raw_b_rate_mean"] == pytest.approx(0.75)
+        assert quality_progress["recent_live_ready_given_raw_b_rate_mean"] == pytest.approx(0.25)
+        assert quality_progress["strict_live_gap_measurement_run_count"] == 2
+        assert quality_progress["strict_live_gap_run_count"] == 1
+        assert quality_progress["strict_live_gap_run_rate"] == pytest.approx(0.5)
+        assert diagnostics["recent_runs"][0]["run_id"] == "run_diag_success_latest"
+        assert diagnostics["recent_runs"][0]["readiness_decision"] == "proceed"
+        assert diagnostics["recent_runs"][1]["blocking_reason_codes"] == [
+            "governed_candidate_pool_missing_after_scheduler_success",
+        ]
+        assert (
+            status_resp["data"]["quality_baseline"]["recent_run_diagnostics"]["readiness_blocked_count"]
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_factory_status_prefers_newer_persisted_run_over_stale_scheduler_snapshot(self, setup, monkeypatch):
+        mcp, db = setup
+        await db.save_strategy_factory_run({
+            "run_id": "run_hist_new",
+            "status": "success",
+            "started_at": "2026-03-06T10:00:00Z",
+            "completed_at": "2026-03-06T10:00:08Z",
+            "elapsed_seconds": 8.0,
+            "summary": {
+                "candidates_spawned": 4,
+                "submitted": 2,
+                "scheduler_slo": {"status": "healthy", "alert_count": 0},
+                "bulk_stock_matrix_enabled": True,
+                "bulk_stock_matrix_universe_limit": 500,
+                "bulk_stock_matrix_requested_task_offset": 20,
+                "bulk_stock_matrix_effective_task_offset": 20,
+                "bulk_stock_matrix_next_task_offset": 40,
+                "bulk_stock_matrix_planned_task_count": 20,
+            },
+        })
+
+        class _DummyScheduler:
+            def status(self):
+                return {
+                    "running": False,
+                    "last_run": "2026-03-05T09:00:03Z",
+                    "last_result": {
+                        "run_id": "run_mem_old",
+                        "status": "success",
+                        "started_at": "2026-03-05T09:00:00Z",
+                        "completed_at": "2026-03-05T09:00:03Z",
+                        "summary": {"candidates_spawned": 1},
+                    },
+                    "last_summary": {"candidates_spawned": 1},
+                }
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        assert status_resp["data"]["last_run"] == "2026-03-06T10:00:08Z"
+        assert status_resp["data"]["last_result"]["run_id"] == "run_hist_new"
+        assert status_resp["data"]["last_result"]["summary"]["scheduler_slo"]["status"] == "healthy"
+        assert status_resp["data"]["last_summary"]["candidates_spawned"] == 4
+        assert status_resp["data"]["last_status"] == "success"
+        assert status_resp["data"]["last_persisted_run"]["run_id"] == "run_hist_new"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["source"] == "persisted_run"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["resume_from_run_id"] == "run_hist_new"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["available"] is True
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["requested_task_offset"] == 20
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["effective_task_offset"] == 20
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["next_task_offset"] == 40
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["cursor_mode"] == "task_offset"
+
+    @pytest.mark.asyncio
+    async def test_factory_status_normalizes_scheduler_last_result_contract(self, setup, monkeypatch):
+        mcp, _db = setup
+
+        class _DummyScheduler:
+            def status(self):
+                return {
+                    "running": False,
+                    "last_run": "2026-03-07T09:00:03Z",
+                    "last_result": {
+                        "run_id": "run_mem_latest",
+                        "status": "success",
+                        "started_at": "2026-03-07T09:00:00Z",
+                        "completed_at": "2026-03-07T09:00:03Z",
+                    },
+                    "last_summary": {
+                        "candidates_spawned": 5,
+                    "stock_family_allocation_count": 1024,
+                    "family_preference_order": ["momentum", "quality_factor"],
+                    "family_preference_source_mode": "stock_family_allocation",
+                    "governed_candidate_pool_provisional_spillover_policy_status": "spillover_applied",
+                    "governed_pending_candidate_count": 0,
+                    "candidate_local_attempt_count": 5,
+                    "validation_grade_distribution": {"C": 1},
+                    "raw_validation_grade_distribution": {"D": 1},
+                    "effective_validation_grade_distribution": {"C": 1},
+                    "raw_validation_total_score_mean": 44.0,
+                    "raw_validation_total_score_p50": 44.0,
+                    "raw_validation_total_score_p90": 44.0,
+                    "raw_validation_a_rate": 0.0,
+                    "raw_validation_b_rate": 0.0,
+                    "raw_validation_c_rate": 0.0,
+                    "raw_validation_d_rate": 1.0,
+                },
+            }
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        assert status_resp["data"]["last_result"]["run_id"] == "run_mem_latest"
+        assert status_resp["data"]["last_result"]["family_preference_source_mode"] == "stock_family_allocation"
+        assert (
+            status_resp["data"]["last_result"]["governed_candidate_pool_provisional_spillover_policy_status"]
+            == "spillover_applied"
+        )
+        assert status_resp["data"]["last_result"]["stock_family_allocation_count"] == 1024
+        assert status_resp["data"]["last_summary"]["family_preference_order"] == ["momentum", "quality_factor"]
+        assert status_resp["data"]["last_status"] == "success"
+        assert status_resp["data"]["last_stock_family_allocation_count"] == 1024
+        assert status_resp["data"]["last_family_preference_order"] == ["momentum", "quality_factor"]
+        assert status_resp["data"]["last_family_preference_source_mode"] == "stock_family_allocation"
+        assert status_resp["data"]["last_candidate_local_attempt_count"] == 5
+        assert status_resp["data"]["last_validation_grade_distribution"] == {"C": 1}
+        assert status_resp["data"]["last_raw_validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_effective_validation_grade_distribution"] == {"C": 1}
+        assert status_resp["data"]["last_raw_validation_total_score_mean"] == 44.0
+        assert (
+            status_resp["data"]["last_governed_candidate_pool_provisional_spillover_policy_status"]
+            == "spillover_applied"
+        )
+        assert status_resp["data"]["last_governed_pending_candidate_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_factory_status_falls_back_to_last_result_submission_artifact_for_raw_panel(self, setup, monkeypatch):
+        mcp, _db = setup
+
+        class _DummyScheduler:
+            def status(self):
+                return {
+                    "running": False,
+                    "last_run": "2026-03-08T09:00:03Z",
+                    "last_result": {
+                        "run_id": "run_mem_submission_artifact",
+                        "status": "success",
+                        "started_at": "2026-03-08T09:00:00Z",
+                        "completed_at": "2026-03-08T09:00:03Z",
+                        "governance_plane": {
+                            "submission_artifact": {
+                                "raw_validation_grade_distribution": {"D": 1},
+                                "validation_family_quality_panel": [
+                                    {
+                                        "strategy_family": "momentum",
+                                        "holding_period_bucket": "medium",
+                                        "validation_focus": "candidate_target_only",
+                                        "strategy_count": 1,
+                                        "raw_validation_grade_distribution": {"D": 1},
+                                    }
+                                ],
+                            }
+                        },
+                    },
+                    "last_summary": {
+                        "candidates_spawned": 3,
+                    },
+                }
+
+        monkeypatch.setattr(
+            "strategy_factory.get_strategy_factory_scheduler",
+            lambda: _DummyScheduler(),
+        )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+            },
+        )
+
+        status_resp = await mcp.strategy_manager(action="factory_status")
+
+        assert status_resp["success"] is True
+        assert status_resp["data"]["last_result"]["run_id"] == "run_mem_submission_artifact"
+        assert status_resp["data"]["last_raw_validation_grade_distribution"] == {"D": 1}
+        assert status_resp["data"]["last_validation_family_quality_panel"][0]["strategy_family"] == "momentum"
 
     @pytest.mark.asyncio
     async def test_submit_allows_provisional_incubation_for_factory_ai_strategy(self, setup, monkeypatch):
@@ -870,6 +2132,93 @@ class TestStrategyManager:
         assert gate_kwargs["validation_report"]["rating"]["grade"] == "A"
         assert gate_kwargs["risk_report"]["var_percent"] == 0.9
         assert gate_kwargs["backtest_metrics"]["sharpe_ratio"] == 0.42
+
+    @pytest.mark.asyncio
+    async def test_review_report_recheck_recomputes_validation_risk_and_backtest_inputs(self, setup, monkeypatch):
+        from akshare_mcp.tools.managers import strategy_mgr_lifecycle as lifecycle_mod
+
+        mcp, db = setup
+        created = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "复检重算策略",
+            "strategy_type": "momentum",
+            "params": {"lookback": 30, "threshold": 0.03},
+        }))
+        sid = created["data"]["strategy_id"]
+        await db.save_strategy_metrics(sid, "backtest", {"sharpe_ratio": 1.23, "max_drawdown": 0.08, "trade_count": 9})
+        await db.save_strategy_quality_report(sid, "submission", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "C",
+                "status_after_review": "incubating",
+                "review_source": "strategy_factory_submit",
+            },
+            "quality_gate": {"passed": True, "reasons": []},
+            "validation_report": {"rating": {"grade": "C"}},
+            "risk_report": {"var_percent": 9.9},
+            "dedup_report": {},
+            "backtest_metrics": {
+                "sharpe_ratio": 0.21,
+                "max_drawdown": 0.22,
+                "trade_count": 2,
+                "post_cost_sharpe": 0.67,
+                "target_layer_oos_return": 0.11,
+                "target_layer_abnormal_return": 0.07,
+                "event_window_hit_ratio": 0.71,
+                "post_event_decay": -0.12,
+                "trade_density": 0.42,
+                "parameter_perturbation_trade_stability": 0.74,
+                "primary_validation_layer": "target",
+            },
+            "snapshot": {"date": "2026-03-09"},
+        })
+        await db.save_strategy_quality_report(sid, "recheck:latest_skinny", {
+            "passed": True,
+            "summary": {
+                "validation_grade": "C",
+                "status_after_review": "submitted",
+                "review_source": "review_report_recheck",
+            },
+            "quality_gate": {"passed": True, "reasons": [], "gate_protocol": "trade_rule_validation:statistical_fallback_research_only"},
+            "validation_report": {"rating": {"grade": "C"}},
+            "risk_report": {"var_percent": 8.8},
+            "dedup_report": {},
+            "backtest_metrics": {
+                "sharpe_ratio": 0.33,
+                "max_drawdown": 0.18,
+                "trade_count": 3,
+            },
+            "snapshot": {"date": "2026-03-10"},
+        })
+
+        validation_mock = AsyncMock(return_value={
+            "rating": {"grade": "B", "total_score": 61.0},
+            "validation_focus": "target_only",
+            "validation_focus_layer": "family_peer",
+        })
+        risk_mock = AsyncMock(return_value={"var_percent": 0.12, "stress_loss_percent": 0.18})
+        gate_mock = AsyncMock(return_value={"passed": True, "reasons": []})
+
+        monkeypatch.setattr(lifecycle_mod, "_run_recheck_validation_report", validation_mock)
+        monkeypatch.setattr(lifecycle_mod, "_run_recheck_risk_report", risk_mock)
+        monkeypatch.setattr(lifecycle_mod, "run_quality_gate", gate_mock)
+
+        recheck = await mcp.strategy_manager(action="review_report_recheck", kwargs=json.dumps({"strategy_id": sid}))
+
+        assert recheck["success"] is True
+        assert validation_mock.await_count == 1
+        assert risk_mock.await_count == 1
+        gate_kwargs = gate_mock.await_args.kwargs
+        assert gate_kwargs["validation_report"]["rating"]["grade"] == "B"
+        assert gate_kwargs["risk_report"]["var_percent"] == pytest.approx(0.12)
+        assert gate_kwargs["backtest_metrics"]["sharpe_ratio"] == pytest.approx(1.23)
+        assert gate_kwargs["backtest_metrics"]["post_cost_sharpe"] == pytest.approx(0.67)
+        assert gate_kwargs["backtest_metrics"]["trade_density"] == pytest.approx(0.42)
+        assert gate_kwargs["backtest_metrics"]["primary_validation_layer"] == "target"
+        assert recheck["data"]["validation_report"]["rating"]["grade"] == "B"
+        assert recheck["data"]["risk_report"]["var_percent"] == pytest.approx(0.12)
+        assert recheck["data"]["backtest_metrics"]["sharpe_ratio"] == pytest.approx(1.23)
+        assert recheck["data"]["backtest_metrics"]["post_cost_sharpe"] == pytest.approx(0.67)
+        assert recheck["data"]["summary"]["validation_grade"] == "B"
 
     @pytest.mark.asyncio
     async def test_submit_binds_incubation_account(self, setup, monkeypatch):

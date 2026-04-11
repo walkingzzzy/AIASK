@@ -1,6 +1,7 @@
 from strategy_factory.application.candidate_contract import (
     apply_resolved_candidate_envelope,
     build_alpha_identity_components,
+    build_factory_backtest_assumptions,
     build_candidate_contract_hash,
     build_candidate_contract_backfill,
     build_candidate_identity_signature,
@@ -225,6 +226,82 @@ def test_alpha_identity_components_expose_explicit_signatures_for_dsl_variants()
     assert base_components["logic_signature"] != revised_components["logic_signature"]
     assert base_components["dsl_signature"] != revised_components["dsl_signature"]
     assert base_components["entry_exit_signature"] != revised_components["entry_exit_signature"]
+
+
+def test_factory_backtest_assumptions_infer_economic_semantics_from_candidate_fields():
+    candidate = {
+        "strategy_type": "dsl_rule",
+        "target_symbols": ["300442"],
+        "stock_pool": {
+            "selection_mode": "explicit",
+            "symbols": ["300442"],
+            "rationale": "target-only open dsl validation",
+        },
+        "holding_horizon": {
+            "min_days": 16,
+            "max_days": 40,
+            "expected_turnover_band": "low",
+            "rationale": "trend persistence",
+        },
+        "portfolio_spec": {
+            "position_assumption": "single_name_full_notional",
+            "target_weight_scheme": "single_name",
+        },
+        "execution_assumptions": {
+            "commission_rate": 0.00025,
+            "tradability_filter": True,
+            "slippage_model": "fixed",
+        },
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_only",
+        },
+        "position_sizing": {
+            "mode": "single_name",
+            "position_sizing_rationale": "single_name_conviction_capped_by_capacity",
+        },
+        "position_model": "single_name",
+        "capacity_assumption": {
+            "capacity_bucket": "small",
+            "max_position_pct": 0.12,
+            "capacity_participation_rate": 0.08,
+            "adv_ratio_limit": 0.15,
+            "symbol_count": 1,
+        },
+        "cost_sensitivity_grid": {
+            "base_case": {
+                "slippage_bps": 7,
+                "market_impact_bps": 2,
+                "commission_rate": 0.00025,
+                "capacity_participation_rate": 0.08,
+                "adv_ratio_limit": 0.15,
+            }
+        },
+        "market_regime_assumption": {
+            "summary": "trend expansion",
+            "preferred_regime": "trend_expansion",
+            "avoid_regime": "range_bound_chop",
+        },
+        "params": {
+            "dsl": {
+                "entry": {"op": "gt", "left": {"field": "close"}, "right": {"value": 10}},
+                "exit": {"op": "lt", "left": {"field": "close"}, "right": {"value": 9}},
+            }
+        },
+    }
+
+    assumptions = build_factory_backtest_assumptions(candidate)
+
+    assert assumptions.slippage_bps == 7
+    assert assumptions.market_impact_bps == 2
+    assert assumptions.capacity_bucket == "small"
+    assert assumptions.capacity_participation_rate == 0.08
+    assert assumptions.adv_ratio_limit == 0.15
+    assert assumptions.max_position_pct == 0.12
+    assert assumptions.turnover_cost_class == "medium_touch"
+    assert assumptions.position_sizing_rationale == "single_name_conviction_capped_by_capacity"
+    assert assumptions.expected_turnover_band == "low"
+    assert assumptions.validation_focus == "target_only"
 
 
 def test_candidate_contract_backfill_marks_missing_logic_as_partial():

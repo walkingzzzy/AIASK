@@ -51,6 +51,14 @@ FACTORY_RESEARCH_FACTORS: List[str] = list(FACTORY_RESEARCH_SEED_FACTORS)
 
 FACTOR_STRATEGY_MAPPING: Dict[str, tuple[str, ...]] = {
     "momentum": ("momentum", "ma_cross"),
+    "trend_quality": ("growth_factor", "quality_factor", "ma_cross"),
+    "price_volume_confirmation": ("momentum", "ma_cross", "quality_factor"),
+    "breakout_structure": ("momentum", "volatility_breakout", "ma_cross"),
+    "volatility_response": ("volatility_breakout", "ma_cross", "quality_factor"),
+    "overextension_filter": ("mean_reversion_short", "rsi", "gap_fill"),
+    "intraday_overnight_bridge": ("gap_fill", "mean_reversion_short", "ma_cross"),
+    "turnover_dynamics": ("momentum", "ma_cross", "macro_timing"),
+    "momentum_reversal_hybrid": ("mean_reversion_short", "momentum", "gap_fill"),
     "value": ("value_factor", "multi_factor"),
     "quality": ("quality_factor", "multi_factor"),
     "growth": ("growth_factor", "momentum"),
@@ -128,6 +136,10 @@ RESEARCH_ADMISSION_THRESHOLDS: Dict[str, dict] = {
         "white_reality_check_pvalue_max": 0.35,
         "hansen_spa_pvalue_max": 0.35,
     },
+    "review": {
+        "committee_final_score_min": 0.0,
+        "promotion_review_score_min": 0.0,
+    },
 }
 
 INCUBATION_ADMISSION_THRESHOLDS: Dict[str, dict] = {
@@ -167,6 +179,10 @@ INCUBATION_ADMISSION_THRESHOLDS: Dict[str, dict] = {
         "white_reality_check_pvalue_max": 0.25,
         "hansen_spa_pvalue_max": 0.25,
     },
+    "review": {
+        "committee_final_score_min": 0.58,
+        "promotion_review_score_min": 0.50,
+    },
 }
 
 LIVE_ADMISSION_THRESHOLDS: Dict[str, dict] = {
@@ -205,6 +221,10 @@ LIVE_ADMISSION_THRESHOLDS: Dict[str, dict] = {
         "pbo_max": 0.35,
         "white_reality_check_pvalue_max": 0.10,
         "hansen_spa_pvalue_max": 0.10,
+    },
+    "review": {
+        "committee_final_score_min": 0.70,
+        "promotion_review_score_min": 0.65,
     },
 }
 
@@ -414,6 +434,19 @@ STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD: int = _env_int(
     maximum=500,
 )
 STOCK_STRATEGY_MATRIX_RUN_WINDOW: str = resolve_stock_strategy_matrix_run_window()
+FACTORY_BACKLOG_RELAX_ENABLED: bool = _env_bool("STRATEGY_FACTORY_BACKLOG_RELAX_ENABLED", True)
+FACTORY_BACKLOG_RELAX_WEIGHT_MULTIPLIER: float = _env_float(
+    "STRATEGY_FACTORY_BACKLOG_RELAX_WEIGHT_MULTIPLIER",
+    0.18,
+    minimum=0.01,
+    maximum=0.6,
+)
+FACTORY_BACKLOG_RELAX_PRIORITY_PENALTY: int = _env_int(
+    "STRATEGY_FACTORY_BACKLOG_RELAX_PRIORITY_PENALTY",
+    10,
+    minimum=0,
+    maximum=40,
+)
 FACTORY_PRE_GATE_ENABLED: bool = _env_bool("STRATEGY_FACTORY_PRE_GATE_ENABLED", True)
 AUTONOMY_STARTUP_DELAY_SEC = _env_int("STRATEGY_FACTORY_STARTUP_DELAY_SEC", 0, minimum=0, maximum=3600)
 FACTORY_SUBMISSION_MIN_BACKTEST_TRADES: int = _env_int(
@@ -474,11 +507,29 @@ def is_factory_runtime_enabled() -> bool:
 
 
 def is_factory_factor_auto_refresh_enabled() -> bool:
-    return _env_bool("STRATEGY_FACTORY_FACTOR_AUTO_REFRESH", True)
+    return _env_bool("STRATEGY_FACTORY_FACTOR_AUTO_REFRESH", False)
 
 
 def is_factory_readiness_hard_block_enabled() -> bool:
-    return _env_bool("STRATEGY_FACTORY_READINESS_HARD_BLOCK", False)
+    return _env_bool("STRATEGY_FACTORY_READINESS_HARD_BLOCK", True)
+
+
+def resolve_factory_readiness_min_governed_active_candidates() -> int:
+    return _env_int(
+        "STRATEGY_FACTORY_READINESS_MIN_GOVERNED_ACTIVE_CANDIDATES",
+        1,
+        minimum=1,
+        maximum=100,
+    )
+
+
+def resolve_factory_readiness_min_governed_active_families() -> int:
+    return _env_int(
+        "STRATEGY_FACTORY_READINESS_MIN_GOVERNED_ACTIVE_FAMILIES",
+        1,
+        minimum=1,
+        maximum=20,
+    )
 
 
 FACTORY_EVENT_RUNTIME_MODE: str = resolve_event_runtime_mode()
@@ -501,11 +552,17 @@ FACTORY_STARTUP_WARMUP_LIMIT: int = _env_int(
 )
 FACTORY_FACTOR_REFRESH_TIMEOUT_SEC: int = _env_int(
     "STRATEGY_FACTORY_FACTOR_REFRESH_TIMEOUT_SEC",
-    600,
+    30,
     minimum=10,
     maximum=3600,
 )
 FACTORY_READINESS_HARD_BLOCK: bool = is_factory_readiness_hard_block_enabled()
+FACTORY_READINESS_MIN_GOVERNED_ACTIVE_CANDIDATES: int = (
+    resolve_factory_readiness_min_governed_active_candidates()
+)
+FACTORY_READINESS_MIN_GOVERNED_ACTIVE_FAMILIES: int = (
+    resolve_factory_readiness_min_governed_active_families()
+)
 FACTORY_READINESS_MIN_SCORE: float = _env_float(
     "STRATEGY_FACTORY_READINESS_MIN_SCORE",
     0.55,

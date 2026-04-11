@@ -392,6 +392,7 @@ class FactorScheduler:
         llm_enabled: bool,
         scheduler_llm: bool,
         provider_status: Optional[dict[str, Any]] = None,
+        provider_preflight: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         allow_local_rule_fallback = cls._scheduler_local_fallback_enabled()
         if not (llm_enabled and scheduler_llm):
@@ -402,6 +403,8 @@ class FactorScheduler:
             }
 
         status = dict(provider_status or {})
+        preflight = dict(provider_preflight or {})
+        before = dict(preflight.get("before") or {})
         if bool(status.get("ready")):
             return {
                 "status": "ready",
@@ -413,6 +416,12 @@ class FactorScheduler:
                 "status": "fallback_override",
                 "reason": "scheduler_local_rule_fallback_override",
                 "allow_local_rule_fallback": True,
+            }
+        if bool(before.get("ready")):
+            return {
+                "status": "degraded",
+                "reason": "provider_degraded_after_preflight",
+                "allow_local_rule_fallback": allow_local_rule_fallback,
             }
         return {
             "status": "blocked",
@@ -754,19 +763,29 @@ class FactorScheduler:
             "before": {},
             "after": {},
         }
+        reset_llm_provider_after_run = False
         if llm_enabled and scheduler_llm:
             llm_provider_preflight = await self._prepare_llm_provider(
                 llm_enabled=llm_enabled,
                 scheduler_llm=scheduler_llm,
+            )
+            reset_llm_provider_after_run = bool(
+                str(llm_provider_preflight.get("status") or "").strip().lower() == "failed"
+                and bool(dict(llm_provider_preflight.get("before") or {}).get("ready"))
             )
         llm_provider_status = self._provider_status() if (llm_enabled and scheduler_llm) else {}
         llm_provider_gate = self._resolve_provider_gate(
             llm_enabled=llm_enabled,
             scheduler_llm=scheduler_llm,
             provider_status=llm_provider_status,
+            provider_preflight=llm_provider_preflight,
         )
         if llm_enabled and scheduler_llm:
-            if str(llm_provider_gate.get("status") or "").strip().lower() == "blocked":
+            gate_status = str(llm_provider_gate.get("status") or "").strip().lower()
+            should_short_circuit_llm = gate_status == "blocked" and not bool(
+                dict(llm_provider_preflight.get("before") or {}).get("ready")
+            )
+            if should_short_circuit_llm:
                 reason = str(llm_provider_gate.get("reason") or "provider_not_ready_after_preflight")
                 llm_mining_result = {
                     "success": False,
@@ -1025,6 +1044,13 @@ class FactorScheduler:
         self.last_result["stale"] = "stale" in list(self.last_result.get("quality_flags") or [])
         self.last_result["summary"] = self._build_run_summary(self.last_result)
         self._record_run_history(self.last_result)
+        if reset_llm_provider_after_run:
+            try:
+                from .factor_llm_provider import close_factor_llm_provider
+
+                await close_factor_llm_provider()
+            except Exception:
+                logger.debug("FactorScheduler: failed to reset factor llm provider after degraded preflight", exc_info=True)
         logger.info(
             "FactorScheduler: completed in %.1fs — %d computed, %d errors",
             elapsed, total_computed, total_errors,

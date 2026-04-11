@@ -56,6 +56,8 @@ class Deduplicator:
     VECTOR_TRIGGER_THRESHOLD = 0.65
     VECTOR_THRESHOLD = 0.93
     MAX_VECTOR_CANDIDATES = 8
+    MAX_REFRESH_PER_LINEAGE = 2
+    MAX_REVISION_PER_LINEAGE = 3
     DEFAULT_BEHAVIOR_BUILD_TIMEOUT_SEC = 8.0
     DEFAULT_PREWARM_TIMEOUT_SEC = 15.0
 
@@ -240,6 +242,346 @@ class Deduplicator:
         total_return = float(metrics.get('total_return') or 0.0)
         max_drawdown = float(metrics.get('max_drawdown') or 1.0)
         return (round(sharpe, 6), round(total_return, 6), round(-max_drawdown, 6))
+
+    @staticmethod
+    def _extract_quality_snapshot(item: Optional[dict]) -> dict[str, Any]:
+        payload = dict(item or {})
+        params = dict(payload.get("params") or {})
+        quality_summary = dict(
+            payload.get("quality_summary")
+            or payload.get("quality_gate_summary")
+            or dict(payload.get("quality_gate") or {}).get("summary")
+            or {}
+        )
+        evidence = dict(
+            payload.get("candidate_evidence_status")
+            or params.get("candidate_evidence_status")
+            or quality_summary.get("candidate_evidence_status")
+            or {}
+        )
+        promotion_review = dict(
+            payload.get("promotion_review")
+            or payload.get("review_report")
+            or quality_summary.get("promotion_review")
+            or {}
+        )
+        backtest_metrics = dict(
+            payload.get("backtest_metrics")
+            or (payload.get("backtest_result") or {}).get("metrics")
+            or quality_summary.get("backtest_metrics")
+            or {}
+        )
+        observed_forward_days = list(
+            evidence.get("observed_forward_days")
+            or evidence.get("forward_days")
+            or []
+        )
+        missing_forward_days = list(evidence.get("missing_forward_days") or [])
+        raw_validation_grade = str(
+            payload.get("raw_validation_grade")
+            or quality_summary.get("raw_validation_grade")
+            or evidence.get("raw_validation_grade")
+            or payload.get("validation_grade")
+            or quality_summary.get("validation_grade")
+            or evidence.get("validation_grade")
+            or ""
+        ).strip().upper()
+        effective_validation_grade = str(
+            payload.get("validation_grade")
+            or payload.get("effective_validation_grade")
+            or quality_summary.get("validation_grade")
+            or quality_summary.get("effective_validation_grade")
+            or evidence.get("validation_grade")
+            or ""
+        ).strip().upper()
+        promotion_ready = bool(
+            evidence.get("promotion_ready")
+            or quality_summary.get("promotion_ready")
+        )
+        total_signals = int(
+            evidence.get("total_signals")
+            or evidence.get("signal_total_signals")
+            or quality_summary.get("signal_total_signals")
+            or 0
+        )
+        minimum_signal_count = int(evidence.get("minimum_signal_count") or 10)
+        forward_coverage_ratio = float(
+            evidence.get("forward_window_coverage_ratio")
+            or quality_summary.get("forward_window_coverage_ratio")
+            or (
+                len(observed_forward_days) / max(len(observed_forward_days) + len(missing_forward_days), 1)
+                if observed_forward_days or missing_forward_days
+                else 0.0
+            )
+            or 0.0
+        )
+        return {
+            "validation_grade": effective_validation_grade or raw_validation_grade or None,
+            "raw_validation_grade": raw_validation_grade or None,
+            "effective_validation_grade": effective_validation_grade or raw_validation_grade or None,
+            "promotion_ready": promotion_ready,
+            "total_signals": total_signals,
+            "minimum_signal_count": minimum_signal_count,
+            "forward_coverage_ratio": round(max(min(forward_coverage_ratio, 1.0), 0.0), 4),
+            "promotion_review_score": float(
+                promotion_review.get("score")
+                or quality_summary.get("promotion_review_score")
+                or 0.0
+            ),
+            "promotion_review_status": str(
+                promotion_review.get("status")
+                or quality_summary.get("promotion_review_status")
+                or ""
+            ).strip().lower(),
+            "promotion_review_recommendation": str(
+                promotion_review.get("recommendation")
+                or quality_summary.get("promotion_review_recommendation")
+                or ""
+            ).strip().lower(),
+            "sharpe_ratio": float(backtest_metrics.get("sharpe_ratio") or 0.0),
+            "total_return": float(backtest_metrics.get("total_return") or 0.0),
+            "max_drawdown": float(backtest_metrics.get("max_drawdown") or 0.0),
+        }
+
+    @classmethod
+    def _quality_snapshot_score(cls, item: Optional[dict]) -> tuple[float, bool]:
+        snapshot = cls._extract_quality_snapshot(item)
+        comparable = any(
+            [
+                snapshot.get("raw_validation_grade"),
+                snapshot.get("validation_grade"),
+                snapshot.get("promotion_ready"),
+                snapshot.get("total_signals"),
+                snapshot.get("forward_coverage_ratio"),
+                snapshot.get("promotion_review_score"),
+                snapshot.get("sharpe_ratio"),
+            ]
+        )
+        if not comparable:
+            return 0.0, False
+        grade_score = {
+            "A": 1.0,
+            "B": 0.85,
+            "C": 0.7,
+            "D": 0.45,
+        }.get(
+            str(snapshot.get("raw_validation_grade") or snapshot.get("validation_grade") or "").upper(),
+            0.25,
+        )
+        signal_ratio = min(
+            float(snapshot.get("total_signals") or 0.0)
+            / max(float(snapshot.get("minimum_signal_count") or 10.0), 1.0),
+            1.0,
+        )
+        review_score = max(min(float(snapshot.get("promotion_review_score") or 0.0), 1.0), 0.0)
+        sharpe_score = max(min((float(snapshot.get("sharpe_ratio") or 0.0) + 1.0) / 4.0, 1.0), 0.0)
+        total_return_score = max(min(float(snapshot.get("total_return") or 0.0), 1.0), -1.0)
+        drawdown_penalty = max(min(float(snapshot.get("max_drawdown") or 0.0), 1.0), 0.0)
+        score = (
+            grade_score * 0.26
+            + signal_ratio * 0.18
+            + float(snapshot.get("forward_coverage_ratio") or 0.0) * 0.22
+            + (0.16 if bool(snapshot.get("promotion_ready")) else 0.0)
+            + review_score * 0.1
+            + sharpe_score * 0.06
+            + max(total_return_score, 0.0) * 0.04
+            - drawdown_penalty * 0.04
+        )
+        return round(score, 6), True
+
+    @staticmethod
+    def _lineage_counter(item: Optional[dict], *keys: str) -> int:
+        payload = dict(item or {})
+        params = dict(payload.get("params") or {})
+        lineage = dict(
+            payload.get("candidate_lineage_contract")
+            or payload.get("lineage")
+            or params.get("candidate_lineage_contract")
+            or params.get("lineage")
+            or {}
+        )
+        for source in (payload, params, lineage):
+            for key in keys:
+                try:
+                    value = int(source.get(key) or 0)
+                except Exception:
+                    value = 0
+                if value > 0:
+                    return value
+        return 0
+
+    @classmethod
+    def _suggest_holding_bucket_shift(cls, bucket: str | None) -> str | None:
+        mapping = {
+            "short": "medium",
+            "medium": "long",
+            "long": "medium",
+        }
+        token = str(bucket or "").strip().lower()
+        return mapping.get(token) or ("medium" if token else None)
+
+    @classmethod
+    def _suggest_generator_mode_shift(cls, generator_mode: str | None) -> str | None:
+        token = str(generator_mode or "").strip().lower()
+        if not token:
+            return "external_llm"
+        return "external_llm" if token != "external_llm" else "rule"
+
+    @classmethod
+    def _lineage_quality_pressure(
+        cls,
+        candidate: Optional[dict],
+        existing_item: Optional[dict],
+        *,
+        refresh_lineage_depth: int,
+        revision_lineage_depth: int,
+        exact_target_universe_match: bool,
+    ) -> dict[str, Any]:
+        candidate_snapshot = cls._extract_quality_snapshot(candidate)
+        existing_snapshot = cls._extract_quality_snapshot(existing_item)
+        raw_grade = str(
+            existing_snapshot.get("raw_validation_grade")
+            or candidate_snapshot.get("raw_validation_grade")
+            or ""
+        ).strip().upper()
+        explicit_streak = max(
+            cls._lineage_counter(
+                candidate,
+                "consecutive_raw_validation_d_count",
+                "raw_validation_d_streak",
+                "consecutive_low_quality_count",
+                "low_quality_lineage_count",
+            ),
+            cls._lineage_counter(
+                existing_item,
+                "consecutive_raw_validation_d_count",
+                "raw_validation_d_streak",
+                "consecutive_low_quality_count",
+                "low_quality_lineage_count",
+            ),
+        )
+        low_quality_active = raw_grade == "D"
+        streak = explicit_streak
+        if low_quality_active and streak <= 0:
+            streak = max(refresh_lineage_depth, revision_lineage_depth)
+        candidate_profile = cls._candidate_strategy_profile(candidate)
+        existing_profile = cls._candidate_strategy_profile(existing_item)
+        candidate_holding_bucket = str(candidate_profile.get("holding_period_bucket") or "").strip().lower()
+        existing_holding_bucket = str(existing_profile.get("holding_period_bucket") or "").strip().lower()
+        candidate_generator_mode = str(candidate_profile.get("generator_mode") or "").strip().lower()
+        existing_generator_mode = str(existing_profile.get("generator_mode") or "").strip().lower()
+        holding_bucket_shift_applied = bool(
+            candidate_holding_bucket
+            and existing_holding_bucket
+            and candidate_holding_bucket != existing_holding_bucket
+        )
+        generator_mode_shift_applied = bool(
+            candidate_generator_mode
+            and existing_generator_mode
+            and candidate_generator_mode != existing_generator_mode
+        )
+        universe_shift_applied = not exact_target_universe_match
+        structural_shift_applied = bool(
+            holding_bucket_shift_applied
+            or generator_mode_shift_applied
+            or universe_shift_applied
+        )
+        required_shift = bool(low_quality_active and streak >= 2)
+        retire_lineage = bool(low_quality_active and streak >= cls.MAX_REVISION_PER_LINEAGE)
+        return {
+            "low_quality_lineage_active": low_quality_active,
+            "low_quality_lineage_streak": streak if low_quality_active else 0,
+            "lineage_structural_shift_required": required_shift,
+            "lineage_structural_shift_applied": structural_shift_applied,
+            "holding_bucket_shift_applied": holding_bucket_shift_applied,
+            "generator_mode_shift_applied": generator_mode_shift_applied,
+            "universe_shift_applied": universe_shift_applied,
+            "recommended_holding_bucket_shift": (
+                cls._suggest_holding_bucket_shift(existing_holding_bucket or candidate_holding_bucket)
+                if required_shift and not holding_bucket_shift_applied
+                else None
+            ),
+            "recommended_generator_mode_shift": (
+                cls._suggest_generator_mode_shift(existing_generator_mode or candidate_generator_mode)
+                if required_shift and not generator_mode_shift_applied
+                else None
+            ),
+            "recommended_universe_shift": bool(required_shift and not universe_shift_applied),
+            "lineage_retire_recommended": retire_lineage,
+            "lineage_quality_basis_grade": raw_grade or None,
+        }
+
+    @classmethod
+    def _refresh_improvement_snapshot(
+        cls,
+        candidate: Optional[dict],
+        existing_item: Optional[dict],
+    ) -> dict[str, Any]:
+        candidate_score, candidate_comparable = cls._quality_snapshot_score(candidate)
+        existing_score, existing_comparable = cls._quality_snapshot_score(existing_item)
+        if not candidate_comparable and not existing_comparable:
+            return {
+                "required": False,
+                "passed": True,
+                "candidate_score": candidate_score,
+                "existing_score": existing_score,
+            }
+        improvement_margin = round(candidate_score - existing_score, 6)
+        candidate_snapshot = cls._extract_quality_snapshot(candidate)
+        existing_snapshot = cls._extract_quality_snapshot(existing_item)
+        passed = bool(
+            improvement_margin >= 0.05
+            or (
+                bool(candidate_snapshot.get("promotion_ready"))
+                and not bool(existing_snapshot.get("promotion_ready"))
+            )
+            or (
+                float(candidate_snapshot.get("forward_coverage_ratio") or 0.0)
+                - float(existing_snapshot.get("forward_coverage_ratio") or 0.0)
+                >= 0.2
+            )
+            or (
+                float(candidate_snapshot.get("promotion_review_score") or 0.0)
+                - float(existing_snapshot.get("promotion_review_score") or 0.0)
+                >= 0.08
+            )
+        )
+        return {
+            "required": True,
+            "passed": passed,
+            "candidate_score": candidate_score,
+            "existing_score": existing_score,
+            "candidate_snapshot": candidate_snapshot,
+            "existing_snapshot": existing_snapshot,
+        }
+
+    @staticmethod
+    def _lineage_operation_depth(item: Optional[dict], *, mode: str) -> int:
+        payload = dict(item or {})
+        params = dict(payload.get("params") or {})
+        lineage = dict(
+            payload.get("candidate_lineage_contract")
+            or payload.get("lineage")
+            or params.get("candidate_lineage_contract")
+            or params.get("lineage")
+            or {}
+        )
+        keys = (
+            f"{mode}_count",
+            f"{mode}_depth",
+            f"lineage_{mode}_count",
+            f"lineage_{mode}_depth",
+            f"consecutive_{mode}_count",
+        )
+        for source in (payload, params, lineage):
+            for key in keys:
+                try:
+                    value = int(source.get(key) or 0)
+                except Exception:
+                    value = 0
+                if value > 0:
+                    return value
+        return 0
 
     @classmethod
     def _collapse_refresh_existing_candidates(cls, unique: List[dict]) -> tuple[List[dict], List[dict]]:
@@ -550,6 +892,12 @@ class Deduplicator:
         return {
             "refresh_decision_basis": payload.get("refresh_decision_basis"),
             "revision_trigger_reason": payload.get("revision_trigger_reason"),
+            "refresh_improvement_required": payload.get("refresh_improvement_required"),
+            "refresh_improvement_passed": payload.get("refresh_improvement_passed"),
+            "refresh_candidate_score": payload.get("refresh_candidate_score"),
+            "refresh_existing_score": payload.get("refresh_existing_score"),
+            "refresh_lineage_limit_reached": payload.get("refresh_lineage_limit_reached"),
+            "revision_lineage_limit_reached": payload.get("revision_lineage_limit_reached"),
             "identity_changed": payload.get("identity_changed"),
             "tested_object_changed": payload.get("tested_object_changed"),
             "tested_object_hash_changed": payload.get("tested_object_hash_changed"),
@@ -561,6 +909,15 @@ class Deduplicator:
             "existing_tested_object_available": payload.get("existing_tested_object_available"),
             "candidate_tested_object_hash": payload.get("candidate_tested_object_hash"),
             "existing_tested_object_hash": payload.get("existing_tested_object_hash"),
+            "low_quality_lineage_active": payload.get("low_quality_lineage_active"),
+            "low_quality_lineage_streak": payload.get("low_quality_lineage_streak"),
+            "lineage_structural_shift_required": payload.get("lineage_structural_shift_required"),
+            "lineage_structural_shift_applied": payload.get("lineage_structural_shift_applied"),
+            "recommended_holding_bucket_shift": payload.get("recommended_holding_bucket_shift"),
+            "recommended_generator_mode_shift": payload.get("recommended_generator_mode_shift"),
+            "recommended_universe_shift": payload.get("recommended_universe_shift"),
+            "lineage_retire_recommended": payload.get("lineage_retire_recommended"),
+            "lineage_quality_basis_grade": payload.get("lineage_quality_basis_grade"),
         }
 
     @classmethod
@@ -575,6 +932,9 @@ class Deduplicator:
             "same_tested_object_and_identity": 6,
             "same_tested_object_but_legacy_identity_partial": 5,
             "same_tested_object_with_legacy_identity_backfill": 5,
+            "legacy_partial_parent_lineage_refresh": 5,
+            "legacy_partial_event_context_refresh": 5,
+            "legacy_partial_task_signature_refresh": 5,
             "tested_object_changed": 4,
             "identity_changed": 3,
             "task_signature_changed": 2,
@@ -603,7 +963,13 @@ class Deduplicator:
         basis = str(payload.get("refresh_decision_basis") or "").strip().lower()
         effective_similarity = float(match_payload.get("effective_similarity") or 0.0)
         if payload.get("refresh_existing"):
-            if basis not in {"same_tested_object_and_identity", "same_tested_object_with_legacy_identity_backfill"}:
+            if basis not in {
+                "same_tested_object_and_identity",
+                "same_tested_object_with_legacy_identity_backfill",
+                "legacy_partial_parent_lineage_refresh",
+                "legacy_partial_event_context_refresh",
+                "legacy_partial_task_signature_refresh",
+            }:
                 return None
             return cls._semantic_result_priority(payload, match_payload), {
                 "duplicate": False,
@@ -665,6 +1031,14 @@ class Deduplicator:
             else False
         )
         target_overlap = float(match.get("target_overlap") or 0.0)
+        research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
+        event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
+        has_event_context = bool(
+            event_context.get("event_id")
+            or event_context.get("theme_code")
+            or research_task.get("task_source") == "event_driven"
+            or str(candidate.get("source") or "").startswith("strategy_factory:")
+        )
         candidate_signature = cls._candidate_task_signature(candidate)
         existing_signature = cls._existing_task_signature(existing_payload) if existing_payload else ""
         candidate_identity = cls._candidate_identity_signature(candidate)
@@ -686,6 +1060,15 @@ class Deduplicator:
                 not cls._has_explicit_identity_contract(existing_payload)
                 or not cls._has_explicit_tested_object_hash(existing_payload)
             )
+        )
+        refresh_improvement = cls._refresh_improvement_snapshot(candidate, existing_payload)
+        refresh_lineage_depth = max(
+            cls._lineage_operation_depth(candidate, mode="refresh"),
+            cls._lineage_operation_depth(existing_payload, mode="refresh"),
+        )
+        revision_lineage_depth = max(
+            cls._lineage_operation_depth(candidate, mode="revision"),
+            cls._lineage_operation_depth(existing_payload, mode="revision"),
         )
         tested_object_backfill_incomplete = bool(
             existing_payload
@@ -713,19 +1096,33 @@ class Deduplicator:
             "legacy_identity_partial": legacy_identity_partial,
             "tested_object_backfill_incomplete": tested_object_backfill_incomplete,
             "exact_target_universe_match": exact_target_universe_match,
+            "refresh_improvement_required": bool(refresh_improvement.get("required")),
+            "refresh_improvement_passed": bool(refresh_improvement.get("passed")),
+            "refresh_candidate_score": refresh_improvement.get("candidate_score"),
+            "refresh_existing_score": refresh_improvement.get("existing_score"),
+            "refresh_lineage_limit_reached": refresh_lineage_depth >= cls.MAX_REFRESH_PER_LINEAGE,
+            "revision_lineage_limit_reached": revision_lineage_depth >= cls.MAX_REVISION_PER_LINEAGE,
         }
+        decision.update(
+            cls._lineage_quality_pressure(
+                candidate,
+                existing_payload,
+                refresh_lineage_depth=refresh_lineage_depth,
+                revision_lineage_depth=revision_lineage_depth,
+                exact_target_universe_match=exact_target_universe_match,
+            )
+        )
         if matched_status not in {"incubating", "listed", "published"} or not matched_strategy_id:
             decision["refresh_decision_basis"] = "matched_strategy_not_refreshable"
             return decision
+        if (
+            decision.get("lineage_retire_recommended")
+            and decision.get("lineage_structural_shift_required")
+            and not decision.get("lineage_structural_shift_applied")
+        ):
+            decision["refresh_decision_basis"] = "low_quality_lineage_retired"
+            return decision
         if not existing_payload:
-            research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
-            event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
-            has_event_context = bool(
-                event_context.get("event_id")
-                or event_context.get("theme_code")
-                or research_task.get("task_source") == "event_driven"
-                or str(candidate.get("source") or "").startswith("strategy_factory:")
-            )
             decision["refresh_existing"] = bool(has_event_context and explicit_candidate_universe)
             decision["refresh_decision_basis"] = (
                 "event_context_fallback"
@@ -733,54 +1130,188 @@ class Deduplicator:
                 else ("parent_lineage_without_existing_context" if parent_lineage_matched else "insufficient_existing_context")
             )
             return decision
+        legacy_partial_refresh_allowed = bool(
+            legacy_identity_partial
+            and not bool(decision.get("existing_identity_available"))
+            and exact_target_universe_match
+            and bool(decision.get("refresh_improvement_passed"))
+            and not bool(decision.get("refresh_lineage_limit_reached"))
+            and (
+                (parent_lineage_matched and task_signature_changed is not True)
+                or (
+                    has_event_context
+                    and explicit_candidate_universe
+                    and task_signature_changed is not True
+                )
+                or (task_signature_changed is False)
+            )
+        )
         if tested_object_changed is True:
+            if legacy_partial_refresh_allowed:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["refresh_decision_basis"] = "low_quality_lineage_refresh_blocked"
+                    return decision
+                decision["refresh_existing"] = True
+                if parent_lineage_matched:
+                    decision["refresh_decision_basis"] = "legacy_partial_parent_lineage_refresh"
+                elif has_event_context and explicit_candidate_universe:
+                    decision["refresh_decision_basis"] = "legacy_partial_event_context_refresh"
+                else:
+                    decision["refresh_decision_basis"] = "legacy_partial_task_signature_refresh"
+                return decision
             decision["refresh_decision_basis"] = "tested_object_changed"
             decision["spawn_revision_from_existing"] = bool(
-                parent_lineage_matched
-                or target_overlap >= 0.8
-                or exact_target_universe_match
-                or task_signature_changed is False
-            )
-            if decision["spawn_revision_from_existing"]:
-                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
-            return decision
-        if identity_changed is True:
-            decision["refresh_decision_basis"] = "identity_changed"
-            decision["spawn_revision_from_existing"] = bool(
-                parent_lineage_matched
-                or target_overlap >= 0.8
-                or exact_target_universe_match
-            )
-            if decision["spawn_revision_from_existing"]:
-                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
-            return decision
-        if task_signature_changed is True:
-            decision["refresh_decision_basis"] = "task_signature_changed"
-            decision["spawn_revision_from_existing"] = bool(parent_lineage_matched or target_overlap >= 0.8)
-            if decision["spawn_revision_from_existing"]:
-                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
-            return decision
-        if explicit_candidate_universe and explicit_existing_universe and not exact_target_universe_match:
-            decision["refresh_decision_basis"] = "target_universe_changed"
-            decision["spawn_revision_from_existing"] = bool(parent_lineage_matched or target_overlap >= 0.8)
-            if decision["spawn_revision_from_existing"]:
-                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
-            return decision
-        if candidate_tested_object_hash and existing_tested_object_hash and candidate_tested_object_hash == existing_tested_object_hash:
-            if legacy_identity_partial:
-                if task_signature_changed is False and (exact_target_universe_match or target_overlap >= 0.8):
-                    decision["refresh_existing"] = True
-                    decision["refresh_decision_basis"] = "same_tested_object_with_legacy_identity_backfill"
-                    return decision
-                decision["refresh_decision_basis"] = "same_tested_object_but_legacy_identity_partial"
-                decision["spawn_revision_from_existing"] = bool(
+                not decision.get("revision_lineage_limit_reached")
+                and (
                     parent_lineage_matched
                     or target_overlap >= 0.8
                     or exact_target_universe_match
                     or task_signature_changed is False
                 )
+            )
+            if decision["spawn_revision_from_existing"]:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["spawn_revision_from_existing"] = False
+                    decision["refresh_decision_basis"] = "low_quality_lineage_shift_required"
+                    return decision
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            elif decision.get("revision_lineage_limit_reached"):
+                decision["refresh_decision_basis"] = "revision_limit_reached"
+            return decision
+        if identity_changed is True:
+            decision["refresh_decision_basis"] = "identity_changed"
+            decision["spawn_revision_from_existing"] = bool(
+                not decision.get("revision_lineage_limit_reached")
+                and (
+                    parent_lineage_matched
+                    or target_overlap >= 0.8
+                    or exact_target_universe_match
+                )
+            )
+            if decision["spawn_revision_from_existing"]:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["spawn_revision_from_existing"] = False
+                    decision["refresh_decision_basis"] = "low_quality_lineage_shift_required"
+                    return decision
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            elif decision.get("revision_lineage_limit_reached"):
+                decision["refresh_decision_basis"] = "revision_limit_reached"
+            return decision
+        if task_signature_changed is True:
+            decision["refresh_decision_basis"] = "task_signature_changed"
+            decision["spawn_revision_from_existing"] = bool(
+                not decision.get("revision_lineage_limit_reached")
+                and (parent_lineage_matched or target_overlap >= 0.8)
+            )
+            if decision["spawn_revision_from_existing"]:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["spawn_revision_from_existing"] = False
+                    decision["refresh_decision_basis"] = "low_quality_lineage_shift_required"
+                    return decision
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            elif decision.get("revision_lineage_limit_reached"):
+                decision["refresh_decision_basis"] = "revision_limit_reached"
+            return decision
+        if explicit_candidate_universe and explicit_existing_universe and not exact_target_universe_match:
+            decision["refresh_decision_basis"] = "target_universe_changed"
+            decision["spawn_revision_from_existing"] = bool(
+                not decision.get("revision_lineage_limit_reached")
+                and (parent_lineage_matched or target_overlap >= 0.8)
+            )
+            if decision["spawn_revision_from_existing"]:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["spawn_revision_from_existing"] = False
+                    decision["refresh_decision_basis"] = "low_quality_lineage_shift_required"
+                    return decision
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            elif decision.get("revision_lineage_limit_reached"):
+                decision["refresh_decision_basis"] = "revision_limit_reached"
+            return decision
+        if candidate_tested_object_hash and existing_tested_object_hash and candidate_tested_object_hash == existing_tested_object_hash:
+            if legacy_identity_partial:
+                if (
+                    decision.get("lineage_structural_shift_required")
+                    and not decision.get("lineage_structural_shift_applied")
+                ):
+                    decision["refresh_decision_basis"] = "low_quality_lineage_refresh_blocked"
+                    return decision
+                if (
+                    not decision.get("refresh_improvement_required")
+                    or bool(decision.get("refresh_improvement_passed"))
+                ) and not bool(decision.get("refresh_lineage_limit_reached")) and (
+                    parent_lineage_matched
+                    or (
+                        has_event_context
+                        and explicit_candidate_universe
+                        and (exact_target_universe_match or target_overlap >= 0.8)
+                    )
+                    or (
+                        task_signature_changed is False
+                        and (exact_target_universe_match or target_overlap >= 0.8)
+                    )
+                ):
+                    decision["refresh_existing"] = True
+                    if parent_lineage_matched:
+                        decision["refresh_decision_basis"] = "same_tested_object_with_legacy_identity_parent_lineage"
+                    elif has_event_context and explicit_candidate_universe:
+                        decision["refresh_decision_basis"] = "same_tested_object_with_legacy_identity_event_context"
+                    else:
+                        decision["refresh_decision_basis"] = "same_tested_object_with_legacy_identity_backfill"
+                    return decision
+                if decision.get("refresh_lineage_limit_reached"):
+                    decision["refresh_decision_basis"] = "refresh_limit_reached"
+                    return decision
+                if decision.get("refresh_improvement_required") and not decision.get("refresh_improvement_passed"):
+                    decision["refresh_decision_basis"] = "same_tested_object_without_improvement"
+                    return decision
+                decision["refresh_decision_basis"] = "same_tested_object_but_legacy_identity_partial"
+                decision["spawn_revision_from_existing"] = bool(
+                    not decision.get("revision_lineage_limit_reached")
+                    and (
+                        parent_lineage_matched
+                        or target_overlap >= 0.8
+                        or exact_target_universe_match
+                        or task_signature_changed is False
+                    )
+                )
                 if decision["spawn_revision_from_existing"]:
+                    if (
+                        decision.get("lineage_structural_shift_required")
+                        and not decision.get("lineage_structural_shift_applied")
+                    ):
+                        decision["spawn_revision_from_existing"] = False
+                        decision["refresh_decision_basis"] = "low_quality_lineage_shift_required"
+                        return decision
                     decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+                elif decision.get("revision_lineage_limit_reached"):
+                    decision["refresh_decision_basis"] = "revision_limit_reached"
+                return decision
+            if (
+                decision.get("lineage_structural_shift_required")
+                and not decision.get("lineage_structural_shift_applied")
+            ):
+                decision["refresh_decision_basis"] = "low_quality_lineage_refresh_blocked"
+                return decision
+            if decision.get("refresh_lineage_limit_reached"):
+                decision["refresh_decision_basis"] = "refresh_limit_reached"
+                return decision
+            if decision.get("refresh_improvement_required") and not decision.get("refresh_improvement_passed"):
+                decision["refresh_decision_basis"] = "same_tested_object_without_improvement"
                 return decision
             decision["refresh_existing"] = True
             decision["refresh_decision_basis"] = "same_tested_object_and_identity"
@@ -831,15 +1362,20 @@ class Deduplicator:
             target_overlap = self._target_overlap(candidate, existing_item)
             material_target_divergence = self._has_material_target_divergence(candidate, existing_item, target_overlap)
             tag_overlap = self._tag_overlap(candidate, existing_item)
+            existing_dedup = dict(existing_item.get("dedup_result") or {})
             if tag_overlap > 0:
                 metrics["coarse_tag_hit_count"] += 1
             if target_overlap is not None and target_overlap > 0:
                 metrics["coarse_target_hit_count"] += 1
             effective_similarity = self._effective_similarity(param_similarity, target_overlap)
             match = {
-                "matched_strategy_id": existing_item.get("id"),
-                "matched_name": existing_item.get("name") or existing_item.get("strategy_type"),
-                "matched_status": existing_item.get("status"),
+                "matched_strategy_id": existing_item.get("id") or existing_dedup.get("matched_strategy_id"),
+                "matched_name": (
+                    existing_item.get("name")
+                    or existing_dedup.get("matched_name")
+                    or existing_item.get("strategy_type")
+                ),
+                "matched_status": existing_item.get("status") or existing_dedup.get("matched_status"),
                 "param_similarity": round(param_similarity, 4),
                 "target_overlap": target_overlap,
                 "effective_similarity": round(effective_similarity, 4),

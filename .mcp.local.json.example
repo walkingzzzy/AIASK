@@ -6,7 +6,7 @@
       "cwd": "/Users/mac/Desktop/股票/packages/akshare-mcp",
       "env": {
         "TUSHARE_TOKEN": "<your-real-tushare-token>",
-        "TUSHARE_HTTP_URL": "http://lianghua.nanyangqiankun.top",
+        "TUSHARE_HTTP_URL": "http://api.tushare.pro",
         "TDX_ENABLED": "false",
         "DB_HOST": "localhost",
         "DB_PORT": "5432",

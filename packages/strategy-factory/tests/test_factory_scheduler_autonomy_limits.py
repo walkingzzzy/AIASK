@@ -914,6 +914,215 @@ async def test_run_autonomy_batches_filters_feedback_blocked_tasks_and_cools_dow
 
 
 @pytest.mark.asyncio
+async def test_run_autonomy_batches_relaxes_bulk_backlog_freeze_into_cooldown(monkeypatch):
+    scheduler = StrategyFactoryScheduler()
+
+    scanner = _FakeScanner([])
+    factory_pkg = SimpleNamespace(MarketOpportunityScanner=lambda: scanner)
+    fake_autonomy = SimpleNamespace()
+    called_tasks: list[dict] = []
+
+    async def _generate_factory_candidates(_db, _snapshot, *, limit=4, research_task=None, source=""):
+        task = dict(research_task or {})
+        called_tasks.append(task)
+        assert source.startswith("strategy_factory:")
+        return _fake_cycle(task)
+
+    fake_autonomy.generate_factory_candidates = _generate_factory_candidates
+
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.get_strategy_factory_package",
+        lambda: factory_pkg,
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop._call_optional_async",
+        _fake_call_optional,
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.StockStrategyMatrixPlanner.plan",
+        AsyncMock(
+            return_value={
+                "summary": {"enabled": True, "task_count": 1},
+                "tasks": [
+                    {
+                        "task_id": "bulk_task_relaxed",
+                        "task_key": "bulk_task_relaxed",
+                        "task_source": "bulk_stock_matrix",
+                        "opportunity_type": "stock_strategy_matrix",
+                        "candidate_family": "multi_factor",
+                        "target_symbols": ["600519"],
+                        "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                        "strategy_preferences": ["multi_factor"],
+                        "priority": 62,
+                        "generation_limit": 4,
+                    }
+                ],
+            }
+        ),
+    )
+    monkeypatch.setattr(scheduler, "_get_autonomy_gateway", lambda: fake_autonomy)
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_bulk_stock_matrix_cursor",
+        AsyncMock(return_value={"next_universe_offset": 0, "source": "default", "resume_from_run_id": None}),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_bulk_stock_matrix_run_window_state",
+        lambda _now: {
+            "run_window_active": True,
+            "configured_enabled": True,
+            "run_window": "always",
+            "current_period": "off_hours",
+            "skip_reason": None,
+        },
+    )
+    monkeypatch.setattr(scheduler, "_prepare_shared_generation_context", AsyncMock(return_value=False))
+    monkeypatch.setattr(scheduler, "_persist_task_evidence", AsyncMock(return_value=[]))
+
+    result = await scheduler._run_autonomy_batches(
+        SimpleNamespace(),
+        {
+            "date": "2026-04-03",
+            "fear_greed_index": 45,
+            "factor_research": {
+                "budget_feedback": {
+                    "multi_factor": {
+                        "strategy_count": 6,
+                        "zero_signal_ratio": 1.0,
+                        "low_signal_ratio": 1.0,
+                        "evidence_debt_ratio": 0.92,
+                    }
+                }
+            },
+        },
+    )
+
+    stage = result["stage"]
+    assert stage["task_count"] == 1
+    assert stage["planned_feedback_control_mode_counts"] == {"normal": 1}
+    assert stage["planned_feedback_limited_task_count"] == 1
+    assert stage["planned_feedback_relaxed_task_count"] == 1
+    assert stage["blocked_feedback_task_count"] == 0
+    assert [task["task_id"] for task in called_tasks] == ["bulk_task_relaxed"]
+    assert called_tasks[0]["feedback_control_mode"] == "normal"
+    assert called_tasks[0]["feedback_control_original_mode"] == "freeze"
+    assert called_tasks[0]["feedback_control_relaxed_mode"] == "normal"
+    assert called_tasks[0]["feedback_generation_limited"] is True
+    assert called_tasks[0]["generation_limit"] == 1
+    assert called_tasks[0]["priority"] < 62
+
+
+@pytest.mark.asyncio
+async def test_run_autonomy_batches_relaxes_snapshot_generator_mode_freeze_into_normal(monkeypatch):
+    scheduler = StrategyFactoryScheduler()
+
+    scan_tasks = [
+        {
+            "task_id": "snapshot_task_relaxed",
+            "task_key": "snapshot_task_relaxed",
+            "task_source": "snapshot",
+            "opportunity_type": "factor_acceleration",
+            "strategy_preferences": ["momentum"],
+            "target_symbols": ["600519"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+            "priority": 58,
+            "generation_limit": 4,
+        }
+    ]
+
+    scanner = _FakeScanner(scan_tasks)
+    factory_pkg = SimpleNamespace(MarketOpportunityScanner=lambda: scanner)
+    fake_autonomy = SimpleNamespace()
+    called_tasks: list[dict] = []
+
+    async def _generate_factory_candidates(_db, _snapshot, *, limit=4, research_task=None, source=""):
+        task = dict(research_task or {})
+        called_tasks.append(task)
+        assert source.startswith("strategy_factory:")
+        return _fake_cycle(task)
+
+    fake_autonomy.generate_factory_candidates = _generate_factory_candidates
+
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.get_strategy_factory_package",
+        lambda: factory_pkg,
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop._call_optional_async",
+        _fake_call_optional,
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.StockStrategyMatrixPlanner.plan",
+        AsyncMock(return_value={"summary": {"enabled": False, "task_count": 0}, "tasks": []}),
+    )
+    monkeypatch.setattr(scheduler, "_get_autonomy_gateway", lambda: fake_autonomy)
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_bulk_stock_matrix_cursor",
+        AsyncMock(return_value={"next_universe_offset": 0, "source": "default", "resume_from_run_id": None}),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_bulk_stock_matrix_run_window_state",
+        lambda _now: {
+            "run_window_active": False,
+            "configured_enabled": False,
+            "run_window": "always",
+            "current_period": "market_hours",
+            "skip_reason": "outside_run_window",
+        },
+    )
+    monkeypatch.setattr(scheduler, "_prepare_shared_generation_context", AsyncMock(return_value=False))
+    monkeypatch.setattr(scheduler, "_persist_task_evidence", AsyncMock(return_value=[]))
+
+    result = await scheduler._run_autonomy_batches(
+        SimpleNamespace(),
+        {
+            "date": "2026-04-03",
+            "fear_greed_index": 45,
+            "factor_research": {
+                "budget_feedback": {
+                    "momentum": {
+                        "generator_mode_feedback": {
+                            "rule": {
+                                "strategy_count": 6,
+                                "zero_signal_ratio": 1.0,
+                                "low_signal_ratio": 1.0,
+                                "forward_window_coverage_ratio": 0.0,
+                                "promotion_ready_ratio": 0.0,
+                                "promotion_review_coverage_ratio": 0.0,
+                                "evidence_debt_ratio": 0.92,
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    )
+
+    stage = result["stage"]
+    assert stage["task_count"] == 1
+    assert stage["planned_feedback_control_mode_counts"] == {"normal": 1}
+    assert stage["planned_feedback_generator_mode_control_mode_counts"] == {"freeze": 1}
+    assert stage["selected_feedback_control_mode_counts"] == {"normal": 1}
+    assert stage["selected_feedback_generator_mode_control_mode_counts"] == {"freeze": 1}
+    assert stage["planned_feedback_limited_task_count"] == 1
+    assert stage["planned_feedback_relaxed_task_count"] == 1
+    assert stage["blocked_feedback_task_count"] == 0
+    assert [task["task_id"] for task in called_tasks] == ["snapshot_task_relaxed"]
+    assert called_tasks[0]["generator_mode"] == "rule"
+    assert called_tasks[0]["feedback_generator_mode_control_mode"] == "freeze"
+    assert called_tasks[0]["feedback_control_mode"] == "normal"
+    assert called_tasks[0]["feedback_control_original_mode"] == "freeze"
+    assert called_tasks[0]["feedback_control_relaxed_mode"] == "normal"
+    assert called_tasks[0]["feedback_control_relax_reason"] == "snapshot_research_backlog_normal_throttle"
+    assert called_tasks[0]["feedback_generation_limited"] is True
+    assert called_tasks[0]["generation_limit"] == 1
+    assert called_tasks[0]["priority"] < 58
+
+
+@pytest.mark.asyncio
 async def test_run_autonomy_batches_applies_provider_and_rl_mode_controls(monkeypatch):
     scheduler = StrategyFactoryScheduler()
     scheduler.last_result = {

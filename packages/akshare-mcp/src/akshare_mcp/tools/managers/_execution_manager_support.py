@@ -76,6 +76,19 @@ _SOFT_GATE_RUNTIME_CONFIG: dict[str, Any] = {
     "code_profiles": {},
 }
 
+
+def _reset_runtime_config_state() -> None:
+    global _RUNTIME_CONFIG_LOADED
+    _RUNTIME_CONFIG_LOADED = False
+    _SOFT_GATE_RUNTIME_CONFIG.clear()
+    _SOFT_GATE_RUNTIME_CONFIG.update(
+        {
+            "default_profile": "balanced",
+            "default_threshold_overrides": {},
+            "code_profiles": {},
+        }
+    )
+
 def _apply_soft_gate_runtime_defaults(kwargs: dict) -> dict:
     """Apply runtime soft-gate defaults when request-level params are absent."""
     merged = dict(kwargs)
@@ -636,7 +649,7 @@ def _load_realtime_quote_with_timeout(code: str) -> dict[str, Any] | None:
 
 def _enrich_kwargs_with_realtime(code: str, kwargs: dict) -> dict:
     """从实时行情自动填充 reference_price / avg_minute_volume（P1-c）。"""
-    if kwargs.get("reference_price") and kwargs.get("avg_minute_volume"):
+    if kwargs.get("reference_price"):
         return kwargs
     try:
         quote = _load_realtime_quote_with_timeout(code)

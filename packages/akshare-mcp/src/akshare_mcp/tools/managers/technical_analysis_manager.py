@@ -119,24 +119,38 @@ def _build_indicator_summary(klines: list[dict], results: dict) -> dict:
             signals.append('MACD柱线为负，动量偏弱')
             score -= 1
 
-    # 波动
+    # 波动 — ATR 纳入评分
     volatility_label = 'normal'
     atr_pct = None
     if atr_val is not None and latest_close > 0:
         atr_pct = atr_val / latest_close
-        if atr_pct >= 0.04:
+        if atr_pct >= 0.05:
             volatility_label = 'high'
-            signals.append(f'ATR/Close={atr_pct:.2%}，波动较高')
+            signals.append(f'ATR/Close={atr_pct:.2%}，波动偏高，风险较大')
+            score -= 1
+        elif atr_pct >= 0.04:
+            volatility_label = 'elevated'
+            signals.append(f'ATR/Close={atr_pct:.2%}，波动偏高')
         elif atr_pct <= 0.015:
             volatility_label = 'low'
             signals.append(f'ATR/Close={atr_pct:.2%}，波动较低')
 
+    # 布林带位置 — 纳入评分
     boll_width_pct = None
     if boll_upper is not None and boll_lower is not None and boll_middle:
         try:
             boll_width_pct = (boll_upper - boll_lower) / float(boll_middle)
         except Exception:
             boll_width_pct = None
+
+    if boll_lower is not None and latest_close > 0 and boll_lower > 0:
+        if latest_close <= boll_lower * 1.01:
+            signals.append(f'触及布林下轨({boll_lower:.1f})，超卖信号')
+            score += 1
+    if boll_upper is not None and latest_close > 0 and boll_upper > 0:
+        if latest_close >= boll_upper * 0.99:
+            signals.append(f'触及布林上轨({boll_upper:.1f})，超买信号')
+            score -= 1
 
     if score >= 2:
         suggestion, suggestion_text = 'buy', '技术面偏强，可关注低吸机会'

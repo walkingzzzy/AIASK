@@ -434,6 +434,67 @@ class _TestStrategyFactorySchedulerScannerMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _scan)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+        from strategy_factory.application import factory_scheduler as scheduler_module
+
+        def _allow_readiness(self, snapshot, factor_research):
+            summary = dict((factor_research or {}).get("summary") or {})
+            return {
+                "readiness_contract_version": "strategy_factory.readiness.v1",
+                "authority_contract_version": "strategy_factory.readiness.authority.v1",
+                "runtime_enabled": True,
+                "event_runtime_mode": "readonly",
+                "auto_refresh_enabled": True,
+                "hard_block_enabled": False,
+                "decision": "proceed",
+                "blocked": False,
+                "hard_gate": False,
+                "gate_mode": "soft",
+                "can_proceed": True,
+                "blocking_stage": None,
+                "blocking_reason_codes": [],
+                "critical_blocking_reason_codes": [],
+                "warning_reason_codes": [],
+                "skip_reason": None,
+                "readiness_score": 0.92,
+                "blocker_count": 0,
+                "warning_count": 0,
+                "snapshot_degraded": bool(snapshot.get("degraded")),
+                "snapshot_completion_ratio": 1.0,
+                "event_status": "success",
+                "event_task_ready_count": 0,
+                "factor_research_degraded": bool(summary.get("degraded")),
+                "factor_research_stale": bool(summary.get("stale")),
+                "factor_refresh_attempted": False,
+                "factor_refresh_status": "not_needed",
+                "factor_refresh_trigger": None,
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_mode": "strict_governed",
+                "governed_candidate_pool_provisional": False,
+                "governed_candidate_pool_active": True,
+                "governed_candidate_pool_runtime_state": "active",
+                "active_candidate_count": max(1, int(summary.get("active_candidate_count") or 0)),
+                "governed_source_candidate_count": max(
+                    1,
+                    int(summary.get("governed_source_candidate_count") or 0),
+                ),
+                "governed_blocked_candidate_count": 0,
+                "governed_pending_candidate_count": 0,
+                "governed_blocked_ratio": 0.0,
+                "governed_pending_ratio": 0.0,
+                "governed_freshness_days": 0.0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+                "governed_exclusion_reason_counts": {},
+                "governed_blocking_reason_counts": {},
+                "governed_pending_reason_counts": {},
+                "governed_risk_counts": {},
+            }
+
+        monkeypatch.setattr(
+            scheduler_module.FactoryCycleRunner,
+            "_build_factory_readiness",
+            _allow_readiness,
+        )
 
         result = await StrategyFactoryScheduler().run_once()
 
@@ -582,6 +643,47 @@ class _TestStrategyFactorySchedulerScannerMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _scan)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+        monkeypatch.setattr(
+            "strategy_factory.infrastructure.mcp_adapters.MCPFactorResearchGatewayImpl.build_artifact",
+            AsyncMock(
+                return_value={
+                    "active_factors": [{"factor_name": "quality"}],
+                    "active_candidates": [{"factor_name": "quality", "family": "quality_breakout"}],
+                    "active_family_summary": [{"family": "quality_breakout", "count": 1}],
+                    "active_regime_summary": [{"regime": "neutral", "count": 1}],
+                    "preferred_strategy_types": ["sector_breakout"],
+                    "source_chain": ["governed_candidate_pool"],
+                    "research_rationale": ["mock governed pool ready"],
+                    "degraded": False,
+                    "summary": {
+                        "active_factor_count": 1,
+                        "active_candidate_count": 1,
+                        "ranked_factor_count": 1,
+                        "top_factor_names": ["quality"],
+                        "top_candidate_names": ["quality_breakout"],
+                        "preferred_strategy_types": ["sector_breakout"],
+                        "factor_source_mode": "governed_candidate_pool",
+                        "governed_candidate_pool_mode": "strict_governed",
+                        "governed_candidate_pool_provisional": False,
+                        "governed_source_candidate_count": 1,
+                        "governed_blocked_candidate_count": 0,
+                        "governed_pending_candidate_count": 0,
+                        "governed_blocked_ratio": 0.0,
+                        "governed_pending_ratio": 0.0,
+                        "governed_freshness_days": 0.0,
+                        "scheduler_recent_success": True,
+                        "scheduler_llm_validation_status": "success",
+                        "quality_flags": [],
+                    },
+                    "freshness_repair": {
+                        "auto_refresh_enabled": True,
+                        "refresh_attempted": False,
+                        "refresh_status": "not_needed",
+                        "refresh_trigger": None,
+                    },
+                }
+            ),
+        )
 
         result = await StrategyFactoryScheduler().run_once()
 
@@ -681,13 +783,15 @@ class _TestStrategyFactorySchedulerScannerMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _scan)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+        _mock_governed_factor_research(monkeypatch)
 
         result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'partial'
+        assert result['status'] == 'success'
+        assert result['summary']['partial_stage_count'] == 0
         assert result['summary']['external_llm_status'] == 'succeeded'
         saved_run = db.save_strategy_factory_run.await_args.args[0]
-        assert saved_run['summary']['partial_stage_count'] >= 1
+        assert saved_run['summary']['partial_stage_count'] == 0
         assert saved_run['stages']['autonomy']['status'] == 'completed'
         assert saved_run['stages']['autonomy']['external_llm_status'] == 'succeeded'
         assert saved_run['stages']['autonomy']['external_llm_status_counts']['skipped'] == 1
@@ -832,12 +936,13 @@ class _TestStrategyFactorySchedulerScannerMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _scan)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+        _mock_governed_factor_research(monkeypatch)
 
         result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'partial'
+        assert result['status'] == 'success'
         assert result['stages']['autonomy']['status'] == 'completed'
-        assert result['summary']['partial_stage_count'] >= 1
+        assert result['summary']['partial_stage_count'] == 0
         assert result['summary']['event_task_count'] == 1
         assert result['summary']['snapshot_task_count'] == 0
         assert result['summary']['task_source_counts'] == {'event_driven': 1}

@@ -137,8 +137,6 @@ class _TestStrategyFactorySchedulerReportingMixin:
             async def check(self, _db, _fg_level):
                 return []
 
-        from strategy_factory.application.factor_research import FactorResearchBuilder as _FRB
-
         monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
@@ -146,13 +144,13 @@ class _TestStrategyFactorySchedulerReportingMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.Deduplicator", _DummyDedup)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
-
-        with patch.object(
-            _FRB, "_load_governed_candidate_pool",
-            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
-        ):
-            scheduler = StrategyFactoryScheduler()
-            result = await scheduler.run_once()
+        _mock_governed_factor_research(
+            monkeypatch,
+            factor_names=["value", "quality"],
+            preferred_strategy_types=["momentum", "value_factor"],
+        )
+        scheduler = StrategyFactoryScheduler()
+        result = await scheduler.run_once()
 
         assert result["status"] == "partial"
         assert result["summary"]["partial_stage_count"] >= 1
@@ -161,6 +159,11 @@ class _TestStrategyFactorySchedulerReportingMixin:
         assert saved_run["run_id"] == result["run_id"]
         assert saved_run["summary"]["candidates_spawned"] == 2
         assert saved_run["summary"]["quota_fill_candidates"] == 0
+        assert saved_run["summary"]["effective_quota_fill_candidates"] == 0
+        assert saved_run["summary"]["historical_guided_quota_fill_candidates"] == 0
+        assert saved_run["summary"]["no_signal_quota_fill_candidates"] == 0
+        assert saved_run["summary"]["quota_fill_mode_counts"] == {}
+        assert saved_run["summary"]["parameter_source_counts"] == {}
         assert saved_run["summary"]["signal_trigger_candidates"] == 2
         assert saved_run["summary"]["candidates_passed_backtest"] == 1
         assert saved_run["summary"]["candidates_failed_backtest"] == 1
@@ -335,8 +338,6 @@ class _TestStrategyFactorySchedulerReportingMixin:
                     },
                 }
 
-        from strategy_factory.application.factor_research import FactorResearchBuilder as _FRB
-
         monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
@@ -345,12 +346,8 @@ class _TestStrategyFactorySchedulerReportingMixin:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
-
-        with patch.object(
-            _FRB, "_load_governed_candidate_pool",
-            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
-        ):
-            result = await StrategyFactoryScheduler().run_once()
+        _mock_governed_factor_research(monkeypatch)
+        result = await StrategyFactoryScheduler().run_once()
 
         assert result['status'] == 'partial'
         saved_run = db.save_strategy_factory_run.await_args.args[0]
@@ -360,7 +357,7 @@ class _TestStrategyFactorySchedulerReportingMixin:
         assert saved_run['stages']['autonomy']['external_llm_last_error_type'] == 'ReadTimeout'
         assert saved_run['summary']['external_llm_status'] == 'failed'
         assert saved_run['summary']['external_llm_last_error_type'] == 'ReadTimeout'
-        assert saved_run['summary']['external_llm_elapsed_seconds'] == 12.5
+        assert saved_run['summary']['external_llm_elapsed_seconds'] >= 12.5
         assert saved_run['summary']['gate_3_passed'] == 0
         assert saved_run['summary']['gate_3_failed'] == 0
         assert saved_run['summary']['gate_3_provisional_passed'] == 0

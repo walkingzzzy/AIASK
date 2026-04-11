@@ -456,6 +456,72 @@ async def should_i_buy(
                 confidence_hint=0.75,
             )
 
+        # 5b. 布林带位置
+        highs = [float(k.get('high', 0) or 0) for k in klines]
+        lows = [float(k.get('low', 0) or 0) for k in klines]
+        boll = technical_analysis.calculate_bollinger_bands(closes)
+        if boll:
+            boll_upper = _maybe_float(boll.get('upper', [None])[-1] if isinstance(boll.get('upper'), list) else None)
+            boll_lower = _maybe_float(boll.get('lower', [None])[-1] if isinstance(boll.get('lower'), list) else None)
+            if boll_lower and current_price <= boll_lower * 1.01:
+                _apply_signal(
+                    'technical', f'触及布林下轨({boll_lower:.1f})，超卖信号',
+                    10, source='fallback', metric_name='boll_position', raw_value=current_price,
+                    evidence_type='technical', confidence_hint=0.65,
+                )
+            elif boll_upper and current_price >= boll_upper * 0.99:
+                _apply_signal(
+                    'technical', f'触及布林上轨({boll_upper:.1f})，超买信号',
+                    -10, source='fallback', metric_name='boll_position', raw_value=current_price,
+                    evidence_type='technical', confidence_hint=0.65,
+                )
+
+        # 5c. ATR 波动率风险
+        atr_series = technical_analysis.calculate_atr(highs, lows, closes, period=14)
+        if atr_series:
+            atr_val = _maybe_float(atr_series[-1])
+            if atr_val and current_price > 0:
+                atr_pct = atr_val / current_price
+                if atr_pct > 0.05:
+                    _apply_signal(
+                        'technical', f'ATR 波动率偏高({atr_pct:.1%})，风险较大',
+                        -10, source='fallback', metric_name='atr_pct', raw_value=float(atr_pct),
+                        evidence_type='technical', confidence_hint=0.60,
+                    )
+
+        # 5d. 支撑/阻力位
+        support_60d = _maybe_float(technical_ctx.get('support_60d'))
+        resistance_60d = _maybe_float(technical_ctx.get('resistance_60d'))
+        if support_60d is None and len(lows) >= 60:
+            support_60d = min(lows[-60:])
+        if resistance_60d is None and len(highs) >= 60:
+            resistance_60d = max(highs[-60:])
+        if support_60d and current_price > 0:
+            dist_to_support = (current_price - support_60d) / current_price
+            if dist_to_support < 0.03:
+                _apply_signal(
+                    'technical', f'接近 60 日支撑位({support_60d:.1f})，安全边际较高',
+                    15, confidence_delta=5, source='key_level',
+                    metric_name='support_distance', raw_value=float(dist_to_support),
+                    evidence_type='technical', confidence_hint=0.68,
+                )
+            elif dist_to_support < 0:
+                _apply_signal(
+                    'technical', f'已跌破 60 日支撑位({support_60d:.1f})，风险增加',
+                    -10, source='key_level',
+                    metric_name='support_distance', raw_value=float(dist_to_support),
+                    evidence_type='technical', confidence_hint=0.70,
+                )
+        if resistance_60d and current_price > 0:
+            dist_to_resistance = (resistance_60d - current_price) / current_price
+            if dist_to_resistance < 0.03:
+                _apply_signal(
+                    'technical', f'接近 60 日阻力位({resistance_60d:.1f})，上涨空间有限',
+                    -15, source='key_level',
+                    metric_name='resistance_distance', raw_value=float(dist_to_resistance),
+                    evidence_type='technical', confidence_hint=0.65,
+                )
+
         # 6. 因子分析
         momentum = _maybe_float(momentum_ctx.get('mom_20d'))
         if momentum is None:
@@ -640,6 +706,24 @@ async def should_i_buy(
             'method': 'decision_threshold_bucket_backtest_proxy',
             'support_samples': prediction_quality.get('support_samples', 0),
         }
+
+        # 数据新鲜度检查
+        data_freshness_warning = None
+        if analysis_date:
+            try:
+                from datetime import datetime as _dt, timedelta
+                date_str = str(analysis_date)[:10]
+                if len(date_str) >= 10:
+                    ad = _dt.strptime(date_str, '%Y-%m-%d')
+                    days_old = (_dt.now() - ad).days
+                    if days_old > 90:
+                        data_freshness_warning = (
+                            f"K线/基本面数据截至 {date_str}，距今 {days_old} 天，"
+                            f"估值和基本面指标可能已过时，请结合最新财报使用"
+                        )
+            except Exception:
+                pass
+        payload['data_freshness_warning'] = data_freshness_warning
 
         if analysis_context:
             payload['analysis_context'] = analysis_context

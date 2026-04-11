@@ -1,5 +1,7 @@
 """K线数据模块"""
 
+import asyncio
+import os
 import re
 import json
 import requests
@@ -28,8 +30,28 @@ except ImportError:
     ak = None
 import pandas as pd
 
+_KLINE_TOTAL_TIMEOUT = float(os.getenv("KLINE_TOTAL_TIMEOUT", "45"))
+
 
 _SOFT_KLINE_FIELDS = frozenset({"turnover", "change_pct"})
+
+
+_DB_STALE_DAYS = int(os.getenv("KLINE_DB_STALE_DAYS", "5"))
+
+
+def _is_db_data_fresh(klines: list[dict], max_stale_days: int = _DB_STALE_DAYS) -> bool:
+    """检查 DB K 线数据是否足够新鲜（最后一根距今不超过 max_stale_days 天）。"""
+    if not klines:
+        return False
+    last_date = klines[-1].get("date", "") if klines else ""
+    if not last_date:
+        return False
+    try:
+        last_dt = datetime.strptime(str(last_date)[:10], "%Y-%m-%d")
+        days = (datetime.now() - last_dt).days
+        return days <= max_stale_days
+    except (ValueError, TypeError):
+        return False
 
 
 def _append_chain_step(chain: list[str], step: str) -> None:
@@ -217,9 +239,30 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
         get_kline("600519")
         get_kline("510050", period="weekly", limit=52)
     """
+    started_at = datetime.now().astimezone()
+    try:
+        return await asyncio.wait_for(
+            _get_kline_impl(stock_code, period, limit, started_at),
+            timeout=_KLINE_TOTAL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        safe_stderr_print(f"[Kline] total timeout ({_KLINE_TOTAL_TIMEOUT}s) exceeded for {stock_code}")
+        return _fail_kline_response(
+            f"K线请求总超时（>{_KLINE_TOTAL_TIMEOUT}s），所有数据源均未在时限内响应",
+            source_chain=["total_timeout"],
+            fallback_reason=[f"total_timeout_exceeded:{_KLINE_TOTAL_TIMEOUT}s"],
+            started_at=started_at,
+        )
+
+
+def _time_remaining(started_at: datetime) -> float:
+    return _KLINE_TOTAL_TIMEOUT - (datetime.now().astimezone() - started_at).total_seconds()
+
+
+async def _get_kline_impl(stock_code: str, period: str, limit: int, started_at: datetime) -> dict:
+    """K 线获取核心逻辑，由 get_kline 在总超时内调用。"""
     limiter = get_limiter("kline", max_calls=5, period=1.0)
     limiter.acquire()
-    started_at = datetime.now().astimezone()
 
     raw_code = str(stock_code or "").strip()
     if not re.fullmatch(r"\d{6}", raw_code):
@@ -243,49 +286,59 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
             if db_data:
                 validated_results = _validated_kline_rows(db_data)
                 has_turnover = any(item.get('turnover') is not None for item in validated_results)
-                if has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
+
+                # 新鲜度检查: DB 数据过期时 fall through 到 API
+                db_is_fresh = _is_db_data_fresh(validated_results)
+
+                if db_is_fresh and (has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results))):
                     return _ok_kline_response(validated_results, source="timescaledb", source_chain=["db.get_klines"], started_at=started_at)
                 if _kline_rows_usable(validated_results):
                     _db_fallback = validated_results
-                # DB 数据缺软字段时继续向下层获取 richer source；全部失败时回退到已验证数据
-                safe_stderr_print(f"[Kline] DB data for {code} has null turnover, falling through to fetch complete data")
-                fallback_reason.append("db.get_klines missing turnover, falling through")
+                if not db_is_fresh:
+                    safe_stderr_print(f"[Kline] DB data for {code} is stale (last date: {validated_results[-1].get('date', '?') if validated_results else '?'}), falling through to API")
+                    fallback_reason.append("db.get_klines data stale, falling through to API")
+                else:
+                    safe_stderr_print(f"[Kline] DB data for {code} has null turnover, falling through to fetch complete data")
+                    fallback_reason.append("db.get_klines missing turnover, falling through")
         except Exception as e_db:
             safe_stderr_print(f"TimescaleDB K-line query failed for {code}: {e_db}")
             fallback_reason.append(f"db.get_klines failed: {e_db}")
 
-    _ds_fallback: Optional[list] = None  # 备用：DataSource有数据但无换手率时保存，Baostock失败时返回
+    _ds_fallback: Optional[list] = None
     _append_chain_step(source_chain, "data_source.get_kline")
-    try:
-        # 1. DataSource 优先：Tushare / 公开源（仅当结果包含换手率时才直接返回）
-        ds_results = data_source.get_kline(code, period, limit)
-        if ds_results:
-            validated_results = _validated_kline_rows(ds_results)
-            ds_has_turnover = any(item.get('turnover') is not None for item in validated_results)
-            await _async_save_klines_to_db(code, validated_results)
-            if ds_has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
-                return _ok_kline_response(
-                    validated_results,
-                    source="data_source",
-                    source_chain=list(source_chain),
-                    fallback_reason=fallback_reason,
-                    started_at=started_at,
-                )
-            # DataSource 无换手率 → 先保存结果以备 Baostock 失败时回退
-            _ds_fallback = validated_results if _kline_rows_usable(validated_results) else None
-            safe_stderr_print(f"[Kline] DataSource for {code} has no turnover, trying Baostock")
-            fallback_reason.append("data_source.get_kline missing turnover, trying richer fallback")
-    except Exception as e:
-        safe_stderr_print(f"DataSource K-line fetch failed for {code}: {e}")
-        fallback_reason.append(f"data_source.get_kline failed: {e}")
 
-    # 2. Baostock 优先降级（仅日线，包含换手率/涨跌幅，质量最高）
-    if period == "daily" and baostock_client is not None:
+    # 1. DataSource（Tushare/公开源）— 放入线程避免阻塞事件循环
+    if _time_remaining(started_at) > 3:
+        try:
+            ds_results = await asyncio.to_thread(data_source.get_kline, code, period, limit)
+            if ds_results:
+                validated_results = _validated_kline_rows(ds_results)
+                ds_has_turnover = any(item.get('turnover') is not None for item in validated_results)
+                await _async_save_klines_to_db(code, validated_results)
+                if ds_has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
+                    return _ok_kline_response(
+                        validated_results,
+                        source="data_source",
+                        source_chain=list(source_chain),
+                        fallback_reason=fallback_reason,
+                        started_at=started_at,
+                    )
+                _ds_fallback = validated_results if _kline_rows_usable(validated_results) else None
+                safe_stderr_print(f"[Kline] DataSource for {code} has no turnover, trying Baostock")
+                fallback_reason.append("data_source.get_kline missing turnover, trying richer fallback")
+        except Exception as e:
+            safe_stderr_print(f"DataSource K-line fetch failed for {code}: {e}")
+            fallback_reason.append(f"data_source.get_kline failed: {e}")
+    else:
+        fallback_reason.append("data_source.get_kline skipped: time budget exhausted")
+
+    # 2. Baostock 优先降级（仅日线，包含换手率/涨跌幅）
+    if period == "daily" and baostock_client is not None and _time_remaining(started_at) > 3:
         _append_chain_step(source_chain, "baostock.get_history_k_data")
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=limit * 1.5 + 30)).strftime("%Y-%m-%d")
-            df_bs = baostock_client.get_history_k_data(code, start_date, end_date)
+            df_bs = await asyncio.to_thread(baostock_client.get_history_k_data, code, start_date, end_date)
             if not df_bs.empty:
                 results = []
                 for _, row in df_bs.tail(limit).iterrows():
@@ -331,7 +384,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                     started_at=started_at,
                 )
 
-    # Baostock 跳过 + 有DataSource备用数据时直接返回
+    # 有备用数据时直接返回（时间预算不足 or Baostock 跳过）
     if _ds_fallback:
         return _ok_kline_response(
             _ds_fallback,
@@ -351,10 +404,11 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
         )
 
     # 3. AkShare 降级
-    if ak is not None:
+    if ak is not None and _time_remaining(started_at) > 5:
         _append_chain_step(source_chain, "akshare.stock_zh_a_hist")
         try:
-            df = _run_with_retry(
+            df = await asyncio.to_thread(
+                _run_with_retry,
                 lambda: ak.stock_zh_a_hist(symbol=code, period=period, adjust="qfq"),
                 _KLINE_TIMEOUTS,
             )
@@ -375,17 +429,18 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
             safe_stderr_print(f"AkShare K-line fetch failed for {code}: {e}")
             fallback_reason.append(f"akshare.stock_zh_a_hist failed: {e}")
 
-        # 3.5 Tencent K线（仅日线，无换手率，最后备用）
-        if period == "daily" and ak is not None:
+        # 3.5 Tencent K线（仅日线，最后备用）
+        if period == "daily" and _time_remaining(started_at) > 3:
             _append_chain_step(source_chain, "tencent.stock_zh_a_hist_tx")
             try:
                 end_date = datetime.now().strftime("%Y%m%d")
                 start_date = (datetime.now() - timedelta(days=int(limit) * 2 + 30)).strftime("%Y%m%d")
                 market_prefix = "sh" if code.startswith("6") else "sz"
                 symbol = f"{market_prefix}{code}"
-                df_tx = ak.stock_zh_a_hist_tx(
+                df_tx = await asyncio.to_thread(
+                    ak.stock_zh_a_hist_tx,
                     symbol=symbol, start_date=start_date, end_date=end_date,
-                    adjust="", timeout=_KLINE_TIMEOUTS[-1] if _KLINE_TIMEOUTS else None,
+                    adjust="", timeout=min(_KLINE_TIMEOUTS[-1] if _KLINE_TIMEOUTS else 25, _time_remaining(started_at)),
                 )
                 if df_tx is not None and not df_tx.empty:
                     results = []
