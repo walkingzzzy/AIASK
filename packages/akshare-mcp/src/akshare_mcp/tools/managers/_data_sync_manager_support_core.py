@@ -6,12 +6,14 @@
 - sync_daily/sync_init.py 是独立脚本，用于深度历史全量回填
 """
 
+import asyncio
 from typing import Any
 import argparse
 import contextlib
 import importlib.util
 import json
 import logging
+import os
 from io import StringIO
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -354,32 +356,48 @@ async def _execute_sync_task(
     except Exception as e:
         logger.warning(f"[DataSyncManager] 写入任务记录失败: {e}")
 
+    timeout_sec = _sync_task_timeout_sec(task_type)
     try:
+        runner = None
         if task_type == "kline":
-            results = await _sync_klines_now(effective_codes)
+            runner = _sync_klines_now(effective_codes)
         elif task_type == "financial":
-            results = await _sync_financials_check(effective_codes)
+            runner = _sync_financials_check(effective_codes)
         elif task_type == "core_market":
-            results = await _sync_core_market_now(effective_payload)
+            runner = _sync_core_market_now(effective_payload)
         elif task_type == "factor_context":
-            results = await _sync_factor_context_now(effective_payload)
+            runner = _sync_factor_context_now(effective_payload)
         elif task_type == "vector_backfill_market_docs":
-            results = await _sync_vector_backfill_market_docs_now(effective_payload)
+            runner = _sync_vector_backfill_market_docs_now(effective_payload)
         elif task_type == "vector_backfill_kline_patterns":
-            results = await _sync_vector_backfill_kline_patterns_now(effective_payload)
+            runner = _sync_vector_backfill_kline_patterns_now(effective_payload)
         elif task_type == "vector_backfill_stock_profiles":
-            results = await _sync_vector_backfill_stock_profiles_now(effective_payload)
+            runner = _sync_vector_backfill_stock_profiles_now(effective_payload)
         elif task_type == "vector_backfill_factor_candidates":
-            results = await _sync_vector_backfill_factor_candidates_now(effective_payload)
+            runner = _sync_vector_backfill_factor_candidates_now(effective_payload)
         elif task_type == "vector_build_snapshot":
-            results = await _sync_vector_build_snapshot_now(effective_payload)
+            runner = _sync_vector_build_snapshot_now(effective_payload)
         elif task_type == "vector_benchmark_collection":
-            results = await _sync_vector_benchmark_collection_now(effective_payload)
+            runner = _sync_vector_benchmark_collection_now(effective_payload)
         else:
-            results = await _sync_klines_now(effective_codes)
+            runner = _sync_klines_now(effective_codes)
+
+        if timeout_sec is not None:
+            results = await asyncio.wait_for(runner, timeout=timeout_sec)
+        else:
+            results = await runner
 
         if results.get("failed", 0) > 0 and results.get("success", 0) == 0:
             final_status = "failed"
+    except asyncio.TimeoutError:
+        final_status = "failed"
+        results["failed"] = max(int(results.get("failed") or 0), 1)
+        results["errors"].append(f"{task_type}_timeout_after_{timeout_sec:g}s")
+        logger.warning(
+            "[DataSyncManager] %s sync timed out after %.3fs",
+            task_type,
+            timeout_sec,
+        )
     except Exception as e:
         final_status = "failed"
         results["errors"].append(str(e))
@@ -418,6 +436,27 @@ async def _execute_sync_task(
         "schedule_id": schedule_id,
         "message": f'同步完成: 成功 {results.get("success", 0)}, 失败 {results.get("failed", 0)}',
     }
+
+
+def _sync_task_timeout_sec(task_type: str) -> float | None:
+    normalized = str(task_type or "").strip().lower()
+    env_names = {
+        "core_market": "DATA_SYNC_CORE_MARKET_TIMEOUT_SEC",
+        "factor_context": "DATA_SYNC_FACTOR_CONTEXT_TIMEOUT_SEC",
+    }
+    defaults = {
+        "core_market": 45.0,
+        "factor_context": 45.0,
+    }
+    env_name = env_names.get(normalized)
+    if env_name is None:
+        return None
+    raw = str(os.getenv(env_name, str(defaults[normalized])) or defaults[normalized]).strip()
+    try:
+        value = float(raw)
+    except Exception:
+        value = defaults[normalized]
+    return max(0.001, min(value, 1800.0))
 
 async def _run_due_schedules(
     db,

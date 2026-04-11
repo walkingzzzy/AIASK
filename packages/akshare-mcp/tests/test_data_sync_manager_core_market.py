@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from datetime import datetime, timedelta
@@ -443,6 +444,37 @@ async def test_data_sync_manager_supports_vector_benchmark_collection_sync(monke
     assert data["status"] == "completed"
     assert data["results"]["benchmark"]["index_version"] == "snap_v2"
     assert data["results"]["args"]["collection_name"] == "stock_profile_embeddings"
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_factor_context_timeout_marks_task_failed(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+    monkeypatch.setenv("DATA_SYNC_FACTOR_CONTEXT_TIMEOUT_SEC", "0.01")
+
+    async def _slow_sync_factor_context_now(_kwargs):
+        await asyncio.sleep(0.05)
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_factor_context_now", _slow_sync_factor_context_now)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps({"type": "factor_context"}),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "factor_context"
+    assert data["status"] == "failed"
+    assert "factor_context_timeout_after_0.01s" in data["results"]["errors"]
+    assert any("UPDATE sync_tasks" in item[0] for item in db.conn.executed)
 
 
 @pytest.mark.asyncio

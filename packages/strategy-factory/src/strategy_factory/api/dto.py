@@ -87,6 +87,8 @@ class FactoryRunSummaryDTO:
     elapsed_seconds: float
     candidates_spawned: int
     submitted: int
+    submit_stage_entered: bool
+    submit_stage_status: Optional[str]
     eliminated: int
     hard_failure_count: int
     degraded_stage_count: int
@@ -102,6 +104,11 @@ class FactoryRunSummaryDTO:
     governed_pending_candidate_count: int = 0
     external_llm_provider_health_status: Optional[str] = None
     external_llm_provider_control_mode: Optional[str] = None
+    external_llm_provider_control_reasons: list[str] = field(default_factory=list)
+    suppressed_generator_modes: list[str] = field(default_factory=list)
+    feedback_generator_mode_control_mode_counts: dict[str, int] = field(default_factory=dict)
+    external_llm_provider_suppressed: bool = False
+    external_llm_provider_cooldown: bool = False
     candidate_local_attempt_count: int = 0
     task_local_attempt_count: int = 0
     cohort_effective_trials: float = 0.0
@@ -141,7 +148,84 @@ class FactoryRunSummaryDTO:
         submission_artifact = dict(
             (_normalize_governance_plane_detail(d).get("submission_artifact") or {})
         )
+        raw_stages = dict(d.get("stages") or {})
+        submit_stage = (
+            dict(raw_stages.get("submit") or {})
+            if isinstance(raw_stages.get("submit"), dict)
+            else {}
+        )
+        submit_stage_status_raw = submit_stage.get("status")
+        submit_stage_status = (
+            normalize_stage_status(submit_stage_status_raw).value
+            if submit_stage_status_raw not in (None, "", [], {})
+            else None
+        )
+        submitted = int(
+            summary.get("submitted")
+            or d.get("submitted")
+            or submission_artifact.get("submitted")
+            or 0
+        )
+        research_only_count = int(
+            summary.get("research_only_count")
+            or d.get("research_only_count")
+            or submission_artifact.get("research_only_count")
+            or 0
+        )
+        deferred_submission_count = int(
+            summary.get("deferred_submission_count")
+            or d.get("deferred_submission_count")
+            or submission_artifact.get("deferred_submission_count")
+            or 0
+        )
+        submit_stage_entered = bool(submit_stage) or any(
+            count > 0
+            for count in (
+                submitted,
+                research_only_count,
+                deferred_submission_count,
+            )
+        )
         status = normalize_run_status(d.get("status"), default=FactoryRunStatus.FAILED).value
+        external_llm_provider_control_mode = (
+            str(summary.get("external_llm_provider_control_mode") or d.get("external_llm_provider_control_mode") or "").strip()
+            or None
+        )
+        external_llm_provider_control_reasons = [
+            str(item or "").strip()
+            for item in list(
+                summary.get("external_llm_provider_control_reasons")
+                or d.get("external_llm_provider_control_reasons")
+                or []
+            )
+            if str(item or "").strip()
+        ]
+        suppressed_generator_modes = [
+            str(item or "").strip()
+            for item in list(
+                summary.get("suppressed_generator_modes")
+                or d.get("suppressed_generator_modes")
+                or []
+            )
+            if str(item or "").strip()
+        ]
+        feedback_generator_mode_control_mode_counts = {
+            str(key or "").strip(): int(value or 0)
+            for key, value in dict(
+                summary.get("feedback_generator_mode_control_mode_counts")
+                or d.get("feedback_generator_mode_control_mode_counts")
+                or {}
+            ).items()
+            if str(key or "").strip()
+        }
+        external_llm_provider_suppressed = bool(
+            str(external_llm_provider_control_mode or "").strip().lower() == "suppress"
+            or "external_llm" in {str(item).strip().lower() for item in suppressed_generator_modes}
+            or int(feedback_generator_mode_control_mode_counts.get("suppress") or 0) > 0
+        )
+        external_llm_provider_cooldown = (
+            str(external_llm_provider_control_mode or "").strip().lower() == "cooldown"
+        )
         return cls(
             run_id=str(d.get("run_id") or ""),
             trace_id=str(d.get("trace_id") or summary.get("trace_id") or ""),
@@ -150,7 +234,9 @@ class FactoryRunSummaryDTO:
             completed_at=d.get("completed_at"),
             elapsed_seconds=float(d.get("elapsed_seconds") or 0.0),
             candidates_spawned=int(summary.get("candidates_spawned") or 0),
-            submitted=int(summary.get("submitted") or 0),
+            submitted=submitted,
+            submit_stage_entered=submit_stage_entered,
+            submit_stage_status=submit_stage_status,
             eliminated=int(summary.get("eliminated") or 0),
             hard_failure_count=int(audit.get("hard_failure_count") or 0),
             degraded_stage_count=int(audit.get("degraded_stage_count") or 0),
@@ -182,10 +268,12 @@ class FactoryRunSummaryDTO:
                 str(summary.get("external_llm_provider_health_status") or d.get("external_llm_provider_health_status") or "").strip()
                 or None
             ),
-            external_llm_provider_control_mode=(
-                str(summary.get("external_llm_provider_control_mode") or d.get("external_llm_provider_control_mode") or "").strip()
-                or None
-            ),
+            external_llm_provider_control_mode=external_llm_provider_control_mode,
+            external_llm_provider_control_reasons=external_llm_provider_control_reasons,
+            suppressed_generator_modes=suppressed_generator_modes,
+            feedback_generator_mode_control_mode_counts=feedback_generator_mode_control_mode_counts,
+            external_llm_provider_suppressed=external_llm_provider_suppressed,
+            external_llm_provider_cooldown=external_llm_provider_cooldown,
             candidate_local_attempt_count=int(
                 summary.get("candidate_local_attempt_count")
                 or d.get("candidate_local_attempt_count")
@@ -221,16 +309,8 @@ class FactoryRunSummaryDTO:
                 or d.get("economic_semantics_missing_count")
                 or 0
             ),
-            research_only_count=int(
-                summary.get("research_only_count")
-                or d.get("research_only_count")
-                or 0
-            ),
-            deferred_submission_count=int(
-                summary.get("deferred_submission_count")
-                or d.get("deferred_submission_count")
-                or 0
-            ),
+            research_only_count=research_only_count,
+            deferred_submission_count=deferred_submission_count,
             validation_grade_distribution={
                 str(key or "").strip().upper(): int(value or 0)
                 for key, value in dict(
@@ -391,6 +471,7 @@ class FactoryRunSummaryDTO:
             "elapsed_seconds": self.elapsed_seconds,
             "candidates_spawned": self.candidates_spawned,
             "submitted": self.submitted,
+            "submit_stage_entered": self.submit_stage_entered,
             "eliminated": self.eliminated,
             "hard_failure_count": self.hard_failure_count,
             "degraded_stage_count": self.degraded_stage_count,
@@ -400,6 +481,13 @@ class FactoryRunSummaryDTO:
             "stock_family_allocation_count": self.stock_family_allocation_count,
             "family_preference_order": list(self.family_preference_order),
             "governed_pending_candidate_count": self.governed_pending_candidate_count,
+            "external_llm_provider_control_reasons": list(self.external_llm_provider_control_reasons),
+            "suppressed_generator_modes": list(self.suppressed_generator_modes),
+            "feedback_generator_mode_control_mode_counts": dict(
+                self.feedback_generator_mode_control_mode_counts
+            ),
+            "external_llm_provider_suppressed": self.external_llm_provider_suppressed,
+            "external_llm_provider_cooldown": self.external_llm_provider_cooldown,
             "candidate_local_attempt_count": self.candidate_local_attempt_count,
             "task_local_attempt_count": self.task_local_attempt_count,
             "cohort_effective_trials": self.cohort_effective_trials,
@@ -437,6 +525,8 @@ class FactoryRunSummaryDTO:
             result["skip_reason"] = self.skip_reason
         if self.error:
             result["error"] = self.error
+        if self.submit_stage_status:
+            result["submit_stage_status"] = self.submit_stage_status
         if self.family_preference_source_mode:
             result["family_preference_source_mode"] = self.family_preference_source_mode
         if self.governed_candidate_pool_provisional_spillover_policy_status:

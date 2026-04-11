@@ -777,10 +777,16 @@ class _StrategyFactorySchedulerLoopMixin:
             )
             source = f"strategy_factory:{effective_task.get('opportunity_type') or 'general'}"
             gateway_db = self._adapt_gateway_repository(db)
-            timeout_sec = self._resolve_research_task_timeout_sec()
             task_id = str(effective_task.get("task_id") or effective_task.get("task_key") or source).strip() or source
+            base_timeout_sec = self._resolve_research_task_timeout_sec()
 
-            async def _run_generation(task_payload: dict[str, Any]) -> dict:
+            async def _run_generation(task_payload: dict[str, Any], *, local_fallback: bool = False) -> dict:
+                timeout_sec = self._resolve_effective_research_task_timeout_sec(
+                    autonomy_gateway,
+                    task_payload,
+                    base_timeout=base_timeout_sec,
+                    local_fallback=local_fallback,
+                )
                 return await asyncio.wait_for(
                     autonomy_gateway.generate_factory_candidates(
                         gateway_db,
@@ -795,6 +801,11 @@ class _StrategyFactorySchedulerLoopMixin:
             try:
                 return await _run_generation(effective_task)
             except asyncio.TimeoutError as exc:
+                initial_timeout_sec = self._resolve_effective_research_task_timeout_sec(
+                    autonomy_gateway,
+                    effective_task,
+                    base_timeout=base_timeout_sec,
+                )
                 retry_task = dict(effective_task)
                 retry_applied = False
                 if not retry_task.get("disable_external_llm"):
@@ -807,17 +818,25 @@ class _StrategyFactorySchedulerLoopMixin:
                     retry_applied = True
                 if not retry_applied:
                     raise RuntimeError(
-                        f"research task {task_id} timed out after {timeout_sec:g}s"
+                        f"research task {task_id} timed out after {initial_timeout_sec:g}s"
                     ) from exc
                 retry_task["task_timeout_local_fallback"] = True
                 retry_task["task_timeout_local_fallback_attempts"] = int(
                     retry_task.get("task_timeout_local_fallback_attempts") or 0
                 ) + 1
                 try:
-                    return await _run_generation(retry_task)
+                    return await _run_generation(retry_task, local_fallback=True)
                 except asyncio.TimeoutError as retry_exc:
+                    fallback_timeout_sec = self._resolve_effective_research_task_timeout_sec(
+                        autonomy_gateway,
+                        retry_task,
+                        base_timeout=base_timeout_sec,
+                        local_fallback=True,
+                    )
                     raise RuntimeError(
-                        f"research task {task_id} timed out after {timeout_sec:g}s even after local fallback retry"
+                        "research task "
+                        f"{task_id} timed out after {initial_timeout_sec:g}s "
+                        f"and local fallback timed out after {fallback_timeout_sec:g}s"
                     ) from retry_exc
 
         async def _persist_run_result(
@@ -936,6 +955,18 @@ class _StrategyFactorySchedulerLoopMixin:
             )
 
         @classmethod
+        def _research_task_uses_external_llm(cls, autonomy_gateway, task: dict[str, Any] | None) -> bool:
+            payload = dict(task or {})
+            if payload.get("disable_external_llm"):
+                return False
+            if not cls._external_llm_should_participate(autonomy_gateway):
+                return False
+            task_source = str(payload.get("task_source") or "").strip().lower()
+            if task_source == "bulk_stock_matrix":
+                return cls._bulk_tasks_use_external_llm(autonomy_gateway)
+            return True
+
+        @classmethod
         def _resolve_research_task_concurrency(cls, autonomy_gateway, *, has_bulk_tasks: bool = False) -> int:
             effective = RESEARCH_TASK_CONCURRENCY
             provider_limit = cls._resolve_external_llm_concurrency_limit(autonomy_gateway)
@@ -964,6 +995,58 @@ class _StrategyFactorySchedulerLoopMixin:
             except Exception:
                 value = 180.0
             return max(15.0, min(value, 1800.0))
+
+        @staticmethod
+        def _resolve_external_research_task_timeout_cap_sec() -> float:
+            raw = str(
+                os.getenv("STRATEGY_FACTORY_EXTERNAL_RESEARCH_TASK_TIMEOUT_SEC", "20")
+                or "20"
+            ).strip()
+            try:
+                value = float(raw)
+            except Exception:
+                value = 20.0
+            return max(0.001, min(value, 300.0))
+
+        @staticmethod
+        def _resolve_local_fallback_research_task_timeout_cap_sec() -> float:
+            raw = str(
+                os.getenv("STRATEGY_FACTORY_LOCAL_FALLBACK_TASK_TIMEOUT_SEC", "10")
+                or "10"
+            ).strip()
+            try:
+                value = float(raw)
+            except Exception:
+                value = 10.0
+            return max(0.001, min(value, 120.0))
+
+        @classmethod
+        def _resolve_effective_research_task_timeout_sec(
+            cls,
+            autonomy_gateway,
+            task: dict[str, Any] | None,
+            *,
+            base_timeout: float,
+            local_fallback: bool = False,
+        ) -> float:
+            if not cls._research_task_uses_external_llm(autonomy_gateway, task):
+                if local_fallback:
+                    return min(
+                        base_timeout,
+                        cls._resolve_local_fallback_research_task_timeout_cap_sec(),
+                    )
+                return base_timeout
+
+            external_timeout = min(
+                base_timeout,
+                cls._resolve_external_research_task_timeout_cap_sec(),
+            )
+            if not local_fallback:
+                return external_timeout
+            return min(
+                external_timeout,
+                cls._resolve_local_fallback_research_task_timeout_cap_sec(),
+            )
 
         @staticmethod
         def _control_mode_from_severity(severity: int) -> str:
@@ -1029,6 +1112,20 @@ class _StrategyFactorySchedulerLoopMixin:
         ) -> dict[str, Any]:
             summaries = [dict(item or {}) for item in list(recent_summaries or []) if isinstance(item, dict)]
             health = dict(provider_health or {})
+            active_attempt_run_count = 0
+            zero_attempt_run_streak = 0
+            zero_attempt_streak_open = True
+            for item in summaries:
+                attempt_count = int(
+                    item.get("external_llm_stage_attempt_count") or item.get("external_llm_attempt_count") or 0
+                )
+                real_request_count = int(item.get("external_llm_real_request_count") or 0)
+                if attempt_count > 0 or real_request_count > 0:
+                    active_attempt_run_count += 1
+                    zero_attempt_streak_open = False
+                    continue
+                if zero_attempt_streak_open:
+                    zero_attempt_run_streak += 1
             stage_attempt_count = sum(
                 int(item.get("external_llm_stage_attempt_count") or item.get("external_llm_attempt_count") or 0)
                 for item in summaries
@@ -1069,8 +1166,21 @@ class _StrategyFactorySchedulerLoopMixin:
                 severity = max(severity, 1)
                 reasons.append("provider_health_degraded")
 
+            suppress_recovery_probe_recommended = False
+            suppress_recovery_probe_reason = None
             if stage_attempt_count >= 3 and compatibility_skip_ratio >= 0.75:
-                severity = max(severity, 2)
+                skip_severity = 2
+                if (
+                    real_request_count <= 0
+                    and compatibility_failure_count <= 0
+                    and active_attempt_run_count <= 1
+                    and zero_attempt_run_streak >= 1
+                    and not bool(health.get("scheduler_should_disable"))
+                ):
+                    skip_severity = 1
+                    suppress_recovery_probe_recommended = True
+                    suppress_recovery_probe_reason = "skip_only_history_without_recent_probe"
+                severity = max(severity, skip_severity)
                 reasons.append("compatibility_skip_ratio_too_high")
             elif stage_attempt_count >= 2 and compatibility_skip_ratio >= 0.4:
                 severity = max(severity, 1)
@@ -1112,6 +1222,10 @@ class _StrategyFactorySchedulerLoopMixin:
                 "effective_response_ratio": effective_response_ratio,
                 "empty_200_response_count": empty_200_response_count,
                 "empty_200_response_ratio": empty_200_response_ratio,
+                "active_attempt_run_count": active_attempt_run_count,
+                "zero_attempt_run_streak": zero_attempt_run_streak,
+                "suppress_recovery_probe_recommended": suppress_recovery_probe_recommended,
+                "suppress_recovery_probe_reason": suppress_recovery_probe_reason,
                 "scheduler_should_disable": bool(health.get("scheduler_should_disable")),
                 "scheduler_skip_reason": health.get("scheduler_skip_reason"),
             }

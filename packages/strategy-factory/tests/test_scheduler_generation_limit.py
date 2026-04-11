@@ -83,3 +83,54 @@ async def test_generate_for_research_task_retries_with_local_fallback_after_time
     assert calls[1]["research_task"]["disable_pipeline_staged"] is True
     assert calls[1]["research_task"]["pipeline_staged_skip_reason"] == "task_timeout_local_fallback"
     assert calls[1]["research_task"]["task_timeout_local_fallback"] is True
+
+
+@pytest.mark.asyncio
+async def test_generate_for_research_task_caps_external_timeout_before_retry(monkeypatch):
+    scheduler = StrategyFactoryScheduler()
+    calls: list[dict] = []
+
+    class _DummyExternalProvider:
+        def is_enabled(self):
+            return True
+
+    class _DummyAutonomy:
+        llm_generator = MagicMock(external_provider=_DummyExternalProvider())
+
+        async def generate_factory_candidates(self, db, snapshot, *, limit, research_task, source):
+            calls.append(
+                {
+                    "limit": limit,
+                    "research_task": dict(research_task or {}),
+                    "source": source,
+                }
+            )
+            if not research_task.get("disable_external_llm"):
+                await asyncio.sleep(0.05)
+            return {
+                "generated_count": 1,
+                "candidates": [{"name": "bounded_timeout_local_candidate"}],
+                "experiments": [],
+            }
+
+    monkeypatch.setattr(scheduler, "_resolve_research_task_timeout_sec", lambda: 1.0)
+    monkeypatch.setenv("STRATEGY_FACTORY_EXTERNAL_RESEARCH_TASK_TIMEOUT_SEC", "0.01")
+    monkeypatch.setenv("STRATEGY_FACTORY_LOCAL_FALLBACK_TASK_TIMEOUT_SEC", "0.02")
+
+    result = await scheduler._generate_for_research_task(
+        _DummyAutonomy(),
+        MagicMock(),
+        {"date": "2026-04-02"},
+        {
+            "task_id": "task_external_timeout_cap",
+            "task_source": "snapshot",
+            "opportunity_type": "factor_acceleration",
+            "generation_limit": 2,
+        },
+    )
+
+    assert result["generated_count"] == 1
+    assert len(calls) == 2
+    assert calls[0]["research_task"].get("disable_external_llm") is not True
+    assert calls[1]["research_task"]["disable_external_llm"] is True
+    assert calls[1]["research_task"]["task_timeout_local_fallback"] is True

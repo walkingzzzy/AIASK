@@ -1276,6 +1276,70 @@ async def test_run_autonomy_batches_applies_provider_and_rl_mode_controls(monkey
     assert by_task_id["bulk_task"]["disable_optimizer"] is True
 
 
+def test_build_external_provider_control_downgrades_stale_skip_only_suppress():
+    control = StrategyFactoryScheduler._build_external_provider_control(
+        [
+            {
+                "run_id": "latest_zero_attempt",
+                "external_llm_stage_attempt_count": 0,
+                "external_llm_real_request_count": 0,
+                "external_llm_compatibility_skip_count": 0,
+                "external_llm_compatibility_failure_count": 0,
+                "external_llm_effective_response_count": 0,
+                "external_llm_empty_200_response_count": 0,
+            },
+            {
+                "run_id": "older_skip_only",
+                "external_llm_stage_attempt_count": 8,
+                "external_llm_real_request_count": 0,
+                "external_llm_compatibility_skip_count": 8,
+                "external_llm_compatibility_failure_count": 0,
+                "external_llm_effective_response_count": 0,
+                "external_llm_empty_200_response_count": 8,
+            },
+        ],
+        {},
+    )
+
+    assert control["control_mode"] == "cooldown"
+    assert control["control_reasons"] == ["compatibility_skip_ratio_too_high"]
+    assert control["active_attempt_run_count"] == 1
+    assert control["zero_attempt_run_streak"] == 1
+    assert control["suppress_recovery_probe_recommended"] is True
+    assert control["suppress_recovery_probe_reason"] == "skip_only_history_without_recent_probe"
+
+
+def test_build_external_provider_control_keeps_suppress_for_repeated_skip_only_runs():
+    control = StrategyFactoryScheduler._build_external_provider_control(
+        [
+            {
+                "run_id": "latest_skip_only",
+                "external_llm_stage_attempt_count": 4,
+                "external_llm_real_request_count": 0,
+                "external_llm_compatibility_skip_count": 4,
+                "external_llm_compatibility_failure_count": 0,
+                "external_llm_effective_response_count": 0,
+                "external_llm_empty_200_response_count": 4,
+            },
+            {
+                "run_id": "older_skip_only",
+                "external_llm_stage_attempt_count": 4,
+                "external_llm_real_request_count": 0,
+                "external_llm_compatibility_skip_count": 4,
+                "external_llm_compatibility_failure_count": 0,
+                "external_llm_effective_response_count": 0,
+                "external_llm_empty_200_response_count": 4,
+            },
+        ],
+        {},
+    )
+
+    assert control["control_mode"] == "suppress"
+    assert control["suppress_recovery_probe_recommended"] is False
+    assert control["active_attempt_run_count"] == 2
+    assert control["zero_attempt_run_streak"] == 0
+
+
 @pytest.mark.asyncio
 async def test_run_autonomy_batches_uses_lifecycle_feedback_generator_mode_controls(monkeypatch):
     scheduler = StrategyFactoryScheduler()

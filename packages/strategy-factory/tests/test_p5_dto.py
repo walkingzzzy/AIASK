@@ -118,6 +118,9 @@ _SAMPLE_RUN_RESULT = {
         "governed_pending_candidate_count": 0,
         "external_llm_provider_health_status": "degraded",
         "external_llm_provider_control_mode": "suppress",
+        "external_llm_provider_control_reasons": ["provider_budget_guardrail"],
+        "suppressed_generator_modes": ["external_llm"],
+        "feedback_generator_mode_control_mode_counts": {"suppress": 1, "normal": 1},
         "candidate_local_attempt_count": 6,
         "task_local_attempt_count": 4,
         "cohort_effective_trials": 9.5,
@@ -190,12 +193,19 @@ class TestFactoryRunSummaryDTO:
         assert dto.status == "success"
         assert dto.candidates_spawned == 12
         assert dto.submitted == 3
+        assert dto.submit_stage_entered is True
+        assert dto.submit_stage_status == "completed"
         assert dto.elapsed_seconds == pytest.approx(300.0)
         assert dto.stock_family_allocation_count == 128
         assert dto.family_preference_source_mode == "stock_family_allocation"
         assert dto.governed_candidate_pool_provisional_spillover_policy_status == "spillover_applied"
         assert dto.external_llm_provider_health_status == "degraded"
         assert dto.external_llm_provider_control_mode == "suppress"
+        assert dto.external_llm_provider_control_reasons == ["provider_budget_guardrail"]
+        assert dto.suppressed_generator_modes == ["external_llm"]
+        assert dto.feedback_generator_mode_control_mode_counts == {"suppress": 1, "normal": 1}
+        assert dto.external_llm_provider_suppressed is True
+        assert dto.external_llm_provider_cooldown is False
         assert dto.candidate_local_attempt_count == 6
         assert dto.cohort_effective_trials == pytest.approx(9.5)
 
@@ -222,6 +232,12 @@ class TestFactoryRunSummaryDTO:
         d = dto.to_dict()
         for key in ["run_id", "status", "elapsed_seconds", "submitted", "candidates_spawned"]:
             assert key in d
+        assert d["submit_stage_entered"] is True
+        assert d["submit_stage_status"] == "completed"
+        assert d["external_llm_provider_control_reasons"] == ["provider_budget_guardrail"]
+        assert d["suppressed_generator_modes"] == ["external_llm"]
+        assert d["feedback_generator_mode_control_mode_counts"] == {"suppress": 1, "normal": 1}
+        assert d["external_llm_provider_suppressed"] is True
 
     def test_error_omitted_when_none(self):
         dto = FactoryRunSummaryDTO.from_dict(_SAMPLE_RUN_RESULT)
@@ -300,6 +316,23 @@ class TestFactoryRunSummaryDTO:
         assert dto.raw_validation_b_rate == pytest.approx(1.0)
         assert dto.validation_family_quality_panel[0]["strategy_family"] == "momentum"
 
+    def test_submit_stage_entered_falls_back_to_summary_counts(self):
+        data = {
+            **_SAMPLE_RUN_RESULT,
+            "stages": {
+                "collect": {"status": "completed", "ok": True},
+            },
+            "summary": {
+                **dict(_SAMPLE_RUN_RESULT["summary"]),
+                "submitted": 2,
+            },
+        }
+
+        dto = FactoryRunSummaryDTO.from_dict(data)
+
+        assert dto.submit_stage_entered is True
+        assert dto.submit_stage_status is None
+
 
 # ---------------------------------------------------------------------------
 # FactoryRunDetailDTO
@@ -349,6 +382,10 @@ class TestFactoryRunDetailDTO:
         assert d["feedback_summary"]["family_count"] == 2
         assert d["incubation_summary"]["gate_3_passed"] == 2
         assert d["live_ready_summary"]["live_ready_review_count"] == 1
+        assert d["external_llm_provider_control_reasons"] == ["provider_budget_guardrail"]
+        assert d["suppressed_generator_modes"] == ["external_llm"]
+        assert d["feedback_generator_mode_control_mode_counts"] == {"suppress": 1, "normal": 1}
+        assert d["external_llm_provider_suppressed"] is True
 
     def test_from_dict_ignores_fallback_stage_metadata_entries(self):
         data = {
