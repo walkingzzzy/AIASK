@@ -207,6 +207,29 @@ def build_factor_research_summary(
         "budget_feedback_promotion_review_status_counts": dict(
             budget_feedback_summary.get("promotion_review_status_counts") or {}
         ),
+        "budget_feedback_paper_hit_ratio": _safe_float(
+            budget_feedback_summary.get("paper_hit_ratio"),
+            0.5,
+        ),
+        "budget_feedback_paper_skill_lcb": _safe_float(
+            budget_feedback_summary.get("paper_skill_lcb")
+        ),
+        "budget_feedback_paper_recent_skill_lcb": _safe_float(
+            budget_feedback_summary.get("paper_recent_skill_lcb")
+        ),
+        "budget_feedback_paper_stability_gap": _safe_float(
+            budget_feedback_summary.get("paper_stability_gap")
+        ),
+        "budget_feedback_paper_coverage_ratio": _safe_float(
+            budget_feedback_summary.get("paper_coverage_ratio"),
+            1.0,
+        ),
+        "budget_feedback_legacy_control_mode_counts": dict(
+            budget_feedback_summary.get("legacy_control_mode_counts") or {}
+        ),
+        "budget_feedback_skill_control_mode_counts": dict(
+            budget_feedback_summary.get("skill_control_mode_counts") or {}
+        ),
         "budget_feedback_signal_count_total": int(
             budget_feedback_summary.get("signal_count_total") or 0
         ),

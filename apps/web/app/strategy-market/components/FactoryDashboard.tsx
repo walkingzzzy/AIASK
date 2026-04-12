@@ -366,6 +366,18 @@ function previewBadgeVariant(status: unknown): 'success' | 'danger' | 'warning' 
   return 'info';
 }
 
+function providerControlBadgeVariant(
+  mode: unknown,
+): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(mode ?? '').trim().toLowerCase();
+  if (!normalized) return 'neutral';
+  if (normalized === 'suppress') return 'danger';
+  if (normalized === 'cooldown') return 'warning';
+  if (normalized === 'limited') return 'info';
+  if (normalized === 'normal') return 'success';
+  return previewBadgeVariant(normalized);
+}
+
 function validationGradeBadgeVariant(
   grade: unknown,
 ): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
@@ -672,6 +684,470 @@ function FactoryQualityBaselinePanel({
   );
 }
 
+function FactoryProviderDiagnosticsPanel({
+  factoryStatus,
+}: {
+  factoryStatus: FactoryStatusResponse | null | undefined;
+}) {
+  const diagnostics = asTypedObject<Record<string, unknown>>(
+    firstDefinedValue(
+      factoryStatus?.recent_run_diagnostics,
+      isObjectRecord(factoryStatus?.quality_baseline)
+        ? factoryStatus?.quality_baseline?.recent_run_diagnostics
+        : undefined,
+    ),
+  );
+  const readinessDecisionCounts = toDisplayCountEntries(diagnostics.readiness_decision_counts);
+  const blockerReasonTop = toObjectArray(diagnostics.blocker_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const warningReasonTop = toObjectArray(diagnostics.warning_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const governedDiagnostics = asTypedObject<Record<string, unknown>>(diagnostics.governed_pool_diagnostics);
+  const governedWarningTop = toObjectArray(governedDiagnostics.warning_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const governedBlockingTop = toObjectArray(governedDiagnostics.blocking_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const governedExclusionTop = toObjectArray(governedDiagnostics.exclusion_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const governedIneligibleTop = toObjectArray(governedDiagnostics.ineligible_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const evidenceDebtDiagnostics = asTypedObject<Record<string, unknown>>(diagnostics.evidence_debt_diagnostics);
+  const evidenceDebtWarningTop = toObjectArray(evidenceDebtDiagnostics.warning_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const providerWindowDiagnostics = asTypedObject<Record<string, unknown>>(diagnostics.provider_control_diagnostics);
+  const controlModeCounts = toDisplayCountEntries(diagnostics.external_llm_provider_control_mode_counts);
+  const controlReasonTop = toObjectArray(diagnostics.external_llm_provider_control_reason_topn)
+    .map((item) => ({
+      reason: toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+  const suppressedModeTop = toObjectArray(diagnostics.suppressed_generator_mode_topn)
+    .map((item) => ({
+      mode: toDisplayText(item.mode) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.mode && Number.isFinite(item.count) && item.count > 0);
+  const recentRuns = toObjectArray(diagnostics.recent_runs);
+  const analyzedRunCount = toDisplayNumber(diagnostics.analyzed_run_count);
+  const blockedRunCount = toDisplayNumber(diagnostics.readiness_blocked_count);
+  const submitStageEnteredCount = toDisplayNumber(diagnostics.submit_stage_entered_count);
+  const submittedPositiveCount = toDisplayNumber(diagnostics.submitted_positive_count);
+  const suppressedRunCount = toDisplayNumber(diagnostics.external_llm_provider_suppressed_run_count);
+  const cooldownRunCount = toDisplayNumber(diagnostics.external_llm_provider_cooldown_run_count);
+  const governedBlockedRatioLatest = formatRatioPercent(
+    toDisplayNumber(governedDiagnostics.latest_governed_blocked_ratio),
+  );
+  const governedBlockedRatioMean = formatRatioPercent(
+    toDisplayNumber(governedDiagnostics.recent_governed_blocked_ratio_mean),
+  );
+  const governedStrictShortfallLatest = toDisplayNumber(
+    governedDiagnostics.latest_governed_candidate_pool_strict_shortfall_count,
+  );
+  const governedStrictShortfallMean = toDisplayNumber(
+    governedDiagnostics.recent_governed_candidate_pool_strict_shortfall_mean,
+  );
+  const governedBlockedCandidateLatest = toDisplayNumber(
+    governedDiagnostics.latest_governed_blocked_candidate_count,
+  );
+  const governedBlockedCandidateMean = toDisplayNumber(
+    governedDiagnostics.recent_governed_blocked_candidate_count_mean,
+  );
+  const evidenceDebtRatioLatest = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.latest_budget_feedback_evidence_debt_ratio),
+  );
+  const evidenceDebtRatioMean = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.recent_budget_feedback_evidence_debt_ratio_mean),
+  );
+  const zeroSignalRatioLatest = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.latest_budget_feedback_zero_signal_ratio),
+  );
+  const zeroSignalRatioMean = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.recent_budget_feedback_zero_signal_ratio_mean),
+  );
+  const forwardCoverageLatest = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.latest_budget_feedback_forward_window_coverage_ratio),
+  );
+  const forwardCoverageMean = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.recent_budget_feedback_forward_window_coverage_ratio_mean),
+  );
+  const promotionReadyLatest = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.latest_budget_feedback_promotion_ready_ratio),
+  );
+  const promotionReviewLatest = formatRatioPercent(
+    toDisplayNumber(evidenceDebtDiagnostics.latest_budget_feedback_promotion_review_coverage_ratio),
+  );
+  const providerAttemptActiveRuns = toDisplayNumber(providerWindowDiagnostics.active_attempt_run_count);
+  const providerAttemptZeroRuns = toDisplayNumber(providerWindowDiagnostics.zero_attempt_run_count);
+  const providerStageAttemptLatest = toDisplayNumber(providerWindowDiagnostics.latest_stage_attempt_count);
+  const providerStageAttemptMean = toDisplayNumber(providerWindowDiagnostics.recent_stage_attempt_count_mean);
+  const providerRealRequestLatest = toDisplayNumber(providerWindowDiagnostics.latest_real_request_count);
+  const providerRealRequestMean = toDisplayNumber(providerWindowDiagnostics.recent_real_request_count_mean);
+  const providerSkipRatioLatest = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.latest_compatibility_skip_ratio),
+  );
+  const providerSkipRatioMean = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.recent_compatibility_skip_ratio_mean),
+  );
+  const providerFailureRatioLatest = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.latest_compatibility_failure_ratio),
+  );
+  const providerFailureRatioMean = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.recent_compatibility_failure_ratio_mean),
+  );
+  const providerEffectiveRatioLatest = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.latest_effective_response_ratio),
+  );
+  const providerEffectiveRatioMean = formatRatioPercent(
+    toDisplayNumber(providerWindowDiagnostics.recent_effective_response_ratio_mean),
+  );
+  const hasGovernedBreakdown = [
+    governedWarningTop.length,
+    governedBlockingTop.length,
+    governedExclusionTop.length,
+    governedIneligibleTop.length,
+    governedStrictShortfallLatest,
+    governedBlockedCandidateLatest,
+  ].some((value) => (typeof value === 'number' ? value > 0 : Boolean(value)));
+  const hasEvidenceDebtBreakdown = [
+    evidenceDebtWarningTop.length,
+    evidenceDebtDiagnostics.latest_budget_feedback_evidence_debt_ratio,
+    evidenceDebtDiagnostics.latest_budget_feedback_zero_signal_ratio,
+    evidenceDebtDiagnostics.latest_budget_feedback_forward_window_coverage_ratio,
+  ].some(Boolean);
+  const hasProviderWindow = [
+    providerAttemptActiveRuns,
+    providerAttemptZeroRuns,
+    providerStageAttemptLatest,
+    providerRealRequestLatest,
+    providerWindowDiagnostics.latest_compatibility_skip_ratio,
+    providerWindowDiagnostics.latest_effective_response_ratio,
+  ].some(Boolean);
+  const hasProviderDiagnostics = [
+    analyzedRunCount,
+    readinessDecisionCounts.length,
+    blockerReasonTop.length,
+    warningReasonTop.length,
+    blockedRunCount,
+    submitStageEnteredCount,
+    submittedPositiveCount,
+    controlModeCounts.length,
+    suppressedRunCount,
+    cooldownRunCount,
+    hasGovernedBreakdown,
+    hasEvidenceDebtBreakdown,
+    hasProviderWindow,
+    controlReasonTop.length,
+    suppressedModeTop.length,
+    recentRuns.length,
+  ].some((value) => (typeof value === 'number' ? value > 0 : Boolean(value)));
+
+  if (!hasProviderDiagnostics) return null;
+
+  return (
+    <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">默认运行阻断与 Provider 诊断</div>
+        {analyzedRunCount != null ? (
+          <Badge variant="neutral">近 {analyzedRunCount} 轮</Badge>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <FactoryMetric title="Readiness 阻断" value={formatCountWithRate(blockedRunCount, diagnostics.readiness_blocked_rate)} />
+        <FactoryMetric title="进入 Submit" value={formatCountWithRate(submitStageEnteredCount, diagnostics.submit_stage_entered_rate)} />
+        <FactoryMetric title="实际提交" value={formatCountWithRate(submittedPositiveCount, diagnostics.submitted_positive_rate)} />
+        <FactoryMetric title="Provider 抑制" value={formatCountWithRate(suppressedRunCount, diagnostics.external_llm_provider_suppressed_run_rate)} />
+        <FactoryMetric title="Provider 冷却" value={formatCountWithRate(cooldownRunCount, diagnostics.external_llm_provider_cooldown_run_rate)} />
+        <FactoryMetric title="控制模式数" value={controlModeCounts.length} />
+      </div>
+
+      {(readinessDecisionCounts.length > 0 || controlModeCounts.length > 0) && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {readinessDecisionCounts.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">Readiness 决策分布</div>
+              <div className="flex flex-wrap gap-2">
+                {readinessDecisionCounts.map(([decision, count]) => (
+                  <Badge key={decision} variant={previewBadgeVariant(decision)}>
+                    {formatTaskLabel(decision)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {controlModeCounts.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">Provider 模式分布</div>
+              <div className="flex flex-wrap gap-2">
+                {controlModeCounts.map(([mode, count]) => (
+                  <Badge key={mode} variant={providerControlBadgeVariant(mode)}>
+                    {formatTaskLabel(mode)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(hasGovernedBreakdown || hasEvidenceDebtBreakdown || hasProviderWindow) && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+          {hasGovernedBreakdown && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+              <div className="text-xs font-medium text-text-primary">Governed Pool 子因子</div>
+              <div className="grid grid-cols-2 gap-3">
+                <FactoryMetric title="Blocked 比率" value={`${governedBlockedRatioLatest} / ${governedBlockedRatioMean}`} />
+                <FactoryMetric title="Strict shortfall" value={`${governedStrictShortfallLatest ?? '-'} / ${governedStrictShortfallMean == null ? '-' : formatFactoryMetricValue(governedStrictShortfallMean, 1)}`} />
+                <FactoryMetric title="Blocked 候选" value={`${governedBlockedCandidateLatest ?? '-'} / ${governedBlockedCandidateMean == null ? '-' : formatFactoryMetricValue(governedBlockedCandidateMean, 1)}`} />
+                <FactoryMetric title="Source 候选" value={toDisplayNumber(governedDiagnostics.latest_governed_source_candidate_count) ?? '-'} />
+              </div>
+              {governedBlockingTop.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">Blocking 细项</div>
+                  <div className="flex flex-wrap gap-2">
+                    {governedBlockingTop.slice(0, 5).map((item) => (
+                      <Badge key={`${item.reason}-${item.count}`} variant="danger">
+                        {formatTaskLabel(item.reason)} {item.count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {governedExclusionTop.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">Exclusion 细项</div>
+                  <div className="flex flex-wrap gap-2">
+                    {governedExclusionTop.slice(0, 5).map((item) => (
+                      <Badge key={`${item.reason}-${item.count}`} variant="warning">
+                        {formatTaskLabel(item.reason)} {item.count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(governedWarningTop.length > 0 || governedIneligibleTop.length > 0) && (
+                <div className="space-y-2">
+                  {governedWarningTop.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {governedWarningTop.slice(0, 4).map((item) => (
+                        <Badge key={`${item.reason}-${item.count}`} variant="warning">
+                          {formatTaskLabel(item.reason)} {item.count}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  {governedIneligibleTop.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {governedIneligibleTop.slice(0, 4).map((item) => (
+                        <Badge key={`${item.reason}-${item.count}`} variant="neutral">
+                          {formatTaskLabel(item.reason)} {item.count}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {hasEvidenceDebtBreakdown && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+              <div className="text-xs font-medium text-text-primary">Evidence Debt 子因子</div>
+              <div className="grid grid-cols-2 gap-3">
+                <FactoryMetric title="Debt 比率" value={`${evidenceDebtRatioLatest} / ${evidenceDebtRatioMean}`} />
+                <FactoryMetric title="零信号比率" value={`${zeroSignalRatioLatest} / ${zeroSignalRatioMean}`} />
+                <FactoryMetric title="Forward 覆盖" value={`${forwardCoverageLatest} / ${forwardCoverageMean}`} />
+                <FactoryMetric title="晋级 / 评审" value={`${promotionReadyLatest} / ${promotionReviewLatest}`} />
+              </div>
+              {evidenceDebtWarningTop.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">Debt 预警拆分</div>
+                  <div className="flex flex-wrap gap-2">
+                    {evidenceDebtWarningTop.slice(0, 6).map((item) => (
+                      <Badge key={`${item.reason}-${item.count}`} variant="warning">
+                        {formatTaskLabel(item.reason)} {item.count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {hasProviderWindow && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+              <div className="text-xs font-medium text-text-primary">Provider 兼容性窗口</div>
+              <div className="grid grid-cols-2 gap-3">
+                <FactoryMetric title="活跃尝试轮数" value={providerAttemptActiveRuns ?? '-'} />
+                <FactoryMetric title="零尝试轮数" value={providerAttemptZeroRuns ?? '-'} />
+                <FactoryMetric title="Stage attempts" value={`${providerStageAttemptLatest ?? '-'} / ${providerStageAttemptMean == null ? '-' : formatFactoryMetricValue(providerStageAttemptMean, 1)}`} />
+                <FactoryMetric title="真实请求" value={`${providerRealRequestLatest ?? '-'} / ${providerRealRequestMean == null ? '-' : formatFactoryMetricValue(providerRealRequestMean, 1)}`} />
+                <FactoryMetric title="Skip 比率" value={`${providerSkipRatioLatest} / ${providerSkipRatioMean}`} />
+                <FactoryMetric title="Failure 比率" value={`${providerFailureRatioLatest} / ${providerFailureRatioMean}`} />
+              </div>
+              <div className="text-xs text-text-secondary">
+                Effective 响应：{providerEffectiveRatioLatest} / {providerEffectiveRatioMean}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(blockerReasonTop.length > 0 || warningReasonTop.length > 0 || controlReasonTop.length > 0 || suppressedModeTop.length > 0) && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {blockerReasonTop.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">主要阻断原因</div>
+              <div className="flex flex-wrap gap-2">
+                {blockerReasonTop.slice(0, 6).map((item) => (
+                  <Badge key={`${item.reason}-${item.count}`} variant="danger">
+                    {formatTaskLabel(item.reason)} {item.count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {warningReasonTop.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">主要预警原因</div>
+              <div className="flex flex-wrap gap-2">
+                {warningReasonTop.slice(0, 6).map((item) => (
+                  <Badge key={`${item.reason}-${item.count}`} variant="warning">
+                    {formatTaskLabel(item.reason)} {item.count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {controlReasonTop.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">Provider 主要原因码</div>
+              <div className="flex flex-wrap gap-2">
+                {controlReasonTop.slice(0, 6).map((item) => (
+                  <Badge key={`${item.reason}-${item.count}`} variant="warning">
+                    {formatTaskLabel(item.reason)} {item.count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {suppressedModeTop.length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">被压制生成模式</div>
+              <div className="flex flex-wrap gap-2">
+                {suppressedModeTop.slice(0, 6).map((item) => (
+                  <Badge key={`${item.mode}-${item.count}`} variant="warning">
+                    {formatTaskLabel(item.mode)} {item.count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {recentRuns.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">最近运行 Provider 轨迹</div>
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+            {recentRuns.slice(0, 3).map((item, idx) => {
+              const runId = toDisplayText(item.run_id) ?? `run-${idx + 1}`;
+              const status = toDisplayText(item.status) ?? 'unknown';
+              const readinessDecision = toDisplayText(item.readiness_decision) ?? 'unknown';
+              const blockingReasons = toDisplayTextList(item.blocking_reason_codes, 3);
+              const warningReasons = toDisplayTextList(item.warning_reason_codes, 3);
+              const providerMode = toDisplayText(item.external_llm_provider_control_mode);
+              const reasons = toDisplayTextList(item.external_llm_provider_control_reasons, 3);
+              const suppressedModes = toDisplayTextList(item.suppressed_generator_modes, 3);
+              const completedAt = toDisplayText(item.completed_at) ?? toDisplayText(item.started_at);
+              const providerSuppressed = Boolean(item.external_llm_provider_suppressed);
+              const providerCooldown = Boolean(item.external_llm_provider_cooldown);
+              const governedBlockedRatio = formatRatioPercent(toDisplayNumber(item.governed_blocked_ratio));
+              const evidenceDebtRatio = formatRatioPercent(toDisplayNumber(item.budget_feedback_evidence_debt_ratio));
+              const providerAttemptCount = toDisplayNumber(item.external_llm_stage_attempt_count) ?? 0;
+              const providerRealRequestCount = toDisplayNumber(item.external_llm_real_request_count) ?? 0;
+              const providerSkipRatio = formatRatioPercent(toDisplayNumber(item.external_llm_compatibility_skip_ratio));
+              const providerFailureRatio = formatRatioPercent(
+                toDisplayNumber(item.external_llm_compatibility_failure_ratio),
+              );
+              const providerEffectiveRatio = formatRatioPercent(
+                toDisplayNumber(item.external_llm_effective_response_ratio),
+              );
+
+              return (
+                <div
+                  key={`${runId}-${idx}`}
+                  className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="font-medium text-text-primary">{runId}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={getFactoryRunStatusVariant(status)}>
+                        {getFactoryRunStatusLabel(status)}
+                      </Badge>
+                      <Badge variant={previewBadgeVariant(readinessDecision)}>
+                        readiness {formatTaskLabel(readinessDecision)}
+                      </Badge>
+                      {providerMode && (
+                        <Badge variant={providerControlBadgeVariant(providerMode)}>
+                          {formatTaskLabel(providerMode)}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div>时间：{shortFactoryRunTime(completedAt)}</div>
+                  <div className="flex flex-wrap gap-2">
+                    {blockingReasons.length > 0 ? <Badge variant="danger">存在阻断</Badge> : null}
+                    {warningReasons.length > 0 ? <Badge variant="warning">存在预警</Badge> : null}
+                    {providerSuppressed ? <Badge variant="warning">Provider 抑制</Badge> : null}
+                    {providerCooldown ? <Badge variant="warning">Provider 冷却</Badge> : null}
+                  </div>
+                  <div>阻断：{blockingReasons.join(' / ') || '-'}</div>
+                  <div>预警：{warningReasons.join(' / ') || '-'}</div>
+                  <div>Governed / Debt：{governedBlockedRatio} / {evidenceDebtRatio}</div>
+                  <div>Provider 探针 / 请求：{providerAttemptCount} / {providerRealRequestCount}</div>
+                  <div>Provider Skip / Failure / Effective：{providerSkipRatio} / {providerFailureRatio} / {providerEffectiveRatio}</div>
+                  <div>原因：{reasons.join(' / ') || '-'}</div>
+                  <div>受抑制模式：{suppressedModes.join(' / ') || '-'}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FactoryPreviewSection({
   title,
   count,
@@ -888,6 +1364,24 @@ function FactoryFeedbackLoopPanel({
     6,
   );
   const externalLlmProviderControlMode = toDisplayText(summary?.external_llm_provider_control_mode);
+  const externalLlmProviderControlReasons = toDisplayTextList(
+    summary?.external_llm_provider_control_reasons,
+    6,
+  );
+  const externalLlmProviderSuppressed = firstDefinedValue(
+    typeof summary?.external_llm_provider_suppressed === 'boolean'
+      ? Boolean(summary.external_llm_provider_suppressed)
+      : undefined,
+    externalLlmProviderControlMode === 'suppress'
+      || suppressedGeneratorModes.includes('external_llm')
+      || submissionGeneratorModeControlModeCounts.some(([key]) => key === 'suppress'),
+  );
+  const externalLlmProviderCooldown = firstDefinedValue(
+    typeof summary?.external_llm_provider_cooldown === 'boolean'
+      ? Boolean(summary.external_llm_provider_cooldown)
+      : undefined,
+    externalLlmProviderControlMode === 'cooldown',
+  );
   const generatorModeControls = isObjectRecord(summary?.generator_mode_controls)
     ? Object.entries(summary.generator_mode_controls).filter(([, payload]) => isObjectRecord(payload))
     : [];
@@ -938,6 +1432,9 @@ function FactoryFeedbackLoopPanel({
     suppressedTargetPools.length > 0,
     suppressedGeneratorModes.length > 0,
     externalLlmProviderControlMode,
+    externalLlmProviderControlReasons.length > 0,
+    externalLlmProviderSuppressed,
+    externalLlmProviderCooldown,
     generatorModeControls.length > 0,
   ].some(Boolean);
 
@@ -962,10 +1459,16 @@ function FactoryFeedbackLoopPanel({
             </Badge>
           )}
           {externalLlmProviderControlMode && (
-            <Badge variant="info">
+            <Badge variant={providerControlBadgeVariant(externalLlmProviderControlMode)}>
               外部 LLM {formatTaskLabel(externalLlmProviderControlMode)}
             </Badge>
           )}
+          {externalLlmProviderSuppressed ? (
+            <Badge variant="warning">Provider 抑制中</Badge>
+          ) : null}
+          {externalLlmProviderCooldown ? (
+            <Badge variant="warning">Provider 冷却中</Badge>
+          ) : null}
         </div>
       </div>
 
@@ -1078,6 +1581,30 @@ function FactoryFeedbackLoopPanel({
                   </Badge>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!compact && (externalLlmProviderControlReasons.length > 0 || externalLlmProviderSuppressed || externalLlmProviderCooldown) && (
+        <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+          <div className="text-xs font-medium text-text-primary">外部 LLM Provider</div>
+          <div className="flex flex-wrap gap-2">
+            {externalLlmProviderControlMode ? (
+              <Badge variant={providerControlBadgeVariant(externalLlmProviderControlMode)}>
+                模式 {formatTaskLabel(externalLlmProviderControlMode)}
+              </Badge>
+            ) : null}
+            {externalLlmProviderSuppressed ? (
+              <Badge variant="warning">已触发抑制</Badge>
+            ) : null}
+            {externalLlmProviderCooldown ? (
+              <Badge variant="warning">已触发冷却</Badge>
+            ) : null}
+          </div>
+          {externalLlmProviderControlReasons.length > 0 && (
+            <div className="text-xs text-text-secondary">
+              原因码：{externalLlmProviderControlReasons.map((item) => formatTaskLabel(item)).join(' / ')}
             </div>
           )}
         </div>
@@ -2779,6 +3306,7 @@ export function FactoryDashboard({
         description="优先看原始 validation 等级，再看 effective 等级与 strict / live 对齐情况，避免把门禁修正误当成质量提升。"
       />
       <FactoryQualityBaselinePanel factoryStatus={factoryStatus} />
+      <FactoryProviderDiagnosticsPanel factoryStatus={factoryStatus} />
       <FactoryFeedbackLoopPanel title="P3 反馈闭环" summary={factorySummary} compact />
       <div className="mt-3 flex flex-wrap gap-2">
         {capabilityBadges.map((item) => (
@@ -2901,6 +3429,22 @@ export function FactoryDashboard({
                     冷却任务 {item.summary?.planned_feedback_cooldown_task_count}
                   </Badge>
                 ) : null}
+                {item.summary?.external_llm_provider_control_mode ? (
+                  <Badge variant={providerControlBadgeVariant(item.summary.external_llm_provider_control_mode)}>
+                    Provider {formatTaskLabel(item.summary.external_llm_provider_control_mode)}
+                  </Badge>
+                ) : null}
+                {item.summary?.external_llm_provider_suppressed ? (
+                  <Badge variant="warning">Provider 抑制</Badge>
+                ) : null}
+                {item.summary?.external_llm_provider_cooldown ? (
+                  <Badge variant="warning">Provider 冷却</Badge>
+                ) : null}
+                {(item.summary?.suppressed_generator_modes?.length ?? 0) > 0 ? (
+                  <Badge variant="warning">
+                    受抑制模式 {item.summary?.suppressed_generator_modes?.length ?? 0}
+                  </Badge>
+                ) : null}
                 {(() => {
                   const [topSource] = sortCountEntries(item.summary?.task_source_counts);
                   return topSource ? (
@@ -2945,6 +3489,11 @@ export function FactoryDashboard({
               {(item.summary?.skip_reason || (item.summary?.skip_reasons ?? []).length > 0) && (
                 <div className="mt-2 text-xs text-text-secondary">
                   跳过原因：{item.summary?.skip_reason ?? item.summary?.skip_reasons?.join(' / ')}
+                </div>
+              )}
+              {(item.summary?.external_llm_provider_control_reasons?.length ?? 0) > 0 && (
+                <div className="mt-2 text-xs text-text-secondary">
+                  Provider 原因：{item.summary?.external_llm_provider_control_reasons?.map((item) => formatTaskLabel(item)).join(' / ')}
                 </div>
               )}
               {item.error && <div className="mt-2 text-xs text-danger">错误：{item.error}</div>}

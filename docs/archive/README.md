@@ -33,6 +33,7 @@
 目录：`docs/archive/strategy-factory/`
 
 - [`strategy-factory/README.md`](./strategy-factory/README.md)
+- [`strategy-factory/root-2026-04/README.md`](./strategy-factory/root-2026-04/README.md)
 - `01-系统架构设计文档.md`
 - `02-接口定义与数据模型.md`
 - `03-模块功能方案.md`
@@ -42,6 +43,7 @@
 - `策略工厂重构方案.md`
 - `策略超市集成可行性分析报告.md`
 - `策略超市五期开发方案.md`
+- `root-2026-04/` 下按“架构方案 / 候选生成 / 质量提升 / 跟踪与优先级 / 扩展产线设想”归类保存的 2026-04 根目录策略工厂材料
 - 以及其他策略工厂专题优化与研究文档
 
 ## 使用边界

@@ -133,13 +133,16 @@ class StrategyIncubationMixin:
                 """
                 INSERT INTO strategy_incubation_metrics
                     (strategy_id, account_id, metric_date, stage, total_value, cash, market_value, nav,
-                     daily_return, max_drawdown, sharpe_ratio, hit_rate_5d, forward_ic_5d, forward_sharpe_5d,
+                     daily_return, max_drawdown, sharpe_ratio, hit_rate_5d, hit_rate_lcb_5d, skill_lcb_5d,
+                     effective_n_5d, recent_hit_rate_5d, recent_skill_lcb_5d, stability_gap_5d,
+                     forward_ic_5d, forward_sharpe_5d,
                      total_signals, total_orders, total_trades, turnover_rate, exposure_rate, alpha_decay,
                      drift_score, blockers, risk_flags, decision, metadata, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
                         $9, $10, $11, $12, $13, $14,
                         $15, $16, $17, $18, $19, $20,
-                        $21, $22::jsonb, $23::jsonb, $24, $25::jsonb, NOW(), NOW())
+                        $21, $22, $23, $24, $25, $26,
+                        $27::jsonb, $28::jsonb, $29, $30::jsonb, NOW(), NOW())
                 ON CONFLICT (strategy_id, metric_date) DO UPDATE SET
                     account_id = EXCLUDED.account_id,
                     stage = EXCLUDED.stage,
@@ -151,6 +154,12 @@ class StrategyIncubationMixin:
                     max_drawdown = EXCLUDED.max_drawdown,
                     sharpe_ratio = EXCLUDED.sharpe_ratio,
                     hit_rate_5d = EXCLUDED.hit_rate_5d,
+                    hit_rate_lcb_5d = EXCLUDED.hit_rate_lcb_5d,
+                    skill_lcb_5d = EXCLUDED.skill_lcb_5d,
+                    effective_n_5d = EXCLUDED.effective_n_5d,
+                    recent_hit_rate_5d = EXCLUDED.recent_hit_rate_5d,
+                    recent_skill_lcb_5d = EXCLUDED.recent_skill_lcb_5d,
+                    stability_gap_5d = EXCLUDED.stability_gap_5d,
                     forward_ic_5d = EXCLUDED.forward_ic_5d,
                     forward_sharpe_5d = EXCLUDED.forward_sharpe_5d,
                     total_signals = EXCLUDED.total_signals,
@@ -179,6 +188,12 @@ class StrategyIncubationMixin:
                 payload.get("max_drawdown"),
                 payload.get("sharpe_ratio"),
                 payload.get("hit_rate_5d"),
+                payload.get("hit_rate_lcb_5d"),
+                payload.get("skill_lcb_5d"),
+                payload.get("effective_n_5d"),
+                payload.get("recent_hit_rate_5d"),
+                payload.get("recent_skill_lcb_5d"),
+                payload.get("stability_gap_5d"),
                 payload.get("forward_ic_5d"),
                 payload.get("forward_sharpe_5d"),
                 int(payload.get("total_signals") or 0),
@@ -452,16 +467,16 @@ class StrategyIncubationMixin:
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COUNT(*)::int AS total_orders,
-                    COUNT(*) FILTER (WHERE status = 'filled')::int AS total_trades,
-                    COALESCE(SUM(price * shares) FILTER (WHERE status = 'filled'), 0)::float AS trade_amount
-                FROM paper_orders
-                WHERE account_id = $1
+                    COALESCE((SELECT COUNT(*) FROM paper_orders WHERE account_id = $1), 0)::int AS total_orders,
+                    COALESCE((SELECT COUNT(*) FROM paper_orders WHERE account_id = $1 AND status = 'filled'), 0)::int AS filled_orders,
+                    COALESCE((SELECT COUNT(*) FROM paper_trades WHERE account_id = $1), 0)::int AS total_trades,
+                    COALESCE((SELECT SUM(amount) FROM paper_trades WHERE account_id = $1), 0)::float AS trade_amount
                 """,
                 account_id,
             )
         return {
             'total_orders': int((row or {}).get('total_orders') or 0),
+            'filled_orders': int((row or {}).get('filled_orders') or 0),
             'total_trades': int((row or {}).get('total_trades') or 0),
             'trade_amount': float((row or {}).get('trade_amount') or 0.0),
         }

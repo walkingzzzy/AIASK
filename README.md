@@ -115,5 +115,6 @@ python -c "import akshare_mcp.server as s; m=s.mcp; print('tools', len(m._tool_m
 这次整理后：
 
 - 根目录 dated 方案、阶段修复记录、专项审计已移入 [docs/archive/README.md](./docs/archive/README.md)。
+- 根目录曾回流的策略工厂专题文档已按类别归档到 [docs/archive/strategy-factory/root-2026-04/README.md](./docs/archive/strategy-factory/root-2026-04/README.md)。
 - 当前入口文档只保留和现行代码仍强相关的说明。
 - 历史材料不再作为默认阅读入口，但仍保留供追溯和审计参考。

@@ -229,6 +229,14 @@ def build_success_run_summary(
         "planned_feedback_control_mode_counts": dict(
             autonomy_summary.get("planned_feedback_control_mode_counts") or {}
         ),
+        "planned_feedback_legacy_control_mode_counts": dict(
+            autonomy_summary.get("planned_feedback_legacy_control_mode_counts")
+            or autonomy_summary.get("planned_feedback_control_mode_counts")
+            or {}
+        ),
+        "planned_feedback_skill_control_mode_counts": dict(
+            autonomy_summary.get("planned_feedback_skill_control_mode_counts") or {}
+        ),
         "planned_feedback_target_pool_control_mode_counts": dict(
             autonomy_summary.get("planned_feedback_target_pool_control_mode_counts") or {}
         ),
@@ -238,8 +246,27 @@ def build_success_run_summary(
         "planned_feedback_generator_mode_control_mode_counts": dict(
             autonomy_summary.get("planned_feedback_generator_mode_control_mode_counts") or {}
         ),
+        "planned_feedback_skill_target_pool_control_mode_counts": dict(
+            autonomy_summary.get("planned_feedback_skill_target_pool_control_mode_counts") or {}
+        ),
+        "planned_feedback_skill_holding_bucket_control_mode_counts": dict(
+            autonomy_summary.get("planned_feedback_skill_holding_bucket_control_mode_counts")
+            or {}
+        ),
+        "planned_feedback_skill_generator_mode_control_mode_counts": dict(
+            autonomy_summary.get("planned_feedback_skill_generator_mode_control_mode_counts")
+            or {}
+        ),
         "selected_feedback_control_mode_counts": dict(
             autonomy_summary.get("selected_feedback_control_mode_counts") or {}
+        ),
+        "selected_feedback_legacy_control_mode_counts": dict(
+            autonomy_summary.get("selected_feedback_legacy_control_mode_counts")
+            or autonomy_summary.get("selected_feedback_control_mode_counts")
+            or {}
+        ),
+        "selected_feedback_skill_control_mode_counts": dict(
+            autonomy_summary.get("selected_feedback_skill_control_mode_counts") or {}
         ),
         "selected_feedback_target_pool_control_mode_counts": dict(
             autonomy_summary.get("selected_feedback_target_pool_control_mode_counts") or {}
@@ -249,6 +276,17 @@ def build_success_run_summary(
         ),
         "selected_feedback_generator_mode_control_mode_counts": dict(
             autonomy_summary.get("selected_feedback_generator_mode_control_mode_counts") or {}
+        ),
+        "selected_feedback_skill_target_pool_control_mode_counts": dict(
+            autonomy_summary.get("selected_feedback_skill_target_pool_control_mode_counts") or {}
+        ),
+        "selected_feedback_skill_holding_bucket_control_mode_counts": dict(
+            autonomy_summary.get("selected_feedback_skill_holding_bucket_control_mode_counts")
+            or {}
+        ),
+        "selected_feedback_skill_generator_mode_control_mode_counts": dict(
+            autonomy_summary.get("selected_feedback_skill_generator_mode_control_mode_counts")
+            or {}
         ),
         "selected_feedback_limited_task_count": int(
             autonomy_summary.get("selected_feedback_limited_task_count") or 0

@@ -592,29 +592,14 @@ class StrategyIncubationService:
 
     # Fix #12: 6 阶段孵化映射
     @staticmethod
-    def _derive_incubation_stage(overview: dict, nav_days: int) -> str:
-        """根据孵化概览和交易天数推导当前阶段。
+    def _derive_incubation_stage(overview: dict, open_risk_count: int = 0) -> str:
+        """根据信号质量与风险状态推导当前阶段。"""
+        from .strategy_lifecycle_shared import resolve_incubation_pipeline_stage
 
-        6 stages: warmup → observe → candidate → graduation_ready → promoted / failed
-        """
-        if overview.get('promotion_ready'):
-            return 'graduation_ready'
-        if overview.get('deprecation_risk'):
-            return 'failed'
-
-        blockers = overview.get('blockers') or []
-        risk_flags = overview.get('risk_flags') or []
-
-        # warmup: 交易天数不足或有严重阻塞项
-        if nav_days < 5 or any('min_' in str(b) for b in blockers):
-            return 'warmup'
-
-        # candidate: 无阻塞项且交易天数充足
-        if not blockers and not risk_flags and nav_days >= 15:
-            return 'candidate'
-
-        # observe: 中间状态
-        return 'observe'
+        return resolve_incubation_pipeline_stage(
+            overview.get('signal_quality') or {},
+            open_risk_count=open_risk_count,
+        )
 
     async def record_metrics(self, db, strategy: dict, metric_date: Optional[date] = None) -> Optional[dict]:
         metric_date = metric_date or date.today()
@@ -648,6 +633,7 @@ class StrategyIncubationService:
                 )
                 order_summary = {
                     'total_orders': int((summary or {}).get('total_orders') or 0),
+                    'filled_orders': int((summary or {}).get('filled_orders') or 0),
                     'total_trades': int((trade_summary or {}).get('total_trades') or 0),
                     'trade_amount': float((trade_summary or {}).get('trade_amount') or 0.0),
                 }
@@ -693,12 +679,27 @@ class StrategyIncubationService:
 
         from .strategy_lifecycle_shared import build_incubation_overview as _build_incubation_overview
         overview = await _build_incubation_overview(db, strategy)
+        signal_quality = dict(overview.get('signal_quality') or {})
+        execution_quality = dict(overview.get('execution_quality') or {})
+        signal_quality_5d = dict((signal_quality.get('by_horizon') or {}).get('5') or {})
+        overview_without_signal_quality = dict(overview)
+        overview_without_signal_quality.pop('signal_quality', None)
+        overview_without_signal_quality.pop('execution_quality', None)
         decision = 'promote' if overview.get('promotion_ready') else ('observe' if not overview.get('deprecation_risk') else 'halt')
+        open_risk_count = 0
+        if hasattr(db, 'list_strategy_runtime_risk_events'):
+            open_risks = await db.list_strategy_runtime_risk_events(
+                strategy_id=str(strategy['id']),
+                status='open',
+                limit=20,
+            )
+            open_risk_count = len(list(open_risks or []))
+        derived_stage = self._derive_incubation_stage(overview, open_risk_count=open_risk_count)
 
         metric = await db.save_strategy_incubation_metric(strategy['id'], metric_date, {
             'account_id': account_id,
             # Fix #12: 使用完整的 6 阶段映射替代二元分类
-            'stage': self._derive_incubation_stage(overview, len(nav_rows)),
+            'stage': derived_stage,
             'total_value': round(total_value, 4),
             'cash': round(cash, 4),
             'market_value': round(market_value, 4),
@@ -707,6 +708,12 @@ class StrategyIncubationService:
             'max_drawdown': round(max_drawdown, 6),
             'sharpe_ratio': round(sharpe_ratio, 6),
             'hit_rate_5d': round(hit_rate_5d, 6),
+            'hit_rate_lcb_5d': round(float(signal_quality_5d.get('hit_rate_lcb') or 0.0), 6) if signal_quality_5d.get('hit_rate_lcb') is not None else None,
+            'skill_lcb_5d': round(float(signal_quality_5d.get('skill_lcb') or 0.0), 6) if signal_quality_5d.get('skill_lcb') is not None else None,
+            'effective_n_5d': int(signal_quality_5d.get('effective_n') or 0) if signal_quality_5d.get('effective_n') is not None else None,
+            'recent_hit_rate_5d': round(float(signal_quality_5d.get('recent_hit_rate') or 0.0), 6) if signal_quality_5d.get('recent_hit_rate') is not None else None,
+            'recent_skill_lcb_5d': round(float(signal_quality_5d.get('recent_skill_lcb') or 0.0), 6) if signal_quality_5d.get('recent_skill_lcb') is not None else None,
+            'stability_gap_5d': round(float(signal_quality_5d.get('stability_gap') or 0.0), 6) if signal_quality_5d.get('stability_gap') is not None else None,
             'forward_ic_5d': round(forward_ic_5d, 6),
             'forward_sharpe_5d': round(forward_sharpe_5d, 6),
             'total_signals': total_signals,
@@ -720,8 +727,11 @@ class StrategyIncubationService:
             'risk_flags': overview.get('risk_flags') or [],
             'decision': decision,
             'metadata': {
-                'overview': overview,
+                'overview': overview_without_signal_quality,
+                'signal_quality': signal_quality,
+                'execution_quality': execution_quality,
                 'binding_created': bool(binding.get('created')),
+                'open_risk_count': open_risk_count,
             },
         })
         update_account_status_method = _get_async_db_method(db, 'update_paper_account_status')

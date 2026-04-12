@@ -355,6 +355,42 @@ class _SchedulerRecentSuccessNoPoolGateway:
         return {"running": False}
 
 
+class _RecoverableSchedulerShortfallGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 3,
+                "governed_blocked_candidate_count": 0,
+                "governed_blocked_ratio": 0.0,
+                "governed_pending_candidate_count": 0,
+                "governed_pending_ratio": 0.0,
+                "governed_candidate_pool_mode": "provisional_validated_watch",
+                "governed_candidate_pool_provisional": True,
+                "governed_candidate_pool_provisional_pending_count": 2,
+                "governed_candidate_pool_strict_shortfall_count": 1,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 1,
+                "top_factor_names": ["value"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
+                "preferred_strategy_types": ["value_factor"],
+                "factor_source_mode": "governed_pool_missing_after_scheduler_success",
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
 class _GovernedPoolHighBlockedRatioGateway:
     async def build_artifact(self, db, snapshot):
         return {
@@ -462,6 +498,55 @@ class _EvidenceDebtBacklogGateway:
         return {"running": False}
 
 
+class _RecoverableEvidenceDebtGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 8,
+                "governed_blocked_candidate_count": 0,
+                "governed_blocked_ratio": 0.0,
+                "governed_pending_candidate_count": 0,
+                "governed_pending_ratio": 0.0,
+                "governed_candidate_pool_mode": "provisional_validated_watch",
+                "governed_candidate_pool_provisional": True,
+                "governed_candidate_pool_provisional_pending_count": 3,
+                "governed_candidate_pool_strict_shortfall_count": 2,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["momentum"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_pool_missing_after_scheduler_success",
+                "budget_feedback_strategy_count": 12,
+                "budget_feedback_zero_signal_strategy_count": 1,
+                "budget_feedback_zero_signal_ratio": 0.0833,
+                "budget_feedback_observed_forward_window_count": 36,
+                "budget_feedback_missing_forward_window_count": 12,
+                "budget_feedback_expected_forward_window_count": 48,
+                "budget_feedback_forward_window_coverage_ratio": 0.75,
+                "budget_feedback_promotion_ready_count": 5,
+                "budget_feedback_promotion_ready_ratio": 0.4167,
+                "budget_feedback_promotion_review_count": 4,
+                "budget_feedback_promotion_review_coverage_ratio": 0.3333,
+                "budget_feedback_evidence_debt_strategy_count": 10,
+                "budget_feedback_evidence_debt_ratio": 0.85,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
 class _GovernedPoolResilientBlockedRatioGateway:
     async def build_artifact(self, db, snapshot):
         return {
@@ -486,6 +571,40 @@ class _GovernedPoolResilientBlockedRatioGateway:
                 "freshness_days": 0,
                 "scheduler_recent_success": True,
                 "scheduler_llm_validation_status": "success",
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _ProviderSuppressWarningGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 1,
+                "governed_source_candidate_count": 2,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["value"],
+                "top_candidate_names": ["value_pool_factor"],
+                "active_family_names": ["value"],
+                "active_regime_names": ["neutral"],
+                "preferred_strategy_types": ["value_factor"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_mode": "strict_governed",
+                "governed_candidate_pool_provisional": False,
+                "stale": False,
+                "degraded": False,
+                "freshness_days": 0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+                "suppressed_generator_modes": ["external_llm"],
+                "feedback_generator_mode_control_mode_counts": {"suppress": 1, "normal": 1},
+                "external_llm_provider_control_mode": "suppress",
+                "external_llm_provider_control_reasons": ["provider_budget_guardrail"],
             },
         }
 
@@ -1329,6 +1448,37 @@ async def test_scheduler_readiness_surfaces_recent_scheduler_success_without_gov
 
 
 @pytest.mark.asyncio
+async def test_scheduler_readiness_allows_recoverable_governed_shortfall_after_scheduler_success(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_RecoverableSchedulerShortfallGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["governed_supply_recoverable"] is True
+    assert "governed_candidate_pool_inactive" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_shortfall_recoverable" in result["stages"]["readiness"]["warnings"]
+    assert "factor_scheduler_recent_success_without_governed_pool" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_required" not in result["stages"]["readiness"]["blockers"]
+    assert (
+        "governed_candidate_pool_missing_after_scheduler_success"
+        not in result["stages"]["readiness"]["blockers"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_scheduler_readiness_penalizes_high_governed_blocked_ratio(monkeypatch):
     db = MagicMock()
     db.save_strategy_factory_run = AsyncMock()
@@ -1430,6 +1580,59 @@ async def test_scheduler_readiness_blocks_on_severe_incubating_evidence_debt_whe
     assert "incubating_evidence_debt_high" in result["stages"]["readiness"]["blockers"]
     assert result["stages"]["readiness"]["budget_feedback_zero_signal_ratio"] == pytest.approx(0.9167, abs=1e-4)
     assert result["stages"]["readiness"]["budget_feedback_evidence_debt_ratio"] == pytest.approx(0.9229, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_allows_high_evidence_debt_when_shortfall_is_recoverable(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_RecoverableEvidenceDebtGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["governed_supply_recoverable"] is True
+    assert "incubating_evidence_debt_high" in result["stages"]["readiness"]["warnings"]
+    assert "incubating_evidence_debt_high" not in result["stages"]["readiness"]["blockers"]
+    assert "governed_candidate_pool_shortfall_recoverable" in result["stages"]["readiness"]["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_surfaces_provider_suppress_as_warning_only(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_ProviderSuppressWarningGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["external_llm_provider_suppress_active"] is True
+    assert result["stages"]["readiness"]["external_llm_provider_control_mode"] == "suppress"
+    assert result["stages"]["readiness"]["suppressed_generator_modes"] == ["external_llm"]
+    assert "external_llm_provider_suppressed" in result["stages"]["readiness"]["warnings"]
+    assert "external_llm_provider_suppressed" not in result["stages"]["readiness"]["blockers"]
 
 
 def test_scheduler_slo_treats_filled_bulk_budget_as_healthy_even_when_batch_coverage_is_narrow():

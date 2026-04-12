@@ -109,6 +109,42 @@ def scope_route_action(
         "budget_multiplier": round(budget_multiplier, 4),
         "priority_adjustment": round(priority_adjustment, 4),
         "reasons": list(scope_metrics.get("control_reasons") or []),
+        "legacy_control_mode": normalize_text(scope_metrics.get("legacy_control_mode")) or control_mode,
+        "skill_control_mode": normalize_text(scope_metrics.get("skill_control_mode")) or "normal",
+        "legacy_budget_multiplier": round(
+            builder_cls._safe_float(scope_metrics.get("legacy_budget_multiplier"), budget_multiplier),
+            4,
+        ),
+        "skill_budget_multiplier": round(
+            builder_cls._safe_float(scope_metrics.get("skill_budget_multiplier"), budget_multiplier),
+            4,
+        ),
+        "legacy_priority_adjustment": round(
+            builder_cls._safe_float(scope_metrics.get("legacy_priority_adjustment"), priority_adjustment),
+            4,
+        ),
+        "skill_priority_adjustment": round(
+            builder_cls._safe_float(scope_metrics.get("skill_priority_adjustment"), priority_adjustment),
+            4,
+        ),
+        "paper_skill_lcb": round(
+            builder_cls._safe_float(scope_metrics.get("paper_skill_lcb")),
+            4,
+        ),
+        "paper_recent_skill_lcb": round(
+            builder_cls._safe_float(scope_metrics.get("paper_recent_skill_lcb")),
+            4,
+        ),
+        "paper_stability_gap": round(
+            builder_cls._safe_float(scope_metrics.get("paper_stability_gap")),
+            4,
+        ),
+        "paper_coverage_ratio": round(
+            builder_cls._safe_float(scope_metrics.get("paper_coverage_ratio"), 1.0),
+            4,
+        ),
+        "effective_feedback_signal": scope_metrics.get("effective_feedback_signal")
+        or "legacy_paper_hit_ratio",
     }
     if scope_name == "target_pool":
         if control_mode in {"freeze", "suppress"} or evidence_debt_ratio >= 0.55:
@@ -362,12 +398,45 @@ def fallback_feedback_evidence_overview(
         days for days in builder_cls.EVIDENCE_FORWARD_WINDOWS if days not in observed_forward_days
     ]
     promotion_ready = total_signals >= minimum_signal_count and not missing_forward_days
+    primary_horizon = 5 if 5 in builder_cls.EVIDENCE_FORWARD_WINDOWS else builder_cls.EVIDENCE_FORWARD_WINDOWS[0]
+
+    def _resolve_metric(metric_name: str, *, fallback: float | None = None) -> float | None:
+        bucket = dict(payload.get(metric_name) or {})
+        for key in (str(primary_horizon), primary_horizon):
+            if bucket.get(key) is not None:
+                return builder_cls._safe_float(bucket.get(key))
+        for days in builder_cls.EVIDENCE_FORWARD_WINDOWS:
+            for key in (str(days), days):
+                if bucket.get(key) is not None:
+                    return builder_cls._safe_float(bucket.get(key))
+        return fallback
+
+    coverage_ratio = (
+        round(len(observed_forward_days) / len(builder_cls.EVIDENCE_FORWARD_WINDOWS), 4)
+        if builder_cls.EVIDENCE_FORWARD_WINDOWS
+        else 0.0
+    )
+    signal_quality = {
+        "primary_horizon": primary_horizon,
+        "coverage_ratio": coverage_ratio,
+        "primary_skill_lcb": _resolve_metric("skill_lcb", fallback=0.0),
+        "recent_primary_skill_lcb": _resolve_metric(
+            "recent_skill_lcb",
+            fallback=_resolve_metric("skill_lcb", fallback=0.0),
+        ),
+        "stability_gap": _resolve_metric("stability_gap", fallback=0.0),
+    }
     return {
         "total_signals": total_signals,
         "minimum_signal_count": minimum_signal_count,
         "observed_forward_days": observed_forward_days,
         "missing_forward_days": missing_forward_days,
         "promotion_ready": promotion_ready,
+        "skill_lcb": signal_quality.get("primary_skill_lcb"),
+        "recent_skill_lcb": signal_quality.get("recent_primary_skill_lcb"),
+        "stability_gap": signal_quality.get("stability_gap"),
+        "coverage_ratio": coverage_ratio,
+        "signal_quality": signal_quality,
         "blockers": [],
         "risk_flags": [],
     }
@@ -425,6 +494,18 @@ def accumulate_feedback_bucket(
     accumulator["paper_hit_ratio_total"] = builder_cls._safe_float(accumulator.get("paper_hit_ratio_total")) + builder_cls._safe_float(
         metrics.get("paper_hit_ratio")
     )
+    accumulator["paper_skill_lcb_total"] = builder_cls._safe_float(
+        accumulator.get("paper_skill_lcb_total")
+    ) + builder_cls._safe_float(metrics.get("paper_skill_lcb"))
+    accumulator["paper_recent_skill_lcb_total"] = builder_cls._safe_float(
+        accumulator.get("paper_recent_skill_lcb_total")
+    ) + builder_cls._safe_float(metrics.get("paper_recent_skill_lcb"))
+    accumulator["paper_stability_gap_total"] = builder_cls._safe_float(
+        accumulator.get("paper_stability_gap_total")
+    ) + builder_cls._safe_float(metrics.get("paper_stability_gap"))
+    accumulator["paper_coverage_ratio_total"] = builder_cls._safe_float(
+        accumulator.get("paper_coverage_ratio_total")
+    ) + builder_cls._safe_float(metrics.get("paper_coverage_ratio"), 1.0)
     accumulator["runtime_alert_pressure_total"] = builder_cls._safe_float(
         accumulator.get("runtime_alert_pressure_total")
     ) + builder_cls._safe_float(metrics.get("runtime_alert_pressure"))
@@ -690,6 +771,22 @@ def finalize_feedback_bucket(builder_cls, accumulator: dict[str, Any]) -> dict[s
             builder_cls._safe_float(payload.get("paper_hit_ratio_total")) / strategy_count,
             4,
         ) if strategy_count else 0.5,
+        "paper_skill_lcb": round(
+            builder_cls._safe_float(payload.get("paper_skill_lcb_total")) / strategy_count,
+            4,
+        ) if strategy_count else 0.0,
+        "paper_recent_skill_lcb": round(
+            builder_cls._safe_float(payload.get("paper_recent_skill_lcb_total")) / strategy_count,
+            4,
+        ) if strategy_count else 0.0,
+        "paper_stability_gap": round(
+            builder_cls._safe_float(payload.get("paper_stability_gap_total")) / strategy_count,
+            4,
+        ) if strategy_count else 0.0,
+        "paper_coverage_ratio": round(
+            builder_cls._safe_float(payload.get("paper_coverage_ratio_total")) / strategy_count,
+            4,
+        ) if strategy_count else 1.0,
         "runtime_alert_pressure": round(
             builder_cls._safe_float(payload.get("runtime_alert_pressure_total")) / strategy_count,
             4,

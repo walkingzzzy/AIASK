@@ -40,6 +40,7 @@
 ### 历史参考
 
 - [`../docs/archive/strategy-factory/README.md`](../docs/archive/strategy-factory/README.md)
+- [`../docs/archive/strategy-factory/root-2026-04/README.md`](../docs/archive/strategy-factory/root-2026-04/README.md)
 
 历史分析、阶段方案、研究蓝图和专题优化文档都已迁入统一归档目录，只保留背景价值，不再作为当前执行入口。
 
@@ -48,4 +49,5 @@
 - 根目录 dated 方案已迁入 `docs/archive/root/`
 - 因子挖掘专题长文已迁入 `docs/archive/factor-mining/`
 - 历史策略工厂方案与研究长文已迁入 `docs/archive/strategy-factory/`
+- 2026-04 曾回流到根目录的策略工厂专题文档已再次归档到 `docs/archive/strategy-factory/root-2026-04/`
 - 当前策略工厂入口统一收敛到本目录和 `packages/strategy-factory`

@@ -264,10 +264,12 @@ class _StrategyDBRuntimeMixin:
 
     async def get_paper_order_summary(self, account_id):
         orders = [item for item in self._paper_orders if item.get('account_id') == account_id]
+        trades = [item for item in self._paper_trades if item.get('account_id') == account_id]
         return {
             'total_orders': len(orders),
-            'total_trades': len([item for item in orders if item.get('status') == 'filled']),
-            'trade_amount': float(sum((item.get('price') or 0) * (item.get('shares') or 0) for item in orders if item.get('status') == 'filled')),
+            'filled_orders': len([item for item in orders if item.get('status') == 'filled']),
+            'total_trades': len(trades),
+            'trade_amount': float(sum(item.get('amount') or 0 for item in trades)),
         }
 
     async def save_strategy_incubation_account(self, strategy_id, account_id, stage='warmup', status='active', source_run_id=None, metadata=None):

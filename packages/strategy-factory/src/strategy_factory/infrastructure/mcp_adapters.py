@@ -70,8 +70,18 @@ class MCPStrategyFactoryRepositoryAdapter:
     async def get_strategy_metrics(self, strategy_id: str):
         return await self._call("get_strategy_metrics", strategy_id)
 
-    async def get_signal_stats(self, strategy_id: str):
-        return await self._call("get_signal_stats", strategy_id)
+    async def get_signal_stats(
+        self,
+        strategy_id: str,
+        lookback_days: int | None = None,
+        eps: float | None = None,
+    ):
+        kwargs: dict[str, Any] = {}
+        if lookback_days is not None:
+            kwargs["lookback_days"] = lookback_days
+        if eps is not None:
+            kwargs["eps"] = eps
+        return await self._call("get_signal_stats", strategy_id, **kwargs)
 
     async def save_strategy(self, data: Mapping[str, Any]):
         return await self._call("save_strategy", data)

@@ -1903,6 +1903,23 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "promotion_review_status_counts": dict(
                         base.get("budget_feedback_promotion_review_status_counts") or {}
                     ),
+                    "paper_hit_ratio": float(base.get("budget_feedback_paper_hit_ratio") or 0.5),
+                    "paper_skill_lcb": float(base.get("budget_feedback_paper_skill_lcb") or 0.0),
+                    "paper_recent_skill_lcb": float(
+                        base.get("budget_feedback_paper_recent_skill_lcb") or 0.0
+                    ),
+                    "paper_stability_gap": float(
+                        base.get("budget_feedback_paper_stability_gap") or 0.0
+                    ),
+                    "paper_coverage_ratio": float(
+                        base.get("budget_feedback_paper_coverage_ratio") or 1.0
+                    ),
+                    "legacy_control_mode_counts": dict(
+                        base.get("budget_feedback_legacy_control_mode_counts") or {}
+                    ),
+                    "skill_control_mode_counts": dict(
+                        base.get("budget_feedback_skill_control_mode_counts") or {}
+                    ),
                     "signal_count_total": int(base.get("budget_feedback_signal_count_total") or 0),
                     "zero_signal_strategy_count": int(
                         base.get("budget_feedback_zero_signal_strategy_count") or 0
@@ -1948,6 +1965,14 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "planned_control_mode_counts": dict(
                         base.get("planned_feedback_control_mode_counts") or {}
                     ),
+                    "planned_legacy_control_mode_counts": dict(
+                        base.get("planned_feedback_legacy_control_mode_counts")
+                        or base.get("planned_feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "planned_skill_control_mode_counts": dict(
+                        base.get("planned_feedback_skill_control_mode_counts") or {}
+                    ),
                     "planned_target_pool_control_mode_counts": dict(
                         base.get("planned_feedback_target_pool_control_mode_counts") or {}
                     ),
@@ -1957,8 +1982,27 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "planned_generator_mode_control_mode_counts": dict(
                         base.get("planned_feedback_generator_mode_control_mode_counts") or {}
                     ),
+                    "planned_skill_target_pool_control_mode_counts": dict(
+                        base.get("planned_feedback_skill_target_pool_control_mode_counts") or {}
+                    ),
+                    "planned_skill_holding_bucket_control_mode_counts": dict(
+                        base.get("planned_feedback_skill_holding_bucket_control_mode_counts")
+                        or {}
+                    ),
+                    "planned_skill_generator_mode_control_mode_counts": dict(
+                        base.get("planned_feedback_skill_generator_mode_control_mode_counts")
+                        or {}
+                    ),
                     "selected_control_mode_counts": dict(
                         base.get("selected_feedback_control_mode_counts") or {}
+                    ),
+                    "selected_legacy_control_mode_counts": dict(
+                        base.get("selected_feedback_legacy_control_mode_counts")
+                        or base.get("selected_feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "selected_skill_control_mode_counts": dict(
+                        base.get("selected_feedback_skill_control_mode_counts") or {}
                     ),
                     "selected_target_pool_control_mode_counts": dict(
                         base.get("selected_feedback_target_pool_control_mode_counts") or {}
@@ -1969,8 +2013,27 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "selected_generator_mode_control_mode_counts": dict(
                         base.get("selected_feedback_generator_mode_control_mode_counts") or {}
                     ),
+                    "selected_skill_target_pool_control_mode_counts": dict(
+                        base.get("selected_feedback_skill_target_pool_control_mode_counts") or {}
+                    ),
+                    "selected_skill_holding_bucket_control_mode_counts": dict(
+                        base.get("selected_feedback_skill_holding_bucket_control_mode_counts")
+                        or {}
+                    ),
+                    "selected_skill_generator_mode_control_mode_counts": dict(
+                        base.get("selected_feedback_skill_generator_mode_control_mode_counts")
+                        or {}
+                    ),
                     "submission_control_mode_counts": dict(
                         base.get("feedback_control_mode_counts") or {}
+                    ),
+                    "submission_legacy_control_mode_counts": dict(
+                        base.get("feedback_legacy_control_mode_counts")
+                        or base.get("feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "submission_skill_control_mode_counts": dict(
+                        base.get("feedback_skill_control_mode_counts") or {}
                     ),
                     "submission_target_pool_control_mode_counts": dict(
                         base.get("feedback_target_pool_control_mode_counts") or {}
@@ -1980,6 +2043,15 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     ),
                     "submission_generator_mode_control_mode_counts": dict(
                         base.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "submission_skill_target_pool_control_mode_counts": dict(
+                        base.get("feedback_skill_target_pool_control_mode_counts") or {}
+                    ),
+                    "submission_skill_holding_bucket_control_mode_counts": dict(
+                        base.get("feedback_skill_holding_bucket_control_mode_counts") or {}
+                    ),
+                    "submission_skill_generator_mode_control_mode_counts": dict(
+                        base.get("feedback_skill_generator_mode_control_mode_counts") or {}
                     ),
                     "suppressed_families": list(base.get("suppressed_families") or []),
                     "suppressed_target_pools": list(base.get("suppressed_target_pools") or []),
@@ -2012,6 +2084,14 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     ),
                     "contract_reject_reason_counts": dict(base.get("contract_reject_reason_counts") or {}),
                     "feedback_control_mode_counts": dict(base.get("feedback_control_mode_counts") or {}),
+                    "feedback_legacy_control_mode_counts": dict(
+                        base.get("feedback_legacy_control_mode_counts")
+                        or base.get("feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_control_mode_counts": dict(
+                        base.get("feedback_skill_control_mode_counts") or {}
+                    ),
                     "feedback_target_pool_control_mode_counts": dict(
                         base.get("feedback_target_pool_control_mode_counts") or {}
                     ),
@@ -2020,6 +2100,15 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         base.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "feedback_skill_target_pool_control_mode_counts": dict(
+                        base.get("feedback_skill_target_pool_control_mode_counts") or {}
+                    ),
+                    "feedback_skill_holding_bucket_control_mode_counts": dict(
+                        base.get("feedback_skill_holding_bucket_control_mode_counts") or {}
+                    ),
+                    "feedback_skill_generator_mode_control_mode_counts": dict(
+                        base.get("feedback_skill_generator_mode_control_mode_counts") or {}
                     ),
                     "submission_lane_counts": submission_lane_counts,
                     "submission_action_type_counts": submission_action_type_counts,

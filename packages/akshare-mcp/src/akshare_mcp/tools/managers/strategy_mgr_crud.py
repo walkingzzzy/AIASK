@@ -427,7 +427,12 @@ async def handle_get_forward_returns(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
         return fail("strategy_id is required")
-    stats = await db.get_signal_stats(sid)
+    extra_kwargs = {}
+    if params.get("lookback_days") is not None:
+        extra_kwargs["lookback_days"] = int(params.get("lookback_days"))
+    if params.get("eps") is not None:
+        extra_kwargs["eps"] = float(params.get("eps"))
+    stats = await db.get_signal_stats(sid, **extra_kwargs)
     return ok(stats)
 
 
@@ -435,5 +440,10 @@ async def handle_get_signal_stats(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
         return fail("strategy_id is required")
-    stats = await db.get_signal_stats(sid)
+    extra_kwargs = {}
+    if params.get("lookback_days") is not None:
+        extra_kwargs["lookback_days"] = int(params.get("lookback_days"))
+    if params.get("eps") is not None:
+        extra_kwargs["eps"] = float(params.get("eps"))
+    stats = await db.get_signal_stats(sid, **extra_kwargs)
     return ok(stats)

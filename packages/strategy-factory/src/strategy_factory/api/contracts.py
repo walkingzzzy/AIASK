@@ -200,7 +200,12 @@ class StrategyFactoryRepository(Protocol):
 
     async def get_strategy_metrics(self, strategy_id: str) -> list[Mapping[str, Any]]: ...
 
-    async def get_signal_stats(self, strategy_id: str) -> Mapping[str, Any]: ...
+    async def get_signal_stats(
+        self,
+        strategy_id: str,
+        lookback_days: int | None = None,
+        eps: float | None = None,
+    ) -> Mapping[str, Any]: ...
 
     async def save_strategy(self, data: Mapping[str, Any]) -> Any: ...
 

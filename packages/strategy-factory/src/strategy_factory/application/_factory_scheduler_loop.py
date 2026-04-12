@@ -1389,6 +1389,14 @@ class _StrategyFactorySchedulerLoopMixin:
             scan_summary.update(
                 {
                     "feedback_control_mode_counts": dict(scan_feedback_summary.get("feedback_control_mode_counts") or {}),
+                    "feedback_legacy_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_legacy_control_mode_counts")
+                        or scan_feedback_summary.get("feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_skill_control_mode_counts") or {}
+                    ),
                     "feedback_target_pool_control_mode_counts": dict(
                         scan_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
                     ),
@@ -1397,6 +1405,18 @@ class _StrategyFactorySchedulerLoopMixin:
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         scan_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "feedback_skill_target_pool_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_skill_target_pool_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_holding_bucket_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_skill_holding_bucket_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_generator_mode_control_mode_counts": dict(
+                        scan_feedback_summary.get("feedback_skill_generator_mode_control_mode_counts")
+                        or {}
                     ),
                     "feedback_cooldown_task_count": int(
                         scan_feedback_summary.get("feedback_cooldown_task_count") or 0
@@ -1490,6 +1510,14 @@ class _StrategyFactorySchedulerLoopMixin:
             bulk_summary.update(
                 {
                     "feedback_control_mode_counts": dict(bulk_feedback_summary.get("feedback_control_mode_counts") or {}),
+                    "feedback_legacy_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_legacy_control_mode_counts")
+                        or bulk_feedback_summary.get("feedback_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_skill_control_mode_counts") or {}
+                    ),
                     "feedback_target_pool_control_mode_counts": dict(
                         bulk_feedback_summary.get("feedback_target_pool_control_mode_counts") or {}
                     ),
@@ -1498,6 +1526,18 @@ class _StrategyFactorySchedulerLoopMixin:
                     ),
                     "feedback_generator_mode_control_mode_counts": dict(
                         bulk_feedback_summary.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "feedback_skill_target_pool_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_skill_target_pool_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_holding_bucket_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_skill_holding_bucket_control_mode_counts")
+                        or {}
+                    ),
+                    "feedback_skill_generator_mode_control_mode_counts": dict(
+                        bulk_feedback_summary.get("feedback_skill_generator_mode_control_mode_counts")
+                        or {}
                     ),
                     "feedback_cooldown_task_count": int(
                         bulk_feedback_summary.get("feedback_cooldown_task_count") or 0

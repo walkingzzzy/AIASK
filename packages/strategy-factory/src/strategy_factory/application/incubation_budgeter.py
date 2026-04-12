@@ -88,11 +88,31 @@ class IncubationBudgeter:
             "target_pool_feedback_available": bool(feedback_metrics.get("target_pool_feedback_available")),
             "generator_mode_feedback_available": bool(feedback_metrics.get("generator_mode_feedback_available")),
             "control_mode": feedback_metrics.get("control_mode"),
+            "legacy_control_mode": feedback_metrics.get("legacy_control_mode"),
+            "skill_control_mode": feedback_metrics.get("skill_control_mode"),
             "cooldown_active": bool(feedback_metrics.get("cooldown_active")),
             "suppressed": bool(feedback_metrics.get("suppressed")),
             "family_freeze_active": bool(feedback_metrics.get("family_freeze_active")),
             "target_pool_freeze_active": bool(feedback_metrics.get("target_pool_freeze_active")),
             "generator_mode_freeze_active": bool(feedback_metrics.get("generator_mode_freeze_active")),
+            "skill_cooldown_active": bool(feedback_metrics.get("skill_cooldown_active")),
+            "skill_suppressed": bool(feedback_metrics.get("skill_suppressed")),
+            "skill_family_freeze_active": bool(feedback_metrics.get("skill_family_freeze_active")),
+            "skill_target_pool_freeze_active": bool(
+                feedback_metrics.get("skill_target_pool_freeze_active")
+            ),
+            "skill_generator_mode_freeze_active": bool(
+                feedback_metrics.get("skill_generator_mode_freeze_active")
+            ),
+            "paper_skill_lcb": cls._safe_float(feedback_metrics.get("paper_skill_lcb")),
+            "paper_recent_skill_lcb": cls._safe_float(
+                feedback_metrics.get("paper_recent_skill_lcb")
+            ),
+            "paper_stability_gap": cls._safe_float(feedback_metrics.get("paper_stability_gap")),
+            "paper_coverage_ratio": cls._safe_float(
+                feedback_metrics.get("paper_coverage_ratio"),
+                1.0,
+            ),
         }
         feedback_scope["feedback_available"] = any(
             bool(feedback_scope.get(key))
@@ -326,14 +346,28 @@ class IncubationBudgeter:
         feedback_candidate_count = 0
         feedback_budget_multiplier_values: list[float] = []
         feedback_priority_adjustment_values: list[float] = []
+        feedback_skill_budget_multiplier_values: list[float] = []
+        feedback_skill_priority_adjustment_values: list[float] = []
+        feedback_paper_skill_lcb_values: list[float] = []
+        feedback_paper_recent_skill_lcb_values: list[float] = []
+        feedback_paper_stability_gap_values: list[float] = []
+        feedback_paper_coverage_ratio_values: list[float] = []
         feedback_budget_promoted_count = 0
         feedback_budget_constrained_count = 0
         feedback_controlled_count = 0
         feedback_cooldown_count = 0
         feedback_suppressed_count = 0
         feedback_freeze_count = 0
+        feedback_skill_budget_promoted_count = 0
+        feedback_skill_budget_constrained_count = 0
+        feedback_skill_controlled_count = 0
+        feedback_skill_cooldown_count = 0
+        feedback_skill_suppressed_count = 0
+        feedback_skill_freeze_count = 0
         feedback_target_pool_freeze_count = 0
         feedback_generator_mode_freeze_count = 0
+        feedback_skill_target_pool_freeze_count = 0
+        feedback_skill_generator_mode_freeze_count = 0
         active_family_names = {
             str(item or "").strip().lower()
             for item in list(((snapshot.get("factor_research") or {}).get("summary") or {}).get("active_family_names") or [])
@@ -367,13 +401,39 @@ class IncubationBudgeter:
                     feedback_generator_modes.add(generator_mode)
                 feedback_budget_multiplier = cls._safe_float(feedback_metrics.get("budget_multiplier"), 1.0)
                 feedback_priority_adjustment = cls._safe_float(feedback_metrics.get("priority_adjustment"))
+                feedback_skill_budget_multiplier = cls._safe_float(
+                    feedback_metrics.get("skill_budget_multiplier"),
+                    1.0,
+                )
+                feedback_skill_priority_adjustment = cls._safe_float(
+                    feedback_metrics.get("skill_priority_adjustment")
+                )
                 feedback_budget_multiplier_values.append(feedback_budget_multiplier)
                 feedback_priority_adjustment_values.append(feedback_priority_adjustment)
+                feedback_skill_budget_multiplier_values.append(feedback_skill_budget_multiplier)
+                feedback_skill_priority_adjustment_values.append(feedback_skill_priority_adjustment)
+                feedback_paper_skill_lcb_values.append(
+                    cls._safe_float(feedback_metrics.get("paper_skill_lcb"))
+                )
+                feedback_paper_recent_skill_lcb_values.append(
+                    cls._safe_float(feedback_metrics.get("paper_recent_skill_lcb"))
+                )
+                feedback_paper_stability_gap_values.append(
+                    cls._safe_float(feedback_metrics.get("paper_stability_gap"))
+                )
+                feedback_paper_coverage_ratio_values.append(
+                    cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0)
+                )
                 if feedback_budget_multiplier > 1.02 or feedback_priority_adjustment > 0.5:
                     feedback_budget_promoted_count += 1
                 if feedback_budget_multiplier < 0.98 or feedback_priority_adjustment < -0.5:
                     feedback_budget_constrained_count += 1
+                if feedback_skill_budget_multiplier > 1.02 or feedback_skill_priority_adjustment > 0.5:
+                    feedback_skill_budget_promoted_count += 1
+                if feedback_skill_budget_multiplier < 0.98 or feedback_skill_priority_adjustment < -0.5:
+                    feedback_skill_budget_constrained_count += 1
             control_mode = str(feedback_metrics.get("control_mode") or "").strip().lower()
+            skill_control_mode = str(feedback_metrics.get("skill_control_mode") or "").strip().lower()
             if control_mode and control_mode != "normal":
                 feedback_controlled_count += 1
             if control_mode == "cooldown":
@@ -382,10 +442,22 @@ class IncubationBudgeter:
                 feedback_suppressed_count += 1
             elif control_mode == "freeze":
                 feedback_freeze_count += 1
+            if skill_control_mode and skill_control_mode != "normal":
+                feedback_skill_controlled_count += 1
+            if skill_control_mode == "cooldown":
+                feedback_skill_cooldown_count += 1
+            elif skill_control_mode == "suppress":
+                feedback_skill_suppressed_count += 1
+            elif skill_control_mode == "freeze":
+                feedback_skill_freeze_count += 1
             if bool(feedback_metrics.get("target_pool_freeze_active")):
                 feedback_target_pool_freeze_count += 1
             if bool(feedback_metrics.get("generator_mode_freeze_active")):
                 feedback_generator_mode_freeze_count += 1
+            if bool(feedback_metrics.get("skill_target_pool_freeze_active")):
+                feedback_skill_target_pool_freeze_count += 1
+            if bool(feedback_metrics.get("skill_generator_mode_freeze_active")):
+                feedback_skill_generator_mode_freeze_count += 1
             entries.append(
                 {
                     "marker": id(candidate),
@@ -404,13 +476,70 @@ class IncubationBudgeter:
                     "feedback_failure_penalty_adjustment": cls._safe_float(
                         feedback_metrics.get("failure_penalty_adjustment")
                     ),
+                    "feedback_legacy_budget_multiplier": cls._safe_float(
+                        feedback_metrics.get("legacy_budget_multiplier"),
+                        1.0,
+                    ),
+                    "feedback_legacy_priority_adjustment": cls._safe_float(
+                        feedback_metrics.get("legacy_priority_adjustment")
+                    ),
+                    "feedback_skill_budget_multiplier": cls._safe_float(
+                        feedback_metrics.get("skill_budget_multiplier"),
+                        1.0,
+                    ),
+                    "feedback_skill_priority_adjustment": cls._safe_float(
+                        feedback_metrics.get("skill_priority_adjustment")
+                    ),
+                    "feedback_skill_failure_penalty_adjustment": cls._safe_float(
+                        feedback_metrics.get("skill_failure_penalty_adjustment")
+                    ),
                     "feedback_control_mode": control_mode or "normal",
+                    "feedback_legacy_control_mode": str(
+                        feedback_metrics.get("legacy_control_mode") or control_mode or "normal"
+                    ),
+                    "feedback_skill_control_mode": skill_control_mode or "normal",
                     "feedback_control_reasons": list(feedback_metrics.get("control_reasons") or []),
+                    "feedback_legacy_control_reasons": list(
+                        feedback_metrics.get("legacy_control_reasons") or []
+                    ),
+                    "feedback_skill_control_reasons": list(
+                        feedback_metrics.get("skill_control_reasons") or []
+                    ),
                     "feedback_cooldown_active": bool(feedback_metrics.get("cooldown_active")),
                     "feedback_suppressed": bool(feedback_metrics.get("suppressed")),
                     "feedback_family_freeze_active": bool(feedback_metrics.get("family_freeze_active")),
                     "feedback_target_pool_freeze_active": bool(feedback_metrics.get("target_pool_freeze_active")),
                     "feedback_generator_mode_freeze_active": bool(feedback_metrics.get("generator_mode_freeze_active")),
+                    "feedback_skill_cooldown_active": bool(
+                        feedback_metrics.get("skill_cooldown_active")
+                    ),
+                    "feedback_skill_suppressed": bool(feedback_metrics.get("skill_suppressed")),
+                    "feedback_skill_family_freeze_active": bool(
+                        feedback_metrics.get("skill_family_freeze_active")
+                    ),
+                    "feedback_skill_target_pool_freeze_active": bool(
+                        feedback_metrics.get("skill_target_pool_freeze_active")
+                    ),
+                    "feedback_skill_generator_mode_freeze_active": bool(
+                        feedback_metrics.get("skill_generator_mode_freeze_active")
+                    ),
+                    "feedback_paper_skill_lcb": cls._safe_float(
+                        feedback_metrics.get("paper_skill_lcb")
+                    ),
+                    "feedback_paper_recent_skill_lcb": cls._safe_float(
+                        feedback_metrics.get("paper_recent_skill_lcb")
+                    ),
+                    "feedback_paper_stability_gap": cls._safe_float(
+                        feedback_metrics.get("paper_stability_gap")
+                    ),
+                    "feedback_paper_coverage_ratio": cls._safe_float(
+                        feedback_metrics.get("paper_coverage_ratio"),
+                        1.0,
+                    ),
+                    "feedback_effective_signal": str(
+                        feedback_metrics.get("effective_feedback_signal")
+                        or "legacy_paper_hit_ratio"
+                    ),
                 }
             )
 
@@ -549,12 +678,70 @@ class IncubationBudgeter:
                         entry.get("feedback_failure_penalty_adjustment") or 0.0
                     ),
                     "feedback_control_mode": str(entry.get("feedback_control_mode") or "normal"),
+                    "feedback_legacy_control_mode": str(
+                        entry.get("feedback_legacy_control_mode") or "normal"
+                    ),
+                    "feedback_skill_control_mode": str(
+                        entry.get("feedback_skill_control_mode") or "normal"
+                    ),
                     "feedback_control_reasons": list(entry.get("feedback_control_reasons") or []),
+                    "feedback_legacy_control_reasons": list(
+                        entry.get("feedback_legacy_control_reasons") or []
+                    ),
+                    "feedback_skill_control_reasons": list(
+                        entry.get("feedback_skill_control_reasons") or []
+                    ),
                     "feedback_cooldown_active": bool(entry.get("feedback_cooldown_active")),
                     "feedback_suppressed": bool(entry.get("feedback_suppressed")),
                     "feedback_family_freeze_active": bool(entry.get("feedback_family_freeze_active")),
                     "feedback_target_pool_freeze_active": bool(entry.get("feedback_target_pool_freeze_active")),
                     "feedback_generator_mode_freeze_active": bool(entry.get("feedback_generator_mode_freeze_active")),
+                    "feedback_skill_cooldown_active": bool(
+                        entry.get("feedback_skill_cooldown_active")
+                    ),
+                    "feedback_skill_suppressed": bool(entry.get("feedback_skill_suppressed")),
+                    "feedback_skill_family_freeze_active": bool(
+                        entry.get("feedback_skill_family_freeze_active")
+                    ),
+                    "feedback_skill_target_pool_freeze_active": bool(
+                        entry.get("feedback_skill_target_pool_freeze_active")
+                    ),
+                    "feedback_skill_generator_mode_freeze_active": bool(
+                        entry.get("feedback_skill_generator_mode_freeze_active")
+                    ),
+                    "feedback_legacy_budget_multiplier": cls._safe_float(
+                        entry.get("feedback_legacy_budget_multiplier"),
+                        1.0,
+                    ),
+                    "feedback_legacy_priority_adjustment": float(
+                        entry.get("feedback_legacy_priority_adjustment") or 0.0
+                    ),
+                    "feedback_skill_budget_multiplier": cls._safe_float(
+                        entry.get("feedback_skill_budget_multiplier"),
+                        1.0,
+                    ),
+                    "feedback_skill_priority_adjustment": float(
+                        entry.get("feedback_skill_priority_adjustment") or 0.0
+                    ),
+                    "feedback_skill_failure_penalty_adjustment": float(
+                        entry.get("feedback_skill_failure_penalty_adjustment") or 0.0
+                    ),
+                    "feedback_paper_skill_lcb": cls._safe_float(
+                        entry.get("feedback_paper_skill_lcb")
+                    ),
+                    "feedback_paper_recent_skill_lcb": cls._safe_float(
+                        entry.get("feedback_paper_recent_skill_lcb")
+                    ),
+                    "feedback_paper_stability_gap": cls._safe_float(
+                        entry.get("feedback_paper_stability_gap")
+                    ),
+                    "feedback_paper_coverage_ratio": cls._safe_float(
+                        entry.get("feedback_paper_coverage_ratio"),
+                        1.0,
+                    ),
+                    "feedback_effective_signal": str(
+                        entry.get("feedback_effective_signal") or "legacy_paper_hit_ratio"
+                    ),
                     "exploration_candidate": cls._is_exploration_candidate(
                         candidate,
                         dominant_families=dominant_families,
@@ -582,12 +769,70 @@ class IncubationBudgeter:
                     entry.get("feedback_failure_penalty_adjustment") or 0.0
                 ),
                 "feedback_control_mode": str(entry.get("feedback_control_mode") or "normal"),
+                "feedback_legacy_control_mode": str(
+                    entry.get("feedback_legacy_control_mode") or "normal"
+                ),
+                "feedback_skill_control_mode": str(
+                    entry.get("feedback_skill_control_mode") or "normal"
+                ),
                 "feedback_control_reasons": list(entry.get("feedback_control_reasons") or []),
+                "feedback_legacy_control_reasons": list(
+                    entry.get("feedback_legacy_control_reasons") or []
+                ),
+                "feedback_skill_control_reasons": list(
+                    entry.get("feedback_skill_control_reasons") or []
+                ),
                 "feedback_cooldown_active": bool(entry.get("feedback_cooldown_active")),
                 "feedback_suppressed": bool(entry.get("feedback_suppressed")),
                 "feedback_family_freeze_active": bool(entry.get("feedback_family_freeze_active")),
                 "feedback_target_pool_freeze_active": bool(entry.get("feedback_target_pool_freeze_active")),
                 "feedback_generator_mode_freeze_active": bool(entry.get("feedback_generator_mode_freeze_active")),
+                "feedback_skill_cooldown_active": bool(
+                    entry.get("feedback_skill_cooldown_active")
+                ),
+                "feedback_skill_suppressed": bool(entry.get("feedback_skill_suppressed")),
+                "feedback_skill_family_freeze_active": bool(
+                    entry.get("feedback_skill_family_freeze_active")
+                ),
+                "feedback_skill_target_pool_freeze_active": bool(
+                    entry.get("feedback_skill_target_pool_freeze_active")
+                ),
+                "feedback_skill_generator_mode_freeze_active": bool(
+                    entry.get("feedback_skill_generator_mode_freeze_active")
+                ),
+                "feedback_legacy_budget_multiplier": cls._safe_float(
+                    entry.get("feedback_legacy_budget_multiplier"),
+                    1.0,
+                ),
+                "feedback_legacy_priority_adjustment": float(
+                    entry.get("feedback_legacy_priority_adjustment") or 0.0
+                ),
+                "feedback_skill_budget_multiplier": cls._safe_float(
+                    entry.get("feedback_skill_budget_multiplier"),
+                    1.0,
+                ),
+                "feedback_skill_priority_adjustment": float(
+                    entry.get("feedback_skill_priority_adjustment") or 0.0
+                ),
+                "feedback_skill_failure_penalty_adjustment": float(
+                    entry.get("feedback_skill_failure_penalty_adjustment") or 0.0
+                ),
+                "feedback_paper_skill_lcb": cls._safe_float(
+                    entry.get("feedback_paper_skill_lcb")
+                ),
+                "feedback_paper_recent_skill_lcb": cls._safe_float(
+                    entry.get("feedback_paper_recent_skill_lcb")
+                ),
+                "feedback_paper_stability_gap": cls._safe_float(
+                    entry.get("feedback_paper_stability_gap")
+                ),
+                "feedback_paper_coverage_ratio": cls._safe_float(
+                    entry.get("feedback_paper_coverage_ratio"),
+                    1.0,
+                ),
+                "feedback_effective_signal": str(
+                    entry.get("feedback_effective_signal") or "legacy_paper_hit_ratio"
+                ),
                 "exploration_candidate": cls._is_exploration_candidate(
                     dict(entry.get("candidate") or {}),
                     dominant_families=dominant_families,
@@ -625,14 +870,65 @@ class IncubationBudgeter:
                 )
                 if feedback_priority_adjustment_values
                 else 0.0,
+                "feedback_skill_budget_multiplier_avg": round(
+                    sum(feedback_skill_budget_multiplier_values)
+                    / len(feedback_skill_budget_multiplier_values),
+                    4,
+                )
+                if feedback_skill_budget_multiplier_values
+                else 0.0,
+                "feedback_skill_priority_adjustment_avg": round(
+                    sum(feedback_skill_priority_adjustment_values)
+                    / len(feedback_skill_priority_adjustment_values),
+                    4,
+                )
+                if feedback_skill_priority_adjustment_values
+                else 0.0,
+                "feedback_paper_skill_lcb_avg": round(
+                    sum(feedback_paper_skill_lcb_values) / len(feedback_paper_skill_lcb_values),
+                    4,
+                )
+                if feedback_paper_skill_lcb_values
+                else 0.0,
+                "feedback_paper_recent_skill_lcb_avg": round(
+                    sum(feedback_paper_recent_skill_lcb_values)
+                    / len(feedback_paper_recent_skill_lcb_values),
+                    4,
+                )
+                if feedback_paper_recent_skill_lcb_values
+                else 0.0,
+                "feedback_paper_stability_gap_avg": round(
+                    sum(feedback_paper_stability_gap_values)
+                    / len(feedback_paper_stability_gap_values),
+                    4,
+                )
+                if feedback_paper_stability_gap_values
+                else 0.0,
+                "feedback_paper_coverage_ratio_avg": round(
+                    sum(feedback_paper_coverage_ratio_values)
+                    / len(feedback_paper_coverage_ratio_values),
+                    4,
+                )
+                if feedback_paper_coverage_ratio_values
+                else 0.0,
                 "feedback_budget_promoted_count": feedback_budget_promoted_count,
                 "feedback_budget_constrained_count": feedback_budget_constrained_count,
+                "feedback_skill_budget_promoted_count": feedback_skill_budget_promoted_count,
+                "feedback_skill_budget_constrained_count": feedback_skill_budget_constrained_count,
                 "feedback_controlled_count": feedback_controlled_count,
                 "feedback_cooldown_count": feedback_cooldown_count,
                 "feedback_suppressed_count": feedback_suppressed_count,
                 "feedback_freeze_count": feedback_freeze_count,
+                "feedback_skill_controlled_count": feedback_skill_controlled_count,
+                "feedback_skill_cooldown_count": feedback_skill_cooldown_count,
+                "feedback_skill_suppressed_count": feedback_skill_suppressed_count,
+                "feedback_skill_freeze_count": feedback_skill_freeze_count,
                 "feedback_target_pool_freeze_count": feedback_target_pool_freeze_count,
                 "feedback_generator_mode_freeze_count": feedback_generator_mode_freeze_count,
+                "feedback_skill_target_pool_freeze_count": feedback_skill_target_pool_freeze_count,
+                "feedback_skill_generator_mode_freeze_count": (
+                    feedback_skill_generator_mode_freeze_count
+                ),
                 "priority_score_avg": round(
                     sum(float(item.get("priority_score") or 0.0) for item in sorted_entries) / len(sorted_entries),
                     4,

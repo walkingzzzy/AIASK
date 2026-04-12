@@ -37,7 +37,7 @@ async def handle_paper_account(db, params: dict) -> dict:
     binding = await db.get_strategy_incubation_account(sid) if hasattr(db, "get_strategy_incubation_account") else None
     positions = await db.list_paper_positions(account["id"]) if account and hasattr(db, "list_paper_positions") else []
     nav_rows = await db.get_paper_nav_rows(account["id"], limit=min(max(int(params.get("limit", 10)), 1), 120)) if account and hasattr(db, "get_paper_nav_rows") else []
-    order_summary = await db.get_paper_order_summary(account["id"]) if account and hasattr(db, "get_paper_order_summary") else {"total_orders": 0, "total_trades": 0, "trade_amount": 0.0}
+    order_summary = await db.get_paper_order_summary(account["id"]) if account and hasattr(db, "get_paper_order_summary") else {"total_orders": 0, "filled_orders": 0, "total_trades": 0, "trade_amount": 0.0}
     latest_nav = nav_rows[0] if nav_rows else None
     return ok({
         "account": account,

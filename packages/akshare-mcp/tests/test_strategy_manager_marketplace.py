@@ -318,10 +318,21 @@ class TestStrategyManager:
         db._events[sid][1]["created_at"] = now.isoformat()
         await db.save_strategy_metrics(sid, "all", {"sharpe_ratio": 0.8, "max_drawdown": 0.12})
         db._signal_stats[sid] = {
-            "hit_rate": {1: 0.51, 5: 0.52, 10: 0.50, 20: 0.49},
-            "forward_ic": {1: 0.01, 5: 0.08, 10: 0.04, 20: 0.02},
-            "forward_sharpe": {1: 0.12, 5: 0.66, 10: 0.41, 20: 0.20},
-            "total_signals": 18,
+            "hit_rate": {1: 0.64, 5: 0.67, 10: 0.64, 20: 0.60},
+            "hit_rate_lcb": {1: 0.58, 5: 0.61, 10: 0.57, 20: 0.53},
+            "skill_lcb": {1: 0.08, 5: 0.11, 10: 0.07, 20: 0.04},
+            "recent_hit_rate": {1: 0.62, 5: 0.65, 10: 0.62, 20: 0.59},
+            "recent_hit_rate_lcb": {1: 0.56, 5: 0.59, 10: 0.55, 20: 0.51},
+            "recent_skill_lcb": {1: 0.06, 5: 0.09, 10: 0.05, 20: 0.02},
+            "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.01},
+            "sample_count": {1: 120, 5: 120, 10: 96, 20: 80},
+            "effective_n": {1: 120, 5: 60, 10: 48, 20: 40},
+            "forward_ic": {1: 0.03, 5: 0.10, 10: 0.07, 20: 0.04},
+            "forward_sharpe": {1: 0.18, 5: 0.74, 10: 0.48, 20: 0.22},
+            "total_signals": 140,
+            "raw_signal_count": 140,
+            "signals_with_forward_returns_count": 128,
+            "observed_forward_return_count": 512,
         }
 
         review = await mcp.strategy_manager(action="review_report", kwargs=json.dumps({"strategy_id": sid}))
@@ -368,6 +379,220 @@ class TestStrategyManager:
         assert len(incubation["data"]["forward_returns"]) == 4
         assert incubation["data"]["blockers_by_period"] == {}
         assert incubation["data"]["risk_flags_by_period"] == {}
+        assert incubation["data"]["signal_quality"]["primary_effective_n"] == 60
+        assert incubation["data"]["signal_quality"]["primary_skill_lcb"] == pytest.approx(0.11)
+        assert incubation["data"]["execution_quality"]["approximate"] is True
+        assert incubation["data"]["execution_quality"]["audit_grade"] is False
+        assert incubation["data"]["execution_quality"]["evidence_status"] == "missing_account"
+        assert incubation["data"]["quality_diagnosis"] == "await_execution_evidence"
+
+    @pytest.mark.asyncio
+    async def test_incubation_overview_distinguishes_execution_conversion_weak(self, setup):
+        mcp, db = setup
+        cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "高命中低转化策略", "strategy_type": "momentum", "params": {"lookback": 20},
+        }))
+        sid = cr["data"]["strategy_id"]
+        await db.update_strategy_status(sid, "incubating", actor_id="test", reason="seed")
+        await db.save_strategy_metrics(sid, "all", {"sharpe_ratio": 1.12, "max_drawdown": 0.06})
+        db._signal_stats[sid] = {
+            "hit_rate": {1: 0.64, 5: 0.67, 10: 0.64, 20: 0.60},
+            "hit_rate_lcb": {1: 0.58, 5: 0.61, 10: 0.57, 20: 0.53},
+            "skill_lcb": {1: 0.08, 5: 0.11, 10: 0.07, 20: 0.04},
+            "recent_hit_rate": {1: 0.62, 5: 0.65, 10: 0.62, 20: 0.59},
+            "recent_hit_rate_lcb": {1: 0.56, 5: 0.59, 10: 0.55, 20: 0.51},
+            "recent_skill_lcb": {1: 0.06, 5: 0.09, 10: 0.05, 20: 0.02},
+            "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.01},
+            "sample_count": {1: 120, 5: 120, 10: 96, 20: 80},
+            "effective_n": {1: 120, 5: 60, 10: 48, 20: 40},
+            "forward_ic": {1: 0.03, 5: 0.10, 10: 0.07, 20: 0.04},
+            "forward_sharpe": {1: 0.18, 5: 0.74, 10: 0.48, 20: 0.22},
+            "total_signals": 20,
+            "raw_signal_count": 20,
+            "signals_with_forward_returns_count": 20,
+            "observed_forward_return_count": 80,
+        }
+        await db.save_paper_account({
+            "id": "acct_exec_weak",
+            "strategy_id": sid,
+            "name": "acct_exec_weak",
+            "initial_capital": 100000.0,
+            "current_capital": 99500.0,
+            "total_value": 99500.0,
+            "status": "active",
+        })
+        for idx in range(6):
+            order_id = idx + 1
+            status = "filled" if idx < 2 else "pending"
+            await db.save_paper_order({
+                "id": order_id,
+                "account_id": "acct_exec_weak",
+                "strategy_id": sid,
+                "signal_date": f"2026-03-0{min(idx + 1, 9)}",
+                "source": "strategy_signal",
+                "code": f"6005{10 + idx}",
+                "direction": "buy",
+                "shares": 100,
+                "price": 50.0 + idx,
+                "order_type": "limit",
+                "status": status,
+            })
+        for idx in range(2):
+            await db.save_paper_trade({
+                "id": f"trade_exec_weak_{idx}",
+                "account_id": "acct_exec_weak",
+                "strategy_id": sid,
+                "stock_code": f"6005{10 + idx}",
+                "stock_name": f"样本{idx}",
+                "trade_type": "buy",
+                "price": 50.0 + idx,
+                "quantity": 100,
+                "amount": (50.0 + idx) * 100,
+                "commission": 3.0,
+                "trade_time": datetime.now(timezone.utc).isoformat(),
+                "source_order_id": str(idx + 1),
+            })
+        await db.save_paper_nav({
+            "account_id": "acct_exec_weak",
+            "nav_date": "2026-03-01",
+            "total_value": 100000.0,
+            "cash": 100000.0,
+            "market_value": 0.0,
+            "daily_return": 0.0,
+        })
+        await db.save_paper_nav({
+            "account_id": "acct_exec_weak",
+            "nav_date": "2026-03-02",
+            "total_value": 99820.0,
+            "cash": 94820.0,
+            "market_value": 5000.0,
+            "daily_return": -0.0018,
+        })
+        await db.save_paper_nav({
+            "account_id": "acct_exec_weak",
+            "nav_date": "2026-03-03",
+            "total_value": 99500.0,
+            "cash": 94500.0,
+            "market_value": 5000.0,
+            "daily_return": -0.0032,
+        })
+
+        incubation = await mcp.strategy_manager(action="incubation_overview", kwargs=json.dumps({"strategy_id": sid}))
+
+        assert incubation["success"] is True
+        assert incubation["data"]["prediction_quality_label"] == "strong"
+        assert incubation["data"]["execution_quality_label"] == "weak"
+        assert incubation["data"]["quality_diagnosis"] == "execution_conversion_weak"
+        assert incubation["data"]["signal_to_fill_ratio"] == pytest.approx(0.1)
+        assert incubation["data"]["filled_order_ratio"] == pytest.approx(2 / 6)
+        assert incubation["data"]["paper_nav_return"] == pytest.approx(-0.005)
+        assert incubation["data"]["nav_conversion_proxy"] == pytest.approx(-0.005 / 0.11, rel=1e-3)
+        assert incubation["data"]["execution_quality"]["approximate"] is True
+        assert incubation["data"]["execution_quality"]["audit_grade"] is False
+        assert incubation["data"]["execution_quality"]["order_count"] == 6
+        assert incubation["data"]["execution_quality"]["filled_order_count"] == 2
+        assert incubation["data"]["execution_quality"]["trade_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_incubation_overview_distinguishes_prediction_weak_with_good_execution(self, setup):
+        mcp, db = setup
+        cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "低命中高转化策略", "strategy_type": "momentum", "params": {"lookback": 20},
+        }))
+        sid = cr["data"]["strategy_id"]
+        await db.update_strategy_status(sid, "incubating", actor_id="test", reason="seed")
+        await db.save_strategy_metrics(sid, "all", {"sharpe_ratio": 0.82, "max_drawdown": 0.11})
+        db._signal_stats[sid] = {
+            "hit_rate": {1: 0.48, 5: 0.46, 10: 0.47, 20: 0.45},
+            "hit_rate_lcb": {1: 0.44, 5: 0.43, 10: 0.42, 20: 0.40},
+            "skill_lcb": {1: -0.02, 5: -0.04, 10: -0.05, 20: -0.06},
+            "recent_hit_rate": {1: 0.49, 5: 0.47, 10: 0.45, 20: 0.44},
+            "recent_hit_rate_lcb": {1: 0.45, 5: 0.44, 10: 0.40, 20: 0.39},
+            "recent_skill_lcb": {1: -0.01, 5: -0.02, 10: -0.04, 20: -0.05},
+            "stability_gap": {1: 0.01, 5: 0.01, 10: 0.02, 20: 0.01},
+            "sample_count": {1: 12, 5: 12, 10: 10, 20: 8},
+            "effective_n": {1: 12, 5: 12, 10: 10, 20: 8},
+            "forward_ic": {1: 0.01, 5: -0.03, 10: -0.02, 20: -0.01},
+            "forward_sharpe": {1: 0.05, 5: -0.15, 10: -0.12, 20: -0.08},
+            "total_signals": 12,
+            "raw_signal_count": 12,
+            "signals_with_forward_returns_count": 12,
+            "observed_forward_return_count": 48,
+        }
+        await db.save_paper_account({
+            "id": "acct_pred_weak",
+            "strategy_id": sid,
+            "name": "acct_pred_weak",
+            "initial_capital": 100000.0,
+            "current_capital": 92000.0,
+            "total_value": 102000.0,
+            "status": "active",
+        })
+        for idx in range(10):
+            order_id = idx + 1
+            await db.save_paper_order({
+                "id": order_id,
+                "account_id": "acct_pred_weak",
+                "strategy_id": sid,
+                "signal_date": f"2026-03-{idx + 1:02d}",
+                "source": "strategy_signal",
+                "code": f"0008{50 + idx}",
+                "direction": "buy",
+                "shares": 100,
+                "price": 20.0 + idx,
+                "order_type": "limit",
+                "status": "filled",
+            })
+            await db.save_paper_trade({
+                "id": f"trade_pred_weak_{idx}",
+                "account_id": "acct_pred_weak",
+                "strategy_id": sid,
+                "stock_code": f"0008{50 + idx}",
+                "stock_name": f"样本{idx}",
+                "trade_type": "buy",
+                "price": 20.0 + idx,
+                "quantity": 100,
+                "amount": (20.0 + idx) * 100,
+                "commission": 2.0,
+                "trade_time": datetime.now(timezone.utc).isoformat(),
+                "source_order_id": str(order_id),
+            })
+        await db.save_paper_nav({
+            "account_id": "acct_pred_weak",
+            "nav_date": "2026-03-01",
+            "total_value": 100000.0,
+            "cash": 100000.0,
+            "market_value": 0.0,
+            "daily_return": 0.0,
+        })
+        await db.save_paper_nav({
+            "account_id": "acct_pred_weak",
+            "nav_date": "2026-03-02",
+            "total_value": 101200.0,
+            "cash": 93000.0,
+            "market_value": 8200.0,
+            "daily_return": 0.012,
+        })
+        await db.save_paper_nav({
+            "account_id": "acct_pred_weak",
+            "nav_date": "2026-03-03",
+            "total_value": 102000.0,
+            "cash": 92000.0,
+            "market_value": 10000.0,
+            "daily_return": 0.0079,
+        })
+
+        incubation = await mcp.strategy_manager(action="incubation_overview", kwargs=json.dumps({"strategy_id": sid}))
+
+        assert incubation["success"] is True
+        assert incubation["data"]["prediction_quality_label"] == "weak"
+        assert incubation["data"]["execution_quality_label"] == "strong"
+        assert incubation["data"]["quality_diagnosis"] == "prediction_weak"
+        assert incubation["data"]["signal_to_fill_ratio"] == pytest.approx(10 / 12)
+        assert incubation["data"]["filled_order_ratio"] == pytest.approx(1.0)
+        assert incubation["data"]["paper_nav_return"] == pytest.approx(0.02)
+        assert incubation["data"]["execution_quality"]["signal_edge_reference"] is None
+        assert incubation["data"]["execution_quality"]["nav_conversion_proxy"] is None
 
     @pytest.mark.asyncio
     async def test_incubation_overview_surfaces_multi_period_blockers(self, setup):
@@ -390,9 +615,14 @@ class TestStrategyManager:
         assert incubation["success"] is True
         assert incubation["data"]["promotion_ready"] is False
         assert incubation["data"]["deprecation_risk"] is False
-        assert "20D" in incubation["data"]["blockers_by_period"]
-        assert any("20D命中率" in item for item in incubation["data"]["blockers_by_period"]["20D"])
-        assert incubation["data"]["risk_flags_by_period"] == {}
+        assert "5D" in incubation["data"]["blockers_by_period"]
+        assert any(
+            "skill LCB" in item or "有效样本" in item
+            for item in incubation["data"]["blockers_by_period"]["5D"]
+        )
+        assert "5D" in incubation["data"]["risk_flags_by_period"]
+        assert any("近期 skill LCB" in item for item in incubation["data"]["risk_flags_by_period"]["5D"])
+        assert incubation["data"]["signal_quality"]["primary_horizon"] == 5
 
     @pytest.mark.asyncio
     async def test_incubation_overview_and_promotion_review_block_grade_d_and_live_gate_gap(self, setup):
@@ -462,10 +692,21 @@ class TestStrategyManager:
         await db.update_strategy_status(good_id, "incubating", actor_id="test", reason="seed")
         await db.save_strategy_metrics(good_id, "all", {"sharpe_ratio": 0.85, "max_drawdown": 0.11})
         db._signal_stats[good_id] = {
-            "hit_rate": {1: 0.52, 5: 0.54, 10: 0.51, 20: 0.47},
-            "forward_ic": {1: 0.01, 5: 0.07, 10: 0.05, 20: 0.03},
+            "hit_rate": {1: 0.63, 5: 0.66, 10: 0.63, 20: 0.60},
+            "hit_rate_lcb": {1: 0.57, 5: 0.60, 10: 0.56, 20: 0.52},
+            "skill_lcb": {1: 0.07, 5: 0.10, 10: 0.06, 20: 0.03},
+            "recent_hit_rate": {1: 0.61, 5: 0.64, 10: 0.61, 20: 0.58},
+            "recent_hit_rate_lcb": {1: 0.55, 5: 0.58, 10: 0.54, 20: 0.50},
+            "recent_skill_lcb": {1: 0.05, 5: 0.08, 10: 0.04, 20: 0.01},
+            "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.02},
+            "sample_count": {1: 132, 5: 132, 10: 100, 20: 84},
+            "effective_n": {1: 132, 5: 66, 10: 50, 20: 42},
+            "forward_ic": {1: 0.02, 5: 0.08, 10: 0.05, 20: 0.03},
             "forward_sharpe": {1: 0.08, 5: 0.61, 10: 0.33, 20: 0.12},
-            "total_signals": 18,
+            "total_signals": 150,
+            "raw_signal_count": 150,
+            "signals_with_forward_returns_count": 132,
+            "observed_forward_return_count": 528,
         }
 
         bad = await mcp.strategy_manager(action="create", kwargs=json.dumps({
@@ -475,10 +716,21 @@ class TestStrategyManager:
         await db.update_strategy_status(bad_id, "listed", actor_id="test", reason="seed")
         await db.save_strategy_metrics(bad_id, "all", {"sharpe_ratio": 0.72, "max_drawdown": 0.14})
         db._signal_stats[bad_id] = {
-            "hit_rate": {1: 0.48, 5: 0.41, 10: 0.38, 20: 0.22},
+            "hit_rate": {1: 0.48, 5: 0.44, 10: 0.41, 20: 0.33},
+            "hit_rate_lcb": {1: 0.43, 5: 0.39, 10: 0.35, 20: 0.26},
+            "skill_lcb": {1: -0.02, 5: -0.06, 10: -0.09, 20: -0.14},
+            "recent_hit_rate": {1: 0.42, 5: 0.38, 10: 0.35, 20: 0.28},
+            "recent_hit_rate_lcb": {1: 0.36, 5: 0.31, 10: 0.28, 20: 0.20},
+            "recent_skill_lcb": {1: -0.08, 5: -0.14, 10: -0.18, 20: -0.24},
+            "stability_gap": {1: 0.06, 5: 0.12, 10: 0.11, 20: 0.14},
+            "sample_count": {1: 88, 5: 88, 10: 72, 20: 52},
+            "effective_n": {1: 88, 5: 32, 10: 24, 20: 12},
             "forward_ic": {1: 0.01, 5: 0.02, 10: -0.01, 20: -0.08},
             "forward_sharpe": {1: 0.05, 5: 0.12, 10: -0.05, 20: -0.31},
-            "total_signals": 16,
+            "total_signals": 96,
+            "raw_signal_count": 96,
+            "signals_with_forward_returns_count": 88,
+            "observed_forward_return_count": 352,
         }
         await db.save_strategy_incubation_metric(bad_id, '2026-03-08', {
             'account_id': 'acct_bad', 'stage': 'candidate', 'decision': 'halt', 'nav': 0.97,
@@ -597,6 +849,9 @@ class TestStrategyManager:
                 "governed_pending_candidate_count": 0,
                 "external_llm_provider_health_status": "degraded",
                 "external_llm_provider_control_mode": "suppress",
+                "external_llm_provider_control_reasons": ["provider_budget_guardrail"],
+                "suppressed_generator_modes": ["external_llm"],
+                "feedback_generator_mode_control_mode_counts": {"suppress": 1, "normal": 1},
                 "candidate_local_attempt_count": 6,
                 "task_local_attempt_count": 4,
                 "cohort_effective_trials": 9.5,
@@ -902,15 +1157,30 @@ class TestStrategyManager:
         assert runs_resp["data"]["count"] == 1
         assert runs_resp["data"]["items"][0]["run_id"] == "run_hist_1"
         assert runs_resp["data"]["items"][0]["candidates_spawned"] == 2
+        assert runs_resp["data"]["items"][0]["submit_stage_entered"] is True
+        assert runs_resp["data"]["items"][0]["submit_stage_status"] == "completed"
         assert runs_resp["data"]["items"][0]["family_preference_order"][:2] == ["mean_reversion_short", "momentum"]
         assert runs_resp["data"]["items"][0]["family_preference_source_mode"] == "stock_family_allocation"
         assert runs_resp["data"]["items"][0]["candidate_local_attempt_count"] == 6
+        assert runs_resp["data"]["items"][0]["external_llm_provider_control_mode"] == "suppress"
+        assert runs_resp["data"]["items"][0]["external_llm_provider_control_reasons"] == [
+            "provider_budget_guardrail",
+        ]
+        assert runs_resp["data"]["items"][0]["suppressed_generator_modes"] == ["external_llm"]
+        assert runs_resp["data"]["items"][0]["feedback_generator_mode_control_mode_counts"] == {
+            "suppress": 1,
+            "normal": 1,
+        }
+        assert runs_resp["data"]["items"][0]["external_llm_provider_suppressed"] is True
+        assert runs_resp["data"]["items"][0]["external_llm_provider_cooldown"] is False
         assert runs_resp["data"]["items"][0]["validation_grade_distribution"] == {"D": 1}
         assert runs_resp["data"]["items"][0]["raw_validation_grade_distribution"] == {"D": 1}
         assert runs_resp["data"]["items"][0]["raw_validation_total_score_mean"] == 38.0
         assert runs_resp["data"]["items"][0]["summary"]["event_task_count"] == 1
         assert runs_resp["data"]["items"][0]["summary"]["event_snapshot_mixed"] is True
         assert detail_resp["data"]["run_id"] == "run_hist_1"
+        assert detail_resp["data"]["submit_stage_entered"] is True
+        assert detail_resp["data"]["submit_stage_status"] == "completed"
         assert detail_resp["data"]["candidate_local_attempt_count"] == 6
         assert detail_resp["data"]["task_local_attempt_count"] == 4
         assert detail_resp["data"]["cohort_effective_trials"] == 9.5
@@ -923,8 +1193,28 @@ class TestStrategyManager:
         assert detail_resp["data"]["validation_grade_distribution"] == {"D": 1}
         assert detail_resp["data"]["raw_validation_grade_distribution"] == {"D": 1}
         assert detail_resp["data"]["raw_validation_total_score_mean"] == 38.0
+        assert detail_resp["data"]["external_llm_provider_control_mode"] == "suppress"
+        assert detail_resp["data"]["external_llm_provider_control_reasons"] == [
+            "provider_budget_guardrail",
+        ]
+        assert detail_resp["data"]["suppressed_generator_modes"] == ["external_llm"]
+        assert detail_resp["data"]["feedback_generator_mode_control_mode_counts"] == {
+            "suppress": 1,
+            "normal": 1,
+        }
+        assert detail_resp["data"]["external_llm_provider_suppressed"] is True
+        assert detail_resp["data"]["external_llm_provider_cooldown"] is False
         assert detail_resp["data"]["validation_family_quality_panel"][0]["strategy_family"] == "momentum"
         assert detail_resp["data"]["summary"]["candidate_local_attempt_count"] == 6
+        assert detail_resp["data"]["summary"]["external_llm_provider_control_reasons"] == [
+            "provider_budget_guardrail",
+        ]
+        assert detail_resp["data"]["summary"]["suppressed_generator_modes"] == ["external_llm"]
+        assert detail_resp["data"]["summary"]["feedback_generator_mode_control_mode_counts"] == {
+            "suppress": 1,
+            "normal": 1,
+        }
+        assert detail_resp["data"]["summary"]["external_llm_provider_suppressed"] is True
         assert detail_resp["data"]["summary"]["validation_grade_distribution"] == {"D": 1}
         assert detail_resp["data"]["summary"]["raw_validation_grade_distribution"] == {"D": 1}
         assert detail_resp["data"]["summary"]["snapshot_task_count"] == 1
@@ -1199,10 +1489,21 @@ class TestStrategyManager:
             "max_drawdown": 0.06,
         })
         db._signal_stats["factory_promotion_ready"] = {
-            "hit_rate": {1: 0.53, 5: 0.56, 10: 0.54, 20: 0.5},
-            "forward_ic": {1: 0.02, 5: 0.08, 10: 0.06, 20: 0.03},
-            "forward_sharpe": {1: 0.11, 5: 0.72, 10: 0.44, 20: 0.16},
-            "total_signals": 18,
+            "hit_rate": {1: 0.64, 5: 0.67, 10: 0.64, 20: 0.60},
+            "hit_rate_lcb": {1: 0.58, 5: 0.61, 10: 0.57, 20: 0.53},
+            "skill_lcb": {1: 0.08, 5: 0.11, 10: 0.07, 20: 0.04},
+            "recent_hit_rate": {1: 0.62, 5: 0.65, 10: 0.62, 20: 0.59},
+            "recent_hit_rate_lcb": {1: 0.56, 5: 0.59, 10: 0.55, 20: 0.51},
+            "recent_skill_lcb": {1: 0.06, 5: 0.09, 10: 0.05, 20: 0.02},
+            "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.01},
+            "sample_count": {1: 120, 5: 120, 10: 96, 20: 80},
+            "effective_n": {1: 120, 5: 60, 10: 48, 20: 40},
+            "forward_ic": {1: 0.03, 5: 0.10, 10: 0.07, 20: 0.04},
+            "forward_sharpe": {1: 0.18, 5: 0.74, 10: 0.48, 20: 0.22},
+            "total_signals": 140,
+            "raw_signal_count": 140,
+            "signals_with_forward_returns_count": 128,
+            "observed_forward_return_count": 512,
         }
 
         await db.save_strategy({
@@ -1570,10 +1871,21 @@ class TestStrategyManager:
             await db.save_strategy(row)
             await db.save_strategy_metrics(row["id"], "all", {"sharpe_ratio": 1.2, "max_drawdown": 0.06})
             db._signal_stats[row["id"]] = {
-                "hit_rate": {1: 0.54, 5: 0.58, 10: 0.55, 20: 0.51},
-                "forward_ic": {1: 0.03, 5: 0.08, 10: 0.06, 20: 0.04},
-                "forward_sharpe": {1: 0.10, 5: 0.70, 10: 0.46, 20: 0.18},
-                "total_signals": 24,
+                "hit_rate": {1: 0.64, 5: 0.67, 10: 0.64, 20: 0.60},
+                "hit_rate_lcb": {1: 0.58, 5: 0.61, 10: 0.57, 20: 0.53},
+                "skill_lcb": {1: 0.08, 5: 0.11, 10: 0.07, 20: 0.04},
+                "recent_hit_rate": {1: 0.62, 5: 0.65, 10: 0.62, 20: 0.59},
+                "recent_hit_rate_lcb": {1: 0.56, 5: 0.59, 10: 0.55, 20: 0.51},
+                "recent_skill_lcb": {1: 0.06, 5: 0.09, 10: 0.05, 20: 0.02},
+                "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.01},
+                "sample_count": {1: 120, 5: 120, 10: 96, 20: 80},
+                "effective_n": {1: 120, 5: 60, 10: 48, 20: 40},
+                "forward_ic": {1: 0.03, 5: 0.10, 10: 0.07, 20: 0.04},
+                "forward_sharpe": {1: 0.18, 5: 0.74, 10: 0.48, 20: 0.22},
+                "total_signals": 140,
+                "raw_signal_count": 140,
+                "signals_with_forward_returns_count": 128,
+                "observed_forward_return_count": 512,
             }
 
         await db.save_strategy_quality_report("factory_grade_d_blocked", "submission", {
@@ -1733,13 +2045,36 @@ class TestStrategyManager:
                 "live_ready_given_raw_b_rate": 0.0,
                 "strict_live_alignment_gap_count": 1,
                 "strict_live_alignment_gap_rate": 1.0,
+                "governed_blocked_ratio": 0.25,
+                "governed_blocked_candidate_count": 2,
+                "governed_source_candidate_count": 8,
+                "governed_candidate_pool_strict_shortfall_count": 1,
+                "governed_blocking_reason_counts": {"multiple_testing_risk_high": 2},
+                "governed_exclusion_reason_counts": {"score_below_provisional_threshold": 1},
+                "budget_feedback_evidence_debt_ratio": 0.5,
+                "budget_feedback_zero_signal_ratio": 0.25,
+                "budget_feedback_forward_window_coverage_ratio": 0.75,
+                "budget_feedback_promotion_ready_ratio": 0.25,
+                "budget_feedback_promotion_review_coverage_ratio": 0.5,
+                "external_llm_stage_attempt_count": 2,
+                "external_llm_real_request_count": 1,
+                "external_llm_compatibility_skip_count": 1,
+                "external_llm_compatibility_failure_count": 0,
+                "external_llm_effective_response_count": 1,
+                "external_llm_empty_200_response_count": 0,
+                "external_llm_provider_control_mode": "cooldown",
+                "external_llm_provider_control_reasons": ["provider_cooldown"],
+                "suppressed_generator_modes": [],
             },
             "stages": {
                 "readiness": {
                     "status": "partial",
                     "decision": "proceed",
                     "can_proceed": True,
-                    "warnings": ["budget_feedback_evidence_debt_elevated"],
+                    "warnings": [
+                        "budget_feedback_evidence_debt_elevated",
+                        "governed_candidate_pool_blocked_ratio_elevated",
+                    ],
                 },
                 "submit": {"status": "completed", "ok": True},
             },
@@ -1755,6 +2090,18 @@ class TestStrategyManager:
                 "factory_readiness_can_proceed": False,
                 "factory_readiness_score": 0.34,
                 "skip_reason": "readiness_blocked",
+                "governed_blocked_ratio": 1.0,
+                "governed_blocked_candidate_count": 4,
+                "governed_source_candidate_count": 4,
+                "governed_candidate_pool_strict_shortfall_count": 2,
+                "governed_blocking_reason_counts": {
+                    "governed_candidate_pool_missing_after_scheduler_success": 4,
+                },
+                "budget_feedback_evidence_debt_ratio": 0.9,
+                "budget_feedback_zero_signal_ratio": 0.8,
+                "budget_feedback_forward_window_coverage_ratio": 0.1,
+                "budget_feedback_promotion_ready_ratio": 0.0,
+                "budget_feedback_promotion_review_coverage_ratio": 0.0,
             },
             "stages": {
                 "readiness": {
@@ -1783,13 +2130,42 @@ class TestStrategyManager:
                 "live_ready_given_raw_b_rate": 0.5,
                 "strict_live_alignment_gap_count": 0,
                 "strict_live_alignment_gap_rate": 0.0,
+                "governed_blocked_ratio": 0.75,
+                "governed_blocked_candidate_count": 6,
+                "governed_source_candidate_count": 8,
+                "governed_candidate_pool_strict_shortfall_count": 3,
+                "governed_blocking_reason_counts": {"multiple_testing_risk_high": 3},
+                "governed_exclusion_reason_counts": {
+                    "multiple_testing_risk_high": 3,
+                    "score_below_provisional_threshold": 1,
+                },
+                "governed_ineligible_reason_counts": {"score_below_provisional_threshold": 1},
+                "budget_feedback_evidence_debt_ratio": 0.85,
+                "budget_feedback_zero_signal_ratio": 0.7,
+                "budget_feedback_forward_window_coverage_ratio": 0.2,
+                "budget_feedback_promotion_ready_ratio": 0.0,
+                "budget_feedback_promotion_review_coverage_ratio": 0.0,
+                "external_llm_stage_attempt_count": 4,
+                "external_llm_real_request_count": 2,
+                "external_llm_compatibility_skip_count": 2,
+                "external_llm_compatibility_failure_count": 1,
+                "external_llm_effective_response_count": 1,
+                "external_llm_empty_200_response_count": 1,
+                "external_llm_provider_control_mode": "suppress",
+                "external_llm_provider_control_reasons": ["provider_budget_guardrail"],
+                "suppressed_generator_modes": ["external_llm", "open_dsl"],
+                "feedback_generator_mode_control_mode_counts": {"suppress": 1, "normal": 1},
             },
             "stages": {
                 "readiness": {
                     "status": "completed",
                     "decision": "proceed",
                     "can_proceed": True,
-                    "warnings": ["budget_feedback_evidence_debt_elevated"],
+                    "warnings": [
+                        "budget_feedback_evidence_debt_elevated",
+                        "governed_candidate_pool_blocked_candidates",
+                        "governed_candidate_pool_blocked_ratio_high",
+                    ],
                 },
                 "submit": {"status": "completed", "ok": True},
             },
@@ -1837,6 +2213,52 @@ class TestStrategyManager:
             "reason_code": "budget_feedback_evidence_debt_elevated",
             "count": 2,
         }
+        assert diagnostics["external_llm_provider_control_mode_counts"] == {
+            "cooldown": 1,
+            "suppress": 1,
+        }
+        assert diagnostics["external_llm_provider_suppressed_run_count"] == 1
+        assert diagnostics["external_llm_provider_suppressed_run_rate"] == pytest.approx(0.3333)
+        assert diagnostics["external_llm_provider_cooldown_run_count"] == 1
+        assert diagnostics["external_llm_provider_cooldown_run_rate"] == pytest.approx(0.3333)
+        assert diagnostics["external_llm_provider_control_reason_topn"] == [
+            {"reason_code": "provider_budget_guardrail", "count": 1},
+            {"reason_code": "provider_cooldown", "count": 1},
+        ]
+        assert diagnostics["suppressed_generator_mode_topn"] == [
+            {"mode": "external_llm", "count": 1},
+            {"mode": "open_dsl", "count": 1},
+        ]
+        governed_pool = diagnostics["governed_pool_diagnostics"]
+        assert governed_pool["latest_governed_blocked_ratio"] == pytest.approx(0.75)
+        assert governed_pool["recent_governed_blocked_ratio_mean"] == pytest.approx(0.6667)
+        assert governed_pool["latest_governed_candidate_pool_strict_shortfall_count"] == 3
+        assert governed_pool["blocking_reason_topn"][0] == {
+            "reason_code": "multiple_testing_risk_high",
+            "count": 5,
+        }
+        assert governed_pool["exclusion_reason_topn"][0] == {
+            "reason_code": "multiple_testing_risk_high",
+            "count": 3,
+        }
+        evidence_debt = diagnostics["evidence_debt_diagnostics"]
+        assert evidence_debt["latest_budget_feedback_evidence_debt_ratio"] == pytest.approx(0.85)
+        assert evidence_debt["recent_budget_feedback_evidence_debt_ratio_mean"] == pytest.approx(0.75)
+        assert evidence_debt["latest_budget_feedback_zero_signal_ratio"] == pytest.approx(0.7)
+        assert evidence_debt["recent_budget_feedback_forward_window_coverage_ratio_mean"] == pytest.approx(0.35)
+        assert evidence_debt["warning_reason_topn"][0] == {
+            "reason_code": "budget_feedback_evidence_debt_elevated",
+            "count": 2,
+        }
+        provider_diag = diagnostics["provider_control_diagnostics"]
+        assert provider_diag["active_attempt_run_count"] == 2
+        assert provider_diag["zero_attempt_run_count"] == 1
+        assert provider_diag["latest_stage_attempt_count"] == 4
+        assert provider_diag["recent_stage_attempt_count_mean"] == pytest.approx(2.0)
+        assert provider_diag["latest_compatibility_skip_ratio"] == pytest.approx(0.5)
+        assert provider_diag["recent_compatibility_skip_ratio_mean"] == pytest.approx(0.3333)
+        assert provider_diag["latest_compatibility_failure_ratio"] == pytest.approx(0.5)
+        assert provider_diag["recent_effective_response_ratio_mean"] == pytest.approx(0.5)
         quality_progress = diagnostics["quality_progress"]
         assert quality_progress["quality_measurement_run_count"] == 2
         assert quality_progress["latest_raw_b_or_above_rate"] == pytest.approx(0.5)
@@ -1848,9 +2270,17 @@ class TestStrategyManager:
         assert quality_progress["strict_live_gap_run_rate"] == pytest.approx(0.5)
         assert diagnostics["recent_runs"][0]["run_id"] == "run_diag_success_latest"
         assert diagnostics["recent_runs"][0]["readiness_decision"] == "proceed"
+        assert diagnostics["recent_runs"][0]["external_llm_provider_control_mode"] == "suppress"
+        assert diagnostics["recent_runs"][0]["external_llm_provider_suppressed"] is True
+        assert diagnostics["recent_runs"][0]["suppressed_generator_modes"] == [
+            "external_llm",
+            "open_dsl",
+        ]
         assert diagnostics["recent_runs"][1]["blocking_reason_codes"] == [
             "governed_candidate_pool_missing_after_scheduler_success",
         ]
+        assert diagnostics["recent_runs"][2]["external_llm_provider_control_mode"] == "cooldown"
+        assert diagnostics["recent_runs"][2]["external_llm_provider_cooldown"] is True
         assert (
             status_resp["data"]["quality_baseline"]["recent_run_diagnostics"]["readiness_blocked_count"]
             == 1
@@ -2393,6 +2823,7 @@ class TestStrategyManager:
         paper_account = await mcp.strategy_manager(action='paper_account', kwargs=json.dumps({'strategy_id': sid, 'limit': 10}))
         paper_orders = await mcp.strategy_manager(action='paper_orders', kwargs=json.dumps({'strategy_id': sid, 'limit': 10}))
         paper_nav = await mcp.strategy_manager(action='paper_nav', kwargs=json.dumps({'strategy_id': sid, 'limit': 10}))
+        incubation_metrics = await mcp.strategy_manager(action='incubation_metrics', kwargs=json.dumps({'strategy_id': sid, 'limit': 5}))
         detail = await mcp.strategy_manager(action='detail', kwargs=json.dumps({'strategy_id': sid}))
         latest_metric = await db.get_latest_strategy_incubation_metric(sid)
         capabilities = await mcp.strategy_manager(action='capabilities')
@@ -2403,12 +2834,27 @@ class TestStrategyManager:
         assert sync['data']['nav_snapshots'] == 1
         assert paper_account['data']['account']['strategy_id'] == sid
         assert paper_account['data']['order_summary']['total_orders'] == 1
+        assert paper_account['data']['order_summary']['filled_orders'] == 1
         assert paper_account['data']['order_summary']['total_trades'] == 1
         assert len(paper_account['data']['positions']) == 1
         assert paper_orders['data']['items'][0]['status'] == 'filled'
         assert paper_nav['data']['latest']['total_value'] > 0
         assert latest_metric['total_orders'] == 1
         assert latest_metric['total_trades'] == 1
+        assert latest_metric['hit_rate_lcb_5d'] == pytest.approx(0.58)
+        assert latest_metric['skill_lcb_5d'] == pytest.approx(0.08)
+        assert latest_metric['effective_n_5d'] == 6
+        assert latest_metric['recent_hit_rate_5d'] == pytest.approx(0.58)
+        assert latest_metric['recent_skill_lcb_5d'] == pytest.approx(0.08)
+        assert latest_metric['stability_gap_5d'] == pytest.approx(0.0)
+        assert incubation_metrics['data']['latest']['hit_rate_lcb_5d'] == pytest.approx(0.58)
+        assert incubation_metrics['data']['latest']['skill_lcb_5d'] == pytest.approx(0.08)
+        assert incubation_metrics['data']['latest']['effective_n_5d'] == 6
+        assert latest_metric['metadata']['signal_quality']['primary_horizon'] == 5
+        assert latest_metric['metadata']['execution_quality']['approximate'] is True
+        assert latest_metric['metadata']['execution_quality']['audit_grade'] is False
+        assert latest_metric['metadata']['overview'].get('signal_quality') is None
+        assert latest_metric['metadata']['overview'].get('execution_quality') is None
         assert len(detail['data']['nav_series']) >= 1
         assert capabilities['data']['paper_trading'] is True
 
@@ -2480,10 +2926,21 @@ class TestStrategyManager:
         await db.update_strategy_status(sid, 'incubating')
         await db.save_strategy_metrics(sid, 'all', {'sharpe_ratio': 1.2, 'max_drawdown': -0.12})
         db._signal_stats[sid] = {
-            'total_signals': 18,
-            'hit_rate': {1: 0.55, 5: 0.62, 10: 0.58, 20: 0.56},
-            'forward_ic': {1: 0.01, 5: 0.03, 10: 0.02, 20: 0.01},
-            'forward_sharpe': {1: 0.12, 5: 0.8, 10: 0.5, 20: 0.3},
+            "hit_rate": {1: 0.64, 5: 0.67, 10: 0.64, 20: 0.60},
+            "hit_rate_lcb": {1: 0.58, 5: 0.61, 10: 0.57, 20: 0.53},
+            "skill_lcb": {1: 0.08, 5: 0.11, 10: 0.07, 20: 0.04},
+            "recent_hit_rate": {1: 0.62, 5: 0.65, 10: 0.62, 20: 0.59},
+            "recent_hit_rate_lcb": {1: 0.56, 5: 0.59, 10: 0.55, 20: 0.51},
+            "recent_skill_lcb": {1: 0.06, 5: 0.09, 10: 0.05, 20: 0.02},
+            "stability_gap": {1: 0.02, 5: 0.02, 10: 0.02, 20: 0.01},
+            "sample_count": {1: 120, 5: 120, 10: 96, 20: 80},
+            "effective_n": {1: 120, 5: 60, 10: 48, 20: 40},
+            "forward_ic": {1: 0.03, 5: 0.10, 10: 0.07, 20: 0.04},
+            "forward_sharpe": {1: 0.18, 5: 0.74, 10: 0.48, 20: 0.22},
+            "total_signals": 140,
+            "raw_signal_count": 140,
+            "signals_with_forward_returns_count": 128,
+            "observed_forward_return_count": 512,
         }
         await db.save_strategy_incubation_account(sid, 'acct_promote', stage='candidate', status='active')
         await db.save_strategy_incubation_metric(sid, '2026-03-08', {

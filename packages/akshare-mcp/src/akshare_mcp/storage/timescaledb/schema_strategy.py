@@ -480,6 +480,12 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             max_drawdown DOUBLE PRECISION,
             sharpe_ratio DOUBLE PRECISION,
             hit_rate_5d DOUBLE PRECISION,
+            hit_rate_lcb_5d DOUBLE PRECISION,
+            skill_lcb_5d DOUBLE PRECISION,
+            effective_n_5d INTEGER,
+            recent_hit_rate_5d DOUBLE PRECISION,
+            recent_skill_lcb_5d DOUBLE PRECISION,
+            stability_gap_5d DOUBLE PRECISION,
             forward_ic_5d DOUBLE PRECISION,
             forward_sharpe_5d DOUBLE PRECISION,
             total_signals INTEGER DEFAULT 0,
@@ -816,6 +822,21 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             ON strategy_task_runs(task_name, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_sid
             ON strategy_task_runs(strategy_id, started_at DESC);
+    """)
+
+    await conn.execute("""
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS hit_rate_lcb_5d DOUBLE PRECISION;
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS skill_lcb_5d DOUBLE PRECISION;
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS effective_n_5d INTEGER;
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS recent_hit_rate_5d DOUBLE PRECISION;
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS recent_skill_lcb_5d DOUBLE PRECISION;
+        ALTER TABLE strategy_incubation_metrics
+        ADD COLUMN IF NOT EXISTS stability_gap_5d DOUBLE PRECISION;
     """)
 
     # Compat: backfill index_name for vector profiles

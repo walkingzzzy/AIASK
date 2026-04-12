@@ -23,20 +23,35 @@ class StrategyIncubationPipelineService:
 
     @staticmethod
     def _readiness_score(*, latest_metric: Optional[dict], overview: dict, open_risk_count: int, runtime_control: Optional[dict], observed_days: int, promote_streak: int, trade_days: int) -> float:
-        score = 0.2
+        signal_quality = dict(overview.get('signal_quality') or {})
+        primary_skill_lcb = float(signal_quality.get('primary_skill_lcb') or 0.0)
+        secondary_skill_lcb = float(signal_quality.get('secondary_skill_lcb') or 0.0)
+        recent_primary_skill_lcb = float(signal_quality.get('recent_primary_skill_lcb') or 0.0)
+        coverage_ratio = float(signal_quality.get('coverage_ratio') or 0.0)
+        stability_gap = float(signal_quality.get('stability_gap') or 0.0)
+        primary_effective_n = int(signal_quality.get('primary_effective_n') or 0)
+        secondary_effective_n = int(signal_quality.get('secondary_effective_n') or 0)
+
+        score = 0.18
+        score += max(min(primary_skill_lcb, 0.20), -0.20) * 1.1
+        score += max(min(secondary_skill_lcb, 0.18), -0.18) * 0.7
+        score += max(min(recent_primary_skill_lcb, 0.18), -0.18) * 0.8
+        score += min(max(coverage_ratio, 0.0), 1.0) * 0.18
+        score += min(primary_effective_n, 60) / 60 * 0.16
+        score += min(secondary_effective_n, 30) / 30 * 0.08
+        score -= min(max(stability_gap, 0.0), 0.2) * 0.8
         if latest_metric:
-            score += min(max(float(latest_metric.get('nav') or 1.0) - 1.0, -0.1), 0.2) * 1.5
-            score += min(max(float(latest_metric.get('sharpe_ratio') or 0.0), -1.0), 2.0) * 0.12
-            score += min(max(float(latest_metric.get('forward_sharpe_5d') or 0.0), -1.0), 1.5) * 0.12
-            score += min(max(float(latest_metric.get('hit_rate_5d') or 0.0), 0.0), 1.0) * 0.18
-            score -= min(max(float(latest_metric.get('max_drawdown') or 0.0), 0.0), 0.5) * 0.4
-        score += min(observed_days, 20) * 0.0075  # scale to 20 days (was 10*0.015)
-        score += min(promote_streak, 5) * 0.04
-        score += min(trade_days, 10) * 0.015
+            score += min(max(float(latest_metric.get('nav') or 1.0) - 1.0, -0.08), 0.12) * 0.35
+            score += min(max(float(latest_metric.get('sharpe_ratio') or 0.0), -1.0), 2.0) * 0.04
+            score += min(max(float(latest_metric.get('forward_sharpe_5d') or 0.0), -1.0), 1.5) * 0.04
+            score -= min(max(float(latest_metric.get('max_drawdown') or 0.0), 0.0), 0.5) * 0.22
+        score += min(observed_days, 20) * 0.004
+        score += min(promote_streak, 5) * 0.015
+        score += min(trade_days, 10) * 0.006
         if overview.get('promotion_ready'):
-            score += 0.15
+            score += 0.08
         if overview.get('deprecation_risk'):
-            score -= 0.2
+            score -= 0.12
         score -= min(len(overview.get('blockers') or []), 5) * 0.06
         score -= min(len(overview.get('risk_flags') or []), 5) * 0.05
         score -= min(open_risk_count, 3) * 0.08
@@ -60,7 +75,10 @@ class StrategyIncubationPipelineService:
 
     async def _derive_snapshot(self, db, strategy: dict, *, task_run_id: Optional[int], source: str, auto_apply_review: bool) -> dict:
         # Fix #10: 从 strategy_lifecycle_shared 导入，避免循环依赖
-        from .strategy_lifecycle_shared import build_incubation_overview as _build_incubation_overview
+        from .strategy_lifecycle_shared import (
+            build_incubation_overview as _build_incubation_overview,
+            resolve_incubation_pipeline_stage as _resolve_incubation_pipeline_stage,
+        )
 
         sid = str(strategy['id'])
         overview = await _build_incubation_overview(db, strategy)
@@ -86,31 +104,32 @@ class StrategyIncubationPipelineService:
         control_mode = str((runtime_control or {}).get('control_mode') or 'active')
         is_control_blocking = control_mode not in {'active', 'throttled'}
         latest_decision = str((latest_metric or {}).get('decision') or 'observe')
+        signal_quality = dict(overview.get('signal_quality') or {})
 
         if str(strategy.get('status') or '') == 'listed':
             pipeline_stage = 'promoted'
             pipeline_status = 'listed'
             next_action = 'listed_monitoring'
-        elif halt_streak >= 2 or (overview.get('deprecation_risk') and open_risk_count > 0):
-            pipeline_stage = 'failed'
-            pipeline_status = 'blocked'
-            next_action = 'manual_intervention'
-        elif observed_days < 7 or trade_days == 0:
-            pipeline_stage = 'warmup'
-            pipeline_status = 'collecting'
-            next_action = 'collect_more_samples'
-        elif overview.get('promotion_ready') and promote_streak >= 3 and observed_days >= 20 and open_risk_count == 0 and not is_control_blocking:
-            pipeline_stage = 'graduation_ready'
-            pipeline_status = 'ready_for_review'
-            next_action = 'run_promotion_review'
-        elif overview.get('promotion_ready') or latest_decision == 'promote':
-            pipeline_stage = 'candidate'
-            pipeline_status = 'candidate'
-            next_action = 'accumulate_confirmation'
         else:
-            pipeline_stage = 'observe'
-            pipeline_status = 'observing'
-            next_action = 'continue_observation'
+            pipeline_stage = _resolve_incubation_pipeline_stage(signal_quality, open_risk_count=open_risk_count)
+            if pipeline_stage == 'failed':
+                pipeline_status = 'blocked'
+                next_action = 'manual_intervention'
+            elif pipeline_stage == 'warmup':
+                pipeline_status = 'collecting'
+                next_action = 'collect_more_samples'
+            elif pipeline_stage == 'graduation_ready' and not is_control_blocking:
+                pipeline_status = 'ready_for_review'
+                next_action = 'run_promotion_review'
+            elif pipeline_stage == 'graduation_ready':
+                pipeline_status = 'candidate'
+                next_action = 'release_runtime_block'
+            elif pipeline_stage == 'candidate':
+                pipeline_status = 'candidate'
+                next_action = 'accumulate_confirmation'
+            else:
+                pipeline_status = 'observing'
+                next_action = 'stabilize_signal_quality' if latest_decision == 'halt' or halt_streak > 0 else 'continue_observation'
 
         readiness_score = self._readiness_score(
             latest_metric=latest_metric,
@@ -144,6 +163,14 @@ class StrategyIncubationPipelineService:
                 'observed_forward_days': overview.get('observed_forward_days') or [],
                 'missing_forward_days': overview.get('missing_forward_days') or [],
                 'total_signals': overview.get('total_signals'),
+                'primary_horizon': signal_quality.get('primary_horizon'),
+                'secondary_horizon': signal_quality.get('secondary_horizon'),
+                'primary_effective_n': signal_quality.get('primary_effective_n'),
+                'secondary_effective_n': signal_quality.get('secondary_effective_n'),
+                'primary_skill_lcb': signal_quality.get('primary_skill_lcb'),
+                'recent_primary_skill_lcb': signal_quality.get('recent_primary_skill_lcb'),
+                'coverage_ratio': signal_quality.get('coverage_ratio'),
+                'stability_gap': signal_quality.get('stability_gap'),
                 'trade_days': trade_days,
                 'observe_streak': observe_streak,
                 'open_risk_count': open_risk_count,

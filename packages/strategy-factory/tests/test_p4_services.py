@@ -223,6 +223,51 @@ class TestReadinessService:
         assert "governed_candidate_pool_unavailable_after_refresh" in result["blockers"]
         assert result["critical_blocker_count"] == 2
 
+    def test_recoverable_governed_shortfall_does_not_hard_block(self):
+        svc = self._svc()
+        factor = self._good_factor()
+        factor["summary"].update(
+            {
+                "factor_source_mode": "governed_pool_missing_after_scheduler_success",
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 3,
+                "governed_candidate_pool_mode": "provisional_validated_watch",
+                "governed_candidate_pool_provisional": True,
+                "governed_candidate_pool_provisional_pending_count": 2,
+                "governed_candidate_pool_strict_shortfall_count": 1,
+                "active_family_names": [],
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+            }
+        )
+
+        result = svc.evaluate(self._good_snapshot(), factor)
+
+        assert result["can_proceed"] is True
+        assert result["governed_supply_recoverable"] is True
+        assert "governed_candidate_pool_shortfall_recoverable" in result["warnings"]
+        assert "governed_candidate_pool_required" not in result["blockers"]
+        assert "governed_candidate_pool_missing_after_scheduler_success" not in result["blockers"]
+
+    def test_provider_suppress_is_warning_only_when_governed_supply_viable(self):
+        svc = self._svc()
+        factor = self._good_factor()
+        factor["summary"].update(
+            {
+                "suppressed_generator_modes": ["external_llm"],
+                "feedback_generator_mode_control_mode_counts": {"suppress": 1, "normal": 1},
+                "external_llm_provider_control_mode": "suppress",
+                "external_llm_provider_control_reasons": ["provider_budget_guardrail"],
+            }
+        )
+
+        result = svc.evaluate(self._good_snapshot(), factor)
+
+        assert result["can_proceed"] is True
+        assert result["external_llm_provider_suppress_active"] is True
+        assert "external_llm_provider_suppressed" in result["warnings"]
+        assert "external_llm_provider_suppressed" not in result["blockers"]
+
 
 # ---------------------------------------------------------------------------
 # TaskOrchestrator – classify_tasks

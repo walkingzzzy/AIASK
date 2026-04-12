@@ -160,6 +160,51 @@ def build_search_route_feedback_snapshot(
                 builder_cls._safe_float(feedback_metrics.get("forward_window_coverage_ratio"), 1.0),
                 4,
             ),
+            "paper_hit_ratio": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_hit_ratio"), 0.5),
+                4,
+            ),
+            "paper_skill_lcb": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_skill_lcb")),
+                4,
+            ),
+            "paper_recent_skill_lcb": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_recent_skill_lcb")),
+                4,
+            ),
+            "paper_stability_gap": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_stability_gap")),
+                4,
+            ),
+            "paper_coverage_ratio": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0),
+                4,
+            ),
+            "legacy_control_mode": feedback_metrics.get("legacy_control_mode")
+            or plan.get("feedback_control_mode"),
+            "skill_control_mode": feedback_metrics.get("skill_control_mode"),
+            "legacy_budget_multiplier": round(
+                builder_cls._safe_float(
+                    feedback_metrics.get("legacy_budget_multiplier"),
+                    plan.get("feedback_budget_multiplier"),
+                ),
+                4,
+            ),
+            "skill_budget_multiplier": round(
+                builder_cls._safe_float(feedback_metrics.get("skill_budget_multiplier"), 1.0),
+                4,
+            ),
+            "legacy_priority_adjustment": round(
+                builder_cls._safe_float(
+                    feedback_metrics.get("legacy_priority_adjustment"),
+                    plan.get("feedback_priority_adjustment"),
+                ),
+                4,
+            ),
+            "skill_priority_adjustment": round(
+                builder_cls._safe_float(feedback_metrics.get("skill_priority_adjustment")),
+                4,
+            ),
             "raw_validation_a_rate": round(
                 builder_cls._safe_float(feedback_metrics.get("raw_validation_a_rate")),
                 4,
@@ -196,8 +241,29 @@ def build_search_route_feedback_snapshot(
                 builder_cls._safe_float(feedback_metrics.get("raw_validation_d_rate")),
                 4,
             ),
+            "paper_skill_lcb": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_skill_lcb")),
+                4,
+            ),
+            "paper_recent_skill_lcb": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_recent_skill_lcb")),
+                4,
+            ),
+            "paper_stability_gap": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_stability_gap")),
+                4,
+            ),
+            "paper_coverage_ratio": round(
+                builder_cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0),
+                4,
+            ),
             "control_mode": plan.get("feedback_control_mode"),
+            "legacy_control_mode": feedback_metrics.get("legacy_control_mode")
+            or plan.get("feedback_control_mode"),
+            "skill_control_mode": feedback_metrics.get("skill_control_mode"),
             "control_reasons": list(plan.get("feedback_control_reasons") or []),
+            "legacy_control_reasons": list(feedback_metrics.get("legacy_control_reasons") or []),
+            "skill_control_reasons": list(feedback_metrics.get("skill_control_reasons") or []),
             "family_freeze_active": bool(plan.get("feedback_family_freeze_active")),
             "family_quality_score": family_quality_score,
             "family_route_action": family_action,
@@ -208,12 +274,42 @@ def build_search_route_feedback_snapshot(
                 "scope": "family",
                 "action": family_action,
                 "control_mode": plan.get("feedback_control_mode"),
+                "legacy_control_mode": feedback_metrics.get("legacy_control_mode")
+                or plan.get("feedback_control_mode"),
+                "skill_control_mode": feedback_metrics.get("skill_control_mode"),
                 "budget_weight": round(builder_cls._safe_float(plan.get("budget_weight")), 4),
                 "budget_multiplier": round(
                     builder_cls._safe_float(plan.get("feedback_budget_multiplier"), 1.0),
                     4,
                 ),
+                "legacy_budget_multiplier": round(
+                    builder_cls._safe_float(
+                        feedback_metrics.get("legacy_budget_multiplier"),
+                        plan.get("feedback_budget_multiplier"),
+                    ),
+                    4,
+                ),
+                "skill_budget_multiplier": round(
+                    builder_cls._safe_float(feedback_metrics.get("skill_budget_multiplier"), 1.0),
+                    4,
+                ),
                 "family_quality_score": family_quality_score,
+                "paper_skill_lcb": round(
+                    builder_cls._safe_float(feedback_metrics.get("paper_skill_lcb")),
+                    4,
+                ),
+                "paper_recent_skill_lcb": round(
+                    builder_cls._safe_float(feedback_metrics.get("paper_recent_skill_lcb")),
+                    4,
+                ),
+                "paper_stability_gap": round(
+                    builder_cls._safe_float(feedback_metrics.get("paper_stability_gap")),
+                    4,
+                ),
+                "paper_coverage_ratio": round(
+                    builder_cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0),
+                    4,
+                ),
                 "raw_validation_a_rate": round(
                     builder_cls._safe_float(feedback_metrics.get("raw_validation_a_rate")),
                     4,
@@ -415,8 +511,59 @@ async def load_budget_feedback(
         if latest_metric.get("hit_rate_5d") is None:
             paper_hit_ratio = 0.5
         evidence_overview = await builder_cls._load_feedback_evidence_overview(db, strategy)
+        metric_metadata = dict(latest_metric.get("metadata") or {})
+        signal_quality = dict(
+            metric_metadata.get("signal_quality")
+            or evidence_overview.get("signal_quality")
+            or {}
+        )
+        paper_skill_lcb = evidence_overview.get("skill_lcb")
+        if paper_skill_lcb is None:
+            paper_skill_lcb = (
+                signal_quality.get("primary_skill_lcb")
+                if signal_quality.get("primary_skill_lcb") is not None
+                else signal_quality.get("primary_signal_skill_lcb")
+            )
+        paper_recent_skill_lcb = evidence_overview.get("recent_skill_lcb")
+        if paper_recent_skill_lcb is None:
+            paper_recent_skill_lcb = signal_quality.get("recent_primary_skill_lcb")
+        if paper_recent_skill_lcb is None:
+            paper_recent_skill_lcb = paper_skill_lcb
+        paper_stability_gap = evidence_overview.get("stability_gap")
+        if paper_stability_gap is None:
+            paper_stability_gap = signal_quality.get("stability_gap")
+        paper_coverage_ratio = evidence_overview.get("coverage_ratio")
+        if paper_coverage_ratio is None:
+            paper_coverage_ratio = signal_quality.get("coverage_ratio")
+        if paper_coverage_ratio is None:
+            observed_days = [
+                int(day)
+                for day in list(evidence_overview.get("observed_forward_days") or [])
+                if int(day) in builder_cls.EVIDENCE_FORWARD_WINDOWS
+            ]
+            paper_coverage_ratio = (
+                len(observed_days) / len(builder_cls.EVIDENCE_FORWARD_WINDOWS)
+                if builder_cls.EVIDENCE_FORWARD_WINDOWS
+                else 0.0
+            )
         feedback_metrics = {
             "paper_hit_ratio": round(min(max(paper_hit_ratio, 0.0), 1.0), 4),
+            "paper_skill_lcb": round(
+                max(min(builder_cls._safe_float(paper_skill_lcb), 1.0), -1.0),
+                4,
+            ),
+            "paper_recent_skill_lcb": round(
+                max(min(builder_cls._safe_float(paper_recent_skill_lcb), 1.0), -1.0),
+                4,
+            ),
+            "paper_stability_gap": round(
+                max(builder_cls._safe_float(paper_stability_gap), 0.0),
+                4,
+            ),
+            "paper_coverage_ratio": round(
+                min(max(builder_cls._safe_float(paper_coverage_ratio, 1.0), 0.0), 1.0),
+                4,
+            ),
             "runtime_alert_pressure": builder_cls._feedback_runtime_alert_pressure(
                 latest_metric,
                 open_risk_events,

@@ -288,6 +288,23 @@ class ReadinessService:
             factor_summary.get("budget_feedback_evidence_debt_ratio"),
             default=0.0,
         )
+        feedback_generator_mode_control_mode_counts = dict(
+            factor_summary.get("feedback_generator_mode_control_mode_counts") or {}
+        )
+        suppressed_generator_modes = [
+            str(item or "").strip().lower()
+            for item in list(factor_summary.get("suppressed_generator_modes") or [])
+            if str(item or "").strip()
+        ]
+        external_llm_provider_control_mode = (
+            str(factor_summary.get("external_llm_provider_control_mode") or "").strip().lower()
+            or None
+        )
+        external_llm_provider_control_reasons = [
+            str(item or "").strip()
+            for item in list(factor_summary.get("external_llm_provider_control_reasons") or [])
+            if str(item or "").strip()
+        ]
         governed_freshness_days = factor_summary.get("governed_freshness_days")
         scheduler_recent_success = bool(factor_summary.get("scheduler_recent_success"))
         scheduler_llm_validation_status = factor_summary.get("scheduler_llm_validation_status")
@@ -336,6 +353,23 @@ class ReadinessService:
             and governed_pool_runtime_state
             not in {"blocked_by_governed_pool", "governed_pool_missing_after_scheduler_success"}
         )
+        governed_supply_recoverable = bool(
+            governed_source_candidate_count >= min_governed_active_candidate_count
+            and (
+                governed_candidate_pool_provisional
+                or governed_candidate_pool_provisional_pending_count > 0
+                or governed_candidate_pool_strict_shortfall_count > 0
+                or (active_candidate_count > 0 and active_family_count > 0)
+            )
+        )
+        governed_supply_hard_block = not (
+            governed_supply_viable or governed_supply_recoverable
+        )
+        external_llm_provider_suppress_active = bool(
+            external_llm_provider_control_mode in {"suppress", "cooldown"}
+            or "external_llm" in suppressed_generator_modes
+            or int(feedback_generator_mode_control_mode_counts.get("suppress") or 0) > 0
+        )
 
         warnings: list[str] = []
         blockers: list[str] = []
@@ -366,16 +400,28 @@ class ReadinessService:
         if governed_candidate_pool_provisional:
             warnings.append("governed_candidate_pool_provisional")
             score -= 0.04
+        if external_llm_provider_suppress_active:
+            warnings.append(
+                "external_llm_provider_cooldown"
+                if external_llm_provider_control_mode == "cooldown"
+                else "external_llm_provider_suppressed"
+            )
+            score -= 0.03 if external_llm_provider_control_mode == "cooldown" else 0.05
         if not governed_candidate_pool_active:
             warnings.append("governed_candidate_pool_inactive")
-            blockers.append("governed_candidate_pool_required")
-            critical_blockers.append("governed_candidate_pool_required")
-            score -= 0.22
+            if governed_supply_recoverable:
+                if "governed_candidate_pool_shortfall_recoverable" not in warnings:
+                    warnings.append("governed_candidate_pool_shortfall_recoverable")
+                score -= 0.10
+            else:
+                blockers.append("governed_candidate_pool_required")
+                critical_blockers.append("governed_candidate_pool_required")
+                score -= 0.22
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
             warnings.append("governed_candidate_pool_blocked_ratio_high")
-            if hard_block and not governed_supply_viable:
+            if hard_block and governed_supply_hard_block:
                 blockers.append("governed_candidate_pool_blocked_ratio_high")
             score -= 0.12
         elif governed_blocked_ratio >= 0.40:
@@ -383,12 +429,12 @@ class ReadinessService:
             score -= 0.06
         if governed_pending_ratio >= 0.75:
             warnings.append("governed_candidate_pool_promotion_backlog_high")
-            if hard_block and not governed_supply_viable:
+            if hard_block and governed_supply_hard_block:
                 blockers.append("governed_candidate_pool_promotion_backlog_high")
             score -= 0.06
         elif governed_pending_ratio >= 0.40:
             warnings.append("governed_candidate_pool_promotion_backlog_elevated")
-            if hard_block and not governed_supply_viable:
+            if hard_block and governed_supply_hard_block:
                 blockers.append("governed_candidate_pool_promotion_backlog_elevated")
             score -= 0.03
         if budget_feedback_zero_signal_ratio >= 0.75:
@@ -430,7 +476,7 @@ class ReadinessService:
                 governed_pending_ratio >= 0.25
                 or governed_blocked_ratio >= 0.25
             )
-            if hard_block and severe_governance_drag and not governed_supply_viable:
+            if hard_block and severe_governance_drag and governed_supply_hard_block:
                 blockers.append("incubating_evidence_debt_high")
             score -= 0.12
         elif budget_feedback_evidence_debt_ratio >= 0.45 and budget_feedback_strategy_count >= 3:
@@ -438,17 +484,23 @@ class ReadinessService:
             score -= 0.05
         if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
-            blockers.append("governed_candidate_pool_missing_after_scheduler_success")
-            critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
-            score -= 0.18
+            if governed_supply_hard_block:
+                blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+                critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+                score -= 0.18
+            else:
+                score -= 0.08
         if governed_pool_runtime_state == "refreshing_pool":
             warnings.append("governed_candidate_pool_refreshing")
             score -= 0.05
         elif governed_pool_runtime_state == "blocked_by_governed_pool" and not governed_pool_missing_after_scheduler_success:
             warnings.append("governed_candidate_pool_refresh_blocked")
-            blockers.append("governed_candidate_pool_unavailable_after_refresh")
-            critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
-            score -= 0.18
+            if governed_supply_hard_block:
+                blockers.append("governed_candidate_pool_unavailable_after_refresh")
+                critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
+                score -= 0.18
+            else:
+                score -= 0.10
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -513,6 +565,7 @@ class ReadinessService:
             "governed_candidate_pool_active": governed_candidate_pool_active,
             "governed_candidate_pool_runtime_state": governed_pool_runtime_state,
             "governed_supply_viable": governed_supply_viable,
+            "governed_supply_recoverable": governed_supply_recoverable,
             "governed_candidate_pool_mode": governed_candidate_pool_mode,
             "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
             "governed_candidate_pool_provisional_spillover_policy": governed_candidate_pool_provisional_spillover_policy,
@@ -541,6 +594,11 @@ class ReadinessService:
             "budget_feedback_promotion_review_coverage_ratio": budget_feedback_promotion_review_coverage_ratio,
             "budget_feedback_evidence_debt_strategy_count": budget_feedback_evidence_debt_strategy_count,
             "budget_feedback_evidence_debt_ratio": budget_feedback_evidence_debt_ratio,
+            "feedback_generator_mode_control_mode_counts": feedback_generator_mode_control_mode_counts,
+            "suppressed_generator_modes": suppressed_generator_modes,
+            "external_llm_provider_control_mode": external_llm_provider_control_mode,
+            "external_llm_provider_control_reasons": external_llm_provider_control_reasons,
+            "external_llm_provider_suppress_active": external_llm_provider_suppress_active,
             "governed_freshness_days": governed_freshness_days,
             "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
             "governed_blocking_reason_counts": governed_blocking_reason_counts,

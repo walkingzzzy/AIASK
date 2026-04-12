@@ -19,7 +19,7 @@ class _FakeConn:
         self.last_fetchrow_query = query
         self.last_fetchrow_params = params
         if "COUNT(*) AS total_signals" in query:
-            return {"total_signals": 12}
+            return {"total_signals": 12, "latest_signal_date": date(2026, 4, 2)}
         return None
 
     async def fetch(self, query, *params):
@@ -27,9 +27,9 @@ class _FakeConn:
         self.last_fetch_params = params
         if "JOIN signal_forward_returns" in query:
             return [
-                {"signal_id": 101, "signal": 1, "forward_days": 1, "actual_return": 0.03},
-                {"signal_id": 101, "signal": 1, "forward_days": 5, "actual_return": 0.07},
-                {"signal_id": 102, "signal": -1, "forward_days": 1, "actual_return": -0.02},
+                {"signal_id": 101, "signal_date": date(2026, 4, 2), "signal": 1, "forward_days": 1, "actual_return": 0.03},
+                {"signal_id": 101, "signal_date": date(2026, 4, 2), "signal": 1, "forward_days": 5, "actual_return": 0.07},
+                {"signal_id": 102, "signal_date": date(2026, 4, 1), "signal": -1, "forward_days": 1, "actual_return": -0.02},
             ]
         return [
             {
@@ -63,6 +63,13 @@ async def test_get_signal_stats_separates_raw_signal_count_from_forward_return_c
     assert stats["observed_forward_return_count"] == 3
     assert stats["hit_rate"][1] == 1.0
     assert stats["hit_rate"][5] == 1.0
+    assert stats["sample_count"][1] == 2
+    assert stats["effective_n"][5] == 1
+    assert stats["hit_rate_lcb"][1] < stats["hit_rate"][1]
+    assert stats["skill_lcb"][1] < stats["hit_rate_lcb"][1]
+    assert stats["recent_hit_rate"][1] == 1.0
+    assert stats["hit_rate_lcb_method"] == "wilson_ess_approx"
+    assert stats["effective_n_method"] == "overlap_adjusted_ess_v1"
 
 
 @pytest.mark.asyncio

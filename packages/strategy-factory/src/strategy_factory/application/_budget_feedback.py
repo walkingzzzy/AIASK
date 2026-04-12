@@ -12,6 +12,10 @@ from ..domain.constants import (
 FEEDBACK_METRIC_KEYS = (
     "ema_submit_count",
     "paper_hit_ratio",
+    "paper_skill_lcb",
+    "paper_recent_skill_lcb",
+    "paper_stability_gap",
+    "paper_coverage_ratio",
     "runtime_alert_pressure",
     "realized_turnover",
     "capacity_crowding",
@@ -54,6 +58,9 @@ RELAXABLE_RESEARCH_CONTROL_REASON_MARKERS: tuple[str, ...] = (
 HARD_RESEARCH_CONTROL_REASON_MARKERS: tuple[str, ...] = (
     "runtime_alert_pressure",
     "paper_hit_ratio",
+    "paper_skill_lcb",
+    "paper_recent_skill_lcb",
+    "paper_stability_gap",
     "turnover_or_crowding",
     "open_risk_load",
     "promotion_review_rejected",
@@ -75,6 +82,28 @@ _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
         "ema_paper_hit_ratio",
         "avg_paper_hit_ratio",
         "paper_hit_ratio_avg",
+    ),
+    "paper_skill_lcb": (
+        "paper_skill_lcb",
+        "paper_primary_skill_lcb",
+        "paper_signal_skill_lcb",
+        "primary_skill_lcb",
+        "skill_lcb",
+    ),
+    "paper_recent_skill_lcb": (
+        "paper_recent_skill_lcb",
+        "paper_recent_primary_skill_lcb",
+        "recent_primary_skill_lcb",
+        "recent_skill_lcb",
+    ),
+    "paper_stability_gap": (
+        "paper_stability_gap",
+        "stability_gap",
+    ),
+    "paper_coverage_ratio": (
+        "paper_coverage_ratio",
+        "paper_signal_coverage_ratio",
+        "coverage_ratio",
     ),
     "runtime_alert_pressure": (
         "runtime_alert_pressure",
@@ -219,6 +248,47 @@ def _sum_feedback_metric(
     return total
 
 
+def _average_feedback_metric(
+    feedback_root: dict[str, Any],
+    *,
+    metric_name: str,
+    default: float,
+) -> float:
+    weighted_total = 0.0
+    total_weight = 0.0
+    for bucket in feedback_root.values():
+        if not isinstance(bucket, dict):
+            continue
+        value = _metric_value(bucket, metric_name)
+        if value is None:
+            continue
+        weight = max(_safe_int(bucket.get("strategy_count")), 1)
+        weighted_total += float(value) * weight
+        total_weight += float(weight)
+    return round(weighted_total / total_weight, 4) if total_weight else round(float(default), 4)
+
+
+def _family_control_mode_counts(
+    feedback_root: dict[str, Any],
+    *,
+    signal_mode: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for bucket in feedback_root.values():
+        if not isinstance(bucket, dict):
+            continue
+        if signal_mode == "skill":
+            mode = normalize_text(
+                _derive_skill_scope_control(dict(bucket), scope_name="family").get("mode")
+            )
+        else:
+            mode = normalize_text(
+                _derive_scope_control(dict(bucket), scope_name="family").get("mode")
+            )
+        counts[mode or "normal"] = counts.get(mode or "normal", 0) + 1
+    return counts
+
+
 def _merge_feedback_count_maps(*mappings: Any) -> dict[str, int]:
     merged: dict[str, int] = {}
     for mapping in mappings:
@@ -264,6 +334,61 @@ def normalize_feedback_input_contract(
     ).strip() or None
     if contract_available and resolved_reason == "feedback_unavailable":
         resolved_reason = None
+    paper_hit_ratio = (
+        safe_float(summary_payload.get("paper_hit_ratio"), 0.5)
+        if "paper_hit_ratio" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="paper_hit_ratio",
+            default=0.5,
+        )
+    )
+    paper_skill_lcb = (
+        safe_float(summary_payload.get("paper_skill_lcb"))
+        if "paper_skill_lcb" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="paper_skill_lcb",
+            default=0.0,
+        )
+    )
+    paper_recent_skill_lcb = (
+        safe_float(summary_payload.get("paper_recent_skill_lcb"))
+        if "paper_recent_skill_lcb" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="paper_recent_skill_lcb",
+            default=0.0,
+        )
+    )
+    paper_stability_gap = (
+        safe_float(summary_payload.get("paper_stability_gap"))
+        if "paper_stability_gap" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="paper_stability_gap",
+            default=0.0,
+        )
+    )
+    paper_coverage_ratio = (
+        safe_float(summary_payload.get("paper_coverage_ratio"), 1.0)
+        if "paper_coverage_ratio" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="paper_coverage_ratio",
+            default=1.0,
+        )
+    )
+    legacy_control_mode_counts = (
+        _merge_feedback_count_maps(summary_payload.get("legacy_control_mode_counts"))
+        if "legacy_control_mode_counts" in summary_payload
+        else _family_control_mode_counts(feedback_root, signal_mode="legacy")
+    )
+    skill_control_mode_counts = (
+        _merge_feedback_count_maps(summary_payload.get("skill_control_mode_counts"))
+        if "skill_control_mode_counts" in summary_payload
+        else _family_control_mode_counts(feedback_root, signal_mode="skill")
+    )
     normalized_summary = {
         **summary_payload,
         "family_count": family_count,
@@ -332,6 +457,13 @@ def normalize_feedback_input_contract(
                 ]
             )
         ),
+        "paper_hit_ratio": round(paper_hit_ratio, 4),
+        "paper_skill_lcb": round(paper_skill_lcb, 4),
+        "paper_recent_skill_lcb": round(paper_recent_skill_lcb, 4),
+        "paper_stability_gap": round(paper_stability_gap, 4),
+        "paper_coverage_ratio": round(paper_coverage_ratio, 4),
+        "legacy_control_mode_counts": legacy_control_mode_counts,
+        "skill_control_mode_counts": skill_control_mode_counts,
     }
     strategy_count = int(normalized_summary.get("strategy_count") or 0)
     expected_forward_window_count = int(normalized_summary.get("expected_forward_window_count") or 0)
@@ -604,6 +736,47 @@ def _truthy_flag(value: Any) -> bool:
     return token in {"1", "true", "yes", "active", "on", "cooldown", "suppress", "freeze"}
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return min(max(float(value), lower), upper)
+
+
+def _finalize_scope_control(
+    *,
+    scope_name: str,
+    freeze_active: bool,
+    suppressed: bool,
+    cooldown_active: bool,
+    reasons: list[str],
+) -> dict[str, Any]:
+    if freeze_active:
+        mode = "freeze"
+        severity = 3
+    elif suppressed:
+        mode = "suppress"
+        severity = 2
+    elif cooldown_active:
+        mode = "cooldown"
+        severity = 1
+    else:
+        mode = "normal"
+        severity = 0
+
+    deduped_reasons: list[str] = []
+    for reason in reasons:
+        if reason not in deduped_reasons:
+            deduped_reasons.append(reason)
+
+    return {
+        "scope": scope_name,
+        "mode": mode,
+        "severity": severity,
+        "cooldown_active": severity >= 1,
+        "suppressed": severity >= 2,
+        "freeze_active": freeze_active,
+        "reasons": deduped_reasons,
+    }
+
+
 def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[str, Any]:
     payload = dict(bucket or {})
     if not payload:
@@ -787,33 +960,238 @@ def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[st
             cooldown_active = True
             reasons.append(f"{scope_name}_promotion_review_score_cooldown")
 
-    if freeze_active:
-        mode = "freeze"
-        severity = 3
-    elif suppressed:
-        mode = "suppress"
-        severity = 2
-    elif cooldown_active:
-        mode = "cooldown"
-        severity = 1
-    else:
-        mode = "normal"
-        severity = 0
+    return _finalize_scope_control(
+        scope_name=scope_name,
+        freeze_active=freeze_active,
+        suppressed=suppressed,
+        cooldown_active=cooldown_active,
+        reasons=reasons,
+    )
 
-    deduped_reasons: list[str] = []
-    for reason in reasons:
-        if reason not in deduped_reasons:
-            deduped_reasons.append(reason)
 
-    return {
-        "scope": scope_name,
-        "mode": mode,
-        "severity": severity,
-        "cooldown_active": severity >= 1,
-        "suppressed": severity >= 2,
-        "freeze_active": freeze_active,
-        "reasons": deduped_reasons,
-    }
+def _derive_skill_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[str, Any]:
+    payload = dict(bucket or {})
+    if not payload:
+        return {
+            "scope": scope_name,
+            "mode": "normal",
+            "severity": 0,
+            "cooldown_active": False,
+            "suppressed": False,
+            "freeze_active": False,
+            "reasons": [],
+        }
+
+    paper_skill_lcb = _clamp(safe_float(_metric_value(payload, "paper_skill_lcb"), 0.0), -1.0, 1.0)
+    paper_recent_skill_lcb = _clamp(
+        safe_float(_metric_value(payload, "paper_recent_skill_lcb"), paper_skill_lcb),
+        -1.0,
+        1.0,
+    )
+    paper_stability_gap = _clamp(
+        safe_float(_metric_value(payload, "paper_stability_gap"), 0.0),
+        0.0,
+        1.0,
+    )
+    paper_coverage_ratio = _clamp(
+        safe_float(_metric_value(payload, "paper_coverage_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    runtime_alert_pressure = _clamp(
+        safe_float(_metric_value(payload, "runtime_alert_pressure"), 0.0),
+        0.0,
+        1.0,
+    )
+    realized_turnover = _clamp(
+        safe_float(_metric_value(payload, "realized_turnover"), 0.0),
+        0.0,
+        2.0,
+    )
+    capacity_crowding = _clamp(
+        safe_float(_metric_value(payload, "capacity_crowding"), 0.0),
+        0.0,
+        2.0,
+    )
+    runtime_alert_count = _safe_int(payload.get("runtime_alert_count"))
+    runtime_risk_event_count = _safe_int(payload.get("runtime_risk_event_count"))
+    strategy_count = _safe_int(payload.get("strategy_count"))
+    zero_signal_ratio = _clamp(safe_float(_metric_value(payload, "zero_signal_ratio"), 0.0), 0.0, 1.0)
+    low_signal_ratio = _clamp(safe_float(_metric_value(payload, "low_signal_ratio"), 0.0), 0.0, 1.0)
+    forward_window_coverage_ratio = _clamp(
+        safe_float(_metric_value(payload, "forward_window_coverage_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    promotion_ready_ratio = _clamp(
+        safe_float(_metric_value(payload, "promotion_ready_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    promotion_review_coverage_ratio = _clamp(
+        safe_float(_metric_value(payload, "promotion_review_coverage_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    evidence_debt_ratio = _clamp(
+        safe_float(_metric_value(payload, "evidence_debt_ratio"), 0.0),
+        0.0,
+        1.0,
+    )
+    promotion_review_count = _safe_int(payload.get("promotion_review_count"))
+    promotion_review_score = _clamp(safe_float(payload.get("promotion_review_score"), 0.5), 0.0, 1.0)
+    promotion_review_status = normalize_text(payload.get("promotion_review_status"))
+    promotion_review_recommendation = normalize_text(payload.get("promotion_review_recommendation"))
+    freeze_active = any(
+        _truthy_flag(payload.get(key))
+        for key in ("freeze", "freeze_active", "scope_freeze_active", "hard_freeze")
+    )
+    suppressed = any(
+        _truthy_flag(payload.get(key))
+        for key in ("suppress", "suppress_active", "suppressed")
+    )
+    cooldown_active = any(
+        _truthy_flag(payload.get(key))
+        for key in ("cooldown", "cooldown_active")
+    )
+    reasons: list[str] = []
+
+    if runtime_alert_pressure >= 0.88:
+        freeze_active = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_freeze")
+    elif runtime_alert_pressure >= 0.72:
+        suppressed = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_suppress")
+    elif runtime_alert_pressure >= 0.55:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_cooldown")
+
+    if paper_skill_lcb <= -0.08 or paper_recent_skill_lcb <= -0.10:
+        freeze_active = True
+        reasons.append(f"{scope_name}_paper_skill_lcb_collapse")
+    elif paper_skill_lcb <= -0.03 or paper_recent_skill_lcb <= -0.05:
+        suppressed = True
+        reasons.append(f"{scope_name}_paper_skill_lcb_suppress")
+    elif paper_skill_lcb < 0.015 or paper_recent_skill_lcb < -0.005:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_paper_skill_lcb_cooldown")
+
+    if paper_stability_gap >= 0.18:
+        freeze_active = True
+        reasons.append(f"{scope_name}_paper_stability_gap_freeze")
+    elif paper_stability_gap >= 0.11:
+        suppressed = True
+        reasons.append(f"{scope_name}_paper_stability_gap_suppress")
+    elif paper_stability_gap > 0.07:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_paper_stability_gap_cooldown")
+
+    if paper_coverage_ratio <= 0.15 and strategy_count >= 4:
+        suppressed = True
+        reasons.append(f"{scope_name}_paper_coverage_ratio_suppress")
+    elif paper_coverage_ratio < 0.45 and strategy_count >= 3:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_paper_coverage_ratio_cooldown")
+
+    if realized_turnover >= 1.45 or capacity_crowding >= 1.20:
+        freeze_active = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_freeze")
+    elif realized_turnover >= 1.15 or capacity_crowding >= 0.95:
+        suppressed = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_suppress")
+    elif realized_turnover >= 0.90 or capacity_crowding >= 0.75:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_cooldown")
+
+    if runtime_alert_count + runtime_risk_event_count >= 6:
+        freeze_active = True
+        reasons.append(f"{scope_name}_open_risk_load_freeze")
+    elif runtime_alert_count + runtime_risk_event_count >= 4:
+        suppressed = True
+        reasons.append(f"{scope_name}_open_risk_load_suppress")
+    elif runtime_alert_count + runtime_risk_event_count >= 2:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_open_risk_load_cooldown")
+
+    if strategy_count >= 2:
+        if zero_signal_ratio >= 0.85 and strategy_count >= 4:
+            freeze_active = True
+            reasons.append(f"{scope_name}_zero_signal_backlog_freeze")
+        elif zero_signal_ratio >= 0.65 and strategy_count >= 3:
+            suppressed = True
+            reasons.append(f"{scope_name}_zero_signal_backlog_suppress")
+        elif zero_signal_ratio >= 0.40:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_zero_signal_backlog_cooldown")
+
+        if low_signal_ratio >= 0.90 and strategy_count >= 4:
+            suppressed = True
+            reasons.append(f"{scope_name}_low_signal_backlog_suppress")
+        elif low_signal_ratio >= 0.60 and strategy_count >= 3:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_low_signal_backlog_cooldown")
+
+        if forward_window_coverage_ratio <= 0.15 and strategy_count >= 4:
+            suppressed = True
+            reasons.append(f"{scope_name}_forward_window_coverage_suppress")
+        elif forward_window_coverage_ratio <= 0.35 and strategy_count >= 3:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_forward_window_coverage_cooldown")
+
+        if promotion_ready_ratio <= 0.10 and strategy_count >= 4:
+            suppressed = True
+            reasons.append(f"{scope_name}_promotion_ready_gap_suppress")
+        elif promotion_ready_ratio <= 0.25 and strategy_count >= 3:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_ready_gap_cooldown")
+
+        if promotion_review_coverage_ratio <= 0.05 and strategy_count >= 8:
+            suppressed = True
+            reasons.append(f"{scope_name}_promotion_review_gap_suppress")
+        elif promotion_review_coverage_ratio <= 0.15 and strategy_count >= 4:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_review_gap_cooldown")
+
+        if evidence_debt_ratio >= 0.82 and strategy_count >= 4:
+            freeze_active = True
+            reasons.append(f"{scope_name}_evidence_debt_freeze")
+        elif evidence_debt_ratio >= 0.65 and strategy_count >= 3:
+            suppressed = True
+            reasons.append(f"{scope_name}_evidence_debt_suppress")
+        elif evidence_debt_ratio >= 0.45:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_evidence_debt_cooldown")
+
+    if promotion_review_count > 0:
+        if (
+            promotion_review_status == "rejected"
+            or promotion_review_recommendation == "deprecate"
+        ):
+            freeze_active = True
+            reasons.append(f"{scope_name}_promotion_review_rejected")
+        elif (
+            promotion_review_status == "watch"
+            or promotion_review_recommendation == "observe"
+        ):
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_review_watch")
+        if promotion_review_score <= 0.2:
+            freeze_active = True
+            reasons.append(f"{scope_name}_promotion_review_score_freeze")
+        elif promotion_review_score <= 0.35:
+            suppressed = True
+            reasons.append(f"{scope_name}_promotion_review_score_suppress")
+        elif promotion_review_score < 0.5:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_review_score_cooldown")
+
+    return _finalize_scope_control(
+        scope_name=scope_name,
+        freeze_active=freeze_active,
+        suppressed=suppressed,
+        cooldown_active=cooldown_active,
+        reasons=reasons,
+    )
 
 
 def resolve_feedback_metrics(
@@ -846,11 +1224,30 @@ def resolve_feedback_metrics(
         scope_name="holding_bucket",
     )
     generator_mode_control = _derive_scope_control(generator_bucket, scope_name="generator_mode")
-    scope_controls = (
+    legacy_scope_controls = (
         family_control,
         target_pool_control,
         holding_bucket_control,
         generator_mode_control,
+    )
+    skill_family_control = _derive_skill_scope_control(family_bucket, scope_name="family")
+    skill_target_pool_control = _derive_skill_scope_control(
+        target_pool_bucket,
+        scope_name="target_pool",
+    )
+    skill_holding_bucket_control = _derive_skill_scope_control(
+        holding_bucket_bucket,
+        scope_name="holding_bucket",
+    )
+    skill_generator_mode_control = _derive_skill_scope_control(
+        generator_bucket,
+        scope_name="generator_mode",
+    )
+    skill_scope_controls = (
+        skill_family_control,
+        skill_target_pool_control,
+        skill_holding_bucket_control,
+        skill_generator_mode_control,
     )
     resolved: dict[str, Any] = {
         "family": normalize_text(family) or "unknown",
@@ -865,6 +1262,10 @@ def resolve_feedback_metrics(
     defaults = {
         "ema_submit_count": 0.0,
         "paper_hit_ratio": 0.5,
+        "paper_skill_lcb": 0.0,
+        "paper_recent_skill_lcb": 0.0,
+        "paper_stability_gap": 0.0,
+        "paper_coverage_ratio": 1.0,
         "runtime_alert_pressure": 0.0,
         "realized_turnover": 0.0,
         "capacity_crowding": 0.0,
@@ -892,27 +1293,96 @@ def resolve_feedback_metrics(
             weighted_total += value * weight
             total_weight += weight
         resolved[metric] = round(weighted_total / total_weight, 4) if total_weight else defaults[metric]
-    resolved["budget_multiplier"] = compute_budget_multiplier(resolved)
-    resolved["priority_adjustment"] = compute_priority_adjustment(resolved)
-    resolved["failure_penalty_adjustment"] = compute_failure_penalty_adjustment(resolved)
-    highest_control = max(scope_controls, key=lambda item: int(item.get("severity") or 0))
+    legacy_budget_multiplier = compute_budget_multiplier(resolved)
+    legacy_priority_adjustment = compute_priority_adjustment(resolved)
+    legacy_failure_penalty_adjustment = compute_failure_penalty_adjustment(resolved)
+    skill_budget_multiplier = compute_skill_budget_multiplier(resolved)
+    skill_priority_adjustment = compute_skill_priority_adjustment(resolved)
+    skill_failure_penalty_adjustment = compute_skill_failure_penalty_adjustment(resolved)
+    highest_control = max(legacy_scope_controls, key=lambda item: int(item.get("severity") or 0))
+    skill_highest_control = max(skill_scope_controls, key=lambda item: int(item.get("severity") or 0))
     control_reasons: list[str] = []
-    for scope_control in scope_controls:
+    for scope_control in legacy_scope_controls:
         for reason in list(scope_control.get("reasons") or []):
             if reason not in control_reasons:
                 control_reasons.append(reason)
+    skill_control_reasons: list[str] = []
+    for scope_control in skill_scope_controls:
+        for reason in list(scope_control.get("reasons") or []):
+            if reason not in skill_control_reasons:
+                skill_control_reasons.append(reason)
+    legacy_control_mode = highest_control.get("mode") or "normal"
+    skill_control_mode = skill_highest_control.get("mode") or "normal"
+    (
+        legacy_budget_multiplier,
+        legacy_priority_adjustment,
+        legacy_failure_penalty_adjustment,
+    ) = _apply_control_mode_caps(
+        control_mode=legacy_control_mode,
+        budget_multiplier=legacy_budget_multiplier,
+        priority_adjustment=legacy_priority_adjustment,
+        failure_penalty_adjustment=legacy_failure_penalty_adjustment,
+    )
+    (
+        skill_budget_multiplier,
+        skill_priority_adjustment,
+        skill_failure_penalty_adjustment,
+    ) = _apply_control_mode_caps(
+        control_mode=skill_control_mode,
+        budget_multiplier=skill_budget_multiplier,
+        priority_adjustment=skill_priority_adjustment,
+        failure_penalty_adjustment=skill_failure_penalty_adjustment,
+    )
     resolved["family_control_mode"] = family_control.get("mode")
     resolved["target_pool_control_mode"] = target_pool_control.get("mode")
     resolved["holding_bucket_control_mode"] = holding_bucket_control.get("mode")
     resolved["generator_mode_control_mode"] = generator_mode_control.get("mode")
-    resolved["control_mode"] = highest_control.get("mode") or "normal"
+    resolved["legacy_family_control_mode"] = family_control.get("mode")
+    resolved["legacy_target_pool_control_mode"] = target_pool_control.get("mode")
+    resolved["legacy_holding_bucket_control_mode"] = holding_bucket_control.get("mode")
+    resolved["legacy_generator_mode_control_mode"] = generator_mode_control.get("mode")
+    resolved["skill_family_control_mode"] = skill_family_control.get("mode")
+    resolved["skill_target_pool_control_mode"] = skill_target_pool_control.get("mode")
+    resolved["skill_holding_bucket_control_mode"] = skill_holding_bucket_control.get("mode")
+    resolved["skill_generator_mode_control_mode"] = skill_generator_mode_control.get("mode")
+    resolved["legacy_control_mode"] = legacy_control_mode
+    resolved["skill_control_mode"] = skill_control_mode
+    resolved["control_mode"] = legacy_control_mode
+    resolved["effective_feedback_signal"] = "legacy_paper_hit_ratio"
     resolved["cooldown_active"] = bool(highest_control.get("severity", 0) >= 1)
     resolved["suppressed"] = bool(highest_control.get("severity", 0) >= 2)
     resolved["family_freeze_active"] = bool(family_control.get("freeze_active"))
     resolved["target_pool_freeze_active"] = bool(target_pool_control.get("freeze_active"))
     resolved["holding_bucket_freeze_active"] = bool(holding_bucket_control.get("freeze_active"))
     resolved["generator_mode_freeze_active"] = bool(generator_mode_control.get("freeze_active"))
+    resolved["legacy_cooldown_active"] = bool(highest_control.get("severity", 0) >= 1)
+    resolved["legacy_suppressed"] = bool(highest_control.get("severity", 0) >= 2)
+    resolved["legacy_family_freeze_active"] = bool(family_control.get("freeze_active"))
+    resolved["legacy_target_pool_freeze_active"] = bool(target_pool_control.get("freeze_active"))
+    resolved["legacy_holding_bucket_freeze_active"] = bool(holding_bucket_control.get("freeze_active"))
+    resolved["legacy_generator_mode_freeze_active"] = bool(generator_mode_control.get("freeze_active"))
+    resolved["skill_cooldown_active"] = bool(skill_highest_control.get("severity", 0) >= 1)
+    resolved["skill_suppressed"] = bool(skill_highest_control.get("severity", 0) >= 2)
+    resolved["skill_family_freeze_active"] = bool(skill_family_control.get("freeze_active"))
+    resolved["skill_target_pool_freeze_active"] = bool(skill_target_pool_control.get("freeze_active"))
+    resolved["skill_holding_bucket_freeze_active"] = bool(
+        skill_holding_bucket_control.get("freeze_active")
+    )
+    resolved["skill_generator_mode_freeze_active"] = bool(
+        skill_generator_mode_control.get("freeze_active")
+    )
     resolved["control_reasons"] = control_reasons
+    resolved["legacy_control_reasons"] = control_reasons
+    resolved["skill_control_reasons"] = skill_control_reasons
+    resolved["budget_multiplier"] = legacy_budget_multiplier
+    resolved["priority_adjustment"] = legacy_priority_adjustment
+    resolved["failure_penalty_adjustment"] = legacy_failure_penalty_adjustment
+    resolved["legacy_budget_multiplier"] = legacy_budget_multiplier
+    resolved["legacy_priority_adjustment"] = legacy_priority_adjustment
+    resolved["legacy_failure_penalty_adjustment"] = legacy_failure_penalty_adjustment
+    resolved["skill_budget_multiplier"] = skill_budget_multiplier
+    resolved["skill_priority_adjustment"] = skill_priority_adjustment
+    resolved["skill_failure_penalty_adjustment"] = skill_failure_penalty_adjustment
     resolved["promotion_review_count"] = max(
         _safe_int(family_bucket.get("promotion_review_count")),
         _safe_int(target_pool_bucket.get("promotion_review_count")),
@@ -942,27 +1412,6 @@ def resolve_feedback_metrics(
         ),
         4,
     )
-    if resolved["control_mode"] == "cooldown":
-        resolved["budget_multiplier"] = round(min(safe_float(resolved.get("budget_multiplier"), 1.0), 0.55), 4)
-        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -6.0), 4)
-        resolved["failure_penalty_adjustment"] = round(
-            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.12),
-            4,
-        )
-    elif resolved["control_mode"] == "suppress":
-        resolved["budget_multiplier"] = 0.0
-        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -18.0), 4)
-        resolved["failure_penalty_adjustment"] = round(
-            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.22),
-            4,
-        )
-    elif resolved["control_mode"] == "freeze":
-        resolved["budget_multiplier"] = 0.0
-        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -24.0), 4)
-        resolved["failure_penalty_adjustment"] = round(
-            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.3),
-            4,
-        )
     return resolved
 
 
@@ -1030,16 +1479,67 @@ def apply_feedback_controls_to_task(
         "holding_period_bucket": feedback.get("holding_bucket") or extract_holding_bucket(payload),
         "generator_mode": feedback.get("generator_mode") or extract_generator_mode(payload),
         "feedback_control_mode": control_mode,
+        "feedback_legacy_control_mode": normalize_text(feedback.get("legacy_control_mode")) or control_mode,
+        "feedback_skill_control_mode": normalize_text(feedback.get("skill_control_mode")) or "normal",
         "feedback_target_pool_control_mode": target_pool_control_mode,
         "feedback_holding_bucket_control_mode": holding_bucket_control_mode,
         "feedback_generator_mode_control_mode": generator_mode_control_mode,
+        "feedback_skill_target_pool_control_mode": normalize_text(
+            feedback.get("skill_target_pool_control_mode")
+        )
+        or "normal",
+        "feedback_skill_holding_bucket_control_mode": normalize_text(
+            feedback.get("skill_holding_bucket_control_mode")
+        )
+        or "normal",
+        "feedback_skill_generator_mode_control_mode": normalize_text(
+            feedback.get("skill_generator_mode_control_mode")
+        )
+        or "normal",
         "feedback_control_reasons": list(feedback.get("control_reasons") or []),
+        "feedback_legacy_control_reasons": list(feedback.get("legacy_control_reasons") or []),
+        "feedback_skill_control_reasons": list(feedback.get("skill_control_reasons") or []),
         "feedback_cooldown_active": bool(feedback.get("cooldown_active")),
         "feedback_suppressed": bool(feedback.get("suppressed")),
         "feedback_family_freeze_active": bool(feedback.get("family_freeze_active")),
         "feedback_target_pool_freeze_active": bool(feedback.get("target_pool_freeze_active")),
         "feedback_holding_bucket_freeze_active": bool(feedback.get("holding_bucket_freeze_active")),
         "feedback_generator_mode_freeze_active": bool(feedback.get("generator_mode_freeze_active")),
+        "feedback_skill_cooldown_active": bool(feedback.get("skill_cooldown_active")),
+        "feedback_skill_suppressed": bool(feedback.get("skill_suppressed")),
+        "feedback_skill_family_freeze_active": bool(feedback.get("skill_family_freeze_active")),
+        "feedback_skill_target_pool_freeze_active": bool(
+            feedback.get("skill_target_pool_freeze_active")
+        ),
+        "feedback_skill_holding_bucket_freeze_active": bool(
+            feedback.get("skill_holding_bucket_freeze_active")
+        ),
+        "feedback_skill_generator_mode_freeze_active": bool(
+            feedback.get("skill_generator_mode_freeze_active")
+        ),
+        "feedback_budget_multiplier": safe_float(feedback.get("legacy_budget_multiplier"), 1.0),
+        "feedback_priority_adjustment": safe_float(feedback.get("legacy_priority_adjustment")),
+        "feedback_failure_penalty_adjustment": safe_float(
+            feedback.get("legacy_failure_penalty_adjustment")
+        ),
+        "feedback_legacy_budget_multiplier": safe_float(
+            feedback.get("legacy_budget_multiplier"),
+            1.0,
+        ),
+        "feedback_legacy_priority_adjustment": safe_float(
+            feedback.get("legacy_priority_adjustment")
+        ),
+        "feedback_skill_budget_multiplier": safe_float(
+            feedback.get("skill_budget_multiplier"),
+            1.0,
+        ),
+        "feedback_skill_priority_adjustment": safe_float(
+            feedback.get("skill_priority_adjustment")
+        ),
+        "feedback_skill_failure_penalty_adjustment": safe_float(
+            feedback.get("skill_failure_penalty_adjustment")
+        ),
+        "feedback_effective_signal": feedback.get("effective_feedback_signal") or "legacy_paper_hit_ratio",
         "feedback_metrics": feedback,
     }
 
@@ -1213,9 +1713,14 @@ def relax_feedback_control_for_research_task(
 
 def summarize_task_feedback_controls(tasks: list[dict[str, Any]] | None) -> dict[str, Any]:
     control_mode_counts: dict[str, int] = {}
+    legacy_control_mode_counts: dict[str, int] = {}
+    skill_control_mode_counts: dict[str, int] = {}
     target_pool_control_mode_counts: dict[str, int] = {}
     holding_bucket_control_mode_counts: dict[str, int] = {}
     generator_mode_control_mode_counts: dict[str, int] = {}
+    skill_target_pool_control_mode_counts: dict[str, int] = {}
+    skill_holding_bucket_control_mode_counts: dict[str, int] = {}
+    skill_generator_mode_control_mode_counts: dict[str, int] = {}
     suppressed_families: list[str] = []
     suppressed_target_pools: list[str] = []
     suppressed_holding_buckets: list[str] = []
@@ -1233,12 +1738,31 @@ def summarize_task_feedback_controls(tasks: list[dict[str, Any]] | None) -> dict
     for item in list(tasks or []):
         task = dict(item or {})
         control_mode = normalize_text(task.get("feedback_control_mode")) or "normal"
+        legacy_control_mode = (
+            normalize_text(task.get("feedback_legacy_control_mode")) or control_mode
+        )
+        skill_control_mode = normalize_text(task.get("feedback_skill_control_mode")) or "normal"
         target_pool_control_mode = normalize_text(task.get("feedback_target_pool_control_mode")) or "normal"
         holding_bucket_control_mode = (
             normalize_text(task.get("feedback_holding_bucket_control_mode")) or "normal"
         )
         generator_mode_control_mode = normalize_text(task.get("feedback_generator_mode_control_mode")) or "normal"
+        skill_target_pool_control_mode = (
+            normalize_text(task.get("feedback_skill_target_pool_control_mode")) or "normal"
+        )
+        skill_holding_bucket_control_mode = (
+            normalize_text(task.get("feedback_skill_holding_bucket_control_mode")) or "normal"
+        )
+        skill_generator_mode_control_mode = (
+            normalize_text(task.get("feedback_skill_generator_mode_control_mode")) or "normal"
+        )
         control_mode_counts[control_mode] = control_mode_counts.get(control_mode, 0) + 1
+        legacy_control_mode_counts[legacy_control_mode] = (
+            legacy_control_mode_counts.get(legacy_control_mode, 0) + 1
+        )
+        skill_control_mode_counts[skill_control_mode] = (
+            skill_control_mode_counts.get(skill_control_mode, 0) + 1
+        )
         target_pool_control_mode_counts[target_pool_control_mode] = (
             target_pool_control_mode_counts.get(target_pool_control_mode, 0) + 1
         )
@@ -1247,6 +1771,15 @@ def summarize_task_feedback_controls(tasks: list[dict[str, Any]] | None) -> dict
         )
         generator_mode_control_mode_counts[generator_mode_control_mode] = (
             generator_mode_control_mode_counts.get(generator_mode_control_mode, 0) + 1
+        )
+        skill_target_pool_control_mode_counts[skill_target_pool_control_mode] = (
+            skill_target_pool_control_mode_counts.get(skill_target_pool_control_mode, 0) + 1
+        )
+        skill_holding_bucket_control_mode_counts[skill_holding_bucket_control_mode] = (
+            skill_holding_bucket_control_mode_counts.get(skill_holding_bucket_control_mode, 0) + 1
+        )
+        skill_generator_mode_control_mode_counts[skill_generator_mode_control_mode] = (
+            skill_generator_mode_control_mode_counts.get(skill_generator_mode_control_mode, 0) + 1
         )
         if control_mode == "cooldown":
             cooldown_task_count += 1
@@ -1267,9 +1800,16 @@ def summarize_task_feedback_controls(tasks: list[dict[str, Any]] | None) -> dict
 
     return {
         "feedback_control_mode_counts": control_mode_counts,
+        "feedback_legacy_control_mode_counts": legacy_control_mode_counts,
+        "feedback_skill_control_mode_counts": skill_control_mode_counts,
         "feedback_target_pool_control_mode_counts": target_pool_control_mode_counts,
         "feedback_holding_bucket_control_mode_counts": holding_bucket_control_mode_counts,
         "feedback_generator_mode_control_mode_counts": generator_mode_control_mode_counts,
+        "feedback_skill_target_pool_control_mode_counts": skill_target_pool_control_mode_counts,
+        "feedback_skill_holding_bucket_control_mode_counts": skill_holding_bucket_control_mode_counts,
+        "feedback_skill_generator_mode_control_mode_counts": (
+            skill_generator_mode_control_mode_counts
+        ),
         "feedback_cooldown_task_count": cooldown_task_count,
         "feedback_limited_task_count": limited_task_count,
         "feedback_relaxed_task_count": relaxed_task_count,
@@ -1315,14 +1855,82 @@ def collect_generator_mode_feedback_controls(
             winner_mode = existing_mode
             if incoming_severity >= existing_severity:
                 winner_mode = normalize_text(scope_control.get("mode")) or winner_mode
+            skill_scope_control = _derive_skill_scope_control(
+                dict(mode_bucket or {}),
+                scope_name="generator_mode",
+            )
             controls[normalized_mode] = {
                 "control_mode": winner_mode or "normal",
+                "legacy_control_mode": winner_mode or "normal",
+                "skill_control_mode": normalize_text(skill_scope_control.get("mode")) or "normal",
                 "control_reasons": merged_reasons,
+                "legacy_control_reasons": merged_reasons,
+                "skill_control_reasons": list(skill_scope_control.get("reasons") or []),
                 "families": families,
                 "feedback_observed_count": int(existing.get("feedback_observed_count") or 0) + 1,
                 "source": "lifecycle_feedback",
             }
     return controls
+
+
+def _apply_control_mode_caps(
+    *,
+    control_mode: str,
+    budget_multiplier: float,
+    priority_adjustment: float,
+    failure_penalty_adjustment: float,
+) -> tuple[float, float, float]:
+    resolved_budget_multiplier = round(float(budget_multiplier), 4)
+    resolved_priority_adjustment = round(float(priority_adjustment), 4)
+    resolved_failure_penalty_adjustment = round(float(failure_penalty_adjustment), 4)
+    normalized_mode = normalize_text(control_mode) or "normal"
+    if normalized_mode == "cooldown":
+        resolved_budget_multiplier = round(min(resolved_budget_multiplier, 0.55), 4)
+        resolved_priority_adjustment = round(min(resolved_priority_adjustment, -6.0), 4)
+        resolved_failure_penalty_adjustment = round(
+            max(resolved_failure_penalty_adjustment, 0.12),
+            4,
+        )
+    elif normalized_mode == "suppress":
+        resolved_budget_multiplier = 0.0
+        resolved_priority_adjustment = round(min(resolved_priority_adjustment, -18.0), 4)
+        resolved_failure_penalty_adjustment = round(
+            max(resolved_failure_penalty_adjustment, 0.22),
+            4,
+        )
+    elif normalized_mode == "freeze":
+        resolved_budget_multiplier = 0.0
+        resolved_priority_adjustment = round(min(resolved_priority_adjustment, -24.0), 4)
+        resolved_failure_penalty_adjustment = round(
+            max(resolved_failure_penalty_adjustment, 0.3),
+            4,
+        )
+    return (
+        resolved_budget_multiplier,
+        resolved_priority_adjustment,
+        resolved_failure_penalty_adjustment,
+    )
+
+
+def _build_skill_feedback_proxy(metrics: dict[str, Any]) -> dict[str, Any]:
+    proxy = dict(metrics or {})
+    paper_skill_lcb = _clamp(safe_float(metrics.get("paper_skill_lcb"), 0.0), -1.0, 1.0)
+    paper_coverage_ratio = _clamp(
+        safe_float(metrics.get("paper_coverage_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    forward_window_coverage_ratio = _clamp(
+        safe_float(metrics.get("forward_window_coverage_ratio"), 1.0),
+        0.0,
+        1.0,
+    )
+    proxy["paper_hit_ratio"] = _clamp(0.5 + paper_skill_lcb, 0.0, 1.0)
+    proxy["forward_window_coverage_ratio"] = min(
+        forward_window_coverage_ratio,
+        paper_coverage_ratio,
+    )
+    return proxy
 
 
 def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
@@ -1408,6 +2016,22 @@ def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
     return round(min(max(multiplier, 0.4), 1.75), 4)
 
 
+def compute_skill_budget_multiplier(metrics: dict[str, Any]) -> float:
+    proxy = _build_skill_feedback_proxy(metrics)
+    paper_recent_skill_lcb = _clamp(
+        safe_float(metrics.get("paper_recent_skill_lcb"), metrics.get("paper_skill_lcb")),
+        -1.0,
+        1.0,
+    )
+    paper_stability_gap = _clamp(safe_float(metrics.get("paper_stability_gap"), 0.0), 0.0, 1.0)
+    paper_coverage_ratio = _clamp(safe_float(metrics.get("paper_coverage_ratio"), 1.0), 0.0, 1.0)
+    multiplier = compute_budget_multiplier(proxy)
+    multiplier += paper_recent_skill_lcb * 0.45
+    multiplier -= max(paper_stability_gap - 0.05, 0.0) * 1.15
+    multiplier -= max(0.60 - paper_coverage_ratio, 0.0) * 0.32
+    return round(min(max(multiplier, 0.3), 1.75), 4)
+
+
 def compute_priority_adjustment(metrics: dict[str, Any]) -> float:
     paper_hit_ratio = max(0.0, min(safe_float(metrics.get("paper_hit_ratio"), 0.5), 1.0))
     runtime_alert_pressure = max(0.0, min(safe_float(metrics.get("runtime_alert_pressure"), 0.0), 1.0))
@@ -1476,6 +2100,22 @@ def compute_priority_adjustment(metrics: dict[str, Any]) -> float:
         + min(ema_submit_count, 6.0) * 0.75
         + promotion_review_adjustment
     )
+    return round(adjustment, 4)
+
+
+def compute_skill_priority_adjustment(metrics: dict[str, Any]) -> float:
+    proxy = _build_skill_feedback_proxy(metrics)
+    paper_recent_skill_lcb = _clamp(
+        safe_float(metrics.get("paper_recent_skill_lcb"), metrics.get("paper_skill_lcb")),
+        -1.0,
+        1.0,
+    )
+    paper_stability_gap = _clamp(safe_float(metrics.get("paper_stability_gap"), 0.0), 0.0, 1.0)
+    paper_coverage_ratio = _clamp(safe_float(metrics.get("paper_coverage_ratio"), 1.0), 0.0, 1.0)
+    adjustment = compute_priority_adjustment(proxy)
+    adjustment += paper_recent_skill_lcb * 9.0
+    adjustment -= max(paper_stability_gap - 0.05, 0.0) * 24.0
+    adjustment -= max(0.60 - paper_coverage_ratio, 0.0) * 7.0
     return round(adjustment, 4)
 
 
@@ -1549,6 +2189,24 @@ def compute_failure_penalty_adjustment(metrics: dict[str, Any]) -> float:
     return round(min(max(adjustment, -0.06), 0.22), 4)
 
 
+def compute_skill_failure_penalty_adjustment(metrics: dict[str, Any]) -> float:
+    proxy = _build_skill_feedback_proxy(metrics)
+    paper_skill_lcb = _clamp(safe_float(metrics.get("paper_skill_lcb"), 0.0), -1.0, 1.0)
+    paper_recent_skill_lcb = _clamp(
+        safe_float(metrics.get("paper_recent_skill_lcb"), paper_skill_lcb),
+        -1.0,
+        1.0,
+    )
+    paper_stability_gap = _clamp(safe_float(metrics.get("paper_stability_gap"), 0.0), 0.0, 1.0)
+    paper_coverage_ratio = _clamp(safe_float(metrics.get("paper_coverage_ratio"), 1.0), 0.0, 1.0)
+    adjustment = compute_failure_penalty_adjustment(proxy)
+    adjustment += max(0.0 - paper_recent_skill_lcb, 0.0) * 0.14
+    adjustment += max(paper_stability_gap - 0.05, 0.0) * 0.28
+    adjustment += max(0.60 - paper_coverage_ratio, 0.0) * 0.08
+    adjustment -= max(paper_skill_lcb, 0.0) * 0.05
+    return round(min(max(adjustment, -0.06), 0.24), 4)
+
+
 __all__ = [
     "CONTROL_MODE_SEVERITY",
     "LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION",
@@ -1557,6 +2215,9 @@ __all__ = [
     "compute_budget_multiplier",
     "compute_failure_penalty_adjustment",
     "compute_priority_adjustment",
+    "compute_skill_budget_multiplier",
+    "compute_skill_failure_penalty_adjustment",
+    "compute_skill_priority_adjustment",
     "collect_generator_mode_feedback_controls",
     "derive_target_pool_id",
     "extract_feedback_root",

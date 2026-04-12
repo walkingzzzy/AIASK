@@ -35,7 +35,7 @@ class _StrategyDBLifecycleMixin:
     async def list_user_subscriptions(self, user_id):
         return [{"strategy_id": s} for s, u in self._subs if u == user_id]
 
-    async def get_signal_stats(self, sid):
+    async def get_signal_stats(self, sid, lookback_days=None, eps=None):
         return self._signal_stats.get(sid, {"hit_rate": {}, "forward_ic": {}, "forward_sharpe": {}, "total_signals": 0})
 
     async def get_signals(self, sid, start_date=None, end_date=None, limit=100):

@@ -963,12 +963,18 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
     assert feedback_contract["summary"]["target_pool_scope_count"] == 1
     assert feedback_contract["summary"]["holding_bucket_scope_count"] == 1
     assert feedback_contract["summary"]["generator_mode_scope_count"] == 1
+    assert feedback_contract["summary"]["paper_hit_ratio"] == pytest.approx(0.72)
+    assert feedback_contract["summary"]["paper_skill_lcb"] == pytest.approx(0.0)
+    assert feedback_contract["summary"]["legacy_control_mode_counts"] == {"suppress": 1}
+    assert feedback_contract["summary"]["skill_control_mode_counts"] == {"suppress": 1}
     assert momentum_feedback["ema_submit_count"] == pytest.approx(3.4)
     assert momentum_feedback["strategy_count"] == 1
     assert momentum_feedback["promotion_review_count"] == 1
     assert momentum_feedback["promotion_review_status"] == "watch"
     assert momentum_feedback["promotion_review_recommendation"] == "observe"
     assert momentum_feedback["promotion_review_score"] == pytest.approx(0.34)
+    assert momentum_feedback["paper_hit_ratio"] == pytest.approx(0.72)
+    assert momentum_feedback["paper_skill_lcb"] == pytest.approx(0.0)
     assert momentum_feedback["signal_count_total"] == 0
     assert momentum_feedback["zero_signal_strategy_count"] == 1
     assert momentum_feedback["zero_signal_ratio"] == pytest.approx(1.0)
@@ -999,6 +1005,9 @@ async def test_factor_research_publishes_lifecycle_feedback_input_contract(monke
     assert artifact["summary"]["budget_feedback_generator_mode_scope_count"] == 1
     assert artifact["summary"]["budget_feedback_promotion_review_count"] == 1
     assert artifact["summary"]["budget_feedback_promotion_review_status_counts"] == {"watch": 1}
+    assert artifact["summary"]["budget_feedback_paper_hit_ratio"] == pytest.approx(0.72)
+    assert artifact["summary"]["budget_feedback_paper_skill_lcb"] == pytest.approx(0.0)
+    assert artifact["summary"]["budget_feedback_skill_control_mode_counts"] == {"suppress": 1}
     assert artifact["summary"]["budget_feedback_zero_signal_strategy_count"] == 1
     assert artifact["summary"]["budget_feedback_zero_signal_ratio"] == pytest.approx(1.0)
     assert artifact["summary"]["budget_feedback_forward_window_coverage_ratio"] == pytest.approx(0.0)
