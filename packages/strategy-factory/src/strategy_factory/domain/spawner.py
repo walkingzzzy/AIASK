@@ -20,6 +20,27 @@ from .parameter_distribution_registry import ParameterDistributionRegistry
 
 class StrategySpawner:
     """根据每日数据快照生成候选策略。"""
+    _TREND_CLUSTER_TYPES = frozenset({"momentum", "ma_cross", "volatility_breakout", "sector_rotation"})
+    _DIVERSIFICATION_GROUPS = {
+        "quality_defensive": frozenset({"quality_factor", "value_factor", "macro_timing"}),
+        "mean_reversion": frozenset({"rsi", "gap_fill", "mean_reversion_short"}),
+        "flow_rotation": frozenset({"north_capital_track", "sector_rotation", "margin_divergence"}),
+    }
+    _POOL_PROFILE_BY_TYPE = {
+        "momentum": "high_vol_growth",
+        "volatility_breakout": "high_vol_growth",
+        "growth_factor": "high_vol_growth",
+        "gap_fill": "high_vol_growth",
+        "mean_reversion_short": "high_vol_growth",
+        "rsi": "high_vol_growth",
+        "quality_factor": "low_vol_defensive",
+        "value_factor": "low_vol_defensive",
+        "macro_timing": "low_vol_defensive",
+        "north_capital_track": "cycle_resource",
+        "sector_rotation": "cycle_resource",
+        "margin_divergence": "cycle_resource",
+        "ma_cross": "cycle_resource",
+    }
 
     def __init__(self):
         self.last_report: dict = {
@@ -74,6 +95,36 @@ class StrategySpawner:
             "trigger_thresholds": list(trigger_thresholds or []),
             "quota_fill": quota_fill,
         }
+
+    @classmethod
+    def _trend_cluster_count(cls, candidates: Optional[List[dict]]) -> int:
+        return sum(
+            1
+            for item in list(candidates or [])
+            if str((item or {}).get("strategy_type") or "").strip() in cls._TREND_CLUSTER_TYPES
+        )
+
+    @classmethod
+    def _diversification_debt(cls, candidates: Optional[List[dict]]) -> List[str]:
+        present = {
+            str((item or {}).get("strategy_type") or "").strip()
+            for item in list(candidates or [])
+            if str((item or {}).get("strategy_type") or "").strip()
+        }
+        debt: List[str] = []
+        for group_name, members in cls._DIVERSIFICATION_GROUPS.items():
+            if not any(strategy_type in present for strategy_type in members):
+                debt.append(group_name)
+        return debt
+
+    @classmethod
+    def _pool_profile_distribution(cls, candidates: Optional[List[dict]]) -> Dict[str, int]:
+        distribution: Dict[str, int] = {}
+        for item in list(candidates or []):
+            strategy_type = str((item or {}).get("strategy_type") or "").strip()
+            profile = cls._POOL_PROFILE_BY_TYPE.get(strategy_type, "unknown")
+            distribution[profile] = distribution.get(profile, 0) + 1
+        return distribution
 
     @staticmethod
     def _build_spawn_report(
@@ -130,6 +181,8 @@ class StrategySpawner:
             max(0, int(raw_counts.get(source, 0) or 0) - int(source_counts.get(source, 0) or 0))
             for source in raw_counts
         )
+        trend_cluster_count = StrategySpawner._trend_cluster_count(candidates)
+        diversification_debt = StrategySpawner._diversification_debt(candidates)
         return {
             "summary": {
                 "candidate_count": len(candidates),
@@ -152,6 +205,9 @@ class StrategySpawner:
                 "signal_aligned_quota_fill_count": signal_aligned_quota_fill_count,
                 "no_signal_quota_fill_count": no_signal_quota_fill_count,
                 "effective_quota_fill_count": max(quota_fill_count - no_signal_quota_fill_count, 0),
+                "trend_cluster_ratio": round(trend_cluster_count / len(candidates), 4) if candidates else 0.0,
+                "diversification_debt": diversification_debt,
+                "pool_profile_distribution": StrategySpawner._pool_profile_distribution(candidates),
             }
         }
 
@@ -375,32 +431,32 @@ class StrategySpawner:
 
         fear_greed = int(snapshot.get("fear_greed_index") or 50)
         if fear_greed <= 35:
-            add("rsi", "value_factor", "quality_factor", "macro_timing")
+            add("rsi", "gap_fill", "mean_reversion_short", "quality_factor", "macro_timing")
         elif fear_greed >= 65:
-            add("momentum", "growth_factor", "quality_factor", "ma_cross")
+            add("growth_factor", "quality_factor", "north_capital_track", "sector_rotation", "volatility_breakout")
         else:
-            add("ma_cross", "momentum", "quality_factor", "value_factor")
+            add("quality_factor", "north_capital_track", "sector_rotation", "gap_fill", "ma_cross")
 
         north_3d = float(snapshot.get("north_fund_3d_net") or 0.0)
         if north_3d >= 5_000_000_000:
-            add("growth_factor", "quality_factor", "momentum")
+            add("north_capital_track", "quality_factor", "growth_factor", "sector_rotation")
         elif north_3d <= -5_000_000_000:
-            add("value_factor", "macro_timing", "rsi")
+            add("value_factor", "macro_timing", "rsi", "quality_factor")
 
         margin_5d = float(snapshot.get("margin_5d_change_pct") or 0.0)
         if margin_5d >= 2.0:
-            add("momentum", "ma_cross")
+            add("volatility_breakout", "sector_rotation", "north_capital_track")
         elif margin_5d <= -2.0:
-            add("rsi", "value_factor")
+            add("rsi", "gap_fill", "value_factor")
 
         add(*cls._factor_preferred_strategy_types(snapshot))
 
         event_driven = dict(snapshot.get("event_driven") or {})
         if int(event_driven.get("event_count") or 0) > 0 or int(event_driven.get("tasks_ready_count") or 0) > 0:
-            add("momentum", "ma_cross", "quality_factor", "value_factor")
+            add("quality_factor", "north_capital_track", "sector_rotation", "gap_fill")
 
         if not preferred:
-            add("ma_cross", "momentum", "quality_factor")
+            add("quality_factor", "north_capital_track", "gap_fill", "ma_cross")
 
         counts = current_counts or {}
         return sorted(preferred, key=lambda strategy_type: (int(counts.get(strategy_type) or 0), preferred.index(strategy_type)))
@@ -612,6 +668,25 @@ class StrategySpawner:
             out.append(self._make("rsi", {"rsi_period": self._jitter(6, 4, 10), "oversold": 20, "overbought": 80}, f"融资5日降速{abs(margin_5d):.1f}%，RSI超跌", source="fund_flow", trigger_signal={"field": "margin_5d_change_pct", "value": margin_5d}, trigger_thresholds=[self._threshold("margin_5d_change_pct", "<", -2.0, margin_5d, "融资降速阈值")]))
         return out
 
+    @classmethod
+    def _coverage_fill_priority(cls, current_candidates: Optional[List[dict]]) -> List[str]:
+        debt = cls._diversification_debt(current_candidates)
+        preferred: List[str] = []
+
+        def add(*types: str) -> None:
+            for strategy_type in types:
+                if strategy_type in CATEGORY_MINIMUMS and strategy_type not in preferred:
+                    preferred.append(strategy_type)
+
+        for item in debt:
+            if item == "quality_defensive":
+                add("quality_factor", "value_factor")
+            elif item == "mean_reversion":
+                add("gap_fill", "mean_reversion_short", "rsi")
+            elif item == "flow_rotation":
+                add("north_capital_track", "sector_rotation")
+        return preferred
+
     def _fill_gaps(self, snapshot: dict, current_candidates: Optional[List[dict]] = None) -> List[dict]:
         current_candidates = list(current_candidates or [])
         current_counts = self._generated_type_counts(current_candidates)
@@ -620,7 +695,14 @@ class StrategySpawner:
             return []
         parameter_registry = ParameterDistributionRegistry.from_snapshot(snapshot)
 
-        preferred_types = self._preferred_fill_types(snapshot, current_counts)
+        preferred_types = list(
+            dict.fromkeys(
+                [
+                    *self._coverage_fill_priority(current_candidates),
+                    *self._preferred_fill_types(snapshot, current_counts),
+                ]
+            )
+        )
         preferred_types = sorted(
             preferred_types,
             key=lambda strategy_type: (
@@ -632,9 +714,23 @@ class StrategySpawner:
         fill_counts: Dict[str, int] = {}
 
         def maybe_add(strategy_type: str, preferred_rank: int) -> bool:
+            if strategy_type == "momentum":
+                return False
             current = int(current_counts.get(strategy_type) or 0) + int(fill_counts.get(strategy_type) or 0)
             desired_generated_count = 1 if preferred_rank > 2 else 2
             if current >= desired_generated_count:
+                return False
+            existing_total = len(current_candidates) + len(out)
+            existing_trend = self._trend_cluster_count(current_candidates) + self._trend_cluster_count(out)
+            if strategy_type in self._TREND_CLUSTER_TYPES and existing_total > 0 and existing_trend / existing_total >= 0.5:
+                return False
+            projected_total = len(current_candidates) + len(out) + 1
+            projected_trend = (
+                self._trend_cluster_count(current_candidates)
+                + self._trend_cluster_count(out)
+                + (1 if strategy_type in self._TREND_CLUSTER_TYPES else 0)
+            )
+            if strategy_type in self._TREND_CLUSTER_TYPES and projected_total > 0 and projected_trend / projected_total > 0.5:
                 return False
             slot_index = int(fill_counts.get(strategy_type) or 0) + 1
             params, parameter_source, parameter_sample_count = self._resolved_varied_defaults(

@@ -72,16 +72,30 @@ class ArtifactMixin:
             return None
         return json.loads(row["payload"])
 
-    async def list_artifacts_db(self, limit: int = 20) -> list[dict]:
+    async def list_artifacts_db(self, limit: int = 20, strategy: str | None = None) -> list[dict]:
         """按更新时间倒序返回工件摘要。"""
+        normalized_strategy = str(strategy or "").strip()
         async with self.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT artifact_id, strategy, strategy_version, code, updated_at
-                FROM strategy_artifacts
-                ORDER BY updated_at DESC
-                LIMIT $1
-                """,
-                max(1, int(limit)),
-            )
+            if normalized_strategy:
+                rows = await conn.fetch(
+                    """
+                    SELECT artifact_id, strategy, strategy_version, code, updated_at
+                    FROM strategy_artifacts
+                    WHERE LOWER(strategy) = LOWER($2)
+                    ORDER BY updated_at DESC
+                    LIMIT $1
+                    """,
+                    max(1, int(limit)),
+                    normalized_strategy,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT artifact_id, strategy, strategy_version, code, updated_at
+                    FROM strategy_artifacts
+                    ORDER BY updated_at DESC
+                    LIMIT $1
+                    """,
+                    max(1, int(limit)),
+                )
         return [dict(r) for r in rows]

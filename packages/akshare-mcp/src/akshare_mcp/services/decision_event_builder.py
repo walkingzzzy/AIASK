@@ -165,6 +165,34 @@ def _classify_event_candidates(documents: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _build_persistable_headline_labels(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from .event_extraction import extract_events
+    from .sentiment import SentimentAnalyzer
+
+    labels: list[dict[str, Any]] = []
+    for doc in documents:
+        title = str(doc.get("title") or "").strip()
+        if not title:
+            continue
+        extraction = extract_events([{"title": title, "text": _pick_text(doc)}], top_n=1)
+        event_tags = list(extraction.get("event_tags") or [])
+        event_type = str(event_tags[0].get("tag") or "").strip() if event_tags else None
+        label = SentimentAnalyzer._classify_headline(title)
+        labels.append(
+            {
+                "doc_uid": doc.get("doc_uid"),
+                "headline": title,
+                "label": label,
+                "event_type": event_type,
+                "direction": "up" if label == "bullish" else "down" if label == "bearish" else "flat",
+                "horizon_days": 5 if str(doc.get("doc_type") or doc.get("type") or "").lower() == "news" else 10,
+                "keywords": list(dict(extraction.get("keyword_hits") or {}).keys())[:8],
+                "published_at": doc.get("date"),
+            }
+        )
+    return labels[:20]
+
+
 async def build_event_context(
     code: str,
     *,
@@ -363,6 +391,7 @@ async def build_event_context(
         "hard_veto_eligible": structured_events.get("hard_veto_eligible"),
         "veto_candidates": structured_events.get("veto_candidates", []),
         "evidence_links": structured_events.get("evidence_links", []),
+        "headline_labels": _build_persistable_headline_labels(documents),
         "hard_risk": hard_risk,
         "reasons": unique_texts(reasons),
         "risks": unique_texts(risks),

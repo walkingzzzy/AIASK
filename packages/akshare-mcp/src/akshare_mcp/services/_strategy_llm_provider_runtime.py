@@ -187,6 +187,10 @@ class _StrategyLLMProviderRuntimeMixin:
             return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError))
 
         @staticmethod
+        def _is_connectivity_error(exc: Exception) -> bool:
+            return isinstance(exc, httpx.ConnectError)
+
+        @staticmethod
         def _status_code_from_error(exc: Exception) -> Optional[int]:
             try:
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
@@ -243,6 +247,25 @@ class _StrategyLLMProviderRuntimeMixin:
             if cooldown_until > 0:
                 metrics["compatibility_cooldown_sec"] = round(max(cooldown_until - now, 0.0), 4)
             return metrics
+
+        def _active_connectivity_failure(self) -> Optional[dict[str, Any]]:
+            now = time.monotonic()
+            cooldown_until = float(getattr(self, "_recent_connectivity_cooldown_until", 0.0) or 0.0)
+            minimal_streak = max(1, int(getattr(self.config, "recent_connectivity_minimal_streak", 1) or 1))
+            streak = int(getattr(self, "_recent_connectivity_streak", 0) or 0)
+            if cooldown_until > 0 and cooldown_until <= now:
+                self._recent_connectivity_streak = 0
+                self._recent_connectivity_cooldown_until = 0.0
+                return None
+            if streak < minimal_streak or cooldown_until <= 0:
+                return None
+            return {
+                "cooldown_reason": "recent_connectivity",
+                "recent_connectivity_streak": streak,
+                "recent_connectivity_cooldown_sec": round(max(cooldown_until - now, 0.0), 4),
+                "last_error_type": self._last_failure_type or "ConnectError",
+                "last_error_status_code": self._last_failure_status_code,
+            }
 
         def _response_structure_metrics(
             self,
@@ -650,7 +673,11 @@ class _StrategyLLMProviderRuntimeMixin:
             )
             scheduler_should_disable = False
             scheduler_skip_reason = None
-            if active_compatibility is not None:
+            connectivity_failure = self._active_connectivity_failure()
+            if connectivity_failure is not None:
+                scheduler_should_disable = True
+                scheduler_skip_reason = "connectivity_cooldown_active"
+            elif active_compatibility is not None:
                 scheduler_should_disable = True
                 scheduler_skip_reason = "compatibility_cooldown_active"
             elif recent_request_count >= 2 and compatibility_failure_ratio >= 0.5:
@@ -675,6 +702,15 @@ class _StrategyLLMProviderRuntimeMixin:
                 "empty_200_response_count": empty_200_response_count,
                 "compatibility_failure_ratio": compatibility_failure_ratio,
                 "effective_response_ratio": effective_response_ratio,
+                "connectivity_cooldown_active": connectivity_failure is not None,
+                "connectivity_cooldown_sec": (
+                    connectivity_failure.get("recent_connectivity_cooldown_sec") if connectivity_failure else 0.0
+                ),
+                "recent_connectivity_streak": (
+                    connectivity_failure.get("recent_connectivity_streak")
+                    if connectivity_failure
+                    else int(getattr(self, "_recent_connectivity_streak", 0) or 0)
+                ),
                 "compatibility_cooldown_active": active_compatibility is not None,
                 "compatibility_cooldown_sec": (
                     active_compatibility.get("compatibility_cooldown_sec") if active_compatibility else 0.0
@@ -752,7 +788,15 @@ class _StrategyLLMProviderRuntimeMixin:
             self._last_failure_type = self._failure_type(exc)
             self._last_failure_status_code = self._status_code_from_error(exc)
             self._append_recent_request_outcome(status="failed")
-            if self._is_timeout_like_error(exc):
+            if self._is_connectivity_error(exc):
+                self._recent_connectivity_streak = int(getattr(self, "_recent_connectivity_streak", 0) or 0) + 1
+                self._recent_connectivity_cooldown_until = time.monotonic() + max(
+                    0.0,
+                    float(getattr(self.config, "recent_connectivity_cooldown_sec", 600.0) or 0.0),
+                )
+                self._recent_timeout_streak += 1
+                self._recent_timeout_cooldown_until = time.monotonic() + max(0.0, float(self.config.recent_timeout_cooldown_sec or 0.0))
+            elif self._is_timeout_like_error(exc):
                 self._recent_timeout_streak += 1
                 self._recent_timeout_cooldown_until = time.monotonic() + max(0.0, float(self.config.recent_timeout_cooldown_sec or 0.0))
             elif self._is_overload_like_error(exc):
@@ -793,6 +837,8 @@ class _StrategyLLMProviderRuntimeMixin:
         def _record_request_success(self) -> None:
             self._recent_timeout_streak = 0
             self._recent_timeout_cooldown_until = 0.0
+            self._recent_connectivity_streak = 0
+            self._recent_connectivity_cooldown_until = 0.0
             self._recent_overload_streak = 0
             self._recent_overload_cooldown_until = 0.0
             self._last_failure_type = None
@@ -828,6 +874,19 @@ class _StrategyLLMProviderRuntimeMixin:
                         "elapsed_seconds": round(time.perf_counter() - started_at, 4),
                         **compatibility_metrics,
                         "status": "compatibility_skip",
+                    },
+                )
+            connectivity_metrics = self._active_connectivity_failure()
+            if connectivity_metrics is not None:
+                raise StrategyLLMRequestError(
+                    "external llm request skipped during connectivity cooldown",
+                    metrics={
+                        "endpoint": self._endpoint(),
+                        "provider": self.config.provider,
+                        "model": self.config.model,
+                        "elapsed_seconds": round(time.perf_counter() - started_at, 4),
+                        **connectivity_metrics,
+                        "status": "cooldown_skip",
                     },
                 )
             requested_limit = self._normalize_limit(limit)
@@ -1077,6 +1136,17 @@ class _StrategyLLMProviderRuntimeMixin:
                         "elapsed_seconds": round(time.perf_counter() - started_at, 4),
                         **compatibility_metrics,
                         "status": "compatibility_skip",
+                    },
+                )
+            connectivity_metrics = self._active_connectivity_failure()
+            if connectivity_metrics is not None:
+                raise StrategyLLMRequestError(
+                    f"call_stage({stage_id}) skipped during connectivity cooldown",
+                    metrics={
+                        "stage_id": stage_id,
+                        "elapsed_seconds": round(time.perf_counter() - started_at, 4),
+                        **connectivity_metrics,
+                        "status": "cooldown_skip",
                     },
                 )
             _compact_level, degrade_reason = self._recent_failure_degrade_state()

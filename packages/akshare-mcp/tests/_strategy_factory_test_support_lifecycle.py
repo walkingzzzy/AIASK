@@ -44,11 +44,16 @@ class _StrategyDBLifecycleMixin:
     async def get_signals_public(self, sid, start_date=None, end_date=None, limit=100):
         return []
 
-    async def get_klines(self, code, limit=200):
-        return [
+    async def get_klines(self, code, limit=200, start_date=None, end_date=None):
+        rows = [
             {"date": f"2026-01-{(idx % 28) + 1:02d}", "open": 10 + idx * 0.1, "high": 10.2 + idx * 0.1, "low": 9.8 + idx * 0.1, "close": 10 + idx * 0.1, "volume": 1000 + idx}
             for idx in range(limit)
         ]
+        if start_date is not None:
+            rows = [row for row in rows if str(row.get("date") or "") >= str(start_date)]
+        if end_date is not None:
+            rows = [row for row in rows if str(row.get("date") or "") <= str(end_date)]
+        return rows
 
     async def list_stock_universe(self, limit=200, offset=0, min_market_cap=None, industry=None, market=None):
         rows = [

@@ -20,6 +20,7 @@ from ..tools.quant_analysis import run_factor_oos_validation
 from ..utils import resolve_security_code
 from .decision_pipeline_shared import build_context_meta, clamp, safe_float
 from .decision_context_builder import _sanitize_warning_message
+from .signal_quality_registry import get_default_signal_quality_registry
 
 
 def _pick_period_stat(container: dict[str, Any] | None, period: int) -> dict[str, Any]:
@@ -566,7 +567,7 @@ async def build_quant_context(
         cached=False,
     )
     default_target = probability_targets.get("10d") or {}
-    return {
+    result = {
         "code": normalized_code,
         "score": score,
         "factors": result_factors,
@@ -582,3 +583,12 @@ async def build_quant_context(
         "risks": risks,
         **meta,
     }
+    try:
+        get_default_signal_quality_registry().register_probability(
+            code=normalized_code,
+            as_of=str((ordered[-1] or {}).get("date") or ""),
+            payload=result,
+        )
+    except Exception:
+        pass
+    return result

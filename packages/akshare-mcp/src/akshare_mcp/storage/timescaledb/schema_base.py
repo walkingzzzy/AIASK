@@ -144,6 +144,7 @@ class SchemaBase:
             'max_inactive_connection_lifetime': max_inactive_lifetime,
             'server_settings': {
                 'application_name': f'akshare-mcp:{profile}',
+                'TimeZone': 'Asia/Shanghai',
             },
         }
 

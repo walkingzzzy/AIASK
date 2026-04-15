@@ -439,6 +439,65 @@ async def test_factor_llm_provider_smoke_check_recovers_via_chat_stream_replay()
 
 
 @pytest.mark.asyncio
+async def test_factor_llm_provider_smoke_check_recovers_when_json_response_has_empty_message_content():
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+
+    nonstream_payload = {
+        "id": "resp_fake_nonstream_json",
+        "object": "chat.completion",
+        "created": 1775544050,
+        "model": "test-factor-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13},
+    }
+    stream_chunks = [
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":"{\\"ok\\": true}"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n',
+    ]
+
+    class _ReplayClient:
+        is_closed = False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                nonstream_payload,
+                headers={"content-type": "application/json; charset=utf-8"},
+            )
+
+        def stream(self, *args, **kwargs):
+            return _FakeStreamResponse(stream_chunks)
+
+        async def aclose(self):
+            self.is_closed = True
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    provider._client = _ReplayClient()
+
+    result = await provider.smoke_check(force=True)
+
+    assert result["status"] == "passed"
+    assert result["compatibility_mode"] == "chat_stream_replay"
+    assert provider.status()["health_status"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_factor_llm_provider_blocks_empty_200_false_success():
     from akshare_mcp.services.factor_llm_provider import (
         FactorLLMConfig,

@@ -49,7 +49,13 @@ export type PaperTradingPositionsResponse = {
 
 export type PaperTradingTrade = {
     id?: string;
+    account_id?: string;
+    strategy_id?: string;
+    source_order_id?: string;
+    signal_id?: string;
+    position_id?: string;
     stock_code?: string;
+    stock_name?: string;
     trade_type?: string;
     price?: number;
     quantity?: number;
@@ -66,6 +72,8 @@ export type PaperTradingPendingOrder = {
     id?: number;
     account_id?: string;
     strategy_id?: string;
+    signal_id?: string;
+    position_id?: string;
     signal_date?: string;
     source?: string;
     code?: string;

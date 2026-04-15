@@ -259,27 +259,21 @@ class CompleteDataSync:
                 df = self.ts_pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
 
                 if df is not None and not df.empty:
-                    row_inserted_for_stock = 0
-                    async with self.db.acquire() as conn:
-                        for _, row in df.iterrows():
-                            trade_date = str(row['trade_date'])
-                            trade_date_obj = datetime.strptime(trade_date, '%Y%m%d').date()
-
-                            await conn.execute("""
-                                INSERT INTO kline_1d (time, code, open, high, low, close, volume, amount, change_pct, updated_at)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-                                ON CONFLICT (time, code) DO UPDATE SET
-                                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                                    close = EXCLUDED.close, volume = EXCLUDED.volume, amount = EXCLUDED.amount,
-                                    change_pct = EXCLUDED.change_pct, updated_at = NOW()
-                            """, trade_date_obj, code,
-                                float(row['open']), float(row['high']), float(row['low']), float(row['close']),
-                                int(float(row['vol']) * 100) if row['vol'] else 0,
-                                float(row['amount']) * 1000 if row['amount'] else 0,
-                                float(row['pct_chg']) if row['pct_chg'] else None)
-                            row_inserted_for_stock += 1
-
-                    inserted_rows += row_inserted_for_stock
+                    payload = []
+                    for _, row in df.iterrows():
+                        trade_date = str(row['trade_date'])
+                        payload.append({
+                            'date': f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
+                            'open': float(row['open']),
+                            'high': float(row['high']),
+                            'low': float(row['low']),
+                            'close': float(row['close']),
+                            'volume': int(float(row['vol']) * 100) if row['vol'] else 0,
+                            'amount': float(row['amount']) * 1000 if row['amount'] else 0,
+                            'change_pct': float(row['pct_chg']) if row['pct_chg'] else None,
+                        })
+                    save_result = await self.db.save_klines(code, payload)
+                    inserted_rows += int((save_result or {}).get('accepted_count') or 0)
                     count += 1
             except Exception as e:
                 errors += 1

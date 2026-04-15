@@ -248,6 +248,10 @@ test('strategy factory run-once is accepted asynchronously and exposed in status
 
   const backgroundState = (service as unknown as { backgroundFactoryRunState?: { status?: string; upstream_run_id?: string } })
     .backgroundFactoryRunState;
+  const backgroundCleanupTimer = (service as unknown as {
+    backgroundFactoryRunClearTimer?: { hasRef?: () => boolean };
+  }).backgroundFactoryRunClearTimer;
   assert.equal(backgroundState?.status, 'success');
   assert.equal(backgroundState?.upstream_run_id, 'factory_run_001');
+  assert.equal(backgroundCleanupTimer?.hasRef?.(), false);
 });

@@ -18,6 +18,10 @@ from ..domain.constants import (
     FACTORY_INCUBATION_OBSERVE_SLOT_COUNT,
 )
 
+_BASE_PRIORITY_SHARPE_WEIGHT = 10.0
+_BASE_PRIORITY_TOTAL_RETURN_WEIGHT = 3.0
+_BASE_PRIORITY_MAX_DRAWDOWN_WEIGHT = 8.0
+
 
 class IncubationBudgeter:
     """Allocate candidates into formal / observe / deferred incubation tracks."""
@@ -43,6 +47,37 @@ class IncubationBudgeter:
             or payload.get("strategy_type")
             or "unknown"
         ).strip().lower() or "unknown"
+
+    @staticmethod
+    def _task_feedback_override(candidate: dict[str, Any]) -> dict[str, Any]:
+        research_task = dict((candidate or {}).get("research_task") or {})
+        if not research_task:
+            return {}
+        field_map = {
+            "feedback_control_mode": "control_mode",
+            "feedback_legacy_control_mode": "legacy_control_mode",
+            "feedback_skill_control_mode": "skill_control_mode",
+            "feedback_control_reasons": "control_reasons",
+            "feedback_legacy_control_reasons": "legacy_control_reasons",
+            "feedback_skill_control_reasons": "skill_control_reasons",
+            "feedback_cooldown_active": "cooldown_active",
+            "feedback_suppressed": "suppressed",
+            "feedback_skill_cooldown_active": "skill_cooldown_active",
+            "feedback_skill_suppressed": "skill_suppressed",
+            "feedback_relaxed_throttle_active": "relaxed_throttle_active",
+            "feedback_control_relaxed": "control_relaxed",
+            "feedback_control_relaxed_mode": "control_relaxed_mode",
+            "feedback_control_original_mode": "control_original_mode",
+            "feedback_control_relax_reason": "control_relax_reason",
+            "feedback_generation_limited": "generation_limited",
+        }
+        override: dict[str, Any] = {}
+        for source_key, target_key in field_map.items():
+            value = research_task.get(source_key)
+            if value in (None, "", [], {}):
+                continue
+            override[target_key] = value
+        return override
 
     @staticmethod
     def _resolve_budget_feedback_root(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +115,12 @@ class IncubationBudgeter:
             target_pool_id=extract_target_pool_id(candidate),
             generator_mode=extract_generator_mode(candidate),
         )
+        task_feedback_override = cls._task_feedback_override(candidate)
+        if task_feedback_override:
+            feedback_metrics = {
+                **feedback_metrics,
+                **task_feedback_override,
+            }
         feedback_scope = {
             "family": family_name,
             "target_pool_id": feedback_metrics.get("target_pool_id"),
@@ -113,6 +154,27 @@ class IncubationBudgeter:
                 feedback_metrics.get("paper_coverage_ratio"),
                 1.0,
             ),
+            "execution_conversion_efficiency": (
+                cls._safe_float(feedback_metrics.get("execution_conversion_efficiency"))
+                if feedback_metrics.get("execution_conversion_efficiency_available")
+                else None
+            ),
+            "execution_conversion_efficiency_available": bool(
+                feedback_metrics.get("execution_conversion_efficiency_available")
+            ),
+            "budget_feedback_action": feedback_metrics.get("budget_feedback_action"),
+            "budget_action_applied": bool(feedback_metrics.get("budget_action_applied")),
+            "prediction_axis": feedback_metrics.get("prediction_axis"),
+            "execution_axis": feedback_metrics.get("execution_axis"),
+            "execution_optimization_queue": bool(
+                feedback_metrics.get("execution_optimization_queue")
+            ),
+            "small_budget_observe": bool(feedback_metrics.get("small_budget_observe")),
+            "prioritize_scale": bool(feedback_metrics.get("prioritize_scale")),
+            "cool_or_freeze": bool(feedback_metrics.get("cool_or_freeze")),
+            "retain_family": bool(feedback_metrics.get("retain_family")),
+            "reduce_budget": bool(feedback_metrics.get("reduce_budget")),
+            "no_expansion": bool(feedback_metrics.get("no_expansion")),
         }
         feedback_scope["feedback_available"] = any(
             bool(feedback_scope.get(key))
@@ -235,9 +297,9 @@ class IncubationBudgeter:
         family_name = cls._candidate_family(payload)
 
         score = 0.0
-        score += max(-1.0, min(sharpe, 3.0)) * 20.0
-        score += max(-0.2, min(total_return, 0.6)) * 40.0
-        score -= min(max_drawdown, 0.6) * 15.0
+        score += max(-1.0, min(sharpe, 3.0)) * _BASE_PRIORITY_SHARPE_WEIGHT
+        score += max(-0.2, min(total_return, 0.6)) * _BASE_PRIORITY_TOTAL_RETURN_WEIGHT
+        score -= min(max_drawdown, 0.6) * _BASE_PRIORITY_MAX_DRAWDOWN_WEIGHT
         score += min(max(validation_score, 0.0), 100.0) * 0.25
         score += max(task_priority, 0.0) * 0.18
         score += max(stock_family_priority, 0.0) * 12.0
@@ -264,15 +326,63 @@ class IncubationBudgeter:
         feedback_scope = dict(feedback_payload.get("scope") or {})
         feedback_priority_adjustment = cls._safe_float(feedback_metrics.get("priority_adjustment"))
         feedback_budget_multiplier = cls._safe_float(feedback_metrics.get("budget_multiplier"), 1.0)
-        score += feedback_priority_adjustment
-        score *= max(0.7, min(1.3, 0.7 + feedback_budget_multiplier * 0.3))
+        if bool(feedback_scope.get("feedback_available")):
+            feedback_skill_priority_adjustment = cls._safe_float(
+                feedback_metrics.get("skill_priority_adjustment")
+            )
+            feedback_skill_budget_multiplier = cls._safe_float(
+                feedback_metrics.get("skill_budget_multiplier"),
+                1.0,
+            )
+            paper_skill_lcb = cls._safe_float(feedback_metrics.get("paper_skill_lcb"))
+            paper_recent_skill_lcb = cls._safe_float(
+                feedback_metrics.get("paper_recent_skill_lcb"),
+                paper_skill_lcb,
+            )
+            paper_stability_gap = max(
+                0.0,
+                cls._safe_float(feedback_metrics.get("paper_stability_gap")),
+            )
+            paper_coverage_ratio = max(
+                0.0,
+                min(cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0), 1.0),
+            )
+            execution_conversion_efficiency_available = bool(
+                feedback_metrics.get("execution_conversion_efficiency_available")
+            )
+            execution_conversion_efficiency = cls._safe_float(
+                feedback_metrics.get("execution_conversion_efficiency")
+            )
+            score += feedback_priority_adjustment * 0.45
+            score += feedback_skill_priority_adjustment
+            score += max(-0.12, min(paper_skill_lcb, 0.18)) * 55.0
+            score += max(-0.12, min(paper_recent_skill_lcb, 0.18)) * 34.0
+            score -= max(paper_stability_gap - 0.05, 0.0) * 40.0
+            score += max(min(paper_coverage_ratio, 1.0) - 0.50, -0.50) * 14.0
+            if execution_conversion_efficiency_available:
+                score += max(min(execution_conversion_efficiency, 0.40), -0.10) * 28.0
+            combined_budget_multiplier = (
+                feedback_budget_multiplier * 0.35
+                + feedback_skill_budget_multiplier * 0.65
+            )
+            score *= max(0.68, min(1.35, 0.45 + combined_budget_multiplier * 0.55))
+        else:
+            score += feedback_priority_adjustment
+            score *= max(0.7, min(1.3, 0.7 + feedback_budget_multiplier * 0.3))
         control_mode = str(feedback_metrics.get("control_mode") or "").strip().lower()
+        skill_control_mode = str(feedback_metrics.get("skill_control_mode") or "").strip().lower()
         if control_mode == "cooldown":
             score -= 9.0
         elif control_mode == "suppress":
             score -= 24.0
         elif control_mode == "freeze":
             score -= 36.0
+        if skill_control_mode == "cooldown":
+            score -= 6.0
+        elif skill_control_mode == "suppress":
+            score -= 16.0
+        elif skill_control_mode == "freeze":
+            score -= 28.0
 
         # P2-D 反馈回路：对纯 family EMA 的轻量兼容，避免没有 P3 feedback 时退化。
         if not bool(feedback_scope.get("feedback_available")):
@@ -352,8 +462,15 @@ class IncubationBudgeter:
         feedback_paper_recent_skill_lcb_values: list[float] = []
         feedback_paper_stability_gap_values: list[float] = []
         feedback_paper_coverage_ratio_values: list[float] = []
+        feedback_execution_conversion_efficiency_values: list[float] = []
         feedback_budget_promoted_count = 0
         feedback_budget_constrained_count = 0
+        feedback_budget_action_counts: dict[str, int] = {}
+        feedback_dual_axis_action_count = 0
+        feedback_execution_optimization_queue_count = 0
+        feedback_small_budget_observe_count = 0
+        feedback_prioritize_scale_count = 0
+        feedback_cool_or_freeze_count = 0
         feedback_controlled_count = 0
         feedback_cooldown_count = 0
         feedback_suppressed_count = 0
@@ -424,6 +541,28 @@ class IncubationBudgeter:
                 feedback_paper_coverage_ratio_values.append(
                     cls._safe_float(feedback_metrics.get("paper_coverage_ratio"), 1.0)
                 )
+                if bool(feedback_metrics.get("execution_conversion_efficiency_available")):
+                    feedback_execution_conversion_efficiency_values.append(
+                        cls._safe_float(
+                            feedback_metrics.get("execution_conversion_efficiency")
+                        )
+                    )
+                budget_action = str(
+                    feedback_metrics.get("budget_feedback_action") or ""
+                ).strip().lower()
+                if budget_action:
+                    feedback_dual_axis_action_count += 1
+                    feedback_budget_action_counts[budget_action] = (
+                        feedback_budget_action_counts.get(budget_action, 0) + 1
+                    )
+                if bool(feedback_metrics.get("execution_optimization_queue")):
+                    feedback_execution_optimization_queue_count += 1
+                if bool(feedback_metrics.get("small_budget_observe")):
+                    feedback_small_budget_observe_count += 1
+                if bool(feedback_metrics.get("prioritize_scale")):
+                    feedback_prioritize_scale_count += 1
+                if bool(feedback_metrics.get("cool_or_freeze")):
+                    feedback_cool_or_freeze_count += 1
                 if feedback_budget_multiplier > 1.02 or feedback_priority_adjustment > 0.5:
                     feedback_budget_promoted_count += 1
                 if feedback_budget_multiplier < 0.98 or feedback_priority_adjustment < -0.5:
@@ -536,6 +675,33 @@ class IncubationBudgeter:
                         feedback_metrics.get("paper_coverage_ratio"),
                         1.0,
                     ),
+                    "feedback_execution_conversion_efficiency": (
+                        cls._safe_float(feedback_metrics.get("execution_conversion_efficiency"))
+                        if feedback_metrics.get("execution_conversion_efficiency_available")
+                        else None
+                    ),
+                    "feedback_execution_conversion_efficiency_available": bool(
+                        feedback_metrics.get("execution_conversion_efficiency_available")
+                    ),
+                    "feedback_budget_action": feedback_metrics.get("budget_feedback_action"),
+                    "feedback_budget_action_applied": bool(
+                        feedback_metrics.get("budget_action_applied")
+                    ),
+                    "feedback_prediction_axis": feedback_metrics.get("prediction_axis"),
+                    "feedback_execution_axis": feedback_metrics.get("execution_axis"),
+                    "feedback_retain_family": bool(feedback_metrics.get("retain_family")),
+                    "feedback_reduce_budget": bool(feedback_metrics.get("reduce_budget")),
+                    "feedback_execution_optimization_queue": bool(
+                        feedback_metrics.get("execution_optimization_queue")
+                    ),
+                    "feedback_small_budget_observe": bool(
+                        feedback_metrics.get("small_budget_observe")
+                    ),
+                    "feedback_prioritize_scale": bool(
+                        feedback_metrics.get("prioritize_scale")
+                    ),
+                    "feedback_cool_or_freeze": bool(feedback_metrics.get("cool_or_freeze")),
+                    "feedback_no_expansion": bool(feedback_metrics.get("no_expansion")),
                     "feedback_effective_signal": str(
                         feedback_metrics.get("effective_feedback_signal")
                         or "legacy_paper_hit_ratio"
@@ -739,6 +905,29 @@ class IncubationBudgeter:
                         entry.get("feedback_paper_coverage_ratio"),
                         1.0,
                     ),
+                    "feedback_execution_conversion_efficiency": entry.get(
+                        "feedback_execution_conversion_efficiency"
+                    ),
+                    "feedback_execution_conversion_efficiency_available": bool(
+                        entry.get("feedback_execution_conversion_efficiency_available")
+                    ),
+                    "feedback_budget_action": entry.get("feedback_budget_action"),
+                    "feedback_budget_action_applied": bool(
+                        entry.get("feedback_budget_action_applied")
+                    ),
+                    "feedback_prediction_axis": entry.get("feedback_prediction_axis"),
+                    "feedback_execution_axis": entry.get("feedback_execution_axis"),
+                    "feedback_retain_family": bool(entry.get("feedback_retain_family")),
+                    "feedback_reduce_budget": bool(entry.get("feedback_reduce_budget")),
+                    "feedback_execution_optimization_queue": bool(
+                        entry.get("feedback_execution_optimization_queue")
+                    ),
+                    "feedback_small_budget_observe": bool(
+                        entry.get("feedback_small_budget_observe")
+                    ),
+                    "feedback_prioritize_scale": bool(entry.get("feedback_prioritize_scale")),
+                    "feedback_cool_or_freeze": bool(entry.get("feedback_cool_or_freeze")),
+                    "feedback_no_expansion": bool(entry.get("feedback_no_expansion")),
                     "feedback_effective_signal": str(
                         entry.get("feedback_effective_signal") or "legacy_paper_hit_ratio"
                     ),
@@ -830,6 +1019,29 @@ class IncubationBudgeter:
                     entry.get("feedback_paper_coverage_ratio"),
                     1.0,
                 ),
+                "feedback_execution_conversion_efficiency": entry.get(
+                    "feedback_execution_conversion_efficiency"
+                ),
+                "feedback_execution_conversion_efficiency_available": bool(
+                    entry.get("feedback_execution_conversion_efficiency_available")
+                ),
+                "feedback_budget_action": entry.get("feedback_budget_action"),
+                "feedback_budget_action_applied": bool(
+                    entry.get("feedback_budget_action_applied")
+                ),
+                "feedback_prediction_axis": entry.get("feedback_prediction_axis"),
+                "feedback_execution_axis": entry.get("feedback_execution_axis"),
+                "feedback_retain_family": bool(entry.get("feedback_retain_family")),
+                "feedback_reduce_budget": bool(entry.get("feedback_reduce_budget")),
+                "feedback_execution_optimization_queue": bool(
+                    entry.get("feedback_execution_optimization_queue")
+                ),
+                "feedback_small_budget_observe": bool(
+                    entry.get("feedback_small_budget_observe")
+                ),
+                "feedback_prioritize_scale": bool(entry.get("feedback_prioritize_scale")),
+                "feedback_cool_or_freeze": bool(entry.get("feedback_cool_or_freeze")),
+                "feedback_no_expansion": bool(entry.get("feedback_no_expansion")),
                 "feedback_effective_signal": str(
                     entry.get("feedback_effective_signal") or "legacy_paper_hit_ratio"
                 ),
@@ -911,6 +1123,21 @@ class IncubationBudgeter:
                 )
                 if feedback_paper_coverage_ratio_values
                 else 0.0,
+                "feedback_execution_conversion_efficiency_avg": round(
+                    sum(feedback_execution_conversion_efficiency_values)
+                    / len(feedback_execution_conversion_efficiency_values),
+                    4,
+                )
+                if feedback_execution_conversion_efficiency_values
+                else 0.0,
+                "feedback_budget_action_counts": feedback_budget_action_counts,
+                "feedback_dual_axis_action_count": feedback_dual_axis_action_count,
+                "feedback_execution_optimization_queue_count": (
+                    feedback_execution_optimization_queue_count
+                ),
+                "feedback_small_budget_observe_count": feedback_small_budget_observe_count,
+                "feedback_prioritize_scale_count": feedback_prioritize_scale_count,
+                "feedback_cool_or_freeze_count": feedback_cool_or_freeze_count,
                 "feedback_budget_promoted_count": feedback_budget_promoted_count,
                 "feedback_budget_constrained_count": feedback_budget_constrained_count,
                 "feedback_skill_budget_promoted_count": feedback_skill_budget_promoted_count,

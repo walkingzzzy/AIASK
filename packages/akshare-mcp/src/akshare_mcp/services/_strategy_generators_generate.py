@@ -448,9 +448,157 @@ def _conservative_ma_cross_dsl(target_symbols: list[str], stock_pool: dict[str, 
     }
 
 
+def _snapshot_pool_risk_contract(pool_profile: str, strategy_type: str) -> dict[str, Any]:
+    profile = str(pool_profile or "").strip().lower()
+    strategy_key = str(strategy_type or "").strip().lower()
+    if profile == "high_vol_growth":
+        if strategy_key in {"volatility_breakout", "momentum"}:
+            return {
+                "holding_horizon": {"min_days": 5, "max_days": 8},
+                "trade_plan": {"exit_bias": "atr_trailing_or_time_stop"},
+                "risk_rules": {
+                    "stop_loss_mode": "atr_bucketed",
+                    "atr_window": 14,
+                    "atr_multiplier": 2.2,
+                    "stop_floor_pct": 0.05,
+                    "stop_loss_pct": 0.05,
+                    "take_profit_pct": 0.10,
+                    "time_stop_days": 8,
+                    "max_holding_days": 8,
+                    "position_cap_pct": 0.10,
+                    "max_position_pct": 0.10,
+                    "trailing_activation_r": 1.0,
+                    "stop_rule_source": "atr_bucketed_high_vol_growth_breakout",
+                },
+            }
+        return {
+            "holding_horizon": {"min_days": 1, "max_days": 5},
+            "trade_plan": {"exit_bias": "fast_reversion_or_time_stop"},
+            "risk_rules": {
+                "stop_loss_mode": "atr_bucketed",
+                "atr_window": 14,
+                "atr_multiplier": 1.8,
+                "stop_floor_pct": 0.04,
+                "stop_loss_pct": 0.04,
+                "take_profit_pct": 0.08,
+                "time_stop_days": 5,
+                "max_holding_days": 5,
+                "position_cap_pct": 0.10,
+                "max_position_pct": 0.10,
+                "trailing_activation_r": 1.0,
+                "stop_rule_source": "atr_bucketed_high_vol_growth_reversion",
+            },
+        }
+    if profile == "low_vol_defensive":
+        return {
+            "holding_horizon": {"min_days": 15, "max_days": 25},
+            "trade_plan": {"exit_bias": "flow_decay_or_time_stop"},
+            "risk_rules": {
+                "stop_loss_mode": "atr_bucketed",
+                "atr_window": 14,
+                "atr_multiplier": 3.0,
+                "stop_floor_pct": 0.06,
+                "stop_loss_pct": 0.06,
+                "take_profit_pct": 0.14,
+                "time_stop_days": 25,
+                "max_holding_days": 25,
+                "position_cap_pct": 0.18,
+                "max_position_pct": 0.18,
+                "trailing_activation_r": 1.2,
+                "stop_rule_source": "atr_bucketed_low_vol_defensive",
+            },
+        }
+    if profile == "cycle_resource":
+        return {
+            "holding_horizon": {"min_days": 8, "max_days": 15},
+            "trade_plan": {"exit_bias": "leadership_decay_or_time_stop"},
+            "risk_rules": {
+                "stop_loss_mode": "atr_bucketed",
+                "atr_window": 14,
+                "atr_multiplier": 2.5,
+                "stop_floor_pct": 0.05,
+                "stop_loss_pct": 0.05,
+                "take_profit_pct": 0.16,
+                "time_stop_days": 15,
+                "max_holding_days": 15,
+                "position_cap_pct": 0.14,
+                "max_position_pct": 0.14,
+                "trailing_activation_r": 1.1,
+                "stop_rule_source": "atr_bucketed_cycle_resource",
+            },
+        }
+    return {}
+
+
+def _apply_snapshot_pool_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    task = _normalize_research_task_contract(payload.get("research_task") or {})
+    pool_profile = str(task.get("pool_profile") or payload.get("pool_profile") or "").strip().lower()
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    if not pool_profile or not strategy_type:
+        return payload
+    if pool_profile == "high_vol_growth" and strategy_type == "ma_cross":
+        return {}
+    profile_contract = _snapshot_pool_risk_contract(pool_profile, strategy_type)
+    if not profile_contract:
+        return payload
+    risk_rules = {
+        **dict(payload.get("risk_rules") or {}),
+        **dict(profile_contract.get("risk_rules") or {}),
+    }
+    trade_plan = {
+        **dict(payload.get("trade_plan") or {}),
+        **dict(profile_contract.get("trade_plan") or {}),
+    }
+    portfolio_spec = {
+        **dict(payload.get("portfolio_spec") or {}),
+        "max_position_pct": risk_rules.get("position_cap_pct") or risk_rules.get("max_position_pct"),
+    }
+    rule_template_contract = {
+        **dict(payload.get("rule_template_contract") or {}),
+        "default_risk_constraints": {
+            **dict(dict(payload.get("rule_template_contract") or {}).get("default_risk_constraints") or {}),
+            **dict(profile_contract.get("risk_rules") or {}),
+        },
+    }
+    tags = list(
+        dict.fromkeys(
+            [
+                *list(payload.get("tags") or []),
+                f"pool_profile_{pool_profile}",
+                "risk_contract_atr_bucketed",
+            ]
+        )
+    )
+    return {
+        **payload,
+        "pool_profile": pool_profile,
+        "volatility_bucket": task.get("volatility_bucket") or payload.get("volatility_bucket"),
+        "liquidity_bucket": task.get("liquidity_bucket") or payload.get("liquidity_bucket"),
+        "family_mix_constraints": dict(task.get("family_mix_constraints") or payload.get("family_mix_constraints") or {}),
+        "holding_horizon": {
+            **dict(payload.get("holding_horizon") or {}),
+            **dict(profile_contract.get("holding_horizon") or {}),
+        },
+        "trade_plan": trade_plan,
+        "risk_rules": risk_rules,
+        "portfolio_spec": portfolio_spec,
+        "rule_template_contract": rule_template_contract,
+        "position_sizing_rationale": "pool_profile_bucketed_risk",
+        "market_regime_assumption": {
+            "summary": f"{pool_profile} bucket uses ATR bucketed stops and horizon tuned for profile persistence.",
+            "preferred_regime": pool_profile,
+            "avoid_regime": "uniform_fixed_stop_loss",
+        },
+        "tags": tags,
+    }
+
+
 def _normalize_snapshot_pipeline_candidate(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
     payload = deepcopy(candidate or {})
     contract = _snapshot_pipeline_contract(payload.get("research_task"))
+    payload = _apply_snapshot_pool_contract(payload)
+    if not payload:
+        return None
     if not contract.get("conservative_snapshot_task"):
         return payload
 

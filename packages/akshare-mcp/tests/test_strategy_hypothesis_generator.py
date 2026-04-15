@@ -155,3 +155,129 @@ def test_llm_hypothesis_generator_populates_family_specific_hypothesis_for_momen
     assert artifact["family_specific_hypothesis"]["trend_persistence_logic"]
     assert artifact["family_specific_hypothesis"]["failure_scenario"]
     assert artifact["family_specific_hypothesis"]["false_breakout_filter"]
+
+
+def test_llm_hypothesis_generator_rejects_prediction_contract_without_evidence_ids():
+    result = LLMHypothesisGenerator.build(
+        {
+            "name": "semantic-broken",
+            "strategy_type": "dsl_rule",
+            "hypothesis": "趋势证据支持事件后的跟随。",
+            "target_symbols": ["600519"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["600519"],
+            },
+            "holding_horizon": {"max_days": 5, "rationale": "事件后短窗口交易。"},
+            "trade_plan": {
+                "entry_bias": "event_follow_through",
+                "exit_bias": "signal_or_time_stop",
+            },
+            "risk_rules": {
+                "stop_loss_pct": 0.05,
+                "take_profit_pct": 0.12,
+                "max_holding_days": 5,
+            },
+            "position_sizing": {
+                "mode": "single_name",
+                "position_assumption": "single_name_full_notional",
+            },
+            "portfolio_spec": {
+                "position_assumption": "single_name_full_notional",
+                "target_weight_scheme": "single_name",
+                "max_position_pct": 0.25,
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_only",
+                "primary_validation_layer": "target",
+            },
+            "prediction_contract": {
+                "claims": [{"claim_id": "claim_1", "expected_move": "up", "evidence_ids": []}],
+            },
+        },
+        research_task={
+            "task_source": "event_driven",
+            "task_id": "task_hypothesis_semantic_missing_ids",
+            "event_id": "evt_001",
+            "target_symbols": ["600519"],
+        },
+    )
+
+    assert result.accepted is False
+    assert "prediction_contract_missing_evidence_ids:claim_1" in result.reject_reasons
+
+
+def test_llm_hypothesis_generator_requires_conflict_rule_for_mixed_claim_evidence():
+    result = LLMHypothesisGenerator.build(
+        {
+            "name": "semantic-conflict",
+            "strategy_type": "dsl_rule",
+            "hypothesis": "事件后趋势跟随。",
+            "target_symbols": ["600519"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["600519"],
+            },
+            "holding_horizon": {"max_days": 6, "rationale": "事件跟随后观察一周内兑现。"},
+            "trade_plan": {
+                "entry_bias": "event_follow_through",
+                "exit_bias": "signal_or_time_stop",
+            },
+            "risk_rules": {
+                "stop_loss_pct": 0.05,
+                "take_profit_pct": 0.12,
+                "max_holding_days": 6,
+            },
+            "position_sizing": {
+                "mode": "single_name",
+                "position_assumption": "single_name_full_notional",
+            },
+            "portfolio_spec": {
+                "position_assumption": "single_name_full_notional",
+                "target_weight_scheme": "single_name",
+                "max_position_pct": 0.25,
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_only",
+                "primary_validation_layer": "target",
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {"evidence_id": "ev_up", "direction": "up", "source_type": "news"},
+                    {"evidence_id": "ev_down", "direction": "down", "source_type": "news"},
+                ],
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_1",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_up", "ev_down"],
+                    }
+                ],
+            },
+        },
+        research_task={
+            "task_source": "event_driven",
+            "task_id": "task_hypothesis_semantic_conflict",
+            "event_id": "evt_002",
+            "target_symbols": ["600519"],
+        },
+    )
+
+    assert result.accepted is False
+    assert "prediction_contract_missing_conflict_resolution_rule:claim_1" in result.reject_reasons

@@ -19,11 +19,18 @@ from .candidate_contract import (
     build_portfolio_candidate_contract,
     build_resolved_candidate_envelope,
     build_tested_object_hash,
+    candidate_contract_value,
 )
 from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .incubation_budgeter import IncubationBudgeter
-from .quality_gates import build_completed_gate_3_report
+from .quality_gates import _VALID_STRATEGY_TYPES, build_completed_gate_3_report
 from .quality_reporting import build_quality_report, normalize_quality_gate_result
+from .semantic_contract import (
+    audit_candidate_semantic_contract,
+    build_candidate_evidence_records,
+    normalize_semantic_contract_fields,
+    synthesize_confidence_contract,
+)
 from .submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
 from .utils import (
     _auto_name as _local_auto_name,
@@ -37,6 +44,7 @@ from ..domain.constants import (
     FACTORY_SUBMISSION_REJECT_GENERIC_AI_NAMES,
     FACTORY_SUBMISSION_REQUIRE_STRICT_PASS_FOR_REFRESH,
     FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH,
+    STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED,
     SUBMIT_CONCURRENCY,
 )
 from ..domain.targets import _build_task_signature, _normalize_research_task_contract, _normalize_target_codes
@@ -89,6 +97,85 @@ async def _update_strategy_status(*args, **kwargs):
     )
 
 
+_SEMANTIC_CONTRACT_FIELDS = (
+    "evidence_chain",
+    "prediction_contract",
+    "confidence_contract",
+    "evidence_alignment_audit",
+    "dsl_support_audit",
+    "legacy_semantic_contract",
+    "contradiction_count",
+    "proxy_dependency_score",
+)
+
+_RUNTIME_BOOTSTRAP_REQUIRED_FIELDS = (
+    "holding_horizon",
+    "trade_plan",
+    "risk_rules",
+    "execution_assumptions",
+)
+_EMPTY_CONTRACT_VALUES = (None, "", [], {})
+
+
+def _semantic_contract_feature_enabled() -> bool:
+    return bool(STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED)
+
+
+def _assign_optional_payload(target: dict[str, Any], key: str, value: Any) -> None:
+    if value not in (None, "", [], {}):
+        target[key] = value
+
+
+def _apply_candidate_semantic_contract(candidate: dict[str, Any], semantic_audit: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    semantic_fields = normalize_semantic_contract_fields(payload)
+    if semantic_audit is not None:
+        semantic_fields["evidence_alignment_audit"] = dict(semantic_audit or {})
+        semantic_fields["legacy_semantic_contract"] = bool(semantic_audit.get("legacy_semantic_contract"))
+        semantic_fields["contradiction_count"] = int(semantic_audit.get("contradiction_count") or 0)
+        semantic_fields["proxy_dependency_score"] = semantic_audit.get("proxy_dependency_score")
+    params = dict(payload.get("params") or {})
+    for field_name in _SEMANTIC_CONTRACT_FIELDS:
+        _assign_optional_payload(params, field_name, semantic_fields.get(field_name))
+    payload["params"] = params
+    for field_name in _SEMANTIC_CONTRACT_FIELDS:
+        _assign_optional_payload(payload, field_name, semantic_fields.get(field_name))
+    return payload
+
+
+def _apply_semantic_contract_gate(gate: Optional[dict], semantic_audit: Optional[dict[str, Any]]) -> dict[str, Any]:
+    normalized_gate = normalize_quality_gate_result(gate)
+    audit = dict(semantic_audit or {})
+    if not audit:
+        return normalized_gate
+    for field_name in (
+        "evidence_alignment_audit",
+        "legacy_semantic_contract",
+        "contradiction_count",
+        "proxy_dependency_score",
+    ):
+        value = (
+            audit
+            if field_name == "evidence_alignment_audit"
+            else audit.get(field_name)
+        )
+        _assign_optional_payload(normalized_gate, field_name, value)
+    hard_fail_reasons = [
+        str(reason or "").strip()
+        for reason in list(audit.get("hard_fail_reasons") or [])
+        if str(reason or "").strip()
+    ]
+    if hard_fail_reasons and bool(audit.get("using_new_contract")):
+        existing_reasons = [
+            str(reason or "").strip()
+            for reason in list(normalized_gate.get("reasons") or [])
+            if str(reason or "").strip()
+        ]
+        normalized_gate["passed"] = False
+        normalized_gate["reasons"] = list(dict.fromkeys([*existing_reasons, *hard_fail_reasons]))
+    return normalize_quality_gate_result(normalized_gate)
+
+
 class _CompatValidationGateway:
     """Resolve validation runner through the legacy patch-point at call time."""
 
@@ -120,6 +207,9 @@ class _StrategySubmitterActionsMixin:
             gate_3_failed = 0
             gate_3_provisional_passed = 0
             gate_3_failure_codes: Counter[str] = Counter()
+            submission_lane_counts: Counter[str] = Counter()
+            submission_action_type_counts: Counter[str] = Counter()
+            strict_incubation_ready_count = 0
             submitted_items: List[dict] = []
             incubation_budget_plan = IncubationBudgeter.plan(candidates, snapshot)
             incubation_budget_summary = dict(incubation_budget_plan.get("summary") or {})
@@ -171,7 +261,16 @@ class _StrategySubmitterActionsMixin:
                         normalized = str(code or "").strip()
                         if normalized:
                             gate_3_failure_codes[normalized] += 1
-                submitted_items.append(result["summary"])
+                summary = dict(result["summary"] or {})
+                submission_lane = str(summary.get("submission_lane") or "").strip().lower()
+                if submission_lane:
+                    submission_lane_counts[submission_lane] += 1
+                action_type = str(summary.get("submission_action_type") or "").strip().lower()
+                if action_type:
+                    submission_action_type_counts[action_type] += 1
+                if bool(summary.get("strict_incubation_ready")):
+                    strict_incubation_ready_count += 1
+                submitted_items.append(summary)
 
             gate_report = build_completed_gate_3_report(
                 {
@@ -184,6 +283,12 @@ class _StrategySubmitterActionsMixin:
                         {"reason_code": reason_code, "count": count}
                         for reason_code, count in gate_3_failure_codes.most_common(5)
                     ],
+                    "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
+                    "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
+                    "live_ready_review_count": int(submission_lane_counts.get("live_ready_review") or 0),
+                    "deferred_submission_count": int(submission_lane_counts.get("deferred_submission") or 0),
+                    "research_only_count": int(submission_action_type_counts.get("research_only") or 0),
+                    "strict_incubation_ready_count": strict_incubation_ready_count,
                 }
             )
 
@@ -200,6 +305,12 @@ class _StrategySubmitterActionsMixin:
                 "gate_3_failed": gate_3_failed,
                 "gate_3_provisional_passed": gate_3_provisional_passed,
                 "gate_3_failure_reason_topn": gate_report["gate_3"]["failure_reason_topn"],
+                "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
+                "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
+                "live_ready_review_count": int(submission_lane_counts.get("live_ready_review") or 0),
+                "deferred_submission_count": int(submission_lane_counts.get("deferred_submission") or 0),
+                "research_only_count": int(submission_action_type_counts.get("research_only") or 0),
+                "strict_incubation_ready_count": strict_incubation_ready_count,
                 "quality_gate": gate_report,
                 "gate_report": gate_report,
                 "incubation_budget_summary": incubation_budget_summary,
@@ -209,6 +320,7 @@ class _StrategySubmitterActionsMixin:
         async def _submit_one(self, candidate: dict, snapshot: dict, db) -> dict:
             """处理单个候选策略的完整提交流程。"""
             candidate = apply_resolved_candidate_envelope(candidate)
+            candidate = self._ensure_runtime_playbook(candidate)
             run_submission_quality_gate = get_compat_symbol(
                 _LEGACY_SUBMISSION_GATE_MODULE,
                 "run_submission_quality_gate",
@@ -221,6 +333,11 @@ class _StrategySubmitterActionsMixin:
             strategy_id = str((existing_strategy or {}).get("id") or f"factory_{int(_time.time())}_{uuid4().hex[:8]}")
             name = self._candidate_name(candidate, existing_strategy)
             metrics = candidate.get("backtest_metrics", {})
+            semantic_audit: dict[str, Any] = {}
+            if _semantic_contract_feature_enabled():
+                candidate["confidence_contract"] = synthesize_confidence_contract(candidate)
+                semantic_audit = audit_candidate_semantic_contract(candidate)
+                candidate = _apply_candidate_semantic_contract(candidate, semantic_audit)
             data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
             candidate = apply_resolved_candidate_envelope(
                 {
@@ -258,6 +375,8 @@ class _StrategySubmitterActionsMixin:
                     "entry_exit_signature": str((data.get("params") or {}).get("entry_exit_signature") or ""),
                 }
             )
+            if _semantic_contract_feature_enabled():
+                candidate = _apply_candidate_semantic_contract(candidate, semantic_audit)
             validation_report, risk_report = await self._evaluate_reports(candidate, db)
             gate = await run_submission_quality_gate(
                 db,
@@ -278,6 +397,8 @@ class _StrategySubmitterActionsMixin:
                 backtest_metrics=metrics,
                 refresh_existing=refresh_existing,
             )
+            if _semantic_contract_feature_enabled():
+                gate = _apply_semantic_contract_gate(gate, semantic_audit)
             candidate_provenance = self._candidate_provenance(candidate, existing_strategy)
             strategy_profile = dict(candidate_provenance.get("strategy_profile") or {})
             incubation_budget = dict(candidate.get("incubation_budget") or {})
@@ -285,12 +406,56 @@ class _StrategySubmitterActionsMixin:
 
             submission_action = self._resolve_submission_action_plan(
                 gate,
+                candidate=candidate,
                 refresh_existing=refresh_existing,
                 existing_status=existing_status,
                 incubation_budget_track=incubation_budget_track,
             )
             submission_lane = str(submission_action.get("submission_lane") or "deferred_submission")
             final_status = str(submission_action.get("final_status") or "submitted")
+            candidate = self._apply_runtime_bootstrap_contract(
+                candidate,
+                submission_lane=submission_lane,
+                runtime_bootstrap_eligible=bool(submission_action.get("runtime_bootstrap_eligible")),
+                runtime_bootstrap_budget_tier=str(submission_action.get("runtime_bootstrap_budget_tier") or "") or None,
+            )
+            data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
+            candidate = apply_resolved_candidate_envelope(
+                {
+                    **dict(candidate or {}),
+                    "id": strategy_id,
+                    "name": name,
+                    "params": dict(data.get("params") or {}),
+                    "target_symbols": list((data.get("params") or {}).get("target_symbols") or candidate.get("target_symbols") or []),
+                    "stock_pool": dict((data.get("params") or {}).get("stock_pool") or candidate.get("stock_pool") or {}),
+                    "research_task": dict((data.get("params") or {}).get("research_task") or candidate.get("research_task") or {}),
+                    "validation_profile": dict(
+                        (data.get("params") or {}).get("validation_profile")
+                        or candidate.get("validation_profile")
+                        or {}
+                    ),
+                    "targeting_policy": dict(
+                        (data.get("params") or {}).get("targeting_policy")
+                        or candidate.get("targeting_policy")
+                        or {}
+                    ),
+                    "constraint_check": dict(
+                        (data.get("params") or {}).get("constraint_check")
+                        or candidate.get("constraint_check")
+                        or {}
+                    ),
+                    "candidate_contract_snapshot": dict((data.get("params") or {}).get("candidate_contract_snapshot") or {}),
+                    "candidate_contract_hash": str((data.get("params") or {}).get("candidate_contract_hash") or ""),
+                    "execution_contract_hash": str((data.get("params") or {}).get("execution_contract_hash") or ""),
+                    "tested_object_hash": str((data.get("params") or {}).get("tested_object_hash") or ""),
+                    "candidate_identity_signature": str((data.get("params") or {}).get("candidate_identity_signature") or ""),
+                    "candidate_lineage_contract": dict((data.get("params") or {}).get("candidate_lineage_contract") or {}),
+                    "logic_signature": str((data.get("params") or {}).get("logic_signature") or ""),
+                    "dsl_signature": str((data.get("params") or {}).get("dsl_signature") or ""),
+                    "factor_signature": str((data.get("params") or {}).get("factor_signature") or ""),
+                    "entry_exit_signature": str((data.get("params") or {}).get("entry_exit_signature") or ""),
+                }
+            )
             should_persist_strategy = not refresh_existing or bool(gate.get("passed"))
             if should_persist_strategy:
                 await db.save_strategy(data)
@@ -429,6 +594,47 @@ class _StrategySubmitterActionsMixin:
                             strategy_id,
                             exc,
                         )
+            if _semantic_contract_feature_enabled():
+                candidate_evidence_rows = build_candidate_evidence_records(
+                    candidate,
+                    strategy_id=strategy_id,
+                )
+                if callable(getattr(db, "save_strategy_candidate_evidence", None)):
+                    for evidence_payload in candidate_evidence_rows:
+                        try:
+                            persisted_candidate_evidence = db.save_strategy_candidate_evidence(
+                                {
+                                    "id": evidence_payload.get("id"),
+                                    "candidate_id": evidence_payload.get("candidate_id"),
+                                    "strategy_id": strategy_id,
+                                    "candidate_artifact_id": evidence_payload.get("candidate_artifact_id"),
+                                    "experiment_id": evidence_payload.get("experiment_id"),
+                                    "evidence_id": evidence_payload.get("evidence_id"),
+                                    "evidence_type": evidence_payload.get("evidence_type"),
+                                    "source_type": evidence_payload.get("source_type"),
+                                    "event_type": evidence_payload.get("event_type"),
+                                    "target_symbols": evidence_payload.get("target_symbols") or [],
+                                    "direction": evidence_payload.get("direction"),
+                                    "horizon_days": evidence_payload.get("horizon_days"),
+                                    "raw_confidence": evidence_payload.get("raw_confidence"),
+                                    "calibrated_confidence": evidence_payload.get("calibrated_confidence"),
+                                    "freshness_ts": evidence_payload.get("freshness_ts"),
+                                    "proxy_only": evidence_payload.get("proxy_only"),
+                                    "support_metric": evidence_payload.get("support_metric") or {},
+                                    "doc_uid": evidence_payload.get("doc_uid"),
+                                    "headline_label_id": evidence_payload.get("headline_label_id"),
+                                    "source_task_key": evidence_payload.get("source_task_key") or evidence_payload.get("task_key"),
+                                    "payload": evidence_payload.get("evidence_payload") or evidence_payload,
+                                }
+                            )
+                            if inspect.isawaitable(persisted_candidate_evidence):
+                                await persisted_candidate_evidence
+                        except Exception as exc:
+                            logger.warning(
+                                "StrategySubmitter: save candidate evidence failed for %s: %s",
+                                strategy_id,
+                                exc,
+                            )
             final_status = str(post_gate.get("final_status") or final_status)
             submission_lane = str(post_gate.get("submission_lane") or submission_lane)
             if self._get_optional_db_method(db, "save_strategy_quality_report") is not None:
@@ -634,6 +840,8 @@ class _StrategySubmitterActionsMixin:
                     "created_audit_only": created_audit_only,
                 }
             )
+            for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                _assign_optional_payload(summary, field_name, candidate.get(field_name))
             return {
                 "created": created_strategy_pool,
                 "created_total": created_total,
@@ -755,11 +963,56 @@ class _StrategySubmitterActionsMixin:
                 "rebalance_rule": dict(candidate.get("rebalance_rule") or existing_params.get("rebalance_rule") or {}),
                 "portfolio_spec": dict(candidate.get("portfolio_spec") or existing_params.get("portfolio_spec") or {}),
                 "execution_assumptions": dict(candidate.get("execution_assumptions") or existing_params.get("execution_assumptions") or {}),
+                "runtime_playbook": dict(candidate.get("runtime_playbook") or existing_params.get("runtime_playbook") or {}),
                 "validation_profile": dict(candidate.get("validation_profile") or existing_params.get("validation_profile") or {}),
                 "targeting_policy": dict(candidate.get("targeting_policy") or existing_params.get("targeting_policy") or {}),
                 "constraint_check": dict(candidate.get("constraint_check") or existing_params.get("constraint_check") or {}),
                 "task_signature": _build_task_signature(normalized_task),
             }
+            _assign_if_present(
+                stored_params,
+                "evidence_chain",
+                dict(candidate.get("evidence_chain") or existing_params.get("evidence_chain") or {}),
+            )
+            _assign_if_present(
+                stored_params,
+                "prediction_contract",
+                dict(candidate.get("prediction_contract") or existing_params.get("prediction_contract") or {}),
+            )
+            _assign_if_present(
+                stored_params,
+                "confidence_contract",
+                dict(candidate.get("confidence_contract") or existing_params.get("confidence_contract") or {}),
+            )
+            _assign_if_present(
+                stored_params,
+                "evidence_alignment_audit",
+                dict(candidate.get("evidence_alignment_audit") or existing_params.get("evidence_alignment_audit") or {}),
+            )
+            _assign_if_present(
+                stored_params,
+                "dsl_support_audit",
+                dict(candidate.get("dsl_support_audit") or existing_params.get("dsl_support_audit") or {}),
+            )
+            if candidate.get("legacy_semantic_contract") is not None:
+                stored_params["legacy_semantic_contract"] = bool(candidate.get("legacy_semantic_contract"))
+            if candidate.get("contradiction_count") is not None:
+                stored_params["contradiction_count"] = int(candidate.get("contradiction_count") or 0)
+            if candidate.get("proxy_dependency_score") is not None:
+                stored_params["proxy_dependency_score"] = candidate.get("proxy_dependency_score")
+            for field_name in (
+                "semantic_runtime_match",
+                "runtime_family_data_source",
+                "proxy_runtime_used",
+                "diagnostic_only",
+                "execution_readiness_tier",
+                "semantic_contract_missing_fields",
+                "execution_semantic_gap_reasons",
+            ):
+                value = candidate.get(field_name)
+                if value in (None, "", [], {}):
+                    value = existing_params.get(field_name)
+                _assign_if_present(stored_params, field_name, value)
             if candidate_provenance:
                 stored_params["candidate_provenance"] = candidate_provenance
                 if candidate_provenance.get("source_candidate_artifact_id"):
@@ -925,14 +1178,455 @@ class _StrategySubmitterActionsMixin:
                     logger.warning("StrategySubmitter: save risk metrics failed for %s: %s", strategy_id, exc)
 
         @staticmethod
+        def _normalized_validation_grade(gate: Optional[dict[str, Any]]) -> str:
+            normalized_gate = dict(gate or {})
+            return str(
+                normalized_gate.get("effective_validation_grade")
+                or normalized_gate.get("validation_grade")
+                or normalized_gate.get("raw_validation_grade")
+                or ""
+            ).strip().upper()
+
+        @staticmethod
+        def _strategy_type_registered(candidate: Optional[dict[str, Any]]) -> bool:
+            strategy_type = str(
+                candidate_contract_value(candidate or {}, "strategy_type")
+                or dict(candidate or {}).get("strategy_type")
+                or ""
+            ).strip().lower()
+            return bool(strategy_type) and strategy_type in _VALID_STRATEGY_TYPES
+
+        @staticmethod
+        def _default_runtime_holding_horizon(strategy_type: str) -> dict[str, Any]:
+            normalized = str(strategy_type or "").strip().lower()
+            if normalized in {"quality_factor", "value_factor"}:
+                return {"min_days": 30, "max_days": 84, "cooldown_window_days": 7}
+            if normalized in {"momentum", "ma_cross", "volatility_breakout"}:
+                return {"min_days": 14, "max_days": 48, "cooldown_window_days": 5}
+            return {"min_days": 5, "max_days": 20, "cooldown_window_days": 5}
+
+        @staticmethod
+        def _default_runtime_trade_plan(strategy_type: str) -> dict[str, Any]:
+            normalized = str(strategy_type or "").strip().lower()
+            if normalized == "momentum":
+                return {
+                    "entry_bias": "trend_persistence_confirmation",
+                    "exit_bias": "false_breakout_or_momentum_decay",
+                }
+            if normalized == "ma_cross":
+                return {
+                    "entry_bias": "adaptive_cross_with_volume_confirmation",
+                    "exit_bias": "range_reentry_or_cross_failure",
+                }
+            if normalized in {"quality_factor", "value_factor"}:
+                return {
+                    "entry_bias": "cross_sectional_rank",
+                    "exit_bias": "rank_decay_or_periodic_rebalance",
+                }
+            return {
+                "entry_bias": "signal_confirmed",
+                "exit_bias": "signal_or_time_stop",
+            }
+
+        @classmethod
+        def _default_runtime_risk_rules(cls, strategy_type: str, holding_horizon: dict[str, Any]) -> dict[str, Any]:
+            normalized = str(strategy_type or "").strip().lower()
+            max_holding_days = int(holding_horizon.get("max_days") or 20)
+            if normalized in {"quality_factor", "value_factor"}:
+                return {
+                    "stop_loss_pct": 0.08,
+                    "take_profit_pct": 0.18,
+                    "max_holding_days": max(max_holding_days, 42),
+                    "cooldown_days": max(5, int(holding_horizon.get("cooldown_window_days") or 7)),
+                }
+            return {
+                "stop_loss_pct": 0.10,
+                "take_profit_pct": 0.20,
+                "max_holding_days": max_holding_days,
+                "cooldown_days": max(3, int(holding_horizon.get("cooldown_window_days") or 5)),
+            }
+
+        @staticmethod
+        def _default_runtime_execution_assumptions() -> dict[str, Any]:
+            return {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            }
+
+        @classmethod
+        def _runtime_playbook_from_contract(cls, candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            playbook = dict(candidate_contract_value(payload, "runtime_playbook", {}) or {})
+            if playbook:
+                return playbook
+            holding_horizon = dict(candidate_contract_value(payload, "holding_horizon", {}) or {})
+            trade_plan = dict(candidate_contract_value(payload, "trade_plan", {}) or {})
+            risk_rules = dict(candidate_contract_value(payload, "risk_rules", {}) or {})
+            execution_assumptions = dict(candidate_contract_value(payload, "execution_assumptions", {}) or {})
+            portfolio_spec = dict(candidate_contract_value(payload, "portfolio_spec", {}) or {})
+            if not holding_horizon and not trade_plan and not risk_rules and not execution_assumptions:
+                return {}
+
+            strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+            stop_loss_pct = abs(float(risk_rules.get("stop_loss_pct") or risk_rules.get("stop_loss") or 0.08) or 0.08)
+            take_profit_pct = abs(
+                float(risk_rules.get("take_profit_pct") or risk_rules.get("take_profit") or max(stop_loss_pct * 2.0, 0.12))
+                or max(stop_loss_pct * 2.0, 0.12)
+            )
+            time_stop_days = max(1, int(risk_rules.get("max_holding_days") or holding_horizon.get("max_days") or 20))
+            cooldown_days = max(
+                1,
+                int(
+                    risk_rules.get("cooldown_days")
+                    or risk_rules.get("cooldown_window_days")
+                    or trade_plan.get("cooldown_window_days")
+                    or holding_horizon.get("cooldown_window_days")
+                    or 5
+                ),
+            )
+            max_position_pct = min(
+                0.35,
+                max(
+                    0.02,
+                    float(
+                        portfolio_spec.get("max_position_pct")
+                        or risk_rules.get("max_position_pct")
+                        or 0.18
+                    )
+                    or 0.18,
+                ),
+            )
+            family = "default"
+            if strategy_type in {"momentum", "ma_cross", "volatility_breakout"}:
+                family = "trend"
+            elif strategy_type in {"quality_factor", "value_factor"}:
+                family = "slow_factor"
+                time_stop_days = max(time_stop_days, 42)
+            failure_exit_rule = (
+                "opposite_signal_or_breakout_failure"
+                if family == "trend"
+                else "quality_drift_or_rank_decay"
+                if family == "slow_factor"
+                else "signal_or_time_stop"
+            )
+            playbook = {
+                "entry_policy": {
+                    "order_style": "marketable_limit",
+                    "signal_validity_days": max(1, min(5, max(1, time_stop_days // 5))),
+                    "max_slippage_bps": float(
+                        execution_assumptions.get("max_slippage_bps")
+                        or execution_assumptions.get("slippage_bps")
+                        or 5.0
+                    ),
+                    "tradability_guard": bool(
+                        execution_assumptions.get("tradability_filter")
+                        if execution_assumptions.get("tradability_filter") is not None
+                        else True
+                    ),
+                },
+                "exit_policy": {
+                    "initial_stop_loss_pct": round(max(0.02, stop_loss_pct), 4),
+                    "take_profit_pct": round(max(take_profit_pct, stop_loss_pct), 4),
+                    "trailing_stop_pct": round(max(0.03, min(stop_loss_pct * (0.8 if family == "trend" else 1.0), 0.12)), 4),
+                    "trailing_activation_profit_pct": round(max(stop_loss_pct, 0.05), 4),
+                    "time_stop_days": int(time_stop_days),
+                    "failure_exit_rule": failure_exit_rule,
+                },
+                "adverse_move_policy": {
+                    "loss_bands": [
+                        {
+                            "threshold_pct": round(max(0.01, stop_loss_pct * 0.5), 4),
+                            "action": "hold",
+                            "label": "soft_drawdown_watch",
+                        },
+                        {
+                            "threshold_pct": round(max(0.02, stop_loss_pct), 4),
+                            "action": "reduce" if family == "slow_factor" else "exit",
+                            "label": "primary_stop_band",
+                        },
+                        {
+                            "threshold_pct": round(max(0.03, stop_loss_pct * 1.2), 4),
+                            "action": "freeze_reentry",
+                            "label": "hard_stop_band",
+                        },
+                    ],
+                    "average_down": "forbid",
+                    "freeze_after_stop": True,
+                    "reduce_on_drawdown": family == "slow_factor",
+                },
+                "reentry_policy": {
+                    "cooldown_days": int(cooldown_days),
+                    "reclaim_condition": (
+                        "reclaim_fast_ma_and_break_recent_high"
+                        if family == "trend"
+                        else "recover_rank_and_trend_alignment"
+                        if family == "slow_factor"
+                        else "signal_reconfirm_after_cooldown"
+                    ),
+                    "max_retries_per_20d": 1 if family == "slow_factor" else 2,
+                },
+                "position_policy": {
+                    "budget_mode": "fixed_fraction",
+                    "base_budget_pct": 0.05 if family == "slow_factor" else 0.04,
+                    "max_position_pct": round(max_position_pct, 4),
+                    "max_concurrent_positions": 2 if family in {"trend", "slow_factor"} else 1,
+                    "scale_in": {"enabled": False, "mode": "forbid"},
+                    "scale_out": {
+                        "enabled": family == "slow_factor",
+                        "mode": "reduce_then_exit" if family == "slow_factor" else "take_profit_or_trailing",
+                    },
+                },
+                "incubation_policy": {
+                    "warmup_target_signals": 20,
+                    "warmup_soft_timeout_days": 5,
+                    "warmup_hard_timeout_days": 20,
+                    "warmup_max_days": 30,
+                },
+            }
+            return playbook
+
+        @classmethod
+        def _ensure_runtime_playbook(cls, candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            params = dict(payload.get("params") or {})
+            strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+            holding_horizon = dict(candidate_contract_value(payload, "holding_horizon", {}) or {})
+            if not holding_horizon:
+                holding_horizon = cls._default_runtime_holding_horizon(strategy_type)
+            trade_plan = dict(candidate_contract_value(payload, "trade_plan", {}) or {})
+            if not trade_plan:
+                trade_plan = cls._default_runtime_trade_plan(strategy_type)
+            risk_rules = dict(candidate_contract_value(payload, "risk_rules", {}) or {})
+            if not risk_rules:
+                risk_rules = cls._default_runtime_risk_rules(strategy_type, holding_horizon)
+            execution_assumptions = dict(candidate_contract_value(payload, "execution_assumptions", {}) or {})
+            if not execution_assumptions:
+                execution_assumptions = cls._default_runtime_execution_assumptions()
+            payload["holding_horizon"] = holding_horizon
+            payload["trade_plan"] = trade_plan
+            payload["risk_rules"] = risk_rules
+            payload["execution_assumptions"] = execution_assumptions
+            params.update(
+                {
+                    "holding_horizon": dict(holding_horizon),
+                    "trade_plan": dict(trade_plan),
+                    "risk_rules": dict(risk_rules),
+                    "execution_assumptions": dict(execution_assumptions),
+                }
+            )
+            playbook = cls._runtime_playbook_from_contract(payload)
+            if not playbook:
+                payload["params"] = params
+                return payload
+            params["runtime_playbook"] = dict(playbook)
+            payload["params"] = params
+            payload["runtime_playbook"] = dict(playbook)
+            return payload
+
+        @classmethod
+        def _runtime_bootstrap_context(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            candidate: Optional[dict[str, Any]],
+        ) -> dict[str, Any]:
+            normalized_gate = dict(gate or {})
+            payload = cls._ensure_runtime_playbook(candidate)
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            strategy_type_registered = cls._strategy_type_registered(payload)
+            missing_runtime_fields = [
+                field_name
+                for field_name in _RUNTIME_BOOTSTRAP_REQUIRED_FIELDS
+                if candidate_contract_value(payload, field_name) in _EMPTY_CONTRACT_VALUES
+            ]
+            runtime_playbook_present = bool(candidate_contract_value(payload, "runtime_playbook", {}))
+            execution_semantic_mode = str(
+                candidate_contract_value(payload, "execution_semantic_mode") or ""
+            ).strip().lower() or None
+            execution_semantic_gap = bool(candidate_contract_value(payload, "execution_semantic_gap"))
+            execution_semantic_gap_reasons = [
+                str(item or "").strip()
+                for item in list(candidate_contract_value(payload, "execution_semantic_gap_reasons", []) or [])
+                if str(item or "").strip()
+            ]
+            dsl_required = bool(candidate_contract_value(payload, "dsl_required"))
+            dsl_compiled = bool(candidate_contract_value(payload, "dsl_compiled"))
+            semantic_runtime_match = bool(
+                candidate_contract_value(payload, "semantic_runtime_match", True)
+            )
+            runtime_family_data_source = str(
+                candidate_contract_value(payload, "runtime_family_data_source") or ""
+            ).strip().lower() or None
+            proxy_runtime_used = bool(candidate_contract_value(payload, "proxy_runtime_used"))
+            diagnostic_only = bool(candidate_contract_value(payload, "diagnostic_only"))
+            execution_readiness_tier = str(
+                candidate_contract_value(payload, "execution_readiness_tier") or ""
+            ).strip().lower() or None
+            semantic_contract_missing_fields = [
+                str(item or "").strip()
+                for item in list(candidate_contract_value(payload, "semantic_contract_missing_fields", []) or [])
+                if str(item or "").strip()
+            ]
+            semantic_hard_fail = bool(
+                list(
+                    dict(payload.get("evidence_alignment_audit") or {}).get("hard_fail_reasons") or []
+                )
+            )
+            quality_passed = bool(normalized_gate.get("passed"))
+            runtime_bootstrap_eligible = (
+                quality_passed
+                and validation_grade != "D"
+                and strategy_type_registered
+                and not missing_runtime_fields
+                and not semantic_hard_fail
+            )
+            if runtime_bootstrap_eligible:
+                runtime_bootstrap_reason = (
+                    "execution_semantic_gap_observe_only"
+                    if execution_semantic_gap
+                    else "proxy_runtime_observe_only"
+                    if proxy_runtime_used
+                    else "diagnostic_only_observe"
+                    if diagnostic_only
+                    else "quality_passed_non_d_candidate_with_complete_runtime_contract"
+                )
+            elif not quality_passed:
+                runtime_bootstrap_reason = "quality_gate_failed"
+            elif validation_grade == "D":
+                runtime_bootstrap_reason = "validation_grade_d_not_allowed_for_runtime"
+            elif not strategy_type_registered:
+                runtime_bootstrap_reason = "strategy_type_not_registered"
+            elif missing_runtime_fields:
+                runtime_bootstrap_reason = f"missing_runtime_contract:{','.join(missing_runtime_fields)}"
+            elif semantic_hard_fail:
+                runtime_bootstrap_reason = "semantic_hard_fail"
+            else:
+                runtime_bootstrap_reason = "runtime_bootstrap_blocked"
+            budget_tier = None
+            if runtime_bootstrap_eligible:
+                budget_tier = (
+                    "micro"
+                    if execution_semantic_gap or proxy_runtime_used or diagnostic_only
+                    else "standard" if validation_grade in {"A", "B"} else "micro"
+                )
+            return {
+                "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
+                "runtime_bootstrap_reason": runtime_bootstrap_reason,
+                "runtime_bootstrap_budget_tier": budget_tier,
+                "runtime_playbook_present": runtime_playbook_present,
+                "runtime_contract_missing_fields": missing_runtime_fields,
+                "strategy_type_registered": strategy_type_registered,
+                "execution_semantic_mode": execution_semantic_mode,
+                "execution_semantic_gap": execution_semantic_gap,
+                "execution_semantic_gap_reasons": execution_semantic_gap_reasons,
+                "dsl_required": dsl_required,
+                "dsl_compiled": dsl_compiled,
+                "semantic_runtime_match": semantic_runtime_match,
+                "runtime_family_data_source": runtime_family_data_source,
+                "proxy_runtime_used": proxy_runtime_used,
+                "diagnostic_only": diagnostic_only,
+                "execution_readiness_tier": execution_readiness_tier,
+                "semantic_contract_missing_fields": semantic_contract_missing_fields,
+            }
+
+        @classmethod
+        def _apply_runtime_bootstrap_contract(
+            cls,
+            candidate: Optional[dict[str, Any]],
+            *,
+            submission_lane: str,
+            runtime_bootstrap_eligible: bool,
+            runtime_bootstrap_budget_tier: Optional[str],
+        ) -> dict[str, Any]:
+            payload = cls._ensure_runtime_playbook(candidate)
+            if (
+                str(submission_lane or "").strip().lower() != "observe_incubation"
+                or not runtime_bootstrap_eligible
+                or runtime_bootstrap_budget_tier not in {"standard", "micro"}
+            ):
+                return payload
+            playbook = dict(payload.get("runtime_playbook") or {})
+            entry_policy = dict(playbook.get("entry_policy") or {})
+            position_policy = dict(playbook.get("position_policy") or {})
+            entry_policy["order_style"] = "marketable_limit"
+            if runtime_bootstrap_budget_tier == "standard":
+                position_policy["base_budget_pct"] = 0.06
+                position_policy["max_concurrent_positions"] = 2
+            else:
+                position_policy["base_budget_pct"] = 0.03
+                position_policy["max_concurrent_positions"] = 1
+            playbook["entry_policy"] = entry_policy
+            playbook["position_policy"] = position_policy
+            params = dict(payload.get("params") or {})
+            params["runtime_playbook"] = dict(playbook)
+            payload["params"] = params
+            payload["runtime_playbook"] = dict(playbook)
+            return payload
+
+        @classmethod
+        def _should_bootstrap_observe_candidate(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            incubation_budget_track: str,
+        ) -> bool:
+            normalized_gate = dict(gate or {})
+            track = str(incubation_budget_track or "").strip().lower()
+            if track not in {"", "deferred_budget_queue", "deferred_submission"}:
+                return False
+            if not bool(normalized_gate.get("passed")):
+                return False
+            if bool(normalized_gate.get("live_candidate_ready")):
+                return False
+            if bool(normalized_gate.get("research_only_due_to_trade_audit_gap")):
+                return False
+            if not bool(normalized_gate.get("research_candidate_ready")):
+                return False
+            if not bool(normalized_gate.get("strict_incubation_ready")):
+                return False
+            if str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() != "strict":
+                return False
+            if bool(normalized_gate.get("provisional_pass")):
+                return False
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            return validation_grade in {"A", "B"}
+
+        @classmethod
+        def _allow_observe_trade_audit_bootstrap(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            incubation_budget_track: str,
+        ) -> bool:
+            normalized_gate = dict(gate or {})
+            if str(incubation_budget_track or "").strip().lower() != "observe_incubation":
+                return False
+            if not bool(normalized_gate.get("passed")):
+                return False
+            if not bool(normalized_gate.get("research_candidate_ready")):
+                return False
+            if bool(normalized_gate.get("live_candidate_ready")):
+                return False
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            return validation_grade != "D"
+
+        @classmethod
         def _resolve_submission_action_plan(
+            cls,
             gate: dict,
             *,
+            candidate: Optional[dict[str, Any]] = None,
             refresh_existing: bool,
             existing_status: str,
             incubation_budget_track: str,
         ) -> dict[str, Any]:
             normalized_gate = dict(gate or {})
+            runtime_bootstrap = cls._runtime_bootstrap_context(
+                normalized_gate,
+                candidate=candidate,
+            )
             readiness_fields = (
                 "research_candidate_ready",
                 "incubation_candidate_ready",
@@ -961,34 +1655,58 @@ class _StrategySubmitterActionsMixin:
                 fallback_conditions = ["re_enter_after_quality_gaps_closed"]
                 next_step = "incubation"
                 completed = True
-            elif bool(normalized_gate.get("live_candidate_ready")):
-                action_type = "runtime_review"
-                submission_lane = "live_ready_review"
-                final_status = "submitted"
-                trigger = "live_candidate_ready"
-                gaps = []
-                fallback_conditions = [
-                    "downgrade_to_paper_if_runtime_review_fails",
-                    "return_to_research_if_runtime_alerts_fire",
-                ]
-                next_step = "pool_admission"
-                completed = False
-            elif bool(normalized_gate.get("research_only_due_to_trade_audit_gap")) or not bool(normalized_gate.get("incubation_candidate_ready")):
-                action_type = "research_only"
-                submission_lane = "deferred_submission"
-                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
-                trigger = (
-                    "research_only_due_to_trade_audit_gap"
-                    if bool(normalized_gate.get("research_only_due_to_trade_audit_gap"))
-                    else "incubation_admission_not_ready"
+            elif bool(normalized_gate.get("live_candidate_ready")) and not bool(runtime_bootstrap.get("execution_semantic_gap")):
+                formal_runtime_ready = (
+                    bool(runtime_bootstrap.get("semantic_runtime_match"))
+                    and not bool(runtime_bootstrap.get("proxy_runtime_used"))
+                    and not bool(runtime_bootstrap.get("diagnostic_only"))
+                    and str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() == "formal_runtime_ready"
                 )
-                gaps = admission_block_reasons
-                fallback_conditions = ["promote_after_trade_audit_completed"]
-                next_step = "research"
-                completed = True
+                if not formal_runtime_ready:
+                    action_type = "paper"
+                    submission_lane = "observe_incubation"
+                    final_status = "submitted"
+                    trigger = str(
+                        runtime_bootstrap.get("runtime_bootstrap_reason")
+                        or "formal_lane_requires_semantic_runtime_match"
+                    )
+                    gaps = list(
+                        dict.fromkeys(
+                            [
+                                *admission_block_reasons,
+                                trigger,
+                            ]
+                        )
+                    )
+                    fallback_conditions = [
+                        "promote_after_runtime_data_source_and_semantic_contract_are_repaired",
+                    ]
+                    next_step = "runtime_review"
+                    completed = False
+                else:
+                    action_type = "runtime_review"
+                    submission_lane = "live_ready_review"
+                    final_status = "submitted"
+                    trigger = "live_candidate_ready"
+                    gaps = []
+                    fallback_conditions = [
+                        "downgrade_to_paper_if_runtime_review_fails",
+                        "return_to_research_if_runtime_alerts_fire",
+                    ]
+                    next_step = "pool_admission"
+                    completed = False
             elif (
-                str(incubation_budget_track or "").strip().lower() == "formal_incubation"
-                and str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
+                runtime_bootstrap.get("runtime_bootstrap_eligible")
+                and str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+                and not bool(runtime_bootstrap.get("execution_semantic_gap"))
+                and bool(runtime_bootstrap.get("semantic_runtime_match"))
+                and not bool(runtime_bootstrap.get("proxy_runtime_used"))
+                and not bool(runtime_bootstrap.get("diagnostic_only"))
+                and str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() == "formal_runtime_ready"
+                and (
+                    bool(normalized_gate.get("strict_incubation_ready"))
+                    or str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
+                )
             ):
                 action_type = "incubation"
                 submission_lane = "formal_incubation"
@@ -996,49 +1714,60 @@ class _StrategySubmitterActionsMixin:
                 trigger = "strict_incubation_ready_and_budget_formal"
                 gaps = admission_block_reasons
                 fallback_conditions = [
-                    "downgrade_to_paper_if_incubation_readiness_drops",
+                    "downgrade_to_observe_if_signal_quality_or_execution_evidence_weakens",
                     "return_to_research_if_runtime_risk_accumulates",
                 ]
                 next_step = "paper"
                 completed = False
-            elif str(incubation_budget_track or "").strip().lower() == "formal_incubation":
+            elif runtime_bootstrap.get("runtime_bootstrap_eligible"):
+                action_type = "paper"
+                submission_lane = "observe_incubation"
+                final_status = "submitted"
+                trigger = "runtime_bootstrap_observe"
+                gaps = admission_block_reasons
+                fallback_conditions = [
+                    "promote_to_formal_after_signal_quality_and_execution_conversion_improve",
+                    "return_to_research_if_runtime_bootstrap_evidence_turns_negative",
+                ]
+                next_step = "runtime_review"
+                completed = False
+            elif (
+                str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+            ):
                 action_type = "research_only"
                 submission_lane = "deferred_submission"
                 final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
-                trigger = "formal_incubation_requires_strict_gate"
+                trigger = "formal_incubation_requires_bootstrap_or_strict_gate"
                 gaps = list(
                     dict.fromkeys(
                         [
                             *list(admission_block_reasons),
-                            "strict_incubation_pass_required_for_formal_track",
+                            str(runtime_bootstrap.get("runtime_bootstrap_reason") or "strict_incubation_pass_required_for_formal_track"),
                         ]
                     )
                 )
                 fallback_conditions = [
-                    "promote_after_strict_incubation_gate_passes",
-                    "observe_track_allowed_only_after_budget_rebalance",
+                    "promote_after_runtime_contract_is_repaired_or_quality_improves",
+                    "observe_track_allowed_after_runtime_bootstrap_eligibility_is_restored",
                 ]
                 next_step = "research"
                 completed = True
             elif str(incubation_budget_track or "").strip().lower() == "observe_incubation":
-                action_type = "paper"
-                submission_lane = "observe_incubation"
-                final_status = "submitted"
-                trigger = "observe_track_paper_route"
-                gaps = admission_block_reasons
-                fallback_conditions = [
-                    "return_to_research_if_paper_fill_quality_weak",
-                    "promote_to_runtime_review_after_paper_pass",
-                ]
-                next_step = "runtime_review"
-                completed = False
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
+                trigger = str(runtime_bootstrap.get("runtime_bootstrap_reason") or "observe_track_runtime_contract_incomplete")
+                gaps = list(dict.fromkeys([*admission_block_reasons, trigger]))
+                fallback_conditions = ["repair_runtime_contract_and_replay_submission"]
+                next_step = "research"
+                completed = True
             else:
                 action_type = "research_only"
                 submission_lane = "deferred_submission"
                 final_status = "submitted"
-                trigger = "budget_deferred_research_only"
-                gaps = admission_block_reasons
-                fallback_conditions = ["promote_to_incubation_after_budget_released"]
+                trigger = str(runtime_bootstrap.get("runtime_bootstrap_reason") or "budget_deferred_research_only")
+                gaps = list(dict.fromkeys([*admission_block_reasons, trigger]))
+                fallback_conditions = ["promote_to_observe_after_runtime_bootstrap_eligibility_is_restored"]
                 next_step = "incubation"
                 completed = True
 
@@ -1051,6 +1780,7 @@ class _StrategySubmitterActionsMixin:
                 "submission_lane": submission_lane,
                 "final_status": final_status,
                 "completed": bool(completed),
+                **runtime_bootstrap,
             }
             return {
                 "submission_action": plan,
@@ -1062,6 +1792,7 @@ class _StrategySubmitterActionsMixin:
                 "submission_action_completed": bool(completed),
                 "submission_lane": submission_lane,
                 "final_status": final_status,
+                **runtime_bootstrap,
             }
 
         @classmethod
@@ -1069,12 +1800,14 @@ class _StrategySubmitterActionsMixin:
             cls,
             gate: dict,
             *,
+            candidate: Optional[dict[str, Any]] = None,
             refresh_existing: bool,
             existing_status: str,
             incubation_budget_track: str,
         ) -> tuple[str, str]:
             plan = cls._resolve_submission_action_plan(
                 gate,
+                candidate=candidate,
                 refresh_existing=refresh_existing,
                 existing_status=existing_status,
                 incubation_budget_track=incubation_budget_track,
@@ -1109,6 +1842,21 @@ class _StrategySubmitterActionsMixin:
                 "promotion_review_score",
                 "pool_admission_applied",
                 "promotion_applied_transition",
+                "runtime_bootstrap_eligible",
+                "runtime_bootstrap_reason",
+                "runtime_bootstrap_budget_tier",
+                "runtime_playbook_present",
+                "execution_semantic_mode",
+                "execution_semantic_gap",
+                "execution_semantic_gap_reasons",
+                "dsl_required",
+                "dsl_compiled",
+                "semantic_runtime_match",
+                "runtime_family_data_source",
+                "proxy_runtime_used",
+                "diagnostic_only",
+                "execution_readiness_tier",
+                "semantic_contract_missing_fields",
                 "submission_action",
                 "submission_action_type",
                 "submission_action_trigger",
@@ -1157,7 +1905,7 @@ class _StrategySubmitterActionsMixin:
                         paper_account_id,
                         "active",
                         stage="paper",
-                        observation_candidate=True,
+                        promotion_candidate=False,
                     )
                     paper_account_status = (updated or {}).get("status") if isinstance(updated, dict) else "active"
             except Exception as exc:
@@ -1536,6 +2284,207 @@ class _StrategySubmitterActionsMixin:
             }
 
         @classmethod
+        def _build_replay_candidate(
+            cls,
+            strategy: dict,
+            *,
+            latest_report: Optional[dict],
+            backtest_metrics: Optional[dict],
+        ) -> dict[str, Any]:
+            payload = dict(strategy or {})
+            params = dict(payload.get("params") or {})
+            report = dict(latest_report or {})
+            summary = dict(report.get("summary") or {})
+            quality_gate = dict(report.get("quality_gate") or {})
+            candidate = apply_resolved_candidate_envelope(
+                {
+                    **payload,
+                    "id": payload.get("id"),
+                    "name": payload.get("name"),
+                    "strategy_type": payload.get("strategy_type"),
+                    "params": params,
+                    "spawn_reason": (
+                        summary.get("spawn_reason")
+                        or payload.get("spawn_reason")
+                        or params.get("spawn_reason")
+                    ),
+                    "dedup_result": dict(
+                        report.get("dedup_report")
+                        or payload.get("dedup_result")
+                        or params.get("dedup_result")
+                        or {}
+                    ),
+                    "committee_review": dict(
+                        report.get("committee_review")
+                        or summary.get("committee_review")
+                        or payload.get("committee_review")
+                        or params.get("committee_review")
+                        or {}
+                    ),
+                    "backtest_metrics": dict(backtest_metrics or report.get("backtest_metrics") or {}),
+                }
+            )
+            incubation_budget = dict(
+                candidate.get("incubation_budget")
+                or params.get("incubation_budget")
+                or summary.get("incubation_budget")
+                or {}
+            )
+            summary_track = str(summary.get("incubation_budget_track") or "").strip()
+            if summary_track and not incubation_budget.get("track"):
+                incubation_budget["track"] = summary_track
+            if summary.get("incubation_budget_rank") is not None and incubation_budget.get("rank") is None:
+                incubation_budget["rank"] = summary.get("incubation_budget_rank")
+            if (
+                summary.get("incubation_budget_priority_score") is not None
+                and incubation_budget.get("priority_score") is None
+            ):
+                incubation_budget["priority_score"] = summary.get("incubation_budget_priority_score")
+            if (
+                summary.get("incubation_budget_exploration_candidate") is not None
+                and incubation_budget.get("exploration_candidate") is None
+            ):
+                incubation_budget["exploration_candidate"] = bool(
+                    summary.get("incubation_budget_exploration_candidate")
+                )
+            if incubation_budget:
+                candidate["incubation_budget"] = incubation_budget
+            for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                value = candidate.get(field_name)
+                if value in (None, "", [], {}):
+                    value = params.get(field_name)
+                if value in (None, "", [], {}):
+                    value = summary.get(field_name)
+                if value in (None, "", [], {}):
+                    value = quality_gate.get(field_name)
+                if value not in (None, "", [], {}):
+                    candidate[field_name] = value
+            return cls._ensure_runtime_playbook(candidate)
+
+        async def replay_existing_submission(
+            self,
+            strategy: dict,
+            snapshot: dict,
+            db,
+            *,
+            validation_report: Optional[dict] = None,
+            risk_report: Optional[dict] = None,
+            backtest_metrics: Optional[dict] = None,
+            latest_report: Optional[dict] = None,
+        ) -> dict[str, Any]:
+            strategy_payload = dict(strategy or {})
+            strategy_id = str(strategy_payload.get("id") or "").strip()
+            if not strategy_id:
+                raise ValueError("strategy_id is required for replay_existing_submission")
+            name = str(strategy_payload.get("name") or strategy_id).strip()
+            report = dict(latest_report or {})
+            metrics = dict(backtest_metrics or report.get("backtest_metrics") or {})
+            candidate = self._build_replay_candidate(
+                strategy_payload,
+                latest_report=report,
+                backtest_metrics=metrics,
+            )
+            semantic_audit: dict[str, Any] = {}
+            if _semantic_contract_feature_enabled():
+                candidate["confidence_contract"] = synthesize_confidence_contract(candidate)
+                semantic_audit = audit_candidate_semantic_contract(candidate)
+                candidate = _apply_candidate_semantic_contract(candidate, semantic_audit)
+            incubation_budget = dict(candidate.get("incubation_budget") or {})
+            incubation_budget_track = str(
+                incubation_budget.get("track")
+                or dict(report.get("summary") or {}).get("incubation_budget_track")
+                or "formal_incubation"
+            ).strip().lower() or "formal_incubation"
+            run_submission_quality_gate = get_compat_symbol(
+                _LEGACY_SUBMISSION_GATE_MODULE,
+                "run_submission_quality_gate",
+                _local_run_submission_quality_gate,
+            )
+            gate = await run_submission_quality_gate(
+                db,
+                {**strategy_payload, "status": strategy_payload.get("status")},
+                validation_report=validation_report,
+                risk_report=risk_report,
+                backtest_metrics={
+                    **dict(metrics or {}),
+                    "trade_count": metrics.get("trade_count"),
+                    "trades_count": metrics.get("trades_count"),
+                },
+                incubation_budget_track=incubation_budget_track,
+            )
+            gate = self._apply_factory_submission_policy(
+                candidate,
+                name=name,
+                gate=gate,
+                backtest_metrics=metrics,
+                refresh_existing=False,
+            )
+            if _semantic_contract_feature_enabled():
+                gate = _apply_semantic_contract_gate(gate, semantic_audit)
+            submission_action = self._resolve_submission_action_plan(
+                gate,
+                candidate=candidate,
+                refresh_existing=False,
+                existing_status=str(strategy_payload.get("status") or "submitted"),
+                incubation_budget_track=incubation_budget_track,
+            )
+            submission_lane = str(submission_action.get("submission_lane") or "deferred_submission")
+            final_status = str(submission_action.get("final_status") or strategy_payload.get("status") or "submitted")
+            candidate = self._apply_runtime_bootstrap_contract(
+                candidate,
+                submission_lane=submission_lane,
+                runtime_bootstrap_eligible=bool(submission_action.get("runtime_bootstrap_eligible")),
+                runtime_bootstrap_budget_tier=str(submission_action.get("runtime_bootstrap_budget_tier") or "") or None,
+            )
+            strategy_payload = {
+                **strategy_payload,
+                "params": {
+                    **dict(strategy_payload.get("params") or {}),
+                    "runtime_playbook": dict(candidate.get("runtime_playbook") or {}),
+                },
+            }
+            quality_report = self._build_quality_report(
+                strategy_id=strategy_id,
+                candidate=candidate,
+                snapshot=snapshot,
+                backtest_metrics=metrics,
+                quality_gate=gate,
+                validation_report=validation_report,
+                risk_report=risk_report,
+                final_status=final_status,
+                submission_lane=submission_lane,
+            )
+            post_gate = await self._handle_post_gate(
+                strategy_id,
+                name,
+                candidate,
+                strategy_payload,
+                gate,
+                quality_report,
+                metrics,
+                snapshot,
+                validation_report,
+                risk_report,
+                db,
+                submission_lane=submission_lane,
+                submission_action=submission_action,
+            )
+            final_status = str(post_gate.get("final_status") or final_status)
+            submission_lane = str(post_gate.get("submission_lane") or submission_lane)
+            if self._get_optional_db_method(db, "save_strategy_quality_report") is not None:
+                await db.save_strategy_quality_report(strategy_id, "submission", quality_report)
+            return {
+                "strategy_id": strategy_id,
+                "name": name,
+                "status": final_status,
+                "submission_lane": submission_lane,
+                "incubation_budget_track": incubation_budget_track,
+                "gate": dict(gate or {}),
+                "quality_report": quality_report,
+                **dict(post_gate or {}),
+            }
+
+        @classmethod
         async def _record_experiment(
             cls,
             db,
@@ -1658,6 +2607,8 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(parameters, "dsl_signature", candidate.get("dsl_signature"))
                 _assign_if_present(parameters, "factor_signature", candidate.get("factor_signature"))
                 _assign_if_present(parameters, "entry_exit_signature", candidate.get("entry_exit_signature"))
+                for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                    _assign_if_present(parameters, field_name, candidate.get(field_name))
 
                 strategy_spec = dict(existing_spec)
                 _assign_if_present(strategy_spec, "strategy_type", candidate.get("strategy_type"))
@@ -1692,6 +2643,8 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(strategy_spec, "dsl_signature", candidate.get("dsl_signature"))
                 _assign_if_present(strategy_spec, "factor_signature", candidate.get("factor_signature"))
                 _assign_if_present(strategy_spec, "entry_exit_signature", candidate.get("entry_exit_signature"))
+                for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                    _assign_if_present(strategy_spec, field_name, candidate.get(field_name))
 
                 evaluation = dict(existing_evaluation)
                 _assign_if_present(evaluation, "generation_reason", candidate.get("generation_reason") or existing_evaluation.get("generation_reason"))
@@ -1726,6 +2679,8 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(evaluation, "dsl_signature", candidate.get("dsl_signature"))
                 _assign_if_present(evaluation, "factor_signature", candidate.get("factor_signature"))
                 _assign_if_present(evaluation, "entry_exit_signature", candidate.get("entry_exit_signature"))
+                for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                    _assign_if_present(evaluation, field_name, candidate.get(field_name))
                 evaluation["quality_gate"] = gate
                 if validation_report is not None or "validation_report" not in evaluation:
                     evaluation["validation_report"] = validation_report or {}
@@ -1781,6 +2736,8 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(result, "dsl_signature", candidate.get("dsl_signature"))
                 _assign_if_present(result, "factor_signature", candidate.get("factor_signature"))
                 _assign_if_present(result, "entry_exit_signature", candidate.get("entry_exit_signature"))
+                for field_name in _SEMANTIC_CONTRACT_FIELDS:
+                    _assign_if_present(result, field_name, candidate.get(field_name))
                 _assign_if_present(result, "quality_summary", quality_summary)
                 _assign_if_present(result, "backtest_metrics", backtest_payload)
                 _assign_if_present(result, "event_window_config", event_window_config)

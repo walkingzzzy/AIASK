@@ -12,6 +12,10 @@ from ..domain.targets import (
 )
 from .candidate_contract import resolve_candidate_validation_profile
 from .precompile_contract import validate_precompile_candidate_contract
+from .semantic_contract import (
+    audit_candidate_semantic_contract,
+    normalize_semantic_contract_fields,
+)
 
 _EMPTY_VALUES = (None, "", [], {})
 _REQUIRED_HYPOTHESIS_FIELDS = (
@@ -499,6 +503,7 @@ class HypothesisLoweringCompiler:
             research_task or payload.get("research_task") or {}
         )
         structured_hypothesis = dict(hypothesis or {})
+        semantic_fields = normalize_semantic_contract_fields(payload)
         reject_reasons: list[str] = []
 
         if not structured_hypothesis:
@@ -718,6 +723,20 @@ class HypothesisLoweringCompiler:
                 )
             ),
         }
+        for key in (
+            "evidence_chain",
+            "prediction_contract",
+            "confidence_contract",
+            "evidence_alignment_audit",
+            "dsl_support_audit",
+        ):
+            value = semantic_fields.get(key)
+            if isinstance(value, Mapping) and dict(value):
+                candidate_payload[key] = dict(value)
+        for key in ("legacy_semantic_contract", "contradiction_count", "proxy_dependency_score"):
+            value = semantic_fields.get(key)
+            if value not in _EMPTY_VALUES:
+                candidate_payload[key] = value
         if reject_reasons:
             return HypothesisLoweringCompileResult(
                 accepted=False,
@@ -768,6 +787,35 @@ class HypothesisLoweringCompiler:
         candidate_payload["hypothesis_artifact"] = hypothesis_artifact
         candidate_payload["hypothesis_artifact_id"] = hypothesis_artifact.get("artifact_id")
 
+        semantic_audit = audit_candidate_semantic_contract(candidate_payload)
+        candidate_payload["evidence_alignment_audit"] = dict(semantic_audit)
+        candidate_payload["legacy_semantic_contract"] = bool(
+            semantic_audit.get("legacy_semantic_contract")
+        )
+        candidate_payload["contradiction_count"] = _safe_int(
+            semantic_audit.get("contradiction_count"),
+            0,
+        )
+        candidate_payload["proxy_dependency_score"] = _safe_float(
+            semantic_audit.get("proxy_dependency_score"),
+            0.0,
+        )
+        if semantic_audit.get("hard_fail_reasons"):
+            return HypothesisLoweringCompileResult(
+                accepted=False,
+                candidate={},
+                hypothesis_artifact=dict(structured_hypothesis),
+                reject_reasons=list(dict.fromkeys(semantic_audit.get("hard_fail_reasons") or [])),
+                audit={
+                    "source": source,
+                    "target_symbols": list(target_symbols),
+                    "constraint_check": dict(validation.constraint_check or {}),
+                    "precompile_validation": validation.to_dict(),
+                    "semantic_audit": dict(semantic_audit),
+                    "rejected_at": "semantic_contract",
+                },
+            )
+
         candidate_provenance = dict(payload.get("candidate_provenance") or {})
         candidate_payload["candidate_provenance"] = {
             **candidate_provenance,
@@ -801,6 +849,7 @@ class HypothesisLoweringCompiler:
                 "target_symbols": list(target_symbols),
                 "constraint_check": dict(validation.constraint_check or {}),
                 "precompile_validation": validation.to_dict(),
+                "semantic_audit": dict(semantic_audit),
                 "field_sources": dict(structured_hypothesis.get("field_sources") or {}),
                 "family_specific_hypothesis": dict(family_specific_hypothesis),
                 "derived_holding_profile": dict(derived_holding_profile),

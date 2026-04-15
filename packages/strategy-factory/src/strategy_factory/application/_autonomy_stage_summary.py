@@ -11,6 +11,23 @@ from ..domain.constants import (
     STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
 )
 
+_BENIGN_SKIPPED_EXTERNAL_STATUSES = {
+    "skipped",
+    "skipped_target_context_blocked",
+}
+
+
+def _normalize_external_status_counts(external_status_counts: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for raw_status, raw_count in dict(external_status_counts or {}).items():
+        token = str(raw_status or "").strip().lower()
+        if not token:
+            token = "unknown"
+        elif token in _BENIGN_SKIPPED_EXTERNAL_STATUSES:
+            token = "skipped"
+        counts[token] = counts.get(token, 0) + int(raw_count or 0)
+    return counts
+
 
 def resolve_autonomy_overall_status(
     task_results: list[dict[str, Any]],
@@ -21,9 +38,13 @@ def resolve_autonomy_overall_status(
 ) -> tuple[str, int, int]:
     completed_task_count = len([item for item in task_results if item.get("status") == "completed"])
     failed_task_count = len([item for item in task_results if item.get("status") == "failed"])
-    positive_provider = sum(int(external_status_counts.get(key, 0) or 0) for key in ("succeeded", "fallback_only"))
-    failed_provider = int(external_status_counts.get("failed", 0) or 0)
-    skipped_provider = int(external_status_counts.get("skipped", 0) or 0)
+    normalized_external_status_counts = _normalize_external_status_counts(external_status_counts)
+    positive_provider = sum(
+        int(normalized_external_status_counts.get(key, 0) or 0)
+        for key in ("succeeded", "fallback_only")
+    )
+    failed_provider = int(normalized_external_status_counts.get("failed", 0) or 0)
+    skipped_provider = int(normalized_external_status_counts.get("skipped", 0) or 0)
     has_local_output = int(generated_candidate_count or 0) > 0 or int(experiment_count or 0) > 0
     if not task_results:
         overall_status = "skipped"

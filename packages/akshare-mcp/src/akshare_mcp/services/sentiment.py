@@ -5,6 +5,8 @@ from typing import List, Dict, Any, Optional
 
 import numpy as np
 
+from .signal_quality_registry import get_default_signal_quality_registry
+
 # ── 新闻情绪关键词库 ──
 _BULLISH_KEYWORDS = [
     '利好', '大涨', '涨停', '突破', '新高', '放量', '加仓', '抄底',
@@ -197,24 +199,129 @@ class SentimentAnalyzer:
         cls,
         klines: List[Dict[str, Any]],
         *,
+        headline_labels: Optional[List[Dict[str, Any]]] = None,
         proxy_lookback: int = 5,
         forward_days: tuple[int, ...] = (5, 10, 20),
     ) -> Dict[str, Any]:
-        """Build a lightweight OOS validation proxy for headline sentiment.
-
-        The repository does not yet persist timestamped headline labels per bar,
-        so we use recent price-path buckets as a proxy signal to estimate whether
-        bullish / neutral / bearish headline states have differentiated forward
-        returns in recent history.
-        """
         ordered_klines = cls._sort_klines(klines)
         empty_bucket_stats = cls._empty_news_oos_bucket_stats()
+        normalized_labels = [
+            dict(item)
+            for item in list(headline_labels or [])
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ]
+        if ordered_klines and normalized_labels:
+            closes = [float(item.get("close", 0) or 0) for item in ordered_klines]
+            kline_dates = [cls._parse_kline_date(item.get("date")) for item in ordered_klines]
+            date_to_index = {
+                one_date: idx
+                for idx, one_date in enumerate(kline_dates)
+                if one_date is not None
+            }
+            bucket_forward_map: dict[str, dict[int, list[float]]] = {
+                bucket: {int(day): [] for day in forward_days}
+                for bucket in ("bullish", "neutral", "bearish")
+            }
+            max_forward = max(int(day) for day in forward_days)
+            for label_row in normalized_labels:
+                label = str(label_row.get("label") or "").strip().lower()
+                if label not in bucket_forward_map:
+                    continue
+                published_at = (
+                    label_row.get("published_at")
+                    or label_row.get("date")
+                    or ((label_row.get("payload") or {}).get("published_at") if isinstance(label_row.get("payload"), dict) else None)
+                )
+                signal_date = cls._parse_kline_date(published_at)
+                if signal_date is None:
+                    continue
+                idx = date_to_index.get(signal_date)
+                if idx is None:
+                    future_candidates = [
+                        position
+                        for position, one_date in enumerate(kline_dates)
+                        if one_date is not None and one_date >= signal_date
+                    ]
+                    if not future_candidates:
+                        continue
+                    idx = future_candidates[0]
+                current_price = closes[idx]
+                if current_price <= 0 or idx + max_forward >= len(closes):
+                    continue
+                for day in forward_days:
+                    future_price = closes[idx + int(day)]
+                    if future_price <= 0:
+                        continue
+                    bucket_forward_map[label][int(day)].append((future_price - current_price) / current_price)
+
+            bucket_stats = {
+                bucket: {
+                    f"{int(day)}d": cls._summarize_forward_returns(values)
+                    for day, values in day_map.items()
+                }
+                for bucket, day_map in bucket_forward_map.items()
+            }
+
+            def _avg(bucket: str, period_key: str) -> float | None:
+                value = bucket_stats.get(bucket, {}).get(period_key, {}).get("avg_return")
+                return float(value) if value is not None else None
+
+            alpha_curve = {
+                period_key: (
+                    round(float(_avg("bullish", period_key) - _avg("bearish", period_key)), 4)
+                    if _avg("bullish", period_key) is not None and _avg("bearish", period_key) is not None
+                    else None
+                )
+                for period_key in ("5d", "10d", "20d")
+            }
+            alpha_5d = alpha_curve.get("5d")
+            alpha_10d = alpha_curve.get("10d")
+            alpha_20d = alpha_curve.get("20d")
+            if alpha_5d is None:
+                signal_stability = "unknown"
+            elif (alpha_10d is None and alpha_20d is None) or (
+                alpha_5d > 0 and (alpha_10d is None or alpha_10d >= 0) and (alpha_20d is None or alpha_20d >= 0)
+            ):
+                signal_stability = "stable"
+            else:
+                signal_stability = "degraded"
+            if alpha_5d is None:
+                decay_note = "alpha_unavailable"
+            elif alpha_20d is None:
+                decay_note = "long_horizon_insufficient_samples"
+            elif alpha_20d >= alpha_5d:
+                decay_note = "signal_persists_or_strengthens"
+            elif alpha_20d >= 0:
+                decay_note = "signal_decays_but_remains_positive"
+            else:
+                decay_note = "signal_reverses_on_longer_horizon"
+            available = any(
+                (bucket_stats.get(bucket, {}).get("5d", {}).get("samples") or 0) > 0
+                for bucket in ("bullish", "neutral", "bearish")
+            )
+            if available:
+                return {
+                    "available": True,
+                    "method": "headline_label_oos_v1",
+                    "proxy_only": False,
+                    "label_sample_count": len(normalized_labels),
+                    "bucket_stats": bucket_stats,
+                    "alpha_5d_bull_vs_bear": alpha_5d,
+                    "signal_stability": signal_stability,
+                    "decay_analysis": {
+                        "decay_note": decay_note,
+                        "alpha_curve": alpha_curve,
+                    },
+                }
+
         min_points = max(60, proxy_lookback + max(int(day) for day in forward_days) + 20)
         if len(ordered_klines) < min_points:
             return {
                 "available": False,
                 "reason": f"insufficient_kline:{len(ordered_klines)}<{min_points}",
-                "method": "headline_bucket_price_proxy",
+                "method": "headline_label_oos_v1_fallback_proxy",
+                "proxy_only": True,
+                "fallback_reason": "insufficient_headline_labels",
                 "bucket_stats": empty_bucket_stats,
                 "alpha_5d_bull_vs_bear": None,
                 "signal_stability": "unknown",
@@ -302,7 +409,9 @@ class SentimentAnalyzer:
 
         return {
             "available": available,
-            "method": "headline_bucket_price_proxy",
+            "method": "headline_label_oos_v1_fallback_proxy",
+            "proxy_only": True,
+            "fallback_reason": "insufficient_headline_labels",
             "proxy_component": "recent_return_regime",
             "bucket_stats": bucket_stats,
             "alpha_5d_bull_vs_bear": alpha_5d,
@@ -375,13 +484,17 @@ class SentimentAnalyzer:
         klines: List[Dict[str, Any]],
         news_headlines: Optional[List[str]] = None,
         fund_flow_data: Optional[Dict[str, Any]] = None,
+        headline_labels: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """三分量复合情绪评分"""
         pm = self._price_momentum_score(klines)
         ns = self._news_sentiment_score(news_headlines or [])
         ff = self._fund_flow_score(fund_flow_data)
         ordered_klines = self._sort_klines(klines)
-        news_oos_validation = self._build_news_sentiment_oos_validation(ordered_klines)
+        news_oos_validation = self._build_news_sentiment_oos_validation(
+            ordered_klines,
+            headline_labels=headline_labels,
+        )
 
         # 加权复合
         composite = pm * 0.4 + ns * 0.3 + ff * 0.3
@@ -398,7 +511,7 @@ class SentimentAnalyzer:
             current_price_momentum_score=pm,
         )
 
-        return {
+        result = {
             'sentiment': sentiment,
             'score': round(composite, 2),
             'components': {
@@ -411,12 +524,30 @@ class SentimentAnalyzer:
             'news_oos_validation': news_oos_validation,
             'data_quality': {
                 'headline_count': len(news_headlines or []),
+                'headline_label_count': len(headline_labels or []),
                 'fund_flow_available': bool(fund_flow_data),
                 'price_history_points': len(ordered_klines),
                 'historical_validation_available': bool(historical_validation.get('available')),
                 'news_oos_validation_available': bool(news_oos_validation.get('available')),
             },
         }
+        try:
+            as_of = str((ordered_klines[-1] or {}).get('date') or '') if ordered_klines else ''
+            code = str(
+                (ordered_klines[-1] or {}).get('code')
+                or (ordered_klines[-1] or {}).get('symbol')
+                or (fund_flow_data or {}).get('code')
+                or ''
+            ).strip()
+            if code:
+                get_default_signal_quality_registry().register_sentiment(
+                    code=code,
+                    as_of=as_of,
+                    payload=result,
+                )
+        except Exception:
+            pass
+        return result
     
     @staticmethod
     def calculate_fear_greed_index(

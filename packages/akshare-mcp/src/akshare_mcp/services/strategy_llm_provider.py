@@ -43,6 +43,8 @@ class StrategyLLMConfig:
     initial_compact_level: int = 0
     recent_timeout_minimal_streak: int = 1
     recent_timeout_cooldown_sec: float = 600.0
+    recent_connectivity_minimal_streak: int = 1
+    recent_connectivity_cooldown_sec: float = 600.0
     recent_overload_minimal_streak: int = 1
     recent_overload_cooldown_sec: float = 90.0
     compatibility_cooldown_sec: float = 300.0
@@ -57,6 +59,29 @@ class StrategyLLMConfig:
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
         recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
         recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        recent_connectivity_minimal_streak = max(
+            1,
+            min(
+                8,
+                int(
+                    os.getenv(
+                        "STRATEGY_LLM_RECENT_CONNECTIVITY_MINIMAL_STREAK",
+                        str(recent_timeout_minimal_streak),
+                    )
+                    or recent_timeout_minimal_streak
+                ),
+            ),
+        )
+        recent_connectivity_cooldown_sec = max(
+            0.0,
+            float(
+                os.getenv(
+                    "STRATEGY_LLM_RECENT_CONNECTIVITY_COOLDOWN_SEC",
+                    str(recent_timeout_cooldown_sec),
+                )
+                or recent_timeout_cooldown_sec
+            ),
+        )
         recent_overload_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_MINIMAL_STREAK", "1") or 1)))
         recent_overload_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_COOLDOWN_SEC", "90") or 90))
         return cls(
@@ -87,6 +112,8 @@ class StrategyLLMConfig:
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
+            recent_connectivity_minimal_streak=recent_connectivity_minimal_streak,
+            recent_connectivity_cooldown_sec=recent_connectivity_cooldown_sec,
             recent_overload_minimal_streak=recent_overload_minimal_streak,
             recent_overload_cooldown_sec=recent_overload_cooldown_sec,
             compatibility_cooldown_sec=max(0.0, float(os.getenv("STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC", "300") or 300)),
@@ -104,6 +131,8 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
             self.config = config or StrategyLLMConfig.from_env()
             self._recent_timeout_streak = 0
             self._recent_timeout_cooldown_until = 0.0
+            self._recent_connectivity_streak = 0
+            self._recent_connectivity_cooldown_until = 0.0
             self._recent_overload_streak = 0
             self._recent_overload_cooldown_until = 0.0
             self._last_failure_type: Optional[str] = None

@@ -382,9 +382,18 @@ async def _list_factor_candidate_registry_items(
         return market_codes_only and not filter_market_codes(record_codes)
 
     fetch_limit = max(50, min(1000, int(limit) * 12))
-    rows = await list_artifacts_async(limit=fetch_limit)
-    summary_rows = rows if isinstance(rows, list) else []
-    model_registry_stage_index = await _load_model_registry_stage_index(summary_rows)
+    validation_rows = await list_artifacts_async(
+        limit=fetch_limit,
+        strategy="quant_factor_candidate_validation",
+    )
+    summary_rows = validation_rows if isinstance(validation_rows, list) else []
+    model_registry_rows = await list_artifacts_async(
+        limit=fetch_limit,
+        strategy="quant_model_registry",
+    )
+    model_registry_stage_index = await _load_model_registry_stage_index(
+        model_registry_rows if isinstance(model_registry_rows, list) else []
+    )
     items = []
     requested_codes = filter_market_codes(codes) if market_codes_only else list(codes or [])
     for row in summary_rows:

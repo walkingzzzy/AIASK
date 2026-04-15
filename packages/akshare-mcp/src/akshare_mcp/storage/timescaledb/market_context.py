@@ -151,6 +151,208 @@ class MarketContextMixin:
             start = max(end - resolved_overlap, start + 1)
         return chunks
 
+    @staticmethod
+    def _headline_horizon_days(doc_type: str) -> int:
+        normalized = str(doc_type or "").strip().lower()
+        if normalized == "news":
+            return 5
+        if normalized == "notice":
+            return 10
+        if normalized == "research":
+            return 20
+        return 5
+
+    @staticmethod
+    def _headline_direction(label: str) -> str:
+        normalized = str(label or "").strip().lower()
+        if normalized == "bullish":
+            return "up"
+        if normalized == "bearish":
+            return "down"
+        return "flat"
+
+    @classmethod
+    def _build_headline_label_id(
+        cls,
+        *,
+        doc_uid: str,
+        headline: str,
+        label: str,
+        event_type: str | None,
+    ) -> str:
+        basis = "|".join([doc_uid, headline, label, str(event_type or "")])
+        return f"hlabel_{hashlib.sha1(basis.encode('utf-8')).hexdigest()[:24]}"
+
+    @classmethod
+    def _extract_headline_label_rows(
+        cls,
+        stock_code: str,
+        doc_type: str,
+        item: dict[str, Any],
+        *,
+        doc_id: int | None,
+        doc_uid: str,
+        published_at: datetime | None,
+    ) -> list[dict[str, Any]]:
+        headline = cls._pick_document_title(item)
+        if not headline:
+            return []
+        from ...services.event_extraction import extract_events
+        from ...services.sentiment import SentimentAnalyzer
+
+        summary = cls._pick_document_summary(item)
+        body = cls._pick_document_body(item)
+        label = SentimentAnalyzer._classify_headline(headline)
+        extraction = extract_events(
+            [{"title": headline, "text": " ".join(part for part in [headline, summary, body[:200]] if part)}],
+            top_n=1,
+        )
+        event_tags = list(extraction.get("event_tags") or [])
+        event_type = str(event_tags[0].get("tag") or "").strip() if event_tags else None
+        keywords = list(dict(extraction.get("keyword_hits") or {}).keys())[:8]
+        keyword_count = len(keywords)
+        intensity = "high" if keyword_count >= 3 else "medium" if keyword_count >= 1 else "low"
+        confidence = min(0.95, 0.55 + keyword_count * 0.10)
+        label_id = cls._build_headline_label_id(
+            doc_uid=doc_uid,
+            headline=headline,
+            label=label,
+            event_type=event_type,
+        )
+        payload = {
+            "doc_uid": doc_uid,
+            "headline": headline,
+            "summary": summary,
+            "source": item.get("source") or item.get("provider") or item.get("origin"),
+            "event_tags": event_tags,
+            "keyword_hits": dict(extraction.get("keyword_hits") or {}),
+        }
+        return [
+            {
+                "label_id": label_id,
+                "doc_id": doc_id,
+                "doc_uid": doc_uid,
+                "stock_code": str(stock_code or "").strip(),
+                "doc_type": str(doc_type or "").strip().lower(),
+                "published_at": published_at,
+                "headline": headline,
+                "label": label,
+                "event_type": event_type,
+                "direction": cls._headline_direction(label),
+                "horizon_days": cls._headline_horizon_days(doc_type),
+                "intensity": intensity,
+                "confidence": round(confidence, 4),
+                "keywords": keywords,
+                "payload": payload,
+            }
+        ]
+
+    async def save_market_headline_labels(
+        self,
+        stock_code: str,
+        doc_type: str,
+        items: Iterable[dict[str, Any]],
+        *,
+        doc_uid_map: Optional[dict[str, tuple[int | None, datetime | None]]] = None,
+    ) -> int:
+        code = str(stock_code or "").strip()
+        normalized_doc_type = str(doc_type or "").strip().lower()
+        rows: list[dict[str, Any]] = []
+        for item in list(items or []):
+            if not isinstance(item, dict):
+                continue
+            doc_uid = self._build_market_doc_uid(code, normalized_doc_type, item)
+            mapped = dict(doc_uid_map or {}).get(doc_uid) or (None, None)
+            rows.extend(
+                self._extract_headline_label_rows(
+                    code,
+                    normalized_doc_type,
+                    item,
+                    doc_id=mapped[0],
+                    doc_uid=doc_uid,
+                    published_at=mapped[1],
+                )
+            )
+        if not rows:
+            return 0
+        inserted = 0
+        async with self.acquire() as conn:
+            for row in rows:
+                result = await conn.fetchval(
+                    """
+                    INSERT INTO market_headline_labels (
+                        label_id, doc_id, doc_uid, stock_code, doc_type, published_at, headline, label,
+                        event_type, direction, horizon_days, intensity, confidence, keywords, payload, created_at
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6::timestamptz, $7, $8,
+                        $9, $10, $11, $12, $13, $14::jsonb, $15::jsonb, NOW()
+                    )
+                    ON CONFLICT (label_id) DO UPDATE SET
+                        doc_id = COALESCE(EXCLUDED.doc_id, market_headline_labels.doc_id),
+                        published_at = COALESCE(EXCLUDED.published_at, market_headline_labels.published_at),
+                        headline = COALESCE(EXCLUDED.headline, market_headline_labels.headline),
+                        label = COALESCE(EXCLUDED.label, market_headline_labels.label),
+                        event_type = COALESCE(EXCLUDED.event_type, market_headline_labels.event_type),
+                        direction = COALESCE(EXCLUDED.direction, market_headline_labels.direction),
+                        horizon_days = COALESCE(EXCLUDED.horizon_days, market_headline_labels.horizon_days),
+                        intensity = COALESCE(EXCLUDED.intensity, market_headline_labels.intensity),
+                        confidence = COALESCE(EXCLUDED.confidence, market_headline_labels.confidence),
+                        keywords = COALESCE(EXCLUDED.keywords, market_headline_labels.keywords),
+                        payload = COALESCE(EXCLUDED.payload, market_headline_labels.payload)
+                    RETURNING 1
+                    """,
+                    row.get("label_id"),
+                    row.get("doc_id"),
+                    row.get("doc_uid"),
+                    row.get("stock_code"),
+                    row.get("doc_type"),
+                    row.get("published_at"),
+                    row.get("headline"),
+                    row.get("label"),
+                    row.get("event_type"),
+                    row.get("direction"),
+                    row.get("horizon_days"),
+                    row.get("intensity"),
+                    row.get("confidence"),
+                    json.dumps(row.get("keywords") or [], ensure_ascii=False, default=str),
+                    json.dumps(row.get("payload") or {}, ensure_ascii=False, default=str),
+                )
+                if result:
+                    inserted += 1
+        return inserted
+
+    async def list_market_headline_labels(
+        self,
+        stock_code: str,
+        *,
+        doc_type: Optional[str] = None,
+        label: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        async with self.acquire() as conn:
+            sql = "SELECT * FROM market_headline_labels WHERE stock_code = $1"
+            params: list[Any] = [str(stock_code or "").strip()]
+            idx = 2
+            if doc_type:
+                sql += f" AND doc_type = ${idx}"
+                params.append(str(doc_type).strip().lower())
+                idx += 1
+            if label:
+                sql += f" AND label = ${idx}"
+                params.append(str(label).strip().lower())
+                idx += 1
+            sql += f" ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT ${idx}"
+            params.append(max(1, min(int(limit or 200), 2000)))
+            rows = await conn.fetch(sql, *params)
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            payload["keywords"] = self._decode_json_field(payload.get("keywords"), [])
+            payload["payload"] = self._decode_json_field(payload.get("payload"), {})
+            result.append(payload)
+        return result
+
     async def save_market_documents(
         self,
         stock_code: str,
@@ -171,7 +373,9 @@ class MarketContextMixin:
 
         inserted_docs = 0
         inserted_chunks = 0
+        inserted_labels = 0
         chunk_rows: list[dict[str, Any]] = []
+        headline_rows: list[dict[str, Any]] = []
         async with self.acquire() as conn:
             async with conn.transaction():
                 for item in documents:
@@ -230,6 +434,59 @@ class MarketContextMixin:
                     doc_id = dict(row or {}).get("id")
                     if doc_id is None:
                         continue
+                    headline_rows.extend(
+                        self._extract_headline_label_rows(
+                            code,
+                            normalized_doc_type,
+                            item,
+                            doc_id=doc_id,
+                            doc_uid=doc_uid,
+                            published_at=published_at,
+                        )
+                    )
+                    for headline_row in headline_rows[-1:]:
+                        headline_inserted = await conn.fetchval(
+                            """
+                            INSERT INTO market_headline_labels (
+                                label_id, doc_id, doc_uid, stock_code, doc_type, published_at, headline, label,
+                                event_type, direction, horizon_days, intensity, confidence, keywords, payload, created_at
+                            )
+                            VALUES (
+                                $1, $2, $3, $4, $5, $6::timestamptz, $7, $8,
+                                $9, $10, $11, $12, $13, $14::jsonb, $15::jsonb, NOW()
+                            )
+                            ON CONFLICT (label_id) DO UPDATE SET
+                                doc_id = COALESCE(EXCLUDED.doc_id, market_headline_labels.doc_id),
+                                published_at = COALESCE(EXCLUDED.published_at, market_headline_labels.published_at),
+                                headline = COALESCE(EXCLUDED.headline, market_headline_labels.headline),
+                                label = COALESCE(EXCLUDED.label, market_headline_labels.label),
+                                event_type = COALESCE(EXCLUDED.event_type, market_headline_labels.event_type),
+                                direction = COALESCE(EXCLUDED.direction, market_headline_labels.direction),
+                                horizon_days = COALESCE(EXCLUDED.horizon_days, market_headline_labels.horizon_days),
+                                intensity = COALESCE(EXCLUDED.intensity, market_headline_labels.intensity),
+                                confidence = COALESCE(EXCLUDED.confidence, market_headline_labels.confidence),
+                                keywords = COALESCE(EXCLUDED.keywords, market_headline_labels.keywords),
+                                payload = COALESCE(EXCLUDED.payload, market_headline_labels.payload)
+                            RETURNING 1
+                            """,
+                            headline_row.get("label_id"),
+                            headline_row.get("doc_id"),
+                            headline_row.get("doc_uid"),
+                            headline_row.get("stock_code"),
+                            headline_row.get("doc_type"),
+                            headline_row.get("published_at"),
+                            headline_row.get("headline"),
+                            headline_row.get("label"),
+                            headline_row.get("event_type"),
+                            headline_row.get("direction"),
+                            headline_row.get("horizon_days"),
+                            headline_row.get("intensity"),
+                            headline_row.get("confidence"),
+                            json.dumps(headline_row.get("keywords") or [], ensure_ascii=False, default=str),
+                            json.dumps(headline_row.get("payload") or {}, ensure_ascii=False, default=str),
+                        )
+                        if headline_inserted:
+                            inserted_labels += 1
                     await conn.execute("DELETE FROM market_doc_chunks WHERE doc_id = $1", doc_id)
                     chunks = self._chunk_document_text(body, chunk_size=chunk_size, overlap=overlap)
                     for chunk_no, chunk_text in enumerate(chunks):
@@ -351,7 +608,12 @@ class MarketContextMixin:
             except Exception:
                 pass
 
-        return {"documents": inserted_docs, "chunks": inserted_chunks, "embedded_chunks": embedded_chunks}
+        return {
+            "documents": inserted_docs,
+            "chunks": inserted_chunks,
+            "embedded_chunks": embedded_chunks,
+            "headline_labels": inserted_labels,
+        }
 
     async def save_vector_documents(self, stock_code: str, doc_type: str, items: Iterable[dict[str, Any]]) -> int:
         code = str(stock_code or "").strip()

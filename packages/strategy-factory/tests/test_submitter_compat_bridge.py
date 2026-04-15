@@ -6,6 +6,7 @@ import akshare_mcp.services.strategy_factory as legacy_factory_package
 import akshare_mcp.services.strategy_factory.submission_gate as legacy_submission_gate
 import akshare_mcp.services.strategy_factory.utils as legacy_utils
 
+import strategy_factory.application._submitter_actions as submitter_actions
 from strategy_factory.application.submitter import StrategySubmitter
 from strategy_factory.domain.strategy_profile import apply_candidate_strategy_profile
 
@@ -279,10 +280,100 @@ async def test_submitter_requires_strict_gate_for_formal_incubation_track(monkey
 
     strategy_item = result["strategies"][0]
     assert strategy_item["status"] == "submitted"
-    assert strategy_item["submission_lane"] == "deferred_submission"
+    assert strategy_item["submission_lane"] == "observe_incubation"
     assert strategy_item["incubation_budget_track"] == "formal_incubation"
-    incubation_gateway.ensure_account.assert_not_awaited()
+    assert strategy_item["runtime_bootstrap_eligible"] is True
+    assert strategy_item["runtime_bootstrap_budget_tier"] == "micro"
+    saved_strategy = db.save_strategy.await_args.args[0]
+    assert saved_strategy["params"]["runtime_playbook"]["entry_policy"]["order_style"] == "marketable_limit"
+    incubation_gateway.ensure_account.assert_awaited_once()
     incubation_gateway.run_pipeline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replay_existing_submission_bootstraps_observe_lane(monkeypatch):
+    incubation_gateway = MagicMock()
+    incubation_gateway.ensure_account = AsyncMock(return_value={"account": {"id": "acct_observe_1"}})
+    submitter = StrategySubmitter(incubation_gateway=incubation_gateway)
+    db = MagicMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": True,
+                "provisional_pass": False,
+                "validation_grade": "A",
+                "effective_validation_grade": "A",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "strict_incubation_ready": True,
+                "incubation_pass_mode": "strict",
+                "admission_stage": "incubation",
+                "admission_block_reasons": [],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": False},
+                },
+                "reasons": [],
+                "reason_codes": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value={"rating": {"grade": "A"}}))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value={"var_percent": 0.12}))
+
+    strategy = apply_candidate_strategy_profile(
+        {
+            "id": "sid_replay_observe",
+            "name": "观察重放策略",
+            "status": "submitted",
+            "strategy_type": "momentum",
+            "tags": ["factory", "auto_generated"],
+            "params": {
+                "lookback": 20,
+                "threshold": 0.02,
+                "incubation_budget": {"track": "deferred_submission"},
+            },
+        }
+    )
+    latest_report = {
+        "summary": {
+            "incubation_budget_track": "deferred_submission",
+            "strict_incubation_ready": True,
+            "validation_grade": "A",
+        },
+        "snapshot": {"date": "2026-04-13"},
+        "backtest_metrics": {
+            "sharpe_ratio": 1.05,
+            "total_return": 0.18,
+            "max_drawdown": 0.11,
+            "trades_count": 8,
+        },
+    }
+
+    result = await submitter.replay_existing_submission(
+        strategy,
+        {"date": "2026-04-13", "fg_level": "neutral", "fear_greed_index": 52},
+        db,
+        validation_report={"rating": {"grade": "A", "total_score": 83}},
+        risk_report={"var_percent": 0.12},
+        backtest_metrics=latest_report["backtest_metrics"],
+        latest_report=latest_report,
+    )
+
+    assert result["submission_lane"] == "observe_incubation"
+    assert result["status"] == "submitted"
+    assert result["paper_lane_ready"] is True
+    assert result["paper_account_id"] == "acct_observe_1"
+    incubation_gateway.ensure_account.assert_awaited_once()
+    db.save_strategy_quality_report.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1317,7 @@ async def test_submitter_routes_observe_candidates_into_paper_lane(monkeypatch):
     strategy_summary = result["strategies"][0]
     assert strategy_summary["submission_lane"] == "observe_incubation"
     assert strategy_summary["submission_action_type"] == "paper"
-    assert strategy_summary["submission_action_trigger"] == "observe_track_paper_route"
+    assert strategy_summary["submission_action_trigger"] == "runtime_bootstrap_observe"
     assert strategy_summary["submission_action_next_step"] == "runtime_review"
     assert strategy_summary["paper_lane_ready"] is True
     assert strategy_summary["paper_account_id"] == "paper_observe_001"
@@ -1238,3 +1329,475 @@ async def test_submitter_routes_observe_candidates_into_paper_lane(monkeypatch):
     assert quality_report["summary"]["submission_action_type"] == "paper"
     assert quality_report["summary"]["paper_lane_ready"] is True
     assert quality_report["summary"]["paper_account_id"] == "paper_observe_001"
+
+
+@pytest.mark.asyncio
+async def test_submitter_bootstraps_strict_a_b_deferred_candidates_into_observe_lane(monkeypatch):
+    import strategy_factory.application.incubation_budgeter as budgeter_mod
+
+    class _DummyIncubationGateway:
+        async def ensure_account(self, _db, _strategy, *, source_run_id=None, stage="warmup"):
+            assert source_run_id == "2026-03-19"
+            assert stage == "paper"
+            return {
+                "account": {"id": "paper_bootstrap_001"},
+                "binding": {"account_id": "paper_bootstrap_001"},
+            }
+
+    submitter = StrategySubmitter(incubation_gateway=_DummyIncubationGateway())
+
+    class _DB:
+        def __init__(self):
+            self.save_strategy = AsyncMock()
+            self.save_strategy_metrics = AsyncMock()
+            self.save_strategy_quality_report = AsyncMock()
+            self.update_strategy_status = AsyncMock()
+            self.update_paper_account_status = AsyncMock(return_value={"id": "paper_bootstrap_001", "status": "active"})
+            self.save_strategy_lineage = AsyncMock()
+
+    db = _DB()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": True,
+                "provisional_pass": False,
+                "admission_stage": "incubation",
+                "incubation_pass_mode": "strict",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "strict_incubation_ready": True,
+                "validation_grade": "A",
+                "effective_validation_grade": "A",
+                "admission_block_reasons": ["formal_multiple_testing_mode_required_for_live_admission"],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {
+                        "passed": False,
+                        "reasons": ["formal_multiple_testing_mode_required_for_live_admission"],
+                    },
+                },
+                "reasons": [],
+                "reason_codes": [],
+                "warnings": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        budgeter_mod.IncubationBudgeter,
+        "plan",
+        staticmethod(
+            lambda candidates, _snapshot: {
+                "summary": {"track_counts": {"deferred_budget_queue": 1}},
+                "plans": {
+                    int(id(candidates[0])): {
+                        "track": "deferred_budget_queue",
+                        "rank": 3,
+                        "priority_score": 0.29,
+                    }
+                },
+            }
+        ),
+    )
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "bootstrap_ab_candidate",
+                "strategy_type": "ma_cross",
+                "params": {"short_period": 5, "long_period": 20},
+                "target_symbols": ["688981"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["688981"]},
+                "backtest_metrics": {
+                    "sharpe_ratio": 1.18,
+                    "total_return": 0.14,
+                    "max_drawdown": 0.204,
+                    "trades_count": 8,
+                },
+                "incubation_budget": {"track": "deferred_budget_queue", "rank": 3, "priority_score": 0.29},
+                "spawn_reason": "bootstrap-observe-from-deferred",
+                "tags": ["factory", "ai_generated"],
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    strategy_summary = result["strategies"][0]
+    assert strategy_summary["submission_lane"] == "observe_incubation"
+    assert strategy_summary["submission_action_type"] == "paper"
+    assert strategy_summary["submission_action_trigger"] == "runtime_bootstrap_observe"
+    assert strategy_summary["paper_lane_ready"] is True
+    assert strategy_summary["paper_account_id"] == "paper_bootstrap_001"
+    assert result["observe_incubation_count"] == 1
+    assert result["deferred_submission_count"] == 0
+    assert result["research_only_count"] == 0
+    assert result["gate_report"]["gate_3"]["observe_incubation_count"] == 1
+    assert result["gate_report"]["gate_3"]["deferred_submission_count"] == 0
+    assert result["gate_report"]["gate_3"]["strict_incubation_ready_count"] == 1
+
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["submission_lane"] == "observe_incubation"
+    assert quality_report["summary"]["submission_action_trigger"] == "runtime_bootstrap_observe"
+
+
+@pytest.mark.asyncio
+async def test_submitter_allows_observe_track_trade_audit_bootstrap(monkeypatch):
+    import strategy_factory.application.incubation_budgeter as budgeter_mod
+
+    class _DummyIncubationGateway:
+        async def ensure_account(self, _db, _strategy, *, source_run_id=None, stage="warmup"):
+            assert source_run_id == "2026-03-19"
+            assert stage == "paper"
+            return {
+                "account": {"id": "paper_trade_audit_bootstrap_001"},
+                "binding": {"account_id": "paper_trade_audit_bootstrap_001"},
+            }
+
+    submitter = StrategySubmitter(incubation_gateway=_DummyIncubationGateway())
+
+    class _DB:
+        def __init__(self):
+            self.save_strategy = AsyncMock()
+            self.save_strategy_metrics = AsyncMock()
+            self.save_strategy_quality_report = AsyncMock()
+            self.update_strategy_status = AsyncMock()
+            self.update_paper_account_status = AsyncMock(
+                return_value={"id": "paper_trade_audit_bootstrap_001", "status": "active"}
+            )
+            self.save_strategy_lineage = AsyncMock()
+
+    db = _DB()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": False,
+                "provisional_pass": False,
+                "admission_stage": "research",
+                "incubation_pass_mode": "failed",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": False,
+                "live_candidate_ready": False,
+                "research_only_due_to_trade_audit_gap": True,
+                "strict_incubation_ready": False,
+                "validation_grade": "B",
+                "effective_validation_grade": "B",
+                "admission_block_reasons": ["trade_validation_audit_missing_for_incubation_admission"],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {
+                        "passed": False,
+                        "reasons": ["trade_validation_audit_missing_for_incubation_admission"],
+                    },
+                    "live": {
+                        "passed": False,
+                        "reasons": ["trade_validation_audit_missing_for_live_admission"],
+                    },
+                },
+                "reasons": [],
+                "reason_codes": [],
+                "warnings": ["trade_rule_validation:trade_validation_audit_missing"],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        budgeter_mod.IncubationBudgeter,
+        "plan",
+        staticmethod(
+            lambda candidates, _snapshot: {
+                "summary": {"track_counts": {"observe_incubation": 1}},
+                "plans": {
+                    int(id(candidates[0])): {
+                        "track": "observe_incubation",
+                        "rank": 2,
+                        "priority_score": 0.33,
+                    }
+                },
+            }
+        ),
+    )
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "observe_trade_audit_gap_candidate",
+                "strategy_type": "ma_cross",
+                "params": {"short_period": 5, "long_period": 20},
+                "target_symbols": ["600938"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600938"]},
+                "backtest_metrics": {
+                    "sharpe_ratio": 0.94,
+                    "total_return": 0.09,
+                    "max_drawdown": 0.13,
+                    "trades_count": 6,
+                },
+                "incubation_budget": {"track": "observe_incubation", "rank": 2, "priority_score": 0.33},
+                "spawn_reason": "observe-trade-audit-bootstrap",
+                "tags": ["factory", "ai_generated"],
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    strategy_summary = result["strategies"][0]
+    assert strategy_summary["submission_lane"] == "observe_incubation"
+    assert strategy_summary["submission_action_type"] == "paper"
+    assert strategy_summary["submission_action_trigger"] == "runtime_bootstrap_observe"
+    assert strategy_summary["paper_lane_ready"] is True
+    assert strategy_summary["paper_account_id"] == "paper_trade_audit_bootstrap_001"
+    assert result["observe_incubation_count"] == 1
+    assert result["research_only_count"] == 0
+
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["submission_lane"] == "observe_incubation"
+    assert quality_report["summary"]["submission_action_trigger"] == "runtime_bootstrap_observe"
+
+
+@pytest.mark.asyncio
+async def test_submitter_hard_fails_new_semantic_contract_when_claim_has_no_evidence(monkeypatch):
+    submitter = StrategySubmitter()
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+    db.save_factory_task_evidence = AsyncMock()
+
+    monkeypatch.setattr(legacy_submission_gate, "run_submission_quality_gate", AsyncMock(return_value={"passed": True}))
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(submitter_actions, "STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED", True)
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "semantic-hard-fail",
+                "strategy_type": "dsl_rule",
+                "params": {
+                    "dsl": {
+                        "entry": {"trade_plan_node_id": "entry_1"},
+                        "exit": {"trade_plan_node_id": "exit_1"},
+                        "metadata": {},
+                    }
+                },
+                "target_symbols": ["600519"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "research_task": {"task_id": "task_semantic_1", "task_source": "snapshot"},
+                "trade_plan": {
+                    "entry": {"node_id": "entry_1", "claim_ids": ["claim_1"]},
+                    "exit": {"node_id": "exit_1", "claim_ids": ["claim_1"]},
+                },
+                "prediction_contract": {
+                    "claims": [{"claim_id": "claim_1", "evidence_ids": []}],
+                },
+                "backtest_metrics": {
+                    "sharpe_ratio": 0.6,
+                    "total_return": 0.12,
+                    "max_drawdown": 0.1,
+                    "trades_count": 4,
+                },
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    assert result["strategies"][0]["passed"] is False
+    assert "prediction_contract_claim_missing_evidence_ids" in result["strategies"][0]["gate_3"]["reason_codes"]
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["legacy_semantic_contract"] is False
+    assert quality_report["summary"]["evidence_alignment_audit"]["using_new_contract"] is True
+    assert quality_report["summary"]["prediction_contract"]["claims"][0]["claim_id"] == "claim_1"
+    assert db.save_factory_task_evidence.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_submitter_persists_native_semantic_evidence_without_legacy_mirror(monkeypatch):
+    submitter = StrategySubmitter()
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+    call_order: list[str] = []
+
+    async def _save_native_evidence(payload):
+        call_order.append("native")
+        return {"id": "cand_ev_1"}
+
+    db.save_factory_task_evidence = AsyncMock()
+    db.save_strategy_candidate_evidence = AsyncMock(side_effect=_save_native_evidence)
+
+    monkeypatch.setattr(legacy_submission_gate, "run_submission_quality_gate", AsyncMock(return_value={"passed": False}))
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(submitter_actions, "STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED", True)
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "semantic-legacy-pass",
+                "strategy_type": "dsl_rule",
+                "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
+                "target_symbols": ["600519"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "research_task": {
+                    "task_id": "task_semantic_2",
+                    "task_source": "event_driven",
+                    "event_id": "evt_semantic_2",
+                    "theme_code": "ai",
+                },
+                "trade_plan": {"entry_bias": "event_follow_through"},
+                "evidence_chain": {
+                    "evidences": [
+                        {
+                            "evidence_id": "ev_1",
+                            "source_type": "news",
+                            "direction": "up",
+                            "raw_confidence": 0.74,
+                            "target_symbols": ["600519"],
+                        }
+                    ]
+                },
+                "backtest_metrics": {
+                    "sharpe_ratio": 0.6,
+                    "total_return": 0.12,
+                    "max_drawdown": 0.1,
+                    "trades_count": 4,
+                },
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    assert result["strategies"][0]["legacy_semantic_contract"] is True
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["legacy_semantic_contract"] is True
+    persisted_candidate_evidence = db.save_strategy_candidate_evidence.await_args.args[0]
+    assert call_order == ["native"]
+    assert db.save_factory_task_evidence.await_count == 0
+    assert persisted_candidate_evidence["candidate_id"]
+    assert persisted_candidate_evidence["evidence_id"] == "ev_1"
+    assert persisted_candidate_evidence["source_task_key"].startswith("event_driven|evt_semantic_2|ai|")
+
+
+@pytest.mark.asyncio
+async def test_submitter_routes_execution_semantic_gap_candidates_to_observe_only(monkeypatch):
+    incubation_gateway = MagicMock()
+    incubation_gateway.ensure_account = AsyncMock(return_value={"account": {"id": "acct_observe_gap_1"}})
+    incubation_gateway.run_pipeline = AsyncMock(return_value={"snapshot": {}, "task_run_id": 101})
+    submitter = StrategySubmitter(incubation_gateway=incubation_gateway)
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": True,
+                "provisional_pass": False,
+                "validation_grade": "A",
+                "effective_validation_grade": "A",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": True,
+                "strict_incubation_ready": True,
+                "incubation_pass_mode": "strict",
+                "admission_stage": "live_review",
+                "admission_block_reasons": [],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": True},
+                },
+                "reasons": [],
+                "reason_codes": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "observe-only-semantic-gap",
+                "strategy_type": "ma_cross",
+                "params": {
+                    "short_period": 5,
+                    "long_period": 20,
+                    "target_symbols": ["688981"],
+                    "runtime_playbook": {
+                        "entry_policy": {"order_style": "marketable_limit"},
+                        "exit_policy": {"failure_exit_rule": "opposite_signal_or_breakout_failure"},
+                        "adverse_move_policy": {"average_down": "forbid"},
+                        "reentry_policy": {"cooldown_days": 5},
+                        "position_policy": {"budget_mode": "fixed_fraction"},
+                        "incubation_policy": {"warmup_target_signals": 6},
+                    },
+                    "holding_horizon": {"min_days": 14, "max_days": 48},
+                    "trade_plan": {"entry": {"node_id": "entry_step_1"}, "exit": {"node_id": "exit_step_1"}},
+                    "risk_rules": {"stop_loss_pct": 0.1, "take_profit_pct": 0.2, "max_holding_days": 48},
+                    "execution_assumptions": {"tradability_filter": True, "slippage_bps": 5},
+                    "dsl_required": True,
+                    "dsl_compiled": False,
+                    "execution_semantic_mode": "missing_executable_contract",
+                    "execution_semantic_gap": True,
+                    "execution_semantic_gap_reasons": [
+                        "compiled_dsl_missing_for_single_name_trend_strategy"
+                    ],
+                },
+                "target_symbols": ["688981"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["688981"]},
+                "research_task": {
+                    "task_source": "snapshot",
+                    "preferred_strategy_types": ["ma_cross"],
+                    "target_symbols": ["688981"],
+                },
+                "backtest_metrics": {
+                    "sharpe_ratio": 1.12,
+                    "total_return": 0.32,
+                    "max_drawdown": 0.18,
+                    "trades_count": 8,
+                },
+            }
+        ],
+        {"date": "2026-04-14", "fg_level": "neutral", "fear_greed_index": 55},
+        db,
+    )
+
+    strategy_item = result["strategies"][0]
+    saved_strategy = db.save_strategy.await_args.args[0]
+
+    assert strategy_item["status"] == "submitted"
+    assert strategy_item["submission_lane"] == "observe_incubation"
+    assert strategy_item["runtime_bootstrap_eligible"] is True
+    assert strategy_item["runtime_bootstrap_budget_tier"] == "micro"
+    assert strategy_item["execution_semantic_gap"] is True
+    assert saved_strategy["params"]["execution_semantic_gap"] is True
+    assert saved_strategy["params"]["runtime_playbook"]["entry_policy"]["order_style"] == "marketable_limit"
+    incubation_gateway.ensure_account.assert_awaited_once()
+    incubation_gateway.run_pipeline.assert_not_awaited()

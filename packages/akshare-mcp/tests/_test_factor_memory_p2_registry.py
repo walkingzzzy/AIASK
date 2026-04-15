@@ -100,6 +100,78 @@ async def test_quant_manager_factor_candidate_registry_active_pool_can_filter_no
 
 
 @pytest.mark.asyncio
+async def test_quant_manager_factor_candidate_registry_uses_strategy_filtered_artifact_listing(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+
+    candidate_artifact_id = "factor_validation_registry_strategy_filtered_lookup"
+    candidate_codes = ["600519", "000858", "000333", "601318"]
+
+    class _RecencySkewedArtifactDB:
+        async def list_artifacts_db(self, limit=20, strategy=None):
+            del limit
+            normalized = str(strategy or "").strip().lower()
+            if normalized == "quant_factor_candidate_validation":
+                return [
+                    {
+                        "artifact_id": candidate_artifact_id,
+                        "strategy": "quant_factor_candidate_validation",
+                        "strategy_version": "p2.v1",
+                        "code": ",".join(candidate_codes),
+                        "updated_at": "2026-04-14T09:30:00+00:00",
+                    }
+                ]
+            if normalized == "quant_model_registry":
+                return []
+            return [
+                {
+                    "artifact_id": f"runtime_noise_{idx}",
+                    "strategy": "strategy_runtime_alert",
+                    "strategy_version": "p5.v1",
+                    "code": "",
+                    "updated_at": f"2026-04-14T12:{idx:02d}:00+00:00",
+                }
+                for idx in range(20)
+            ]
+
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: _RecencySkewedArtifactDB())
+
+    _register_validation_artifact(
+        candidate_artifact_id,
+        candidate_codes,
+        name="strategy_filtered_lookup",
+        recommendation="promote",
+        total_score=93.0,
+    )
+
+    unfiltered_rows = await _ar_mod.list_artifacts_async(limit=20)
+    assert candidate_artifact_id not in [str(row.get("artifact_id") or "") for row in unfiltered_rows]
+
+    filtered_rows = await _ar_mod.list_artifacts_async(
+        limit=20,
+        strategy="quant_factor_candidate_validation",
+    )
+    assert [str(row.get("artifact_id") or "") for row in filtered_rows] == [candidate_artifact_id]
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    active_pool = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "active_pool", "limit": 20, "market_codes_only": True},
+    )
+
+    assert active_pool["success"] is True
+    pool = active_pool["data"]["active_pool"]
+    top_artifact_ids = [str(item.get("artifact_id") or "") for item in pool["top_candidates"]]
+    assert candidate_artifact_id in top_artifact_ids
+    assert pool["count"] >= 1
+    assert pool["active_pool_mode"] == "strict_governed"
+
+
+@pytest.mark.asyncio
 async def test_quant_manager_factor_candidate_registry_active_pool_blocks_high_risk_candidates(monkeypatch):
     import akshare_mcp.tools.managers.quant_manager as quant_mod
     import akshare_mcp.services.artifact_registry as _ar_mod

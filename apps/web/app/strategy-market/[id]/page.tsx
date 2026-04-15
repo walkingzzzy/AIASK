@@ -55,6 +55,7 @@ export default function StrategyDetailPage() {
     navSeries,
     navCategories,
     factorBars,
+    incubationOverview,
     latestQualityReport,
     incubationAccount,
     latestIncubationMetric,
@@ -63,6 +64,7 @@ export default function StrategyDetailPage() {
     paperNavRows,
     openRiskEvents,
     vectorProfiles,
+    highConfidenceQualityUiEnabled,
     promotionReady,
     rating,
     setRating,
@@ -333,11 +335,13 @@ export default function StrategyDetailPage() {
           navSeries={navSeries}
           navCategories={navCategories}
           factorBars={factorBars}
+          incubationOverview={incubationOverview}
           latestQualityReport={latestQualityReport}
           incubationAccount={incubationAccount}
           latestIncubationMetric={latestIncubationMetric}
           openRiskEventsCount={openRiskEvents.length}
           vectorProfilesCount={vectorProfiles.length}
+          highConfidenceQualityUiEnabled={highConfidenceQualityUiEnabled}
           promotionReady={promotionReady}
           strategyAvgRating={strategy.avg_rating}
           sampleWindow={sampleWindow}

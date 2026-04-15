@@ -13,6 +13,7 @@ from ..data_source import data_source
 from .cost_model import build_cost_model
 from .factor_analysis import FactorAnalyzer
 from .factor_candidate_compiler import compile_factor_candidate, evaluate_compiled_factor
+from .signal_quality_registry import get_default_signal_quality_registry
 from .validation import (
     FactorValidationPipeline,
     deflated_sharpe_ratio,
@@ -445,7 +446,7 @@ async def validate_factor_candidate_pipeline(
         "rating": rating,
     }
 
-    return {
+    result = {
         "success": True,
         "stage": "validated",
         "compiled": validation_report["compile"],
@@ -471,3 +472,19 @@ async def validate_factor_candidate_pipeline(
         "warnings": _dedupe(validation_warnings)[:40],
         "source_chain": _dedupe(source_chain),
     }
+    try:
+        factor_name = str(
+            candidate.get("factor_name")
+            or candidate.get("name")
+            or compiled.get("name")
+            or compiled.get("factor_name")
+            or ""
+        ).strip()
+        if factor_name:
+            get_default_signal_quality_registry().register_factor(
+                factor_name=factor_name,
+                payload=result,
+            )
+    except Exception:
+        pass
+    return result

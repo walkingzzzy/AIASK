@@ -71,13 +71,13 @@ export class PreferencesService {
 
   async setUserPreferences(userId: string, prefs: UserPreferences): Promise<void> {
     if (this.dbService.enabled) {
-      try {
-        await this.dbService.query(
-          'UPDATE app_users SET preferences = $2 WHERE id = $1',
-          [userId, JSON.stringify(prefs)],
-        );
+      const result = await this.dbService.query(
+        'UPDATE app_users SET preferences = $2::jsonb WHERE id = $1',
+        [userId, JSON.stringify(prefs ?? {})],
+      );
+      if (result.rowCount && result.rowCount > 0) {
         return;
-      } catch { /* fall through to memStore */ }
+      }
     }
     this.memStore.set(userId, prefs);
   }

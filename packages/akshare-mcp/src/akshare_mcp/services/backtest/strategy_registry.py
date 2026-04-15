@@ -1,11 +1,13 @@
 """策略注册表 — 动态策略注册与实例化"""
 
 import logging
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 from .strategy_base import IStrategy
 
 logger = logging.getLogger(__name__)
+
+_EXECUTABLE_DSL_REQUIRED_TYPES = {"ma_cross", "momentum", "volatility_breakout"}
 
 
 class StrategyRegistry:
@@ -34,6 +36,43 @@ class StrategyRegistry:
         if params:
             instance.set_parameters(params)
         return instance
+
+    @classmethod
+    def create_runtime_strategy(
+        cls,
+        name: str,
+        params: Optional[dict] = None,
+    ) -> Tuple[Optional[IStrategy], str]:
+        payload = dict(params or {})
+        normalized_name = str(name or "").strip().lower()
+        dsl = payload.get("dsl")
+        fallback_klass = cls.get(normalized_name)
+        fallback_mode = (
+            "missing_executable_contract"
+            if normalized_name in _EXECUTABLE_DSL_REQUIRED_TYPES
+            else "builtin_legacy"
+        )
+        if isinstance(dsl, dict) and dsl:
+            try:
+                from .dsl_strategy import DslRuleStrategy
+
+                instance = DslRuleStrategy()
+                instance.set_parameters(payload)
+                return instance, "compiled_dsl"
+            except Exception as exc:
+                logger.warning("Failed to initialize compiled DSL strategy for %s: %s", normalized_name, exc)
+                if fallback_klass is None:
+                    return None, "missing_executable_contract"
+                fallback = fallback_klass()
+                if payload:
+                    fallback.set_parameters(payload)
+                return fallback, fallback_mode
+        if fallback_klass is None:
+            return None, "missing_executable_contract"
+        instance = fallback_klass()
+        if payload:
+            instance.set_parameters(payload)
+        return instance, fallback_mode
 
     @classmethod
     def list_all(cls) -> List[str]:

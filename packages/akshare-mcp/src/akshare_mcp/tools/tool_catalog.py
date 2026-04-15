@@ -563,8 +563,9 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         category="strategy",
         description=(
             "Strategy marketplace lifecycle manager: create, publish, lifecycle scan, "
-            "promotion review, runtime alerts, incubation, and factory status. "
-            "Prefer strategy_review_workflow for read-only snapshots."
+            "promotion review, runtime alerts, incubation, vector governance, domain projection, "
+            "AI generation, and factory status. Prefer strategy_review_workflow and "
+            "resource://strategy/{id}/review for read-only snapshots."
         ),
         required_params=["action"],
         input_schema={
@@ -574,10 +575,22 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
                     "type": "string",
                     "enum": [
                         "help", "list", "detail", "create", "publish", "archive",
-                        "submit", "review_report", "lifecycle_scan", "factory_status",
-                        "factory_run_once", "runtime_alerts", "runtime_control",
+                        "submit", "review_report", "review_report_recheck", "submission_replay",
+                        "lifecycle_scan", "capabilities",
+                        "factory_status", "factory_run_once", "factory_runs", "factory_run_detail",
+                        "execution_audit_verification", "events", "task_runs",
+                        "incubation_overview", "incubation_accounts", "incubation_metrics",
+                        "paper_account", "paper_orders", "paper_nav",
+                        "incubation_sync_run", "incubation_pipeline", "incubation_pipeline_run",
                         "promotion_reviews", "promotion_review_run",
-                        "risk_events", "risk_scan_run",
+                        "risk_events", "risk_snapshots", "risk_scan_run", "risk_recovery", "resolve_risk_event",
+                        "runtime_alerts", "runtime_alert_dispatch_run", "runtime_alert_ack",
+                        "runtime_control", "runtime_control_set",
+                        "runtime_cycle_status", "runtime_cycle_run",
+                        "vector_health", "vector_indexes", "vector_index_snapshots",
+                        "vector_profiles", "vector_ann_search", "vector_reconcile", "vector_rebuild", "vector_cleanup",
+                        "domain_events", "domain_projection", "domain_projection_snapshot", "domain_projection_rebuild",
+                        "ai_generate", "ai_experiments",
                     ],
                 },
                 "params": {"type": "object"},
@@ -592,6 +605,8 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         examples=[
             {"description": "List strategies sorted by rank", "arguments": {"action": "list", "params": {"limit": 10, "sort_by": "rank"}}},
             {"description": "Get review report for a specific strategy", "arguments": {"action": "review_report", "params": {"strategy_id": "strat_001"}}},
+            {"description": "Verify execution-audit schema, migrations, and linkage coverage", "arguments": {"action": "execution_audit_verification", "params": {"strategy_id": "strat_001"}}},
+            {"description": "Inspect vector index health for strategy governance", "arguments": {"action": "vector_health", "params": {"index_name": "strategy_behavior"}}},
             {"description": "Run factory once to advance lifecycle", "arguments": {"action": "factory_run_once"}},
         ],
         tags=["strategy", "lifecycle", "factory", "promotion", "runtime"],

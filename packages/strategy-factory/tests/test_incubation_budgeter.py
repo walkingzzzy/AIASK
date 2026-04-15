@@ -1,3 +1,5 @@
+import pytest
+
 import strategy_factory.application.incubation_budgeter as budgeter_mod
 from strategy_factory.application._budget_feedback import (
     LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION,
@@ -254,6 +256,225 @@ def test_incubation_budgeter_hard_controls_defer_suppressed_candidates(monkeypat
     assert plan["summary"]["feedback_freeze_count"] == 1
     assert plan["summary"]["feedback_target_pool_freeze_count"] == 1
     assert plan["summary"]["feedback_generator_mode_freeze_count"] == 1
+
+
+def test_incubation_budgeter_honors_relaxed_task_feedback_control(monkeypatch):
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 0)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    candidate = {
+        "name": "relaxed_bulk_candidate",
+        "strategy_type": "ma_cross",
+        "backtest_metrics": {"sharpe_ratio": 1.1, "total_return": 0.16, "max_drawdown": 0.08},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "ma_cross",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {
+            "task_source": "bulk_stock_matrix",
+            "priority": 82,
+            "candidate_family": "ma_cross",
+            "feedback_control_mode": "normal",
+            "feedback_control_original_mode": "suppress",
+            "feedback_control_relaxed": True,
+            "feedback_control_relaxed_mode": "normal",
+            "feedback_control_relax_reason": "bulk_research_backlog_normal_throttle",
+            "feedback_control_reasons": [
+                "family_zero_signal_backlog_cooldown",
+                "family_forward_window_coverage_suppress",
+                "bulk_research_backlog_normal_throttle",
+            ],
+            "feedback_cooldown_active": True,
+            "feedback_suppressed": False,
+            "feedback_skill_control_mode": "suppress",
+            "feedback_skill_suppressed": True,
+            "feedback_skill_control_reasons": [
+                "family_paper_skill_lcb_cooldown",
+                "family_paper_coverage_ratio_suppress",
+            ],
+        },
+    }
+
+    plan = IncubationBudgeter.plan(
+        [candidate],
+        {
+            "fear_greed_index": 56,
+            "factor_research": {
+                "summary": {"active_family_names": ["ma_cross"]},
+                "budget_feedback": {
+                    "ma_cross": {
+                        "paper_hit_ratio": 0.5,
+                        "paper_skill_lcb": 0.0,
+                        "paper_recent_skill_lcb": 0.0,
+                        "paper_stability_gap": 0.0,
+                        "paper_coverage_ratio": 0.12,
+                        "zero_signal_ratio": 0.72,
+                        "forward_window_coverage_ratio": 0.12,
+                        "promotion_ready_ratio": 0.0,
+                        "promotion_review_coverage_ratio": 0.0,
+                        "evidence_debt_ratio": 0.66,
+                    }
+                },
+            },
+        },
+    )
+
+    candidate_plan = plan["plans"][id(candidate)]
+
+    assert candidate_plan["track"] == "formal_incubation"
+    assert candidate_plan["feedback_control_mode"] == "normal"
+    assert candidate_plan["feedback_control_reasons"][-1] == "bulk_research_backlog_normal_throttle"
+    assert candidate_plan["feedback_skill_control_mode"] == "suppress"
+
+
+def test_incubation_budgeter_surfaces_dual_axis_budget_actions(monkeypatch):
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    prioritized_candidate = {
+        "name": "priority_scale",
+        "strategy_type": "momentum",
+        "backtest_metrics": {"sharpe_ratio": 0.9, "total_return": 0.14, "max_drawdown": 0.08},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "momentum",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 80, "candidate_family": "momentum"},
+    }
+    retained_candidate = {
+        "name": "retain_reduce_budget",
+        "strategy_type": "quality_factor",
+        "backtest_metrics": {"sharpe_ratio": 0.85, "total_return": 0.12, "max_drawdown": 0.07},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "quality_factor",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 78, "candidate_family": "quality_factor"},
+    }
+
+    plan = IncubationBudgeter.plan(
+        [prioritized_candidate, retained_candidate],
+        {
+            "fear_greed_index": 60,
+            "factor_research": {
+                "summary": {"active_family_names": ["momentum", "quality_factor"]},
+                "budget_feedback": {
+                    "momentum": {
+                        "strategy_count": 3,
+                        "paper_hit_ratio": 0.62,
+                        "paper_skill_lcb": 0.08,
+                        "paper_recent_skill_lcb": 0.06,
+                        "paper_stability_gap": 0.03,
+                        "paper_coverage_ratio": 0.8,
+                        "execution_conversion_efficiency": 0.26,
+                    },
+                    "quality_factor": {
+                        "strategy_count": 3,
+                        "paper_hit_ratio": 0.6,
+                        "paper_skill_lcb": 0.05,
+                        "paper_recent_skill_lcb": 0.04,
+                        "paper_stability_gap": 0.04,
+                        "paper_coverage_ratio": 0.76,
+                        "execution_conversion_efficiency": 0.12,
+                    },
+                },
+            },
+        },
+    )
+
+    prioritized_plan = plan["plans"][id(prioritized_candidate)]
+    retained_plan = plan["plans"][id(retained_candidate)]
+
+    assert prioritized_plan["feedback_budget_action"] == "prioritize_scale"
+    assert prioritized_plan["feedback_prioritize_scale"] is True
+    assert prioritized_plan["feedback_execution_conversion_efficiency"] == pytest.approx(0.26)
+    assert retained_plan["feedback_budget_action"] == "retain_family_reduce_budget"
+    assert retained_plan["feedback_execution_optimization_queue"] is True
+    assert retained_plan["feedback_reduce_budget"] is True
+    assert plan["summary"]["feedback_budget_action_counts"] == {
+        "prioritize_scale": 1,
+        "retain_family_reduce_budget": 1,
+    }
+    assert plan["summary"]["feedback_execution_optimization_queue_count"] == 1
+    assert plan["summary"]["feedback_prioritize_scale_count"] == 1
+
+
+def test_incubation_budgeter_prefers_skill_and_execution_over_raw_roi(monkeypatch):
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    high_roi_candidate = {
+        "name": "high_roi_low_skill",
+        "strategy_type": "momentum",
+        "backtest_metrics": {"sharpe_ratio": 0.82, "total_return": 0.28, "max_drawdown": 0.11},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "momentum",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 82, "candidate_family": "momentum"},
+    }
+    high_skill_candidate = {
+        "name": "high_skill_execution",
+        "strategy_type": "quality_factor",
+        "backtest_metrics": {"sharpe_ratio": 0.76, "total_return": 0.11, "max_drawdown": 0.07},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "quality_factor",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 76, "candidate_family": "quality_factor"},
+    }
+
+    plan = IncubationBudgeter.plan(
+        [high_roi_candidate, high_skill_candidate],
+        {
+            "fear_greed_index": 58,
+            "factor_research": {
+                "summary": {"active_family_names": ["momentum", "quality_factor"]},
+                "budget_feedback": {
+                    "momentum": {
+                        "strategy_count": 4,
+                        "paper_hit_ratio": 0.49,
+                        "paper_skill_lcb": -0.02,
+                        "paper_recent_skill_lcb": -0.03,
+                        "paper_stability_gap": 0.12,
+                        "paper_coverage_ratio": 0.42,
+                        "execution_conversion_efficiency": 0.09,
+                    },
+                    "quality_factor": {
+                        "strategy_count": 4,
+                        "paper_hit_ratio": 0.66,
+                        "paper_skill_lcb": 0.10,
+                        "paper_recent_skill_lcb": 0.08,
+                        "paper_stability_gap": 0.03,
+                        "paper_coverage_ratio": 0.84,
+                        "execution_conversion_efficiency": 0.24,
+                    },
+                },
+            },
+        },
+    )
+
+    roi_plan = plan["plans"][id(high_roi_candidate)]
+    skill_plan = plan["plans"][id(high_skill_candidate)]
+
+    assert skill_plan["priority_score"] > roi_plan["priority_score"]
+    assert skill_plan["track"] == "formal_incubation"
+    assert roi_plan["track"] in {"observe_incubation", "deferred_budget_queue"}
+    assert skill_plan["feedback_paper_skill_lcb"] == pytest.approx(0.10)
+    assert skill_plan["feedback_execution_conversion_efficiency"] == pytest.approx(0.24)
 
 
 def test_incubation_budgeter_suppresses_evidence_debt_backlog(monkeypatch):

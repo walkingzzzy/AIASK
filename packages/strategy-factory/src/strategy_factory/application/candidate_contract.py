@@ -41,7 +41,11 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "candidate_local_selected_count",
     "candidate_lineage_contract",
     "candidate_provenance",
+    "confidence_contract",
     "constraint_check",
+    "contradiction_count",
+    "evidence_alignment_audit",
+    "evidence_chain",
     "event_context",
     "execution_contract_hash",
     "execution_assumptions",
@@ -52,6 +56,7 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "factory_selected_count",
     "had_explicit_research_task",
     "holding_horizon",
+    "legacy_semantic_contract",
     "logic_signature",
     "lineage",
     "lineage_id",
@@ -60,12 +65,15 @@ _LOGIC_PARAM_SKIP_KEYS = frozenset({
     "parent_strategy_id",
     "parent_strategy_ids",
     "portfolio_spec",
+    "prediction_contract",
+    "proxy_dependency_score",
     "rebalance_rule",
     "request_target_symbols",
     "requested_target_symbols",
     "research_task",
     "resolved_candidate_envelope",
     "risk_rules",
+    "runtime_playbook",
     "stock_pool",
     "strategy_profile",
     "target_pool_id",
@@ -90,8 +98,12 @@ _LOGIC_METADATA_SKIP_KEYS = frozenset({
     "candidate_identity_signature",
     "candidate_lineage_contract",
     "candidate_provenance",
+    "confidence_contract",
     "codes",
+    "contradiction_count",
     "dsl_signature",
+    "evidence_alignment_audit",
+    "evidence_chain",
     "entry_exit_signature",
     "event_context",
     "execution_contract_hash",
@@ -104,8 +116,11 @@ _LOGIC_METADATA_SKIP_KEYS = frozenset({
     "parent_strategy_id",
     "parent_strategy_ids",
     "pool_id",
+    "prediction_contract",
+    "proxy_dependency_score",
     "research_task",
     "run_id",
+    "runtime_playbook",
     "same_theme_symbols",
     "stock_codes",
     "strategy_profile",
@@ -119,6 +134,7 @@ _LOGIC_METADATA_SKIP_KEYS = frozenset({
     "theme_code",
     "theme_id",
     "theme_members",
+    "legacy_semantic_contract",
     "legacy_identity_partial",
 })
 _TOP_LEVEL_LOGIC_KEYS = (
@@ -985,7 +1001,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         "target_source": target_source or None,
         "constraint_check": constraint_check,
     }
-    return {
+    contract = {
         "candidate_id": _string(payload.get("candidate_id") or payload.get("id")) or None,
         "name": _string(payload.get("name")) or None,
         "strategy_type": _string(payload.get("strategy_type")).lower() or "unknown",
@@ -997,6 +1013,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         "holding_horizon": _as_dict(candidate_contract_value(payload, "holding_horizon", {})),
         "trade_plan": _as_dict(candidate_contract_value(payload, "trade_plan", {})),
         "risk_rules": _as_dict(candidate_contract_value(payload, "risk_rules", {})),
+        "runtime_playbook": _as_dict(candidate_contract_value(payload, "runtime_playbook", {})),
         "rebalance_rule": candidate_contract_value(payload, "rebalance_rule", {}),
         "portfolio_spec": _as_dict(candidate_contract_value(payload, "portfolio_spec", {})),
         "execution_assumptions": _as_dict(candidate_contract_value(payload, "execution_assumptions", {})),
@@ -1004,6 +1021,11 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         "validation_profile": validation_profile,
         "lineage": _resolve_lineage(payload, research_task=normalized_task),
     }
+    for field_name in ("evidence_chain", "prediction_contract", "confidence_contract"):
+        value = _as_dict(candidate_contract_value(payload, field_name, {}))
+        if value:
+            contract[field_name] = value
+    return contract
 
 
 def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1150,6 +1172,7 @@ def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "target_symbols": list(envelope.get("resolved_target_symbols") or []),
         "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
         "constraint_check": dict(envelope.get("resolved_constraint_check") or {}),
+        "runtime_playbook": _as_dict(candidate_contract_value(payload, "runtime_playbook", {})),
         "validation_profile": resolved_validation_profile,
         "targeting_policy": resolved_targeting_policy,
         "candidate_contract_snapshot": dict(envelope.get("candidate_contract_snapshot") or {}),
@@ -1237,6 +1260,7 @@ def build_candidate_identity_signature(candidate: Optional[Mapping[str, Any]]) -
         "holding_horizon": dict(contract.get("holding_horizon") or {}),
         "trade_plan": dict(contract.get("trade_plan") or {}),
         "risk_rules": dict(contract.get("risk_rules") or {}),
+        "runtime_playbook": dict(contract.get("runtime_playbook") or {}),
         "rebalance_rule": contract.get("rebalance_rule"),
         "portfolio_spec": dict(contract.get("portfolio_spec") or {}),
         "execution_assumptions": dict(contract.get("execution_assumptions") or {}),

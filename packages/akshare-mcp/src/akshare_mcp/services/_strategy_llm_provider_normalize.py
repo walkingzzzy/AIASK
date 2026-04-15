@@ -14,6 +14,7 @@ import httpx
 import pandas as pd
 from strategy_factory.application.candidate_contract import resolve_candidate_validation_profile
 from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
+from strategy_factory.application.semantic_contract import synthesize_confidence_contract
 from strategy_factory.domain.targets import (
     _apply_target_symbol_policy,
     _build_target_alignment_contract,
@@ -709,6 +710,18 @@ class _StrategyLLMProviderNormalizeMixin:
                 'targeting_policy': dict(targeting_policy),
                 'constraint_check': dict(constraint_check),
             }
+            for key in (
+                'evidence_chain',
+                'prediction_contract',
+                'evidence_alignment_audit',
+            ):
+                value = candidate.get(key)
+                if isinstance(value, dict) and value:
+                    normalized_params[key] = dict(value)
+            for key in ('legacy_semantic_contract', 'contradiction_count', 'proxy_dependency_score'):
+                value = candidate.get(key)
+                if value not in (None, '', [], {}):
+                    normalized_params[key] = value
             normalized: dict[str, Any] = {
                 'name': str(candidate.get('name') or '外部 AI 候选策略'),
                 'strategy_type': strategy_type,
@@ -731,6 +744,18 @@ class _StrategyLLMProviderNormalizeMixin:
                 'constraint_check': constraint_check,
                 'tags': [str(item) for item in [*tags, 'target_contract_enforced'] if str(item or '').strip()][:8],
             }
+            for key in (
+                'evidence_chain',
+                'prediction_contract',
+                'evidence_alignment_audit',
+            ):
+                value = candidate.get(key)
+                if isinstance(value, dict) and value:
+                    normalized[key] = dict(value)
+            for key in ('legacy_semantic_contract', 'contradiction_count', 'proxy_dependency_score'):
+                value = candidate.get(key)
+                if value not in (None, '', [], {}):
+                    normalized[key] = value
             if allow_legacy_contract_defaults:
                 normalized["_legacy_contract_defaults_applied"] = True
             if isinstance(candidate.get('hypothesis_artifact'), dict) and candidate.get('hypothesis_artifact'):
@@ -763,6 +788,9 @@ class _StrategyLLMProviderNormalizeMixin:
                     normalized['selection_logic'] = [str(item) for item in selection_logic[:4]]
                 else:
                     normalized['selection_logic'] = [str(selection_logic)]
+            synthesized_confidence_contract = synthesize_confidence_contract(normalized)
+            normalized['confidence_contract'] = dict(synthesized_confidence_contract)
+            normalized_params['confidence_contract'] = dict(synthesized_confidence_contract)
             return normalized
 
         @classmethod
@@ -812,7 +840,49 @@ class _StrategyLLMProviderNormalizeMixin:
                         'validation_focus': 'target_plus_representative',
                     },
                     'holding_horizon': {'max_days': 10},
-                    'trade_plan': {'entry_bias': 'trend_follow', 'exit_bias': 'signal_or_time_stop'},
+                    'evidence_chain': {
+                        'evidences': [
+                            {
+                                'evidence_id': 'ev_1',
+                                'source_type': 'price_action',
+                                'direction': 'up',
+                                'summary': '10 日均线向上，收盘价重新站回均线之上。',
+                                'proxy_only': False,
+                                'target_symbols': list(symbols),
+                            },
+                            {
+                                'evidence_id': 'ev_2',
+                                'source_type': 'volume',
+                                'direction': 'up',
+                                'summary': '突破伴随量能放大，volume_ratio 保持在 1.2 以上。',
+                                'proxy_only': False,
+                                'target_symbols': list(symbols),
+                            },
+                        ],
+                    },
+                    'prediction_contract': {
+                        'claims': [
+                            {
+                                'claim_id': 'claim_1',
+                                'expected_move': 'up',
+                                'expected_horizon': 10,
+                                'evidence_ids': ['ev_1', 'ev_2'],
+                            },
+                        ],
+                    },
+                    'trade_plan': {
+                        'entry_bias': 'trend_follow',
+                        'exit_bias': 'signal_or_time_stop',
+                        'entry': {
+                            'node_id': 'entry_1',
+                            'claim_ids': ['claim_1'],
+                            'evidence_ids': ['ev_1', 'ev_2'],
+                        },
+                        'exit': {
+                            'node_id': 'exit_1',
+                            'claim_ids': ['claim_1'],
+                        },
+                    },
                     'risk_rules': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 10},
                     'position_sizing': {'mode': 'single_name', 'position_assumption': 'single_name_full_notional'},
                     'execution_notes': 'prefer liquid session execution',
@@ -830,6 +900,7 @@ class _StrategyLLMProviderNormalizeMixin:
                         'version': '1.0',
                         'timeframe': 'daily',
                         'entry': {
+                            'trade_plan_node_id': 'entry_1',
                             'any': [{
                                 'op': 'cross_above',
                                 'left': {'field': 'close'},
@@ -837,6 +908,7 @@ class _StrategyLLMProviderNormalizeMixin:
                             }],
                         },
                         'exit': {
+                            'trade_plan_node_id': 'exit_1',
                             'any': [{
                                 'op': 'cross_below',
                                 'left': {'field': 'close'},

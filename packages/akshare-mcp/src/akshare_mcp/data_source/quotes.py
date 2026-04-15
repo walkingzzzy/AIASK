@@ -12,6 +12,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
 
+from ..date_utils import format_date_dash, get_latest_trading_date
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
 _EFINANCE_TIMEOUT = float(os.getenv("EFINANCE_TIMEOUT", "12"))
@@ -30,6 +31,16 @@ try:
     from ..baostock_api import baostock_client
 except (ImportError, Exception):
     baostock_client = None
+
+
+def _to_tushare_ts_code(code: str) -> str:
+    """Map a normalized stock code to the correct Tushare market suffix."""
+    normalized = normalize_code(code)
+    if normalized.startswith(("4", "8", "9")):
+        return f"{normalized}.BJ"
+    if normalized.startswith(("5", "6")) or normalized.startswith("11"):
+        return f"{normalized}.SH"
+    return f"{normalized}.SZ"
 
 
 class QuotesMixin:
@@ -69,7 +80,7 @@ class QuotesMixin:
         # 1. Tushare Pro
         if self.ts_pro:
             try:
-                ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+                ts_code = _to_tushare_ts_code(code)
                 end_date = datetime.datetime.now().strftime("%Y%m%d")
                 start_date = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime("%Y%m%d")
                 df = self.ts_pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
@@ -178,7 +189,7 @@ class QuotesMixin:
         # 1. Tushare Pro (仅日线)
         if self.ts_pro and period == 'daily':
             try:
-                ts_code = f"{code}.SH" if code.startswith(('6', '5')) else f"{code}.SZ"
+                ts_code = _to_tushare_ts_code(code)
                 end_date = datetime.datetime.now().strftime('%Y%m%d')
                 start_date = (datetime.datetime.now() - datetime.timedelta(days=limit * 2)).strftime('%Y%m%d')
 
@@ -200,7 +211,15 @@ class QuotesMixin:
                             "change_pct": safe_float(row.get('pct_chg')),
                             "source": "tushare_pro"
                         })
-                    return results
+                    latest_expected_date = format_date_dash(get_latest_trading_date())
+                    latest_result_date = str(results[-1].get("date") or "")
+                    if latest_expected_date and latest_result_date and latest_result_date < latest_expected_date:
+                        safe_stderr_print(
+                            f"[DataSource] Tushare Pro KLine stale for {code}: "
+                            f"latest={latest_result_date}, expected={latest_expected_date}, falling through"
+                        )
+                    else:
+                        return results
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro KLine failed: {e}")
 
@@ -238,6 +257,9 @@ class QuotesMixin:
                 start_date = (datetime.datetime.now() - datetime.timedelta(days=limit * 1.5 + 30)).strftime("%Y-%m-%d")
                 df_bs = baostock_client.get_history_k_data(code, start_date, end_date)
                 if not df_bs.empty:
+                    if "date" in df_bs.columns:
+                        # Baostock may return rows newest-first; normalize to ascending before truncation.
+                        df_bs = df_bs.sort_values("date")
                     results = []
                     for _, row in df_bs.tail(limit).iterrows():
                         results.append({

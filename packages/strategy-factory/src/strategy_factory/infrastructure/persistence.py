@@ -134,6 +134,14 @@ class FactoryPersistenceHelper:
         result = await self._call_optional("save_factory_task_evidence", payload, default=None)
         return result if isinstance(result, dict) else None
 
+    async def save_strategy_candidate_evidence(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        result = await self._call_optional("save_strategy_candidate_evidence", payload, default=None)
+        return result if isinstance(result, dict) else None
+
+    async def save_strategy_signal_evidence(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        result = await self._call_optional("save_strategy_signal_evidence", payload, default=None)
+        return result if isinstance(result, dict) else None
+
     async def save_strategy_generation_experiment(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         result = await self._call_optional("save_strategy_generation_experiment", payload, default=None)
         return result if isinstance(result, dict) else None

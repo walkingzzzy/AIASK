@@ -60,6 +60,89 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _direction_bucket(value: Any) -> Optional[str]:
+    token = _string(value).lower()
+    if not token:
+        return None
+    if any(word in token for word in ("up", "long", "bull", "buy", "rise", "rebound")):
+        return "up"
+    if any(word in token for word in ("down", "short", "bear", "sell", "fall", "drop")):
+        return "down"
+    return None
+
+
+def _normalize_conflict_resolution_rule(value: Any) -> Any:
+    if isinstance(value, dict):
+        payload = {
+            key: item
+            for key, item in dict(value).items()
+            if item not in _EMPTY_VALUES
+        }
+        return payload or None
+    token = _string(value)
+    return token or None
+
+
+def _validate_prediction_contract(
+    prediction_contract: Any,
+    evidence_chain: Any,
+) -> list[str]:
+    contract = _as_dict(prediction_contract)
+    if not contract:
+        return []
+    claims = _as_list(contract.get("claims"))
+    evidence_by_id = {
+        _string(item.get("evidence_id") or item.get("id")): _as_dict(item)
+        for item in _as_list(_as_dict(evidence_chain).get("evidences"))
+        if _string(_as_dict(item).get("evidence_id") or _as_dict(item).get("id"))
+    }
+    default_conflict_rule = _normalize_conflict_resolution_rule(
+        contract.get("conflict_resolution_rule")
+    )
+    reject_reasons: list[str] = []
+    for index, raw_claim in enumerate(claims):
+        claim = _as_dict(raw_claim)
+        claim_id = _string(claim.get("claim_id") or claim.get("id")) or f"claim_{index}"
+        evidence_ids = [
+            _string(item)
+            for item in _as_list(claim.get("evidence_ids"))
+            if _string(item)
+        ]
+        if not evidence_ids:
+            reject_reasons.append(f"prediction_contract_missing_evidence_ids:{claim_id}")
+            continue
+        expected_direction = _direction_bucket(claim.get("expected_move"))
+        directions = [
+            _direction_bucket(_as_dict(evidence_by_id.get(evidence_id)).get("direction"))
+            for evidence_id in evidence_ids
+            if evidence_id in evidence_by_id
+        ]
+        directions = [direction for direction in directions if direction]
+        conflict_rule = _normalize_conflict_resolution_rule(
+            claim.get("conflict_resolution_rule")
+        ) or default_conflict_rule
+        if expected_direction:
+            has_same = any(direction == expected_direction for direction in directions)
+            has_opposite = any(direction != expected_direction for direction in directions)
+            if has_same and has_opposite and not conflict_rule:
+                reject_reasons.append(
+                    f"prediction_contract_missing_conflict_resolution_rule:{claim_id}"
+                )
+        elif len(set(directions)) > 1 and not conflict_rule:
+            reject_reasons.append(
+                f"prediction_contract_missing_conflict_resolution_rule:{claim_id}"
+            )
+    return reject_reasons
+
+
 def _normalize_code_list(values: Any, limit: int = 12) -> list[str]:
     codes: list[str] = []
     seen: set[str] = set()
@@ -402,6 +485,8 @@ class LLMHypothesisGenerator:
             or payload.get("hypothesis_structured")
             or {}
         )
+        prediction_contract = _as_dict(payload.get("prediction_contract"))
+        evidence_chain = _as_dict(payload.get("evidence_chain"))
         holding_horizon = _as_dict(payload.get("holding_horizon"))
         trade_plan = _as_dict(payload.get("trade_plan"))
         risk_rules = _as_dict(payload.get("risk_rules"))
@@ -602,6 +687,9 @@ class LLMHypothesisGenerator:
         normalized_hypothesis["family_specific_complete"] = len(family_specific_missing_fields) == 0
 
         reject_reasons = [f"hypothesis_missing:{field}" for field in missing_fields]
+        reject_reasons.extend(
+            _validate_prediction_contract(prediction_contract, evidence_chain)
+        )
 
         artifact_fingerprint = hashlib.sha1(
             json.dumps(
@@ -623,7 +711,7 @@ class LLMHypothesisGenerator:
         return LLMHypothesisResult(
             accepted=accepted,
             hypothesis=normalized_hypothesis,
-            reject_reasons=reject_reasons,
+            reject_reasons=list(dict.fromkeys(reject_reasons)),
             field_sources=field_sources,
         )
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .candidate_contract import apply_resolved_candidate_envelope
+
 
 def attach_autonomy_stage_artifacts(
     *,
@@ -20,7 +22,12 @@ def attach_autonomy_stage_artifacts(
     scan_artifact = dict(scan_task_artifact or {})
     bulk_artifact = dict(bulk_task_artifact or {})
     task_artifact = build_task_artifact(payload)
-    candidate_artifact = build_candidate_artifact(list(generated_candidates or []))
+    resolved_candidates = [
+        apply_resolved_candidate_envelope(dict(candidate or {}))
+        for candidate in list(generated_candidates or [])
+        if isinstance(candidate, dict)
+    ]
+    candidate_artifact = build_candidate_artifact(resolved_candidates)
     evidence_artifact = build_research_evidence_artifact(
         payload,
         experiments=list(all_experiments or []),

@@ -39,6 +39,7 @@ import type {
 } from '../types';
 
 export type FactoryReviewPanelProps = {
+  highConfidenceQualityUiEnabled: boolean;
   report: ReviewReportResponse | null | undefined;
   events: StrategyEventsResponse | null | undefined;
   incubation: IncubationOverviewResponse | null | undefined;
@@ -91,7 +92,32 @@ export type FactoryReviewPanelProps = {
   loading: boolean;
 };
 
+function qualityBadgeVariant(
+  value: unknown,
+): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'strong' || normalized === 'comparable_ready') return 'success';
+  if (normalized === 'mixed' || normalized === 'diagnostic_ready') return 'info';
+  if (normalized === 'insufficient_evidence' || normalized === 'insufficient') return 'warning';
+  if (normalized === 'weak' || normalized === 'missing') return 'danger';
+  return 'neutral';
+}
+
+function qualityLabelText(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'strong') return '强';
+  if (normalized === 'mixed') return '混合';
+  if (normalized === 'weak') return '弱';
+  if (normalized === 'insufficient_evidence') return '证据不足';
+  if (normalized === 'missing') return '缺失';
+  if (normalized === 'insufficient') return '样本不足';
+  if (normalized === 'diagnostic_ready') return '诊断可用';
+  if (normalized === 'comparable_ready') return '可比较';
+  return normalized || '-';
+}
+
 export function FactoryReviewPanel({
+  highConfidenceQualityUiEnabled,
   report,
   events,
   incubation,
@@ -211,6 +237,13 @@ export function FactoryReviewPanel({
     ],
   );
   const activeSectionLoading = sectionLoading[activeSection] || loading;
+  const highConfidencePanel = summaryState.highConfidencePanel;
+  const showHighConfidencePanel = highConfidenceQualityUiEnabled && [
+    highConfidencePanel.predictionQualityLabel,
+    highConfidencePanel.executionQualityLabel,
+    highConfidencePanel.confidenceContractStatus,
+    highConfidencePanel.qualityDiagnosis,
+  ].some(Boolean);
 
   return (
     <div className="mt-4 space-y-4">
@@ -228,6 +261,8 @@ export function FactoryReviewPanel({
         />
         <KpiCard title="Walk-Forward IC IR" value={fmtNum(review?.quality_gate?.wf_ic_ir, 4)} />
         <KpiCard title="Purged K-Fold IC" value={fmtNum(review?.quality_gate?.pkf_ic, 4)} />
+        <KpiCard title="证据门禁" value={review?.summary?.evidence_gate_status ?? '-'} />
+        <KpiCard title="池子画像" value={review?.summary?.pool_profile ?? review?.pool_profile ?? '-'} />
         <KpiCard title="孵化信号数" value={incubation?.total_signals ?? latestMetric?.total_signals ?? '-'} />
         <KpiCard title="5日命中率" value={fmtPct(incubation?.hit_rate_5d ?? latestMetric?.hit_rate_5d)} />
       </KpiGrid>
@@ -251,6 +286,65 @@ export function FactoryReviewPanel({
                 调整原因: {shortText(review?.summary?.validation_grade_adjustment_reason ?? incubation?.validation_grade_adjustment_reason, 28)}
               </Badge>
             ) : null}
+          </div>
+        </SectionCard>
+      ) : null}
+
+      {showHighConfidencePanel ? (
+        <SectionCard className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="mt-0">高置信质量面板</h3>
+              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+                评审链路里同步展示预测、执行和合同状态，只做 additive 呈现，不替代现有质量门卡片。
+              </p>
+            </div>
+            <Badge variant="info">High Confidence</Badge>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {highConfidencePanel.predictionQualityLabel ? (
+              <Badge variant={qualityBadgeVariant(highConfidencePanel.predictionQualityLabel)}>
+                预测质量: {qualityLabelText(highConfidencePanel.predictionQualityLabel)}
+              </Badge>
+            ) : null}
+            {highConfidencePanel.executionQualityLabel ? (
+              <Badge variant={qualityBadgeVariant(highConfidencePanel.executionQualityLabel)}>
+                执行质量: {qualityLabelText(highConfidencePanel.executionQualityLabel)}
+              </Badge>
+            ) : null}
+            {highConfidencePanel.confidenceContractStatus ? (
+              <Badge variant={qualityBadgeVariant(highConfidencePanel.confidenceContractStatus)}>
+                合同状态: {qualityLabelText(highConfidencePanel.confidenceContractStatus)}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">预测轴</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {highConfidencePanel.primarySkillLcb == null ? '-' : fmtNum(highConfidencePanel.primarySkillLcb, 4)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">primary skill LCB</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">覆盖率</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {highConfidencePanel.coverageRatio == null ? '-' : fmtPct(highConfidencePanel.coverageRatio)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">signal / forward coverage</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行轴</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {highConfidencePanel.executionConversionEfficiency == null
+                  ? '-'
+                  : fmtPct(highConfidencePanel.executionConversionEfficiency)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">execution conversion efficiency</div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-[24px] border border-border bg-surface-alt px-4 py-3 text-sm text-text-secondary">
+            {highConfidencePanel.qualityDiagnosis || '当前评审链路尚无额外高置信诊断文本，先以标签和合同状态作为参考。'}
           </div>
         </SectionCard>
       ) : null}
@@ -425,6 +519,41 @@ export function FactoryReviewPanel({
             ) : null}
           </SectionCard>
 
+          {summaryState.executionLineageSummaryRows.length || summaryState.executionLineageRows.length ? (
+            <SectionCard className="p-3">
+              <h3 className="mt-0">执行链路</h3>
+              <p className="mb-3 text-sm text-text-secondary">
+                把 claim-level lineage、Step-level Lineage 和 runtime action 一起放出来，方便直接核对运行态动作到底落到哪一个 trade step。
+              </p>
+              {summaryState.executionLineageSummaryRows.length ? (
+                <DataTable
+                  columns={[
+                    { key: 'item', label: '项目' },
+                    { key: 'value', label: '值' },
+                  ]}
+                  rows={summaryState.executionLineageSummaryRows}
+                />
+              ) : null}
+              {summaryState.executionLineageRows.length ? (
+                <div className="mt-3">
+                  <DataTable
+                    columns={[
+                      { key: 'signal_date', label: '信号日' },
+                      { key: 'code', label: '标的' },
+                      { key: 'runtime_action_reason', label: '动作' },
+                      { key: 'applied_claim_id', label: 'Claim' },
+                      { key: 'applied_trade_step_id', label: 'Trade Step' },
+                      { key: 'lineage_status', label: '状态' },
+                      { key: 'runtime_action_source', label: '来源' },
+                    ]}
+                    rows={summaryState.executionLineageRows}
+                    pageSize={6}
+                  />
+                </div>
+              ) : null}
+            </SectionCard>
+          ) : null}
+
           <SectionCard className="p-3">
             <h3 className="mt-0">运行时控制面</h3>
             <div className="flex flex-wrap gap-2 mb-3">
@@ -529,7 +658,10 @@ export function FactoryReviewPanel({
                   { key: 'evaluated_at', label: '评估时间' },
                   { key: 'pipeline_stage', label: '阶段' },
                   { key: 'pipeline_status', label: '状态', render: (value) => <Badge variant={value === 'ready_for_review' || value === 'promoted' ? 'success' : value === 'blocked' ? 'danger' : 'info'}>{String(value ?? '-')}</Badge> },
-                  { key: 'readiness_score', label: '准备度' },
+                  { key: 'gate_status', label: '硬门状态' },
+                  { key: 'gate_reasons', label: '硬门原因' },
+                  { key: 'priority_score', label: '优先级分' },
+                  { key: 'readiness_score', label: '兼容准备度' },
                   { key: 'observed_days', label: '观察天数' },
                   { key: 'promote_streak', label: '晋级连击' },
                   { key: 'halt_streak', label: '暂停连击' },

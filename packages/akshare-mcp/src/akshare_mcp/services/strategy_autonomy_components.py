@@ -14,6 +14,12 @@ def _extract_event_context(*args, **kwargs):
     from strategy_factory import extract_event_context
     return extract_event_context(*args, **kwargs)
 
+
+def _apply_resolved_candidate_envelope(candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+    from strategy_factory.application.candidate_contract import apply_resolved_candidate_envelope
+
+    return apply_resolved_candidate_envelope(candidate)
+
 from .artifact_registry import register_experiment
 from .strategy_generators import LLMProxyStrategyGenerator, RuleStrategyGenerator
 from .strategy_optimizer import BanditParameterOptimizer
@@ -21,6 +27,30 @@ from .strategy_reviewer import MultiAgentStrategyReviewer
 from .strategy_spec import StrategySpec, _safe_normalize_research_task
 
 logger = logging.getLogger(__name__)
+
+
+_EXPERIMENT_SEMANTIC_FIELDS = (
+    "candidate_contract_snapshot",
+    "candidate_contract_hash",
+    "execution_contract_hash",
+    "candidate_identity_signature",
+    "candidate_lineage_contract",
+    "evidence_chain",
+    "prediction_contract",
+    "confidence_contract",
+    "claim_to_trade_plan_map",
+    "trade_plan_to_dsl_map",
+    "dsl_support_audit",
+    "execution_semantic_mode",
+    "execution_semantic_gap",
+    "execution_semantic_gap_reasons",
+    "semantic_runtime_match",
+    "runtime_family_data_source",
+    "proxy_runtime_used",
+    "diagnostic_only",
+    "execution_readiness_tier",
+    "semantic_contract_missing_fields",
+)
 
 
 def _env_bool(*names: str, default: bool) -> bool:
@@ -799,6 +829,34 @@ class ExperimentRecorder:
             summary["target_symbols"] = target_symbols[:12]
         return summary
 
+    @staticmethod
+    def _candidate_field(candidate: Optional[dict[str, Any]], field_name: str) -> Any:
+        payload = dict(candidate or {})
+        params = dict(payload.get("params") or {})
+        if payload.get(field_name) not in (None, "", [], {}):
+            return payload.get(field_name)
+        if params.get(field_name) not in (None, "", [], {}):
+            return params.get(field_name)
+        return None
+
+    @classmethod
+    def _apply_candidate_contract_fields(
+        cls,
+        target: dict[str, Any],
+        candidate: Optional[dict[str, Any]],
+    ) -> None:
+        payload = dict(candidate or {})
+        for field_name in _EXPERIMENT_SEMANTIC_FIELDS:
+            value = cls._candidate_field(payload, field_name)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, dict):
+                target[field_name] = dict(value)
+            elif isinstance(value, list):
+                target[field_name] = list(value)
+            else:
+                target[field_name] = value
+
     @classmethod
     def _summarize_llm_research_context(cls, context: Optional[dict[str, Any]]) -> dict[str, Any]:
         payload = dict(context or {})
@@ -902,33 +960,37 @@ class ExperimentRecorder:
         spec: StrategySpec,
         research_task: Optional[dict[str, Any]],
         event_context: Optional[dict[str, Any]],
+        candidate: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         metadata = dict(spec.metadata or {})
-        return {
+        candidate_payload = dict(candidate or {})
+        contract = {
             "strategy_type": spec.strategy_type,
             "name": spec.name,
             "description": spec.description,
             "tags": list(spec.tags or []),
-            "params": dict(spec.params or {}),
-            "target_symbols": list(metadata.get("target_symbols") or [])[:12],
-            "stock_pool": dict(metadata.get("stock_pool") or {}),
-            "selection_logic": list(metadata.get("selection_logic") or []),
-            "research_task": dict(research_task or {}),
-            "event_context": dict(event_context or {}),
-            "hypothesis_artifact": dict(metadata.get("hypothesis_artifact") or {}),
-            "hypothesis_lowering_audit": dict(metadata.get("hypothesis_lowering_audit") or {}),
-            "holding_horizon": dict(metadata.get("holding_horizon") or {}),
-            "trade_plan": dict(metadata.get("trade_plan") or {}),
-            "risk_rules": dict(metadata.get("risk_rules") or {}),
-            "position_sizing": dict(metadata.get("position_sizing") or {}),
-            "execution_notes": metadata.get("execution_notes"),
-            "rebalance_rule": dict(metadata.get("rebalance_rule") or {}),
-            "portfolio_spec": dict(metadata.get("portfolio_spec") or {}),
-            "execution_assumptions": dict(metadata.get("execution_assumptions") or {}),
-            "validation_profile": dict(metadata.get("validation_profile") or {}),
-            "targeting_policy": dict(metadata.get("targeting_policy") or {}),
-            "constraint_check": dict(metadata.get("constraint_check") or {}),
+            "params": dict(candidate_payload.get("params") or spec.params or {}),
+            "target_symbols": list(candidate_payload.get("target_symbols") or metadata.get("target_symbols") or [])[:12],
+            "stock_pool": dict(candidate_payload.get("stock_pool") or metadata.get("stock_pool") or {}),
+            "selection_logic": list(candidate_payload.get("selection_logic") or metadata.get("selection_logic") or []),
+            "research_task": dict(candidate_payload.get("research_task") or research_task or {}),
+            "event_context": dict(candidate_payload.get("event_context") or event_context or {}),
+            "hypothesis_artifact": dict(candidate_payload.get("hypothesis_artifact") or metadata.get("hypothesis_artifact") or {}),
+            "hypothesis_lowering_audit": dict(candidate_payload.get("hypothesis_lowering_audit") or metadata.get("hypothesis_lowering_audit") or {}),
+            "holding_horizon": dict(candidate_payload.get("holding_horizon") or metadata.get("holding_horizon") or {}),
+            "trade_plan": dict(candidate_payload.get("trade_plan") or metadata.get("trade_plan") or {}),
+            "risk_rules": dict(candidate_payload.get("risk_rules") or metadata.get("risk_rules") or {}),
+            "position_sizing": dict(candidate_payload.get("position_sizing") or metadata.get("position_sizing") or {}),
+            "execution_notes": candidate_payload.get("execution_notes") or metadata.get("execution_notes"),
+            "rebalance_rule": dict(candidate_payload.get("rebalance_rule") or metadata.get("rebalance_rule") or {}),
+            "portfolio_spec": dict(candidate_payload.get("portfolio_spec") or metadata.get("portfolio_spec") or {}),
+            "execution_assumptions": dict(candidate_payload.get("execution_assumptions") or metadata.get("execution_assumptions") or {}),
+            "validation_profile": dict(candidate_payload.get("validation_profile") or metadata.get("validation_profile") or {}),
+            "targeting_policy": dict(candidate_payload.get("targeting_policy") or metadata.get("targeting_policy") or {}),
+            "constraint_check": dict(candidate_payload.get("constraint_check") or metadata.get("constraint_check") or {}),
         }
+        cls._apply_candidate_contract_fields(contract, candidate_payload)
+        return contract
 
     @classmethod
     def _build_persisted_experiment_payload(
@@ -936,67 +998,83 @@ class ExperimentRecorder:
         *,
         spec: StrategySpec,
         payload: dict[str, Any],
+        candidate: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        research_task = dict((payload.get("strategy_spec") or {}).get("research_task") or {})
-        event_context = dict((payload.get("strategy_spec") or {}).get("event_context") or {})
+        candidate_payload = dict(candidate or {})
+        research_task = dict(
+            candidate_payload.get("research_task")
+            or (payload.get("strategy_spec") or {}).get("research_task")
+            or {}
+        )
+        event_context = dict(
+            candidate_payload.get("event_context")
+            or (payload.get("strategy_spec") or {}).get("event_context")
+            or {}
+        )
         replay_contract = cls._build_replay_strategy_contract(
             spec=spec,
             research_task=research_task,
             event_context=event_context,
+            candidate=candidate_payload,
         )
+        summarized_parameters = cls._summarize_parameters(spec)
         strategy_spec = {
             "strategy_type": spec.strategy_type,
             "name": spec.name,
             "description": spec.description,
             "tags": list(spec.tags or []),
-            "params": cls._summarize_parameters(spec),
-            "target_symbols": list(spec.metadata.get("target_symbols") or [])[:12],
-            "stock_pool": cls._summarize_stock_pool(spec.metadata.get("stock_pool") or {}),
-            "selection_logic": cls._summarize_selection_logic(spec.metadata.get("selection_logic") or []),
+            "params": summarized_parameters,
+            "target_symbols": list(candidate_payload.get("target_symbols") or spec.metadata.get("target_symbols") or [])[:12],
+            "stock_pool": cls._summarize_stock_pool(candidate_payload.get("stock_pool") or spec.metadata.get("stock_pool") or {}),
+            "selection_logic": cls._summarize_selection_logic(candidate_payload.get("selection_logic") or spec.metadata.get("selection_logic") or []),
             "research_task": cls._summarize_research_task(research_task),
             "event_context": cls._summarize_event_context(event_context),
-            "hypothesis_artifact": cls._summarize_hypothesis_artifact(spec.metadata.get("hypothesis_artifact") or {}),
-            "holding_horizon": dict(spec.metadata.get("holding_horizon") or {}),
-            "trade_plan": dict(spec.metadata.get("trade_plan") or {}),
-            "risk_rules": dict(spec.metadata.get("risk_rules") or {}),
-            "position_sizing": dict(spec.metadata.get("position_sizing") or {}),
-            "execution_notes": spec.metadata.get("execution_notes"),
-            "rebalance_rule": dict(spec.metadata.get("rebalance_rule") or {}),
-            "portfolio_spec": dict(spec.metadata.get("portfolio_spec") or {}),
-            "execution_assumptions": dict(spec.metadata.get("execution_assumptions") or {}),
-            "validation_profile": dict(spec.metadata.get("validation_profile") or {}),
+            "hypothesis_artifact": cls._summarize_hypothesis_artifact(candidate_payload.get("hypothesis_artifact") or spec.metadata.get("hypothesis_artifact") or {}),
+            "holding_horizon": dict(candidate_payload.get("holding_horizon") or spec.metadata.get("holding_horizon") or {}),
+            "trade_plan": dict(candidate_payload.get("trade_plan") or spec.metadata.get("trade_plan") or {}),
+            "risk_rules": dict(candidate_payload.get("risk_rules") or spec.metadata.get("risk_rules") or {}),
+            "position_sizing": dict(candidate_payload.get("position_sizing") or spec.metadata.get("position_sizing") or {}),
+            "execution_notes": candidate_payload.get("execution_notes") or spec.metadata.get("execution_notes"),
+            "rebalance_rule": dict(candidate_payload.get("rebalance_rule") or spec.metadata.get("rebalance_rule") or {}),
+            "portfolio_spec": dict(candidate_payload.get("portfolio_spec") or spec.metadata.get("portfolio_spec") or {}),
+            "execution_assumptions": dict(candidate_payload.get("execution_assumptions") or spec.metadata.get("execution_assumptions") or {}),
+            "validation_profile": dict(candidate_payload.get("validation_profile") or spec.metadata.get("validation_profile") or {}),
             "replay_contract": replay_contract,
         }
+        cls._apply_candidate_contract_fields(strategy_spec, candidate_payload)
         evaluation = {
             "source": payload.get("source"),
             "task_run_id": payload.get("task_run_id"),
-            "generation_reason": dict(spec.metadata.get("generation_reason") or {}),
+            "generation_reason": dict(candidate_payload.get("generation_reason") or spec.metadata.get("generation_reason") or {}),
             "committee_review": dict(spec.metadata.get("committee_review") or {}),
             "llm_analysis": dict(spec.metadata.get("llm_analysis") or {}),
             "llm_research_context": cls._summarize_llm_research_context(spec.metadata.get("llm_research_context") or {}),
             "llm_response": cls._summarize_llm_response(spec.metadata.get("llm_response") or {}),
-            "target_symbols": list(spec.metadata.get("target_symbols") or [])[:12],
-            "stock_pool": cls._summarize_stock_pool(spec.metadata.get("stock_pool") or {}),
-            "selection_logic": cls._summarize_selection_logic(spec.metadata.get("selection_logic") or []),
+            "target_symbols": list(candidate_payload.get("target_symbols") or spec.metadata.get("target_symbols") or [])[:12],
+            "stock_pool": cls._summarize_stock_pool(candidate_payload.get("stock_pool") or spec.metadata.get("stock_pool") or {}),
+            "selection_logic": cls._summarize_selection_logic(candidate_payload.get("selection_logic") or spec.metadata.get("selection_logic") or []),
             "research_scope": cls._compact_dict(
-                spec.metadata.get("research_scope") or {},
+                candidate_payload.get("research_scope") or spec.metadata.get("research_scope") or {},
                 keys=("scope", "symbol_count", "candidate_count", "source"),
             ),
-            "hypothesis_artifact": cls._summarize_hypothesis_artifact(spec.metadata.get("hypothesis_artifact") or {}),
+            "hypothesis_artifact": cls._summarize_hypothesis_artifact(candidate_payload.get("hypothesis_artifact") or spec.metadata.get("hypothesis_artifact") or {}),
             "hypothesis_lowering_audit": cls._compact_dict(
-                spec.metadata.get("hypothesis_lowering_audit") or {},
+                candidate_payload.get("hypothesis_lowering_audit") or spec.metadata.get("hypothesis_lowering_audit") or {},
                 keys=("source", "target_symbols"),
             ),
             "research_task": cls._summarize_research_task(research_task),
             "event_context": cls._summarize_event_context(event_context),
         }
-        return {
+        cls._apply_candidate_contract_fields(evaluation, candidate_payload)
+        persisted_payload = {
             **payload,
-            "parameters": cls._summarize_parameters(spec),
+            "parameters": summarized_parameters,
             "strategy_spec": strategy_spec,
             "evaluation": evaluation,
             "result": dict(payload.get("result") or {}),
         }
+        cls._apply_candidate_contract_fields(persisted_payload, candidate_payload)
+        return persisted_payload
 
     async def record_experiment(self, db, spec: StrategySpec, source: str, snapshot: dict, task_run: dict) -> dict:
         experiment_id = f"exp_{int(time.time())}_{uuid4().hex[:8]}"
@@ -1017,8 +1095,9 @@ class ExperimentRecorder:
         })
         parent_strategy_id = spec.metadata.get("parent_strategy_id")
         prompt_payload = spec.metadata.get("llm_prompt")
-        research_task = dict(spec.metadata.get("research_task") or {})
-        event_context = dict(spec.metadata.get("event_context") or {}) or _extract_event_context(research_task)
+        candidate_view = _apply_resolved_candidate_envelope(spec.to_candidate(source, experiment_id))
+        research_task = dict(candidate_view.get("research_task") or spec.metadata.get("research_task") or {})
+        event_context = dict(candidate_view.get("event_context") or spec.metadata.get("event_context") or {}) or _extract_event_context(research_task)
         payload = {
             "experiment_id": experiment_id,
             "strategy_id": parent_strategy_id,
@@ -1031,49 +1110,50 @@ class ExperimentRecorder:
             "status": "generated",
             "hypothesis": hypothesis,
             "prompt": (str(prompt_payload) if prompt_payload is not None else str(snapshot.get("date") or date.today())),
-            "parameters": spec.params,
+            "parameters": dict(candidate_view.get("params") or spec.params),
             "strategy_spec": {
                 "strategy_type": spec.strategy_type,
                 "name": spec.name,
                 "description": spec.description,
                 "tags": spec.tags,
-                "params": spec.params,
-                "target_symbols": spec.metadata.get("target_symbols") or [],
-                "stock_pool": spec.metadata.get("stock_pool") or {},
-                "selection_logic": spec.metadata.get("selection_logic") or [],
+                "params": dict(candidate_view.get("params") or spec.params),
+                "target_symbols": candidate_view.get("target_symbols") or spec.metadata.get("target_symbols") or [],
+                "stock_pool": candidate_view.get("stock_pool") or spec.metadata.get("stock_pool") or {},
+                "selection_logic": candidate_view.get("selection_logic") or spec.metadata.get("selection_logic") or [],
                 "research_task": research_task,
                 "event_context": event_context,
-                "hypothesis_artifact": hypothesis_artifact,
-                "holding_horizon": spec.metadata.get("holding_horizon") or {},
-                "trade_plan": spec.metadata.get("trade_plan") or {},
-                "risk_rules": spec.metadata.get("risk_rules") or {},
-                "position_sizing": spec.metadata.get("position_sizing") or {},
-                "execution_notes": spec.metadata.get("execution_notes"),
-                "rebalance_rule": spec.metadata.get("rebalance_rule") or {},
-                "portfolio_spec": spec.metadata.get("portfolio_spec") or {},
-                "execution_assumptions": spec.metadata.get("execution_assumptions") or {},
-                "validation_profile": spec.metadata.get("validation_profile") or {},
-                "hypothesis_lowering_audit": spec.metadata.get("hypothesis_lowering_audit") or {},
+                "hypothesis_artifact": candidate_view.get("hypothesis_artifact") or hypothesis_artifact,
+                "holding_horizon": candidate_view.get("holding_horizon") or spec.metadata.get("holding_horizon") or {},
+                "trade_plan": candidate_view.get("trade_plan") or spec.metadata.get("trade_plan") or {},
+                "risk_rules": candidate_view.get("risk_rules") or spec.metadata.get("risk_rules") or {},
+                "position_sizing": candidate_view.get("position_sizing") or spec.metadata.get("position_sizing") or {},
+                "execution_notes": candidate_view.get("execution_notes") or spec.metadata.get("execution_notes"),
+                "rebalance_rule": candidate_view.get("rebalance_rule") or spec.metadata.get("rebalance_rule") or {},
+                "portfolio_spec": candidate_view.get("portfolio_spec") or spec.metadata.get("portfolio_spec") or {},
+                "execution_assumptions": candidate_view.get("execution_assumptions") or spec.metadata.get("execution_assumptions") or {},
+                "validation_profile": candidate_view.get("validation_profile") or spec.metadata.get("validation_profile") or {},
+                "hypothesis_lowering_audit": candidate_view.get("hypothesis_lowering_audit") or spec.metadata.get("hypothesis_lowering_audit") or {},
                 "replay_contract": self._build_replay_strategy_contract(
                     spec=spec,
                     research_task=research_task,
                     event_context=event_context,
+                    candidate=candidate_view,
                 ),
             },
             "evaluation": {
                 "source": source,
                 "task_run_id": task_run.get("id"),
-                "generation_reason": spec.metadata.get("generation_reason") or {},
+                "generation_reason": candidate_view.get("generation_reason") or spec.metadata.get("generation_reason") or {},
                 "committee_review": spec.metadata.get("committee_review") or {},
                 "llm_analysis": spec.metadata.get("llm_analysis") or {},
                 "llm_research_context": spec.metadata.get("llm_research_context") or {},
                 "llm_response": spec.metadata.get("llm_response") or {},
-                "target_symbols": spec.metadata.get("target_symbols") or [],
-                "stock_pool": spec.metadata.get("stock_pool") or {},
-                "selection_logic": spec.metadata.get("selection_logic") or [],
-                "research_scope": spec.metadata.get("research_scope") or {},
-                "hypothesis_artifact": hypothesis_artifact,
-                "hypothesis_lowering_audit": spec.metadata.get("hypothesis_lowering_audit") or {},
+                "target_symbols": candidate_view.get("target_symbols") or spec.metadata.get("target_symbols") or [],
+                "stock_pool": candidate_view.get("stock_pool") or spec.metadata.get("stock_pool") or {},
+                "selection_logic": candidate_view.get("selection_logic") or spec.metadata.get("selection_logic") or [],
+                "research_scope": candidate_view.get("research_scope") or spec.metadata.get("research_scope") or {},
+                "hypothesis_artifact": candidate_view.get("hypothesis_artifact") or hypothesis_artifact,
+                "hypothesis_lowering_audit": candidate_view.get("hypothesis_lowering_audit") or spec.metadata.get("hypothesis_lowering_audit") or {},
                 "research_task": research_task,
                 "event_context": event_context,
             },
@@ -1081,9 +1161,13 @@ class ExperimentRecorder:
             "parent_experiment_id": None,
             "artifact_id": artifact.get("artifact_id"),
         }
+        self._apply_candidate_contract_fields(payload["strategy_spec"], candidate_view)
+        self._apply_candidate_contract_fields(payload["evaluation"], candidate_view)
+        self._apply_candidate_contract_fields(payload, candidate_view)
         persisted_payload = self._build_persisted_experiment_payload(
             spec=spec,
             payload=payload,
+            candidate=candidate_view,
         )
         try:
             return await db.save_strategy_generation_experiment(persisted_payload)

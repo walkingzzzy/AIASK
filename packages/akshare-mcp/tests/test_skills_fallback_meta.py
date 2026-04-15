@@ -167,15 +167,56 @@ def test_repo_local_skill_registry_is_fully_executable(monkeypatch):
     summary = skills_mod._build_skill_registry_summary(skills)
     skill_ids = {skill["id"] for skill in skills}
 
-    assert len(skills) == 19
-    assert all(skill["executable"] for skill in skills)
+    assert len(skills) == 20
     assert "akshare-factor-mining" in skill_ids
     assert "akshare-strategy-factory" in skill_ids
-    assert summary["total_count"] == 19
+    assert "akshare-trading-decision" in skill_ids
+    assert summary["total_count"] == 20
     assert summary["executable_count"] == 19
-    assert summary["registered_only_count"] == 0
-    assert summary["executor_coverage_ratio"] == 1.0
-    assert summary["execution_gap"] == []
+    assert summary["registered_only_count"] == 1
+    assert summary["executor_coverage_ratio"] == pytest.approx(19 / 20, rel=1e-4)
+    assert summary["execution_gap"] == [
+        {
+            "id": "akshare-trading-decision",
+            "name": "akshare-trading-decision",
+            "status": "registered",
+            "execution_mode": "no_handler",
+        }
+    ]
+
+
+def test_list_skills_exposes_strategy_factory_task_surface(monkeypatch):
+    repo_root = skills_mod._find_repo_skills_root()
+    assert repo_root is not None
+
+    monkeypatch.setattr(skills_mod, "_list_skill_roots", lambda: [repo_root])
+    monkeypatch.setattr(skills_mod, "_load_skill_coverage_audit", lambda: None)
+
+    mcp = _DummyMCP()
+    skills_mod.register(mcp)
+
+    result = mcp.list_skills()
+
+    assert result["success"] is True
+    data = result["data"]
+    strategy_factory = next(item for item in data["skills"] if item["id"] == "akshare-strategy-factory")
+    assert strategy_factory["status"] == "executable"
+    assert strategy_factory["execution_mode"] == "orchestrated"
+    assert strategy_factory["supported_tasks"] == [
+        "factory_cycle",
+        "strategy_review",
+        "submission_gate",
+        "incubation_pipeline",
+        "runtime_governance",
+        "vector_governance",
+        "domain_projection",
+        "ai_generation",
+        "smoke_test",
+    ]
+    task_schema = strategy_factory["input_schema"]["properties"]["task"]
+    assert task_schema["enum"] == strategy_factory["supported_tasks"]
+    assert strategy_factory["input_schema"]["properties"]["trigger_submit"]["type"] == "boolean"
+    assert strategy_factory["input_schema"]["properties"]["trigger_ai_generate"]["type"] == "boolean"
 
 
 @pytest.mark.asyncio

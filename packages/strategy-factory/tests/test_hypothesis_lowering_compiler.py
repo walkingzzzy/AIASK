@@ -1,4 +1,5 @@
 from strategy_factory.application.hypothesis_lowering_compiler import HypothesisLoweringCompiler
+from strategy_factory.application.semantic_contract import audit_candidate_semantic_contract
 
 
 def _valid_hypothesis() -> dict:
@@ -170,3 +171,251 @@ def test_hypothesis_lowering_compiler_requires_family_specific_hypothesis_for_mo
 
     assert result.accepted is False
     assert "hypothesis_missing:family_specific_hypothesis.failure_scenario" in result.reject_reasons
+
+
+def test_hypothesis_lowering_compiler_preserves_semantic_contract_fields():
+    candidate = _valid_candidate()
+    candidate.update(
+        {
+            "trade_plan": {
+                "entry_bias": "oversold_reversal",
+                "exit_bias": "signal_or_time_stop",
+                "entry": {"node_id": "entry_1", "claim_ids": ["claim_1"], "evidence_ids": ["ev_1"]},
+                "exit": {"node_id": "exit_1", "claim_ids": ["claim_1"]},
+            },
+            "dsl": {
+                **candidate["dsl"],
+                "entry": {
+                    "trade_plan_node_id": "entry_1",
+                    "any": candidate["dsl"]["entry"]["any"],
+                },
+                "exit": {
+                    "trade_plan_node_id": "exit_1",
+                    "any": candidate["dsl"]["exit"]["any"],
+                },
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {
+                        "evidence_id": "ev_1",
+                        "source_type": "price_action",
+                        "direction": "up",
+                        "raw_confidence": 0.74,
+                        "target_symbols": ["603855"],
+                    }
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_1",
+                        "expected_move": "up",
+                        "expected_horizon": 8,
+                        "evidence_ids": ["ev_1"],
+                    }
+                ]
+            },
+            "confidence_contract": {
+                "prediction_quality": {"support_samples": 64, "ece": 0.05, "brier_score": 0.18}
+            },
+        }
+    )
+
+    result = HypothesisLoweringCompiler.lower(
+        candidate,
+        hypothesis=_valid_hypothesis(),
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_l2_compile_semantic_ok",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279"],
+            "validation_focus": "target_plus_representative",
+        },
+    )
+
+    assert result.accepted is True
+    assert result.candidate["evidence_chain"]["evidences"][0]["evidence_id"] == "ev_1"
+    assert result.candidate["prediction_contract"]["claims"][0]["claim_id"] == "claim_1"
+    assert result.candidate["confidence_contract"]["prediction_quality"]["support_samples"] == 64
+    assert result.candidate["evidence_alignment_audit"]["using_new_contract"] is True
+    assert result.candidate["legacy_semantic_contract"] is False
+
+
+def test_hypothesis_lowering_compiler_rejects_mixed_evidence_without_conflict_rule():
+    candidate = _valid_candidate()
+    candidate.update(
+        {
+            "trade_plan": {
+                "entry_bias": "oversold_reversal",
+                "exit_bias": "signal_or_time_stop",
+                "entry": {"node_id": "entry_1", "claim_ids": ["claim_1"], "evidence_ids": ["ev_up", "ev_down"]},
+                "exit": {"node_id": "exit_1", "claim_ids": ["claim_1"]},
+            },
+            "dsl": {
+                **candidate["dsl"],
+                "entry": {
+                    "trade_plan_node_id": "entry_1",
+                    "any": candidate["dsl"]["entry"]["any"],
+                },
+                "exit": {
+                    "trade_plan_node_id": "exit_1",
+                    "any": candidate["dsl"]["exit"]["any"],
+                },
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {"evidence_id": "ev_up", "source_type": "news", "direction": "up"},
+                    {"evidence_id": "ev_down", "source_type": "news", "direction": "down"},
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_1",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_up", "ev_down"],
+                    }
+                ]
+            },
+        }
+    )
+
+    result = HypothesisLoweringCompiler.lower(
+        candidate,
+        hypothesis={**_valid_hypothesis(), "validation_focus": "event_target_only"},
+        research_task={
+            "task_source": "event_driven",
+            "task_id": "task_l2_compile_conflict_rule_missing",
+            "event_id": "evt_conflict_rule",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279"],
+            "validation_focus": "event_target_only",
+        },
+    )
+
+    assert result.accepted is False
+    assert "prediction_contract_conflict_resolution_rule_missing" in result.reject_reasons
+    assert result.audit["rejected_at"] == "semantic_contract"
+
+
+def test_hypothesis_lowering_compiler_rejects_proxy_only_event_evidence():
+    candidate = _valid_candidate()
+    candidate.update(
+        {
+            "trade_plan": {
+                "entry_bias": "event_follow_through",
+                "exit_bias": "signal_or_time_stop",
+                "entry": {"node_id": "entry_1", "claim_ids": ["claim_1"], "evidence_ids": ["ev_1"]},
+                "exit": {"node_id": "exit_1", "claim_ids": ["claim_1"]},
+            },
+            "dsl": {
+                **candidate["dsl"],
+                "entry": {
+                    "trade_plan_node_id": "entry_1",
+                    "any": candidate["dsl"]["entry"]["any"],
+                },
+                "exit": {
+                    "trade_plan_node_id": "exit_1",
+                    "any": candidate["dsl"]["exit"]["any"],
+                },
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {
+                        "evidence_id": "ev_1",
+                        "source_type": "news",
+                        "direction": "up",
+                        "proxy_only": True,
+                    }
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_1",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_1"],
+                    }
+                ]
+            },
+        }
+    )
+
+    result = HypothesisLoweringCompiler.lower(
+        candidate,
+        hypothesis={**_valid_hypothesis(), "validation_focus": "event_target_only"},
+        research_task={
+            "task_source": "event_driven",
+            "task_id": "task_l2_compile_proxy_only",
+            "event_id": "evt_proxy_only",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855"],
+            "validation_focus": "event_target_only",
+        },
+    )
+
+    assert result.accepted is False
+    assert "proxy_only_event_evidence_not_allowed" in result.reject_reasons
+    assert result.audit["rejected_at"] == "semantic_contract"
+
+
+def test_semantic_contract_audit_rejects_lagging_trend_without_quantified_regime_and_temporal_mismatch():
+    audit = audit_candidate_semantic_contract(
+        {
+            "strategy_type": "ma_cross",
+            "holding_horizon": {"max_days": 20},
+            "trade_plan": {
+                "entry_bias": "golden cross confirmation",
+                "entry": {"node_id": "entry_1", "claim_ids": ["claim_trend"], "evidence_ids": ["ev_price"]},
+                "exit": {"node_id": "exit_1", "claim_ids": ["claim_trend"]},
+            },
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "trade_plan_node_id": "entry_1",
+                    "op": "cross_above",
+                    "left": {"indicator": "sma", "field": "close", "window": 5},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
+                },
+                "exit": {
+                    "trade_plan_node_id": "exit_1",
+                    "op": "cross_below",
+                    "left": {"indicator": "sma", "field": "close", "window": 5},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
+                },
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {
+                        "evidence_id": "ev_price",
+                        "source_type": "price_action",
+                        "direction": "up",
+                        "summary": "短均线上穿长均线",
+                    }
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_trend",
+                        "expected_move": "up",
+                        "expected_horizon": 48,
+                        "evidence_ids": ["ev_price"],
+                    }
+                ]
+            },
+            "market_regime_assumption": {
+                "summary": "市场不处于明显震荡时更有效",
+                "preferred_regime": "趋势较强",
+                "avoid_regime": "明显震荡",
+            },
+        }
+    )
+
+    assert audit["lagging_entry_without_lead_evidence"]["status"] == "failed"
+    assert audit["temporal_coherence_audit"]["status"] == "failed"
+    assert audit["ambiguous_regime_condition_audit"]["status"] == "failed"
+    assert "lagging_entry_without_lead_evidence" in audit["hard_fail_reasons"]
+    assert "temporal_coherence_audit_failed" in audit["hard_fail_reasons"]
+    assert "ambiguous_regime_condition_not_allowed" in audit["hard_fail_reasons"]

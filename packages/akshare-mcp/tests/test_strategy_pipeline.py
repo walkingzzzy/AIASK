@@ -1564,10 +1564,21 @@ def test_strategy_llm_prompt_compact_mode_keeps_more_than_one_candidate_when_lim
     assert payload["output_contract"]["candidate_limit"] == 2
     assert payload["output_contract"]["generation_mode"] == "hypothesis_first_lowering_with_optional_open_dsl"
     assert "family_hypothesis_requirements" in payload["output_contract"]
+    assert payload["output_contract"]["required_candidate_fields"][:4] == [
+        "name",
+        "strategy_type",
+        "hypothesis_artifact",
+        "evidence_chain",
+    ]
+    assert "prediction_contract" in payload["output_contract"]["required_candidate_fields"]
     assert payload["output_contract"]["family_hypothesis_requirements"]["momentum"]["required_fields"] == [
         "trend_persistence_logic",
         "failure_scenario",
         "false_breakout_filter",
+    ]
+    assert payload["output_example"]["candidates"][0]["prediction_contract"]["claims"][0]["evidence_ids"] == [
+        "ev_1",
+        "ev_2",
     ]
 
 

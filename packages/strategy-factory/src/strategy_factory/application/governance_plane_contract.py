@@ -38,6 +38,44 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _confidence_contract_status(confidence_contract: dict[str, Any]) -> str | None:
+    contract = dict(confidence_contract or {})
+    if not contract:
+        return None
+    prediction_quality = dict(
+        contract.get("prediction_quality")
+        or contract.get("probability_quality")
+        or {}
+    )
+    support_samples = _safe_int(
+        prediction_quality.get("support_samples")
+        or prediction_quality.get("sample_size")
+        or contract.get("support_samples")
+        or contract.get("sample_size"),
+        0,
+    )
+    contract_version = _normalized_text(
+        prediction_quality.get("contract_version")
+        or contract.get("contract_version")
+        or prediction_quality.get("version")
+        or contract.get("version")
+    )
+    explicit_stable = prediction_quality.get("contract_version_stable")
+    if explicit_stable is None:
+        explicit_stable = contract.get("contract_version_stable")
+    version_stable = (
+        bool(explicit_stable)
+        if explicit_stable is not None
+        else bool(contract_version)
+        and not any(token in contract_version for token in ("draft", "unstable", "experimental", "preview", "beta", "alpha"))
+    )
+    if support_samples < 50:
+        return "insufficient"
+    if support_samples < 100:
+        return "diagnostic_ready"
+    return "comparable_ready" if version_stable else "diagnostic_ready"
+
+
 def _compact_list(values: Any, *, limit: int = 8) -> list[str]:
     items: list[str] = []
     for value in list(values or []):
@@ -651,7 +689,16 @@ def _compact_committee_review(value: Any) -> dict[str, Any]:
 
 def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
     payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
     candidate_provenance = dict(payload.get("candidate_provenance") or {})
+    evidence_alignment_audit = dict(
+        payload.get("evidence_alignment_audit")
+        or params.get("evidence_alignment_audit")
+        or {}
+    )
+    confidence_contract = dict(
+        payload.get("confidence_contract") or params.get("confidence_contract") or {}
+    )
     constraint_check = _compact_mapping(
         payload.get("constraint_check"),
         allowed_keys=(
@@ -691,6 +738,11 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
     raw_validation_grade = _raw_validation_grade(payload) or None
     effective_validation_grade = _effective_validation_grade(payload) or None
     validation_grade_adjustment_reason = _validation_grade_adjustment_reason(payload) or None
+    confidence_contract_status = (
+        _string(payload.get("confidence_contract_status"))
+        or _string(params.get("confidence_contract_status"))
+        or _confidence_contract_status(confidence_contract)
+    )
     return {
         "strategy_id": _string(payload.get("strategy_id")) or None,
         "name": _string(payload.get("name")) or None,
@@ -714,6 +766,30 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
         "raw_validation_total_score": _validation_total_score(payload, raw=True),
         "validation_total_score": _validation_total_score(payload, raw=False),
         "raw_b_or_above": _is_raw_b_or_above(raw_validation_grade),
+        "prediction_quality_label": (
+            _string(payload.get("prediction_quality_label"))
+            or _string(params.get("prediction_quality_label"))
+            or None
+        ),
+        "execution_quality_label": (
+            _string(payload.get("execution_quality_label"))
+            or _string(params.get("execution_quality_label"))
+            or None
+        ),
+        "confidence_contract_status": confidence_contract_status,
+        "evidence_alignment_status": (
+            _string(evidence_alignment_audit.get("evidence_alignment_status")) or None
+        ),
+        "legacy_semantic_contract": bool(
+            payload.get("legacy_semantic_contract")
+            if payload.get("legacy_semantic_contract") is not None
+            else params.get("legacy_semantic_contract")
+        )
+        if (
+            payload.get("legacy_semantic_contract") is not None
+            or params.get("legacy_semantic_contract") is not None
+        )
+        else None,
         "generator_mode": (
             _string(payload.get("generator_mode"))
             or _string(candidate_provenance.get("generator_mode"))
@@ -750,6 +826,27 @@ def _strategy_brief(strategy: dict[str, Any]) -> dict[str, Any]:
         "refreshed_existing": bool(payload.get("refreshed_existing")),
         "live_candidate_ready": bool(payload.get("live_candidate_ready")),
         "live_review_ready": bool(payload.get("live_review_ready")),
+        "runtime_bootstrap_eligible": (
+            bool(payload.get("runtime_bootstrap_eligible"))
+            if payload.get("runtime_bootstrap_eligible") is not None
+            else None
+        ),
+        "runtime_bootstrap_reason": _string(payload.get("runtime_bootstrap_reason")) or None,
+        "runtime_bootstrap_budget_tier": _string(payload.get("runtime_bootstrap_budget_tier")) or None,
+        "runtime_playbook_present": (
+            bool(payload.get("runtime_playbook_present"))
+            if payload.get("runtime_playbook_present") is not None
+            else None
+        ),
+        "stage_clock_days": _safe_int(payload.get("stage_clock_days")) if payload.get("stage_clock_days") is not None else None,
+        "signal_vacuum_days": _safe_int(payload.get("signal_vacuum_days")) if payload.get("signal_vacuum_days") is not None else None,
+        "remediation_action": _string(payload.get("remediation_action")) or None,
+        "remediation_reason": _string(payload.get("remediation_reason")) or None,
+        "paper_lane_ready": (
+            bool(payload.get("paper_lane_ready"))
+            if payload.get("paper_lane_ready") is not None
+            else None
+        ),
         "direct_trade_candidate": bool(payload.get("direct_trade_candidate")),
     }
 

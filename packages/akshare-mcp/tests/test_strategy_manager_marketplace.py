@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from akshare_mcp.services import strategy_lifecycle_shared as lifecycle_mod
 import akshare_mcp.tools.managers.strategy_manager as sm_mod
 
 from ._strategy_factory_test_support import _DummyMCP, _StrategyDB
@@ -26,7 +27,37 @@ class TestStrategyManager:
         r = await mcp.strategy_manager(action="help")
         assert r["success"] is True
         assert "create" in r["data"]["actions"]
+        assert "execution_audit_verification" in r["data"]["actions"]
         assert "review_report_recheck" in r["data"]["actions"]
+
+    @pytest.mark.asyncio
+    async def test_execution_audit_verification_action(self, setup):
+        mcp, db = setup
+        db._market_schema_migrations.update(
+            {
+                "paper_trades_best_effort_position_backfill_v1",
+                "strategy_candidate_evidence_native_backfill_v1",
+                "strategy_signal_evidence_native_backfill_v1",
+                "strategy_trade_positions_roundtrip_backfill_v1",
+            }
+        )
+        db._strategy_trade_audit_summaries["strat_exec_verify"] = {
+            "realized_trade_count": 25,
+            "trade_expectancy": 0.08,
+            "pnl_conversion_efficiency": 0.07,
+            "execution_conversion_efficiency": 0.24,
+        }
+
+        response = await mcp.strategy_manager(
+            action="execution_audit_verification",
+            params={"strategy_id": "strat_exec_verify"},
+        )
+
+        assert response["success"] is True
+        assert response["data"]["schema"]["all_required_tables_present"] is True
+        assert response["data"]["migrations"]["all_required_keys_applied"] is True
+        assert response["data"]["trade_round_trip"]["audit_summary"]["realized_trade_count"] == 25
+        assert response["data"]["trade_round_trip"]["audit_summary"]["execution_audit_gate_status"] == "passed"
 
     @pytest.mark.asyncio
     async def test_create_strategy(self, setup):
@@ -267,7 +298,8 @@ class TestStrategyManager:
         assert "Unknown action" in r["error"]
 
     @pytest.mark.asyncio
-    async def test_review_report_events_and_incubation_overview(self, setup):
+    async def test_review_report_events_and_incubation_overview(self, setup, monkeypatch):
+        monkeypatch.setattr(lifecycle_mod, "STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED", True)
         mcp, db = setup
         cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
             "name": "孵化策略", "strategy_type": "momentum", "params": {"lookback": 20},
@@ -373,7 +405,12 @@ class TestStrategyManager:
         assert filtered_events["data"]["events"][0]["to_status"] == "listed"
         assert filtered_events["data"]["events"][0]["actor_id"] == "reviewer"
         assert filtered_events["data"]["events"][0]["metadata"]["score"] == 91
-        assert incubation["data"]["promotion_ready"] is True
+        assert incubation["data"]["promotion_ready"] is False
+        assert incubation["data"]["execution_audit_gate_status"] == "missing"
+        assert incubation["data"]["promotion_gate_status"] == "missing"
+        assert incubation["data"]["signal_stage_without_execution_gate"] == "graduation_ready"
+        assert "execution_audit_gate:missing" in incubation["data"]["blockers"]
+        assert "execution_audit_gate:missing" not in incubation["data"]["risk_flags"]
         assert incubation["data"]["observed_forward_days"] == [1, 5, 10, 20]
         assert incubation["data"]["missing_forward_days"] == []
         assert len(incubation["data"]["forward_returns"]) == 4
@@ -387,7 +424,8 @@ class TestStrategyManager:
         assert incubation["data"]["quality_diagnosis"] == "await_execution_evidence"
 
     @pytest.mark.asyncio
-    async def test_incubation_overview_distinguishes_execution_conversion_weak(self, setup):
+    async def test_incubation_overview_distinguishes_execution_conversion_weak(self, setup, monkeypatch):
+        monkeypatch.setattr(lifecycle_mod, "STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED", True)
         mcp, db = setup
         cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
             "name": "高命中低转化策略", "strategy_type": "momentum", "params": {"lookback": 20},
@@ -494,7 +532,8 @@ class TestStrategyManager:
         assert incubation["data"]["execution_quality"]["trade_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_incubation_overview_distinguishes_prediction_weak_with_good_execution(self, setup):
+    async def test_incubation_overview_distinguishes_prediction_weak_with_good_execution(self, setup, monkeypatch):
+        monkeypatch.setattr(lifecycle_mod, "STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED", True)
         mcp, db = setup
         cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({
             "name": "低命中高转化策略", "strategy_type": "momentum", "params": {"lookback": 20},
@@ -707,6 +746,15 @@ class TestStrategyManager:
             "raw_signal_count": 150,
             "signals_with_forward_returns_count": 132,
             "observed_forward_return_count": 528,
+        }
+        db._strategy_trade_audit_summaries[good_id] = {
+            "realized_trade_count": 24,
+            "trade_expectancy": 0.031,
+            "pnl_conversion_efficiency": 0.031,
+            "execution_conversion_efficiency": 0.42,
+            "execution_win_rate": 0.625,
+            "avg_win_loss_ratio": 1.46,
+            "realized_pnl_total": 18200.0,
         }
 
         bad = await mcp.strategy_manager(action="create", kwargs=json.dumps({
@@ -1505,6 +1553,15 @@ class TestStrategyManager:
             "signals_with_forward_returns_count": 128,
             "observed_forward_return_count": 512,
         }
+        db._strategy_trade_audit_summaries["factory_promotion_ready"] = {
+            "realized_trade_count": 21,
+            "trade_expectancy": 0.028,
+            "pnl_conversion_efficiency": 0.028,
+            "execution_conversion_efficiency": 0.38,
+            "execution_win_rate": 0.61,
+            "avg_win_loss_ratio": 1.38,
+            "realized_pnl_total": 12480.0,
+        }
 
         await db.save_strategy({
             "id": "manual_strategy",
@@ -1966,6 +2023,15 @@ class TestStrategyManager:
                 "pbo": 0.28,
             },
         })
+        db._strategy_trade_audit_summaries["factory_live_ready"] = {
+            "realized_trade_count": 26,
+            "trade_expectancy": 0.034,
+            "pnl_conversion_efficiency": 0.034,
+            "execution_conversion_efficiency": 0.41,
+            "execution_win_rate": 0.64,
+            "avg_win_loss_ratio": 1.52,
+            "realized_pnl_total": 17640.0,
+        }
 
         class _DummyScheduler:
             def status(self):
@@ -2941,6 +3007,15 @@ class TestStrategyManager:
             "raw_signal_count": 140,
             "signals_with_forward_returns_count": 128,
             "observed_forward_return_count": 512,
+        }
+        db._strategy_trade_audit_summaries[sid] = {
+            "realized_trade_count": 22,
+            "trade_expectancy": 0.029,
+            "pnl_conversion_efficiency": 0.029,
+            "execution_conversion_efficiency": 0.37,
+            "execution_win_rate": 0.59,
+            "avg_win_loss_ratio": 1.41,
+            "realized_pnl_total": 13320.0,
         }
         await db.save_strategy_incubation_account(sid, 'acct_promote', stage='candidate', status='active')
         await db.save_strategy_incubation_metric(sid, '2026-03-08', {

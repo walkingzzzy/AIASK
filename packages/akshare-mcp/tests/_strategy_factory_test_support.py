@@ -83,7 +83,16 @@ class _StrategyDB(
         self._paper_orders = []
         self._paper_positions = {}
         self._paper_trades = []
+        self._signal_event_snapshots = []
         self._paper_nav = {}
+        self._strategy_candidate_evidence = []
+        self._strategy_signal_evidence = []
+        self._market_documents = []
+        self._market_headline_labels = []
+        self._strategy_trade_positions = {}
+        self._strategy_trade_position_fills = []
+        self._strategy_trade_audit_summaries = {}
+        self._market_schema_migrations = set()
         self._incubation_accounts = []
         self._incubation_metrics = []
         self._incubation_pipeline_snapshots = []

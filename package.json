@@ -14,6 +14,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test -w apps/bff",
     "e2e": "npm run e2e -w apps/web",
+    "e2e:realworld": "node scripts/realworld-e2e/run.mjs",
     "e2e:ci": "npm run e2e -w apps/web -- --project=chromium",
     "verify:unified-decision": "bash scripts/verify-unified-decision.sh",
     "verify:unified-decision-benchmark": "bash scripts/unified-decision-benchmark-baseline.sh",

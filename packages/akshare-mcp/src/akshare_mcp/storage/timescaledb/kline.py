@@ -6,12 +6,42 @@ TimescaleDB 适配器 — K线数据 Mixin
 
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
 
 from ...core.validators import validate_kline_list
 
 
 logger = logging.getLogger(__name__)
+MARKET_TZ = ZoneInfo("Asia/Shanghai")
+MARKET_CLOSE_TIME = time(hour=15, minute=0)
+
+
+def _to_market_close_timestamp(value: datetime | date) -> datetime:
+    """Normalize daily bars to Asia/Shanghai market close.
+
+    The DB column is TIMESTAMPTZ. Persisting naive midnight datetimes causes the
+    stored UTC date to roll back to the previous calendar day, which breaks many
+    `time::date` queries. Daily bars are therefore normalized to the market-close
+    instant of the intended trade date.
+    """
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            trade_date = value.date()
+        else:
+            trade_date = value.astimezone(MARKET_TZ).date()
+    else:
+        trade_date = value
+    return datetime.combine(trade_date, MARKET_CLOSE_TIME, tzinfo=MARKET_TZ)
+
+
+def _format_trade_date(value: datetime | date) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(MARKET_TZ)
+        return value.strftime('%Y-%m-%d')
+    return value.strftime('%Y-%m-%d')
 
 
 class KlineMixin:
@@ -49,8 +79,9 @@ class KlineMixin:
                     if len(start_date) == 4:
                         start_date = f"{start_date}-01-01"
                     start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-                    query += f" AND time >= ${param_idx}::date"
-                    params.append(start_date_obj)
+                    start_bound = datetime.combine(start_date_obj, time.min, tzinfo=MARKET_TZ)
+                    query += f" AND time >= ${param_idx}"
+                    params.append(start_bound)
                     param_idx += 1
 
             if end_date:
@@ -58,8 +89,9 @@ class KlineMixin:
                     if len(end_date) == 4:
                         end_date = f"{end_date}-12-31"
                     end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-                    query += f" AND time <= ${param_idx}::date"
-                    params.append(end_date_obj)
+                    end_bound = datetime.combine(end_date_obj + timedelta(days=1), time.min, tzinfo=MARKET_TZ)
+                    query += f" AND time < ${param_idx}"
+                    params.append(end_bound)
                     param_idx += 1
 
             if limit:
@@ -82,7 +114,7 @@ class KlineMixin:
 
             return [
                 {
-                    'date': row['time'].strftime('%Y-%m-%d') if isinstance(row['time'], (datetime, date)) else str(row['time']),
+                    'date': _format_trade_date(row['time']) if isinstance(row['time'], (datetime, date)) else str(row['time']),
                     'code': row['code'],
                     'open': float(row['open']),
                     'high': float(row['high']),
@@ -193,7 +225,7 @@ class KlineMixin:
                     })
                     continue
                 rows.append((
-                    parsed_date, row_code, open_, high, low, close,
+                    _to_market_close_timestamp(parsed_date), row_code, open_, high, low, close,
                     volume, validated.get('amount'), validated.get('turnover'), validated.get('change_pct')
                 ))
 
@@ -240,7 +272,7 @@ class KlineMixin:
         async with self.acquire() as conn:
             if target_date is None:
                 row = await conn.fetchrow(
-                    "SELECT MAX(time::date) as latest FROM kline_1d"
+                    "SELECT MAX((time AT TIME ZONE 'Asia/Shanghai')::date) as latest FROM kline_1d"
                 )
                 if not row or not row['latest']:
                     return None
@@ -251,7 +283,7 @@ class KlineMixin:
                     SELECT code, close,
                            LAG(close) OVER (PARTITION BY code ORDER BY time) AS prev_close
                     FROM kline_1d
-                    WHERE time::date BETWEEN ($1::date - INTERVAL '5 days') AND $1::date
+                    WHERE (time AT TIME ZONE 'Asia/Shanghai')::date BETWEEN ($1::date - INTERVAL '5 days') AND $1::date
                 )
                 SELECT
                     COUNT(*) FILTER (WHERE prev_close > 0 AND (close - prev_close) / prev_close >= 0.098) AS limit_up_count,

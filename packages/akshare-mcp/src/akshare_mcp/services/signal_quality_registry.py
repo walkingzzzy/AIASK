@@ -439,3 +439,11 @@ class SignalQualityRegistry:
 
 # Module-level default registry (shared instance, stateless across requests)
 default_registry = SignalQualityRegistry()
+
+
+def get_default_signal_quality_registry() -> SignalQualityRegistry:
+    return default_registry
+
+
+def get_default_signal_quality_registry_snapshot() -> dict[str, Any]:
+    return default_registry.snapshot()

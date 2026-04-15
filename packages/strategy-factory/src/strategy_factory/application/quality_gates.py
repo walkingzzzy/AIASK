@@ -147,12 +147,23 @@ def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = 
             "pending_count": 0,
             "provisional_passed_count": counts["provisional_passed_count"],
             "failure_reason_topn": list(payload.get("gate_3_failure_reason_topn") or []),
+            "formal_incubation_count": int(payload.get("formal_incubation_count") or 0),
+            "observe_incubation_count": int(payload.get("observe_incubation_count") or 0),
+            "live_ready_review_count": int(payload.get("live_ready_review_count") or 0),
+            "deferred_submission_count": int(payload.get("deferred_submission_count") or 0),
+            "research_only_count": int(payload.get("research_only_count") or 0),
+            "strict_incubation_ready_count": int(payload.get("strict_incubation_ready_count") or 0),
         },
         "final_decision": {
             "stage": "gate_3",
             "passed_count": counts["passed_count"],
             "failed_count": counts["failed_count"],
             "provisional_passed_count": counts["provisional_passed_count"],
+            "formal_incubation_count": int(payload.get("formal_incubation_count") or 0),
+            "observe_incubation_count": int(payload.get("observe_incubation_count") or 0),
+            "live_ready_review_count": int(payload.get("live_ready_review_count") or 0),
+            "deferred_submission_count": int(payload.get("deferred_submission_count") or 0),
+            "research_only_count": int(payload.get("research_only_count") or 0),
         },
     }
 

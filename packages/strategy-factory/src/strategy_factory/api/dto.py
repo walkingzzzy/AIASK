@@ -139,6 +139,10 @@ class FactoryRunSummaryDTO:
     live_ready_given_raw_b_count: int = 0
     live_ready_given_raw_b_rate: float = 0.0
     validation_family_quality_panel: list[dict[str, Any]] = field(default_factory=list)
+    prediction_quality_distribution: Optional[dict[str, int]] = None
+    execution_quality_distribution: Optional[dict[str, int]] = None
+    evidence_alignment_distribution: Optional[dict[str, int]] = None
+    confidence_contract_ready_rate: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FactoryRunSummaryDTO":
@@ -459,6 +463,66 @@ class FactoryRunSummaryDTO:
                 )
                 if isinstance(item, dict)
             ],
+            prediction_quality_distribution=(
+                {
+                    str(key or "").strip(): int(value or 0)
+                    for key, value in dict(
+                        summary.get("prediction_quality_distribution")
+                        or d.get("prediction_quality_distribution")
+                        or {}
+                    ).items()
+                    if str(key or "").strip()
+                }
+                if (
+                    summary.get("prediction_quality_distribution")
+                    or d.get("prediction_quality_distribution")
+                )
+                else None
+            ),
+            execution_quality_distribution=(
+                {
+                    str(key or "").strip(): int(value or 0)
+                    for key, value in dict(
+                        summary.get("execution_quality_distribution")
+                        or d.get("execution_quality_distribution")
+                        or {}
+                    ).items()
+                    if str(key or "").strip()
+                }
+                if (
+                    summary.get("execution_quality_distribution")
+                    or d.get("execution_quality_distribution")
+                )
+                else None
+            ),
+            evidence_alignment_distribution=(
+                {
+                    str(key or "").strip(): int(value or 0)
+                    for key, value in dict(
+                        summary.get("evidence_alignment_distribution")
+                        or d.get("evidence_alignment_distribution")
+                        or {}
+                    ).items()
+                    if str(key or "").strip()
+                }
+                if (
+                    summary.get("evidence_alignment_distribution")
+                    or d.get("evidence_alignment_distribution")
+                )
+                else None
+            ),
+            confidence_contract_ready_rate=(
+                float(
+                    summary.get("confidence_contract_ready_rate")
+                    if summary.get("confidence_contract_ready_rate") is not None
+                    else d.get("confidence_contract_ready_rate")
+                )
+                if (
+                    summary.get("confidence_contract_ready_rate") is not None
+                    or d.get("confidence_contract_ready_rate") is not None
+                )
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -540,6 +604,22 @@ class FactoryRunSummaryDTO:
         if self.external_llm_provider_control_mode:
             result["external_llm_provider_control_mode"] = (
                 self.external_llm_provider_control_mode
+            )
+        if self.prediction_quality_distribution is not None:
+            result["prediction_quality_distribution"] = dict(
+                self.prediction_quality_distribution
+            )
+        if self.execution_quality_distribution is not None:
+            result["execution_quality_distribution"] = dict(
+                self.execution_quality_distribution
+            )
+        if self.evidence_alignment_distribution is not None:
+            result["evidence_alignment_distribution"] = dict(
+                self.evidence_alignment_distribution
+            )
+        if self.confidence_contract_ready_rate is not None:
+            result["confidence_contract_ready_rate"] = (
+                self.confidence_contract_ready_rate
             )
         return result
 
@@ -664,6 +744,12 @@ class FactoryStatusDTO:
     factor_auto_refresh_enabled: bool
     readiness_hard_block_enabled: bool
     readiness_min_score: float
+    high_confidence_enabled: bool = False
+    evidence_contract_enabled: bool = False
+    confidence_diagnostics_enabled: bool = False
+    execution_audit_enabled: bool = False
+    quality_ui_v2_enabled: bool = False
+    feature_flags: dict[str, bool] = field(default_factory=dict)
     last_stock_family_allocation_count: int = 0
     last_family_preference_order: list[str] = field(default_factory=list)
     last_family_preference_source_mode: Optional[str] = None
@@ -711,6 +797,33 @@ class FactoryStatusDTO:
         last_submission_artifact = dict(
             (_normalize_governance_plane_detail(last_result).get("submission_artifact") or {})
         )
+        feature_flags = {
+            "high_confidence_enabled": bool(
+                d.get("high_confidence_enabled")
+                if d.get("high_confidence_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("high_confidence_enabled")
+            ),
+            "evidence_contract_enabled": bool(
+                d.get("evidence_contract_enabled")
+                if d.get("evidence_contract_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("evidence_contract_enabled")
+            ),
+            "confidence_diagnostics_enabled": bool(
+                d.get("confidence_diagnostics_enabled")
+                if d.get("confidence_diagnostics_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("confidence_diagnostics_enabled")
+            ),
+            "execution_audit_enabled": bool(
+                d.get("execution_audit_enabled")
+                if d.get("execution_audit_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("execution_audit_enabled")
+            ),
+            "quality_ui_v2_enabled": bool(
+                d.get("quality_ui_v2_enabled")
+                if d.get("quality_ui_v2_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("quality_ui_v2_enabled")
+            ),
+        }
         return cls(
             running=bool(d.get("running")),
             schedule_mode=str(d.get("schedule_mode") or "continuous"),
@@ -724,6 +837,12 @@ class FactoryStatusDTO:
             factor_auto_refresh_enabled=bool(d.get("factor_auto_refresh_enabled")),
             readiness_hard_block_enabled=bool(d.get("readiness_hard_block_enabled")),
             readiness_min_score=float(d.get("readiness_min_score") or 0.0),
+            high_confidence_enabled=feature_flags["high_confidence_enabled"],
+            evidence_contract_enabled=feature_flags["evidence_contract_enabled"],
+            confidence_diagnostics_enabled=feature_flags["confidence_diagnostics_enabled"],
+            execution_audit_enabled=feature_flags["execution_audit_enabled"],
+            quality_ui_v2_enabled=feature_flags["quality_ui_v2_enabled"],
+            feature_flags=feature_flags,
             last_stock_family_allocation_count=int(
                 last_summary.get("stock_family_allocation_count") or 0
             ),
@@ -973,6 +1092,23 @@ class FactoryStatusDTO:
             "factor_auto_refresh_enabled": self.factor_auto_refresh_enabled,
             "readiness_hard_block_enabled": self.readiness_hard_block_enabled,
             "readiness_min_score": self.readiness_min_score,
+            "high_confidence_enabled": self.high_confidence_enabled,
+            "evidence_contract_enabled": self.evidence_contract_enabled,
+            "confidence_diagnostics_enabled": self.confidence_diagnostics_enabled,
+            "execution_audit_enabled": self.execution_audit_enabled,
+            "quality_ui_v2_enabled": self.quality_ui_v2_enabled,
+            "feature_flags": {
+                "high_confidence_enabled": self.high_confidence_enabled,
+                "evidence_contract_enabled": self.evidence_contract_enabled,
+                "confidence_diagnostics_enabled": self.confidence_diagnostics_enabled,
+                "execution_audit_enabled": self.execution_audit_enabled,
+                "quality_ui_v2_enabled": self.quality_ui_v2_enabled,
+                **{
+                    str(key): bool(value)
+                    for key, value in dict(self.feature_flags).items()
+                    if str(key).strip()
+                },
+            },
             "last_stock_family_allocation_count": self.last_stock_family_allocation_count,
             "last_family_preference_order": list(self.last_family_preference_order),
             "last_governed_pending_candidate_count": self.last_governed_pending_candidate_count,

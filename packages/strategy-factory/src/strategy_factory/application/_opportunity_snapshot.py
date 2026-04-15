@@ -59,6 +59,61 @@ class _MarketOpportunityScannerSnapshotMixin:
             "margin_divergence",
         }
     )
+    _HIGH_VOL_GROWTH_TYPES = (
+        "volatility_breakout",
+        "gap_fill",
+        "mean_reversion_short",
+        "quality_factor",
+    )
+    _LOW_VOL_DEFENSIVE_TYPES = (
+        "quality_factor",
+        "north_capital_track",
+        "sector_rotation",
+        "ma_cross",
+    )
+    _CYCLE_RESOURCE_TYPES = (
+        "sector_rotation",
+        "north_capital_track",
+        "ma_cross",
+        "quality_factor",
+    )
+    _DEFENSIVE_POOL_TOKENS = (
+        "银行",
+        "保险",
+        "电力",
+        "核电",
+        "公用",
+        "运营商",
+        "高股息",
+        "红利",
+        "消费",
+    )
+    _CYCLE_POOL_TOKENS = (
+        "油气",
+        "煤炭",
+        "有色",
+        "钢铁",
+        "化工",
+        "资源",
+        "矿业",
+        "黄金",
+        "铜",
+        "铝",
+        "上游",
+        "周期",
+    )
+    _GROWTH_POOL_TOKENS = (
+        "电子",
+        "通信",
+        "计算机",
+        "软件",
+        "半导体",
+        "算力",
+        "ai",
+        "新能源",
+        "医药",
+        "元器件",
+    )
 
     @classmethod
     def _governed_regime_preferences(cls, regime_name: str, *, fear_greed: float) -> List[str]:
@@ -134,6 +189,198 @@ class _MarketOpportunityScannerSnapshotMixin:
         }
 
     @classmethod
+    def _rows_for_task_targets(
+        cls,
+        task: dict[str, Any],
+        *,
+        rows_by_code: Dict[str, dict[str, Any]],
+        fallback_rows: List[dict[str, Any]],
+    ) -> List[dict[str, Any]]:
+        target_rows: List[dict[str, Any]] = []
+        for code in list(task.get("target_symbols") or []):
+            row = dict(rows_by_code.get(str(code).strip()) or {})
+            if row:
+                target_rows.append(row)
+        return target_rows or list(fallback_rows or [])
+
+    @classmethod
+    def _mean_metric(
+        cls,
+        rows: List[dict[str, Any]],
+        *keys: str,
+    ) -> float | None:
+        values: List[float] = []
+        for row in list(rows or []):
+            for key in keys:
+                value = row.get(key)
+                if value in (None, "", [], {}):
+                    continue
+                metric = cls._safe_float(value)
+                if metric > 0:
+                    values.append(metric)
+                    break
+        if not values:
+            return None
+        return round(sum(values) / len(values), 4)
+
+    @classmethod
+    def _infer_pool_profile(
+        cls,
+        task: dict[str, Any],
+        *,
+        task_rows: List[dict[str, Any]],
+        hot_sectors: List[str],
+        cold_sectors: List[str],
+    ) -> dict[str, Any]:
+        industries = [
+            str(item).strip()
+            for item in list(task.get("focus_industries") or [])
+            if str(item).strip()
+        ]
+        if not industries:
+            industries = cls._focus_industries_from_rows(task_rows, limit=3)
+        haystack = " ".join(
+            [
+                *industries,
+                str(task.get("title") or ""),
+                str(task.get("theme") or ""),
+                str(task.get("candidate_family") or ""),
+                str(task.get("factor_name") or ""),
+                str(task.get("candidate_name") or ""),
+                str(task.get("rationale") or ""),
+            ]
+        ).strip().lower()
+        avg_atr = cls._mean_metric(task_rows, "atr60_pct", "atr20_pct", "atr14_pct", "atr_pct")
+        avg_turnover = cls._mean_metric(task_rows, "turnover_rate", "turnover")
+        avg_volume_ratio = cls._mean_metric(task_rows, "volume_ratio", "vol_ratio", "量比")
+        profile = "high_vol_growth"
+        reason = "growth_style_default"
+        if any(token.lower() in haystack for token in cls._DEFENSIVE_POOL_TOKENS):
+            profile = "low_vol_defensive"
+            reason = "defensive_industry_hint"
+        elif any(token.lower() in haystack for token in cls._CYCLE_POOL_TOKENS):
+            profile = "cycle_resource"
+            reason = "cycle_industry_hint"
+        elif avg_atr is not None and avg_atr >= 0.045:
+            profile = "high_vol_growth"
+            reason = "atr_high"
+        elif avg_atr is not None and avg_atr <= 0.025:
+            profile = "low_vol_defensive"
+            reason = "atr_low"
+        elif avg_turnover is not None and avg_turnover <= 1.2 and not any(
+            token.lower() in haystack for token in cls._GROWTH_POOL_TOKENS
+        ):
+            profile = "low_vol_defensive"
+            reason = "turnover_low"
+        elif any(token.lower() in haystack for token in cls._GROWTH_POOL_TOKENS):
+            profile = "high_vol_growth"
+            reason = "growth_industry_hint"
+
+        volatility_bucket = (
+            "high"
+            if profile == "high_vol_growth"
+            else "low"
+            if profile == "low_vol_defensive"
+            else "medium_high"
+        )
+        liquidity_bucket = (
+            "stable_low_velocity"
+            if profile == "low_vol_defensive"
+            else "high_liquidity"
+            if (avg_turnover or 0.0) >= 1.0
+            else "selective_liquidity"
+        )
+        breakout_allowed = profile == "high_vol_growth" or (
+            profile == "cycle_resource" and (avg_volume_ratio or 0.0) >= 1.05
+        )
+        if profile == "high_vol_growth":
+            preferred = list(cls._HIGH_VOL_GROWTH_TYPES)
+            allowed = list(cls._HIGH_VOL_GROWTH_TYPES)
+        elif profile == "low_vol_defensive":
+            preferred = list(cls._LOW_VOL_DEFENSIVE_TYPES)
+            allowed = list(cls._LOW_VOL_DEFENSIVE_TYPES)
+        else:
+            preferred = list(cls._CYCLE_RESOURCE_TYPES)
+            allowed = list(cls._CYCLE_RESOURCE_TYPES)
+            if breakout_allowed:
+                preferred.append("volatility_breakout")
+                allowed.append("volatility_breakout")
+        family_mix_constraints = {
+            "trend_cluster_types": ["momentum", "ma_cross", "volatility_breakout", "sector_rotation"],
+            "trend_cluster_max_per_task": 2,
+            "require_coverage": ["quality_defensive", "mean_reversion", "flow_rotation"],
+            "breakout_requires_volume_expansion": profile == "cycle_resource",
+            "quota_fill_momentum_allowed": False,
+        }
+        return {
+            "pool_profile": profile,
+            "pool_profile_reason": reason,
+            "volatility_bucket": volatility_bucket,
+            "liquidity_bucket": liquidity_bucket,
+            "preferred_strategy_types": preferred,
+            "allowed_strategy_types": allowed,
+            "breakout_allowed": breakout_allowed,
+            "family_mix_constraints": family_mix_constraints,
+        }
+
+    @classmethod
+    def _apply_pool_profile_contract(
+        cls,
+        task: dict[str, Any],
+        *,
+        task_rows: List[dict[str, Any]],
+        hot_sectors: List[str],
+        cold_sectors: List[str],
+    ) -> dict[str, Any]:
+        normalized = dict(cls._finalize_task(task))
+        profile_contract = cls._infer_pool_profile(
+            normalized,
+            task_rows=task_rows,
+            hot_sectors=hot_sectors,
+            cold_sectors=cold_sectors,
+        )
+        preferred = list(
+            dict.fromkeys(
+                [
+                    *list(profile_contract.get("preferred_strategy_types") or []),
+                    *list(normalized.get("preferred_strategy_types") or []),
+                ]
+            )
+        )
+        allowed = list(
+            dict.fromkeys(
+                [
+                    *list(normalized.get("allowed_strategy_types") or []),
+                    *list(profile_contract.get("allowed_strategy_types") or []),
+                ]
+            )
+        )
+        pool_profile = str(profile_contract.get("pool_profile") or "high_vol_growth")
+        if pool_profile == "high_vol_growth":
+            preferred = [item for item in preferred if item not in {"momentum", "ma_cross"}]
+            allowed = [item for item in allowed if item not in {"momentum", "ma_cross"}]
+        elif pool_profile in {"low_vol_defensive", "cycle_resource"}:
+            if "ma_cross" not in preferred:
+                preferred.append("ma_cross")
+            if "ma_cross" not in allowed:
+                allowed.append("ma_cross")
+        normalized["preferred_strategy_types"] = preferred[:6]
+        normalized["strategy_preferences"] = list(normalized["preferred_strategy_types"])
+        normalized["allowed_strategy_types"] = [
+            item for item in allowed[:8]
+            if item in cls._PIPELINE_TEMPLATE_ALLOWED_TYPES or item in {"quality_factor", "growth_factor", "value_factor"}
+        ]
+        normalized["pool_profile"] = pool_profile
+        normalized["volatility_bucket"] = profile_contract.get("volatility_bucket")
+        normalized["liquidity_bucket"] = profile_contract.get("liquidity_bucket")
+        normalized["family_mix_constraints"] = dict(profile_contract.get("family_mix_constraints") or {})
+        normalized["pool_profile_reason"] = profile_contract.get("pool_profile_reason")
+        normalized["pool_profile_industries"] = industries = cls._focus_industries_from_rows(task_rows, limit=3)
+        if industries and not normalized.get("focus_industries"):
+            normalized["focus_industries"] = industries
+        return normalized
+
+    @classmethod
     def _build_snapshot_tasks(cls, snapshot: dict[str, Any], rows: List[dict]) -> List[dict]:
         tasks: List[dict] = []
         target_selection_pressure: Dict[str, float] = {}
@@ -169,6 +416,7 @@ class _MarketOpportunityScannerSnapshotMixin:
         ]
         hot_sectors = [str(item).strip() for item in list(snapshot.get("hot_sectors") or []) if str(item).strip()]
         cold_sectors = [str(item).strip() for item in list(snapshot.get("cold_sectors") or []) if str(item).strip()]
+        rows_by_code = cls._rows_by_code(rows)
 
         regime_preferences = (
             ["momentum", "ma_cross", "growth_factor"]
@@ -223,8 +471,23 @@ class _MarketOpportunityScannerSnapshotMixin:
                 )
             return selected
 
+        def _snapshot_task(task_payload: dict[str, Any], task_rows: List[dict[str, Any]]) -> dict[str, Any]:
+            provisional = dict(task_payload)
+            finalized = cls._finalize_task(provisional)
+            focus_rows = cls._rows_for_task_targets(
+                finalized,
+                rows_by_code=rows_by_code,
+                fallback_rows=task_rows,
+            )
+            return cls._apply_pool_profile_contract(
+                finalized,
+                task_rows=focus_rows,
+                hot_sectors=hot_sectors,
+                cold_sectors=cold_sectors,
+            )
+
         tasks.append(
-            cls._finalize_task(
+            _snapshot_task(
                 {
                     "task_id": f"regime_{snapshot.get('date')}_{int(fg)}",
                     "task_key": f"regime:{snapshot.get('date')}:{regime_type}",
@@ -261,7 +524,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "governed_regime": primary_governed_regime_name or None,
                         "governed_regime_count": int(primary_governed_regime.get("count") or 0),
                     },
-                }
+                },
+                rows,
             )
         )
 
@@ -269,7 +533,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             matched = cls._match_rows(rows, [sector])
             priority = 90 - idx
             tasks.append(
-                cls._finalize_task(
+                _snapshot_task(
                     {
                         "task_id": f"hot_{idx}_{sector}",
                         "task_key": f"hot_sector:{snapshot.get('date')}:{sector}",
@@ -295,7 +559,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
-                    }
+                    },
+                    matched or rows,
                 )
             )
 
@@ -303,7 +568,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             matched = cls._match_rows(rows, [sector])
             priority = 72 - idx
             tasks.append(
-                cls._finalize_task(
+                _snapshot_task(
                     {
                         "task_id": f"cold_{idx}_{sector}",
                         "task_key": f"cold_sector:{snapshot.get('date')}:{sector}",
@@ -329,7 +594,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
-                    }
+                    },
+                    matched or rows,
                 )
             )
 
@@ -382,7 +648,7 @@ class _MarketOpportunityScannerSnapshotMixin:
                 ),
             )
             tasks.append(
-                cls._finalize_task(
+                _snapshot_task(
                     {
                         "task_id": f"governed_family_{idx}_{family_name}",
                         "task_key": f"governed_family:{snapshot.get('date')}:{family_name}",
@@ -438,7 +704,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                             "family_candidate_lineage": family_lineage,
                             "candidate_pool_count": int(active_candidate_pool.get("count") or 0),
                         },
-                    }
+                    },
+                    family_rows,
                 )
             )
 
@@ -493,7 +760,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             }
             priority = min(99, max(84, int(round(84 + score * 0.12)) - idx))
             tasks.append(
-                cls._finalize_task(
+                _snapshot_task(
                     {
                         "task_id": f"governed_candidate_{idx}_{artifact_id or family_name or idx}",
                         "task_key": f"governed_candidate:{snapshot.get('date')}:{artifact_id or candidate_name}",
@@ -558,7 +825,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                             "candidate_lineage": candidate_lineage,
                             "candidate_pool_count": int(active_candidate_pool.get("count") or 0),
                         },
-                    }
+                    },
+                    family_rows,
                 )
             )
 
@@ -581,7 +849,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             preferences = list(factor_contract.get("preferred_strategy_types") or factor_base_preferences)
             priority = 80 - idx
             tasks.append(
-                cls._finalize_task(
+                _snapshot_task(
                     {
                         "task_id": f"factor_{idx}_{factor_name}",
                         "task_key": f"factor:{snapshot.get('date')}:{factor_name}",
@@ -617,7 +885,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
                         "factor_name": factor_name,
                         "template_generation_profile": factor_contract.get("template_generation_profile"),
-                    }
+                    },
+                    rows,
                 )
             )
 
@@ -631,7 +900,7 @@ class _MarketOpportunityScannerSnapshotMixin:
                 matched = cls._match_rows(rows, [best_industry])
                 priority = 68 - idx
                 tasks.append(
-                    cls._finalize_task(
+                    _snapshot_task(
                         {
                             "task_id": f"industry_{idx}_{best_industry}",
                             "task_key": f"industry:{snapshot.get('date')}:{best_industry}",
@@ -660,7 +929,8 @@ class _MarketOpportunityScannerSnapshotMixin:
                                 AUTONOMY_CANDIDATES_PER_TASK,
                                 priority=priority,
                             ),
-                        }
+                        },
+                        matched or rows,
                     )
                 )
         return tasks

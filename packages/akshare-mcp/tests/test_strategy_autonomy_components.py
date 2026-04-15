@@ -460,6 +460,11 @@ def test_rule_strategy_generator_to_candidate_materializes_trade_contract():
         assert candidate["params"][key]
     assert candidate["validation_profile"]["profile"] == "trade_rule_validation"
     assert candidate["execution_assumptions"]["tradability_filter"] is True
+    assert candidate["evidence_chain"]["evidences"][0]["evidence_id"].startswith("momentum_ev_")
+    assert candidate["prediction_contract"]["claims"][0]["evidence_ids"]
+    assert candidate["confidence_contract"]["prediction_quality"]["quality"]
+    assert candidate["trade_plan"]["entry"]["claim_ids"] == ["momentum_claim_entry"]
+    assert candidate["trade_plan"]["exit"]["claim_ids"] == ["momentum_claim_exit"]
 
 
 def test_rule_strategy_generator_expanded_family_materializes_rule_template_contract():
@@ -686,6 +691,81 @@ async def test_experiment_recorder_persists_structured_hypothesis_artifact():
 
 
 @pytest.mark.asyncio
+async def test_experiment_recorder_persists_enveloped_semantic_contract_fields():
+    recorder = ExperimentRecorder()
+    db = MagicMock()
+    db.save_strategy_generation_experiment = AsyncMock(side_effect=lambda payload: dict(payload))
+
+    spec = StrategySpec(
+        strategy_type="momentum",
+        params={"lookback": 15},
+        name="semantic-contract-persist",
+        description="趋势延续候选",
+        tags=["rule"],
+        metadata={
+            "generator_type": "rule",
+            "target_symbols": ["600519"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+            "research_task": {"task_id": "task_semantic_persist", "task_source": "snapshot", "target_symbols": ["600519"]},
+            "holding_horizon": {"min_days": 5, "max_days": 15},
+            "trade_plan": {
+                "entry_bias": "trend_follow",
+                "exit_bias": "signal_failure_or_time_stop",
+                "entry": {"node_id": "entry_step_1", "claim_ids": ["claim_entry"]},
+                "exit": {"node_id": "exit_step_1", "claim_ids": ["claim_exit"]},
+            },
+            "risk_rules": {"stop_loss_pct": 0.06, "take_profit_pct": 0.12, "max_holding_days": 15},
+            "position_sizing": {"mode": "single_name"},
+            "execution_assumptions": {"slippage_bps": 5, "tradability_filter": True, "slippage_model": "fixed"},
+            "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
+            "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+            "evidence_chain": {
+                "evidences": [
+                    {
+                        "evidence_id": "ev_1",
+                        "source_type": "price_action",
+                        "direction": "up",
+                        "summary": "价格重新站上趋势均线。",
+                    }
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_entry",
+                        "expected_move": "up",
+                        "expected_horizon": 10,
+                        "evidence_ids": ["ev_1"],
+                        "failure_condition": "trend_break",
+                        "conflict_resolution_rule": {"policy": "risk_first"},
+                    }
+                ],
+                "conflict_resolution_rule": {"policy": "risk_first"},
+            },
+            "confidence_contract": {
+                "prediction_quality": {"support_samples": 24, "ece": 0.08, "brier_score": 0.17}
+            },
+        },
+    )
+
+    payload = await recorder.record_experiment(
+        db,
+        spec,
+        source="test_component",
+        snapshot={"date": "2026-04-14"},
+        task_run={"id": 103},
+    )
+
+    assert payload["strategy_spec"]["candidate_contract_snapshot"]["strategy_type"] == "momentum"
+    assert payload["strategy_spec"]["evidence_chain"]["evidences"][0]["evidence_id"] == "ev_1"
+    assert payload["strategy_spec"]["prediction_contract"]["claims"][0]["claim_id"] == "claim_entry"
+    assert payload["strategy_spec"]["confidence_contract"]["prediction_quality"]["support_samples"] == 24
+    assert payload["evaluation"]["candidate_contract_snapshot"]["strategy_type"] == "momentum"
+    assert payload["evaluation"]["confidence_contract"]["prediction_quality"]["support_samples"] == 24
+    assert payload["candidate_contract_snapshot"]["strategy_type"] == "momentum"
+
+
+@pytest.mark.asyncio
 async def test_strategy_autonomy_service_continues_when_task_run_and_event_persistence_fail():
     service = StrategyAutonomyService()
 
@@ -699,9 +779,14 @@ async def test_strategy_autonomy_service_continues_when_task_run_and_event_persi
     db.save_strategy_domain_event = AsyncMock(side_effect=ConnectionRefusedError("db offline"))
     db.update_strategy_task_run = AsyncMock()
 
-    service.rule_generator.generate = lambda *_args, **_kwargs: [
-        StrategySpec(strategy_type="momentum", params={"lookback": 15}, name="db-fallback", tags=["rule"])
-    ]
+    service.rule_generator.generate = lambda *_args, **_kwargs: RuleStrategyGenerator().generate(
+        {
+            "fear_greed_index": 58,
+            "factor_research": {"preferred_strategy_types": ["momentum"]},
+        },
+        limit=1,
+        preferred_types=["momentum"],
+    )
     service.llm_generator.generate = AsyncMock(return_value=[])
     service.optimizer.evolve = AsyncMock(return_value=[])
 
@@ -831,6 +916,53 @@ def test_strategy_ai_mixin_large_factory_run_stages_compact_inline_before_field_
                     }
                     for idx in range(60)
                 ],
+                "task_artifact": {
+                    "contract_version": "strategy_factory.task_artifact.v1",
+                    "available": True,
+                    "planned_task_count": 80,
+                    "executed_task_count": 60,
+                    "generated_candidate_count": 16,
+                    "task_source_counts": {"bulk_stock_matrix": 80},
+                    "planned_task_briefs": [
+                        {"task_id": f"task_{idx}", "task_source": "bulk_stock_matrix", "generation_limit": 1}
+                        for idx in range(12)
+                    ],
+                },
+                "candidate_artifact": {
+                    "contract_version": "strategy_factory.candidate_artifact.v1",
+                    "available": True,
+                    "candidate_count": 16,
+                    "candidate_contract_ready_count": 16,
+                    "candidate_evidence_ready_count": 16,
+                    "candidate_origin_counts": {"external_autonomy": 13, "governed_candidate_activation": 3},
+                    "candidate_briefs": [
+                        {
+                            "name": f"candidate_{idx}",
+                            "strategy_type": "momentum",
+                            "candidate_contract_ready": True,
+                            "evidence_ready": True,
+                            "experiment_id": f"exp_{idx}",
+                        }
+                        for idx in range(16)
+                    ],
+                },
+                "evidence_artifact": {
+                    "contract_version": "strategy_factory.research_evidence_artifact.v1",
+                    "available": True,
+                    "experiment_count": 16,
+                    "task_run_count": 60,
+                    "task_run_ids": [f"task_run_{idx}" for idx in range(16)],
+                    "task_result_status_counts": {"completed": 60},
+                    "experiment_briefs": [
+                        {
+                            "artifact_id": f"exp_{idx}",
+                            "generator_type": "rule",
+                            "candidate_contract_ready": True,
+                            "evidence_ready": True,
+                        }
+                        for idx in range(16)
+                    ],
+                },
                 "blob": "x" * 8192,
             }
         },
@@ -844,6 +976,15 @@ def test_strategy_ai_mixin_large_factory_run_stages_compact_inline_before_field_
     assert decoded["autonomy"]["task_result_count"] == 60
     assert decoded["autonomy"]["task_scan"]["summary"]["bulk_stock_matrix_enabled"] is True
     assert decoded["autonomy"]["task_results"][0]["task"]["task_id"] == "task_0"
+    assert decoded["autonomy"]["task_artifact"]["contract_version"] == "strategy_factory.task_artifact.v1"
+    assert decoded["autonomy"]["task_artifact"]["planned_task_count"] == 80
+    assert decoded["autonomy"]["candidate_artifact"]["contract_version"] == "strategy_factory.candidate_artifact.v1"
+    assert decoded["autonomy"]["candidate_artifact"]["candidate_count"] == 16
+    assert decoded["autonomy"]["candidate_artifact"]["candidate_contract_ready_count"] == 16
+    assert decoded["autonomy"]["candidate_artifact"]["candidate_briefs"][0]["experiment_id"] == "exp_0"
+    assert decoded["autonomy"]["evidence_artifact"]["contract_version"] == "strategy_factory.research_evidence_artifact.v1"
+    assert decoded["autonomy"]["evidence_artifact"]["experiment_count"] == 16
+    assert decoded["autonomy"]["evidence_artifact"]["task_run_count"] == 60
     assert decoded["autonomy"]["truncated"] is True
     assert decoded["autonomy"]["original_size_bytes"] > 32768
     assert "blob" not in decoded["autonomy"]

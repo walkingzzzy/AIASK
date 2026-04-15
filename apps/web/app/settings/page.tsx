@@ -26,18 +26,33 @@ const BTN_PRIMARY = 'cursor-pointer rounded-full bg-primary px-5 py-2 text-sm fo
 const BTN_GHOST = 'cursor-pointer rounded-full border border-glass-border bg-white/35 px-5 py-2 text-sm text-text-primary shadow-sm transition hover:-translate-y-0.5';
 const CARD_CLS = 'panel-soft rounded-[26px] p-5';
 
+type ProfileFormState = {
+  riskLevel: string;
+  nickname: string;
+  avatarUrl: string;
+};
+
 function readRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function buildProfileForm(value: unknown): ProfileFormState {
+  const record = readRecord(value);
+  return {
+    riskLevel: String(record.riskLevel ?? '稳健'),
+    nickname: String(record.nickname ?? ''),
+    avatarUrl: String(record.avatarUrl ?? ''),
+  };
 }
 
 export default function SettingsPage() {
   const { toast } = useToast();
   const setUser = useAuthStore((s) => s.setUser);
   const [tab, setTab] = useState<TabKey>('account');
-  const [riskLevel, setRiskLevel] = useState<string | null>(null);
-  const [nickname, setNickname] = useState<string | null>(null);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [profileForm, setProfileForm] = useState<ProfileFormState>(() => buildProfileForm(null));
+  const [profileReady, setProfileReady] = useState(false);
+  const [profileDirty, setProfileDirty] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -53,9 +68,16 @@ export default function SettingsPage() {
   const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
   const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
 
-  const riskLevelValue = riskLevel ?? String(profileQ.data?.riskLevel ?? '稳健');
-  const nicknameValue = nickname ?? String(profileQ.data?.nickname ?? '');
-  const avatarUrlValue = avatarUrl ?? String(profileQ.data?.avatarUrl ?? '');
+  useEffect(() => {
+    if (profileDirty) return;
+    if (profileQ.data == null && profileQ.error == null && profileQ.isPending) return;
+    setProfileForm(buildProfileForm(profileQ.data));
+    setProfileReady(true);
+  }, [profileDirty, profileQ.data, profileQ.error, profileQ.isPending]);
+
+  const riskLevelValue = profileForm.riskLevel;
+  const nicknameValue = profileForm.nickname;
+  const avatarUrlValue = profileForm.avatarUrl;
   const profileRecord = readRecord(profileQ.data);
   const displayName = nicknameValue || String(profileRecord.username ?? '-');
   const displayRole = String(profileRecord.role ?? 'user');
@@ -88,21 +110,28 @@ export default function SettingsPage() {
   const activeSessionCount = sessionRows.length;
 
   async function saveProfile() {
+    const payload = {
+      riskLevel: profileForm.riskLevel || '稳健',
+      nickname: profileForm.nickname,
+      avatarUrl: profileForm.avatarUrl,
+    };
     const data = await profileApi.triggerAsync(
       '/auth/profile',
       { method: 'POST' },
-      { riskLevel: riskLevelValue, nickname: nicknameValue, avatarUrl: avatarUrlValue },
+      payload,
     );
     const profile = readRecord(data);
     const existing = readRecord(profileQ.data);
     const roleValue = profile.role ?? existing.role;
+    setProfileForm(buildProfileForm({ ...existing, ...profile, ...payload }));
+    setProfileDirty(false);
     setUser({
       id: String(profile.id ?? existing.id ?? ''),
       username: String(profile.username ?? existing.username ?? ''),
       role: roleValue === 'admin' ? 'admin' : 'user',
-      riskLevel: String(profile.riskLevel ?? existing.riskLevel ?? riskLevelValue),
-      nickname: String(profile.nickname ?? existing.nickname ?? nicknameValue),
-      avatarUrl: String(profile.avatarUrl ?? existing.avatarUrl ?? avatarUrlValue),
+      riskLevel: String(profile.riskLevel ?? existing.riskLevel ?? payload.riskLevel),
+      nickname: String(profile.nickname ?? existing.nickname ?? payload.nickname),
+      avatarUrl: String(profile.avatarUrl ?? existing.avatarUrl ?? payload.avatarUrl),
       preferences: readRecord(profile.preferences ?? existing.preferences),
     });
     profileQ.refetch();
@@ -201,24 +230,61 @@ export default function SettingsPage() {
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   <label htmlFor="settings-nickname" className="block">
                     <span className={LABEL_CLS}>昵称</span>
-                    <input id="settings-nickname" value={nicknameValue} onChange={(e) => setNickname(e.target.value)} className={INPUT_CLS} placeholder="输入昵称" />
+                    <input
+                      id="settings-nickname"
+                      value={nicknameValue}
+                      onChange={(e) => {
+                        setProfileDirty(true);
+                        setProfileForm((current) => ({ ...current, nickname: e.target.value }));
+                      }}
+                      disabled={!profileReady}
+                      className={INPUT_CLS}
+                      placeholder="输入昵称"
+                    />
                   </label>
                   <label htmlFor="settings-risk-level" className="block">
                     <span className={LABEL_CLS}>风险偏好</span>
-                    <select id="settings-risk-level" value={riskLevelValue} onChange={(e) => setRiskLevel(e.target.value)} className={INPUT_CLS}>
+                    <select
+                      id="settings-risk-level"
+                      value={riskLevelValue}
+                      onChange={(e) => {
+                        setProfileDirty(true);
+                        setProfileForm((current) => ({ ...current, riskLevel: e.target.value }));
+                      }}
+                      disabled={!profileReady}
+                      className={INPUT_CLS}
+                    >
                       {RISK_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
                     </select>
                   </label>
                   <label htmlFor="settings-avatar-url" className="block sm:col-span-2">
                     <span className={LABEL_CLS}>头像 URL</span>
-                    <input id="settings-avatar-url" value={avatarUrlValue} onChange={(e) => setAvatarUrl(e.target.value)} className={INPUT_CLS} placeholder="https://..." />
+                    <input
+                      id="settings-avatar-url"
+                      value={avatarUrlValue}
+                      onChange={(e) => {
+                        setProfileDirty(true);
+                        setProfileForm((current) => ({ ...current, avatarUrl: e.target.value }));
+                      }}
+                      disabled={!profileReady}
+                      className={INPUT_CLS}
+                      placeholder="https://..."
+                    />
                   </label>
                 </div>
                 <div className="mt-5 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => void saveProfile()} disabled={profileApi.isPending} className={BTN_PRIMARY}>
+                  <button type="button" onClick={() => void saveProfile()} disabled={!profileReady || profileApi.isPending} className={BTN_PRIMARY}>
                     {profileApi.isPending ? '保存中...' : '保存资料'}
                   </button>
-                  <button type="button" onClick={() => { setNickname(String(profileRecord.nickname ?? '')); setAvatarUrl(String(profileRecord.avatarUrl ?? '')); setRiskLevel(String(profileRecord.riskLevel ?? '稳健')); }} className={BTN_GHOST}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProfileForm(buildProfileForm(profileRecord));
+                      setProfileDirty(false);
+                    }}
+                    disabled={!profileReady}
+                    className={BTN_GHOST}
+                  >
                     重置
                   </button>
                 </div>

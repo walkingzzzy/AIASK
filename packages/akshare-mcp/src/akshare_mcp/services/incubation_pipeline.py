@@ -32,7 +32,9 @@ class StrategyIncubationPipelineService:
         primary_effective_n = int(signal_quality.get('primary_effective_n') or 0)
         secondary_effective_n = int(signal_quality.get('secondary_effective_n') or 0)
 
-        score = 0.18
+        # `priority_score` 只用于同 stage 内排序，不能覆盖 hard gate。
+        # `readiness_score` 继续作为兼容别名暴露，因此这里主动弱化 legacy NAV/Sharpe/观察天数信号。
+        score = 0.15
         score += max(min(primary_skill_lcb, 0.20), -0.20) * 1.1
         score += max(min(secondary_skill_lcb, 0.18), -0.18) * 0.7
         score += max(min(recent_primary_skill_lcb, 0.18), -0.18) * 0.8
@@ -41,13 +43,13 @@ class StrategyIncubationPipelineService:
         score += min(secondary_effective_n, 30) / 30 * 0.08
         score -= min(max(stability_gap, 0.0), 0.2) * 0.8
         if latest_metric:
-            score += min(max(float(latest_metric.get('nav') or 1.0) - 1.0, -0.08), 0.12) * 0.35
-            score += min(max(float(latest_metric.get('sharpe_ratio') or 0.0), -1.0), 2.0) * 0.04
-            score += min(max(float(latest_metric.get('forward_sharpe_5d') or 0.0), -1.0), 1.5) * 0.04
-            score -= min(max(float(latest_metric.get('max_drawdown') or 0.0), 0.0), 0.5) * 0.22
-        score += min(observed_days, 20) * 0.004
-        score += min(promote_streak, 5) * 0.015
-        score += min(trade_days, 10) * 0.006
+            score += min(max(float(latest_metric.get('nav') or 1.0) - 1.0, -0.08), 0.12) * 0.12
+            score += min(max(float(latest_metric.get('sharpe_ratio') or 0.0), -1.0), 2.0) * 0.015
+            score += min(max(float(latest_metric.get('forward_sharpe_5d') or 0.0), -1.0), 1.5) * 0.015
+            score -= min(max(float(latest_metric.get('max_drawdown') or 0.0), 0.0), 0.5) * 0.12
+        score += min(observed_days, 20) * 0.001
+        score += min(promote_streak, 5) * 0.004
+        score += min(trade_days, 10) * 0.002
         if overview.get('promotion_ready'):
             score += 0.08
         if overview.get('deprecation_risk'):
@@ -111,7 +113,11 @@ class StrategyIncubationPipelineService:
             pipeline_status = 'listed'
             next_action = 'listed_monitoring'
         else:
-            pipeline_stage = _resolve_incubation_pipeline_stage(signal_quality, open_risk_count=open_risk_count)
+            pipeline_stage = _resolve_incubation_pipeline_stage(
+                signal_quality,
+                open_risk_count=open_risk_count,
+                execution_audit_gate_status=overview.get('execution_audit_gate_status'),
+            )
             if pipeline_stage == 'failed':
                 pipeline_status = 'blocked'
                 next_action = 'manual_intervention'
@@ -131,7 +137,22 @@ class StrategyIncubationPipelineService:
                 pipeline_status = 'observing'
                 next_action = 'stabilize_signal_quality' if latest_decision == 'halt' or halt_streak > 0 else 'continue_observation'
 
-        readiness_score = self._readiness_score(
+        gate_status = pipeline_stage
+        gate_reasons = []
+        if pipeline_stage == 'failed':
+            gate_reasons = list(overview.get('gate_blockers') or overview.get('blockers') or [])
+        elif pipeline_stage == 'observe' and overview.get('execution_audit_gate_status') not in {None, '', 'passed'}:
+            gate_reasons = [f"execution_audit_gate:{overview.get('execution_audit_gate_status')}"]
+        if overview.get('risk_hard_gate_status') not in {None, '', 'passed'}:
+            gate_reasons.extend(
+                item
+                for item in (
+                    overview.get('risk_hard_gate_reasons')
+                    or [f"risk_hard_gate:{overview.get('risk_hard_gate_status')}"]
+                )
+                if item not in gate_reasons
+            )
+        priority_score = self._readiness_score(
             latest_metric=latest_metric,
             overview=overview,
             open_risk_count=open_risk_count,
@@ -150,7 +171,19 @@ class StrategyIncubationPipelineService:
             'promote_streak': promote_streak,
             'halt_streak': halt_streak,
             'latest_decision': latest_decision,
-            'readiness_score': readiness_score,
+            'readiness_score': priority_score,
+            'priority_score': priority_score,
+            'gate_status': gate_status,
+            'gate_reasons': gate_reasons,
+            'hard_gate_result': {
+                'pipeline_stage': pipeline_stage,
+                'signal_stage_without_execution_gate': overview.get('signal_stage_without_execution_gate'),
+                'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
+                'execution_hard_gate_passed': bool(overview.get('execution_hard_gate_passed')),
+                'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
+                'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'},
+                'reasons': list(gate_reasons),
+            },
             'next_action': next_action,
             'auto_review': bool(auto_apply_review and pipeline_stage == 'graduation_ready'),
             'auto_promoted': False,
@@ -175,6 +208,13 @@ class StrategyIncubationPipelineService:
                 'observe_streak': observe_streak,
                 'open_risk_count': open_risk_count,
                 'runtime_control_mode': control_mode,
+                'hard_gate_result': {
+                    'pipeline_stage': pipeline_stage,
+                    'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
+                    'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
+                    'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'},
+                    'reasons': list(gate_reasons),
+                },
             },
             'metadata': {
                 'latest_metric': latest_metric or {},

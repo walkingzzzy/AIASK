@@ -38,6 +38,7 @@ from .strategy_mgr_crud import (
     handle_update_metrics,
 )
 from .strategy_mgr_lifecycle import (
+    handle_execution_audit_verification,
     handle_factory_run_detail,
     handle_factory_run_once,
     handle_factory_runs,
@@ -45,6 +46,7 @@ from .strategy_mgr_lifecycle import (
     handle_incubation_overview,
     handle_lifecycle_scan,
     handle_review_report_recheck,
+    handle_submission_replay,
     handle_submit,
 )
 from .strategy_mgr_incubation import (
@@ -88,6 +90,7 @@ STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "detail": ("strategy_id", "id"),
     "review_report": ("strategy_id", "id"),
     "review_report_recheck": ("strategy_id", "id"),
+    "submission_replay": ("strategy_id", "id", "strategy_ids"),
     "submit": ("strategy_id", "id"),
     "events": ("strategy_id", "id"),
     "incubation_overview": ("strategy_id", "id"),
@@ -181,6 +184,7 @@ ACTION_HANDLERS: dict[str, ...] = {
     "get_signal_stats": handle_get_signal_stats,
     # Lifecycle (strategy_mgr_lifecycle)
     "review_report_recheck": handle_review_report_recheck,
+    "submission_replay": handle_submission_replay,
     "submit": handle_submit,
     "lifecycle_scan": handle_lifecycle_scan,
     "incubation_overview": handle_incubation_overview,
@@ -188,6 +192,7 @@ ACTION_HANDLERS: dict[str, ...] = {
     "factory_run_once": handle_factory_run_once,
     "factory_runs": handle_factory_runs,
     "factory_run_detail": handle_factory_run_detail,
+    "execution_audit_verification": handle_execution_audit_verification,
     # Incubation (strategy_mgr_incubation)
     "incubation_accounts": handle_incubation_accounts,
     "incubation_metrics": handle_incubation_metrics,
@@ -461,7 +466,7 @@ def register_strategy_manager(mcp):
         """策略超市管理器 — 创建/发布/排名/评价/订阅/生命周期管理。
 
         Supports legacy ``kwargs`` JSON strings and structured ``params`` / dict kwargs.
-        Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, help
+        Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, execution_audit_verification, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, help
         """
         started_at = time.perf_counter()
         params = _normalize_strategy_manager_params(kwargs=kwargs, params=params)

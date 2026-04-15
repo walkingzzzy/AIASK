@@ -171,6 +171,10 @@ _SAMPLE_RUN_RESULT = {
         "feedback_summary": {"family_count": 2, "feedback_available": True},
         "incubation_summary": {"gate_3_passed": 2},
         "live_ready_summary": {"live_ready_review_count": 1},
+        "prediction_quality_distribution": {"strong": 1, "mixed": 2},
+        "execution_quality_distribution": {"mixed": 2, "weak": 1},
+        "evidence_alignment_distribution": {"aligned": 2, "legacy": 1},
+        "confidence_contract_ready_rate": 0.3333,
     },
     "_run_audit": {
         "hard_failure_count": 0,
@@ -275,6 +279,10 @@ class TestFactoryRunSummaryDTO:
         assert dto.strict_ready_given_raw_b_rate == pytest.approx(1.0)
         assert dto.validation_family_quality_panel[0]["strategy_family"] == "momentum"
         assert dto.validation_family_quality_panel[0]["family_mean_dsr"] == pytest.approx(0.16)
+        assert dto.prediction_quality_distribution == {"strong": 1, "mixed": 2}
+        assert dto.execution_quality_distribution == {"mixed": 2, "weak": 1}
+        assert dto.evidence_alignment_distribution == {"aligned": 2, "legacy": 1}
+        assert dto.confidence_contract_ready_rate == pytest.approx(0.3333)
 
     def test_from_dict_falls_back_to_submission_artifact_quality_panel(self):
         data = {
@@ -317,21 +325,30 @@ class TestFactoryRunSummaryDTO:
         assert dto.validation_family_quality_panel[0]["strategy_family"] == "momentum"
 
     def test_submit_stage_entered_falls_back_to_summary_counts(self):
+        summary = {
+            **dict(_SAMPLE_RUN_RESULT["summary"]),
+            "submitted": 2,
+        }
+        summary.pop("prediction_quality_distribution", None)
+        summary.pop("execution_quality_distribution", None)
+        summary.pop("evidence_alignment_distribution", None)
+        summary.pop("confidence_contract_ready_rate", None)
         data = {
             **_SAMPLE_RUN_RESULT,
             "stages": {
                 "collect": {"status": "completed", "ok": True},
             },
-            "summary": {
-                **dict(_SAMPLE_RUN_RESULT["summary"]),
-                "submitted": 2,
-            },
+            "summary": summary,
         }
 
         dto = FactoryRunSummaryDTO.from_dict(data)
 
         assert dto.submit_stage_entered is True
         assert dto.submit_stage_status is None
+        assert dto.prediction_quality_distribution is None
+        assert dto.execution_quality_distribution is None
+        assert dto.evidence_alignment_distribution is None
+        assert dto.confidence_contract_ready_rate is None
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +678,18 @@ class TestFactoryStatusDTO:
             "factor_auto_refresh_enabled": True,
             "readiness_hard_block_enabled": False,
             "readiness_min_score": 0.6,
+            "high_confidence_enabled": False,
+            "evidence_contract_enabled": False,
+            "confidence_diagnostics_enabled": False,
+            "execution_audit_enabled": False,
+            "quality_ui_v2_enabled": False,
+            "feature_flags": {
+                "high_confidence_enabled": False,
+                "evidence_contract_enabled": False,
+                "confidence_diagnostics_enabled": False,
+                "execution_audit_enabled": False,
+                "quality_ui_v2_enabled": False,
+            },
             "quality_baseline": {
                 "contract_version": "strategy_factory.quality_baseline.v1",
                 "submitted_strategy_cohort": {
@@ -693,6 +722,9 @@ class TestFactoryStatusDTO:
         assert dto.last_live_candidate_ready_rate == pytest.approx(0.5)
         assert dto.last_raw_b_or_above_count == 0
         assert dto.quality_baseline["contract_version"] == "strategy_factory.quality_baseline.v1"
+        assert dto.high_confidence_enabled is False
+        assert dto.evidence_contract_enabled is False
+        assert dto.feature_flags["quality_ui_v2_enabled"] is False
 
     def test_last_status_none_when_no_last_result(self):
         data = {**self._sample_status(), "last_result": None}
@@ -714,6 +746,8 @@ class TestFactoryStatusDTO:
         assert d["last_live_candidate_ready_count"] == 1
         assert d["last_validation_family_quality_panel"][0]["strategy_family"] == "momentum"
         assert d["quality_baseline"]["submitted_strategy_cohort"]["factory_strategy_count"] == 2
+        assert d["feature_flags"]["high_confidence_enabled"] is False
+        assert d["execution_audit_enabled"] is False
 
     def test_from_dict_falls_back_to_last_submission_artifact_quality_panel(self):
         data = self._sample_status()
@@ -752,6 +786,29 @@ class TestFactoryStatusDTO:
         assert dto.last_raw_validation_grade_distribution == {"B": 1}
         assert dto.last_raw_validation_b_rate == pytest.approx(1.0)
         assert dto.last_validation_family_quality_panel[0]["strategy_family"] == "momentum"
+
+    def test_from_dict_preserves_high_confidence_flags_from_grouped_map(self):
+        data = self._sample_status()
+        data.pop("high_confidence_enabled", None)
+        data.pop("evidence_contract_enabled", None)
+        data.pop("confidence_diagnostics_enabled", None)
+        data.pop("execution_audit_enabled", None)
+        data.pop("quality_ui_v2_enabled", None)
+        data["feature_flags"] = {
+            "high_confidence_enabled": True,
+            "evidence_contract_enabled": True,
+            "confidence_diagnostics_enabled": True,
+            "execution_audit_enabled": True,
+            "quality_ui_v2_enabled": True,
+        }
+
+        dto = FactoryStatusDTO.from_dict(data)
+
+        assert dto.high_confidence_enabled is True
+        assert dto.evidence_contract_enabled is True
+        assert dto.confidence_diagnostics_enabled is True
+        assert dto.execution_audit_enabled is True
+        assert dto.quality_ui_v2_enabled is True
 
 
 # ---------------------------------------------------------------------------

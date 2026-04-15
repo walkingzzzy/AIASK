@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updated_at": "2026-03-23",
+  "updated_at": "2026-04-13",
   "description": "Skill coverage quality gates for CI (strict mode). Keep full tool coverage and full manager coverage.",
   "observed_baseline": {
-    "tool_count": 142,
-    "skills_count": 19,
-    "covered_count": 142,
+    "tool_count": 152,
+    "skills_count": 20,
+    "covered_count": 152,
     "coverage_pct": 100.0,
     "manager_covered_count": 32,
     "manager_total_count": 32

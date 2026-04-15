@@ -14,15 +14,124 @@ from ..infrastructure.mcp_services import (
     get_validation_runtime,
 )
 
+_TREND_EXECUTABLE_DSL_TYPES = {"ma_cross", "momentum", "volatility_breakout"}
 
-def _generate_strategy_signal_series(klass, params: dict, closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
-    instance = klass()
-    instance.set_parameters(params or {})
-    try:
-        signals = np.asarray(instance.generate_signals(closes, volumes), dtype=np.float64)
-    except TypeError:
-        signals = np.asarray(instance.generate_signals(closes), dtype=np.float64)
+
+def _signal_series_from_events(length: int, events: list[dict] | None) -> np.ndarray:
+    signals = np.zeros(max(0, int(length)), dtype=np.float64)
+    for event in list(events or []):
+        idx = int(event.get("index") or 0)
+        signal = int(event.get("signal") or 0)
+        if 0 <= idx < len(signals) and signal != 0:
+            signals[idx] = 1.0 if signal > 0 else -1.0
     return signals
+
+
+def _signal_series_from_masks(entry_mask: np.ndarray, exit_mask: np.ndarray) -> np.ndarray:
+    entry = np.asarray(entry_mask, dtype=bool)
+    exit_ = np.asarray(exit_mask, dtype=bool)
+    size = max(len(entry), len(exit_))
+    signals = np.zeros(size, dtype=np.float64)
+    if len(entry):
+        signals[: len(entry)][entry] = 1.0
+    if len(exit_):
+        exit_slice = signals[: len(exit_)]
+        exit_slice[np.asarray(exit_, dtype=bool) & (exit_slice == 0.0)] = -1.0
+    return signals
+
+
+def _resolve_execution_semantic_status(strategy_type: str, params: dict) -> dict:
+    payload = dict(params or {})
+    normalized_strategy_type = str(strategy_type or "").strip().lower()
+    trade_plan_to_dsl_map = dict(payload.get("trade_plan_to_dsl_map") or {})
+    instrument_profile = dict(payload.get("instrument_profile") or {})
+    dsl_required = bool(payload.get("dsl_required"))
+    if not dsl_required:
+        target_symbols = list(payload.get("target_symbols") or [])
+        dsl_required = normalized_strategy_type in _TREND_EXECUTABLE_DSL_TYPES and len(target_symbols) == 1
+    dsl_compiled = bool(payload.get("dsl_compiled"))
+    if not dsl_compiled:
+        dsl_compiled = bool(dict(payload.get("dsl") or {}))
+    execution_semantic_mode = str(payload.get("execution_semantic_mode") or "").strip().lower()
+    if not execution_semantic_mode:
+        execution_semantic_mode = (
+            "compiled_dsl"
+            if dsl_compiled
+            else "missing_executable_contract"
+            if dsl_required
+            else "builtin_legacy"
+        )
+    mapped_trade_step_count = int(trade_plan_to_dsl_map.get("mapped_trade_step_count") or 0)
+    runtime_family_data_source = str(payload.get("runtime_family_data_source") or "").strip().lower() or None
+    proxy_runtime_used = bool(payload.get("proxy_runtime_used"))
+    semantic_runtime_match = (
+        bool(payload.get("semantic_runtime_match"))
+        if payload.get("semantic_runtime_match") is not None
+        else not proxy_runtime_used
+    )
+    diagnostic_only = bool(payload.get("diagnostic_only"))
+    execution_readiness_tier = str(payload.get("execution_readiness_tier") or "").strip().lower() or None
+    measurement_source = str(
+        instrument_profile.get("measurement_source") or "default_board_profile"
+    ).strip().lower() or "default_board_profile"
+    measured_profile_complete = bool(instrument_profile.get("measured_profile_complete"))
+    default_profile_blocked = dsl_required and (
+        measurement_source == "default_board_profile" or not measured_profile_complete
+    )
+    return {
+        "execution_semantic_mode": execution_semantic_mode,
+        "dsl_required": dsl_required,
+        "dsl_compiled": dsl_compiled,
+        "mapped_trade_step_count": mapped_trade_step_count,
+        "semantic_runtime_match": semantic_runtime_match,
+        "runtime_family_data_source": runtime_family_data_source,
+        "proxy_runtime_used": proxy_runtime_used,
+        "diagnostic_only": diagnostic_only,
+        "execution_readiness_tier": execution_readiness_tier,
+        "measurement_source": measurement_source,
+        "measured_profile_complete": measured_profile_complete,
+        "execution_semantic_ready": (
+            execution_semantic_mode == "compiled_dsl"
+            and dsl_compiled
+            and mapped_trade_step_count > 0
+            and semantic_runtime_match
+            and not proxy_runtime_used
+            and not diagnostic_only
+            and not default_profile_blocked
+            and execution_readiness_tier in {"", "formal_runtime_ready"}
+        ),
+    }
+
+
+def _generate_strategy_signal_series(
+    strategy_registry,
+    strategy_type: str,
+    params: dict,
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    *,
+    klines: list[dict] | None = None,
+) -> np.ndarray:
+    if hasattr(strategy_registry, "create_runtime_strategy"):
+        instance, _execution_semantic_mode = strategy_registry.create_runtime_strategy(strategy_type, params or {})
+    else:
+        klass = strategy_registry.get(strategy_type)
+        instance = klass() if klass is not None else None
+        if instance is not None:
+            instance.set_parameters(params or {})
+    if instance is None:
+        return np.zeros(len(closes), dtype=np.float64)
+    if klines and hasattr(instance, "generate_signal_events_from_klines"):
+        events = instance.generate_signal_events_from_klines(klines)
+        if events is not None:
+            return _signal_series_from_events(len(klines), events)
+    if klines and hasattr(instance, "generate_entry_exit_masks_from_klines"):
+        entry_mask, exit_mask = instance.generate_entry_exit_masks_from_klines(klines)
+        return _signal_series_from_masks(entry_mask, exit_mask)
+    try:
+        return np.asarray(instance.generate_signals(closes, volumes), dtype=np.float64)
+    except TypeError:
+        return np.asarray(instance.generate_signals(closes), dtype=np.float64)
 
 
 def _resolve_validation_focus(params: dict) -> str:
@@ -151,6 +260,8 @@ def _apply_trade_quality_rating_adjustment(
         or params.get("family_specific_hypothesis")
         or {}
     )
+    execution_semantic_status = _resolve_execution_semantic_status(normalized_strategy_type, params)
+    execution_semantic_ready = bool(execution_semantic_status.get("execution_semantic_ready"))
     expected_turnover_band = str(
         params.get("expected_turnover_band")
         or holding_horizon.get("expected_turnover_band")
@@ -533,10 +644,15 @@ def _apply_trade_quality_rating_adjustment(
             else 0.0
         )
         trade_score_breakdown["aligned_dynamic_panel"] = 5.0 if aligned_dynamic_panel else 0.0
-        trade_score_breakdown["range_filter"] = 5.0 if family_specialization.get("range_filter") else 0.0
-        trade_score_breakdown["volume_confirmation"] = 5.0 if family_specialization.get("volume_confirmation") else 0.0
+        trade_score_breakdown["range_filter"] = (
+            5.0 if execution_semantic_ready and family_specialization.get("range_filter") else 0.0
+        )
+        trade_score_breakdown["volume_confirmation"] = (
+            5.0 if execution_semantic_ready and family_specialization.get("volume_confirmation") else 0.0
+        )
         trade_score_breakdown["noise_filtering"] = (
-            4.0 if "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or "")
+            4.0
+            if execution_semantic_ready and "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or "")
             else 0.0
         )
         trade_score_breakdown["trend_persistence_holding"] = (
@@ -572,6 +688,7 @@ def _apply_trade_quality_rating_adjustment(
             and rebalance_frequency_days >= 10
             and realized_sharpe >= 1.1
             and pbo <= 0.4
+            and execution_semantic_ready
             and family_specialization.get("range_filter")
             and family_specialization.get("volume_confirmation")
             else 0.0
@@ -581,6 +698,7 @@ def _apply_trade_quality_rating_adjustment(
             if validation_focus_layer == "target_only"
             and aligned_dynamic_panel
             and positive_ratio >= 0.52
+            and execution_semantic_ready
             and "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or "")
             and pbo <= 0.5
             else 0.0
@@ -609,11 +727,11 @@ def _apply_trade_quality_rating_adjustment(
             bonus_breakdown["adaptive_span_gap"] = 1.0
         if aligned_dynamic_panel:
             bonus_breakdown["aligned_dynamic_panel"] = 1.0
-        if family_specialization.get("range_filter"):
+        if execution_semantic_ready and family_specialization.get("range_filter"):
             bonus_breakdown["range_filter"] = 1.5
-        if family_specialization.get("volume_confirmation"):
+        if execution_semantic_ready and family_specialization.get("volume_confirmation"):
             bonus_breakdown["volume_confirmation"] = 1.5
-        if "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or ""):
+        if execution_semantic_ready and "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or ""):
             bonus_breakdown["noise_filtering"] = 1.0
         if max_holding_days >= 24:
             bonus_breakdown["trend_persistence_holding"] = 1.5
@@ -628,6 +746,7 @@ def _apply_trade_quality_rating_adjustment(
             and rebalance_frequency_days >= 10
             and realized_sharpe >= 1.1
             and pbo <= 0.4
+            and execution_semantic_ready
             and family_specialization.get("range_filter")
             and family_specialization.get("volume_confirmation")
         ):
@@ -636,6 +755,7 @@ def _apply_trade_quality_rating_adjustment(
             validation_focus_layer == "target_only"
             and aligned_dynamic_panel
             and positive_ratio >= 0.52
+            and execution_semantic_ready
             and "range_bound_chop" in str(market_regime_assumption.get("avoid_regime") or "")
             and pbo <= 0.5
         ):
@@ -695,8 +815,10 @@ def _apply_trade_quality_rating_adjustment(
 
 
 def _build_family_returns(
-    klass,
+    strategy_registry,
+    strategy_type: str,
     params: dict,
+    kline_histories: List[list[dict]],
     close_histories: List[np.ndarray],
     volume_histories: List[np.ndarray],
     *,
@@ -707,10 +829,17 @@ def _build_family_returns(
 
     def _series_for(candidate_params: dict) -> np.ndarray | None:
         family_columns: List[np.ndarray] = []
-        for closes, volumes in zip(close_histories, volume_histories):
+        for klines, closes, volumes in zip(kline_histories, close_histories, volume_histories):
             if len(closes) < min_len + 1:
                 continue
-            signals = _generate_strategy_signal_series(klass, candidate_params, closes, volumes)
+            signals = _generate_strategy_signal_series(
+                strategy_registry,
+                strategy_type,
+                candidate_params,
+                closes,
+                volumes,
+                klines=klines,
+            )
             aligned_signals = signals[:-1]
             aligned_returns = np.diff(closes) / np.maximum(closes[:-1], 1e-12)
             if len(aligned_signals) < min_len or len(aligned_returns) < min_len:
@@ -749,12 +878,18 @@ def _build_family_returns(
 async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_size: int = 6) -> dict:
     strategy_registry = get_strategy_registry()
     normalize_klines = get_normalize_klines()
-    klass = strategy_registry.get(strategy_type)
-    if klass is None:
+    strategy_instance_exists = False
+    if hasattr(strategy_registry, "create_runtime_strategy"):
+        instance, _execution_semantic_mode = strategy_registry.create_runtime_strategy(strategy_type, params or {})
+        strategy_instance_exists = instance is not None
+    else:
+        strategy_instance_exists = strategy_registry.get(strategy_type) is not None
+    if not strategy_instance_exists:
         return {}
     factor_columns: List[np.ndarray] = []
     return_columns: List[np.ndarray] = []
     strategy_series: List[np.ndarray] = []
+    kline_histories: List[list[dict]] = []
     close_histories: List[np.ndarray] = []
     volume_histories: List[np.ndarray] = []
     holdings: List[dict] = []
@@ -772,7 +907,14 @@ async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_si
             volumes = np.array([float(k.get("volume", 0) or 0) for k in ordered], dtype=np.float64)
             if len(closes) < 90:
                 continue
-            signals = _generate_strategy_signal_series(klass, params or {}, closes, volumes)
+            signals = _generate_strategy_signal_series(
+                strategy_registry,
+                strategy_type,
+                params or {},
+                closes,
+                volumes,
+                klines=ordered,
+            )
             aligned_signals = signals[:-1]
             aligned_returns = np.diff(closes) / np.maximum(closes[:-1], 1e-12)
             if len(aligned_signals) < 60 or len(aligned_signals) != len(aligned_returns):
@@ -780,6 +922,7 @@ async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_si
             factor_columns.append(aligned_signals[-120:])
             return_columns.append(aligned_returns[-120:])
             strategy_series.append((aligned_signals[-120:] * aligned_returns[-120:]).astype(np.float64))
+            kline_histories.append(list(ordered))
             close_histories.append(closes)
             volume_histories.append(volumes)
             latest_signal = float(aligned_signals[-1]) if len(aligned_signals) else 0.0
@@ -794,8 +937,10 @@ async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_si
     return_panel = np.column_stack([col[-min_len:] for col in return_columns])
     strategy_returns = np.mean(np.column_stack([col[-min_len:] for col in strategy_series]), axis=1)
     family_returns = _build_family_returns(
-        klass,
+        strategy_registry,
+        strategy_type,
         params or {},
+        kline_histories,
         close_histories,
         volume_histories,
         min_len=min_len,

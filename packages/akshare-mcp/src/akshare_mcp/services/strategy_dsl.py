@@ -7,12 +7,14 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+from strategy_factory.application.semantic_contract import inspect_strategy_dsl_support
 
 SUPPORTED_DSL_VERSION = "1.0"
 SUPPORTED_FIELDS = {"open", "high", "low", "close", "volume"}
 SUPPORTED_INDICATORS = {
     "sma", "ema", "roc", "rsi", "stddev", "zscore",
     "highest", "lowest", "volume_ratio", "atr",
+    "adx", "turnover_rate", "upper_shadow_ratio", "rolling_count", "slope",
 }
 SUPPORTED_COMPARE_OPS = {"gt", "gte", "lt", "lte", "eq", "ne", "cross_above", "cross_below"}
 SUPPORTED_BINARY_OPS = {"add", "sub", "mul", "div", "max", "min"}
@@ -151,6 +153,10 @@ def build_ohlcv_frame(klines: list[dict[str, Any]]) -> pd.DataFrame:
     normalized["high"] = normalized.get("high", normalized["close"]).fillna(normalized["close"])
     normalized["low"] = normalized.get("low", normalized["close"]).fillna(normalized["close"])
     normalized["volume"] = normalized.get("volume", 0.0).fillna(0.0)
+    if "turnover_rate" in frame.columns:
+        normalized["turnover_rate"] = pd.to_numeric(frame["turnover_rate"], errors="coerce")
+    elif "turnover" in frame.columns:
+        normalized["turnover_rate"] = pd.to_numeric(frame["turnover"], errors="coerce")
     return normalized.astype(float)
 
 
@@ -165,6 +171,7 @@ def build_close_volume_frame(closes: np.ndarray, volumes: Optional[np.ndarray] =
         "low": close_arr,
         "close": close_arr,
         "volume": volume_arr,
+        "turnover_rate": np.zeros(len(close_arr), dtype=float),
     })
     return frame.astype(float)
 
@@ -214,12 +221,157 @@ def _coerce_open_dsl_signal(node: Any) -> dict[str, Any]:
     return dict(node)
 
 
+def _normalize_claims_for_mapping(prediction_contract: dict[str, Any]) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    for item in list(dict(prediction_contract or {}).get("claims") or []):
+        if not isinstance(item, dict):
+            continue
+        claim_id = str(item.get("claim_id") or item.get("id") or "").strip()
+        if not claim_id:
+            continue
+        claims.append(
+            {
+                **item,
+                "claim_id": claim_id,
+                "evidence_ids": [str(value).strip() for value in list(item.get("evidence_ids") or []) if str(value).strip()],
+            }
+        )
+    return claims
+
+
+def _normalize_trade_plan_nodes_for_mapping(trade_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+
+    def _append(node: Any, *, phase: str, index: int = 0) -> None:
+        if not isinstance(node, dict):
+            return
+        node_id = str(
+            node.get("node_id")
+            or node.get("plan_node_id")
+            or node.get("trade_plan_node_id")
+            or node.get("trade_plan_step_id")
+            or node.get("id")
+            or f"{phase}_{index}"
+        ).strip()
+        claim_ids = [str(item).strip() for item in list(node.get("claim_ids") or []) if str(item).strip()]
+        nodes.append(
+            {
+                **node,
+                "node_id": node_id,
+                "phase": phase,
+                "claim_ids": list(dict.fromkeys(claim_ids)),
+            }
+        )
+
+    payload = dict(trade_plan or {})
+    if isinstance(payload.get("entry"), dict):
+        _append(payload.get("entry"), phase="entry")
+    if isinstance(payload.get("exit"), dict):
+        _append(payload.get("exit"), phase="exit")
+    for phase_name in ("entries", "exits", "nodes", "steps"):
+        for index, item in enumerate(list(payload.get(phase_name) or [])):
+            resolved_phase = "entry" if phase_name == "entries" else "exit" if phase_name == "exits" else phase_name
+            _append(item, phase=resolved_phase, index=index)
+    if not nodes and payload:
+        _append(payload, phase="node")
+    return nodes
+
+
+def _collect_trade_plan_refs_from_dsl(value: Any) -> list[str]:
+    refs: list[str] = []
+    if isinstance(value, dict):
+        for key in (
+            "trade_plan_node_id",
+            "trade_plan_step_id",
+            "plan_node_id",
+            "mapped_trade_plan_node_id",
+            "node_id",
+        ):
+            token = str(value.get(key) or "").strip()
+            if token:
+                refs.append(token)
+        for child in value.values():
+            refs.extend(_collect_trade_plan_refs_from_dsl(child))
+    elif isinstance(value, list):
+        for item in value:
+            refs.extend(_collect_trade_plan_refs_from_dsl(item))
+    return list(dict.fromkeys(refs))
+
+
+def _build_claim_to_trade_plan_map(
+    *,
+    prediction_contract: dict[str, Any],
+    trade_plan: dict[str, Any],
+) -> dict[str, Any]:
+    claims = _normalize_claims_for_mapping(prediction_contract)
+    trade_plan_nodes = _normalize_trade_plan_nodes_for_mapping(trade_plan)
+    claim_to_trade_step_ids: dict[str, list[str]] = {}
+    trade_step_to_claim_ids: dict[str, list[str]] = {}
+    for node in trade_plan_nodes:
+        node_id = str(node.get("node_id") or "").strip()
+        node_claim_ids = [str(item).strip() for item in list(node.get("claim_ids") or []) if str(item).strip()]
+        if not node_id:
+            continue
+        trade_step_to_claim_ids[node_id] = list(dict.fromkeys(node_claim_ids))
+        for claim_id in node_claim_ids:
+            claim_to_trade_step_ids.setdefault(claim_id, []).append(node_id)
+    claim_ids = [str(item.get("claim_id") or "").strip() for item in claims if str(item.get("claim_id") or "").strip()]
+    for claim_id in claim_ids:
+        claim_to_trade_step_ids.setdefault(claim_id, [])
+    return {
+        "claim_to_trade_step_ids": {
+            key: list(dict.fromkeys(value))
+            for key, value in claim_to_trade_step_ids.items()
+        },
+        "trade_step_to_claim_ids": trade_step_to_claim_ids,
+        "mapped_claim_count": sum(1 for value in claim_to_trade_step_ids.values() if value),
+        "unmapped_claim_ids": [key for key, value in claim_to_trade_step_ids.items() if not value],
+        "trade_step_count": len(trade_step_to_claim_ids),
+    }
+
+
+def _build_trade_plan_to_dsl_map(
+    *,
+    trade_plan: dict[str, Any],
+    dsl: dict[str, Any],
+) -> dict[str, Any]:
+    trade_plan_nodes = _normalize_trade_plan_nodes_for_mapping(trade_plan)
+    entry_refs = set(_collect_trade_plan_refs_from_dsl(dict(dsl or {}).get("entry")))
+    exit_refs = set(_collect_trade_plan_refs_from_dsl(dict(dsl or {}).get("exit")))
+    trade_step_to_dsl_sections: dict[str, list[str]] = {}
+    for node in trade_plan_nodes:
+        node_id = str(node.get("node_id") or "").strip()
+        if not node_id:
+            continue
+        sections: list[str] = []
+        phase = str(node.get("phase") or "").strip().lower()
+        if node_id in entry_refs or (phase == "entry" and isinstance(trade_plan.get("entry"), dict)):
+            sections.append("entry")
+        if node_id in exit_refs or (phase == "exit" and isinstance(trade_plan.get("exit"), dict)):
+            sections.append("exit")
+        trade_step_to_dsl_sections[node_id] = sections
+    return {
+        "trade_step_to_dsl_sections": trade_step_to_dsl_sections,
+        "dsl_entry_trade_step_ids": sorted(entry_refs),
+        "dsl_exit_trade_step_ids": sorted(exit_refs),
+        "mapped_trade_step_count": sum(1 for value in trade_step_to_dsl_sections.values() if value),
+        "unmapped_trade_step_ids": [key for key, value in trade_step_to_dsl_sections.items() if not value],
+    }
+
+
 def compile_strategy_blueprint(
     blueprint: dict[str, Any],
     market_frame: Optional[pd.DataFrame] = None,
     tune_for_factory: bool = False,
 ) -> dict[str, Any]:
     payload = dict(blueprint or {})
+    dsl_support_audit = inspect_strategy_dsl_support(payload.get("dsl") or payload)
+    trade_plan = dict(payload.get("trade_plan") or {})
+    prediction_contract = dict(payload.get("prediction_contract") or {})
+    claim_to_trade_plan_map = _build_claim_to_trade_plan_map(
+        prediction_contract=prediction_contract,
+        trade_plan=trade_plan,
+    )
     if payload.get("dsl") or payload.get("entry"):
         dsl = payload.get("dsl") or {
             "version": payload.get("version"),
@@ -242,6 +394,13 @@ def compile_strategy_blueprint(
         if tune_for_factory and market_frame is not None and not market_frame.empty:
             normalized, tuning = tune_strategy_dsl(normalized, market_frame)
         risk_rules = dict(payload.get("risk_rules") or normalized.get("risk_rules") or {})
+        trade_plan_to_dsl_map = _build_trade_plan_to_dsl_map(
+            trade_plan=trade_plan,
+            dsl=normalized,
+        )
+        compile_failure_reasons = []
+        if int(dsl_support_audit.get("unsupported_rule_count") or 0) > 0:
+            compile_failure_reasons.append("dsl_contains_unsupported_rules")
         return {
             "strategy_type": "dsl_rule",
             "params": {
@@ -264,6 +423,11 @@ def compile_strategy_blueprint(
                 "dsl": normalized,
                 "dsl_tuning": tuning,
                 "dsl_activity": tuning.get("after") or summarize_dsl_activity(market_frame, normalized),
+                "dsl_support_audit": dsl_support_audit,
+                "claim_to_trade_plan_map": claim_to_trade_plan_map,
+                "trade_plan_to_dsl_map": trade_plan_to_dsl_map,
+                "unsupported_rule_count": int(dsl_support_audit.get("unsupported_rule_count") or 0),
+                "compile_failure_reasons": compile_failure_reasons,
             },
         }
 
@@ -289,6 +453,11 @@ def compile_strategy_blueprint(
             "execution_notes": payload.get("execution_notes"),
             "stock_pool": dict(payload.get("stock_pool") or {}),
             "target_symbols": list(_normalize_code_list(payload.get("target_symbols"), limit=12)),
+            "dsl_support_audit": dsl_support_audit,
+            "claim_to_trade_plan_map": claim_to_trade_plan_map,
+            "trade_plan_to_dsl_map": {},
+            "unsupported_rule_count": int(dsl_support_audit.get("unsupported_rule_count") or 0),
+            "compile_failure_reasons": [],
         },
     }
 
@@ -335,6 +504,13 @@ def tune_strategy_dsl(dsl: dict[str, Any], market_frame: Optional[pd.DataFrame])
             "before": before,
             "after": before,
             "variants_evaluated": 1,
+            "selection_basis": "activity_fallback",
+            "primary_horizon": 5,
+            "overall_skill": None,
+            "recent_skill": None,
+            "trade_expectancy": None,
+            "sample_count": 0,
+            "stability_gap": None,
         }
 
     variants: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
@@ -370,25 +546,132 @@ def tune_strategy_dsl(dsl: dict[str, Any], market_frame: Optional[pd.DataFrame])
                     {**base_meta, "cross_mode": "state", "group_mode": "relaxed_any"},
                 ))
 
-    ranked: list[tuple[tuple[float, int, int, int], str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    primary_horizon = _resolve_primary_horizon(dsl)
+    predictive_ranked: list[
+        tuple[tuple[float, float, float, float, int, float], str, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]
+    ] = []
+    activity_ranked: list[tuple[tuple[float, int, int, int], str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for name, variant, meta in variants:
         stats = summarize_dsl_activity(market_frame, variant)
-        rank = (
+        predictive_stats = _summarize_variant_predictive_edge(
+            market_frame,
+            variant,
+            primary_horizon=primary_horizon,
+        )
+        activity_rank = (
             float(stats.get("score") or 0.0),
             int(min(stats.get("entry_count") or 0, stats.get("exit_count") or 0)),
             int(stats.get("active_days") or 0),
             -int(stats.get("overlap_count") or 0),
         )
-        ranked.append((rank, name, variant, meta, stats))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    _, selected_name, selected_variant, selected_meta, after = ranked[0]
+        activity_ranked.append((activity_rank, name, variant, meta, stats))
+        predictive_rank = (
+            float(min(
+                predictive_stats.get("recent_skill")
+                if predictive_stats.get("recent_skill") is not None
+                else -999.0,
+                predictive_stats.get("overall_skill")
+                if predictive_stats.get("overall_skill") is not None
+                else -999.0,
+            )),
+            float(predictive_stats.get("overall_skill") if predictive_stats.get("overall_skill") is not None else -999.0),
+            float(predictive_stats.get("trade_expectancy") if predictive_stats.get("trade_expectancy") is not None else -999.0),
+            -float(predictive_stats.get("stability_gap") if predictive_stats.get("stability_gap") is not None else 999.0),
+            -int(stats.get("overlap_count") or 0),
+            float(stats.get("score") or 0.0),
+        )
+        predictive_ranked.append((predictive_rank, name, variant, meta, stats, predictive_stats))
+    activity_ranked.sort(key=lambda item: item[0], reverse=True)
+    predictive_ranked.sort(key=lambda item: item[0], reverse=True)
+    _, fallback_name, fallback_variant, fallback_meta, fallback_after = activity_ranked[0]
+    fallback_metadata = {
+        "applied": False,
+        "selected_variant": "original",
+        "before": before,
+        "after": before,
+        "variants_evaluated": len(activity_ranked),
+        "selection_basis": "activity_fallback",
+        "primary_horizon": primary_horizon,
+        "overall_skill": None,
+        "recent_skill": None,
+        "trade_expectancy": None,
+        "sample_count": 0,
+        "stability_gap": None,
+        **fallback_meta,
+    }
+    if not predictive_ranked:
+        return normalized, fallback_metadata
+    _, selected_name, selected_variant, selected_meta, after, predictive_after = predictive_ranked[0]
+    if int(predictive_after.get("sample_count") or 0) < 20:
+        return normalized, fallback_metadata
     return selected_variant, {
         "applied": selected_name != "original",
         "selected_variant": selected_name,
         "before": before,
         "after": after,
-        "variants_evaluated": len(ranked),
+        "variants_evaluated": len(predictive_ranked),
+        "selection_basis": "predictive_edge",
+        "primary_horizon": primary_horizon,
+        "overall_skill": predictive_after.get("overall_skill"),
+        "recent_skill": predictive_after.get("recent_skill"),
+        "trade_expectancy": predictive_after.get("trade_expectancy"),
+        "sample_count": predictive_after.get("sample_count"),
+        "stability_gap": predictive_after.get("stability_gap"),
         **selected_meta,
+    }
+
+
+def _resolve_primary_horizon(dsl: dict[str, Any]) -> int:
+    metadata = dict((dsl or {}).get("metadata") or {})
+    raw_horizon = metadata.get("holding_horizon_days")
+    if raw_horizon is None and isinstance(metadata.get("holding_horizon"), dict):
+        raw_horizon = dict(metadata.get("holding_horizon") or {}).get("max_days")
+    horizon = int(raw_horizon or 5)
+    candidates = [5, 10, 20]
+    return min(candidates, key=lambda item: abs(item - horizon))
+
+
+def _summarize_variant_predictive_edge(
+    frame: Optional[pd.DataFrame],
+    dsl: dict[str, Any],
+    *,
+    primary_horizon: int,
+) -> dict[str, Any]:
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return {
+            "overall_skill": None,
+            "recent_skill": None,
+            "trade_expectancy": None,
+            "sample_count": 0,
+            "stability_gap": None,
+        }
+    normalized = normalize_strategy_dsl(dsl)
+    entry_mask, _exit_mask = evaluate_dsl_masks(frame, normalized)
+    closes = pd.to_numeric(frame["close"], errors="coerce")
+    forward_returns = (closes.shift(-int(primary_horizon)) / closes) - 1.0
+    valid_mask = entry_mask & forward_returns.notna().to_numpy(dtype=bool)
+    samples = [float(value) for value in forward_returns[valid_mask].tolist() if pd.notna(value)]
+    sample_count = len(samples)
+    if sample_count <= 0:
+        return {
+            "overall_skill": None,
+            "recent_skill": None,
+            "trade_expectancy": None,
+            "sample_count": 0,
+            "stability_gap": None,
+        }
+    split = int(max(1, np.floor(sample_count * 0.7)))
+    recent_samples = samples[split:] if split < sample_count else samples[-max(1, min(sample_count, int(np.ceil(sample_count * 0.3)))) :]
+    overall_skill = round(float(np.mean(samples)), 6)
+    recent_skill = round(float(np.mean(recent_samples)), 6) if recent_samples else overall_skill
+    trade_expectancy = overall_skill
+    stability_gap = round(abs(recent_skill - overall_skill), 6)
+    return {
+        "overall_skill": overall_skill,
+        "recent_skill": recent_skill,
+        "trade_expectancy": trade_expectancy,
+        "sample_count": sample_count,
+        "stability_gap": stability_gap,
     }
 
 
@@ -475,9 +758,9 @@ def _scale_expr_window(expr: dict[str, Any], scale: float) -> dict[str, Any]:
 def _indicator_window_bounds(indicator: str) -> tuple[int, int]:
     if indicator == "rsi":
         return 5, 21
-    if indicator == "volume_ratio":
+    if indicator in {"volume_ratio", "turnover_rate"}:
         return 3, 20
-    if indicator in {"roc", "stddev", "zscore", "atr"}:
+    if indicator in {"roc", "stddev", "zscore", "atr", "adx", "rolling_count", "slope"}:
         return 3, 30
     if indicator in {"highest", "lowest"}:
         return 5, 40
@@ -536,11 +819,13 @@ def _soften_group_node(node: dict[str, Any]) -> dict[str, Any]:
 
 def _expr_neutral_value(expr: dict[str, Any]) -> float:
     indicator = str((expr or {}).get("indicator") or "").strip().lower()
-    if indicator == "volume_ratio":
+    if indicator in {"volume_ratio", "turnover_rate"}:
         return 1.0
     if indicator == "rsi":
         return 50.0
-    if indicator in {"roc", "zscore", "stddev", "atr"}:
+    if indicator == "adx":
+        return 20.0
+    if indicator in {"roc", "zscore", "stddev", "atr", "upper_shadow_ratio", "slope", "rolling_count"}:
         return 0.0
     return 0.0
 
@@ -589,11 +874,16 @@ def _expand_shorthand_expr(node: dict[str, Any]) -> dict[str, Any]:
             field = str(payload.get('field') or 'close').strip().lower() or 'close'
             if field not in SUPPORTED_FIELDS:
                 field = 'close'
-            return {
+            result = {
                 'indicator': indicator,
                 'field': field,
                 'window': max(1, int(payload.get('window') or payload.get('period') or 14)),
             }
+            if indicator == "slope":
+                result["lookback"] = max(1, int(payload.get("lookback") or payload.get("lag") or 5))
+            if indicator == "rolling_count":
+                result["condition"] = _normalize_condition(payload.get("condition"))
+            return result
         if isinstance(payload, (int, float)):
             return {
                 'indicator': indicator,
@@ -684,11 +974,16 @@ def _normalize_expr(node: Any) -> dict[str, Any]:
         field_name = str(node.get("field") or "close").strip().lower() or "close"
         if field_name not in SUPPORTED_FIELDS:
             field_name = "close"
-        return {
+        normalized = {
             "indicator": indicator,
             "field": field_name,
             "window": max(1, int(node.get("window") or node.get("period") or 14)),
         }
+        if indicator == "slope":
+            normalized["lookback"] = max(1, int(node.get("lookback") or node.get("lag") or 5))
+        if indicator == "rolling_count":
+            normalized["condition"] = _normalize_condition(node.get("condition"))
+        return normalized
     field = str(node.get("field") or node.get("column") or "").strip().lower()
     if field in SUPPORTED_FIELDS:
         return {"field": field}
@@ -787,6 +1082,21 @@ def _eval_expr(frame: pd.DataFrame, node: dict[str, Any]) -> pd.Series:
         if indicator == "volume_ratio":
             volume = _eval_expr(frame, {"field": "volume"})
             return volume / np.maximum(volume.rolling(window).mean(), 1e-9)
+        if indicator == "turnover_rate":
+            turnover = pd.to_numeric(frame.get("turnover_rate", pd.Series(np.nan, index=frame.index)), errors="coerce")
+            if turnover.notna().any():
+                return turnover.fillna(0.0)
+            volume = _eval_expr(frame, {"field": "volume"})
+            baseline = volume.rolling(window).median()
+            return volume / np.maximum(baseline, 1e-9)
+        if indicator == "upper_shadow_ratio":
+            high = _eval_expr(frame, {"field": "high"})
+            open_ = _eval_expr(frame, {"field": "open"})
+            close = _eval_expr(frame, {"field": "close"})
+            low = _eval_expr(frame, {"field": "low"})
+            spread = (high - low).abs().clip(lower=1e-9)
+            upper_shadow = (high - pd.concat([open_, close], axis=1).max(axis=1)).clip(lower=0.0)
+            return upper_shadow / spread
         if indicator == "atr":
             high = _eval_expr(frame, {"field": "high"})
             low = _eval_expr(frame, {"field": "low"})
@@ -798,6 +1108,33 @@ def _eval_expr(frame: pd.DataFrame, node: dict[str, Any]) -> pd.Series:
                 (low - prev_close).abs(),
             ], axis=1).max(axis=1)
             return tr.rolling(window).mean()
+        if indicator == "adx":
+            high = _eval_expr(frame, {"field": "high"})
+            low = _eval_expr(frame, {"field": "low"})
+            close = _eval_expr(frame, {"field": "close"})
+            up_move = high.diff()
+            down_move = -low.diff()
+            plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+            minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+            prev_close = close.shift(1)
+            tr = pd.concat([
+                (high - low).abs(),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(window).mean().replace(0.0, np.nan)
+            plus_di = 100.0 * plus_dm.rolling(window).sum() / atr
+            minus_di = 100.0 * minus_dm.rolling(window).sum() / atr
+            dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0.0, np.nan)) * 100.0
+            return dx.rolling(window).mean().fillna(0.0)
+        if indicator == "rolling_count":
+            condition = _normalize_condition(node.get("condition"))
+            mask = _eval_condition(frame, condition).astype(float)
+            return mask.rolling(window).sum().fillna(0.0)
+        if indicator == "slope":
+            smoothed = series.rolling(window).mean()
+            lookback = max(1, int(node.get("lookback") or 5))
+            return smoothed - smoothed.shift(lookback)
     field = str(node.get("field") or "").strip().lower()
     if field in SUPPORTED_FIELDS:
         return pd.to_numeric(frame.get(field, pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0.0)

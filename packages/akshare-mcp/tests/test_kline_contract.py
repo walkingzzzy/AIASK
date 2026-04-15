@@ -64,3 +64,30 @@ async def test_get_klines_limit_returns_latest_rows_but_keeps_ascending_order():
     assert "ORDER BY time DESC" in db._conn.last_query
     assert "ORDER BY time ASC" in db._conn.last_query
     assert [row["date"] for row in data] == ["2026-03-19", "2026-03-20"]
+
+
+@pytest.mark.asyncio
+async def test_get_klines_uses_inclusive_date_bounds_in_market_timezone():
+    rows = [
+        {
+            "time": datetime(2026, 4, 13, 7, 0, tzinfo=timezone.utc),
+            "code": "600519",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+            "amount": 100500.0,
+            "turnover": 1.2,
+            "change_pct": 0.5,
+        },
+    ]
+    db = _FakeDB(rows)
+
+    data = await db.get_klines("600519", start_date="2026-04-13", end_date="2026-04-13")
+
+    assert "time >=" in db._conn.last_query
+    assert "time <" in db._conn.last_query
+    assert db._conn.last_params[1].strftime("%Y-%m-%d %H:%M:%S%z") == "2026-04-13 00:00:00+0800"
+    assert db._conn.last_params[2].strftime("%Y-%m-%d %H:%M:%S%z") == "2026-04-14 00:00:00+0800"
+    assert [row["date"] for row in data] == ["2026-04-13"]

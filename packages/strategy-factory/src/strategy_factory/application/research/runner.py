@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .candidate_origin import count_candidate_origins
+from ..candidate_contract import apply_resolved_candidate_envelope
 from .contracts import build_research_plane_artifact
 from ...domain.constants import (
     FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
@@ -176,11 +177,15 @@ class ResearchPlaneRunner:
             autonomy_stage = {"error": autonomy_error, "generated_count": 0}
 
         profiled_local_candidates = [
-            apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+            apply_resolved_candidate_envelope(
+                apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+            )
             for candidate in local_candidates
         ]
         profiled_autonomy_candidates = [
-            apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+            apply_resolved_candidate_envelope(
+                apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+            )
             for candidate in autonomy_candidates
         ]
         generated_candidates = [

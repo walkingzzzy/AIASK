@@ -127,6 +127,128 @@ test('strategy review workflow uses AI workflow entrypoint', async () => {
   assert.equal(result.workflow, 'strategy_review_workflow');
 });
 
+test('strategy detail normalization passively preserves incubation overview shells', async () => {
+  const service = new StrategyMarketService(
+    {
+      callTool: async () => ({
+        data: {
+          strategy: {
+            id: 'strat_demo',
+            name: 'demo',
+          },
+          incubation_overview: {
+            strategy_id: 'strat_demo',
+            prediction_quality_label: 'mixed',
+            execution_quality_label: 'insufficient_evidence',
+            confidence_contract_status: 'missing',
+          },
+          incubation_account: {
+            account_id: 'paper_demo',
+          },
+        },
+      }),
+    } as never,
+    {} as never,
+  );
+
+  const result = await service.detail('strat_demo') as {
+    incubation_overview?: { strategy_id?: string; prediction_quality_label?: string };
+    view_model?: {
+      incubation?: {
+        overview?: { confidence_contract_status?: string };
+        account?: { account_id?: string };
+      };
+    };
+  };
+
+  assert.equal(result.incubation_overview?.strategy_id, 'strat_demo');
+  assert.equal(result.incubation_overview?.prediction_quality_label, 'mixed');
+  assert.equal(result.view_model?.incubation?.overview?.confidence_contract_status, 'missing');
+  assert.equal(result.view_model?.incubation?.account?.account_id, 'paper_demo');
+});
+
+test('strategy detail normalization preserves pipeline gate diagnostics', async () => {
+  const service = new StrategyMarketService(
+    {
+      callTool: async () => ({
+        data: {
+          strategy: {
+            id: 'strat_demo',
+            name: 'demo',
+          },
+          latest_incubation_pipeline_snapshot: {
+            pipeline_stage: 'observe',
+            pipeline_status: 'observing',
+            readiness_score: 0.42,
+            priority_score: 0.42,
+            gate_status: 'observe',
+            gate_reasons: ['execution_audit_gate:insufficient_samples'],
+            hard_gate_result: {
+              pipeline_stage: 'observe',
+              execution_audit_gate_status: 'insufficient_samples',
+              passed: false,
+            },
+          },
+        },
+      }),
+    } as never,
+    {} as never,
+  );
+
+  const result = await service.detail('strat_demo') as {
+    view_model?: {
+      incubation?: {
+        latest_pipeline_snapshot?: {
+          gate_status?: string;
+          gate_reasons?: string[];
+          priority_score?: number;
+          hard_gate_result?: { execution_audit_gate_status?: string; passed?: boolean };
+        };
+      };
+    };
+  };
+
+  assert.equal(result.view_model?.incubation?.latest_pipeline_snapshot?.gate_status, 'observe');
+  assert.deepEqual(result.view_model?.incubation?.latest_pipeline_snapshot?.gate_reasons, ['execution_audit_gate:insufficient_samples']);
+  assert.equal(result.view_model?.incubation?.latest_pipeline_snapshot?.priority_score, 0.42);
+  assert.equal(result.view_model?.incubation?.latest_pipeline_snapshot?.hard_gate_result?.execution_audit_gate_status, 'insufficient_samples');
+  assert.equal(result.view_model?.incubation?.latest_pipeline_snapshot?.hard_gate_result?.passed, false);
+});
+
+test('strategy capabilities preserve high-confidence feature flags', async () => {
+  const service = new StrategyMarketService(
+    {
+      callTool: async () => ({
+        data: {
+          high_confidence_enabled: true,
+          evidence_contract_enabled: false,
+          confidence_diagnostics_enabled: true,
+          execution_audit_enabled: false,
+          quality_ui_v2_enabled: true,
+          high_confidence_feature_flags: {
+            high_confidence_enabled: true,
+            evidence_contract_enabled: false,
+            confidence_diagnostics_enabled: true,
+            execution_audit_enabled: false,
+            quality_ui_v2_enabled: true,
+          },
+        },
+      }),
+    } as never,
+    {} as never,
+  );
+
+  const result = await service.capabilities() as {
+    quality_ui_v2_enabled?: boolean;
+    high_confidence_enabled?: boolean;
+    high_confidence_feature_flags?: { quality_ui_v2_enabled?: boolean };
+  };
+
+  assert.equal(result.high_confidence_enabled, true);
+  assert.equal(result.quality_ui_v2_enabled, true);
+  assert.equal(result.high_confidence_feature_flags?.quality_ui_v2_enabled, true);
+});
+
 test('data service proxies tool catalog and workflow guide resources', async () => {
   const uris: string[] = [];
   const service = new DataService({

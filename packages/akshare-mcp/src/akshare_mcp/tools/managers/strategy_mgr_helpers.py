@@ -24,6 +24,7 @@ from strategy_factory.application.quality_reporting import (
 from ...services.strategy_lifecycle_shared import (
     LIFECYCLE_TRANSITIONS,
     build_incubation_overview,
+    evaluate_confidence_contract,
     get_latest_quality_report,
     list_quality_reports,
     metric_bucket_value,
@@ -75,6 +76,10 @@ _FACTORY_SUMMARY_OBSERVABILITY_FIELDS = (
     "strict_live_alignment_gap_rate",
     "strict_live_alignment_status_counts",
     "validation_family_quality_panel",
+    "prediction_quality_distribution",
+    "execution_quality_distribution",
+    "evidence_alignment_distribution",
+    "confidence_contract_ready_rate",
 )
 
 _FACTORY_BASELINE_FORWARD_DAYS = (1, 5, 10, 20)
@@ -163,6 +168,102 @@ def _brief_target_universe_key(payload: dict[str, Any]) -> str:
     if validation_focus:
         return f"focus:{validation_focus}"
     return "unknown"
+
+
+def _high_confidence_text(payload: dict[str, Any], key: str) -> str | None:
+    record = dict(payload or {})
+    params = dict(record.get("params") or {})
+    incubation_overview = dict(record.get("incubation_overview") or {})
+    for value in (
+        record.get(key),
+        incubation_overview.get(key),
+        params.get(key),
+    ):
+        token = str(value or "").strip().lower()
+        if token:
+            return token
+    return None
+
+
+def _high_confidence_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    record = dict(payload or {})
+    params = dict(record.get("params") or {})
+    incubation_overview = dict(record.get("incubation_overview") or {})
+    for value in (
+        record.get(key),
+        incubation_overview.get(key),
+        params.get(key),
+    ):
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _resolve_confidence_contract_status(payload: dict[str, Any]) -> str | None:
+    explicit = _high_confidence_text(payload, "confidence_contract_status")
+    contract = _high_confidence_mapping(payload, "confidence_contract")
+    if contract:
+        status, _ = evaluate_confidence_contract(contract)
+        return status
+    if explicit:
+        return explicit
+    if not contract:
+        return None
+    return None
+
+
+def _resolve_evidence_alignment_status(payload: dict[str, Any]) -> str | None:
+    record = dict(payload or {})
+    params = dict(record.get("params") or {})
+    audit = dict(
+        record.get("evidence_alignment_audit")
+        or params.get("evidence_alignment_audit")
+        or {}
+    )
+    status = str(
+        audit.get("evidence_alignment_status") or record.get("evidence_alignment_status") or ""
+    ).strip().lower()
+    if status:
+        return status
+    if record.get("legacy_semantic_contract") is True or params.get("legacy_semantic_contract") is True:
+        return "legacy"
+    return None
+
+
+def _summarize_high_confidence_quality(records: list[dict[str, Any]]) -> dict[str, Any]:
+    prediction_quality_distribution: dict[str, int] = {}
+    execution_quality_distribution: dict[str, int] = {}
+    evidence_alignment_distribution: dict[str, int] = {}
+    confidence_contract_ready_count = 0
+    total = len(records)
+    for record in list(records or []):
+        payload = dict(record or {})
+        prediction_label = _high_confidence_text(payload, "prediction_quality_label")
+        execution_label = _high_confidence_text(payload, "execution_quality_label")
+        evidence_alignment_status = _resolve_evidence_alignment_status(payload)
+        confidence_contract_status = _resolve_confidence_contract_status(payload)
+        if prediction_label:
+            prediction_quality_distribution[prediction_label] = (
+                prediction_quality_distribution.get(prediction_label, 0) + 1
+            )
+        if execution_label:
+            execution_quality_distribution[execution_label] = (
+                execution_quality_distribution.get(execution_label, 0) + 1
+            )
+        if evidence_alignment_status:
+            evidence_alignment_distribution[evidence_alignment_status] = (
+                evidence_alignment_distribution.get(evidence_alignment_status, 0) + 1
+            )
+        if confidence_contract_status in {"diagnostic_ready", "comparable_ready"}:
+            confidence_contract_ready_count += 1
+    return {
+        "prediction_quality_distribution": prediction_quality_distribution,
+        "execution_quality_distribution": execution_quality_distribution,
+        "evidence_alignment_distribution": evidence_alignment_distribution,
+        "confidence_contract_ready_rate": (
+            round(confidence_contract_ready_count / total, 4) if total else 0.0
+        ),
+    }
 
 
 def _build_family_quality_panel(overviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -683,6 +784,9 @@ async def build_factory_quality_baseline(
     latest_run_generation_lane_panel, latest_run_generation_mode_counts = (
         _build_generation_lane_quality_panel(latest_run_strategy_briefs)
     )
+    latest_run_high_confidence = _summarize_high_confidence_quality(
+        latest_run_strategy_briefs
+    )
     latest_run_payload = {
         "run_id": str(latest_run_summary.get("run_id") or "").strip() or None,
         "status": str(latest_run_summary.get("status") or "").strip() or None,
@@ -752,6 +856,25 @@ async def build_factory_quality_baseline(
         "validation_family_quality_panel": list(
             latest_run_summary.get("validation_family_quality_panel") or []
         ),
+        "prediction_quality_distribution": dict(
+            latest_run_summary.get("prediction_quality_distribution")
+            or latest_run_high_confidence.get("prediction_quality_distribution")
+            or {}
+        ),
+        "execution_quality_distribution": dict(
+            latest_run_summary.get("execution_quality_distribution")
+            or latest_run_high_confidence.get("execution_quality_distribution")
+            or {}
+        ),
+        "evidence_alignment_distribution": dict(
+            latest_run_summary.get("evidence_alignment_distribution")
+            or latest_run_high_confidence.get("evidence_alignment_distribution")
+            or {}
+        ),
+        "confidence_contract_ready_rate": _safe_float(
+            latest_run_summary.get("confidence_contract_ready_rate"),
+            latest_run_high_confidence.get("confidence_contract_ready_rate") or 0.0,
+        ),
         "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
         "generation_lane_quality_panel": latest_run_generation_lane_panel,
         "generation_mode_counts": latest_run_generation_mode_counts,
@@ -810,6 +933,10 @@ async def build_factory_quality_baseline(
                 "validation_grade_d_promotion_ready_count": 0,
                 "validation_grade_d_promotion_ready_rate": 0.0,
                 "validation_family_quality_panel": [],
+                "prediction_quality_distribution": {},
+                "execution_quality_distribution": {},
+                "evidence_alignment_distribution": {},
+                "confidence_contract_ready_rate": 0.0,
                 "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
                 "generation_lane_quality_panel": [],
                 "generation_mode_counts": {},
@@ -935,6 +1062,7 @@ async def build_factory_quality_baseline(
     generation_lane_quality_panel, generation_mode_counts = _build_generation_lane_quality_panel(
         cohort_records
     )
+    cohort_high_confidence = _summarize_high_confidence_quality(cohort_records)
     return {
         "contract_version": "strategy_factory.quality_baseline.v1",
         "captured_at": captured_at,
@@ -993,6 +1121,19 @@ async def build_factory_quality_baseline(
                 4,
             ) if processed_count else 0.0,
             "validation_family_quality_panel": family_quality_panel,
+            "prediction_quality_distribution": dict(
+                cohort_high_confidence.get("prediction_quality_distribution") or {}
+            ),
+            "execution_quality_distribution": dict(
+                cohort_high_confidence.get("execution_quality_distribution") or {}
+            ),
+            "evidence_alignment_distribution": dict(
+                cohort_high_confidence.get("evidence_alignment_distribution") or {}
+            ),
+            "confidence_contract_ready_rate": _safe_float(
+                cohort_high_confidence.get("confidence_contract_ready_rate"),
+                0.0,
+            ),
             "generation_lane_definition": _FACTORY_GENERATION_LANE_DEFINITION,
             "generation_lane_quality_panel": generation_lane_quality_panel,
             "generation_mode_counts": generation_mode_counts,
@@ -1579,6 +1720,7 @@ def _summarize_factory_submission_briefs(strategy_briefs: list[dict[str, Any]]) 
         "economic_semantics_missing_count": economic_semantics_missing_count,
     }
     summary.update(_grade_rates(raw_validation_grade_distribution, strategy_count))
+    summary.update(_summarize_high_confidence_quality(briefs))
     return summary
 
 

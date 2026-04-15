@@ -68,6 +68,41 @@ def test_build_snapshot_tasks_diversifies_targets_across_factor_and_regime_tasks
     assert signatures["regime_2026-04-03_45"] != signatures["factor_1_reversal"]
 
 
+def test_build_snapshot_tasks_assigns_pool_profiles_and_template_caps():
+    scanner = MarketOpportunityScanner()
+    rows = [
+        _row("601288", "银行", 180_000_000_000, pe=6.0, pb=0.7),
+        _row("601398", "银行", 178_000_000_000, pe=6.2, pb=0.72),
+        _row("600941", "运营商", 174_000_000_000, pe=7.8, pb=1.0),
+        _row("000725", "电子", 110_000_000_000, pe=24.0, pb=2.8),
+        _row("688036", "电子", 108_000_000_000, pe=23.0, pb=2.6),
+        _row("601857", "上游油气", 88_000_000_000, pe=9.0, pb=1.1),
+        _row("600938", "上游油气", 86_000_000_000, pe=8.5, pb=1.0),
+    ]
+    snapshot = {
+        "date": "2026-04-03",
+        "fear_greed_index": 68,
+        "hot_sectors": ["电子"],
+        "cold_sectors": ["银行"],
+        "factor_ic_trend": {"growth": "rising"},
+    }
+
+    tasks = scanner._build_snapshot_tasks(snapshot, rows)
+    hot_task = next(task for task in tasks if task.get("task_id") == "hot_1_电子")
+    cold_task = next(task for task in tasks if task.get("task_id") == "cold_1_银行")
+    industry_task = next(task for task in tasks if task.get("task_id") == "industry_1_银行")
+
+    assert hot_task["pool_profile"] == "high_vol_growth"
+    assert "ma_cross" not in list(hot_task.get("allowed_strategy_types") or [])
+    assert hot_task["family_mix_constraints"]["trend_cluster_max_per_task"] == 2
+
+    assert cold_task["pool_profile"] == "low_vol_defensive"
+    assert "volatility_breakout" not in list(cold_task.get("allowed_strategy_types") or [])
+
+    assert industry_task["pool_profile"] == "low_vol_defensive"
+    assert industry_task["volatility_bucket"] == "low"
+
+
 @pytest.mark.asyncio
 async def test_market_opportunity_scanner_paginates_universe_before_selecting_tasks():
     scanner = MarketOpportunityScanner()

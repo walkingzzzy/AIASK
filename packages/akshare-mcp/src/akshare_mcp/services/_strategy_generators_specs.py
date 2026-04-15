@@ -23,6 +23,7 @@ def _get_strategy_factory_imports():
     )
     from strategy_factory.application.hypothesis_lowering_compiler import HypothesisLoweringCompiler
     from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
+    from strategy_factory.application.semantic_contract import synthesize_confidence_contract
     from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
@@ -35,6 +36,7 @@ def _get_strategy_factory_imports():
         "preferred_strategy_types_for_factor": preferred_strategy_types_for_factor,
         "apply_target_symbol_policy": _apply_target_symbol_policy,
         "normalize_research_task_contract": _normalize_research_task_contract,
+        "synthesize_confidence_contract": synthesize_confidence_contract,
         "validate_precompile_candidate_contract": validate_precompile_candidate_contract,
     }
 
@@ -65,6 +67,7 @@ def __getattr__(name):
         "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
         "_apply_target_symbol_policy": "apply_target_symbol_policy",
         "_normalize_research_task_contract": "normalize_research_task_contract",
+        "synthesize_confidence_contract": "synthesize_confidence_contract",
         "validate_precompile_candidate_contract": "validate_precompile_candidate_contract",
     }
     if name in _map:
@@ -80,6 +83,7 @@ _extract_event_context = _sf()["extract_event_context"]
 preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor"]
 _apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
 _normalize_research_task_contract = _sf()["normalize_research_task_contract"]
+synthesize_confidence_contract = _sf()["synthesize_confidence_contract"]
 validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_contract"]
 
 from .llm_alpha import LLMAlphaMiner
@@ -210,6 +214,239 @@ def _enrich_rule_template_contract(
     portfolio_spec.setdefault("expected_turnover_band", expected_turnover_band)
     enriched["portfolio_spec"] = portfolio_spec
     return enriched
+
+
+def _rule_semantic_expected_move(strategy_type: str) -> str:
+    strategy_key = str(strategy_type or "").strip().lower()
+    if strategy_key in {"rsi", "gap_fill", "mean_reversion_short", "value_factor"}:
+        return "rebound_up"
+    return "up"
+
+
+def _rule_failure_summary(
+    trade_plan: dict[str, Any],
+    risk_rules: dict[str, Any],
+) -> str:
+    exit_bias = str(trade_plan.get("exit_bias") or "signal_reversal_or_time_stop").strip()
+    max_holding_days = int(risk_rules.get("max_holding_days") or 0)
+    stop_loss_pct = float(risk_rules.get("stop_loss_pct") or risk_rules.get("stop_loss") or 0.0)
+    parts = [exit_bias]
+    if stop_loss_pct > 0:
+        parts.append(f"stop_loss_{round(stop_loss_pct * 100.0, 2)}pct")
+    if max_holding_days > 0:
+        parts.append(f"time_stop_{max_holding_days}d")
+    return " / ".join(parts)
+
+
+def _attach_rule_trade_plan_claims(
+    strategy_type: str,
+    trade_plan: Optional[dict[str, Any]],
+    *,
+    entry_claim_id: str,
+    exit_claim_id: str,
+    entry_evidence_ids: list[str],
+    exit_evidence_ids: list[str],
+) -> dict[str, Any]:
+    payload = dict(trade_plan or {})
+    entry = dict(payload.get("entry") or {})
+    exit_payload = dict(payload.get("exit") or {})
+    entry.setdefault("node_id", "entry_step_1")
+    entry.setdefault("phase", "entry")
+    entry.setdefault("entry_bias", str(payload.get("entry_bias") or "").strip() or None)
+    entry["claim_ids"] = [entry_claim_id]
+    entry["evidence_ids"] = list(entry_evidence_ids)
+    exit_payload.setdefault("node_id", "exit_step_1")
+    exit_payload.setdefault("phase", "exit")
+    exit_payload.setdefault("exit_bias", str(payload.get("exit_bias") or "").strip() or None)
+    exit_payload["claim_ids"] = [exit_claim_id]
+    exit_payload["evidence_ids"] = list(exit_evidence_ids)
+    payload["entry"] = entry
+    payload["exit"] = exit_payload
+    if payload.get("entry_bias") in (None, "", [], {}):
+        payload["entry_bias"] = entry.get("entry_bias")
+    if payload.get("exit_bias") in (None, "", [], {}):
+        payload["exit_bias"] = exit_payload.get("exit_bias")
+    payload.setdefault("semantic_generation_mode", "rule_semantic_contract")
+    payload.setdefault("strategy_type", str(strategy_type or "").strip().lower() or None)
+    return payload
+
+
+def _build_rule_semantic_contract_bundle(
+    strategy_type: str,
+    *,
+    strategy_name: str,
+    description: str,
+    source: str,
+    regime: str,
+    fg: int,
+    factor_summary: Optional[dict[str, Any]] = None,
+    trade_plan: Optional[dict[str, Any]] = None,
+    holding_horizon: Optional[dict[str, Any]] = None,
+    risk_rules: Optional[dict[str, Any]] = None,
+    target_symbols: Optional[list[str]] = None,
+    rationale: Optional[str] = None,
+    template_contract: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    strategy_key = str(strategy_type or "").strip().lower() or "rule_strategy"
+    holding = dict(holding_horizon or {})
+    risk = dict(risk_rules or {})
+    entry_expected_move = _rule_semantic_expected_move(strategy_key)
+    target_symbol_list = [
+        str(symbol).strip()
+        for symbol in list(target_symbols or [])
+        if str(symbol).strip()
+    ][:12]
+    primary_horizon_days = max(
+        1,
+        int(
+            holding.get("max_days")
+            or holding.get("alpha_half_life")
+            or risk.get("max_holding_days")
+            or 10
+        ),
+    )
+    entry_claim_id = f"{strategy_key}_claim_entry"
+    exit_claim_id = f"{strategy_key}_claim_exit"
+    entry_evidence_ids = [f"{strategy_key}_ev_context", f"{strategy_key}_ev_template"]
+    exit_evidence_ids = [f"{strategy_key}_ev_invalidation"]
+    normalized_trade_plan = _attach_rule_trade_plan_claims(
+        strategy_key,
+        trade_plan,
+        entry_claim_id=entry_claim_id,
+        exit_claim_id=exit_claim_id,
+        entry_evidence_ids=entry_evidence_ids,
+        exit_evidence_ids=exit_evidence_ids,
+    )
+    factor_payload = dict(factor_summary or {})
+    template_payload = dict(template_contract or {})
+    factor_names = [
+        str(item).strip()
+        for item in list(factor_payload.get("top_factor_names") or [])
+        if str(item).strip()
+    ][:3]
+    rationale_text = str(rationale or description or strategy_name or strategy_key).strip()
+    failure_summary = _rule_failure_summary(normalized_trade_plan, risk)
+    evidence_chain = {
+        "thesis": rationale_text,
+        "generation_mode": "rule_semantic_contract",
+        "evidences": [
+            {
+                "evidence_id": entry_evidence_ids[0],
+                "source_type": "factor_research" if source == "factor_research" else "regime_context",
+                "direction": "up",
+                "summary": (
+                    f"{source} 认为 {strategy_key} 与 {regime} 环境匹配"
+                    + (f"，top_factors={factor_names}" if factor_names else "")
+                    + f"，fear_greed_index={int(fg)}。"
+                ),
+                "proxy_only": True,
+                "target_symbols": list(target_symbol_list),
+                "horizon_days": primary_horizon_days,
+                "claim_ids": [entry_claim_id],
+                "support_metric": {
+                    "source": source,
+                    "regime": regime,
+                    "fear_greed_index": int(fg),
+                    "top_factor_names": list(factor_names),
+                },
+            },
+            {
+                "evidence_id": entry_evidence_ids[1],
+                "source_type": "rule_template_contract",
+                "direction": "up",
+                "summary": (
+                    f"{strategy_name} 使用模板化 trade plan / risk rules / horizon。"
+                    f" entry_bias={normalized_trade_plan.get('entry_bias')},"
+                    f" exit_bias={normalized_trade_plan.get('exit_bias')}。"
+                ),
+                "proxy_only": True,
+                "target_symbols": list(target_symbol_list),
+                "horizon_days": primary_horizon_days,
+                "claim_ids": [entry_claim_id],
+                "support_metric": {
+                    "template_generation_profile": template_payload.get("template_generation_profile"),
+                    "holding_horizon": dict(holding),
+                    "risk_rules": dict(risk),
+                },
+            },
+            {
+                "evidence_id": exit_evidence_ids[0],
+                "source_type": "risk_template",
+                "direction": "down",
+                "summary": f"退出/失效条件由模板风控定义：{failure_summary}。",
+                "proxy_only": True,
+                "target_symbols": list(target_symbol_list),
+                "horizon_days": min(primary_horizon_days, max(1, primary_horizon_days // 2)),
+                "claim_ids": [exit_claim_id],
+                "support_metric": {
+                    "failure_summary": failure_summary,
+                    "stop_loss_pct": risk.get("stop_loss_pct") or risk.get("stop_loss"),
+                    "max_holding_days": risk.get("max_holding_days"),
+                },
+            },
+        ],
+    }
+    prediction_contract = {
+        "generation_mode": "rule_semantic_contract",
+        "primary_horizon_days": primary_horizon_days,
+        "target": "forward_return_positive",
+        "conflict_resolution_rule": {
+            "policy": "prefer_invalidation_when_exit_evidence_present",
+            "tie_breaker": "risk_first",
+        },
+        "claims": [
+            {
+                "claim_id": entry_claim_id,
+                "claim_type": "entry",
+                "summary": rationale_text,
+                "expected_move": entry_expected_move,
+                "expected_horizon": primary_horizon_days,
+                "evidence_ids": list(entry_evidence_ids),
+                "failure_condition": failure_summary,
+                "conflict_resolution_rule": {
+                    "policy": "prefer_invalidation_when_exit_evidence_present",
+                },
+                "target_symbols": list(target_symbol_list),
+            },
+            {
+                "claim_id": exit_claim_id,
+                "claim_type": "exit",
+                "summary": f"当 {normalized_trade_plan.get('exit_bias') or 'risk_rule'} 出现时退出。",
+                "expected_move": "down",
+                "expected_horizon": min(primary_horizon_days, max(1, primary_horizon_days // 2)),
+                "evidence_ids": list(exit_evidence_ids),
+                "failure_condition": "entry thesis restored",
+                "conflict_resolution_rule": {
+                    "policy": "risk_first",
+                },
+                "target_symbols": list(target_symbol_list),
+            },
+        ],
+    }
+    confidence_contract = synthesize_confidence_contract(
+        {
+            "strategy_type": strategy_key,
+            "evidence_chain": dict(evidence_chain),
+            "prediction_contract": dict(prediction_contract),
+        }
+    )
+    claim_to_trade_plan_map = {
+        "claim_to_trade_step_ids": {
+            entry_claim_id: [str(dict(normalized_trade_plan.get("entry") or {}).get("node_id") or "entry_step_1")],
+            exit_claim_id: [str(dict(normalized_trade_plan.get("exit") or {}).get("node_id") or "exit_step_1")],
+        },
+        "trade_step_to_claim_ids": {
+            str(dict(normalized_trade_plan.get("entry") or {}).get("node_id") or "entry_step_1"): [entry_claim_id],
+            str(dict(normalized_trade_plan.get("exit") or {}).get("node_id") or "exit_step_1"): [exit_claim_id],
+        },
+    }
+    return {
+        "trade_plan": normalized_trade_plan,
+        "evidence_chain": evidence_chain,
+        "prediction_contract": prediction_contract,
+        "confidence_contract": confidence_contract,
+        "claim_to_trade_plan_map": claim_to_trade_plan_map,
+    }
 
 
 def _rule_template_contract(strategy_type: str) -> dict[str, Any]:
@@ -682,6 +919,19 @@ class RuleStrategyGenerator:
         if template is None:
             return None
         template_contract = _rule_template_contract(strategy_type)
+        semantic_contract_bundle = _build_rule_semantic_contract_bundle(
+            strategy_type,
+            strategy_name=str(template["name"]),
+            description=str(template["description"]),
+            source=source,
+            regime=regime,
+            fg=fg,
+            factor_summary=factor_summary,
+            trade_plan=dict(template_contract.get("trade_plan") or {}),
+            holding_horizon=dict(template_contract.get("holding_horizon") or {}),
+            risk_rules=dict(template_contract.get("risk_rules") or {}),
+            template_contract=template_contract,
+        )
         metadata = {
             'generator_type': 'rule',
             'generation_reason': {
@@ -713,6 +963,16 @@ class RuleStrategyGenerator:
             'rule_template_contract',
         ):
             value = template_contract.get(key)
+            if value:
+                metadata[key] = deepcopy(value)
+        for key in (
+            "trade_plan",
+            "evidence_chain",
+            "prediction_contract",
+            "confidence_contract",
+            "claim_to_trade_plan_map",
+        ):
+            value = semantic_contract_bundle.get(key)
             if value:
                 metadata[key] = deepcopy(value)
         return StrategySpec(
@@ -1191,6 +1451,22 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             risk_rules = dict(execution_profile.get('risk_rules') or {})
             rebalance_rule = dict(execution_profile.get('rebalance_rule') or {})
             trade_plan = dict(execution_profile.get('trade_plan') or {})
+            semantic_contract_bundle = _build_rule_semantic_contract_bundle(
+                strategy_type,
+                strategy_name=str(candidate.get('name') or 'AI 候选策略'),
+                description=str(candidate.get('description') or candidate.get('rationale') or ''),
+                source='event_driven_local_fallback' if task_source == 'event_driven' else 'llm_proxy_local_fallback',
+                regime=str(task.get('opportunity_type') or task_source or 'snapshot'),
+                fg=0,
+                factor_summary={},
+                trade_plan=trade_plan,
+                holding_horizon=holding_horizon,
+                risk_rules=risk_rules,
+                target_symbols=target_symbols,
+                rationale=str(candidate.get('rationale') or candidate.get('description') or task.get('rationale') or ''),
+                template_contract=template_contract,
+            )
+            trade_plan = dict(semantic_contract_bundle.get("trade_plan") or trade_plan)
             tags = ['local_rule_v1', 'llm_proxy_fallback', category]
             if target_symbols:
                 tags.append('targeted_universe')
@@ -1257,6 +1533,10 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                     'holding_horizon': holding_horizon,
                     'trade_plan': trade_plan,
                     'risk_rules': risk_rules,
+                    'evidence_chain': dict(semantic_contract_bundle.get("evidence_chain") or {}),
+                    'prediction_contract': dict(semantic_contract_bundle.get("prediction_contract") or {}),
+                    'confidence_contract': dict(semantic_contract_bundle.get("confidence_contract") or {}),
+                    'claim_to_trade_plan_map': dict(semantic_contract_bundle.get("claim_to_trade_plan_map") or {}),
                     'position_sizing': {
                         'mode': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
                         'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',

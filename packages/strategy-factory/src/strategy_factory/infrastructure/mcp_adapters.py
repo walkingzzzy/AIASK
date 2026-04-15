@@ -116,6 +116,12 @@ class MCPStrategyFactoryRepositoryAdapter:
     async def save_factory_task_evidence(self, payload: Mapping[str, Any]):
         return await self._call("save_factory_task_evidence", payload)
 
+    async def save_strategy_candidate_evidence(self, payload: Mapping[str, Any]):
+        return await self._call("save_strategy_candidate_evidence", payload)
+
+    async def save_strategy_signal_evidence(self, payload: Mapping[str, Any]):
+        return await self._call("save_strategy_signal_evidence", payload)
+
     async def save_strategy_task_run(self, payload: Mapping[str, Any]):
         return await self._call("save_strategy_task_run", payload)
 

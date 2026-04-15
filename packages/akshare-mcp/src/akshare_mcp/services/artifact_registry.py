@@ -138,34 +138,59 @@ async def get_artifact_async(artifact_id: str) -> dict | None:
     return None
 
 
-def list_artifacts(limit: int = 20) -> list[dict]:
+def _matches_strategy(row: dict[str, Any], strategy: str | None) -> bool:
+    if strategy is None:
+        return True
+    target = str(strategy or "").strip().lower()
+    if not target:
+        return True
+    return str((row or {}).get("strategy") or "").strip().lower() == target
+
+
+def _summarize_artifact_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_id": row.get("artifact_id"),
+        "strategy_version": row.get("strategy_version"),
+        "code": row.get("code"),
+        "strategy": row.get("strategy"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _filter_artifact_summaries(rows: list[dict] | None, strategy: str | None) -> list[dict]:
+    return [
+        dict(row)
+        for row in list(rows or [])
+        if isinstance(row, dict) and _matches_strategy(row, strategy)
+    ]
+
+
+def list_artifacts(limit: int = 20, strategy: str | None = None) -> list[dict]:
     """按更新时间倒序返回工件摘要（内存缓存）。"""
-    rows = list(_ARTIFACTS.values())
+    rows = [row for row in _ARTIFACTS.values() if _matches_strategy(row, strategy)]
     rows.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
     out = []
     for row in rows[: max(1, int(limit))]:
-        out.append(
-            {
-                "artifact_id": row.get("artifact_id"),
-                "strategy_version": row.get("strategy_version"),
-                "code": row.get("code"),
-                "strategy": row.get("strategy"),
-                "updated_at": row.get("updated_at"),
-            }
-        )
+        out.append(_summarize_artifact_row(row))
     return out
 
 
-async def list_artifacts_async(limit: int = 20) -> list[dict]:
+async def list_artifacts_async(limit: int = 20, strategy: str | None = None) -> list[dict]:
     """异步版本：优先从 DB 获取。"""
     db = _get_db()
     if db is not None and hasattr(db, "list_artifacts_db"):
         try:
+            if strategy is not None:
+                try:
+                    return await db.list_artifacts_db(limit, strategy=strategy)
+                except TypeError:
+                    rows = await db.list_artifacts_db(limit)
+                    return _filter_artifact_summaries(rows, strategy)
             return await db.list_artifacts_db(limit)
         except Exception as exc:
             logger.warning("Failed to list artifacts from DB: %s", exc)
 
-    return list_artifacts(limit)
+    return list_artifacts(limit, strategy=strategy)
 
 
 # ── P2-3: 实验注册标准模板 ─────────────────────────────────

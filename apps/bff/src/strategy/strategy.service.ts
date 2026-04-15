@@ -27,6 +27,13 @@ type BackgroundFactoryRunState = {
   upstream_run_id?: string | null;
 };
 
+function detachTimer<T extends NodeJS.Timeout | ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>>(
+  timer: T,
+): T {
+  timer.unref?.();
+  return timer;
+}
+
 @Injectable()
 export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly RANKING_TTL = 1500; // 25 min
@@ -86,9 +93,9 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
   private startAutoRefreshTimer() {
     if (this.autoRefreshTimer) return;
-    this.autoRefreshTimer = setInterval(() => {
+    this.autoRefreshTimer = detachTimer(setInterval(() => {
       void this.runAutoRefreshTick();
-    }, StrategyMarketService.AUTO_REFRESH_CHECK_MS);
+    }, StrategyMarketService.AUTO_REFRESH_CHECK_MS));
     void this.runAutoRefreshTick();
     this.logger.log(
       `策略排名自动刷新已启动（每 ${StrategyMarketService.AUTO_REFRESH_CHECK_MS / 60000} 分钟检查，收盘后 ${StrategyMarketService.AUTO_REFRESH_HOUR}:${String(StrategyMarketService.AUTO_REFRESH_MINUTE).padStart(2, '0')} 触发）`,
@@ -330,11 +337,13 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return {
       ...(data as object),
       dto_version: 'strategy_market.detail.v2',
+      incubation_overview: data.incubation_overview ?? null,
       view_model: {
         quality: {
           latest_report: data.latest_quality_report ?? null,
         },
         incubation: {
+          overview: data.incubation_overview ?? null,
           account: data.incubation_account ?? null,
           latest_metric: data.latest_incubation_metric ?? null,
           latest_pipeline_snapshot: data.latest_incubation_pipeline_snapshot ?? null,
@@ -479,7 +488,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     if (this.backgroundFactoryRunClearTimer) {
       clearTimeout(this.backgroundFactoryRunClearTimer);
     }
-    this.backgroundFactoryRunClearTimer = setTimeout(() => {
+    this.backgroundFactoryRunClearTimer = detachTimer(setTimeout(() => {
       if (this.backgroundFactoryRunState?.request_id !== requestId) return;
       if (this.backgroundFactoryRunState.status === 'queued' || this.backgroundFactoryRunState.status === 'running') {
         return;
@@ -487,7 +496,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       this.backgroundFactoryRunState = null;
       this.backgroundFactoryRunPromise = null;
       this.backgroundFactoryRunClearTimer = undefined;
-    }, StrategyMarketService.FACTORY_RUN_STATE_TTL_MS);
+    }, StrategyMarketService.FACTORY_RUN_STATE_TTL_MS));
   }
 
   private mergeFactoryStatusWithBackgroundRun<T>(payload: T): T {

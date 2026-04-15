@@ -1,5 +1,6 @@
 """TimescaleDB 适配器 — 信号跟踪 Mixin"""
 
+import json
 import logging
 import math
 import random
@@ -212,7 +213,7 @@ class SignalTrackingMixin:
     async def save_signals(
         self, strategy_id: str, signal_date: date, signals: List[Dict[str, Any]]
     ) -> int:
-        """批量写入信号。每个 dict: {code, signal, score}"""
+        """批量写入信号。每个 dict: {code, signal, score, execution_semantic_mode, ...}"""
         if not signals:
             return 0
         async with self.acquire() as conn:
@@ -220,13 +221,35 @@ class SignalTrackingMixin:
             for s in signals:
                 try:
                     await conn.execute(
-                        """INSERT INTO strategy_signals (strategy_id, signal_date, code, signal, score)
-                           VALUES ($1, $2, $3, $4, $5)
+                        """INSERT INTO strategy_signals (
+                               strategy_id,
+                               signal_date,
+                               code,
+                               signal,
+                               score,
+                               execution_semantic_mode,
+                               action_source,
+                               event_action,
+                               action_reason,
+                               signal_metadata
+                           )
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
                            ON CONFLICT (strategy_id, signal_date, code) DO UPDATE
-                           SET signal = EXCLUDED.signal, score = EXCLUDED.score""",
+                           SET signal = EXCLUDED.signal,
+                               score = EXCLUDED.score,
+                               execution_semantic_mode = EXCLUDED.execution_semantic_mode,
+                               action_source = EXCLUDED.action_source,
+                               event_action = EXCLUDED.event_action,
+                               action_reason = EXCLUDED.action_reason,
+                               signal_metadata = EXCLUDED.signal_metadata""",
                         strategy_id, signal_date,
                         str(s["code"]), int(s["signal"]),
                         float(s.get("score") or 0),
+                        str(s.get("execution_semantic_mode") or "").strip() or None,
+                        str(s.get("action_source") or "").strip() or None,
+                        str(s.get("event_action") or "").strip() or None,
+                        str(s.get("action_reason") or "").strip() or None,
+                        json.dumps(s.get("signal_metadata") or {}, ensure_ascii=False, default=str),
                     )
                     count += 1
                 except Exception as e:
@@ -256,7 +279,139 @@ class SignalTrackingMixin:
             sql += f" ORDER BY signal_date DESC, code LIMIT ${idx}"
             params.append(limit)
             rows = await conn.fetch(sql, *params)
-        return [dict(r) for r in rows]
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            result = dict(row)
+            result["signal_metadata"] = self._decode_json_field(result.get("signal_metadata"), {})
+            results.append(result)
+        return results
+
+    def _decode_strategy_signal_event_snapshot(self, row: dict) -> dict:
+        result = dict(row)
+        result["recent_events"] = self._decode_json_field(result.get("recent_events"), [])
+        result["metadata"] = self._decode_json_field(result.get("metadata"), {})
+        return result
+
+    async def save_strategy_signal_event_snapshot(self, snapshot: dict) -> dict:
+        payload = dict(snapshot or {})
+        strategy_id = str(payload.get("strategy_id") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        as_of_date = self._coerce_date(payload.get("as_of_date"))
+        if not strategy_id or not code or as_of_date is None:
+            raise ValueError("strategy_id/code/as_of_date are required for signal event snapshots")
+
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO strategy_signal_event_snapshots (
+                    strategy_id,
+                    code,
+                    as_of_date,
+                    latest_bar_date,
+                    latest_bar_signal,
+                    execution_semantic_mode,
+                    latest_event_index,
+                    latest_event_date,
+                    latest_event_signal,
+                    latest_event_action,
+                    latest_event_action_source,
+                    latest_event_reason,
+                    latest_event_units,
+                    latest_entry_date,
+                    latest_exit_date,
+                    event_count,
+                    recent_events,
+                    metadata,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, NOW(), NOW()
+                )
+                ON CONFLICT (strategy_id, code, as_of_date) DO UPDATE
+                SET latest_bar_date = EXCLUDED.latest_bar_date,
+                    latest_bar_signal = EXCLUDED.latest_bar_signal,
+                    execution_semantic_mode = EXCLUDED.execution_semantic_mode,
+                    latest_event_index = EXCLUDED.latest_event_index,
+                    latest_event_date = EXCLUDED.latest_event_date,
+                    latest_event_signal = EXCLUDED.latest_event_signal,
+                    latest_event_action = EXCLUDED.latest_event_action,
+                    latest_event_action_source = EXCLUDED.latest_event_action_source,
+                    latest_event_reason = EXCLUDED.latest_event_reason,
+                    latest_event_units = EXCLUDED.latest_event_units,
+                    latest_entry_date = EXCLUDED.latest_entry_date,
+                    latest_exit_date = EXCLUDED.latest_exit_date,
+                    event_count = EXCLUDED.event_count,
+                    recent_events = EXCLUDED.recent_events,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                strategy_id,
+                code,
+                as_of_date,
+                self._coerce_date(payload.get("latest_bar_date")),
+                int(payload.get("latest_bar_signal") or 0),
+                str(payload.get("execution_semantic_mode") or "").strip() or None,
+                int(payload.get("latest_event_index")) if payload.get("latest_event_index") is not None else None,
+                self._coerce_date(payload.get("latest_event_date")),
+                int(payload.get("latest_event_signal")) if payload.get("latest_event_signal") is not None else None,
+                str(payload.get("latest_event_action") or "").strip() or None,
+                str(payload.get("latest_event_action_source") or "").strip() or None,
+                str(payload.get("latest_event_reason") or "").strip() or None,
+                float(payload.get("latest_event_units")) if payload.get("latest_event_units") is not None else None,
+                self._coerce_date(payload.get("latest_entry_date")),
+                self._coerce_date(payload.get("latest_exit_date")),
+                max(int(payload.get("event_count") or 0), 0),
+                json.dumps(payload.get("recent_events") or [], ensure_ascii=False, default=str),
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+            )
+        return self._decode_strategy_signal_event_snapshot(dict(row))
+
+    async def list_strategy_signal_event_snapshots(
+        self,
+        strategy_id: Optional[str] = None,
+        code: Optional[str] = None,
+        as_of_date: Optional[date] = None,
+        *,
+        latest_only: bool = False,
+        limit: int = 20,
+    ) -> List[dict]:
+        table_name = "strategy_signal_event_snapshots_latest" if latest_only else "strategy_signal_event_snapshots"
+        async with self.acquire() as conn:
+            sql = f"SELECT * FROM {table_name} WHERE 1=1"
+            params: list[Any] = []
+            idx = 1
+            if strategy_id:
+                sql += f" AND strategy_id = ${idx}"
+                params.append(str(strategy_id))
+                idx += 1
+            if code:
+                sql += f" AND code = ${idx}"
+                params.append(str(code))
+                idx += 1
+            if as_of_date is not None:
+                sql += f" AND as_of_date = ${idx}"
+                params.append(self._coerce_date(as_of_date))
+                idx += 1
+            sql += f" ORDER BY as_of_date DESC, updated_at DESC, id DESC LIMIT ${idx}"
+            params.append(max(1, min(int(limit or 20), 500)))
+            rows = await conn.fetch(sql, *params)
+        return [self._decode_strategy_signal_event_snapshot(dict(row)) for row in rows]
+
+    async def get_latest_strategy_signal_event_snapshot(
+        self,
+        strategy_id: str,
+        code: Optional[str] = None,
+    ) -> Optional[dict]:
+        rows = await self.list_strategy_signal_event_snapshots(
+            strategy_id=strategy_id,
+            code=code,
+            latest_only=True,
+            limit=1,
+        )
+        return rows[0] if rows else None
 
     async def get_signals_public(
         self, strategy_id: str, limit: int = 100

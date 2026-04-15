@@ -54,11 +54,13 @@ export class PerformanceService {
     try {
       payload = await this.callManager('attribution', argsMatched.params);
     } catch (error) {
-      const nonFatalMessage = this.extractNonFatalAttributionMessage(error);
-      if (nonFatalMessage) {
-        return this.buildAttributionFallback(context, benchmark, normalizedLookbackDays, argsMatched, nonFatalMessage);
-      }
-      throw error;
+      return this.buildAttributionFallback(
+        context,
+        benchmark,
+        normalizedLookbackDays,
+        argsMatched,
+        this.extractNonFatalAttributionMessage(error) || this.extractExceptionDetail(error) || '当前无法获取组合归因，已返回空结果。',
+      );
     }
     const record = this.extractDataRecord(payload);
     const dataWindow = this.asRecord(record.data_window);

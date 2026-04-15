@@ -197,6 +197,8 @@ class MatchingEngine:
                     fill_price,
                     strategy_id=order.get('strategy_id'),
                     source_order_id=str(order_id),
+                    signal_id=order.get('signal_id'),
+                    position_id=order.get('position_id'),
                 )
                 await conn.execute(
                     "UPDATE paper_orders SET status='filled', filled_at=NOW(), commission=$1, updated_at=NOW() WHERE id=$2",

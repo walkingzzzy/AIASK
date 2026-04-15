@@ -320,5 +320,12 @@ class _StrategySubmitterPolicyMixin:
                     "committee_review": dict(candidate.get("committee_review") or {}),
                     "task_preference": dict((quality_gate or {}).get("task_preference") or {}),
                     "candidate_provenance": cls._candidate_provenance(candidate),
+                    "evidence_chain": dict(candidate.get("evidence_chain") or {}),
+                    "prediction_contract": dict(candidate.get("prediction_contract") or {}),
+                    "confidence_contract": dict(candidate.get("confidence_contract") or {}),
+                    "evidence_alignment_audit": dict(candidate.get("evidence_alignment_audit") or {}),
+                    "legacy_semantic_contract": candidate.get("legacy_semantic_contract"),
+                    "contradiction_count": candidate.get("contradiction_count"),
+                    "proxy_dependency_score": candidate.get("proxy_dependency_score"),
                 },
             )

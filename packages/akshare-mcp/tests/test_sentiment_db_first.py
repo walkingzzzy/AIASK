@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -225,3 +226,57 @@ async def test_get_recent_margin_summary_falls_back_to_detail_aggregate():
     assert result["source"] == "margin_detail_aggregate"
     assert result["margin_balance_latest"] == 120.0
     assert result["margin_balance_change_5d"] == 20.0
+
+
+def _headline_validation_klines():
+    start = date(2026, 1, 1)
+    rows = []
+    for idx in range(80):
+        if idx < 25:
+            close = 100.0 + idx * 1.0
+        elif idx < 50:
+            close = 125.0 - (idx - 25) * 1.2
+        else:
+            close = 95.0 + (idx - 50) * 1.1
+        rows.append(
+            {
+                "date": (start + timedelta(days=idx)).isoformat(),
+                "close": round(close, 4),
+                "high": round(close * 1.01, 4),
+                "low": round(close * 0.99, 4),
+                "volume": 1000 + idx,
+            }
+        )
+    return rows
+
+
+def test_news_sentiment_oos_prefers_persisted_headline_labels():
+    labels = [
+        {"label_id": "label_bull_1", "published_at": "2026-01-05", "label": "bullish"},
+        {"label_id": "label_bear_1", "published_at": "2026-01-28", "label": "bearish"},
+        {"label_id": "label_bull_2", "published_at": "2026-02-25", "label": "bullish"},
+    ]
+
+    validation = sentiment_mod.sentiment_analyzer._build_news_sentiment_oos_validation(
+        _headline_validation_klines(),
+        headline_labels=labels,
+    )
+
+    assert validation["available"] is True
+    assert validation["method"] == "headline_label_oos_v1"
+    assert validation["proxy_only"] is False
+    assert validation["label_sample_count"] == 3
+    assert validation["bucket_stats"]["bullish"]["5d"]["samples"] >= 2
+    assert validation["bucket_stats"]["bearish"]["5d"]["samples"] >= 1
+    assert validation["alpha_5d_bull_vs_bear"] is not None
+
+
+def test_news_sentiment_oos_falls_back_to_proxy_when_labels_missing():
+    validation = sentiment_mod.sentiment_analyzer._build_news_sentiment_oos_validation(
+        _headline_validation_klines(),
+        headline_labels=[],
+    )
+
+    assert validation["method"] == "headline_label_oos_v1_fallback_proxy"
+    assert validation["proxy_only"] is True
+    assert validation["fallback_reason"] == "insufficient_headline_labels"

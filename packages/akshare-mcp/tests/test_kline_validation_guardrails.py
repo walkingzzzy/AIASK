@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import pytest
 
@@ -134,3 +135,28 @@ async def test_save_klines_skips_invalid_rows_before_persisting() -> None:
     assert db.conn.rows is not None
     assert len(db.conn.rows) == 1
     assert db.conn.rows[0][1] == "600519"
+
+
+@pytest.mark.asyncio
+async def test_save_klines_normalizes_daily_date_to_market_close() -> None:
+    db = _KlineDb()
+
+    saved = await db.save_klines(
+        "600519",
+        [
+            {
+                "date": "2026-04-13",
+                "open": 10.0,
+                "close": 11.0,
+                "high": 12.0,
+                "low": 9.0,
+                "volume": 1000,
+            },
+        ],
+    )
+
+    assert saved["accepted_count"] == 1
+    stored_time = db.conn.rows[0][0]
+    assert isinstance(stored_time, datetime)
+    assert stored_time.tzinfo is not None
+    assert stored_time.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M") == "2026-04-13 07:00"

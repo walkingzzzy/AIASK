@@ -14,6 +14,10 @@ class StrategyPromotionPipelineService:
         score = 0.35
         if overview.get('promotion_ready'):
             score += 0.4
+        if overview.get('execution_hard_gate_passed'):
+            score += 0.12
+        elif str(overview.get('execution_audit_gate_status') or '') == 'failed_metrics':
+            score -= 0.25
         if overview.get('deprecation_risk'):
             score -= 0.35
         if metric:
@@ -76,6 +80,10 @@ class StrategyPromotionPipelineService:
                 'strict_incubation_ready': overview.get('strict_incubation_ready'),
                 'live_candidate_ready': overview.get('live_candidate_ready'),
                 'strict_live_alignment_status': overview.get('strict_live_alignment_status'),
+                'signal_stage_without_execution_gate': overview.get('signal_stage_without_execution_gate'),
+                'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
+                'execution_hard_gate_passed': bool(overview.get('execution_hard_gate_passed')),
+                'promotion_gate_status': overview.get('promotion_gate_status'),
                 'total_signals': overview.get('total_signals'),
                 'observed_forward_days': overview.get('observed_forward_days') or [],
             },

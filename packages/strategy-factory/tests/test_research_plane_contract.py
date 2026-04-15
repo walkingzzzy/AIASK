@@ -177,7 +177,20 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
             "target_symbols": ["000858"],
             "experiment_id": "exp_beta",
             "research_task": {"task_source": "event_driven", "candidate_family": "value_factor"},
-            "params": {"candidate_provenance": {"generator_mode": "external_llm"}},
+            "params": {
+                "candidate_provenance": {"generator_mode": "external_llm"},
+                "candidate_contract_snapshot": {"targeting": {"target_pool_id": "explicit:000858"}},
+                "evidence_chain": {
+                    "evidences": [
+                        {
+                            "evidence_id": "ev_beta_1",
+                            "source_type": "event_context",
+                            "direction": "up",
+                            "summary": "事件驱动候选保留了 research evidence。",
+                        }
+                    ]
+                },
+            },
         },
     ]
     experiments = [
@@ -223,8 +236,12 @@ def test_research_plane_contract_builds_factor_task_candidate_and_evidence_artif
     }
     assert artifact["candidate_artifact"]["local_rule_candidate_count"] == 1
     assert artifact["candidate_artifact"]["external_autonomy_candidate_count"] == 1
+    assert artifact["candidate_artifact"]["candidate_contract_ready_count"] == 2
+    assert artifact["candidate_artifact"]["candidate_evidence_ready_count"] == 2
     assert artifact["candidate_artifact"]["generator_type_counts"] == {"rule": 1, "external_llm": 1}
     assert artifact["candidate_artifact"]["family_counts"] == {"momentum": 1, "value_factor": 1}
+    assert artifact["candidate_artifact"]["candidate_briefs"][1]["candidate_contract_ready"] is True
+    assert artifact["candidate_artifact"]["candidate_briefs"][1]["evidence_ready"] is True
     assert artifact["evidence_artifact"]["task_evidence_count"] == 3
     assert artifact["evidence_artifact"]["experiment_count"] == 2
     assert artifact["evidence_artifact"]["external_llm_status"] == "succeeded"

@@ -31,6 +31,31 @@ def test_build_strategy_data_persists_extended_strategy_contract():
             "validation_profile": {"profile": "event_trade_validation", "validation_focus": "event_target_only"},
             "targeting_policy": {"target_symbol_policy": "strict_intersection"},
             "constraint_check": {"intersection_ratio": 1.0},
+            "evidence_chain": {
+                "evidences": [
+                    {
+                        "evidence_id": "ev_1",
+                        "source_type": "news",
+                        "direction": "up",
+                        "raw_confidence": 0.81,
+                        "target_symbols": ["600519"],
+                    }
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim_1",
+                        "evidence_ids": ["ev_1"],
+                        "expected_move": "up",
+                    }
+                ]
+            },
+            "confidence_contract": {"status": "diagnostic_ready"},
+            "evidence_alignment_audit": {"using_new_contract": True, "evidence_alignment_score": 1.0},
+            "legacy_semantic_contract": False,
+            "contradiction_count": 0,
+            "proxy_dependency_score": 0.0,
             "source_candidate_artifact_id": "candidate_001",
             "source_generation_artifact_id": "llm_episode_001",
             "source_validation_artifact_id": "candidate_validation_001",
@@ -64,6 +89,13 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["execution_notes"] == "仅在流动性良好时段执行"
     assert params["validation_profile"]["profile"] == "event_trade_validation"
     assert params["targeting_policy"]["target_symbol_policy"] == "strict_intersection"
+    assert params["evidence_chain"]["evidences"][0]["evidence_id"] == "ev_1"
+    assert params["prediction_contract"]["claims"][0]["claim_id"] == "claim_1"
+    assert params["confidence_contract"]["status"] == "diagnostic_ready"
+    assert params["evidence_alignment_audit"]["using_new_contract"] is True
+    assert params["legacy_semantic_contract"] is False
+    assert params["contradiction_count"] == 0
+    assert params["proxy_dependency_score"] == 0.0
     assert params["task_signature"].startswith("event_driven|evt_1|ai|")
     assert params["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
     assert params["candidate_provenance"]["source_generation_artifact_id"] == "llm_episode_001"
@@ -91,6 +123,9 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["candidate_contract_snapshot"]["targeting"]["target_pool_id"] == "ai"
     assert params["candidate_contract_snapshot"]["targeting"]["target_symbols"] == ["600519"]
     assert params["candidate_contract_snapshot"]["validation_profile"]["profile"] == "event_trade_validation"
+    assert params["candidate_contract_snapshot"]["evidence_chain"]["evidences"][0]["evidence_id"] == "ev_1"
+    assert params["candidate_contract_snapshot"]["prediction_contract"]["claims"][0]["claim_id"] == "claim_1"
+    assert params["candidate_contract_snapshot"]["confidence_contract"]["status"] == "diagnostic_ready"
     assert params["candidate_lineage_contract"]["task_signature"].startswith("event_driven|evt_1|ai|")
 
 

@@ -246,6 +246,7 @@ def test_schema_base_uses_compact_pool_defaults_for_tool_only_profile(monkeypatc
     assert config['min_size'] == 1
     assert config['max_size'] == 2
     assert config['server_settings']['application_name'] == 'akshare-mcp:tool-only'
+    assert config['server_settings']['TimeZone'] == 'Asia/Shanghai'
 
 
 def test_schema_base_pool_limits_honor_env_overrides(monkeypatch):
@@ -260,6 +261,7 @@ def test_schema_base_pool_limits_honor_env_overrides(monkeypatch):
     assert config['min_size'] == 3
     assert config['max_size'] == 3
     assert config['server_settings']['application_name'] == 'akshare-mcp:full'
+    assert config['server_settings']['TimeZone'] == 'Asia/Shanghai'
 
 
 @pytest.mark.asyncio

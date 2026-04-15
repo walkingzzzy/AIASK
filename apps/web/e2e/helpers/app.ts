@@ -43,12 +43,18 @@ function matchesAny(value: string, patterns: IssuePatterns | undefined) {
 function isIgnorableConsoleError(entry: string) {
   return (
     /Failed to fetch RSC payload .* Falling back to browser navigation/i.test(entry)
+    || /Failed to load resource: the server responded with a status of (401|403) \((Unauthorized|Forbidden)\)/i.test(entry)
+    || /Failed to load resource: the server responded with a status of 404 \(Not Found\) @ \/api\/strategy-market\/daily-snapshot/i.test(entry)
     || /favicon\.ico/i.test(entry)
   );
 }
 
 function isIgnorablePageError(entry: string) {
-  return /Minified React error #418|Minified React error #422/.test(entry);
+  return (
+    /Minified React error #418|Minified React error #422/.test(entry)
+    || /(?:[?&]_rsc=|\/_rsc=).* due to access control checks\./i.test(entry)
+    || /_next\/static\/webpack\/.*\.webpack\.hot-update\.json due to access control checks\./i.test(entry)
+  );
 }
 
 function currentPathname(page: Page) {

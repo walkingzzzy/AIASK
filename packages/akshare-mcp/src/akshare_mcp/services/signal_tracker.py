@@ -25,6 +25,380 @@ logger = logging.getLogger(__name__)
 FORWARD_DAYS = [1, 5, 10, 20]
 FORWARD_RETURN_BATCH_LIMIT = 2000
 FORWARD_RETURN_MAX_ROUNDS = 100
+RECENT_SIGNAL_EVENT_LIMIT = 8
+
+
+def _signal_series_from_events(length: int, events: list[dict[str, Any]] | None) -> np.ndarray:
+    signals = np.zeros(max(0, int(length)), dtype=np.int8)
+    for event in list(events or []):
+        idx = int(event.get("index") or 0)
+        signal = int(event.get("signal") or 0)
+        if 0 <= idx < len(signals) and signal != 0:
+            signals[idx] = 1 if signal > 0 else -1
+    return signals
+
+
+def _signal_series_from_masks(entry_mask: np.ndarray, exit_mask: np.ndarray) -> np.ndarray:
+    entry = np.asarray(entry_mask, dtype=bool)
+    exit_ = np.asarray(exit_mask, dtype=bool)
+    size = max(len(entry), len(exit_))
+    signals = np.zeros(size, dtype=np.int8)
+    if len(entry):
+        signals[: len(entry)][entry] = 1
+    if len(exit_):
+        exit_slice = signals[: len(exit_)]
+        exit_slice[np.asarray(exit_, dtype=bool) & (exit_slice == 0)] = -1
+    return signals
+
+
+def _coerce_event_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(normalized).date()
+    except Exception:
+        pass
+    try:
+        return date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _default_event_action(signal: int) -> str:
+    return "enter" if int(signal or 0) > 0 else ("exit" if int(signal or 0) < 0 else "hold")
+
+
+def _classify_action_source(
+    *,
+    execution_semantic_mode: str,
+    signal: int,
+    action: Optional[str],
+    reason: Optional[str],
+) -> str:
+    normalized_mode = str(execution_semantic_mode or "").strip().lower()
+    normalized_action = str(action or "").strip().lower()
+    normalized_reason = str(reason or "").strip().lower()
+    if normalized_mode != "compiled_dsl":
+        return "builtin_legacy_signal"
+    if normalized_action == "enter" or int(signal or 0) > 0:
+        return "dsl_entry"
+    if normalized_action == "reduce":
+        return "runtime_playbook_reduce"
+    if normalized_action in {"freeze_reentry", "stop"}:
+        return "runtime_playbook_stop"
+    runtime_stop_tokens = (
+        "stop",
+        "take_profit",
+        "trailing",
+        "time_stop",
+        "freeze",
+        "band",
+    )
+    if any(token in normalized_reason for token in runtime_stop_tokens):
+        return "runtime_playbook_stop"
+    return "dsl_exit"
+
+
+def _normalize_signal_events(
+    klines: list[dict[str, Any]],
+    events: list[dict[str, Any]] | None,
+    *,
+    execution_semantic_mode: str,
+) -> list[dict[str, Any]]:
+    ordered = list(klines or [])
+    normalized: list[dict[str, Any]] = []
+    max_length = len(ordered)
+    for sequence, raw_event in enumerate(list(events or [])):
+        try:
+            index = int(raw_event.get("index") or 0)
+        except Exception:
+            continue
+        if index < 0 or index >= max_length:
+            continue
+        raw_signal = int(raw_event.get("signal") or 0)
+        signal = 1 if raw_signal > 0 else (-1 if raw_signal < 0 else 0)
+        action = str(raw_event.get("action") or _default_event_action(signal)).strip().lower() or _default_event_action(signal)
+        reason = str(raw_event.get("reason") or "").strip() or None
+        units = _coerce_optional_float(raw_event.get("units"))
+        remaining_units = _coerce_optional_float(raw_event.get("remaining_units"))
+        bar = ordered[index] if 0 <= index < len(ordered) else {}
+        event_date = _coerce_event_date(bar.get("date") or bar.get("time"))
+        action_source = _classify_action_source(
+            execution_semantic_mode=execution_semantic_mode,
+            signal=signal,
+            action=action,
+            reason=reason,
+        )
+        normalized.append(
+            {
+                "sequence": sequence,
+                "index": index,
+                "date": event_date.isoformat() if event_date else None,
+                "signal": signal,
+                "action": action,
+                "action_source": action_source,
+                "reason": reason,
+                "units": units,
+                "remaining_units": remaining_units,
+            }
+        )
+    return normalized
+
+
+def _synthesize_events_from_masks(
+    klines: list[dict[str, Any]],
+    entry_mask: np.ndarray,
+    exit_mask: np.ndarray,
+    *,
+    execution_semantic_mode: str,
+) -> list[dict[str, Any]]:
+    entry = np.asarray(entry_mask, dtype=bool)
+    exit_ = np.asarray(exit_mask, dtype=bool)
+    size = max(len(entry), len(exit_))
+    events: list[dict[str, Any]] = []
+    for index in range(size):
+        if index < len(entry) and bool(entry[index]):
+            events.append(
+                {
+                    "index": index,
+                    "signal": 1,
+                    "action": "enter",
+                    "reason": "legacy_entry_mask",
+                }
+            )
+        if index < len(exit_) and bool(exit_[index]):
+            events.append(
+                {
+                    "index": index,
+                    "signal": -1,
+                    "action": "exit",
+                    "reason": "legacy_exit_mask",
+                }
+            )
+    return _normalize_signal_events(
+        klines,
+        events,
+        execution_semantic_mode=execution_semantic_mode,
+    )
+
+
+def _synthesize_events_from_signal_series(
+    klines: list[dict[str, Any]],
+    signal_series: np.ndarray,
+    *,
+    execution_semantic_mode: str,
+) -> list[dict[str, Any]]:
+    signals = np.asarray(signal_series, dtype=np.int8)
+    events: list[dict[str, Any]] = []
+    last_nonzero_signal = 0
+    for index, raw_signal in enumerate(signals):
+        signal = 1 if int(raw_signal) > 0 else (-1 if int(raw_signal) < 0 else 0)
+        if signal == 0 or signal == last_nonzero_signal:
+            continue
+        events.append(
+            {
+                "index": index,
+                "signal": signal,
+                "action": _default_event_action(signal),
+                "reason": "legacy_signal_series",
+            }
+        )
+        last_nonzero_signal = signal
+    return _normalize_signal_events(
+        klines,
+        events,
+        execution_semantic_mode=execution_semantic_mode,
+    )
+
+
+def _build_signal_tracking_artifacts(
+    instance: Any,
+    klines: list[dict[str, Any]],
+    *,
+    execution_semantic_mode: str,
+) -> dict[str, Any]:
+    ordered = list(klines or [])
+    if not ordered:
+        return {
+            "signal_series": np.zeros(0, dtype=np.int8),
+            "events": [],
+            "latest_bar_signal": 0,
+            "latest_bar_date": None,
+            "signal_row": None,
+            "snapshot": None,
+        }
+
+    signal_series: Optional[np.ndarray] = None
+    normalized_events: list[dict[str, Any]] = []
+    if hasattr(instance, "generate_signal_events_from_klines"):
+        events = instance.generate_signal_events_from_klines(ordered)
+        if events is not None:
+            normalized_events = _normalize_signal_events(
+                ordered,
+                events,
+                execution_semantic_mode=execution_semantic_mode,
+            )
+            signal_series = _signal_series_from_events(len(ordered), normalized_events)
+    if signal_series is None and hasattr(instance, "generate_entry_exit_masks_from_klines"):
+        entry_mask, exit_mask = instance.generate_entry_exit_masks_from_klines(ordered)
+        signal_series = _signal_series_from_masks(entry_mask, exit_mask)
+        normalized_events = _synthesize_events_from_masks(
+            ordered,
+            entry_mask,
+            exit_mask,
+            execution_semantic_mode=execution_semantic_mode,
+        )
+    if signal_series is None:
+        closes = np.array([float(k.get("close", 0) or 0.0) for k in ordered], dtype=float)
+        volumes = np.array([float(k.get("volume", 0) or 0.0) for k in ordered], dtype=float)
+        try:
+            signal_series = np.asarray(instance.generate_signals(closes, volumes), dtype=np.int8)
+        except TypeError:
+            signal_series = np.asarray(instance.generate_signals(closes), dtype=np.int8)
+        normalized_events = _synthesize_events_from_signal_series(
+            ordered,
+            signal_series,
+            execution_semantic_mode=execution_semantic_mode,
+        )
+
+    latest_bar_signal = int(signal_series[-1]) if len(signal_series) > 0 else 0
+    latest_bar_date = _coerce_event_date((ordered[-1] or {}).get("date") or (ordered[-1] or {}).get("time"))
+    latest_bar_index = len(signal_series) - 1
+    latest_bar_event = next(
+        (event for event in reversed(normalized_events) if int(event.get("index") or -1) == latest_bar_index),
+        None,
+    )
+    latest_event = normalized_events[-1] if normalized_events else None
+    latest_entry = next((event for event in reversed(normalized_events) if str(event.get("action") or "") == "enter"), None)
+    latest_exit = next((event for event in reversed(normalized_events) if str(event.get("action") or "") == "exit"), None)
+    nonzero_indexes = np.flatnonzero(np.asarray(signal_series, dtype=np.int8) != 0)
+    latest_nonzero_index = int(nonzero_indexes[-1]) if len(nonzero_indexes) > 0 else None
+    latest_nonzero_date = None
+    latest_nonzero_signal = None
+    if latest_nonzero_index is not None and 0 <= latest_nonzero_index < len(ordered):
+        latest_nonzero_date = _coerce_event_date(
+            (ordered[latest_nonzero_index] or {}).get("date") or (ordered[latest_nonzero_index] or {}).get("time")
+        )
+        latest_nonzero_signal = int(signal_series[latest_nonzero_index])
+
+    default_action_source = _classify_action_source(
+        execution_semantic_mode=execution_semantic_mode,
+        signal=latest_bar_signal,
+        action=_default_event_action(latest_bar_signal) if latest_bar_signal != 0 else None,
+        reason=None,
+    ) if latest_bar_signal != 0 else None
+    signal_row = None
+    if latest_bar_signal != 0:
+        signal_row = {
+            "signal": latest_bar_signal,
+            "score": float(latest_bar_signal),
+            "execution_semantic_mode": execution_semantic_mode,
+            "action_source": (
+                str(latest_bar_event.get("action_source") or "").strip() or default_action_source
+                if latest_bar_event
+                else default_action_source
+            ),
+            "event_action": (
+                str(latest_bar_event.get("action") or "").strip() or _default_event_action(latest_bar_signal)
+                if latest_bar_event
+                else _default_event_action(latest_bar_signal)
+            ),
+            "action_reason": (
+                str(latest_bar_event.get("reason") or "").strip() or None
+                if latest_bar_event
+                else None
+            ),
+            "signal_metadata": {
+                "latest_bar_date": latest_bar_date.isoformat() if latest_bar_date else None,
+                "latest_event_index": latest_event.get("index") if latest_event else None,
+                "latest_event_date": latest_event.get("date") if latest_event else None,
+                "latest_nonzero_signal_index": latest_nonzero_index,
+                "latest_nonzero_signal_date": latest_nonzero_date.isoformat() if latest_nonzero_date else None,
+                "latest_nonzero_signal": latest_nonzero_signal,
+                "event_count": len(normalized_events),
+                "latest_bar_has_event": latest_bar_event is not None,
+                "execution_semantic_mode": execution_semantic_mode,
+                "action_source": (
+                    str(latest_bar_event.get("action_source") or "").strip() or default_action_source
+                    if latest_bar_event
+                    else default_action_source
+                ),
+                "event_action": (
+                    str(latest_bar_event.get("action") or "").strip() or _default_event_action(latest_bar_signal)
+                    if latest_bar_event
+                    else _default_event_action(latest_bar_signal)
+                ),
+                "action_reason": (
+                    str(latest_bar_event.get("reason") or "").strip() or None
+                    if latest_bar_event
+                    else None
+                ),
+            },
+        }
+
+    recent_events = []
+    for event in normalized_events[-RECENT_SIGNAL_EVENT_LIMIT:]:
+        recent_events.append(
+            {
+                "index": int(event.get("index") or 0),
+                "date": event.get("date"),
+                "signal": int(event.get("signal") or 0),
+                "action": event.get("action"),
+                "action_source": event.get("action_source"),
+                "reason": event.get("reason"),
+                "units": event.get("units"),
+                "remaining_units": event.get("remaining_units"),
+            }
+        )
+
+    snapshot = {
+        "latest_bar_date": latest_bar_date,
+        "latest_bar_signal": latest_bar_signal,
+        "execution_semantic_mode": execution_semantic_mode,
+        "latest_event_index": latest_event.get("index") if latest_event else None,
+        "latest_event_date": latest_event.get("date") if latest_event else None,
+        "latest_event_signal": latest_event.get("signal") if latest_event else None,
+        "latest_event_action": latest_event.get("action") if latest_event else None,
+        "latest_event_action_source": latest_event.get("action_source") if latest_event else None,
+        "latest_event_reason": latest_event.get("reason") if latest_event else None,
+        "latest_event_units": latest_event.get("units") if latest_event else None,
+        "latest_entry_date": latest_entry.get("date") if latest_entry else None,
+        "latest_exit_date": latest_exit.get("date") if latest_exit else None,
+        "event_count": len(normalized_events),
+        "recent_events": recent_events,
+        "metadata": {
+            "latest_bar_has_event": latest_bar_event is not None,
+            "recent_event_window": RECENT_SIGNAL_EVENT_LIMIT,
+            "latest_nonzero_signal_index": latest_nonzero_index,
+            "latest_nonzero_signal_date": latest_nonzero_date.isoformat() if latest_nonzero_date else None,
+            "latest_nonzero_signal": latest_nonzero_signal,
+        },
+    }
+    return {
+        "signal_series": signal_series,
+        "events": normalized_events,
+        "latest_bar_signal": latest_bar_signal,
+        "latest_bar_date": latest_bar_date,
+        "signal_row": signal_row,
+        "snapshot": snapshot,
+    }
 
 
 class SignalTracker:
@@ -90,6 +464,104 @@ class SignalTracker:
                 logger.error("SignalTracker loop error: %s", e, exc_info=True)
                 await asyncio.sleep(60)
 
+    @staticmethod
+    def _merge_unique_strategies(*groups: list[dict]) -> list[dict]:
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for group in groups:
+            for strategy in list(group or []):
+                strategy_id = str((strategy or {}).get("id") or "").strip()
+                if not strategy_id or strategy_id in seen:
+                    continue
+                seen.add(strategy_id)
+                merged.append(strategy)
+        return merged
+
+    async def _load_runtime_submitted_strategies(self, db, *, limit: int = 200) -> list[dict]:
+        if not hasattr(db, "list_strategies"):
+            return []
+        rows = await db.list_strategies("submitted", limit=limit)
+        if not rows:
+            return []
+        get_quality_report = getattr(db, "get_strategy_quality_report", None)
+        eligible: list[dict] = []
+        for row in list(rows or []):
+            if await self._is_runtime_submitted_strategy(
+                db,
+                row,
+                get_quality_report=get_quality_report,
+            ):
+                eligible.append(row)
+        return eligible
+
+    async def _is_runtime_submitted_strategy(self, db, strategy: dict, *, get_quality_report=None) -> bool:
+        strategy_id = str((strategy or {}).get("id") or "").strip()
+        if not strategy_id:
+            return False
+        report = None
+        if callable(get_quality_report):
+            try:
+                report = await get_quality_report(strategy_id, "submission")
+            except Exception:
+                report = None
+        summary = dict((report or {}).get("summary") or {})
+        lane = str(
+            summary.get("submission_lane")
+            or (report or {}).get("submission_lane")
+            or ""
+        ).strip().lower()
+        if lane in {"observe_incubation", "live_ready_review"}:
+            return True
+        for field_name in (
+            "paper_lane_ready",
+            "live_review_ready",
+            "paper_account_id",
+            "live_review_account_id",
+        ):
+            if summary.get(field_name) or (report or {}).get(field_name):
+                return True
+        params = dict((strategy or {}).get("params") or {})
+        incubation_budget = dict(params.get("incubation_budget") or {})
+        return str(incubation_budget.get("track") or "").strip().lower() in {
+            "observe_incubation",
+            "live_ready_review",
+        }
+
+    @staticmethod
+    def _resolve_strategy_universe(strategy: dict, default_universe: list[str]) -> list[str]:
+        payload = dict(strategy or {})
+        params = dict(payload.get("params") or {})
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _push(value: Any) -> None:
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _push(item)
+                return
+            if isinstance(value, dict):
+                for key in ("symbols", "target_symbols", "symbol", "stock_code", "code"):
+                    if key in value:
+                        _push(value.get(key))
+                return
+            text = str(value or "").strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            ordered.append(text)
+
+        for candidate in (
+            payload.get("target_symbols"),
+            payload.get("stock_pool"),
+            payload.get("research_task"),
+            params.get("target_symbols"),
+            params.get("stock_pool"),
+            params.get("research_task"),
+            dict(params.get("dsl") or {}).get("metadata"),
+        ):
+            _push(candidate)
+        return ordered or list(default_universe or [])
+
     async def run_once(self):
         """Execute a single signal tracking cycle."""
         from ..storage import get_db
@@ -108,16 +580,40 @@ class SignalTracker:
             'trace_id': uuid4().hex[:12],
             'payload': {'signal_date': str(today)},
         }) if hasattr(db, 'save_strategy_task_run') else {'id': None, 'trace_id': None}
-        results = {"signals_generated": 0, "forward_returns_computed": 0, "incubation_orders": 0, "incubation_metrics": 0, "risk_events": 0, "risk_actions": 0, "transitions": 0, "vector_registry_updates": 0, "projection_snapshots": 0, "skipped_runtime_controls": 0, "task_run_id": task_run.get('id'), "errors": []}
+        results = {
+            "signals_generated": 0,
+            "signal_event_snapshots": 0,
+            "forward_returns_computed": 0,
+            "incubation_orders": 0,
+            "incubation_metrics": 0,
+            "risk_events": 0,
+            "risk_actions": 0,
+            "transitions": 0,
+            "vector_registry_updates": 0,
+            "projection_snapshots": 0,
+            "skipped_runtime_controls": 0,
+            "task_run_id": task_run.get('id'),
+            "errors": [],
+        }
 
         strategies = []
         executable_strategies = []
+        submitted_runtime_strategies = []
 
         # Phase A: Generate signals for listed/incubating strategies
         try:
+            active_strategies = []
             for status in ("listed", "incubating"):
                 rows = await db.list_strategies(status, limit=200)
-                strategies.extend(rows)
+                active_strategies.extend(rows)
+            submitted_runtime_strategies = await self._load_runtime_submitted_strategies(
+                db,
+                limit=200,
+            )
+            strategies = self._merge_unique_strategies(
+                active_strategies,
+                submitted_runtime_strategies,
+            )
 
             from .runtime_control import get_strategy_runtime_control_service
             control_service = get_strategy_runtime_control_service()
@@ -131,26 +627,44 @@ class SignalTracker:
             for s in executable_strategies:
                 try:
                     stype = s.get("strategy_type", "")
-                    klass = StrategyRegistry.get(stype)
-                    if klass is None:
+                    instance, execution_semantic_mode = StrategyRegistry.create_runtime_strategy(
+                        stype,
+                        s.get("params") or {},
+                    )
+                    if instance is None:
                         continue
-                    instance = klass()
-                    instance.set_parameters(s.get("params") or {})
 
                     signals_batch = []
-                    for code in DEFAULT_UNIVERSE:
+                    for code in self._resolve_strategy_universe(s, DEFAULT_UNIVERSE):
                         klines = await self._get_klines_with_fallback(db, code, limit=200)
                         if not klines or len(klines) < 20:
                             continue
-                        closes = np.array([float(k.get("close", 0)) for k in klines])
-                        volumes = np.array([float(k.get("volume", 0) or 0) for k in klines])
-                        try:
-                            sig_arr = instance.generate_signals(closes, volumes)
-                        except TypeError:
-                            sig_arr = instance.generate_signals(closes)
-                        latest_signal = int(sig_arr[-1]) if len(sig_arr) > 0 else 0
+                        artifacts = _build_signal_tracking_artifacts(
+                            instance,
+                            klines,
+                            execution_semantic_mode=execution_semantic_mode,
+                        )
+                        snapshot_payload = dict(artifacts.get("snapshot") or {})
+                        if snapshot_payload and hasattr(db, "save_strategy_signal_event_snapshot"):
+                            snapshot_metadata = dict(snapshot_payload.get("metadata") or {})
+                            snapshot_metadata["runtime_cycle_seen_today"] = True
+                            snapshot_payload["metadata"] = snapshot_metadata
+                            snapshot_payload.update(
+                                {
+                                    "strategy_id": s["id"],
+                                    "code": code,
+                                    "as_of_date": today,
+                                    "execution_semantic_mode": execution_semantic_mode,
+                                }
+                            )
+                            await db.save_strategy_signal_event_snapshot(snapshot_payload)
+                            results["signal_event_snapshots"] += 1
+
+                        signal_row = dict(artifacts.get("signal_row") or {})
+                        latest_signal = int(signal_row.get("signal") or 0)
                         if latest_signal != 0:
-                            signals_batch.append({"code": code, "signal": latest_signal, "score": float(sig_arr[-1])})
+                            signal_row["code"] = code
+                            signals_batch.append(signal_row)
 
                     if signals_batch:
                         count = await db.save_signals(s["id"], today, signals_batch)
@@ -196,15 +710,30 @@ class SignalTracker:
         # Phase E: 孵化流水线推进与自动晋级
         try:
             from .incubation_pipeline import get_strategy_incubation_pipeline_service
-            pipeline_result = await get_strategy_incubation_pipeline_service().run_batch(
+            pipeline_service = get_strategy_incubation_pipeline_service()
+            pipeline_result = await pipeline_service.run_batch(
                 db,
                 statuses=['incubating'],
                 limit=200,
                 source='signal_tracker',
                 auto_apply_review=True,
             )
+            submitted_pipeline_snapshots = 0
+            for strategy in submitted_runtime_strategies:
+                try:
+                    await pipeline_service.run_strategy(
+                        db,
+                        strategy,
+                        source='signal_tracker_submitted',
+                        auto_apply_review=False,
+                    )
+                    submitted_pipeline_snapshots += 1
+                except Exception as exc:
+                    results["errors"].append(f"Phase E submitted {strategy.get('id')}: {exc}")
             results["incubation_pipeline_snapshots"] = int(pipeline_result.get("count") or 0)
+            results["incubation_pipeline_snapshots"] += submitted_pipeline_snapshots
             results["incubation_auto_promotions"] = int(pipeline_result.get("auto_promoted") or 0)
+            results["submitted_runtime_pipeline_snapshots"] = submitted_pipeline_snapshots
         except Exception as e:
             results["errors"].append(f"Phase E: {e}")
 
@@ -254,8 +783,8 @@ class SignalTracker:
                 'payload': self.last_result,
             })
         logger.info(
-            "SignalTracker: completed in %.1fs — %d signals, %d fwd returns, %d incubation orders, %d pipeline snapshots, %d auto promotions, %d risk events, %d risk actions, %d transitions, %d errors",
-            elapsed, results["signals_generated"], results["forward_returns_computed"],
+            "SignalTracker: completed in %.1fs — %d signals, %d event snapshots, %d fwd returns, %d incubation orders, %d pipeline snapshots, %d auto promotions, %d risk events, %d risk actions, %d transitions, %d errors",
+            elapsed, results["signals_generated"], results["signal_event_snapshots"], results["forward_returns_computed"],
             results["incubation_orders"], results["incubation_pipeline_snapshots"], results["incubation_auto_promotions"], results["risk_events"], results["risk_actions"], results["transitions"], len(results["errors"]),
         )
         return self.last_result

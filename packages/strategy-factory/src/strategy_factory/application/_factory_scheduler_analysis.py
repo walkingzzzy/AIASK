@@ -1914,11 +1914,43 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "paper_coverage_ratio": float(
                         base.get("budget_feedback_paper_coverage_ratio") or 1.0
                     ),
+                    "execution_conversion_efficiency": (
+                        float(base.get("budget_feedback_execution_conversion_efficiency"))
+                        if base.get("budget_feedback_execution_conversion_efficiency") is not None
+                        else None
+                    ),
+                    "execution_conversion_efficiency_observed_count": int(
+                        base.get(
+                            "budget_feedback_execution_conversion_efficiency_observed_count"
+                        )
+                        or 0
+                    ),
                     "legacy_control_mode_counts": dict(
                         base.get("budget_feedback_legacy_control_mode_counts") or {}
                     ),
                     "skill_control_mode_counts": dict(
                         base.get("budget_feedback_skill_control_mode_counts") or {}
+                    ),
+                    "budget_action_counts": dict(
+                        base.get("budget_feedback_action_counts") or {}
+                    ),
+                    "dual_axis_action_family_count": int(
+                        base.get("budget_feedback_dual_axis_action_family_count") or 0
+                    ),
+                    "execution_optimization_queue_count": int(
+                        base.get("budget_feedback_execution_optimization_queue_count") or 0
+                    ),
+                    "small_budget_observe_count": int(
+                        base.get("budget_feedback_small_budget_observe_count") or 0
+                    ),
+                    "prioritize_scale_count": int(
+                        base.get("budget_feedback_prioritize_scale_count") or 0
+                    ),
+                    "cool_or_freeze_count": int(
+                        base.get("budget_feedback_cool_or_freeze_count") or 0
+                    ),
+                    "retain_family_reduce_budget_count": int(
+                        base.get("budget_feedback_retain_family_reduce_budget_count") or 0
                     ),
                     "signal_count_total": int(base.get("budget_feedback_signal_count_total") or 0),
                     "zero_signal_strategy_count": int(

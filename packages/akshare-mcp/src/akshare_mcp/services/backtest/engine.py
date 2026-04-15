@@ -112,25 +112,32 @@ def _build_portfolio_strategy_masks(
     closes: np.ndarray,
     volumes: np.ndarray,
     params: Dict[str, Any],
-) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+) -> Optional[Tuple[np.ndarray, np.ndarray, Optional[List[Dict[str, Any]]]]]:
     normalized_strategy = str(strategy or "").strip().lower()
     if normalized_strategy == "buy_and_hold":
-        return _build_buy_and_hold_masks(len(closes))
-
-    masks = _build_strategy_masks(normalized_strategy, closes, params, volumes=volumes)
-    if masks is not None:
-        return masks
+        entry, exit_ = _build_buy_and_hold_masks(len(closes))
+        return entry, exit_, None
 
     from .strategy_registry import StrategyRegistry as _Reg
 
-    klass = _Reg.get(normalized_strategy)
-    if klass is None:
-        return None
-    inst = klass()
-    inst.set_parameters(params)
-    if hasattr(inst, 'generate_entry_exit_masks_from_klines'):
-        return inst.generate_entry_exit_masks_from_klines(klines)
-    return inst.generate_entry_exit_masks(closes, volumes)
+    inst, _execution_semantic_mode = _Reg.create_runtime_strategy(normalized_strategy, params)
+    if inst is not None:
+        signal_events = None
+        if hasattr(inst, 'generate_signal_events_from_klines'):
+            signal_events = inst.generate_signal_events_from_klines(klines)
+        elif hasattr(inst, 'generate_signal_events'):
+            signal_events = inst.generate_signal_events(closes, volumes)
+        if hasattr(inst, 'generate_entry_exit_masks_from_klines'):
+            entry_mask, exit_mask = inst.generate_entry_exit_masks_from_klines(klines)
+        else:
+            entry_mask, exit_mask = inst.generate_entry_exit_masks(closes, volumes)
+        return entry_mask, exit_mask, signal_events
+
+    masks = _build_strategy_masks(normalized_strategy, closes, params, volumes=volumes)
+    if masks is not None:
+        return masks[0], masks[1], None
+
+    return None
 
 
 def _summarize_portfolio_equity(equity: np.ndarray, initial_capital: float) -> tuple[float, float, float]:
@@ -236,6 +243,7 @@ class BacktestEngine:
         tradability_masks: dict[str, np.ndarray | None] = {}
         entry_masks: dict[str, np.ndarray] = {}
         exit_masks: dict[str, np.ndarray] = {}
+        signal_events_by_code: dict[str, list[dict[str, Any]]] = {}
         aligned_klines: dict[str, list[dict[str, Any]]] = {}
         tradable_day_min: Optional[int] = None
 
@@ -263,7 +271,8 @@ class BacktestEngine:
             closes_by_code[code] = closes
             volumes_by_code[code] = volumes
             tradability_masks[code] = tradability_mask
-            entry_masks[code], exit_masks[code] = masks
+            entry_masks[code], exit_masks[code], signal_events = masks
+            signal_events_by_code[code] = list(signal_events or [])
             aligned_klines[code] = rows
 
         if tradable_day_min is not None:
@@ -390,7 +399,14 @@ class BacktestEngine:
 
             for code in active_codes:
                 shares = int(holdings.get(code) or 0)
-                if shares <= 0 or not (bool(exit_masks[code][i]) or bool(pending_exit.get(code))):
+                reduce_event = next(
+                    (
+                        item for item in signal_events_by_code.get(code, [])
+                        if int(item.get('index') or -1) == i and int(item.get('signal') or 0) < 0 and str(item.get('action') or '').strip().lower() == 'reduce'
+                    ),
+                    None,
+                )
+                if shares <= 0 or not (bool(exit_masks[code][i]) or bool(pending_exit.get(code)) or reduce_event is not None):
                     continue
                 buy_index = int(entry_indices.get(code, -1))
                 if t_plus_one and buy_index >= 0 and next_index <= buy_index:
@@ -405,6 +421,22 @@ class BacktestEngine:
                     lot_size=lot_size,
                     args=args,
                 )
+                requested_exit_shares = shares
+                if reduce_event is not None:
+                    requested_exit_shares = _round_down_lot(
+                        max(1, int(round(float(shares) * float(reduce_event.get('units') or 0.0)))),
+                        lot_size,
+                    )
+                    if requested_exit_shares <= 0:
+                        requested_exit_shares = shares
+                    fill_info = _resolve_order_fill(
+                        requested_exit_shares,
+                        index=next_index,
+                        volumes=volumes_by_code[code],
+                        tradability_mask=tradability_masks.get(code),
+                        lot_size=lot_size,
+                        args=args,
+                    )
                 if int(fill_info.get("filled_shares") or 0) <= 0:
                     _record_fill_attempt(code=code, fill_info=fill_info, index=next_index, signal=-1)
                     continue
@@ -449,6 +481,8 @@ class BacktestEngine:
                             'time': str(aligned_klines[code][next_index].get('date', aligned_klines[code][next_index].get('trade_date', aligned_klines[code][next_index].get('time', '')))),
                             'price': float(sell_price),
                             'signal': -1,
+                            'action': 'reduce' if reduce_event is not None else 'exit',
+                            'reason': (reduce_event or {}).get('reason'),
                             'shares': int(filled_shares),
                             'profit': float(profit),
                             'holding_days': holding_days,
@@ -463,6 +497,8 @@ class BacktestEngine:
                     profit=float(profit),
                     holding_days=holding_days,
                 )
+                if reduce_event is not None and holdings[code] > 0:
+                    pending_exit[code] = False
                 if holdings[code] <= 0:
                     if float(position_realized_profit.get(code, 0.0)) > 0:
                         wins += 1
@@ -820,6 +856,56 @@ class BacktestEngine:
             ]
         )
         advanced_exec_enabled = (slippage_calc is not None) or (tradability_mask is not None) or has_execution_overrides
+        from .strategy_registry import StrategyRegistry as _Reg
+
+        runtime_inst, execution_semantic_mode = _Reg.create_runtime_strategy(strategy, params)
+        if runtime_inst is not None and execution_semantic_mode == "compiled_dsl":
+            if hasattr(runtime_inst, 'generate_entry_exit_masks_from_klines'):
+                _entry, _exit = runtime_inst.generate_entry_exit_masks_from_klines(klines)
+            else:
+                _entry, _exit = runtime_inst.generate_entry_exit_masks(closes, volumes)
+            _sim = _simulate_trades_from_masks(
+                closes=closes,
+                volumes=volumes,
+                entry_mask=_entry,
+                exit_mask=_exit,
+                initial_capital=initial_capital,
+                commission_rate=commission,
+                slippage_calc=slippage_calc,
+                tradability_mask=tradability_mask,
+                return_trades=return_trades,
+                klines=klines,
+                params=params,
+                signal_events=(
+                    runtime_inst.generate_signal_events_from_klines(klines)
+                    if hasattr(runtime_inst, 'generate_signal_events_from_klines')
+                    else runtime_inst.generate_signal_events(closes, volumes)
+                    if hasattr(runtime_inst, 'generate_signal_events')
+                    else None
+                ),
+            )
+            _payload = {
+                'code': code, 'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(_sim['final_capital']),
+                'total_return': float(_sim['total_return']),
+                'max_drawdown': float(_sim['max_drawdown']),
+                'sharpe_ratio': float(_sim['sharpe_ratio']),
+                'trades_count': int(_sim['trades_count']),
+                'win_rate': float(_sim['win_rate']),
+                'avg_holding_days': float(_sim.get('avg_holding_days') or 0.0),
+                'turnover_proxy': float(_sim.get('turnover_proxy') or 0.0),
+                'params': params,
+            }
+            if return_trades:
+                _payload['trades'] = _sim.get('trades') or []
+                _payload['fills'] = _sim.get('fills') or []
+            _payload['round_trip_positions'] = _sim.get('round_trip_positions') or []
+            _payload['closed_round_trip_count'] = int(_sim.get('closed_round_trip_count') or 0)
+            _payload['winning_round_trip_count'] = int(_sim.get('winning_round_trip_count') or 0)
+            _payload['execution_summary'] = dict(_sim.get('execution_summary') or {})
+            _finalize_backtest_payload(_payload, _sim['equity'], params=params, closes=closes, volumes=volumes)
+            return {'success': True, 'data': _payload}
 
         if strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
@@ -842,6 +928,7 @@ class BacktestEngine:
                     return_trades=return_trades,
                     klines=klines,
                     params=params,
+                    signal_events=None,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -859,6 +946,9 @@ class BacktestEngine:
                 if return_trades:
                     payload['trades'] = sim.get('trades') or []
                     payload['fills'] = sim.get('fills') or []
+                payload['round_trip_positions'] = sim.get('round_trip_positions') or []
+                payload['closed_round_trip_count'] = int(sim.get('closed_round_trip_count') or 0)
+                payload['winning_round_trip_count'] = int(sim.get('winning_round_trip_count') or 0)
                 payload['execution_summary'] = dict(sim.get('execution_summary') or {})
                 if slippage_calc is not None:
                     payload['slippage_model'] = str(slippage_model_raw).strip().lower()
@@ -1004,6 +1094,7 @@ class BacktestEngine:
                     return_trades=return_trades,
                     klines=klines,
                     params=params,
+                    signal_events=None,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -1021,6 +1112,9 @@ class BacktestEngine:
                 if return_trades:
                     payload['trades'] = sim.get('trades') or []
                     payload['fills'] = sim.get('fills') or []
+                payload['round_trip_positions'] = sim.get('round_trip_positions') or []
+                payload['closed_round_trip_count'] = int(sim.get('closed_round_trip_count') or 0)
+                payload['winning_round_trip_count'] = int(sim.get('winning_round_trip_count') or 0)
                 payload['execution_summary'] = dict(sim.get('execution_summary') or {})
                 if slippage_calc is not None:
                     payload['slippage_model'] = str(slippage_model_raw).strip().lower()
@@ -1071,6 +1165,7 @@ class BacktestEngine:
                     return_trades=return_trades,
                     klines=klines,
                     params=params,
+                    signal_events=None,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -1088,6 +1183,9 @@ class BacktestEngine:
                 if return_trades:
                     payload['trades'] = sim.get('trades') or []
                     payload['fills'] = sim.get('fills') or []
+                payload['round_trip_positions'] = sim.get('round_trip_positions') or []
+                payload['closed_round_trip_count'] = int(sim.get('closed_round_trip_count') or 0)
+                payload['winning_round_trip_count'] = int(sim.get('winning_round_trip_count') or 0)
                 payload['execution_summary'] = dict(sim.get('execution_summary') or {})
                 if slippage_calc is not None:
                     payload['slippage_model'] = str(slippage_model_raw).strip().lower()
@@ -1118,11 +1216,8 @@ class BacktestEngine:
             return {'success': True, 'data': data}
 
         # Generic registry fallback for custom/factory strategies
-        from .strategy_registry import StrategyRegistry as _Reg
-        _klass = _Reg.get(strategy)
-        if _klass is not None:
-            _inst = _klass()
-            _inst.set_parameters(params)
+        _inst, _execution_semantic_mode = _Reg.create_runtime_strategy(strategy, params)
+        if _inst is not None:
             if hasattr(_inst, 'generate_entry_exit_masks_from_klines'):
                 _masks = _inst.generate_entry_exit_masks_from_klines(klines)
             else:
@@ -1139,6 +1234,13 @@ class BacktestEngine:
                     return_trades=return_trades,
                     klines=klines,
                     params=params,
+                    signal_events=(
+                        _inst.generate_signal_events_from_klines(klines)
+                        if hasattr(_inst, 'generate_signal_events_from_klines')
+                        else _inst.generate_signal_events(closes, volumes)
+                        if hasattr(_inst, 'generate_signal_events')
+                        else None
+                    ),
                 )
                 _payload = {
                     'code': code, 'strategy': strategy,
@@ -1156,6 +1258,9 @@ class BacktestEngine:
                 if return_trades:
                     _payload['trades'] = _sim.get('trades') or []
                     _payload['fills'] = _sim.get('fills') or []
+                _payload['round_trip_positions'] = _sim.get('round_trip_positions') or []
+                _payload['closed_round_trip_count'] = int(_sim.get('closed_round_trip_count') or 0)
+                _payload['winning_round_trip_count'] = int(_sim.get('winning_round_trip_count') or 0)
                 _payload['execution_summary'] = dict(_sim.get('execution_summary') or {})
                 _finalize_backtest_payload(_payload, _sim['equity'], params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': _payload}

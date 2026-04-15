@@ -72,11 +72,14 @@ def classify_research_candidate_origin(candidate: dict[str, Any] | None) -> str:
         return EXTERNAL_AUTONOMY_CANDIDATE_ORIGIN
 
     has_autonomy_contract = bool(
-        research_task
-        or _string(payload.get("experiment_id"))
+        _string(payload.get("experiment_id"))
         or _string(params.get("experiment_id"))
+        or _string(payload.get("task_run_id"))
         or _string(params.get("task_run_id"))
         or _string(candidate_provenance.get("task_id"))
+        or _string(research_task.get("task_id"))
+        or _string(research_task.get("task_key"))
+        or _string(research_task.get("event_id"))
     )
     if has_autonomy_contract:
         return EXTERNAL_AUTONOMY_CANDIDATE_ORIGIN

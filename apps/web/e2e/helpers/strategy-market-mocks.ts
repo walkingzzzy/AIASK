@@ -76,6 +76,20 @@ export const factorySummary = {
   suppressed_target_pools: ['micro_cap'],
   suppressed_generator_modes: ['aggressive'],
   external_llm_provider_control_mode: 'manual_review',
+  prediction_quality_distribution: {
+    strong: 2,
+    mixed: 1,
+  },
+  execution_quality_distribution: {
+    strong: 1,
+    mixed: 1,
+    weak: 1,
+  },
+  evidence_alignment_distribution: {
+    aligned: 2,
+    legacy: 1,
+  },
+  confidence_contract_ready_rate: 0.6667,
   generator_mode_controls: {
     momentum: {
       control_mode: 'greenlight',
@@ -91,6 +105,151 @@ export const factorySummary = {
     },
   },
   partial_stage_count: 1,
+};
+
+export const qualityBaseline = {
+  contract_version: 'strategy_factory.quality_baseline.v1',
+  latest_run: {
+    prediction_quality_distribution: {
+      strong: 2,
+      mixed: 1,
+    },
+    execution_quality_distribution: {
+      strong: 1,
+      mixed: 1,
+      weak: 1,
+    },
+    evidence_alignment_distribution: {
+      aligned: 2,
+      legacy: 1,
+    },
+    confidence_contract_ready_rate: 0.6667,
+  },
+  submitted_strategy_cohort: {
+    prediction_quality_distribution: {
+      strong: 5,
+      mixed: 3,
+      weak: 1,
+    },
+    execution_quality_distribution: {
+      strong: 4,
+      mixed: 3,
+      weak: 2,
+    },
+    evidence_alignment_distribution: {
+      aligned: 6,
+      partial: 2,
+      legacy: 1,
+    },
+    confidence_contract_ready_rate: 0.7778,
+    generation_lane_quality_panel: [],
+    validation_family_quality_panel: [],
+    status_counts: {
+      listed: 5,
+      incubating: 3,
+      submitted: 1,
+    },
+  },
+};
+
+export const signalQualityRegistrySnapshot = {
+  snapshot_at: '2026-04-08T10:31:32',
+  buy_probability: {
+    entry_count: 3,
+    brier_score: { mean: 0.1184 },
+    ece: { mean: 0.0342 },
+    quality_distribution: {
+      high: 2,
+      medium: 1,
+    },
+  },
+  sentiment: {
+    entry_count: 2,
+    news_alpha_5d: { mean: 0.0712 },
+    sentiment_distribution: {
+      positive: 1,
+      neutral: 1,
+    },
+    stability_distribution: {
+      stable: 2,
+    },
+  },
+  factor: {
+    entry_count: 2,
+    oos_rank_ic_mean: { mean: 0.0841 },
+    rating_distribution: {
+      high: 1,
+      medium: 1,
+    },
+    lookahead_risk_distribution: {
+      low: 2,
+    },
+  },
+  total_entries: 7,
+};
+
+export const signalQualityRegistry = {
+  ...signalQualityRegistrySnapshot,
+  snapshot: signalQualityRegistrySnapshot,
+  drift: {
+    overall_status: 'stable',
+    checks: {
+      brier_score: { status: 'stable' },
+      ece: { status: 'stable' },
+      news_alpha_5d: { status: 'stable' },
+      oos_rank_ic_mean: { status: 'stable' },
+    },
+  },
+  recent_probability: [
+    { code: '600519', quality: 'high' },
+    { code: '000858', quality: 'medium' },
+  ],
+  recent_sentiment: [
+    { code: '600519', sentiment: 'positive' },
+    { code: '000858', sentiment: 'neutral' },
+  ],
+  recent_factor: [
+    { factor_name: 'momentum_20d', rating: 'high' },
+    { factor_name: 'quality_roe', rating: 'medium' },
+  ],
+};
+
+export const executionLineage = {
+  claim_count: 1,
+  trade_step_count: 3,
+  mapped_trade_step_count: 3,
+  runtime_action_count: 2,
+  unmapped_runtime_action_count: 0,
+  lineage_status_counts: {
+    mapped_runtime_action: 2,
+    mapped_trade_step: 1,
+  },
+  runtime_action_reason_counts: {
+    reduce: 1,
+    freeze_reentry: 1,
+  },
+  recent_runtime_actions: [
+    {
+      signal_id: 'sig_reduce_1',
+      signal_date: '2026-04-07',
+      code: '600519',
+      applied_claim_id: 'claim_growth',
+      applied_trade_step_id: 'exit_step_reduce',
+      runtime_action_reason: 'reduce',
+      runtime_action_source: 'runtime_playbook.adverse_move_policy.loss_bands[0].primary_reduce',
+      lineage_status: 'mapped_runtime_action',
+    },
+    {
+      signal_id: 'sig_exit_1',
+      signal_date: '2026-04-08',
+      code: '600519',
+      applied_claim_id: 'claim_growth',
+      applied_trade_step_id: 'exit_step_freeze',
+      runtime_action_reason: 'freeze_reentry',
+      runtime_action_source: 'runtime_playbook.adverse_move_policy.loss_bands[1].hard_stop_band',
+      lineage_status: 'mapped_runtime_action',
+    },
+  ],
 };
 
 export const factoryRunDetail = {
@@ -232,6 +391,31 @@ export const factoryRunDetail = {
   },
 };
 
+export const latestIncubationPipelineSnapshot = {
+  pipeline_stage: 'observe',
+  pipeline_status: 'observing',
+  latest_decision: 'observe',
+  readiness_score: 0.42,
+  priority_score: 0.42,
+  gate_status: 'observe',
+  gate_reasons: ['execution_audit_gate:insufficient_samples'],
+  hard_gate_result: {
+    pipeline_stage: 'observe',
+    signal_stage_without_execution_gate: 'candidate',
+    execution_audit_gate_status: 'insufficient_samples',
+    execution_hard_gate_passed: false,
+    passed: false,
+    reasons: ['execution_audit_gate:insufficient_samples'],
+  },
+  observed_days: 7,
+  promote_streak: 0,
+  halt_streak: 0,
+  next_action: 'accumulate_confirmation',
+  auto_review: false,
+  auto_promoted: false,
+  evaluated_at: '2026-04-08T10:28:00',
+};
+
 export const strategyDetail = {
   strategy: {
     id: DEMO_STRATEGY_ID,
@@ -285,10 +469,52 @@ export const strategyDetail = {
   nav_series: [1, 1.03, 1.05, 1.08, 1.12],
   latest_quality_report: {
     passed: true,
+    pool_profile: 'high_vol_growth',
+    volatility_bucket: 'high',
+    liquidity_bucket: 'high_liquidity',
+    evidence_chain: {
+      market_facts: [
+        {
+          metric: 'close',
+          trade_date: '2026-04-08',
+          source_as_of_date: '2026-04-08',
+          window_scope: 'same_day',
+          unit: 'cny',
+          same_day_pass: true,
+          unit_pass: true,
+          hard_fact_eligible: true,
+        },
+        {
+          metric: '5d_fund_flow',
+          trade_date: '2026-04-08',
+          source_as_of_date: '2026-04-07',
+          window_scope: '5d',
+          unit: 'cny',
+          same_day_pass: false,
+          unit_pass: true,
+          hard_fact_eligible: false,
+          downgrade_reason: 'non_same_day_source',
+        },
+      ],
+    },
+    evidence_alignment_audit: {
+      market_fact_gate_status: 'mixed_with_degraded',
+      hard_fact_count: 1,
+      degraded_fact_count: 1,
+      evidence_debt_reasons: ['non_same_day_source'],
+    },
     summary: {
       validation_grade: 'A',
       review_source: 'strategy_review_workflow',
       primary_validation_layer: 'governance',
+      evidence_gate_status: 'mixed_with_degraded',
+      pool_profile: 'high_vol_growth',
+      volatility_bucket: 'high',
+      hard_fact_count: 1,
+      degraded_fact_count: 1,
+      evidence_debt_reasons: ['non_same_day_source'],
+      risk_regime_fit: 'trend_expansion',
+      stop_rule_source: 'atr_bucketed_high_vol_growth_breakout',
     },
     quality_gate: {
       deflated_sharpe_ratio: 1.23,
@@ -304,6 +530,7 @@ export const strategyDetail = {
     stage: 'paper',
     status: 'active',
   },
+  latest_incubation_pipeline_snapshot: latestIncubationPipelineSnapshot,
   latest_incubation_metric: {
     metric_date: '2026-04-08',
     account_id: 'paper-001',
@@ -318,6 +545,80 @@ export const strategyDetail = {
     forward_ic_5d: 0.12,
     forward_sharpe_5d: 0.88,
     total_signals: 14,
+  },
+  incubation_overview: {
+    validation_grade: 'A',
+    promotion_ready: true,
+    deprecation_risk: false,
+    blockers: [],
+    risk_flags: ['runtime watch'],
+    total_signals: 14,
+    hit_rate_5d: 0.64,
+    sharpe_ratio: 1.31,
+    max_drawdown: -0.08,
+    forward_ic_5d: 0.12,
+    forward_sharpe_5d: 0.88,
+    prediction_quality_label: 'strong',
+    execution_quality_label: 'mixed',
+    confidence_contract_status: 'diagnostic_ready',
+    quality_diagnosis: '预测轴稳定，执行转化仍有优化空间。',
+    signal_quality: {
+      primary_skill_lcb: 0.08,
+      coverage_ratio: 0.75,
+    },
+    execution_quality: {
+      execution_conversion_efficiency: 0.24,
+      nav_conversion_proxy: 0.18,
+    },
+    execution_diagnostics: {
+      execution_audit_gate_status: 'insufficient_samples',
+      execution_hard_gate_passed: false,
+      remediation_action: 'execution_template_adjustment',
+      diagnostic_only: true,
+    },
+    hard_gate_result: {
+      pipeline_stage: 'observe',
+      signal_stage_without_execution_gate: 'candidate',
+      execution_audit_gate_status: 'insufficient_samples',
+      execution_hard_gate_passed: false,
+      passed: false,
+      reasons: ['execution_audit_gate:insufficient_samples'],
+    },
+    runtime_playbook_provenance: {
+      source_claim_ids: ['claim_growth'],
+      source_trade_step_ids: ['entry_step_1', 'exit_step_reduce', 'exit_step_freeze'],
+      derived_from_defaults: false,
+      derivation_labels: ['runtime_playbook_provided', 'trade_plan_driven', 'claim_linked'],
+    },
+    semantic_lineage: {
+      claim_to_trade_plan_map: {
+        claim_to_trade_step_ids: {
+          claim_growth: ['entry_step_1', 'exit_step_reduce', 'exit_step_freeze'],
+        },
+      },
+      trade_plan_to_dsl_map: {
+        trade_step_to_dsl_sections: {
+          entry_step_1: ['entry'],
+          exit_step_reduce: ['exit'],
+          exit_step_freeze: ['exit'],
+        },
+      },
+    },
+    execution_lineage: executionLineage,
+    forward_returns: [
+      {
+        label: '5D',
+        hit_rate: 0.64,
+        forward_ic: 0.12,
+        forward_sharpe: 0.88,
+      },
+      {
+        label: '10D',
+        hit_rate: 0.58,
+        forward_ic: 0.16,
+        forward_sharpe: 1.05,
+      },
+    ],
   },
   open_risk_events: [
     {
@@ -374,12 +675,54 @@ export const signals = {
 
 export const reviewWorkflow = {
   passed: true,
+  pool_profile: 'high_vol_growth',
+  volatility_bucket: 'high',
+  liquidity_bucket: 'high_liquidity',
+  evidence_chain: {
+    market_facts: [
+      {
+        metric: 'close',
+        trade_date: '2026-04-08',
+        source_as_of_date: '2026-04-08',
+        window_scope: 'same_day',
+        unit: 'cny',
+        same_day_pass: true,
+        unit_pass: true,
+        hard_fact_eligible: true,
+      },
+      {
+        metric: '5d_fund_flow',
+        trade_date: '2026-04-08',
+        source_as_of_date: '2026-04-07',
+        window_scope: '5d',
+        unit: 'cny',
+        same_day_pass: false,
+        unit_pass: true,
+        hard_fact_eligible: false,
+        downgrade_reason: 'non_same_day_source',
+      },
+    ],
+  },
+  evidence_alignment_audit: {
+    market_fact_gate_status: 'mixed_with_degraded',
+    hard_fact_count: 1,
+    degraded_fact_count: 1,
+    evidence_debt_reasons: ['non_same_day_source'],
+  },
   summary: {
     validation_grade: 'A',
     review_source: 'strategy_review_workflow',
     primary_validation_layer: 'governance',
     refresh_mode: 'refresh_metrics_only',
     committee_decision: 'accept',
+    evidence_gate_status: 'mixed_with_degraded',
+    pool_profile: 'high_vol_growth',
+    volatility_bucket: 'high',
+    hard_fact_count: 1,
+    degraded_fact_count: 1,
+    evidence_debt_reasons: ['non_same_day_source'],
+    risk_regime_fit: 'trend_expansion',
+    stop_rule_source: 'atr_bucketed_high_vol_growth_breakout',
   },
   quality_gate: {
     wf_ic_ir: 1.1284,
@@ -450,6 +793,53 @@ export const incubationOverview = {
   max_drawdown: -0.08,
   forward_ic_5d: 0.12,
   forward_sharpe_5d: 0.88,
+  prediction_quality_label: 'strong',
+  execution_quality_label: 'mixed',
+  confidence_contract_status: 'diagnostic_ready',
+  quality_diagnosis: '预测轴稳定，执行转化仍有优化空间。',
+  signal_quality: {
+    primary_skill_lcb: 0.08,
+    coverage_ratio: 0.75,
+  },
+  execution_quality: {
+    execution_conversion_efficiency: 0.24,
+    nav_conversion_proxy: 0.18,
+  },
+  execution_diagnostics: {
+    execution_audit_gate_status: 'insufficient_samples',
+    execution_hard_gate_passed: false,
+    remediation_action: 'execution_template_adjustment',
+    diagnostic_only: true,
+  },
+  hard_gate_result: {
+    pipeline_stage: 'observe',
+    signal_stage_without_execution_gate: 'candidate',
+    execution_audit_gate_status: 'insufficient_samples',
+    execution_hard_gate_passed: false,
+    passed: false,
+    reasons: ['execution_audit_gate:insufficient_samples'],
+  },
+  runtime_playbook_provenance: {
+    source_claim_ids: ['claim_growth'],
+    source_trade_step_ids: ['entry_step_1', 'exit_step_reduce', 'exit_step_freeze'],
+    derived_from_defaults: false,
+    derivation_labels: ['runtime_playbook_provided', 'trade_plan_driven', 'claim_linked'],
+  },
+  semantic_lineage: {
+    claim_to_trade_plan_map: {
+      claim_to_trade_step_ids: {
+        claim_growth: ['entry_step_1', 'exit_step_reduce', 'exit_step_freeze'],
+      },
+    },
+    trade_plan_to_dsl_map: {
+      trade_step_to_dsl_sections: {
+        entry_step_1: ['entry'],
+        exit_step_reduce: ['exit'],
+        exit_step_freeze: ['exit'],
+      },
+    },
+  },
+  execution_lineage: executionLineage,
   forward_returns: [
     {
       label: '5D',
@@ -526,7 +916,15 @@ async function fulfillEnvelope(route: Route, data: unknown) {
   });
 }
 
-export async function mockStrategyMarketScenario(page: Page) {
+type MockStrategyMarketScenarioOptions = {
+  qualityUiV2Enabled?: boolean;
+};
+
+export async function mockStrategyMarketScenario(
+  page: Page,
+  options: MockStrategyMarketScenarioOptions = {},
+) {
+  const qualityUiV2Enabled = Boolean(options.qualityUiV2Enabled);
   await page.route(/\/api\/strategy-market(?:\/.*)?$/, async (route) => {
     const url = new URL(route.request().url());
 
@@ -553,6 +951,12 @@ export async function mockStrategyMarketScenario(page: Page) {
           running: false,
           last_run: '2026-04-08T10:30:00',
           last_summary: factorySummary,
+          quality_baseline: qualityBaseline,
+          signal_quality_registry: signalQualityRegistry,
+          quality_ui_v2_enabled: qualityUiV2Enabled,
+          feature_flags: {
+            quality_ui_v2_enabled: qualityUiV2Enabled,
+          },
           last_result: {
             status: 'success',
           },
@@ -575,6 +979,19 @@ export async function mockStrategyMarketScenario(page: Page) {
           domain_events: true,
           domain_projection: true,
           runtime_cycle: true,
+          high_confidence_enabled: true,
+          evidence_contract_enabled: true,
+          confidence_diagnostics_enabled: true,
+          execution_audit_enabled: true,
+          quality_ui_v2_enabled: qualityUiV2Enabled,
+          signal_quality_registry: signalQualityRegistry,
+          high_confidence_feature_flags: {
+            high_confidence_enabled: true,
+            evidence_contract_enabled: true,
+            confidence_diagnostics_enabled: true,
+            execution_audit_enabled: true,
+            quality_ui_v2_enabled: qualityUiV2Enabled,
+          },
         });
       case '/api/strategy-market/daily-snapshot':
         return fulfillEnvelope(route, {

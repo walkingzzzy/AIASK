@@ -5,6 +5,7 @@ import { Badge, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { formatMultipleTestingMode } from '@/app/strategy-market/lib/strategy-detail-view';
 import type {
+  IncubationOverviewResponse,
   IncubationAccount,
   IncubationMetric,
   ReviewReportResponse,
@@ -26,11 +27,13 @@ type StrategyDetailOverviewTabProps = {
   navSeries: number[];
   navCategories: string[];
   factorBars: FactorBarItem[];
+  incubationOverview: IncubationOverviewResponse | null | undefined;
   latestQualityReport: ReviewReportResponse | null | undefined;
   incubationAccount: IncubationAccount | null | undefined;
   latestIncubationMetric: IncubationMetric | null | undefined;
   openRiskEventsCount: number;
   vectorProfilesCount: number;
+  highConfidenceQualityUiEnabled: boolean;
   promotionReady: boolean;
   strategyAvgRating: number | null | undefined;
   sampleWindow: string;
@@ -51,6 +54,50 @@ type StrategyDetailOverviewTabProps = {
   onReview: () => void;
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+function qualityBadgeVariant(
+  value: unknown,
+): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'strong' || normalized === 'comparable_ready') return 'success';
+  if (normalized === 'mixed' || normalized === 'diagnostic_ready') return 'info';
+  if (normalized === 'insufficient_evidence' || normalized === 'insufficient') return 'warning';
+  if (normalized === 'weak' || normalized === 'missing') return 'danger';
+  return 'neutral';
+}
+
+function qualityLabelText(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'strong') return '强';
+  if (normalized === 'mixed') return '混合';
+  if (normalized === 'weak') return '弱';
+  if (normalized === 'insufficient_evidence') return '证据不足';
+  if (normalized === 'missing') return '缺失';
+  if (normalized === 'insufficient') return '样本不足';
+  if (normalized === 'diagnostic_ready') return '诊断可用';
+  if (normalized === 'comparable_ready') return '可比较';
+  return normalized || '-';
+}
+
+function executionLineageStatusText(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'mapped_runtime_action') return 'mapped runtime';
+  if (normalized === 'unmapped_runtime_action') return 'unmapped runtime';
+  if (normalized === 'mapped_trade_step') return 'mapped step';
+  if (normalized === 'claim_only') return 'claim only';
+  if (normalized === 'missing') return 'missing';
+  return normalized || '-';
+}
+
 export function StrategyDetailOverviewTab({
   allMetrics,
   metrics,
@@ -58,11 +105,13 @@ export function StrategyDetailOverviewTab({
   navSeries,
   navCategories,
   factorBars,
+  incubationOverview,
   latestQualityReport,
   incubationAccount,
   latestIncubationMetric,
   openRiskEventsCount,
   vectorProfilesCount,
+  highConfidenceQualityUiEnabled,
   promotionReady,
   strategyAvgRating,
   sampleWindow,
@@ -82,6 +131,62 @@ export function StrategyDetailOverviewTab({
   userId,
   onReview,
 }: StrategyDetailOverviewTabProps) {
+  const incubationOverviewRecord = asRecord(incubationOverview);
+  const signalQuality = asRecord(incubationOverviewRecord.signal_quality);
+  const executionQuality = asRecord(incubationOverviewRecord.execution_quality);
+  const executionAudit = asRecord(executionQuality.audit);
+  const executionDiagnostics = asRecord(incubationOverviewRecord.execution_diagnostics);
+  const hardGateResult = asRecord(incubationOverviewRecord.hard_gate_result);
+  const semanticLineage = asRecord(incubationOverviewRecord.semantic_lineage);
+  const executionLineage = asRecord(incubationOverviewRecord.execution_lineage);
+  const runtimePlaybookProvenance = asRecord(
+    incubationOverviewRecord.runtime_playbook_provenance ?? semanticLineage.runtime_playbook_provenance,
+  );
+  const claimToTradePlanMap = asRecord(semanticLineage.claim_to_trade_plan_map);
+  const tradePlanToDslMap = asRecord(semanticLineage.trade_plan_to_dsl_map);
+  const predictionQualityLabel = String(
+    incubationOverviewRecord.prediction_quality_label ?? '',
+  ).trim().toLowerCase();
+  const executionQualityLabel = String(
+    incubationOverviewRecord.execution_quality_label ?? '',
+  ).trim().toLowerCase();
+  const confidenceContractStatus = String(
+    incubationOverviewRecord.confidence_contract_status ?? '',
+  ).trim().toLowerCase();
+  const qualityDiagnosis = String(
+    incubationOverviewRecord.quality_diagnosis ?? '',
+  ).trim();
+  const executionConversionEfficiency = Number(
+    executionQuality.execution_conversion_efficiency
+      ?? executionAudit.execution_conversion_efficiency
+      ?? executionDiagnostics.execution_conversion_efficiency
+      ?? executionQuality.nav_conversion_proxy
+      ?? Number.NaN,
+  );
+  const coverageRatio = Number(signalQuality.coverage_ratio ?? Number.NaN);
+  const primarySkillLcb = Number(signalQuality.primary_skill_lcb ?? Number.NaN);
+  const hardGatePassed = Boolean(hardGateResult.passed);
+  const semanticClaimCount = Object.keys(asRecord(claimToTradePlanMap.claim_to_trade_step_ids)).length;
+  const semanticTradeStepCount = Object.keys(asRecord(tradePlanToDslMap.trade_step_to_dsl_sections)).length;
+  const executionLineageRows = asRecordArray(executionLineage.recent_runtime_actions).slice(0, 4);
+  const executionLineageTradeStepCount = Number(
+    executionLineage.trade_step_count
+      ?? executionLineage.mapped_trade_step_count
+      ?? semanticTradeStepCount
+      ?? Number.NaN,
+  );
+  const executionLineageRuntimeCount = Number(executionLineage.runtime_action_count ?? Number.NaN);
+  const executionLineageUnmappedCount = Number(executionLineage.unmapped_runtime_action_count ?? Number.NaN);
+  const playbookDerivationLabels = Array.isArray(runtimePlaybookProvenance.derivation_labels)
+    ? runtimePlaybookProvenance.derivation_labels.map((item) => String(item)).filter(Boolean)
+    : [];
+  const showHighConfidencePanel = highConfidenceQualityUiEnabled && [
+    predictionQualityLabel,
+    executionQualityLabel,
+    confidenceContractStatus,
+    qualityDiagnosis,
+  ].some(Boolean);
+
   return (
     <>
       {allMetrics ? (
@@ -266,6 +371,163 @@ export function StrategyDetailOverviewTab({
           样本期优先取策略合同字段，缺失时回退到孵化账户 NAV 区间；容量优先展示合同声明，缺失时回退到模拟盘当前总资产。
         </div>
       </SectionCard>
+
+      {showHighConfidencePanel ? (
+        <SectionCard className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="mt-0">高置信质量</h3>
+              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+                把预测质量、执行转化和合同就绪度放在同一块，只做增量展示，不替代现有验证卡片。
+              </p>
+            </div>
+            <Badge variant="info">High Confidence</Badge>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {predictionQualityLabel ? (
+              <Badge variant={qualityBadgeVariant(predictionQualityLabel)}>
+                预测质量: {qualityLabelText(predictionQualityLabel)}
+              </Badge>
+            ) : null}
+            {executionQualityLabel ? (
+              <Badge variant={qualityBadgeVariant(executionQualityLabel)}>
+                执行质量: {qualityLabelText(executionQualityLabel)}
+              </Badge>
+            ) : null}
+            {confidenceContractStatus ? (
+              <Badge variant={qualityBadgeVariant(confidenceContractStatus)}>
+                合同状态: {qualityLabelText(confidenceContractStatus)}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">预测轴</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {Number.isFinite(primarySkillLcb) ? fmtNum(primarySkillLcb, 4) : '-'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">primary skill LCB</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">覆盖率</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {Number.isFinite(coverageRatio) ? fmtPct(coverageRatio) : '-'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">signal coverage / forward coverage</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行轴</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {Number.isFinite(executionConversionEfficiency)
+                  ? fmtPct(executionConversionEfficiency)
+                  : '-'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">execution conversion efficiency</div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-[24px] border border-border bg-surface-alt px-4 py-3 text-sm text-text-secondary">
+            {qualityDiagnosis || '当前尚无额外诊断文本，先以标签和合同状态作为高置信质量参考。'}
+          </div>
+        </SectionCard>
+      ) : null}
+
+      {(Object.keys(hardGateResult).length > 0 || Object.keys(semanticLineage).length > 0 || Object.keys(executionLineage).length > 0) ? (
+        <SectionCard className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="mt-0">闭环语义</h3>
+              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+                把 hard gate、diagnostic only 和 semantic lineage 分开讲清楚，避免把排序分误读成硬通过。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {Object.keys(hardGateResult).length > 0 ? (
+                <Badge variant={hardGatePassed ? 'success' : 'warning'}>
+                  Hard Gate: {hardGatePassed ? '通过' : '未通过'}
+                </Badge>
+              ) : null}
+              <Badge variant={executionDiagnostics.diagnostic_only ? 'info' : 'neutral'}>
+                {executionDiagnostics.diagnostic_only ? 'Diagnostic Only' : 'Runtime Contract'}
+              </Badge>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">硬门结果</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {String(hardGateResult.pipeline_stage ?? incubationOverviewRecord.pipeline_stage ?? '-')}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {String(hardGateResult.execution_audit_gate_status ?? incubationOverviewRecord.execution_audit_gate_status ?? '-')}
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Semantic Lineage</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {semanticClaimCount} claims / {semanticTradeStepCount} steps
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">claim → trade step → DSL rule</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Playbook 来源</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {playbookDerivationLabels.length ? playbookDerivationLabels[0] : '-'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {runtimePlaybookProvenance.derived_from_defaults == null
+                  ? 'provenance unavailable'
+                  : runtimePlaybookProvenance.derived_from_defaults
+                    ? 'derived from defaults'
+                    : 'provided by compile output'}
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Step-level Lineage</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {Number.isFinite(executionLineageTradeStepCount) ? executionLineageTradeStepCount : semanticTradeStepCount}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {Number.isFinite(executionLineageRuntimeCount) ? `${executionLineageRuntimeCount} runtime actions` : 'runtime actions unavailable'}
+                {Number.isFinite(executionLineageUnmappedCount) ? ` / unmapped ${executionLineageUnmappedCount}` : ''}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-[24px] border border-border bg-surface-alt px-4 py-3 text-sm text-text-secondary">
+            {[
+              semanticClaimCount ? `claim → trade step 映射 ${semanticClaimCount} 条` : '',
+              semanticTradeStepCount ? `trade step → DSL 映射 ${semanticTradeStepCount} 条` : '',
+              playbookDerivationLabels.length ? `runtime playbook: ${playbookDerivationLabels.join(' / ')}` : '',
+              Number.isFinite(executionLineageRuntimeCount) ? `runtime actions ${executionLineageRuntimeCount}` : '',
+              String(executionDiagnostics.remediation_action ?? '').trim(),
+            ].filter(Boolean).join('；') || '当前未返回额外 lineage 细节。'}
+          </div>
+          {executionLineageRows.length ? (
+            <div className="mt-4 rounded-[24px] border border-border bg-surface-alt px-4 py-4">
+              <div className="text-sm font-medium text-text-primary">Recent Runtime Actions</div>
+              <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                {executionLineageRows.map((item, index) => (
+                  <div
+                    key={`${String(item.signal_id ?? item.signal_date ?? index)}-${String(item.applied_trade_step_id ?? index)}`}
+                    className="rounded-[18px] border border-border bg-surface px-3 py-3"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 text-text-primary">
+                      <Badge variant="info">{String(item.runtime_action_reason ?? 'runtime')}</Badge>
+                      <span>{String(item.code ?? '-')}</span>
+                      <span className="text-text-secondary">{String(item.signal_date ?? '-')}</span>
+                    </div>
+                    <div className="mt-2 text-xs leading-6">
+                      Claim: {String(item.applied_claim_id ?? '-')} · Trade Step: {String(item.applied_trade_step_id ?? '-')}
+                    </div>
+                    <div className="text-xs leading-6">
+                      状态: {executionLineageStatusText(item.lineage_status)} · 来源: {String(item.runtime_action_source ?? '-')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </SectionCard>
+      ) : null}
 
       {metrics.length > 1
         ? (() => {

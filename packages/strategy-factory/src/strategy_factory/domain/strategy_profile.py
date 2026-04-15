@@ -61,6 +61,23 @@ _RISK_LEVEL_BY_TYPE = {
     "dsl_rule": "medium",
 }
 
+_POOL_PROFILE_BY_TYPE = {
+    "momentum": "high_vol_growth",
+    "volatility_breakout": "high_vol_growth",
+    "growth_factor": "high_vol_growth",
+    "gap_fill": "high_vol_growth",
+    "mean_reversion_short": "high_vol_growth",
+    "rsi": "high_vol_growth",
+    "quality_factor": "low_vol_defensive",
+    "value_factor": "low_vol_defensive",
+    "macro_timing": "low_vol_defensive",
+    "north_capital_track": "cycle_resource",
+    "sector_rotation": "cycle_resource",
+    "margin_divergence": "cycle_resource",
+    "ma_cross": "cycle_resource",
+    "dsl_rule": "mixed",
+}
+
 
 def _normalize_tags(values: Any) -> list[str]:
     items = values if isinstance(values, list) else [values]
@@ -181,6 +198,21 @@ def infer_candidate_strategy_profile(
         or task.get("opportunity_type")
         or strategy_type
     ).strip().lower() or strategy_type
+    pool_profile = str(
+        item.get("pool_profile")
+        or task.get("pool_profile")
+        or _POOL_PROFILE_BY_TYPE.get(strategy_type, "mixed")
+    ).strip().lower() or "mixed"
+    volatility_bucket = str(
+        item.get("volatility_bucket")
+        or task.get("volatility_bucket")
+        or ("high" if pool_profile == "high_vol_growth" else "low" if pool_profile == "low_vol_defensive" else "medium")
+    ).strip().lower() or "medium"
+    liquidity_bucket = str(
+        item.get("liquidity_bucket")
+        or task.get("liquidity_bucket")
+        or ("stable_low_velocity" if pool_profile == "low_vol_defensive" else "high_liquidity")
+    ).strip().lower() or "high_liquidity"
     holding_period_bucket = _holding_bucket_from_task(strategy_type, task, item)
     alpha_source = str(
         item.get("alpha_source")
@@ -190,7 +222,13 @@ def infer_candidate_strategy_profile(
     risk_level = str(
         item.get("risk_level")
         or task.get("risk_level")
-        or _RISK_LEVEL_BY_TYPE.get(strategy_type, "medium")
+        or (
+            "high"
+            if pool_profile == "high_vol_growth"
+            else "low"
+            if pool_profile == "low_vol_defensive"
+            else _RISK_LEVEL_BY_TYPE.get(strategy_type, "medium")
+        )
     ).strip().lower() or "medium"
     regime_fit = _infer_regime_fit(strategy_type, task, snapshot)
     generator_mode = _infer_generator_mode(item, task)
@@ -206,6 +244,9 @@ def infer_candidate_strategy_profile(
     return {
         "holding_period_bucket": holding_period_bucket,
         "strategy_family": candidate_family,
+        "pool_profile": pool_profile,
+        "volatility_bucket": volatility_bucket,
+        "liquidity_bucket": liquidity_bucket,
         "alpha_source": alpha_source,
         "direction_bias": direction_bias,
         "risk_level": risk_level,
@@ -239,6 +280,8 @@ def apply_candidate_strategy_profile(
             f"alpha_{profile.get('alpha_source')}",
             f"risk_{profile.get('risk_level')}",
             f"regime_{profile.get('regime_fit')}",
+            f"pool_{profile.get('pool_profile')}",
+            f"vol_{profile.get('volatility_bucket')}",
             f"generator_{profile.get('generator_mode')}",
             f"task_{profile.get('task_source')}",
             "single_name" if int(profile.get("target_symbol_count") or 0) <= 1 else "basket_candidate",
@@ -250,6 +293,9 @@ def apply_candidate_strategy_profile(
     item["tags"] = merged_tags
     item["candidate_family"] = item.get("candidate_family") or profile.get("strategy_family")
     item["holding_period_bucket"] = item.get("holding_period_bucket") or profile.get("holding_period_bucket")
+    item["pool_profile"] = item.get("pool_profile") or profile.get("pool_profile")
+    item["volatility_bucket"] = item.get("volatility_bucket") or profile.get("volatility_bucket")
+    item["liquidity_bucket"] = item.get("liquidity_bucket") or profile.get("liquidity_bucket")
     item["alpha_source"] = item.get("alpha_source") or profile.get("alpha_source")
     item["risk_level"] = item.get("risk_level") or profile.get("risk_level")
     item["regime_fit"] = item.get("regime_fit") or profile.get("regime_fit")

@@ -374,12 +374,32 @@ export class MarketService {
   }
 
   async searchStocks(keyword: string, limit = 20) {
-    const payload = await this.callTool('search_stocks', { keyword: keyword.trim(), limit });
-    const root = this.unwrapPayload(payload);
-    const data = this.asRecord(root);
-    const results = this.asRecordArray(data.results ?? root);
+    const normalizedKeyword = keyword.trim();
+    let results: Record<string, unknown>[] = [];
+
+    try {
+      const payload = await this.callTool('search_stocks', { keyword: normalizedKeyword, limit });
+      const root = this.unwrapPayload(payload);
+      const data = this.asRecord(root);
+      results = this.asRecordArray(data.results ?? root);
+    } catch {
+      const stockList = await this.getStockList();
+      const loweredKeyword = normalizedKeyword.toLowerCase();
+      const fallbackResults = Array.isArray((stockList as { stocks?: Array<Record<string, unknown>> }).stocks)
+        ? (stockList as { stocks: Array<Record<string, unknown>> }).stocks
+        : [];
+      results = fallbackResults
+        .filter((stock) => [stock.code, stock.name, stock.industry].some((value) => String(value ?? '').toLowerCase().includes(loweredKeyword)))
+        .slice(0, limit)
+        .map((stock) => ({
+          code: stock.code,
+          name: stock.name,
+          industry: stock.industry ?? '',
+        }));
+    }
+
     return {
-      keyword: keyword.trim(),
+      keyword: normalizedKeyword,
       results: results.map((stock) => ({
         code: String(stock.code ?? ''),
         name: String(stock.name ?? ''),

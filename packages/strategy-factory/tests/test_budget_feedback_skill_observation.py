@@ -235,3 +235,93 @@ def test_incubation_budgeter_surfaces_skill_feedback_observation_fields(monkeypa
     assert candidate_plan["feedback_scope"]["skill_control_mode"] == "freeze"
     assert plan["summary"]["feedback_skill_controlled_count"] == 1
     assert plan["summary"]["feedback_paper_skill_lcb_avg"] == pytest.approx(-0.0861)
+
+
+@pytest.mark.parametrize(
+    ("paper_skill_lcb", "execution_conversion_efficiency", "expected_action"),
+    [
+        (0.08, 0.28, "prioritize_scale"),
+        (0.08, 0.12, "retain_family_reduce_budget"),
+        (-0.03, 0.24, "small_budget_observe"),
+        (-0.04, 0.08, "cool_or_freeze"),
+    ],
+)
+def test_resolve_feedback_metrics_classifies_dual_axis_budget_actions(
+    paper_skill_lcb: float,
+    execution_conversion_efficiency: float,
+    expected_action: str,
+):
+    feedback_root = {
+        "momentum": {
+            "strategy_count": 3,
+            "paper_hit_ratio": 0.58,
+            "paper_skill_lcb": paper_skill_lcb,
+            "paper_recent_skill_lcb": paper_skill_lcb,
+            "paper_stability_gap": 0.03,
+            "paper_coverage_ratio": 0.78,
+            "execution_conversion_efficiency": execution_conversion_efficiency,
+            "runtime_alert_pressure": 0.02,
+            "realized_turnover": 0.18,
+            "capacity_crowding": 0.12,
+        }
+    }
+
+    metrics = resolve_feedback_metrics(feedback_root, family="momentum")
+
+    assert metrics["budget_action_applied"] is True
+    assert metrics["budget_feedback_action"] == expected_action
+    assert metrics["effective_feedback_signal"] == "prediction_execution_dual_axis"
+
+    if expected_action == "prioritize_scale":
+        assert metrics["prioritize_scale"] is True
+        assert metrics["budget_multiplier"] >= 1.15
+    elif expected_action == "retain_family_reduce_budget":
+        assert metrics["execution_optimization_queue"] is True
+        assert metrics["retain_family"] is True
+        assert metrics["budget_multiplier"] <= 0.78
+    elif expected_action == "small_budget_observe":
+        assert metrics["small_budget_observe"] is True
+        assert metrics["no_expansion"] is True
+        assert metrics["budget_multiplier"] <= 0.58
+    else:
+        assert metrics["cool_or_freeze"] is True
+        assert metrics["cooldown_active"] is True
+
+
+def test_feedback_contract_summary_tracks_dual_axis_budget_actions():
+    contract = normalize_feedback_input_contract(
+        {
+            "available": True,
+            "feedback": {
+                "momentum": {
+                    "strategy_count": 2,
+                    "paper_hit_ratio": 0.61,
+                    "paper_skill_lcb": 0.08,
+                    "paper_recent_skill_lcb": 0.07,
+                    "paper_stability_gap": 0.02,
+                    "paper_coverage_ratio": 0.82,
+                    "execution_conversion_efficiency": 0.12,
+                },
+                "quality_factor": {
+                    "strategy_count": 2,
+                    "paper_hit_ratio": 0.54,
+                    "paper_skill_lcb": -0.02,
+                    "paper_recent_skill_lcb": -0.01,
+                    "paper_stability_gap": 0.04,
+                    "paper_coverage_ratio": 0.75,
+                    "execution_conversion_efficiency": 0.25,
+                },
+            },
+        }
+    )
+
+    summary = contract["summary"]
+
+    assert summary["execution_conversion_efficiency"] == pytest.approx(0.185)
+    assert summary["execution_conversion_efficiency_observed_count"] == 2
+    assert summary["budget_action_counts"] == {
+        "retain_family_reduce_budget": 1,
+        "small_budget_observe": 1,
+    }
+    assert summary["execution_optimization_queue_count"] == 1
+    assert summary["small_budget_observe_count"] == 1

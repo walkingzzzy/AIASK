@@ -84,6 +84,12 @@ _NON_PROMOTABLE_REVIEW_DECISIONS = {"reject", "revise", "retire", "drop", "defer
 _NON_PROMOTABLE_REVIEW_RECOMMENDATIONS = {"reject", "revise", "defer", "observe_only", "paper_only"}
 _LLM_CORRELATED_GENERATOR_MODES = {"external_llm", "pipeline_staged", "llm_proxy", "llm_proxy_fallback"}
 _TRADE_AWARE_VALIDATION_GRADE_FAMILIES = {"momentum", "ma_cross", "quality_factor"}
+_INCUBATION_OBSERVE_TARGET_LAYER_OOS_SOFT_BAND = 0.03
+_INCUBATION_OBSERVE_MDD_SOFT_BAND = 0.03
+_INCUBATION_OBSERVE_POST_COST_SHARPE_FLOOR = 0.55
+_INCUBATION_OBSERVE_TRADE_COUNT_FLOOR = 8.0
+_TREND_EXECUTABLE_DSL_TYPES = {"ma_cross", "momentum", "volatility_breakout"}
+_PROXY_RUNTIME_FACTOR_TYPES = {"quality_factor", "value_factor", "growth_factor"}
 
 
 def _normalize_text(value: Any) -> str:
@@ -164,6 +170,94 @@ def _strategy_payload_value(strategy: dict, key: str, default: Any = None) -> An
     if key in params and params.get(key) is not None:
         return params.get(key)
     return default
+
+
+def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    target_codes = _extract_target_codes_from_payload(payload)
+    single_name_trend = strategy_type in _TREND_EXECUTABLE_DSL_TYPES and len(target_codes) == 1
+    evidence_chain = dict(_strategy_payload_value(payload, "evidence_chain") or {})
+    prediction_contract = dict(_strategy_payload_value(payload, "prediction_contract") or {})
+    confidence_contract = dict(_strategy_payload_value(payload, "confidence_contract") or {})
+    semantic_contract_missing_fields: list[str] = []
+    if strategy_type in (_TREND_EXECUTABLE_DSL_TYPES | _PROXY_RUNTIME_FACTOR_TYPES):
+        if not evidence_chain:
+            semantic_contract_missing_fields.append("evidence_chain")
+        if not prediction_contract:
+            semantic_contract_missing_fields.append("prediction_contract")
+        if not confidence_contract:
+            semantic_contract_missing_fields.append("confidence_contract")
+    instrument_profile = dict(_strategy_payload_value(payload, "instrument_profile") or {})
+    measurement_source = str(
+        instrument_profile.get("measurement_source") or "default_board_profile"
+    ).strip().lower() or "default_board_profile"
+    measured_profile_complete = bool(instrument_profile.get("measured_profile_complete"))
+    runtime_family_data_source = str(
+        _strategy_payload_value(payload, "runtime_family_data_source")
+        or ("price_proxy_runtime" if strategy_type in _PROXY_RUNTIME_FACTOR_TYPES else "market_data_runtime")
+    ).strip().lower() or None
+    proxy_runtime_used = bool(
+        _strategy_payload_value(payload, "proxy_runtime_used")
+    ) or (
+        strategy_type in _PROXY_RUNTIME_FACTOR_TYPES
+        and runtime_family_data_source != "fundamental_runtime"
+    )
+    semantic_runtime_match = (
+        bool(_strategy_payload_value(payload, "semantic_runtime_match"))
+        if _strategy_payload_value(payload, "semantic_runtime_match") is not None
+        else not proxy_runtime_used
+    )
+    default_profile_not_allowed = single_name_trend and (
+        measurement_source == "default_board_profile" or not measured_profile_complete
+    )
+    execution_readiness_tier = str(
+        _strategy_payload_value(payload, "execution_readiness_tier")
+        or (
+            "missing_executable_contract"
+            if single_name_trend and str(_strategy_payload_value(payload, "execution_semantic_mode") or "").strip().lower() != "compiled_dsl"
+            else "observe_diagnostic_only"
+            if proxy_runtime_used or default_profile_not_allowed or semantic_contract_missing_fields
+            else "formal_runtime_ready"
+        )
+    ).strip().lower() or None
+    diagnostic_only = bool(
+        _strategy_payload_value(payload, "diagnostic_only")
+    ) or bool(
+        proxy_runtime_used
+        or default_profile_not_allowed
+        or semantic_contract_missing_fields
+        or execution_readiness_tier == "observe_diagnostic_only"
+    )
+    hard_fail_reasons: list[str] = []
+    if semantic_contract_missing_fields:
+        hard_fail_reasons.append("final_strategy_missing_semantic_contract")
+    if proxy_runtime_used:
+        hard_fail_reasons.extend(
+            [
+                "runtime_family_semantic_mismatch",
+                "proxy_runtime_not_allowed_for_formal_incubation",
+            ]
+        )
+    if default_profile_not_allowed:
+        hard_fail_reasons.append("default_profile_not_allowed_for_single_name_runtime")
+    if not semantic_runtime_match and "runtime_family_semantic_mismatch" not in hard_fail_reasons:
+        hard_fail_reasons.append("runtime_family_semantic_mismatch")
+    if bool(dict(gate or {}).get("execution_semantic_gap")):
+        hard_fail_reasons.append("execution_semantic_gap")
+    return {
+        "semantic_contract_missing_fields": semantic_contract_missing_fields,
+        "semantic_runtime_match": semantic_runtime_match,
+        "runtime_family_data_source": runtime_family_data_source,
+        "proxy_runtime_used": proxy_runtime_used,
+        "diagnostic_only": diagnostic_only,
+        "execution_readiness_tier": execution_readiness_tier,
+        "measurement_source": measurement_source,
+        "measured_profile_complete": measured_profile_complete,
+        "default_profile_not_allowed": default_profile_not_allowed,
+        "hard_fail_reasons": list(dict.fromkeys(hard_fail_reasons)),
+    }
 
 
 def _should_route_single_target_bulk_factor_to_trade_profile(
@@ -1152,6 +1246,28 @@ def _trade_validation_audit_mode(
     return "research_only_fallback"
 
 
+def _can_soften_incubation_trade_metric(
+    *,
+    admission_level: str,
+    post_cost_sharpe: float,
+    trade_count: float,
+    target_layer_abnormal_return: float,
+    primary_validation_layer: str,
+    is_event: bool,
+) -> bool:
+    if admission_level != "incubation":
+        return False
+    if trade_count < _INCUBATION_OBSERVE_TRADE_COUNT_FLOOR:
+        return False
+    if post_cost_sharpe < _INCUBATION_OBSERVE_POST_COST_SHARPE_FLOOR:
+        return False
+    if target_layer_abnormal_return > 0.0:
+        return True
+    if is_event:
+        return False
+    return primary_validation_layer in {"target", "combined"}
+
+
 def _evaluate_trade_profile(
     strategy: dict,
     profile: dict[str, Any],
@@ -1175,7 +1291,7 @@ def _evaluate_trade_profile(
     warnings: list[str] = []
 
     post_cost_sharpe = safe_metric_value(metrics, "post_cost_sharpe", "sharpe_ratio")
-    total_return = safe_metric_value(metrics, "target_layer_oos_return", "total_return")
+    total_return = safe_metric_value(metrics, "total_return", "target_layer_oos_return")
     target_layer_oos_return = safe_metric_value(metrics, "target_layer_oos_return", "total_return")
     target_layer_abnormal_return = safe_metric_value(metrics, "target_layer_abnormal_return", "target_layer_oos_return", "total_return")
     trade_count = safe_metric_value(metrics, "trade_count", "trades_count")
@@ -1188,6 +1304,7 @@ def _evaluate_trade_profile(
     post_event_decay = safe_metric_value(metrics, "post_event_decay")
     trade_density = safe_metric_value(metrics, "trade_density")
     parameter_stability = safe_metric_value(metrics, "parameter_perturbation_trade_stability")
+    primary_validation_layer = str(metrics.get("primary_validation_layer") or "").strip().lower()
     event_study_mode = str(metrics.get("event_study_mode") or "").strip().lower()
     event_sample_count = int(safe_metric_value(metrics, "event_sample_count"))
     event_anchor_count = int(safe_metric_value(metrics, "event_anchor_count"))
@@ -1196,19 +1313,40 @@ def _evaluate_trade_profile(
     event_time_anchors = list(metrics.get("event_time_anchors") or [])
     traceable_to_event_samples = bool(metrics.get("traceable_to_event_samples"))
     event_audit_incomplete = bool(metrics.get("event_audit_incomplete"))
+    observe_softening_allowed = _can_soften_incubation_trade_metric(
+        admission_level=admission_level,
+        post_cost_sharpe=post_cost_sharpe,
+        trade_count=trade_count,
+        target_layer_abnormal_return=target_layer_abnormal_return,
+        primary_validation_layer=primary_validation_layer,
+        is_event=is_event,
+    )
 
     if post_cost_sharpe < thresholds["post_cost_sharpe_min"]:
         reasons.append(f"post_cost_sharpe {post_cost_sharpe:.3f} < {thresholds['post_cost_sharpe_min']:.3f}")
     if trade_count < thresholds["trade_count_min"]:
         reasons.append(f"trade_count {trade_count:.0f} < {thresholds['trade_count_min']:.0f}")
     if total_return < thresholds["total_return_min"]:
-        reasons.append(f"total_return {total_return:.3f} < {thresholds['total_return_min']:.3f}")
+        warnings.append(f"total_return {total_return:.3f} < {thresholds['total_return_min']:.3f}")
     if target_layer_oos_return < thresholds["target_layer_oos_return_min"]:
-        reasons.append(
+        target_layer_reason = (
             f"target_layer_oos_return {target_layer_oos_return:.3f} < {thresholds['target_layer_oos_return_min']:.3f}"
         )
+        target_layer_shortfall = thresholds["target_layer_oos_return_min"] - target_layer_oos_return
+        if (
+            observe_softening_allowed
+            and target_layer_shortfall <= _INCUBATION_OBSERVE_TARGET_LAYER_OOS_SOFT_BAND
+        ):
+            warnings.append(f"{target_layer_reason} [observe_band]")
+        else:
+            reasons.append(target_layer_reason)
     if max_drawdown > thresholds["max_drawdown_max"]:
-        reasons.append(f"max_drawdown {max_drawdown:.3f} > {thresholds['max_drawdown_max']:.3f}")
+        drawdown_reason = f"max_drawdown {max_drawdown:.3f} > {thresholds['max_drawdown_max']:.3f}"
+        drawdown_excess = max_drawdown - thresholds["max_drawdown_max"]
+        if observe_softening_allowed and drawdown_excess <= _INCUBATION_OBSERVE_MDD_SOFT_BAND:
+            warnings.append(f"{drawdown_reason} [observe_band]")
+        else:
+            reasons.append(drawdown_reason)
     if thresholds["event_window_hit_ratio_min"] > 0:
         if event_window_hit_ratio <= 0 and admission_level == "incubation":
             warnings.append("event_window_hit_ratio_missing")
@@ -1624,9 +1762,13 @@ def _review_stage_blockers(
     validation_report: Optional[dict] = None,
     gate: Optional[dict[str, Any]] = None,
 ) -> tuple[list[str], dict[str, Any]]:
+    semantic_runtime_context = _resolve_semantic_runtime_context(strategy, gate=gate)
     if admission_level == "research":
-        return [], _resolve_admission_review_context(strategy, validation_report=validation_report, gate=gate)
+        context = _resolve_admission_review_context(strategy, validation_report=validation_report, gate=gate)
+        context.update(semantic_runtime_context)
+        return [], context
     context = _resolve_admission_review_context(strategy, validation_report=validation_report, gate=gate)
+    context.update(semantic_runtime_context)
     thresholds = _review_gate_thresholds(admission_level)
     blockers: list[str] = []
     validation_grade = str(context.get("validation_grade") or "").strip().upper()
@@ -1649,6 +1791,19 @@ def _review_stage_blockers(
         )
     if accept_blockers:
         blockers.extend(f"committee_accept_blocker:{item}" for item in accept_blockers)
+    semantic_contract_missing_fields = list(context.get("semantic_contract_missing_fields") or [])
+    if semantic_contract_missing_fields:
+        blockers.append("final_strategy_missing_semantic_contract")
+    if not bool(context.get("semantic_runtime_match", True)):
+        blockers.append("runtime_family_semantic_mismatch")
+    if bool(context.get("proxy_runtime_used")):
+        blockers.append("proxy_runtime_not_allowed_for_formal_incubation")
+    if bool(context.get("default_profile_not_allowed")):
+        blockers.append("default_profile_not_allowed_for_single_name_runtime")
+    if bool(context.get("diagnostic_only")):
+        blockers.append(f"diagnostic_only_not_allowed_for_{admission_level}")
+    if str(context.get("execution_readiness_tier") or "").strip().lower() not in {"", "formal_runtime_ready"}:
+        blockers.append(f"execution_readiness_tier:{context.get('execution_readiness_tier')}")
     return blockers, context
 
 
@@ -2157,6 +2312,13 @@ async def run_submission_quality_gate(
                     profile,
                     normalized,
                 ),
+            }
+        )
+        semantic_runtime_context = _resolve_semantic_runtime_context(strategy, gate=normalized)
+        normalized = normalize_quality_gate_result(
+            {
+                **normalized,
+                **semantic_runtime_context,
             }
         )
         return _attach_admission_evaluations(

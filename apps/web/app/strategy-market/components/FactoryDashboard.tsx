@@ -250,6 +250,10 @@ function toDisplayCountEntries(value: unknown) {
     .filter(([, count]) => Number.isFinite(count) && count > 0);
 }
 
+function toDisplayCountRecord(value: unknown): Record<string, number> {
+  return Object.fromEntries(toDisplayCountEntries(value));
+}
+
 function toObjectArray(value: unknown) {
   if (!Array.isArray(value)) return [] as Array<Record<string, unknown>>;
   return value.filter((item): item is Record<string, unknown> => isObjectRecord(item));
@@ -680,6 +684,215 @@ function FactoryQualityBaselinePanel({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function FactoryHighConfidenceQualityPanel({
+  factoryStatus,
+}: {
+  factoryStatus: FactoryStatusResponse | null | undefined;
+}) {
+  const qualityUiV2Enabled = Boolean(
+    factoryStatus?.quality_ui_v2_enabled ?? factoryStatus?.feature_flags?.quality_ui_v2_enabled,
+  );
+  const qualityBaseline = asTypedObject<Record<string, unknown>>(
+    factoryStatus?.quality_baseline,
+  ) as Partial<FactoryQualityBaseline>;
+  const latestRun = asTypedObject<Record<string, unknown>>(
+    qualityBaseline.latest_run,
+  ) as Partial<FactoryQualitySummarySnapshot>;
+  const cohort = asTypedObject<Record<string, unknown>>(
+    qualityBaseline.submitted_strategy_cohort,
+  ) as NonNullable<FactoryQualityBaseline['submitted_strategy_cohort']>;
+
+  if (!qualityUiV2Enabled) return null;
+
+  const hasHighConfidenceData = [
+    latestRun.prediction_quality_distribution,
+    latestRun.execution_quality_distribution,
+    latestRun.evidence_alignment_distribution,
+    latestRun.confidence_contract_ready_rate,
+    cohort.prediction_quality_distribution,
+    cohort.execution_quality_distribution,
+    cohort.evidence_alignment_distribution,
+    cohort.confidence_contract_ready_rate,
+  ].some((value) => {
+    if (isObjectRecord(value)) return Object.keys(value).length > 0;
+    return value != null;
+  });
+
+  if (!hasHighConfidenceData) return null;
+
+  const sections = [
+    {
+      key: 'latest',
+      title: '最近一轮',
+      summary: latestRun,
+    },
+    {
+      key: 'cohort',
+      title: '已提交 Cohort',
+      summary: cohort,
+    },
+  ].filter((item) => {
+    const summary = item.summary;
+    return [
+      summary.prediction_quality_distribution,
+      summary.execution_quality_distribution,
+      summary.evidence_alignment_distribution,
+      summary.confidence_contract_ready_rate,
+    ].some((value) => {
+      if (isObjectRecord(value)) return Object.keys(value).length > 0;
+      return value != null;
+    });
+  });
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">高置信质量面板</div>
+        <Badge variant="info">UI V2</Badge>
+      </div>
+      <div className="text-xs text-text-secondary">
+        预测质量、执行质量、证据对齐和合同就绪率按 cohort / 最近一轮并排展示，旧 KPI 卡片保持不变。
+      </div>
+      <div className="grid gap-3 xl:grid-cols-2">
+        {sections.map(({ key, title, summary }) => (
+          <div
+            key={key}
+            className="rounded border border-border bg-surface px-3 py-3 space-y-3 text-xs text-text-secondary"
+          >
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="font-medium text-text-primary">{title}</div>
+              <Badge variant="neutral">
+                合同就绪率 {formatRatioPercent(toDisplayNumber(summary.confidence_contract_ready_rate))}
+              </Badge>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              <div>预测质量：{formatCountSummary(summary.prediction_quality_distribution ?? {}) || '-'}</div>
+              <div>执行质量：{formatCountSummary(summary.execution_quality_distribution ?? {}) || '-'}</div>
+              <div>证据对齐：{formatCountSummary(summary.evidence_alignment_distribution ?? {}) || '-'}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FactorySignalQualityRegistryPanel({
+  factoryStatus,
+}: {
+  factoryStatus: FactoryStatusResponse | null | undefined;
+}) {
+  const registry = asTypedObject<Record<string, unknown>>(factoryStatus?.signal_quality_registry);
+  const snapshot = asTypedObject<Record<string, unknown>>(
+    firstDefinedValue(registry.snapshot, registry),
+  );
+  const buyProbability = asTypedObject<Record<string, unknown>>(
+    firstDefinedValue(snapshot.buy_probability, registry.buy_probability),
+  );
+  const sentiment = asTypedObject<Record<string, unknown>>(
+    firstDefinedValue(snapshot.sentiment, registry.sentiment),
+  );
+  const factor = asTypedObject<Record<string, unknown>>(
+    firstDefinedValue(snapshot.factor, registry.factor),
+  );
+  const drift = asTypedObject<Record<string, unknown>>(registry.drift);
+  const driftChecks = asTypedObject<Record<string, unknown>>(drift.checks);
+  const driftEntries = Object.entries(driftChecks)
+    .map(([key, value]) => ({
+      key,
+      payload: asTypedObject<Record<string, unknown>>(value),
+    }))
+    .filter(({ payload }) => Object.keys(payload).length > 0);
+  const recentProbability = toObjectArray(registry.recent_probability);
+  const recentSentiment = toObjectArray(registry.recent_sentiment);
+  const recentFactor = toObjectArray(registry.recent_factor);
+
+  const hasRegistryData = [
+    buyProbability.entry_count,
+    sentiment.entry_count,
+    factor.entry_count,
+    drift.overall_status,
+    recentProbability.length,
+    recentSentiment.length,
+    recentFactor.length,
+  ].some((value) => {
+    if (typeof value === 'number') return value > 0;
+    return value != null && value !== '';
+  });
+
+  if (!hasRegistryData) return null;
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">Signal Quality Registry</div>
+        <Badge variant={String(drift.overall_status ?? '').toLowerCase() === 'degraded' ? 'warning' : 'info'}>
+          drift {toDisplayText(drift.overall_status) ?? 'partial'}
+        </Badge>
+      </div>
+      <div className="text-xs text-text-secondary">
+        probability / sentiment / factor 的 recent quality 和 drift summary 放在同一块，作为工厂 dashboard 的观测闭环。
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <FactoryMetric title="概率条目" value={toDisplayNumber(buyProbability.entry_count) ?? 0} />
+        <FactoryMetric title="情绪条目" value={toDisplayNumber(sentiment.entry_count) ?? 0} />
+        <FactoryMetric title="因子条目" value={toDisplayNumber(factor.entry_count) ?? 0} />
+        <FactoryMetric title="总条目" value={toDisplayNumber(snapshot.total_entries ?? registry.total_entries) ?? 0} />
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 text-xs text-text-secondary">
+        <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+          <div className="font-medium text-text-primary">买入概率</div>
+          <div>质量分布：{formatCountSummary(toDisplayCountRecord(buyProbability.quality_distribution)) || '-'}</div>
+          <div>Brier：{formatFactoryMetricValue(toDisplayNumber(asTypedObject<Record<string, unknown>>(buyProbability.brier_score).mean), 4)}</div>
+          <div>ECE：{formatFactoryMetricValue(toDisplayNumber(asTypedObject<Record<string, unknown>>(buyProbability.ece).mean), 4)}</div>
+          {recentProbability.length ? (
+            <div className="rounded border border-border bg-surface-alt px-2 py-2">
+              recent: {recentProbability.slice(0, 2).map((item) => `${toDisplayText(item.code) ?? '-'} ${toDisplayText(item.quality) ?? 'unknown'}`).join(' / ')}
+            </div>
+          ) : null}
+        </div>
+        <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+          <div className="font-medium text-text-primary">情绪质量</div>
+          <div>情绪分布：{formatCountSummary(toDisplayCountRecord(sentiment.sentiment_distribution)) || '-'}</div>
+          <div>稳定性：{formatCountSummary(toDisplayCountRecord(sentiment.stability_distribution)) || '-'}</div>
+          <div>news alpha：{formatFactoryMetricValue(toDisplayNumber(asTypedObject<Record<string, unknown>>(sentiment.news_alpha_5d).mean), 4)}</div>
+          {recentSentiment.length ? (
+            <div className="rounded border border-border bg-surface-alt px-2 py-2">
+              recent: {recentSentiment.slice(0, 2).map((item) => `${toDisplayText(item.code) ?? '-'} ${toDisplayText(item.sentiment) ?? 'neutral'}`).join(' / ')}
+            </div>
+          ) : null}
+        </div>
+        <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+          <div className="font-medium text-text-primary">因子质量</div>
+          <div>评级分布：{formatCountSummary(toDisplayCountRecord(factor.rating_distribution)) || '-'}</div>
+          <div>前视风险：{formatCountSummary(toDisplayCountRecord(factor.lookahead_risk_distribution)) || '-'}</div>
+          <div>OOS RankIC：{formatFactoryMetricValue(toDisplayNumber(asTypedObject<Record<string, unknown>>(factor.oos_rank_ic_mean).mean), 4)}</div>
+          {recentFactor.length ? (
+            <div className="rounded border border-border bg-surface-alt px-2 py-2">
+              recent: {recentFactor.slice(0, 2).map((item) => `${toDisplayText(item.factor_name) ?? '-'} ${toDisplayText(item.rating) ?? 'unknown'}`).join(' / ')}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {driftEntries.length ? (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">Drift Summary</div>
+          <div className="flex flex-wrap gap-2">
+            {driftEntries.map(({ key, payload }) => (
+              <Badge
+                key={key}
+                variant={String(payload.status ?? '').toLowerCase() === 'degraded' ? 'warning' : 'neutral'}
+              >
+                {key}: {toDisplayText(payload.status) ?? 'unknown'}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3306,6 +3519,8 @@ export function FactoryDashboard({
         description="优先看原始 validation 等级，再看 effective 等级与 strict / live 对齐情况，避免把门禁修正误当成质量提升。"
       />
       <FactoryQualityBaselinePanel factoryStatus={factoryStatus} />
+      <FactoryHighConfidenceQualityPanel factoryStatus={factoryStatus} />
+      <FactorySignalQualityRegistryPanel factoryStatus={factoryStatus} />
       <FactoryProviderDiagnosticsPanel factoryStatus={factoryStatus} />
       <FactoryFeedbackLoopPanel title="P3 反馈闭环" summary={factorySummary} compact />
       <div className="mt-3 flex flex-wrap gap-2">

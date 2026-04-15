@@ -175,6 +175,84 @@ async def test_strategy_llm_provider_timeout_schedule_respects_configured_timeou
 
 
 @pytest.mark.asyncio
+async def test_generate_candidates_skips_during_connectivity_cooldown_after_connect_error():
+    import httpx
+
+    provider = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="https://example.com/v1",
+            api_key="k",
+            model="m",
+            retry_count=0,
+            recent_connectivity_minimal_streak=1,
+            recent_connectivity_cooldown_sec=60,
+        )
+    )
+    provider._client = _RaisingPostClient(lambda: httpx.ConnectError("connect failed"))
+
+    try:
+        with pytest.raises(StrategyLLMRequestError) as excinfo:
+            await provider.generate_candidates(
+                snapshot={},
+                market_frame=None,
+                research_context={"task": "connectivity_failure"},
+                parent_strategies=[],
+                history_summary=[],
+                research_task={
+                    "task_id": "connectivity_failure",
+                    "task_source": "smoke_test",
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "medium",
+                    "target_symbols": ["600519"],
+                    "target_pool_id": "explicit:600519",
+                    "validation_profile": {
+                        "profile": "trade_rule_validation",
+                        "validation_focus": "candidate_target_only",
+                        "primary_validation_layer": "combined",
+                    },
+                },
+                limit=1,
+            )
+
+        assert excinfo.value.metrics["last_error_type"] == "ConnectError"
+        status = provider.get_health_snapshot()
+        assert status["scheduler_should_disable"] is True
+        assert status["scheduler_skip_reason"] == "connectivity_cooldown_active"
+        assert status["connectivity_cooldown_active"] is True
+
+        provider._client = _RaisingPostClient(lambda: AssertionError("connectivity cooldown should skip network"))
+        with pytest.raises(StrategyLLMRequestError) as cooldown_exc:
+            await provider.generate_candidates(
+                snapshot={},
+                market_frame=None,
+                research_context={"task": "connectivity_failure"},
+                parent_strategies=[],
+                history_summary=[],
+                research_task={
+                    "task_id": "connectivity_failure",
+                    "task_source": "smoke_test",
+                    "candidate_family": "momentum",
+                    "holding_period_bucket": "medium",
+                    "target_symbols": ["600519"],
+                    "target_pool_id": "explicit:600519",
+                    "validation_profile": {
+                        "profile": "trade_rule_validation",
+                        "validation_focus": "candidate_target_only",
+                        "primary_validation_layer": "combined",
+                    },
+                },
+                limit=1,
+            )
+    finally:
+        await provider.close()
+
+    assert cooldown_exc.value.metrics["status"] == "cooldown_skip"
+    assert cooldown_exc.value.metrics["cooldown_reason"] == "recent_connectivity"
+
+
+@pytest.mark.asyncio
 async def test_generate_candidates_returns_raw_candidates_when_none_are_executable():
     provider = StrategyLLMProvider(
         StrategyLLMConfig(

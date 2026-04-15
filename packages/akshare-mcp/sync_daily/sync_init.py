@@ -234,24 +234,23 @@ class InitSync:
             # 写入DB
             if klines:
                 try:
-                    async with self.db.acquire() as conn:
-                        for kl in klines:
-                            d = kl.get('date', '')[:10]
-                            if not d:
-                                continue
-                            await conn.execute("""
-                                INSERT INTO kline_1d (time, code, open, high, low, close, volume, amount, change_pct, updated_at)
-                                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-                                ON CONFLICT (time, code) DO UPDATE SET
-                                    open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
-                                    close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount,
-                                    change_pct=EXCLUDED.change_pct, updated_at=NOW()
-                            """, d, code,
-                                _safe_float(kl.get('open')), _safe_float(kl.get('high')),
-                                _safe_float(kl.get('low')), _safe_float(kl.get('close')),
-                                _safe_int(kl.get('volume')) or 0,
-                                _safe_float(kl.get('amount')),
-                                _safe_float(kl.get('change_pct')))
+                    payload = []
+                    for kl in klines:
+                        d = kl.get('date', '')[:10]
+                        if not d:
+                            continue
+                        payload.append({
+                            'date': d,
+                            'open': _safe_float(kl.get('open')),
+                            'high': _safe_float(kl.get('high')),
+                            'low': _safe_float(kl.get('low')),
+                            'close': _safe_float(kl.get('close')),
+                            'volume': _safe_int(kl.get('volume')) or 0,
+                            'amount': _safe_float(kl.get('amount')),
+                            'change_pct': _safe_float(kl.get('change_pct')),
+                        })
+                    if payload:
+                        await self.db.save_klines(code, payload)
                     count += 1
                 except Exception as e:
                     errors.append(f"{code}(write): {e}")

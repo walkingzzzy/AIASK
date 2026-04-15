@@ -720,9 +720,12 @@ class FactorLLMProvider:
     def _should_retry_with_stream(self, exc: FactorLLMProviderCompatibilityError) -> bool:
         metrics = dict(getattr(exc, "metrics", {}) or {})
         content_type = str(metrics.get("response_content_type") or "").strip().lower()
+        error_text = self._error_text(exc).lower()
+        if "missing extractable content" in error_text:
+            return True
         if "text/event-stream" not in content_type:
             return False
-        return "missing extractable content" in self._error_text(exc).lower()
+        return False
 
     async def _stream_parse_response_payload(
         self,

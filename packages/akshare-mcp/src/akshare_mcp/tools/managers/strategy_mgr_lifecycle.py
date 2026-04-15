@@ -17,6 +17,7 @@ from .strategy_mgr_helpers import (
     normalize_factory_run_detail_contract,
     normalize_factory_run_summary_contract,
     normalize_quality_gate_result,
+    parse_bool,
     refresh_factory_run_detail_quality_contract,
     refresh_factory_run_summary_quality_contract,
     save_quality_report,
@@ -25,6 +26,27 @@ from .strategy_mgr_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_signal_quality_registry_snapshot():
+    try:
+        from ...services.signal_quality_registry import (
+            get_default_signal_quality_registry,
+            get_default_signal_quality_registry_snapshot,
+        )
+
+        registry = get_default_signal_quality_registry()
+        snapshot = dict(get_default_signal_quality_registry_snapshot() or {})
+        return {
+            **snapshot,
+            "snapshot": snapshot,
+            "drift": dict(registry.drift_check() or {}),
+            "recent_probability": list(registry.recent_probability(5)),
+            "recent_sentiment": list(registry.recent_sentiment(5)),
+            "recent_factor": list(registry.recent_factor(5)),
+        }
+    except Exception:
+        return {}
 
 _TRADE_AUDIT_BACKTEST_KEYS = (
     "post_cost_sharpe",
@@ -40,6 +62,7 @@ _TRADE_AUDIT_BACKTEST_KEYS = (
 
 def _quality_report_submission_audit(report: Optional[dict]) -> dict:
     payload = dict(report or {})
+    summary = dict(payload.get("summary") or {})
     fields = (
         "committee_review",
         "task_signature",
@@ -66,11 +89,19 @@ def _quality_report_submission_audit(report: Optional[dict]) -> dict:
         "submission_action_completed",
         "task_preference",
         "candidate_provenance",
+        "trend_cluster_ratio",
+        "diversification_debt",
+        "pool_profile_distribution",
+        "review_issue_buckets",
+        "review_issue_primary",
     )
     return {
-        field: payload.get(field)
+        field: (payload.get(field) if payload.get(field) not in (None, "", [], {}) else summary.get(field))
         for field in fields
-        if payload.get(field) not in (None, "", [], {})
+        if (
+            payload.get(field) not in (None, "", [], {})
+            or summary.get(field) not in (None, "", [], {})
+        )
     }
 
 
@@ -243,6 +274,88 @@ async def handle_review_report_recheck(db, params: dict) -> dict:
     return ok(report)
 
 
+def _resolve_replay_strategy_ids(params: dict) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    raw_values = [
+        params.get("strategy_id"),
+        params.get("id"),
+        params.get("strategy_ids"),
+    ]
+    queue = list(raw_values)
+    while queue:
+        value = queue.pop(0)
+        if isinstance(value, (list, tuple, set)):
+            queue[:0] = list(value)
+            continue
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ordered
+
+
+async def handle_submission_replay(db, params: dict) -> dict:
+    strategy_ids = _resolve_replay_strategy_ids(params)
+    if not strategy_ids:
+        return fail("strategy_id is required")
+    recheck_reports = parse_bool(params.get("recheck_reports"), True)
+    from strategy_factory import StrategySubmitter
+
+    submitter = StrategySubmitter()
+    items: list[dict] = []
+    for sid in strategy_ids:
+        strategy = await db.get_strategy(sid)
+        if not strategy:
+            return fail(f"Strategy not found: {sid}")
+        latest_report = await get_latest_quality_report(db, sid)
+        if recheck_reports:
+            validation_report, risk_report, backtest_metrics = await _build_recheck_quality_inputs(
+                db,
+                strategy,
+                latest_report,
+            )
+        else:
+            validation_report = dict((latest_report or {}).get("validation_report") or {})
+            risk_report = dict((latest_report or {}).get("risk_report") or {})
+            backtest_metrics = _select_rich_backtest_metrics_from_reports(
+                [dict(latest_report or {})],
+                dict((latest_report or {}).get("backtest_metrics") or {}),
+            )
+        snapshot = dict((latest_report or {}).get("snapshot") or {})
+        if not snapshot.get("date"):
+            snapshot["date"] = datetime.now(timezone.utc).date().isoformat()
+        replayed = await submitter.replay_existing_submission(
+            strategy,
+            snapshot,
+            db,
+            validation_report=validation_report,
+            risk_report=risk_report,
+            backtest_metrics=backtest_metrics,
+            latest_report=latest_report,
+        )
+        gate = dict(replayed.get("gate") or {})
+        items.append(
+            {
+                "strategy_id": sid,
+                "name": replayed.get("name") or strategy.get("name"),
+                "status": replayed.get("status"),
+                "submission_lane": replayed.get("submission_lane"),
+                "incubation_budget_track": replayed.get("incubation_budget_track"),
+                "passed": bool(gate.get("passed")),
+                "strict_incubation_ready": bool(gate.get("strict_incubation_ready")),
+                "validation_grade": (
+                    dict((replayed.get("quality_report") or {}).get("summary") or {}).get("validation_grade")
+                ),
+                "submission_action_trigger": replayed.get("submission_action_trigger"),
+                "paper_lane_ready": replayed.get("paper_lane_ready"),
+                "live_review_ready": replayed.get("live_review_ready"),
+            }
+        )
+    return ok({"count": len(items), "recheck_reports": recheck_reports, "items": items})
+
+
 async def handle_submit(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
@@ -347,6 +460,7 @@ async def handle_factory_status(db, params: dict) -> dict:
             normalized_last_result,
         )
     factory_constants = get_factory_constants()
+    high_confidence_feature_flags = dict(factory_constants.get("HIGH_CONFIDENCE_FEATURE_FLAGS") or {})
 
     def _default_bulk_config() -> dict:
         return {
@@ -444,6 +558,15 @@ async def handle_factory_status(db, params: dict) -> dict:
             **dict(status.get("quality_baseline") or {}),
             "recent_run_diagnostics": dict(status.get("recent_run_diagnostics") or {}),
         }
+    status["high_confidence_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_HIGH_CONFIDENCE_ENABLED"))
+    status["evidence_contract_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED"))
+    status["confidence_diagnostics_enabled"] = bool(
+        factory_constants.get("STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED")
+    )
+    status["execution_audit_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED"))
+    status["quality_ui_v2_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_QUALITY_UI_V2_ENABLED"))
+    status["feature_flags"] = high_confidence_feature_flags
+    status["signal_quality_registry"] = _load_signal_quality_registry_snapshot()
     status = {
         **status,
         **FactoryStatusDTO.from_dict(status).to_dict(),
@@ -476,6 +599,13 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     if not row:
         return fail(f"Factory run not found: {run_id}")
     return ok(await refresh_factory_run_detail_quality_contract(db, row))
+
+
+async def handle_execution_audit_verification(db, params: dict) -> dict:
+    if not hasattr(db, "get_execution_audit_verification"):
+        return fail("execution audit verification is unavailable")
+    strategy_id = str(params.get("strategy_id") or params.get("id") or "").strip() or None
+    return ok(await db.get_execution_audit_verification(strategy_id=strategy_id))
 
 
 # ── Quality gate runner ──────────────────────────────────────────────────────

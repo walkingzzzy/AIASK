@@ -272,6 +272,19 @@ class StrategyAIMixin:
             observable_phases = cls._preview_plain_list(payload.get("observable_phases"), limit=12)
             if observable_phases:
                 summary["observable_phases"] = observable_phases
+            task_artifact = cls._summarize_autonomy_task_artifact(payload.get("task_artifact"))
+            if task_artifact:
+                summary["task_artifact"] = task_artifact
+            candidate_artifact = cls._summarize_autonomy_candidate_artifact(
+                payload.get("candidate_artifact")
+            )
+            if candidate_artifact:
+                summary["candidate_artifact"] = candidate_artifact
+            evidence_artifact = cls._summarize_autonomy_evidence_artifact(
+                payload.get("evidence_artifact")
+            )
+            if evidence_artifact:
+                summary["evidence_artifact"] = evidence_artifact
             return summary
 
         if stage_name == "snapshot_summary":
@@ -337,6 +350,183 @@ class StrategyAIMixin:
                 if preview:
                     summary[key] = preview
                 summary[f"{key}_count"] = len(item)
+        return summary
+
+    @classmethod
+    def _summarize_autonomy_task_artifact(cls, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        if not payload:
+            return {}
+        summary = cls._compact_mapping(
+            payload,
+            keys=(
+                "contract_version",
+                "available",
+                "planned_task_count",
+                "executed_task_count",
+                "completed_task_count",
+                "failed_task_count",
+                "generated_candidate_count",
+                "event_task_count",
+                "snapshot_task_count",
+                "bulk_stock_task_count",
+                "bulk_stock_matrix_enabled",
+                "bulk_stock_matrix_stock_count",
+                "bulk_stock_matrix_eligible_stock_count",
+                "governed_candidate_activation_task_count",
+                "open_research_task_count",
+            ),
+        )
+        for key in (
+            "task_source_counts",
+            "task_origin_counts",
+            "feedback_control_mode_counts",
+            "feedback_target_pool_control_mode_counts",
+            "feedback_holding_bucket_control_mode_counts",
+            "feedback_generator_mode_control_mode_counts",
+        ):
+            item = cls._summarize_scalar_mapping(payload.get(key), limit=20)
+            if item:
+                summary[key] = item
+        for source_key, target_key in (
+            ("planned_task_briefs", "planned_task_briefs"),
+            ("task_result_briefs", "task_result_briefs"),
+        ):
+            values = list(payload.get(source_key) or [])
+            if not values:
+                continue
+            summary[target_key] = [
+                cls._compact_mapping(
+                    dict(item or {}),
+                    keys=(
+                        "task_id",
+                        "task_source",
+                        "opportunity_type",
+                        "candidate_family",
+                        "factor_name",
+                        "generation_limit",
+                        "generated_count",
+                        "status",
+                    ),
+                )
+                for item in values[:10]
+            ]
+            summary[f"{target_key}_count"] = len(values)
+        return summary
+
+    @classmethod
+    def _summarize_autonomy_candidate_artifact(cls, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        if not payload:
+            return {}
+        summary = cls._compact_mapping(
+            payload,
+            keys=(
+                "contract_version",
+                "available",
+                "candidate_count",
+                "targeted_candidate_count",
+                "experiment_linked_count",
+                "candidate_contract_ready_count",
+                "candidate_evidence_ready_count",
+                "local_rule_candidate_count",
+                "external_autonomy_candidate_count",
+                "governed_candidate_activation_count",
+            ),
+        )
+        for key in (
+            "candidate_origin_counts",
+            "generator_type_counts",
+            "task_source_counts",
+            "family_counts",
+        ):
+            item = cls._summarize_scalar_mapping(payload.get(key), limit=20)
+            if item:
+                summary[key] = item
+        briefs = list(payload.get("candidate_briefs") or [])
+        if briefs:
+            summary["candidate_briefs"] = [
+                cls._compact_mapping(
+                    dict(item or {}),
+                    keys=(
+                        "name",
+                        "strategy_type",
+                        "family",
+                        "task_source",
+                        "generator_type",
+                        "origin",
+                        "candidate_contract_ready",
+                        "evidence_ready",
+                        "experiment_id",
+                    ),
+                )
+                for item in briefs[:12]
+            ]
+            summary["candidate_brief_count"] = len(briefs)
+        return summary
+
+    @classmethod
+    def _summarize_autonomy_evidence_artifact(cls, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        if not payload:
+            return {}
+        summary = cls._compact_mapping(
+            payload,
+            keys=(
+                "contract_version",
+                "available",
+                "task_evidence_count",
+                "task_run_count",
+                "governed_candidate_activation_task_count",
+                "experiment_count",
+                "external_llm_status",
+                "external_llm_attempt_count",
+                "external_llm_network_request_count",
+                "external_llm_real_request_count",
+                "external_llm_selected_count",
+                "external_llm_compatibility_skip_count",
+                "external_llm_cooldown_skip_count",
+                "external_llm_compatibility_failure_count",
+                "external_llm_effective_response_count",
+                "external_llm_empty_200_response_count",
+                "external_llm_effective_response_ratio",
+                "external_llm_provider_health_status",
+                "persistence_failure_count",
+                "last_error_type",
+                "last_error",
+            ),
+        )
+        for key in (
+            "task_result_status_counts",
+            "task_origin_counts",
+            "external_llm_status_counts",
+        ):
+            item = cls._summarize_scalar_mapping(payload.get(key), limit=20)
+            if item:
+                summary[key] = item
+        task_run_ids = cls._preview_plain_list(payload.get("task_run_ids"), limit=12)
+        if task_run_ids:
+            summary["task_run_ids"] = task_run_ids
+            summary["task_run_id_count"] = len(list(payload.get("task_run_ids") or []))
+        briefs = list(payload.get("experiment_briefs") or [])
+        if briefs:
+            summary["experiment_briefs"] = [
+                cls._compact_mapping(
+                    dict(item or {}),
+                    keys=(
+                        "artifact_id",
+                        "strategy_type",
+                        "generator_type",
+                        "task_source",
+                        "source",
+                        "task_run_id",
+                        "candidate_contract_ready",
+                        "evidence_ready",
+                    ),
+                )
+                for item in briefs[:12]
+            ]
+            summary["experiment_brief_count"] = len(briefs)
         return summary
 
     @classmethod

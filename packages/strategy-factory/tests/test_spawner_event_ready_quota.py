@@ -228,3 +228,33 @@ def test_spawn_summary_tracks_quota_fill_modes_and_effective_counts():
     assert summary["quota_fill_quality_counts"]["oos_validated_history"] >= 1
     assert summary["effective_quota_fill_count"] >= summary["historical_guided_quota_fill_count"]
     assert summary["no_signal_quota_fill_count"] == 0
+
+
+def test_fill_gaps_avoids_momentum_quota_fill_and_limits_trend_cluster_ratio():
+    spawner = StrategySpawner()
+    snapshot = {
+        "fear_greed_index": 80,
+        "fg_components": {"volatility": 72},
+        "factor_ic": {},
+        "factor_ic_trend": {},
+        "north_fund_3d_net": 0,
+        "margin_5d_change_pct": 0,
+        "event_driven": {"event_count": 0, "tasks_ready_count": 0},
+        "completeness": {"completion_ratio": 1.0},
+    }
+    current_candidates = [
+        {"strategy_type": "momentum"},
+        {"strategy_type": "ma_cross"},
+        {"strategy_type": "volatility_breakout"},
+    ]
+
+    filled = spawner._fill_gaps(snapshot, current_candidates=current_candidates)
+
+    assert filled
+    assert all(item["strategy_type"] != "momentum" for item in filled)
+    assert all(item["strategy_type"] not in {"momentum", "ma_cross", "volatility_breakout"} for item in filled)
+
+    summary = spawner._build_spawn_report([*current_candidates, *filled])["summary"]
+    assert summary["trend_cluster_ratio"] <= 0.5
+    assert "pool_profile_distribution" in summary
+    assert "diversification_debt" in summary

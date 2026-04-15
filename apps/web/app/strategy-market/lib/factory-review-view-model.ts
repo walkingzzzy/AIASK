@@ -64,6 +64,39 @@ function formatIssueSummary(values: Array<string | null | undefined>, length = 4
   return shortText(issues.join(' / '), length);
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+function highConfidenceText(...values: unknown[]) {
+  for (const value of values) {
+    const text = String(value ?? '').trim().toLowerCase();
+    if (text) return text;
+  }
+  return '';
+}
+
+function finiteOrNull(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatExecutionLineageStatus(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'mapped_runtime_action') return 'mapped runtime';
+  if (normalized === 'unmapped_runtime_action') return 'unmapped runtime';
+  if (normalized === 'mapped_trade_step') return 'mapped step';
+  if (normalized === 'claim_only') return 'claim only';
+  if (normalized === 'missing') return 'missing';
+  return normalized || '-';
+}
+
 type BuildFactoryReviewViewModelArgs = {
   report: ReviewReportResponse | null | undefined;
   events: StrategyEventsResponse | null | undefined;
@@ -130,10 +163,88 @@ export function buildFactoryReviewViewModel({
   taskRuns,
 }: BuildFactoryReviewViewModelArgs) {
   const review = report && typeof report === 'object' ? report : null;
+  const incubationRecord = asRecord(incubation);
+  const reportSummary = asRecord((review as Record<string, unknown> | null)?.summary);
+  const evidenceAlignmentAudit = asRecord((review as Record<string, unknown> | null)?.evidence_alignment_audit);
+  const signalQuality = asRecord(
+    incubationRecord.signal_quality ?? reportSummary.signal_quality,
+  );
+  const executionQuality = asRecord(
+    incubationRecord.execution_quality ?? reportSummary.execution_quality,
+  );
+  const executionAudit = asRecord(executionQuality.audit);
+  const executionDiagnostics = asRecord(incubationRecord.execution_diagnostics);
+  const semanticLineage = asRecord(incubationRecord.semantic_lineage);
+  const executionLineage = asRecord(incubationRecord.execution_lineage);
+  const runtimePlaybookProvenance = asRecord(
+    incubationRecord.runtime_playbook_provenance ?? semanticLineage.runtime_playbook_provenance,
+  );
+  const hardGateResult = asRecord(
+    latestIncubationPipelineSnapshot?.hard_gate_result ?? incubationRecord.hard_gate_result,
+  );
+  const semanticClaimCount = Object.keys(asRecord(asRecord(semanticLineage.claim_to_trade_plan_map).claim_to_trade_step_ids)).length;
+  const semanticTradeStepCount = Object.keys(asRecord(asRecord(semanticLineage.trade_plan_to_dsl_map).trade_step_to_dsl_sections)).length;
+  const executionLineageSummaryRows = [
+    {
+      item: 'Claim-level Lineage',
+      value: `${executionLineage.claim_count ?? semanticClaimCount ?? 0} claims`,
+    },
+    {
+      item: 'Step-level Lineage',
+      value: `${executionLineage.trade_step_count ?? executionLineage.mapped_trade_step_count ?? semanticTradeStepCount ?? 0} steps`,
+    },
+    {
+      item: 'Runtime Actions',
+      value: `${executionLineage.runtime_action_count ?? 0} / unmapped ${executionLineage.unmapped_runtime_action_count ?? 0}`,
+    },
+    {
+      item: 'Lineage 状态',
+      value: formatObjectSummary(asRecord(executionLineage.lineage_status_counts), 56),
+    },
+    {
+      item: 'Reason 分布',
+      value: formatObjectSummary(asRecord(executionLineage.runtime_action_reason_counts), 56),
+    },
+  ].filter((row) => row.value !== '-' && row.value !== '0 claims' && row.value !== '0 steps');
+  const executionLineageRows = asRecordArray(executionLineage.recent_runtime_actions).map((item) => ({
+    signal_date: String(item.signal_date ?? '-'),
+    code: String(item.code ?? '-'),
+    runtime_action_reason: String(item.runtime_action_reason ?? '-'),
+    applied_claim_id: String(item.applied_claim_id ?? '-'),
+    applied_trade_step_id: String(item.applied_trade_step_id ?? '-'),
+    lineage_status: formatExecutionLineageStatus(item.lineage_status),
+    runtime_action_source: shortText(item.runtime_action_source, 36),
+  }));
 
   const summaryState = {
+    highConfidencePanel: {
+      predictionQualityLabel: highConfidenceText(
+        incubationRecord.prediction_quality_label,
+        reportSummary.prediction_quality_label,
+      ),
+      executionQualityLabel: highConfidenceText(
+        incubationRecord.execution_quality_label,
+        reportSummary.execution_quality_label,
+      ),
+      confidenceContractStatus: highConfidenceText(
+        incubationRecord.confidence_contract_status,
+        reportSummary.confidence_contract_status,
+      ),
+      qualityDiagnosis: String(
+        incubationRecord.quality_diagnosis ?? reportSummary.quality_diagnosis ?? '',
+      ).trim(),
+      primarySkillLcb: finiteOrNull(signalQuality.primary_skill_lcb),
+      coverageRatio: finiteOrNull(signalQuality.coverage_ratio),
+      executionConversionEfficiency: finiteOrNull(
+        executionQuality.execution_conversion_efficiency
+          ?? executionAudit.execution_conversion_efficiency
+          ?? executionQuality.nav_conversion_proxy,
+      ),
+    },
     blockers: incubation?.blockers ?? [],
     riskFlags: incubation?.risk_flags ?? [],
+    executionLineageSummaryRows,
+    executionLineageRows,
     forwardRows: (incubation?.forward_returns ?? []).map((item) => ({
       label: item.label ?? '-',
       hit_rate: item.hit_rate == null ? '-' : fmtPct(item.hit_rate),
@@ -186,8 +297,36 @@ export function buildFactoryReviewViewModel({
     incubationPipelineOverviewRows: [
       { item: '当前阶段', value: latestIncubationPipelineSnapshot?.pipeline_stage ?? currentAccount?.stage ?? '-' },
       { item: '流水线状态', value: latestIncubationPipelineSnapshot?.pipeline_status ?? '-' },
+      { item: '硬门状态', value: latestIncubationPipelineSnapshot?.gate_status ?? '-' },
+      { item: '硬门原因', value: shortText((latestIncubationPipelineSnapshot?.gate_reasons ?? []).join(' / ') || '-', 48) },
+      { item: '硬门结果', value: hardGateResult.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
+      {
+        item: '硬门语义',
+        value: formatIssueSummary(
+          [
+            String(hardGateResult.pipeline_stage ?? ''),
+            String(hardGateResult.signal_stage_without_execution_gate ?? ''),
+            String(hardGateResult.execution_audit_gate_status ?? ''),
+          ],
+          48,
+        ),
+      },
       { item: '最新决策', value: latestIncubationPipelineSnapshot?.latest_decision ?? latestMetric?.decision ?? '-' },
-      { item: '准备度', value: fmtNum(latestIncubationPipelineSnapshot?.readiness_score, 4) },
+      { item: '优先级分', value: fmtNum(latestIncubationPipelineSnapshot?.priority_score ?? latestIncubationPipelineSnapshot?.readiness_score, 4) },
+      { item: '兼容准备度', value: fmtNum(latestIncubationPipelineSnapshot?.readiness_score, 4) },
+      { item: '执行诊断模式', value: executionDiagnostics.diagnostic_only ? 'diagnostic_only' : 'hard_gate' },
+      {
+        item: '语义链路',
+        value: formatIssueSummary(
+          [
+            `claims:${semanticClaimCount || 0}`,
+            `steps:${semanticTradeStepCount || 0}`,
+            `playbook:${Array.isArray(runtimePlaybookProvenance.derivation_labels) ? runtimePlaybookProvenance.derivation_labels.join(',') : ''}`,
+            `runtime:${executionLineage.runtime_action_count ?? 0}`,
+          ],
+          64,
+        ),
+      },
       { item: '观察天数', value: latestIncubationPipelineSnapshot?.observed_days ?? '-' },
       { item: '晋级连击', value: latestIncubationPipelineSnapshot?.promote_streak ?? '-' },
       { item: '暂停连击', value: latestIncubationPipelineSnapshot?.halt_streak ?? '-' },
@@ -200,7 +339,10 @@ export function buildFactoryReviewViewModel({
       evaluated_at: formatDateTime(item.evaluated_at),
       pipeline_stage: item.pipeline_stage ?? '-',
       pipeline_status: item.pipeline_status ?? '-',
+      gate_status: item.gate_status ?? '-',
+      gate_reasons: shortText((item.gate_reasons ?? []).join(' / ') || '-', 36),
       readiness_score: fmtNum(item.readiness_score, 4),
+      priority_score: fmtNum(item.priority_score ?? item.readiness_score, 4),
       observed_days: item.observed_days ?? 0,
       promote_streak: item.promote_streak ?? 0,
       halt_streak: item.halt_streak ?? 0,
@@ -457,6 +599,33 @@ export function buildFactoryReviewViewModel({
         constraintCheck.expansion_applied ? `expansion:${constraintCheck.expansion_reason ?? 'applied'}` : '',
       ], 64),
     },
+    {
+      item: '证据门禁',
+      value: formatIssueSummary([
+        String(reportSummary.evidence_gate_status ?? evidenceAlignmentAudit.market_fact_gate_status ?? ''),
+        reportSummary.hard_fact_count == null ? '' : `hard:${reportSummary.hard_fact_count}`,
+        reportSummary.degraded_fact_count == null ? '' : `degraded:${reportSummary.degraded_fact_count}`,
+      ], 64),
+    },
+    {
+      item: '证据债务',
+      value: formatIssueSummary(
+        Array.isArray(reportSummary.evidence_debt_reasons)
+          ? reportSummary.evidence_debt_reasons as string[]
+          : Array.isArray(evidenceAlignmentAudit.evidence_debt_reasons)
+          ? evidenceAlignmentAudit.evidence_debt_reasons as string[]
+          : [],
+        64,
+      ),
+    },
+    {
+      item: '池子画像',
+      value: formatIssueSummary([
+        String(reportSummary.pool_profile ?? review?.pool_profile ?? ''),
+        String(reportSummary.volatility_bucket ?? review?.volatility_bucket ?? ''),
+        String(review?.liquidity_bucket ?? ''),
+      ], 64),
+    },
     { item: '仓位假设', value: review?.position_assumption ?? '-' },
     { item: '成本假设', value: formatObjectSummary(review?.cost_assumptions, 64) },
     { item: '显式成本拆分', value: formatObjectSummary(review?.explicit_cost_breakdown, 64) },
@@ -489,6 +658,11 @@ export function buildFactoryReviewViewModel({
         ...committeeAcceptBlockers,
       ], 64),
     },
+    { item: '置信合同', value: summaryState.highConfidencePanel.confidenceContractStatus || '-' },
+    { item: '质量诊断', value: summaryState.highConfidencePanel.qualityDiagnosis || '-' },
+    { item: '预测质量', value: summaryState.highConfidencePanel.predictionQualityLabel || '-' },
+    { item: '执行质量', value: summaryState.highConfidencePanel.executionQualityLabel || '-' },
+    { item: '风控来源', value: formatIssueSummary([String(reportSummary.risk_regime_fit ?? ''), String(reportSummary.stop_rule_source ?? '')], 64) },
     { item: '任务签名', value: shortText(review?.task_signature, 64) },
     { item: '去重匹配类型', value: review?.dedup_report?.match_type ?? '唯一候选' },
     { item: '参数相似度', value: fmtNum(review?.dedup_report?.param_similarity, 4) },

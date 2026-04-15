@@ -18,6 +18,7 @@ from .managers.quant_manager import quant_manager
 from .managers.strategy_manager import strategy_manager
 from .market.kline import get_kline
 from .pit_middleware import build_pit_meta_simple
+from .skills_strategy_workflows import build_strategy_review_workflow_payload
 from .tool_catalog import build_tool_meta
 
 
@@ -816,71 +817,18 @@ def register(mcp) -> None:
         source_chain = ["workflow.strategy_review", "resource.strategy_review", "manager.strategy_manager"]
         lineage_ctx = LineageContext.create("strategy_review_workflow", strategy_id=resolved_strategy_id)
         try:
-            from ..resources.strategy import build_strategy_review_payload
-
-            resource_payload = await build_strategy_review_payload(resolved_strategy_id)
-            steps.append(_step("resource.strategy_review", {"success": bool(resource_payload.get("found", True)), "data": resource_payload}))
-
-            if include_review_report:
-                review_payload = await strategy_manager(
-                    action="review_report",
-                    params={"strategy_id": resolved_strategy_id},
-                )
-                steps.append(_step("strategy_manager.review_report", review_payload))
-
-            if include_factory_status:
-                factory_payload = await strategy_manager(action="factory_status", params={})
-                steps.append(_step("strategy_manager.factory_status", factory_payload))
-
-            if include_runtime_alerts:
-                runtime_payload = await strategy_manager(
-                    action="runtime_alerts",
-                    params={"strategy_id": resolved_strategy_id, "limit": 20},
-                )
-                steps.append(_step("strategy_manager.runtime_alerts", runtime_payload))
-
-            if run_factory_once:
-                factory_run_payload = await strategy_manager(action="factory_run_once", params={})
-                steps.append(_step("strategy_manager.factory_run_once", factory_run_payload))
-
-            if run_runtime_cycle:
-                runtime_cycle_payload = await strategy_manager(action="runtime_cycle_run", params={})
-                steps.append(_step("strategy_manager.runtime_cycle_run", runtime_cycle_payload))
-
+            result_payload = await build_strategy_review_workflow_payload(
+                resolved_strategy_id,
+                runtime_strategy_manager=strategy_manager,
+                include_factory_status=include_factory_status,
+                include_review_report=include_review_report,
+                include_runtime_alerts=include_runtime_alerts,
+                run_factory_once=run_factory_once,
+                run_runtime_cycle=run_runtime_cycle,
+                runtime_alert_limit=20,
+            )
+            steps = list(result_payload.get("steps") or [])
             failed_steps = _collect_failed_steps(steps)
-
-            # P1-5: Execution reality
-            execution_reality_payload: dict[str, Any] | None = None
-            try:
-                from ..services.execution_reality import build_execution_reality_report
-
-                reality_report = build_execution_reality_report(mode="backtest")
-                execution_reality_payload = reality_report.to_dict()
-            except Exception:
-                pass
-
-            completed_stages = [s["step"] for s in steps if s.get("success")]
-            result_payload: dict[str, Any] = {
-                "workflow": "strategy_review_workflow",
-                "strategy_id": resolved_strategy_id,
-                "steps": steps,
-                "summary": {
-                    "current_status": ((resource_payload.get("summary") or {}).get("current_status")),
-                    "open_risk_count": ((resource_payload.get("summary") or {}).get("open_risk_count")),
-                    "failed_steps": failed_steps,
-                },
-                "artifacts": {
-                    "strategy_review_resource": f"resource://strategy/{resolved_strategy_id}/review",
-                },
-                "workflow_stage": {
-                    "completed_stages": completed_stages,
-                    "last_completed_stage": completed_stages[-1] if completed_stages else None,
-                    "recoverable": bool(failed_steps),
-                    "resume_hint": "retry_failed_steps" if failed_steps else None,
-                },
-            }
-            if execution_reality_payload:
-                result_payload["execution_reality"] = execution_reality_payload
 
             return ok_with_meta(
                 result_payload,

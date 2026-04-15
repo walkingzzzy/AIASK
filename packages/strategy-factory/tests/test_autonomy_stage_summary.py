@@ -33,6 +33,21 @@ def test_resolve_autonomy_overall_status_treats_completed_tasks_with_local_outpu
     assert failed_count == 0
 
 
+def test_resolve_autonomy_overall_status_treats_target_context_blocked_skips_as_success():
+    status, completed_count, failed_count = resolve_autonomy_overall_status(
+        [
+            {"status": "completed"},
+            {"status": "completed"},
+            {"status": "completed"},
+        ],
+        {"skipped": 2, "skipped_target_context_blocked": 1},
+    )
+
+    assert status == "succeeded"
+    assert completed_count == 3
+    assert failed_count == 0
+
+
 def test_build_autonomy_stage_summary_keeps_external_llm_and_feedback_fields():
     stage = build_autonomy_stage_summary(
         task_results=[

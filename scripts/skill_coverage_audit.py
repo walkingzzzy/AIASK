@@ -11,14 +11,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SERVER_MODULES_PATTERN = re.compile(r"_tool_names\s*=\s*\((?P<body>.*?)\)\s*try:", re.S)
+SERVER_TOOL_TUPLE_PATTERN = re.compile(r"_(?:core|heavy)_tool_names\s*=\s*\((?P<body>.*?)\)", re.S)
 MODULE_NAME_PATTERN = re.compile(r'"([A-Za-z0-9_]+)"')
+SERVER_REGISTER_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.register\(app\)", re.M)
 DECORATOR_TOOL_PATTERN = re.compile(
-    r"@mcp\.tool(?:\([^\n]*\))?\s*\n\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    r"@[A-Za-z_][A-Za-z0-9_\.]*\.tool(?:\([^\n]*\))?\s*\n\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.M,
 )
 CALL_TOOL_PATTERN = re.compile(
-    r"mcp\.tool\s*\(\s*\)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+    r"[A-Za-z_][A-Za-z0-9_\.]*\.tool\s*\(\s*\)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
     re.M,
 )
 CODE_SPAN_PATTERN = re.compile(r"`([^`]+)`")
@@ -74,13 +75,23 @@ def _looks_like_tool_name(name: str) -> bool:
     )
 
 
+def _discover_server_modules(server_text: str) -> list[str]:
+    module_names: set[str] = set()
+
+    for match in SERVER_TOOL_TUPLE_PATTERN.finditer(server_text):
+        module_names.update(MODULE_NAME_PATTERN.findall(match.group("body")))
+
+    module_names.update(SERVER_REGISTER_PATTERN.findall(server_text))
+    module_names.discard("app")
+
+    return sorted(module_names)
+
+
 def discover_runtime_tools(server_file: Path, tools_dir: Path) -> tuple[list[str], list[Path]]:
     server_text = _load_text(server_file)
-    match = SERVER_MODULES_PATTERN.search(server_text)
-    if not match:
-        raise RuntimeError(f"Cannot find _tool_names tuple in {server_file}")
-
-    module_names = MODULE_NAME_PATTERN.findall(match.group("body"))
+    module_names = _discover_server_modules(server_text)
+    if not module_names:
+        raise RuntimeError(f"Cannot find registered tool modules in {server_file}")
     candidate_files: list[Path] = []
 
     for module in module_names:

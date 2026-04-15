@@ -71,6 +71,43 @@ def _count_by(items: list[dict[str, Any]], resolver) -> dict[str, int]:
     return counts
 
 
+def _prepare_candidate_for_artifact(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    if not payload:
+        return {}
+    try:
+        from .candidate_contract import apply_resolved_candidate_envelope
+
+        return apply_resolved_candidate_envelope(payload)
+    except Exception:
+        return payload
+
+
+def _candidate_contract_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = _prepare_candidate_for_artifact(candidate)
+    params = dict(payload.get("params") or {})
+    return dict(payload.get("candidate_contract_snapshot") or params.get("candidate_contract_snapshot") or {})
+
+
+def _candidate_has_evidence(candidate: dict[str, Any]) -> bool:
+    payload = _prepare_candidate_for_artifact(candidate)
+    params = dict(payload.get("params") or {})
+    provenance = dict(params.get("candidate_provenance") or {})
+    evidence_status = dict(
+        payload.get("candidate_evidence_status")
+        or provenance.get("candidate_evidence_status")
+        or {}
+    )
+    return bool(
+        evidence_status
+        or payload.get("evidence_bundle")
+        or payload.get("evidence_chain")
+        or params.get("evidence_chain")
+        or payload.get("prediction_contract")
+        or params.get("prediction_contract")
+    )
+
+
 def _resolve_contract_artifact(
     payload: dict[str, Any] | None,
     *,
@@ -153,16 +190,11 @@ def _compact_task_result_brief(task_result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_candidate_brief(candidate: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(candidate or {})
+    payload = _prepare_candidate_for_artifact(candidate)
     params = dict(payload.get("params") or {})
     provenance = dict(params.get("candidate_provenance") or {})
-    contract_snapshot = dict(payload.get("candidate_contract_snapshot") or {})
+    contract_snapshot = _candidate_contract_snapshot(payload)
     targeting = dict(contract_snapshot.get("targeting") or {})
-    evidence_status = dict(
-        payload.get("candidate_evidence_status")
-        or provenance.get("candidate_evidence_status")
-        or {}
-    )
     return {
         "name": _string(payload.get("name")) or None,
         "strategy_type": _string(payload.get("strategy_type")) or None,
@@ -188,7 +220,7 @@ def _compact_candidate_brief(candidate: dict[str, Any]) -> dict[str, Any]:
         or None,
         "experiment_id": _string(payload.get("experiment_id")) or None,
         "candidate_contract_ready": bool(contract_snapshot),
-        "evidence_ready": bool(evidence_status or payload.get("evidence_bundle")),
+        "evidence_ready": _candidate_has_evidence(payload),
     }
 
 
@@ -431,23 +463,17 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
 
 
 def build_candidate_artifact(candidates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = [dict(item or {}) for item in list(candidates or []) if isinstance(item, dict)]
+    items = [
+        _prepare_candidate_for_artifact(dict(item or {}))
+        for item in list(candidates or [])
+        if isinstance(item, dict)
+    ]
     briefs = [_compact_candidate_brief(item) for item in items[:12]]
     candidate_origin_counts = count_candidate_origins(items)
     targeted_candidate_count = sum(1 for item in items if list(item.get("target_symbols") or []))
     experiment_linked_count = sum(1 for item in items if _string(item.get("experiment_id")))
-    contract_ready_count = sum(1 for item in items if bool(item.get("candidate_contract_snapshot")))
-    evidence_ready_count = sum(
-        1
-        for item in items
-        if bool(
-            item.get("evidence_bundle")
-            or item.get("candidate_evidence_status")
-            or dict(dict(item.get("params") or {}).get("candidate_provenance") or {}).get(
-                "candidate_evidence_status"
-            )
-        )
-    )
+    contract_ready_count = sum(1 for item in items if bool(_candidate_contract_snapshot(item)))
+    evidence_ready_count = sum(1 for item in items if _candidate_has_evidence(item))
     return {
         "contract_version": CANDIDATE_ARTIFACT_CONTRACT_VERSION,
         "available": bool(items),

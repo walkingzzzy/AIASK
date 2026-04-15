@@ -587,6 +587,42 @@ class _StrategySubmitterHelpersMixin:
             )
             if target_symbol_count is None:
                 target_symbol_count = cls._normalize_optional_int(existing_provenance.get("target_symbol_count"))
+            pool_profile = (
+                str(
+                    payload.get("pool_profile")
+                    or research_task.get("pool_profile")
+                    or strategy_profile.get("pool_profile")
+                    or existing_provenance.get("pool_profile")
+                    or ""
+                ).strip()
+                or None
+            )
+            volatility_bucket = (
+                str(
+                    payload.get("volatility_bucket")
+                    or research_task.get("volatility_bucket")
+                    or strategy_profile.get("volatility_bucket")
+                    or existing_provenance.get("volatility_bucket")
+                    or ""
+                ).strip()
+                or None
+            )
+            liquidity_bucket = (
+                str(
+                    payload.get("liquidity_bucket")
+                    or research_task.get("liquidity_bucket")
+                    or strategy_profile.get("liquidity_bucket")
+                    or existing_provenance.get("liquidity_bucket")
+                    or ""
+                ).strip()
+                or None
+            )
+            family_mix_constraints = cls._normalize_object_dict(
+                payload.get("family_mix_constraints")
+                or research_task.get("family_mix_constraints")
+                or existing_provenance.get("family_mix_constraints")
+                or {}
+            )
 
             provenance = {
                 "source_candidate_artifact_id": source_candidate_artifact_id,
@@ -606,6 +642,10 @@ class _StrategySubmitterHelpersMixin:
                 "candidate_evidence_status": candidate_evidence_status,
                 "strategy_profile": strategy_profile,
                 "holding_period_bucket": holding_period_bucket,
+                "pool_profile": pool_profile,
+                "volatility_bucket": volatility_bucket,
+                "liquidity_bucket": liquidity_bucket,
+                "family_mix_constraints": family_mix_constraints,
                 "alpha_source": alpha_source,
                 "risk_level": risk_level,
                 "regime_fit": regime_fit,

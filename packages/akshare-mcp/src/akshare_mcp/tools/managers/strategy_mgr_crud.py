@@ -9,6 +9,7 @@ from uuid import uuid4
 from ...storage import get_db
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
+    build_incubation_overview,
     compute_nav_series,
     get_latest_quality_report,
     list_quality_reports,
@@ -21,6 +22,27 @@ from .strategy_mgr_helpers import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _load_signal_quality_registry_snapshot():
+    try:
+        from ...services.signal_quality_registry import (
+            get_default_signal_quality_registry,
+            get_default_signal_quality_registry_snapshot,
+        )
+
+        registry = get_default_signal_quality_registry()
+        snapshot = dict(get_default_signal_quality_registry_snapshot() or {})
+        return {
+            **snapshot,
+            "snapshot": snapshot,
+            "drift": dict(registry.drift_check() or {}),
+            "recent_probability": list(registry.recent_probability(5)),
+            "recent_sentiment": list(registry.recent_sentiment(5)),
+            "recent_factor": list(registry.recent_factor(5)),
+        }
+    except Exception:
+        return {}
 
 
 async def _resolved(value):
@@ -119,7 +141,7 @@ async def handle_help(db, params: dict) -> dict:
             "ai_generate", "ai_experiments", "task_runs", "domain_events", "domain_projection", "domain_projection_snapshot", "domain_projection_rebuild",
             "runtime_control", "runtime_control_set", "promotion_reviews", "promotion_review_run",
             "runtime_cycle_run", "runtime_cycle_status", "lifecycle_scan", "get_signals", "get_forward_returns", "get_signal_stats",
-            "factory_status", "factory_run_once", "factory_runs", "factory_run_detail", "review_report", "review_report_recheck", "events",
+            "factory_status", "factory_run_once", "factory_runs", "factory_run_detail", "execution_audit_verification", "review_report", "review_report_recheck", "submission_replay", "events",
             "incubation_overview", "help",
         ],
         "description": "策略超市管理器（含生命周期与前向信号跟踪）",
@@ -182,11 +204,12 @@ async def handle_detail(db, params: dict) -> dict:
         return fail(f"Strategy not found: {sid}")
 
     user_id = str(params.get("user_id", "default"))
-    metrics, reviews, is_sub, latest_quality_report, incubation_account, incubation_metric, risk_events, latest_runtime_risk_snapshot, runtime_control, runtime_alerts, latest_promotion_review, latest_projection_snapshot, latest_vector_index_snapshot, latest_incubation_pipeline_snapshot, vector_profiles, similar_vector_profiles, domain_events, task_runs, nav_series = await asyncio.gather(
+    metrics, reviews, is_sub, latest_quality_report, incubation_overview, incubation_account, incubation_metric, risk_events, latest_runtime_risk_snapshot, runtime_control, runtime_alerts, latest_promotion_review, latest_projection_snapshot, latest_vector_index_snapshot, latest_incubation_pipeline_snapshot, vector_profiles, similar_vector_profiles, domain_events, task_runs, nav_series, signal_event_snapshots = await asyncio.gather(
         db.get_strategy_metrics(sid),
         db.get_reviews(sid, limit=10),
         db.is_subscribed(sid, user_id),
         get_latest_quality_report(db, sid),
+        _resolve_strategy_incubation_overview(db, strategy),
         db.get_strategy_incubation_account(sid) if hasattr(db, "get_strategy_incubation_account") else _resolved(None),
         db.get_latest_strategy_incubation_metric(sid) if hasattr(db, "get_latest_strategy_incubation_metric") else _resolved(None),
         db.list_strategy_runtime_risk_events(strategy_id=sid, status="open", limit=5) if hasattr(db, "list_strategy_runtime_risk_events") else _resolved([]),
@@ -202,6 +225,7 @@ async def handle_detail(db, params: dict) -> dict:
         db.list_strategy_domain_events(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_domain_events") else _resolved([]),
         db.list_strategy_task_runs(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_task_runs") else _resolved([]),
         compute_nav_series(db, sid),
+        db.list_strategy_signal_event_snapshots(strategy_id=sid, latest_only=True, limit=10) if hasattr(db, "list_strategy_signal_event_snapshots") else _resolved([]),
     )
     metric_noise_enabled = os.getenv("STRATEGY_METRIC_NOISE_ENABLED", "1").strip() not in ("0", "false", "no")
     if not is_sub and metrics and metric_noise_enabled:
@@ -222,6 +246,7 @@ async def handle_detail(db, params: dict) -> dict:
         "strategy": strategy, "metrics": metrics, "reviews": reviews,
         "nav_series": nav_series,
         "latest_quality_report": latest_quality_report,
+        "incubation_overview": incubation_overview,
         "incubation_account": incubation_account,
         "latest_incubation_metric": incubation_metric,
         "latest_promotion_review": latest_promotion_review,
@@ -231,12 +256,21 @@ async def handle_detail(db, params: dict) -> dict:
         "runtime_control": runtime_control,
         "runtime_alerts": runtime_alerts,
         "latest_runtime_risk_snapshot": latest_runtime_risk_snapshot,
+        "signal_event_snapshots": signal_event_snapshots,
         "open_risk_events": risk_events,
         "vector_profiles": vector_profiles,
         "similar_vector_profiles": similar_vector_profiles,
         "domain_events": domain_events,
         "task_runs": task_runs,
     })
+
+
+async def _resolve_strategy_incubation_overview(db, strategy: dict) -> dict | None:
+    try:
+        return await build_incubation_overview(db, strategy)
+    except Exception as exc:
+        logger.warning("strategy_manager.detail incubation overview failed for %s: %s", strategy.get("id"), exc)
+        return None
 
 
 async def handle_review_report(db, params: dict) -> dict:
@@ -358,12 +392,23 @@ async def handle_capabilities(db, params: dict) -> dict:
     from strategy_factory import get_factory_constants
 
     factory_constants = get_factory_constants()
+    high_confidence_feature_flags = dict(factory_constants.get("HIGH_CONFIDENCE_FEATURE_FLAGS") or {})
     return ok({
         "daily_snapshot": hasattr(db, "get_daily_snapshot") and hasattr(db, "list_daily_snapshots"),
         "factory_runs": hasattr(db, "save_strategy_factory_run") and hasattr(db, "get_latest_strategy_factory_run"),
         "factory_bulk_lane": hasattr(db, "list_stock_universe") and hasattr(db, "save_strategy_factory_run"),
         "factory_bulk_lane_enabled": bool(factory_constants.get("STOCK_STRATEGY_MATRIX_ENABLED")),
         "factory_pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
+        "high_confidence_enabled": bool(factory_constants.get("STRATEGY_FACTORY_HIGH_CONFIDENCE_ENABLED")),
+        "evidence_contract_enabled": bool(factory_constants.get("STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED")),
+        "confidence_diagnostics_enabled": bool(
+            factory_constants.get("STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED")
+        ),
+        "execution_audit_enabled": bool(factory_constants.get("STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED")),
+        "execution_audit_verification": hasattr(db, "get_execution_audit_verification"),
+        "quality_ui_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_QUALITY_UI_V2_ENABLED")),
+        "high_confidence_feature_flags": high_confidence_feature_flags,
+        "signal_quality_registry": _load_signal_quality_registry_snapshot(),
         "paper_incubation": hasattr(db, "save_strategy_incubation_account") and hasattr(db, "save_strategy_incubation_metric"),
         "paper_trading": hasattr(db, "save_paper_account") and hasattr(db, "save_paper_order") and hasattr(db, "get_paper_nav_rows"),
         "incubation_pipeline": hasattr(db, "save_strategy_incubation_pipeline_snapshot") and hasattr(db, "list_strategy_incubation_metrics"),
@@ -373,6 +418,7 @@ async def handle_capabilities(db, params: dict) -> dict:
         "execution_risk": hasattr(db, "save_strategy_runtime_risk_event"),
         "runtime_controls": hasattr(db, "save_strategy_runtime_control") and hasattr(db, "get_strategy_runtime_control"),
         "runtime_alerting": hasattr(db, "save_strategy_runtime_alert") and hasattr(db, "list_strategy_runtime_alerts"),
+        "signal_event_snapshots": hasattr(db, "save_strategy_signal_event_snapshot") and hasattr(db, "list_strategy_signal_event_snapshots"),
         "promotion_pipeline": hasattr(db, "save_strategy_promotion_review") and hasattr(db, "get_latest_strategy_promotion_review"),
         "projection_snapshots": hasattr(db, "save_strategy_projection_snapshot") and hasattr(db, "get_latest_strategy_projection_snapshot"),
         "event_replay": hasattr(db, "save_strategy_projection_snapshot") and hasattr(db, "list_strategy_domain_events"),

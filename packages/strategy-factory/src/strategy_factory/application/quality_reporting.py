@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
+from .market_evidence import summarize_market_fact_gate
 from ..domain.constants import PROVISIONAL_PASS_THRESHOLDS, QUALITY_GATE_THRESHOLDS, RISK_REPORT_THRESHOLDS
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,49 @@ PROVISIONAL_TECHNICAL_STRATEGY_TYPES = frozenset({
 })
 
 _DEGENERATE_STAT_EPSILON = 1e-9
+_TREND_CLUSTER_TYPES = frozenset({"momentum", "ma_cross", "volatility_breakout", "sector_rotation"})
+_POOL_ALLOWED_STRATEGY_TYPES = {
+    "high_vol_growth": frozenset({"volatility_breakout", "gap_fill", "mean_reversion_short", "quality_factor"}),
+    "low_vol_defensive": frozenset({"quality_factor", "north_capital_track", "sector_rotation", "ma_cross"}),
+    "cycle_resource": frozenset({"sector_rotation", "north_capital_track", "ma_cross", "quality_factor"}),
+}
+_POOL_RISK_EXPECTATIONS = {
+    "high_vol_growth_breakout": {
+        "time_stop_min": 5,
+        "time_stop_max": 8,
+        "take_profit_min": 0.08,
+        "take_profit_max": 0.10,
+        "position_cap_max": 0.10,
+    },
+    "high_vol_growth_reversion": {
+        "time_stop_min": 1,
+        "time_stop_max": 5,
+        "take_profit_min": 0.06,
+        "take_profit_max": 0.08,
+        "position_cap_max": 0.10,
+    },
+    "cycle_resource": {
+        "time_stop_min": 8,
+        "time_stop_max": 15,
+        "take_profit_min": 0.12,
+        "take_profit_max": 0.16,
+        "position_cap_max": 0.14,
+    },
+    "low_vol_defensive": {
+        "time_stop_min": 15,
+        "time_stop_max": 25,
+        "take_profit_min": 0.10,
+        "take_profit_max": 0.14,
+        "position_cap_max": 0.18,
+    },
+}
+_REVIEW_ISSUE_BUCKET_PRIORITY = (
+    "signal_lag",
+    "pool_mismatch",
+    "risk_parameter_mismatch",
+    "homogeneous_exposure",
+    "data_threshold_idle",
+)
 
 
 def quality_gate_reason_code(reason: str) -> str:
@@ -225,6 +269,137 @@ def safe_metric_value(payload: Optional[dict], *keys: str) -> float:
             except Exception:
                 return 0.0
     return 0.0
+
+
+def _safe_ratio(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, "", [], {}):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _normalized_string_list(values: Any) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for value in list(values or []):
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
+def _risk_expectation_key(pool_profile: str, strategy_type: str) -> str | None:
+    profile = str(pool_profile or "").strip().lower()
+    strategy_key = str(strategy_type or "").strip().lower()
+    if profile == "high_vol_growth":
+        if strategy_key in {"volatility_breakout", "momentum"}:
+            return "high_vol_growth_breakout"
+        return "high_vol_growth_reversion"
+    if profile == "cycle_resource":
+        return "cycle_resource"
+    if profile == "low_vol_defensive":
+        return "low_vol_defensive"
+    return None
+
+
+def _derive_review_issue_buckets(
+    strategy_type: Optional[str],
+    *,
+    candidate_provenance: dict[str, Any],
+    strategy_profile: dict[str, Any],
+    market_fact_gate: dict[str, Any],
+    backtest_assumptions: dict[str, Any],
+    audit: dict[str, Any],
+) -> tuple[list[str], str | None]:
+    strategy_key = str(strategy_type or "").strip().lower()
+    pool_profile = str(
+        candidate_provenance.get("pool_profile")
+        or strategy_profile.get("pool_profile")
+        or ""
+    ).strip().lower()
+    holding_period_bucket = str(
+        candidate_provenance.get("holding_period_bucket")
+        or strategy_profile.get("holding_period_bucket")
+        or ""
+    ).strip().lower()
+    buckets: list[str] = []
+
+    def add(bucket: str) -> None:
+        if bucket not in buckets:
+            buckets.append(bucket)
+
+    allowed_strategy_types = _POOL_ALLOWED_STRATEGY_TYPES.get(pool_profile)
+    if allowed_strategy_types and strategy_key and strategy_key not in allowed_strategy_types:
+        add("pool_mismatch")
+
+    if pool_profile == "high_vol_growth":
+        if strategy_key in {"ma_cross", "momentum"}:
+            add("signal_lag")
+        elif strategy_key in _TREND_CLUSTER_TYPES and holding_period_bucket in {"medium", "long"}:
+            add("signal_lag")
+        elif strategy_key in {"gap_fill", "mean_reversion_short", "volatility_breakout"} and holding_period_bucket == "long":
+            add("signal_lag")
+
+    expectation_key = _risk_expectation_key(pool_profile, strategy_key)
+    expectation = _POOL_RISK_EXPECTATIONS.get(expectation_key or "")
+    if expectation:
+        stop_loss_mode = str(backtest_assumptions.get("stop_loss_mode") or "").strip().lower()
+        time_stop_days = _safe_optional_float(
+            backtest_assumptions.get("time_stop_days")
+            if backtest_assumptions.get("time_stop_days") is not None
+            else backtest_assumptions.get("max_holding_days")
+        )
+        take_profit_pct = _safe_optional_float(backtest_assumptions.get("take_profit_pct"))
+        position_cap_pct = _safe_optional_float(
+            backtest_assumptions.get("position_cap_pct")
+            if backtest_assumptions.get("position_cap_pct") is not None
+            else backtest_assumptions.get("max_position_pct")
+        )
+        if stop_loss_mode != "atr_bucketed":
+            add("risk_parameter_mismatch")
+        elif (
+            time_stop_days is None
+            or time_stop_days < float(expectation["time_stop_min"])
+            or time_stop_days > float(expectation["time_stop_max"])
+            or take_profit_pct is None
+            or take_profit_pct < float(expectation["take_profit_min"])
+            or take_profit_pct > float(expectation["take_profit_max"])
+            or position_cap_pct is None
+            or position_cap_pct > float(expectation["position_cap_max"])
+        ):
+            add("risk_parameter_mismatch")
+
+    trend_cluster_ratio = _safe_ratio(
+        audit.get("trend_cluster_ratio")
+        if audit.get("trend_cluster_ratio") is not None
+        else candidate_provenance.get("trend_cluster_ratio")
+    )
+    diversification_debt = _normalized_string_list(
+        audit.get("diversification_debt")
+        or candidate_provenance.get("diversification_debt")
+    )
+    if trend_cluster_ratio > 0.5 or diversification_debt:
+        add("homogeneous_exposure")
+
+    market_fact_gate_status = str(market_fact_gate.get("market_fact_gate_status") or "").strip().lower()
+    has_market_fact_inputs = bool(market_fact_gate.get("market_facts"))
+    if has_market_fact_inputs and market_fact_gate_status in {"missing", "degraded_only", "mixed_with_degraded"}:
+        add("data_threshold_idle")
+
+    ordered = [bucket for bucket in _REVIEW_ISSUE_BUCKET_PRIORITY if bucket in buckets]
+    primary = ordered[0] if ordered else None
+    return ordered, primary
 
 
 def _is_near_zero(value: object, *, eps: float = _DEGENERATE_STAT_EPSILON) -> bool:
@@ -491,6 +666,18 @@ def build_quality_report(
     promotion_review_recommendation = audit.get("promotion_review_recommendation")
     pool_admission_applied = bool(audit.get("pool_admission_applied"))
     promotion_applied_transition = dict(audit.get("promotion_applied_transition") or {})
+    runtime_bootstrap_eligible = (
+        bool(audit.get("runtime_bootstrap_eligible"))
+        if audit.get("runtime_bootstrap_eligible") is not None
+        else None
+    )
+    runtime_bootstrap_reason = audit.get("runtime_bootstrap_reason")
+    runtime_bootstrap_budget_tier = audit.get("runtime_bootstrap_budget_tier")
+    runtime_playbook_present = (
+        bool(audit.get("runtime_playbook_present"))
+        if audit.get("runtime_playbook_present") is not None
+        else None
+    )
     submission_action = dict(audit.get("submission_action") or {})
     submission_action_type = audit.get("submission_action_type")
     submission_action_trigger = audit.get("submission_action_trigger")
@@ -518,6 +705,87 @@ def build_quality_report(
         rating,
         "base_total_score",
         "total_score",
+    )
+    semantic_summary_fields: dict[str, Any] = {}
+    for field_name in (
+        "evidence_chain",
+        "prediction_contract",
+        "confidence_contract",
+        "evidence_alignment_audit",
+        "legacy_semantic_contract",
+        "contradiction_count",
+        "proxy_dependency_score",
+    ):
+        value = audit.get(field_name)
+        if value in (None, "", [], {}):
+            value = normalized_gate.get(field_name)
+        if value in (None, "", [], {}):
+            continue
+        semantic_summary_fields[field_name] = value
+    evidence_chain = dict(semantic_summary_fields.get("evidence_chain") or {})
+    evidence_alignment_audit = dict(semantic_summary_fields.get("evidence_alignment_audit") or {})
+    market_fact_gate = summarize_market_fact_gate(
+        evidence_chain.get("market_facts"),
+        audit.get("market_facts"),
+        snapshot.get("market_facts"),
+    )
+    if market_fact_gate.get("market_facts"):
+        evidence_chain["market_facts"] = list(market_fact_gate.get("market_facts") or [])
+        semantic_summary_fields["evidence_chain"] = evidence_chain
+    evidence_alignment_audit = {
+        **evidence_alignment_audit,
+        "market_fact_gate_status": market_fact_gate.get("market_fact_gate_status"),
+        "hard_fact_count": market_fact_gate.get("hard_fact_count"),
+        "degraded_fact_count": market_fact_gate.get("degraded_fact_count"),
+        "evidence_debt_reasons": list(market_fact_gate.get("evidence_debt_reasons") or []),
+    }
+    if evidence_alignment_audit:
+        semantic_summary_fields["evidence_alignment_audit"] = evidence_alignment_audit
+    pool_profile = (
+        candidate_provenance.get("pool_profile")
+        or strategy_profile.get("pool_profile")
+    )
+    volatility_bucket = (
+        candidate_provenance.get("volatility_bucket")
+        or strategy_profile.get("volatility_bucket")
+    )
+    liquidity_bucket = (
+        candidate_provenance.get("liquidity_bucket")
+        or strategy_profile.get("liquidity_bucket")
+    )
+    family_mix_constraints = dict(candidate_provenance.get("family_mix_constraints") or {})
+    stop_rule_source = (
+        backtest_assumptions.get("stop_rule_source")
+        or backtest_assumptions.get("stop_loss_mode")
+        or ("atr_bucketed" if pool_profile else None)
+        or "fixed_pct_legacy"
+    )
+    risk_regime_fit = (
+        candidate_provenance.get("regime_fit")
+        or strategy_profile.get("regime_fit")
+        or "unknown"
+    )
+    trend_cluster_ratio = (
+        audit.get("trend_cluster_ratio")
+        if audit.get("trend_cluster_ratio") is not None
+        else candidate_provenance.get("trend_cluster_ratio")
+    )
+    diversification_debt = _normalized_string_list(
+        audit.get("diversification_debt")
+        or candidate_provenance.get("diversification_debt")
+    )
+    pool_profile_distribution = dict(
+        audit.get("pool_profile_distribution")
+        or candidate_provenance.get("pool_profile_distribution")
+        or {}
+    )
+    review_issue_buckets, review_issue_primary = _derive_review_issue_buckets(
+        strategy_type,
+        candidate_provenance=candidate_provenance,
+        strategy_profile=strategy_profile,
+        market_fact_gate=market_fact_gate,
+        backtest_assumptions=backtest_assumptions,
+        audit=audit,
     )
     summary = {
         "strategy_id": strategy_id,
@@ -548,6 +816,10 @@ def build_quality_report(
         "paper_account_status": paper_account_status,
         "runtime_control_mode": runtime_control_mode,
         "runtime_control_status": runtime_control_status,
+        "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
+        "runtime_bootstrap_reason": runtime_bootstrap_reason,
+        "runtime_bootstrap_budget_tier": runtime_bootstrap_budget_tier,
+        "runtime_playbook_present": runtime_playbook_present,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,
@@ -566,7 +838,21 @@ def build_quality_report(
         "alpha_source": candidate_provenance.get("alpha_source"),
         "risk_level": candidate_provenance.get("risk_level"),
         "regime_fit": candidate_provenance.get("regime_fit"),
+        "risk_regime_fit": risk_regime_fit,
         "generator_mode": candidate_provenance.get("generator_mode"),
+        "pool_profile": pool_profile,
+        "volatility_bucket": volatility_bucket,
+        "liquidity_bucket": liquidity_bucket,
+        "evidence_gate_status": market_fact_gate.get("market_fact_gate_status"),
+        "hard_fact_count": market_fact_gate.get("hard_fact_count"),
+        "degraded_fact_count": market_fact_gate.get("degraded_fact_count"),
+        "evidence_debt_reasons": list(market_fact_gate.get("evidence_debt_reasons") or []),
+        "stop_rule_source": stop_rule_source,
+        "trend_cluster_ratio": trend_cluster_ratio,
+        "diversification_debt": diversification_debt,
+        "pool_profile_distribution": pool_profile_distribution,
+        "review_issue_buckets": review_issue_buckets,
+        "review_issue_primary": review_issue_primary,
         "market_ruleset": execution_reality.get("market_ruleset"),
         "target_weight_scheme": execution_reality.get("target_weight_scheme"),
         "position_assumption": execution_reality.get("position_assumption"),
@@ -585,10 +871,11 @@ def build_quality_report(
         "multiple_testing_cohort_mode": dict(normalized_gate.get("multiple_testing_registry") or {}).get(
             "multiple_testing_cohort_mode"
         ),
+        **semantic_summary_fields,
     }
     if spawn_reason:
         summary["spawn_reason"] = spawn_reason
-    return {
+    report = {
         "report_type": report_type,
         "passed": bool(normalized_gate.get("passed")),
         "summary": summary,
@@ -616,6 +903,10 @@ def build_quality_report(
         "paper_account_status": paper_account_status,
         "runtime_control_mode": runtime_control_mode,
         "runtime_control_status": runtime_control_status,
+        "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
+        "runtime_bootstrap_reason": runtime_bootstrap_reason,
+        "runtime_bootstrap_budget_tier": runtime_bootstrap_budget_tier,
+        "runtime_playbook_present": runtime_playbook_present,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,
@@ -683,5 +974,23 @@ def build_quality_report(
         "task_preference": dict(audit.get("task_preference") or {}),
         "candidate_provenance": candidate_provenance,
         "strategy_profile": strategy_profile,
+        "pool_profile": pool_profile,
+        "volatility_bucket": volatility_bucket,
+        "liquidity_bucket": liquidity_bucket,
+        "family_mix_constraints": family_mix_constraints,
+        "evidence_gate_status": market_fact_gate.get("market_fact_gate_status"),
+        "hard_fact_count": market_fact_gate.get("hard_fact_count"),
+        "degraded_fact_count": market_fact_gate.get("degraded_fact_count"),
+        "evidence_debt_reasons": list(market_fact_gate.get("evidence_debt_reasons") or []),
+        "trend_cluster_ratio": trend_cluster_ratio,
+        "diversification_debt": diversification_debt,
+        "pool_profile_distribution": pool_profile_distribution,
+        "review_issue_buckets": review_issue_buckets,
+        "review_issue_primary": review_issue_primary,
+        "risk_regime_fit": risk_regime_fit,
+        "stop_rule_source": stop_rule_source,
         "snapshot": dict(snapshot or {}),
     }
+    for field_name, value in semantic_summary_fields.items():
+        report[field_name] = value
+    return report

@@ -224,11 +224,40 @@ def build_factor_research_summary(
             budget_feedback_summary.get("paper_coverage_ratio"),
             1.0,
         ),
+        "budget_feedback_execution_conversion_efficiency": (
+            _safe_float(budget_feedback_summary.get("execution_conversion_efficiency"))
+            if budget_feedback_summary.get("execution_conversion_efficiency") is not None
+            else None
+        ),
+        "budget_feedback_execution_conversion_efficiency_observed_count": int(
+            budget_feedback_summary.get("execution_conversion_efficiency_observed_count") or 0
+        ),
         "budget_feedback_legacy_control_mode_counts": dict(
             budget_feedback_summary.get("legacy_control_mode_counts") or {}
         ),
         "budget_feedback_skill_control_mode_counts": dict(
             budget_feedback_summary.get("skill_control_mode_counts") or {}
+        ),
+        "budget_feedback_action_counts": dict(
+            budget_feedback_summary.get("budget_action_counts") or {}
+        ),
+        "budget_feedback_dual_axis_action_family_count": int(
+            budget_feedback_summary.get("dual_axis_action_family_count") or 0
+        ),
+        "budget_feedback_execution_optimization_queue_count": int(
+            budget_feedback_summary.get("execution_optimization_queue_count") or 0
+        ),
+        "budget_feedback_small_budget_observe_count": int(
+            budget_feedback_summary.get("small_budget_observe_count") or 0
+        ),
+        "budget_feedback_prioritize_scale_count": int(
+            budget_feedback_summary.get("prioritize_scale_count") or 0
+        ),
+        "budget_feedback_cool_or_freeze_count": int(
+            budget_feedback_summary.get("cool_or_freeze_count") or 0
+        ),
+        "budget_feedback_retain_family_reduce_budget_count": int(
+            budget_feedback_summary.get("retain_family_reduce_budget_count") or 0
         ),
         "budget_feedback_signal_count_total": int(
             budget_feedback_summary.get("signal_count_total") or 0

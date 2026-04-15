@@ -229,6 +229,10 @@ export type FactoryQualitySummarySnapshot = {
     generation_mode_counts?: Record<string, number>;
     external_llm_provider_health_status?: string | null;
     external_llm_provider_control_mode?: string | null;
+    prediction_quality_distribution?: Record<string, number>;
+    execution_quality_distribution?: Record<string, number>;
+    evidence_alignment_distribution?: Record<string, number>;
+    confidence_contract_ready_rate?: number;
 };
 
 export type FactoryRecentRunBrief = {
@@ -500,6 +504,10 @@ export type FactoryRunSummary = {
     strict_live_alignment_gap_rate?: number;
     strict_live_alignment_status_counts?: Record<string, number>;
     validation_family_quality_panel?: FactoryValidationFamilyQualityPanelItem[];
+    prediction_quality_distribution?: Record<string, number>;
+    execution_quality_distribution?: Record<string, number>;
+    evidence_alignment_distribution?: Record<string, number>;
+    confidence_contract_ready_rate?: number;
 };
 
 export type FactoryStatusResponse = {
@@ -530,6 +538,19 @@ export type FactoryStatusResponse = {
     recent_run_diagnostics?: FactoryRecentRunDiagnostics;
     last_validation_family_quality_panel?: FactoryValidationFamilyQualityPanelItem[];
     quality_baseline?: FactoryQualityBaseline;
+    high_confidence_enabled?: boolean;
+    evidence_contract_enabled?: boolean;
+    confidence_diagnostics_enabled?: boolean;
+    execution_audit_enabled?: boolean;
+    quality_ui_v2_enabled?: boolean;
+    signal_quality_registry?: Record<string, unknown>;
+    feature_flags?: {
+        high_confidence_enabled?: boolean;
+        evidence_contract_enabled?: boolean;
+        confidence_diagnostics_enabled?: boolean;
+        execution_audit_enabled?: boolean;
+        quality_ui_v2_enabled?: boolean;
+    };
     last_result?: {
         status?: string;
         error?: string;
@@ -558,6 +579,19 @@ export type CapabilityResponse = {
     domain_events?: boolean;
     domain_projection?: boolean;
     runtime_cycle?: boolean;
+    high_confidence_enabled?: boolean;
+    evidence_contract_enabled?: boolean;
+    confidence_diagnostics_enabled?: boolean;
+    execution_audit_enabled?: boolean;
+    quality_ui_v2_enabled?: boolean;
+    signal_quality_registry?: Record<string, unknown>;
+    high_confidence_feature_flags?: {
+        high_confidence_enabled?: boolean;
+        evidence_contract_enabled?: boolean;
+        confidence_diagnostics_enabled?: boolean;
+        execution_audit_enabled?: boolean;
+        quality_ui_v2_enabled?: boolean;
+    };
 };
 
 export type DailySnapshotResponse = {
@@ -724,6 +758,15 @@ export type FactoryGovernanceStrategyBrief = {
     refreshed_existing?: boolean;
     live_candidate_ready?: boolean;
     live_review_ready?: boolean;
+    runtime_bootstrap_eligible?: boolean | null;
+    runtime_bootstrap_reason?: string | null;
+    runtime_bootstrap_budget_tier?: string | null;
+    runtime_playbook_present?: boolean | null;
+    stage_clock_days?: number | null;
+    signal_vacuum_days?: number | null;
+    remediation_action?: string | null;
+    remediation_reason?: string | null;
+    paper_lane_ready?: boolean | null;
     direct_trade_candidate?: boolean;
 };
 
@@ -985,6 +1028,16 @@ export type SignalsResponse = {
 export type ReviewReportResponse = {
     passed?: boolean;
     report_type?: string;
+    pool_profile?: string | null;
+    volatility_bucket?: string | null;
+    liquidity_bucket?: string | null;
+    evidence_chain?: Record<string, unknown>;
+    prediction_contract?: Record<string, unknown>;
+    confidence_contract?: Record<string, unknown>;
+    evidence_alignment_audit?: Record<string, unknown>;
+    legacy_semantic_contract?: boolean;
+    contradiction_count?: number;
+    proxy_dependency_score?: number;
     reports?: Array<{
         report_type?: string;
         updated_at?: string;
@@ -994,6 +1047,17 @@ export type ReviewReportResponse = {
             raw_validation_grade?: string;
             effective_validation_grade?: string;
             validation_grade_adjustment_reason?: string;
+            evidence_alignment_status?: string | null;
+            evidence_gate_status?: string | null;
+            pool_profile?: string | null;
+            volatility_bucket?: string | null;
+            hard_fact_count?: number;
+            degraded_fact_count?: number;
+            evidence_debt_reasons?: string[];
+            stop_rule_source?: string | null;
+            contradiction_count?: number;
+            proxy_dependency_score?: number;
+            legacy_semantic_contract?: boolean;
         };
     }>;
     summary?: {
@@ -1009,6 +1073,18 @@ export type ReviewReportResponse = {
         refresh_mode?: string;
         committee_decision?: string;
         committee_final_score?: number;
+        evidence_alignment_status?: string | null;
+        evidence_gate_status?: string | null;
+        pool_profile?: string | null;
+        volatility_bucket?: string | null;
+        hard_fact_count?: number;
+        degraded_fact_count?: number;
+        evidence_debt_reasons?: string[];
+        risk_regime_fit?: string | null;
+        stop_rule_source?: string | null;
+        contradiction_count?: number;
+        proxy_dependency_score?: number;
+        legacy_semantic_contract?: boolean;
     };
     quality_gate?: {
         wf_ic_ir?: number;
@@ -1180,6 +1256,37 @@ export type IncubationOverviewResponse = {
     gate_blockers?: string[];
     strict_live_alignment_gap?: boolean;
     strict_live_alignment_status?: string | null;
+    signal_quality?: Record<string, unknown>;
+    execution_quality?: Record<string, unknown>;
+    execution_diagnostics?: Record<string, unknown>;
+    prediction_quality_label?: 'weak' | 'insufficient_evidence' | 'mixed' | 'strong';
+    execution_quality_label?: 'weak' | 'insufficient_evidence' | 'mixed' | 'strong';
+    quality_diagnosis?: string | null;
+    quality_diagnosis_reasons?: string[];
+    confidence_contract_status?: 'missing' | 'insufficient' | 'diagnostic_ready' | 'comparable_ready';
+    confidence_diagnostics?: Record<string, unknown>;
+    runtime_bootstrap_eligible?: boolean | null;
+    runtime_bootstrap_reason?: string | null;
+    runtime_bootstrap_budget_tier?: string | null;
+    runtime_playbook_present?: boolean | null;
+    execution_semantic_mode?: 'compiled_dsl' | 'builtin_legacy' | 'missing_executable_contract' | string | null;
+    execution_semantic_gap?: boolean | null;
+    execution_semantic_gap_reasons?: string[];
+    dsl_required?: boolean | null;
+    dsl_compiled?: boolean | null;
+    instrument_profile?: Record<string, unknown>;
+    runtime_playbook_provenance?: Record<string, unknown>;
+    semantic_lineage?: Record<string, unknown>;
+    execution_lineage?: Record<string, unknown>;
+    hard_gate_result?: Record<string, unknown>;
+    signal_vacuum_days?: number | null;
+    stage_clock_days?: number | null;
+    remediation_action?: string | null;
+    remediation_reason?: string | null;
+    budget_action?: string | null;
+    runtime_control_mode?: string | null;
+    revision_required?: boolean;
+    cleanup_recommended?: boolean;
 };
 
 export type IncubationAccount = {
@@ -1256,6 +1363,10 @@ export type IncubationPipelineSnapshot = {
     halt_streak?: number;
     latest_decision?: string;
     readiness_score?: number;
+    priority_score?: number;
+    gate_status?: string;
+    gate_reasons?: string[];
+    hard_gate_result?: Record<string, unknown>;
     next_action?: string;
     auto_review?: boolean;
     auto_promoted?: boolean;
@@ -1520,6 +1631,7 @@ export type StrategyDetailResponse = {
     reviews?: StrategyReview[];
     nav_series?: number[];
     latest_quality_report?: ReviewReportResponse | null;
+    incubation_overview?: IncubationOverviewResponse | null;
     incubation_account?: IncubationAccount | null;
     latest_incubation_metric?: IncubationMetric | null;
     latest_promotion_review?: PromotionReview | null;
@@ -1539,6 +1651,7 @@ export type StrategyDetailResponse = {
             latest_report?: ReviewReportResponse | null;
         };
         incubation?: {
+            overview?: IncubationOverviewResponse | null;
             account?: IncubationAccount | null;
             latest_metric?: IncubationMetric | null;
             latest_pipeline_snapshot?: IncubationPipelineSnapshot | null;

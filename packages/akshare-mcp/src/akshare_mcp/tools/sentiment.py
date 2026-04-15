@@ -132,6 +132,7 @@ def register(mcp):
 
             # Best-effort: fetch news headlines
             news_headlines = []
+            headline_labels = []
             try:
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
@@ -153,6 +154,11 @@ def register(mcp):
                         news_headlines = [r['content'][:200] for r in rows if r.get('content')]
             except Exception:
                 pass
+            if hasattr(db, "list_market_headline_labels"):
+                try:
+                    headline_labels = await db.list_market_headline_labels(code, doc_type="news", limit=120)
+                except Exception:
+                    headline_labels = []
 
             # Best-effort: fetch fund flow data
             fund_flow_data = None
@@ -167,7 +173,12 @@ def register(mcp):
             except Exception:
                 pass
 
-            result = sentiment_analyzer.analyze_sentiment(klines, news_headlines, fund_flow_data)
+            result = sentiment_analyzer.analyze_sentiment(
+                klines,
+                news_headlines,
+                fund_flow_data,
+                headline_labels=headline_labels,
+            )
             result['code'] = code
 
             return ok(result)
