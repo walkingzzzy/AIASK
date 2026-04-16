@@ -26,6 +26,9 @@ FEEDBACK_METRIC_KEYS = (
     "promotion_ready_ratio",
     "promotion_review_coverage_ratio",
     "evidence_debt_ratio",
+    "gate_failure_rate",
+    "trace_completeness_ratio",
+    "admission_quality_objective",
     "raw_validation_a_rate",
     "raw_validation_b_rate",
     "raw_validation_c_rate",
@@ -168,6 +171,19 @@ _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "evidence_debt_ratio": (
         "evidence_debt_ratio",
         "signal_evidence_debt_ratio",
+    ),
+    "gate_failure_rate": (
+        "gate_failure_rate",
+        "submission_gate_failure_rate",
+        "gate_b_failure_rate",
+    ),
+    "trace_completeness_ratio": (
+        "trace_completeness_ratio",
+        "prediction_trace_completeness_ratio",
+    ),
+    "admission_quality_objective": (
+        "admission_quality_objective",
+        "bandit_admission_quality_objective",
     ),
     "raw_validation_a_rate": (
         "raw_validation_a_rate",
@@ -610,6 +626,22 @@ def normalize_feedback_input_contract(
         ),
         4,
     )
+    gate_failure_rate = round(1.0 - promotion_ready_ratio, 4)
+    trace_completeness_ratio = round(1.0 - evidence_debt_ratio, 4)
+    admission_quality_objective = round(
+        min(
+            max(
+                promotion_ready_ratio * 0.35
+                + forward_window_coverage_ratio * 0.20
+                + promotion_review_coverage_ratio * 0.15
+                + trace_completeness_ratio * 0.15
+                + (1.0 - gate_failure_rate) * 0.15,
+                0.0,
+            ),
+            1.0,
+        ),
+        4,
+    )
     normalized_summary.update(
         {
             "zero_signal_ratio": zero_signal_ratio,
@@ -618,6 +650,9 @@ def normalize_feedback_input_contract(
             "promotion_ready_ratio": promotion_ready_ratio,
             "promotion_review_coverage_ratio": promotion_review_coverage_ratio,
             "evidence_debt_ratio": evidence_debt_ratio,
+            "gate_failure_rate": gate_failure_rate,
+            "trace_completeness_ratio": trace_completeness_ratio,
+            "admission_quality_objective": admission_quality_objective,
         }
     )
     return {

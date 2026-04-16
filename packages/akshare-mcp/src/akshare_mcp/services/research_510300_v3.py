@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 
 from strategy_factory.api.contracts import FactoryBacktestAssumptions
+from strategy_factory.application.research_protocol_contract import (
+    build_research_validation_contract,
+)
 
 from ._validation_support import (
     hansen_spa_test,
@@ -171,6 +174,77 @@ class BundleArtifacts:
     latest_json_path: Path
     latest_markdown_path: Path
     latest_pdf_path: Path
+
+
+def build_default_research_validation_contract(
+    protocol: ResearchProtocol | None = None,
+) -> dict[str, Any]:
+    resolved = protocol or ResearchProtocol()
+    return build_research_validation_contract(
+        walk_forward_config={
+            "train_months": int(resolved.train_months),
+            "test_months": int(resolved.test_months),
+            "step_months": int(resolved.step_months),
+        },
+        baseline_reference={
+            "name": str(resolved.baseline_reference or "510300_baseline_reference"),
+            "end_date": str(resolved.end_date),
+            "baseline_slippage_bps": float(resolved.baseline_slippage_bps),
+            "stress_slippage_bps": float(resolved.stress_slippage_bps),
+        },
+        cash_sleeve_policy={
+            "enabled": bool(resolved.enable_cash_sleeves),
+            "schedule_clock": str(resolved.schedule_clock),
+        },
+        cost_sensitivity_grid={
+            "base_slippage_bps": float(resolved.baseline_slippage_bps),
+            "stress_slippage_bps": float(resolved.stress_slippage_bps),
+            "main_scenario_slippage_bps": float(MAIN_SCENARIO_SLIPPAGE_BPS),
+            "control_scenario_slippage_bps": float(CONTROL_SCENARIO_SLIPPAGE_BPS),
+        },
+        capacity_execution={
+            "futures_fallback_cost": dict(FUTURES_FALLBACK_COST),
+            "schedule_clock": str(resolved.schedule_clock),
+        },
+        multiple_testing={
+            "mode": "formal_runtime",
+            "white_reality_check_enabled": True,
+            "hansen_spa_enabled": True,
+            "pbo_enabled": True,
+        },
+        admission_thresholds={
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_representative",
+                "primary_validation_layer": "target",
+            },
+            "business_admission_gate": {
+                "benchmark_return_multiple_min": 2.0,
+                "benchmark_drawdown_mode": "lte",
+                "cost_sensitivity_required_bps": [0.0, 5.0, 10.0],
+                "cash_sleeve_required": True,
+            },
+            "take_profit_grid": list(DEFAULT_TAKE_PROFIT_GRID),
+            "rotation_lookback_months": list(DEFAULT_ROTATION_LOOKBACK_MONTHS),
+            "rotation_trend_windows": list(DEFAULT_ROTATION_TREND_WINDOWS),
+            "leverage_grid": list(DEFAULT_LEVERAGE_GRID),
+        },
+        family_holding_bucket={
+            "family": "510300_default",
+            "holding_bucket": "medium",
+            "enable_enhancements": bool(resolved.enable_enhancements),
+        },
+        field_provenance={
+            "walk_forward_config": "derived",
+            "baseline_reference": "derived",
+            "cash_sleeve_policy": "derived",
+            "cost_sensitivity_grid": "derived",
+            "capacity_execution": "derived",
+            "multiple_testing": "derived",
+            "admission_thresholds": "derived",
+            "family_holding_bucket": "derived",
+        },
+    )
 
 
 class _ProxyBypass:

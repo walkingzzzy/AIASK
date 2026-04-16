@@ -16,6 +16,7 @@ from ..domain.constants import (
     LIVE_ADMISSION_THRESHOLDS,
     QUALITY_GATE_THRESHOLDS,
     RESEARCH_ADMISSION_THRESHOLDS,
+    STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE,
     TRADE_GATE_PROFILE_THRESHOLDS,
 )
 from ..domain.strategy_profile import infer_candidate_strategy_profile
@@ -38,6 +39,10 @@ from .candidate_contract import (
     build_portfolio_candidate_contract,
     build_tested_object_hash,
     resolve_candidate_validation_profile,
+)
+from .research_protocol_contract import (
+    adapt_research_validation_contract_for_submission,
+    evaluate_research_validation_contract_admission,
 )
 from .quality_reporting import maybe_grant_provisional_incubation, normalize_quality_gate_result, safe_metric_value
 
@@ -295,10 +300,20 @@ def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
     research_task = _normalize_research_task_contract(
         _strategy_payload_value(strategy, "research_task") or strategy.get("research_task") or {}
     )
+    research_protocol_adapter = dict(
+        _strategy_payload_value(strategy, "research_validation_contract_submission_adapter")
+        or strategy.get("research_validation_contract_submission_adapter")
+        or {}
+    )
+    adapter_profile = dict(research_protocol_adapter.get("validation_profile") or {})
     resolved_profile = resolve_candidate_validation_profile(strategy, research_task=research_task)
-    profile_name = str(resolved_profile.get("profile") or "").strip().lower()
-    validation_focus = str(resolved_profile.get("validation_focus") or "").strip().lower()
-    primary_validation_layer = str(resolved_profile.get("primary_validation_layer") or "").strip().lower() or "target"
+    profile_name = str(resolved_profile.get("profile") or adapter_profile.get("profile") or "").strip().lower()
+    validation_focus = str(
+        resolved_profile.get("validation_focus") or adapter_profile.get("validation_focus") or ""
+    ).strip().lower()
+    primary_validation_layer = str(
+        resolved_profile.get("primary_validation_layer") or adapter_profile.get("primary_validation_layer") or ""
+    ).strip().lower() or "target"
     if profile_name == "factor_rank_validation" and _should_route_single_target_bulk_factor_to_trade_profile(
         strategy,
         research_task=research_task,
@@ -311,6 +326,123 @@ def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
         "validation_focus": validation_focus,
         "primary_validation_layer": primary_validation_layer,
         "research_task": research_task,
+    }
+
+
+def _resolve_research_protocol_submission_adapter(strategy: dict) -> dict[str, Any]:
+    adapter = dict(
+        _strategy_payload_value(strategy, "research_validation_contract_submission_adapter")
+        or strategy.get("research_validation_contract_submission_adapter")
+        or {}
+    )
+    if adapter:
+        return adapter
+    contract = dict(
+        _strategy_payload_value(strategy, "research_validation_contract")
+        or strategy.get("research_validation_contract")
+        or {}
+    )
+    if contract:
+        return adapt_research_validation_contract_for_submission(contract)
+    return {}
+
+
+def _resolve_research_protocol_observed_payload(
+    strategy: dict,
+    *,
+    backtest_metrics: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    metrics = dict(backtest_metrics or {})
+    params = dict(strategy.get("params") or {})
+    candidate_provenance = dict(
+        _strategy_payload_value(strategy, "candidate_provenance")
+        or strategy.get("candidate_provenance")
+        or {}
+    )
+    contract_snapshot = dict(
+        _strategy_payload_value(strategy, "candidate_contract_snapshot")
+        or strategy.get("candidate_contract_snapshot")
+        or {}
+    )
+    strategy_profile = dict(contract_snapshot.get("strategy_profile") or {})
+    cost_assumptions = dict(metrics.get("cost_assumptions") or {})
+    implementation_shortfall = dict(metrics.get("implementation_shortfall_components") or {})
+    cash_sleeve = dict(
+        metrics.get("cash_sleeve")
+        or _strategy_payload_value(strategy, "cash_sleeve")
+        or _strategy_payload_value(strategy, "cash_sleeve_policy")
+        or {}
+    )
+    return {
+        "oos_cagr": (
+            metrics.get("oos_cagr")
+            if metrics.get("oos_cagr") is not None
+            else metrics.get("target_layer_oos_return")
+        ),
+        "benchmark_oos_cagr": (
+            metrics.get("benchmark_oos_cagr")
+            if metrics.get("benchmark_oos_cagr") is not None
+            else metrics.get("benchmark_target_layer_oos_return")
+        ),
+        "oos_max_drawdown": (
+            metrics.get("oos_max_drawdown")
+            if metrics.get("oos_max_drawdown") is not None
+            else metrics.get("max_drawdown")
+        ),
+        "benchmark_oos_max_drawdown": (
+            metrics.get("benchmark_oos_max_drawdown")
+            if metrics.get("benchmark_oos_max_drawdown") is not None
+            else metrics.get("benchmark_max_drawdown")
+        ),
+        "total_return": metrics.get("total_return"),
+        "post_cost_sharpe": metrics.get("post_cost_sharpe"),
+        "effective_total_bps": (
+            implementation_shortfall.get("effective_total_bps")
+            if implementation_shortfall.get("effective_total_bps") is not None
+            else cost_assumptions.get("slippage_bps")
+        ),
+        "cost_sensitivity_results": dict(
+            metrics.get("cost_sensitivity_results")
+            or metrics.get("cost_scenarios")
+            or metrics.get("cost_sensitivity_grid_results")
+            or {}
+        ),
+        "cash_sleeve": cash_sleeve,
+        "family": (
+            candidate_provenance.get("candidate_family")
+            or candidate_provenance.get("candidate_family_id")
+            or strategy_profile.get("candidate_family")
+            or strategy.get("strategy_type")
+        ),
+        "holding_bucket": (
+            candidate_provenance.get("holding_period_bucket")
+            or strategy_profile.get("holding_period_bucket")
+            or _strategy_payload_value(strategy, "holding_period_bucket")
+        ),
+        "artifact_ids": _normalize_symbol_list(
+            _strategy_payload_value(strategy, "artifact_ids"),
+            candidate_provenance.get("artifact_ids"),
+            params.get("artifact_ids"),
+            limit=16,
+        ),
+        "retrieval_context_ids": _normalize_symbol_list(
+            _strategy_payload_value(strategy, "retrieval_context_ids"),
+            candidate_provenance.get("retrieval_context_ids"),
+            params.get("retrieval_context_ids"),
+            limit=16,
+        ),
+        "prediction_trace_id": (
+            _strategy_payload_value(strategy, "prediction_trace_id")
+            or _strategy_payload_value(strategy, "trace_id")
+            or params.get("prediction_trace_id")
+            or params.get("trace_id")
+        ),
+        "trace_id": (
+            _strategy_payload_value(strategy, "trace_id")
+            or _strategy_payload_value(strategy, "prediction_trace_id")
+            or params.get("trace_id")
+            or params.get("prediction_trace_id")
+        ),
     }
 
 
@@ -1814,12 +1946,57 @@ def _attach_admission_evaluations(
     *,
     risk_report: Optional[dict] = None,
     validation_report: Optional[dict] = None,
+    backtest_metrics: Optional[dict] = None,
 ) -> dict[str, Any]:
     normalized_gate = normalize_quality_gate_result(gate)
     attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized_gate)
     evaluations: dict[str, dict[str, Any]] = {}
     profile_name = str(profile.get("profile") or "").strip().lower()
     research_only_due_to_trade_audit_gap = bool(normalized_gate.get("research_only_due_to_trade_audit_gap"))
+    research_protocol_adapter = _resolve_research_protocol_submission_adapter(strategy)
+    research_protocol_evaluation = evaluate_research_validation_contract_admission(
+        research_protocol_adapter,
+        observed=_resolve_research_protocol_observed_payload(
+            strategy,
+            backtest_metrics=backtest_metrics,
+        ),
+        spec_completeness_mode=STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE,
+    )
+    research_protocol_available = bool(research_protocol_evaluation.get("available"))
+    research_protocol_review_decision = str(
+        research_protocol_evaluation.get("review_decision") or "pending"
+    ).strip().lower()
+    research_protocol_blockers = list(research_protocol_evaluation.get("blocking_reasons") or [])
+    research_protocol_warnings = list(research_protocol_evaluation.get("warnings") or [])
+
+    if research_protocol_available:
+        merged_gate_payload = {
+            **normalized_gate,
+            "warnings": _merge_text_items(normalized_gate.get("warnings"), research_protocol_warnings),
+            "business_admission_decision": dict(
+                research_protocol_evaluation.get("business_admission_decision") or {}
+            ),
+            "benchmark_comparison": dict(research_protocol_evaluation.get("benchmark_comparison") or {}),
+            "cost_sensitivity_summary": dict(
+                research_protocol_evaluation.get("cost_sensitivity_summary") or {}
+            ),
+            "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
+            "family_holding_bucket": dict(research_protocol_evaluation.get("family_holding_bucket") or {}),
+            "gate_b_review_decision": research_protocol_review_decision,
+            "artifact_ids": list(research_protocol_evaluation.get("artifact_ids") or []),
+            "retrieval_context_ids": list(research_protocol_evaluation.get("retrieval_context_ids") or []),
+            "prediction_trace_id": research_protocol_evaluation.get("prediction_trace_id"),
+        }
+        if research_protocol_review_decision in {"revise", "reject"}:
+            merged_gate_payload.update(
+                {
+                    "passed": False,
+                    "passed_strict": False,
+                    "provisional_pass": False,
+                    "reasons": _merge_text_items(normalized_gate.get("reasons"), research_protocol_blockers),
+                }
+            )
+        normalized_gate = normalize_quality_gate_result(merged_gate_payload)
 
     for admission_level in _ADMISSION_LEVEL_ORDER:
         if profile_name in _TRADE_PRIMARY_PROFILES:
@@ -1846,12 +2023,32 @@ def _attach_admission_evaluations(
             gate=normalized_gate,
         )
         stage_reasons = _merge_text_items(stage_result.get("reasons"), review_blockers)
+        stage_warnings = list(stage_result.get("warnings") or [])
+        if research_protocol_available:
+            if research_protocol_review_decision in {"revise", "reject"}:
+                stage_reasons = _merge_text_items(stage_reasons, research_protocol_blockers)
+            stage_warnings = _merge_text_items(stage_warnings, research_protocol_warnings)
         evaluations[admission_level] = {
             "passed": len(stage_reasons) == 0 and bool(stage_result.get("passed")),
             "reasons": stage_reasons,
-            "warnings": list(stage_result.get("warnings") or []),
+            "warnings": stage_warnings,
             "thresholds": dict(stage_result.get("thresholds") or {}),
-            "review_context": dict(review_context or {}),
+            "review_context": {
+                **dict(review_context or {}),
+                "business_admission_decision": dict(
+                    research_protocol_evaluation.get("business_admission_decision") or {}
+                ),
+                "benchmark_comparison": dict(
+                    research_protocol_evaluation.get("benchmark_comparison") or {}
+                ),
+                "cost_sensitivity_summary": dict(
+                    research_protocol_evaluation.get("cost_sensitivity_summary") or {}
+                ),
+                "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
+                "family_holding_bucket": dict(
+                    research_protocol_evaluation.get("family_holding_bucket") or {}
+                ),
+            },
         }
 
     if research_only_due_to_trade_audit_gap:
@@ -1934,6 +2131,18 @@ def _attach_admission_evaluations(
             "raw_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("raw_validation_grade"),
             "effective_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("effective_validation_grade"),
             "validation_grade_adjustment_reason": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("validation_grade_adjustment_reason"),
+            "gate_b_review_decision": research_protocol_review_decision if research_protocol_available else (
+                "pass" if normalized_gate.get("passed") else "reject"
+            ),
+            "business_admission_decision": dict(
+                research_protocol_evaluation.get("business_admission_decision") or {}
+            ),
+            "benchmark_comparison": dict(research_protocol_evaluation.get("benchmark_comparison") or {}),
+            "cost_sensitivity_summary": dict(
+                research_protocol_evaluation.get("cost_sensitivity_summary") or {}
+            ),
+            "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
+            "family_holding_bucket": dict(research_protocol_evaluation.get("family_holding_bucket") or {}),
         }
     )
 
@@ -2327,6 +2536,7 @@ async def run_submission_quality_gate(
             normalized,
             risk_report=risk_report,
             validation_report=validation_report,
+            backtest_metrics=backtest_metrics,
         )
     except Exception as e:
         return normalize_quality_gate_result(

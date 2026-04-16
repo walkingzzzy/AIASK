@@ -716,6 +716,102 @@ def _normalize_execution_quality_for_contract(execution_quality: Optional[dict])
     return payload
 
 
+def _unique_tokens(values: list[Any] | None, *, limit: int = 12) -> list[str]:
+    items: list[str] = []
+    for value in list(values or []):
+        token = _string(value)
+        if token and token not in items:
+            items.append(token)
+        if len(items) >= max(1, int(limit or 12)):
+            break
+    return items
+
+
+def _build_signal_quality_snapshot(signal_quality: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = dict(signal_quality or {})
+    primary_effective_n = _safe_int(payload.get("primary_effective_n"))
+    coverage_ratio = _safe_float(payload.get("coverage_ratio")) or 0.0
+    primary_skill_lcb = _safe_float(payload.get("primary_skill_lcb"))
+    recent_primary_skill_lcb = _safe_float(payload.get("recent_primary_skill_lcb"))
+    stability_gap = _safe_float(payload.get("stability_gap"))
+    if primary_effective_n < 20 or coverage_ratio < 0.25:
+        status = "insufficient_evidence"
+    elif primary_skill_lcb is None or primary_skill_lcb <= 0.0:
+        status = "weak"
+    elif (
+        primary_effective_n >= 60
+        and coverage_ratio >= 0.75
+        and (recent_primary_skill_lcb or 0.0) > 0.0
+        and (stability_gap is None or stability_gap <= 0.05)
+    ):
+        status = "strong"
+    else:
+        status = "candidate"
+    return {
+        "contract_version": "strategy_factory.signal_quality_snapshot.v2",
+        "status": status,
+        "primary_horizon": _safe_int(payload.get("primary_horizon"), 5),
+        "secondary_horizon": _safe_int(payload.get("secondary_horizon"), 10),
+        "primary_effective_n": primary_effective_n,
+        "secondary_effective_n": _safe_int(payload.get("secondary_effective_n")),
+        "primary_skill_lcb": primary_skill_lcb,
+        "secondary_skill_lcb": _safe_float(payload.get("secondary_skill_lcb")),
+        "recent_primary_skill_lcb": recent_primary_skill_lcb,
+        "stability_gap": stability_gap,
+        "coverage_ratio": coverage_ratio,
+        "signal_coverage_ratio": _safe_float(payload.get("signal_coverage_ratio")),
+        "observed_forward_days": list(payload.get("observed_forward_days") or []),
+        "missing_forward_days": list(payload.get("missing_forward_days") or []),
+    }
+
+
+def _build_execution_quality_snapshot(execution_quality: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = dict(execution_quality or {})
+    audit = dict(payload.get("audit") or {})
+    execution_audit_gate_status = _string(
+        payload.get("execution_audit_gate_status") or audit.get("execution_audit_gate_status")
+    ) or "missing"
+    evidence_gap_codes = list(payload.get("evidence_gap_codes") or [])
+    if execution_audit_gate_status in {"missing", "bootstrap_pending", "insufficient_samples", "insufficient_evidence"}:
+        evidence_gap_codes.append(f"execution_audit_gate:{execution_audit_gate_status}")
+    execution_quality_label = _string(payload.get("execution_quality_label")).lower()
+    if execution_audit_gate_status == "passed":
+        status = "strong"
+    elif execution_quality_label in {"strong", "candidate", "weak", "insufficient_evidence"}:
+        status = execution_quality_label
+    elif execution_audit_gate_status == "failed_metrics":
+        status = "weak"
+    else:
+        status = "insufficient_evidence"
+    return {
+        "contract_version": "strategy_factory.execution_quality_snapshot.v2",
+        "status": status,
+        "evidence_status": _string(payload.get("evidence_status")) or None,
+        "evidence_gap_codes": _unique_tokens(evidence_gap_codes, limit=16),
+        "execution_audit_gate_status": execution_audit_gate_status,
+        "realized_trade_count": _safe_int(payload.get("realized_trade_count") or audit.get("realized_trade_count")),
+        "order_count": _safe_int(payload.get("order_count")),
+        "trade_count": _safe_int(payload.get("trade_count")),
+        "mapped_position_count": _safe_int(payload.get("mapped_position_count") or audit.get("mapped_position_count")),
+        "incomplete_position_count": _safe_int(
+            payload.get("incomplete_position_count") or audit.get("incomplete_position_count")
+        ),
+        "realized_pnl_total": _safe_float(payload.get("realized_pnl_total") or audit.get("realized_pnl_total")),
+        "fill_rate": _safe_float(payload.get("fill_rate")),
+        "round_trip_close_rate": _safe_float(payload.get("round_trip_close_rate")),
+        "trade_expectancy": _safe_float(payload.get("trade_expectancy")),
+        "pnl_conversion_efficiency": _safe_float(payload.get("pnl_conversion_efficiency")),
+        "execution_conversion_efficiency": _safe_float(payload.get("execution_conversion_efficiency")),
+        "realized_slippage_vs_model": _safe_float(payload.get("realized_slippage_vs_model"))
+        if payload.get("realized_slippage_vs_model") is not None
+        else None,
+        "missed_trade_ratio": _safe_float(payload.get("missed_trade_ratio"))
+        if payload.get("missed_trade_ratio") is not None
+        else None,
+        "hard_gate_ready": bool(payload.get("execution_hard_gate_passed")),
+    }
+
+
 async def build_execution_quality(
     db,
     strategy: dict,
@@ -759,6 +855,7 @@ async def build_execution_quality(
     else:
         signal_to_fill_ratio = None
     filled_order_ratio = _safe_ratio(filled_orders, total_orders) if total_orders > 0 else None
+    fill_rate = filled_order_ratio
     turnover_base = latest_total_value if latest_total_value and latest_total_value > 0 else initial_capital
     turnover_rate = _safe_ratio(trade_amount, turnover_base)
 
@@ -802,6 +899,11 @@ async def build_execution_quality(
     evidence_status = "missing_account"
     if account_id:
         evidence_status = "ready" if (total_orders > 0 or total_trades > 0 or nav_observation_days > 0) else "empty"
+    missed_trade_ratio = (
+        max(0.0, round(1.0 - float(signal_to_fill_ratio), 6))
+        if signal_to_fill_ratio is not None
+        else None
+    )
 
     result = {
         "approximate": True,
@@ -835,19 +937,24 @@ async def build_execution_quality(
         "paper_nav_latest_value": _round_metric(latest_total_value, 4),
         "paper_nav_change": _round_metric(paper_nav_change, 4),
         "paper_nav_return": paper_nav_return,
+        "fill_rate": fill_rate,
+        "round_trip_close_rate": None,
         "signal_edge_reference": signal_edge_reference,
         "signal_edge_reference_label": (
             f"{_safe_int(quality.get('primary_horizon'), 5)}D_skill_lcb" if signal_edge_reference is not None else None
         ),
         "signal_to_fill_ratio": signal_to_fill_ratio,
         "filled_order_ratio": filled_order_ratio,
+        "missed_trade_ratio": missed_trade_ratio,
         "nav_conversion_proxy": nav_conversion_proxy,
+        "realized_slippage_vs_model": None,
         "prediction_quality_label": prediction_quality_label,
         "prediction_reasons": prediction_reasons,
         "execution_quality_label": execution_quality_label,
         "execution_reasons": execution_reasons,
         "diagnosis": diagnosis,
         "diagnosis_reasons": diagnosis_reasons,
+        "evidence_gap_codes": [],
     }
     gate_context = {
         **dict(audit_summary or {}),
@@ -862,12 +969,20 @@ async def build_execution_quality(
         gate_status, gate_reasons, metric_passes, hard_gate_metrics = evaluate_execution_audit_gate(
             gate_context
         )
+        mapped_position_count = _safe_int(audit_summary.get("mapped_position_count"))
+        realized_trade_count = _safe_int(audit_summary.get("realized_trade_count"))
+        incomplete_position_count = _safe_int(audit_summary.get("incomplete_position_count"))
         result.update(
             {
                 "audit": audit_summary,
                 "audit_source_tables": list(audit_summary.get("source_tables") or []),
-                "realized_trade_count": _safe_int(audit_summary.get("realized_trade_count")),
+                "realized_trade_count": realized_trade_count,
+                "mapped_position_count": mapped_position_count,
+                "incomplete_position_count": incomplete_position_count,
+                "fill_rate": fill_rate,
+                "round_trip_close_rate": _safe_ratio(realized_trade_count, mapped_position_count),
                 "trade_expectancy": _safe_float(audit_summary.get("trade_expectancy")),
+                "realized_pnl_total": _safe_float(audit_summary.get("realized_pnl_total")),
                 "pnl_conversion_efficiency": _safe_float(
                     audit_summary.get("pnl_conversion_efficiency")
                 ),
@@ -884,6 +999,10 @@ async def build_execution_quality(
                 "execution_hard_gate_passed": gate_status == "passed",
                 "hard_gate_metric_passes": metric_passes,
                 "hard_gate_metrics": hard_gate_metrics,
+                "missed_trade_ratio": missed_trade_ratio,
+                "realized_slippage_vs_model": _safe_float(audit_summary.get("realized_slippage_vs_model"))
+                if audit_summary.get("realized_slippage_vs_model") is not None
+                else None,
                 "note": (
                     "Execution metrics include proxy conversion plus additive audit round-trip metrics "
                     "based on position_id-complete samples."
@@ -903,6 +1022,35 @@ async def build_execution_quality(
                 "hard_gate_metrics": hard_gate_metrics,
             }
         )
+    evidence_gap_codes = list(result.get("evidence_gap_codes") or [])
+    if result.get("execution_audit_gate_status") in {
+        "missing",
+        "bootstrap_pending",
+        "insufficient_samples",
+        "insufficient_evidence",
+    }:
+        evidence_gap_codes.append(f"execution_audit_gate:{result.get('execution_audit_gate_status')}")
+    if result.get("realized_trade_count") in (None, 0):
+        evidence_gap_codes.append("missing_realized_trade_count")
+    if _safe_int(result.get("order_count")) <= 0:
+        evidence_gap_codes.append("missing_order_linkage")
+    if _safe_int(result.get("trade_count")) <= 0 and _safe_int(result.get("realized_trade_count")) <= 0:
+        evidence_gap_codes.append("missing_trade_linkage")
+    if _safe_int(result.get("mapped_position_count")) <= 0 and _safe_int(result.get("realized_trade_count")) <= 0:
+        evidence_gap_codes.append("missing_position_linkage")
+    if _safe_int(result.get("incomplete_position_count")) > 0:
+        evidence_gap_codes.append("incomplete_round_trip_coverage")
+    if result.get("round_trip_close_rate") is None:
+        evidence_gap_codes.append("missing_round_trip_close_rate")
+    if result.get("realized_slippage_vs_model") is None:
+        evidence_gap_codes.append("missing_realized_slippage_vs_model")
+    if (
+        _safe_int(result.get("nav_observation_days")) <= 0
+        and result.get("realized_pnl_total") in (None, "")
+        and result.get("trade_expectancy") in (None, "")
+    ):
+        evidence_gap_codes.append("missing_pnl_audit")
+    result["evidence_gap_codes"] = _unique_tokens(evidence_gap_codes, limit=16)
     return result
 
 
@@ -1313,6 +1461,16 @@ async def _build_execution_lineage(db, strategy_id: str) -> dict[str, Any]:
         "unmapped_runtime_action_count": sum(
             1 for item in runtime_rows if _lineage_status(item) == "unmapped_runtime_action"
         ),
+        "recent_signal_ids": _unique_tokens(
+            [_string(item.get("signal_id")) for item in ordered_rows if _string(item.get("signal_id"))],
+            limit=8,
+        ),
+        "latest_signal_date": _string(ordered_rows[0].get("signal_date")) or None,
+        "latest_signal_event_at": (
+            _string(ordered_rows[0].get("signal_ts"))
+            or _string(ordered_rows[0].get("created_at"))
+            or None
+        ),
         "lineage_status_counts": lineage_status_counts,
         "runtime_action_reason_counts": runtime_action_reason_counts,
         "runtime_action_source_counts": runtime_action_source_counts,
@@ -1329,6 +1487,389 @@ async def _build_execution_lineage(db, strategy_id: str) -> dict[str, Any]:
             }
             for item in preview_rows
         ],
+    }
+
+
+async def _load_prediction_trace_entity_chain(
+    db,
+    *,
+    strategy_id: str,
+    account_id: str | None = None,
+) -> dict[str, Any]:
+    orders: list[dict[str, Any]] = []
+    trades: list[dict[str, Any]] = []
+    positions: list[dict[str, Any]] = []
+    fills: list[dict[str, Any]] = []
+    nav_rows: list[dict[str, Any]] = []
+
+    list_orders = getattr(db, "list_strategy_paper_orders", None)
+    if callable(list_orders):
+        try:
+            orders = [dict(item or {}) for item in list(await list_orders(strategy_id, limit=500) or [])]
+        except TypeError:
+            orders = [dict(item or {}) for item in list(await list_orders(strategy_id) or [])]
+        except Exception:
+            orders = []
+
+    list_trades = getattr(db, "list_strategy_paper_trades", None)
+    if callable(list_trades):
+        try:
+            if account_id:
+                trades = [
+                    dict(item or {})
+                    for item in list(await list_trades(strategy_id, account_id=account_id, limit=500) or [])
+                ]
+            else:
+                trades = [dict(item or {}) for item in list(await list_trades(strategy_id, limit=500) or [])]
+        except TypeError:
+            trades = [dict(item or {}) for item in list(await list_trades(strategy_id) or [])]
+        except Exception:
+            trades = []
+
+    list_positions = getattr(db, "list_strategy_trade_positions", None)
+    if callable(list_positions):
+        try:
+            positions = [
+                dict(item or {})
+                for item in list(await list_positions(strategy_id=strategy_id, limit=500) or [])
+            ]
+        except TypeError:
+            positions = [dict(item or {}) for item in list(await list_positions(strategy_id=strategy_id) or [])]
+        except Exception:
+            positions = []
+
+    list_fills = getattr(db, "list_strategy_trade_position_fills", None)
+    if callable(list_fills):
+        try:
+            fills = [
+                dict(item or {})
+                for item in list(await list_fills(strategy_id=strategy_id, limit=1000) or [])
+            ]
+        except TypeError:
+            fills = [dict(item or {}) for item in list(await list_fills(strategy_id=strategy_id) or [])]
+        except Exception:
+            fills = []
+
+    nav_rows_method = getattr(db, "get_paper_nav_rows", None)
+    if account_id and callable(nav_rows_method):
+        try:
+            nav_rows = [dict(item or {}) for item in list(await nav_rows_method(account_id, limit=120) or [])]
+        except TypeError:
+            nav_rows = [dict(item or {}) for item in list(await nav_rows_method(account_id) or [])]
+        except Exception:
+            nav_rows = []
+
+    return {
+        "orders": orders,
+        "trades": trades,
+        "positions": positions,
+        "fills": fills,
+        "nav_rows": nav_rows,
+    }
+
+
+def _prediction_trace_node(
+    *,
+    available: bool,
+    source_mode: str,
+    count: Any = 0,
+    ids: list[Any] | None = None,
+    status: Any = None,
+    as_of: Any = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "available": bool(available),
+        "source_mode": _string(source_mode) or "entity_backed",
+        "count": _safe_int(count),
+        "ids": _unique_tokens(list(ids or []), limit=8),
+    }
+    if _string(status):
+        payload["status"] = _string(status)
+    if _string(as_of):
+        payload["as_of"] = _string(as_of)
+    for key, value in extra.items():
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, list):
+            payload[key] = _unique_tokens(value, limit=8)
+        else:
+            payload[key] = value
+    return payload
+
+
+def _build_prediction_trace_ledger_view(
+    strategy: dict[str, Any],
+    *,
+    quality_report: Optional[dict[str, Any]],
+    signal_quality_snapshot: Optional[dict[str, Any]],
+    execution_quality_snapshot: Optional[dict[str, Any]],
+    execution_lineage: Optional[dict[str, Any]],
+    entity_chain: Optional[dict[str, Any]],
+    latest_signal_snapshot: Optional[dict[str, Any]],
+    hard_gate_result: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    strategy_payload = dict(strategy or {})
+    params = dict(strategy_payload.get("params") or {})
+    report_payload = dict(quality_report or {})
+    report_summary = dict(report_payload.get("summary") or {})
+    signal_snapshot = dict(signal_quality_snapshot or {})
+    execution_snapshot = dict(execution_quality_snapshot or {})
+    lineage = dict(execution_lineage or {})
+    chain = dict(entity_chain or {})
+    latest_snapshot = dict(latest_signal_snapshot or {})
+    hard_gate = dict(hard_gate_result or {})
+    orders = [dict(item or {}) for item in list(chain.get("orders") or []) if isinstance(item, dict)]
+    trades = [dict(item or {}) for item in list(chain.get("trades") or []) if isinstance(item, dict)]
+    positions = [dict(item or {}) for item in list(chain.get("positions") or []) if isinstance(item, dict)]
+    fills = [dict(item or {}) for item in list(chain.get("fills") or []) if isinstance(item, dict)]
+    nav_rows = [dict(item or {}) for item in list(chain.get("nav_rows") or []) if isinstance(item, dict)]
+    prediction_trace_id = (
+        _string(strategy_payload.get("prediction_trace_id"))
+        or _string(strategy_payload.get("trace_id"))
+        or _string(params.get("prediction_trace_id"))
+        or _string(params.get("trace_id"))
+        or _string(report_summary.get("prediction_trace_id"))
+        or _string(report_summary.get("trace_id"))
+    )
+    paper_account_id = _string(strategy_payload.get("paper_account_id")) or None
+    signal_ids = _unique_tokens(
+        [
+            *list(lineage.get("recent_signal_ids") or []),
+            _string(latest_snapshot.get("signal_id")),
+            _string(latest_snapshot.get("id")),
+        ],
+        limit=8,
+    )
+    order_ids = _unique_tokens(
+        [
+            _string(item.get("id") or item.get("order_id"))
+            for item in orders
+            if _string(item.get("id") or item.get("order_id"))
+        ],
+        limit=8,
+    )
+    order_status_counts: dict[str, int] = {}
+    for item in orders:
+        order_status = _string(item.get("status")) or "unknown"
+        order_status_counts[order_status] = order_status_counts.get(order_status, 0) + 1
+    trade_ids = _unique_tokens(
+        [
+            _string(item.get("id") or item.get("trade_id"))
+            for item in trades
+            if _string(item.get("id") or item.get("trade_id"))
+        ],
+        limit=8,
+    )
+    position_ids = _unique_tokens(
+        [
+            _string(item.get("position_id") or item.get("id"))
+            for item in positions
+            if _string(item.get("position_id") or item.get("id"))
+        ],
+        limit=8,
+    )
+    linked_signal_count = len(
+        {
+            _string(item.get("signal_id"))
+            for item in [*trades, *fills]
+            if _string(item.get("signal_id"))
+        }
+    )
+    linked_position_count = len(
+        {
+            _string(item.get("position_id"))
+            for item in [*trades, *fills]
+            if _string(item.get("position_id"))
+        }
+    )
+    position_count = len(positions)
+    mapped_position_count = _safe_int(execution_snapshot.get("mapped_position_count"))
+    closed_position_count = sum(
+        1 for item in positions if _string(item.get("status")) == "closed" or _string(item.get("closed_at"))
+    )
+    incomplete_position_count = _safe_int(execution_snapshot.get("incomplete_position_count"))
+    trade_count = len(trades)
+    realized_trade_count = _safe_int(execution_snapshot.get("realized_trade_count"))
+    nav_row_count = len(nav_rows)
+    realized_pnl_total = _safe_float(execution_snapshot.get("realized_pnl_total"))
+    trade_expectancy = _safe_float(execution_snapshot.get("trade_expectancy"))
+    execution_audit_gate_status = _string(execution_snapshot.get("execution_audit_gate_status")) or "missing"
+    signal_event_available = bool(latest_snapshot or _safe_int(lineage.get("signal_evidence_count")) > 0)
+    intended_order_available = len(order_ids) > 0 or len(orders) > 0
+    actual_fill_available = trade_count > 0 or realized_trade_count > 0
+    position_round_trip_available = position_count > 0 or mapped_position_count > 0 or closed_position_count > 0
+    pnl_audit_available = nav_row_count > 0 or realized_pnl_total is not None or trade_expectancy is not None
+    evidence_gap_codes: list[str] = []
+    if not prediction_trace_id:
+        evidence_gap_codes.append("missing_prediction_trace_id")
+    if not signal_event_available:
+        evidence_gap_codes.append("missing_signal_event")
+    if not intended_order_available:
+        evidence_gap_codes.append("missing_intended_order")
+        if paper_account_id:
+            evidence_gap_codes.append("missing_order_linkage")
+    if not actual_fill_available:
+        evidence_gap_codes.append("missing_actual_fill")
+        evidence_gap_codes.append("missing_trade_linkage")
+    if not position_round_trip_available:
+        evidence_gap_codes.append("missing_position_round_trip")
+        evidence_gap_codes.append("missing_position_linkage")
+    elif incomplete_position_count > 0:
+        evidence_gap_codes.append("incomplete_round_trip_coverage")
+    if not pnl_audit_available:
+        evidence_gap_codes.append("missing_pnl_audit_summary")
+        evidence_gap_codes.append("missing_pnl_audit")
+    if list(execution_snapshot.get("evidence_gap_codes") or []):
+        evidence_gap_codes.extend(list(execution_snapshot.get("evidence_gap_codes") or []))
+    gate_reasons = _unique_tokens(hard_gate.get("reasons") or [], limit=16)
+    return {
+        "contract_version": "strategy_factory.prediction_trace_ledger.v2",
+        "prediction_trace_id": prediction_trace_id or None,
+        "strategy_id": _string(strategy_payload.get("id")) or None,
+        "hypothesis_spec": _prediction_trace_node(
+            available=bool(
+                _string(strategy_payload.get("research_protocol_version") or params.get("research_protocol_version"))
+                or _string(strategy_payload.get("candidate_contract_version") or params.get("candidate_contract_version"))
+                or _string(params.get("dsl_signature"))
+                or dict(params.get("research_validation_contract") or {})
+            ),
+            source_mode="entity_backed",
+            count=1,
+            status="ready",
+            research_protocol_version=_string(
+                strategy_payload.get("research_protocol_version") or params.get("research_protocol_version")
+            ) or None,
+            candidate_contract_version=_string(
+                strategy_payload.get("candidate_contract_version") or params.get("candidate_contract_version")
+            ) or None,
+            dsl_signature=_string(params.get("dsl_signature")) or None,
+        ),
+        "signal_event": _prediction_trace_node(
+            available=signal_event_available,
+            source_mode="entity_backed",
+            count=_safe_int(lineage.get("signal_evidence_count")),
+            ids=signal_ids,
+            status=_string(signal_snapshot.get("status")) or None,
+            as_of=(
+                _string(latest_snapshot.get("as_of_date"))
+                or _string(latest_snapshot.get("created_at"))
+                or _string(lineage.get("latest_signal_event_at"))
+                or _string(lineage.get("latest_signal_date"))
+                or None
+            ),
+            latest_signal_snapshot_id=_string(latest_snapshot.get("id")) or None,
+            signal_evidence_count=_safe_int(lineage.get("signal_evidence_count")),
+            runtime_action_count=_safe_int(lineage.get("runtime_action_count")),
+            recent_signal_ids=signal_ids,
+        ),
+        "intended_order": _prediction_trace_node(
+            available=intended_order_available,
+            source_mode="entity_backed",
+            count=len(orders),
+            ids=order_ids,
+            status="available" if intended_order_available else "missing",
+            as_of=(
+                _string(orders[0].get("filled_at"))
+                if orders
+                else None
+            ) or (
+                _string(orders[0].get("updated_at"))
+                if orders
+                else None
+            ) or (
+                _string(orders[0].get("created_at"))
+                if orders
+                else None
+            ) or None,
+            paper_account_id=paper_account_id,
+            order_count=len(orders),
+            order_status_counts=order_status_counts,
+            order_ids=order_ids,
+        ),
+        "actual_fill": _prediction_trace_node(
+            available=actual_fill_available,
+            source_mode="entity_backed",
+            count=trade_count or realized_trade_count,
+            ids=trade_ids,
+            status=execution_audit_gate_status,
+            as_of=(
+                _string(trades[0].get("trade_time"))
+                if trades
+                else None
+            ) or (
+                _string(trades[0].get("created_at"))
+                if trades
+                else None
+            ) or None,
+            trade_count=trade_count,
+            realized_trade_count=realized_trade_count,
+            trade_ids=trade_ids,
+            linked_signal_count=linked_signal_count,
+            linked_position_count=linked_position_count,
+        ),
+        "position_round_trip": _prediction_trace_node(
+            available=position_round_trip_available,
+            source_mode="entity_backed",
+            count=mapped_position_count or position_count,
+            ids=position_ids,
+            status=(
+                "incomplete"
+                if incomplete_position_count > 0
+                else ("available" if position_round_trip_available else "missing")
+            ),
+            as_of=(
+                _string(positions[0].get("closed_at"))
+                if positions
+                else None
+            ) or (
+                _string(positions[0].get("last_trade_time"))
+                if positions
+                else None
+            ) or (
+                _string(positions[0].get("opened_at"))
+                if positions
+                else None
+            ) or None,
+            position_count=position_count,
+            mapped_position_count=mapped_position_count,
+            closed_position_count=closed_position_count,
+            round_trip_close_rate=execution_snapshot.get("round_trip_close_rate"),
+            incomplete_position_count=incomplete_position_count,
+            position_ids=position_ids,
+        ),
+        "pnl_audit_summary": _prediction_trace_node(
+            available=pnl_audit_available,
+            source_mode="entity_backed",
+            count=nav_row_count or realized_trade_count,
+            ids=_unique_tokens(
+                [_string(item.get("id") or item.get("nav_id") or item.get("as_of_date")) for item in nav_rows],
+                limit=8,
+            ),
+            status=execution_audit_gate_status,
+            as_of=(
+                _string(nav_rows[0].get("as_of_date"))
+                if nav_rows
+                else None
+            ) or (
+                _string(nav_rows[0].get("created_at"))
+                if nav_rows
+                else None
+            ) or None,
+            nav_row_count=nav_row_count,
+            realized_pnl_total=realized_pnl_total,
+            trade_expectancy=trade_expectancy,
+            pnl_conversion_efficiency=execution_snapshot.get("pnl_conversion_efficiency"),
+            execution_conversion_efficiency=execution_snapshot.get("execution_conversion_efficiency"),
+            execution_audit_gate_status=execution_audit_gate_status,
+        ),
+        "gate_decisions": {
+            "execution_audit_gate_status": execution_audit_gate_status,
+            "promotion_ready": bool(hard_gate.get("promotion_ready")),
+            "hard_gate_passed": bool(hard_gate.get("passed")),
+            "failure_reasons": gate_reasons,
+        },
+        "evidence_gap_codes": _unique_tokens(evidence_gap_codes, limit=16),
     }
 
 
@@ -1645,6 +2186,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
     )
     has_live_gate_signal = live_candidate_ready is not None or bool(admission_stage)
     signal_quality = derive_signal_quality(signal_stats, holding_period_bucket=holding_period_bucket)
+    signal_quality_snapshot = _build_signal_quality_snapshot(signal_quality)
     primary_horizon = _safe_int(signal_quality.get("primary_horizon"), 5)
     secondary_horizon = _safe_int(signal_quality.get("secondary_horizon"), 10)
     primary_effective_n = _safe_int(signal_quality.get("primary_effective_n"))
@@ -1664,6 +2206,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         total_signals=total_signals,
     )
     execution_quality_contract = _normalize_execution_quality_for_contract(execution_quality)
+    execution_quality_snapshot = _build_execution_quality_snapshot(execution_quality)
     confidence_contract_status, confidence_diagnostics = _build_confidence_diagnostics(
         strategy,
         quality_report,
@@ -1703,6 +2246,11 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
     runtime_playbook_provenance = _extract_runtime_playbook_provenance(strategy)
     semantic_lineage = _extract_semantic_lineage(strategy)
     execution_lineage = await _build_execution_lineage(db, strategy["id"])
+    prediction_trace_entity_chain = await _load_prediction_trace_entity_chain(
+        db,
+        strategy_id=str(strategy["id"]),
+        account_id=_string(strategy.get("paper_account_id") or execution_quality.get("account_id")) or None,
+    )
     latest_signal_snapshot = None
     get_latest_snapshot = getattr(db, "get_latest_strategy_signal_event_snapshot", None)
     if callable(get_latest_snapshot):
@@ -1750,6 +2298,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "proxy_runtime_used": bool(proxy_runtime_used),
         "execution_readiness_tier": execution_readiness_tier,
         "semantic_contract_missing_fields": semantic_contract_missing_fields,
+        "evidence_gap_codes": list(execution_quality_snapshot.get("evidence_gap_codes") or []),
     }
     early_signal_stage = signal_stage_without_execution_gate in _EARLY_SIGNAL_STAGES
     if risk_hard_gate_status == "kill_switch":
@@ -1943,6 +2492,16 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "passed": pipeline_stage in {"candidate", "graduation_ready", "promoted"} and risk_hard_gate_status == "passed",
         "reasons": list(dict.fromkeys([*gate_blockers, *execution_audit_gate_reasons, *risk_hard_gate_reasons])),
     }
+    prediction_trace_ledger = _build_prediction_trace_ledger_view(
+        strategy,
+        quality_report=quality_report,
+        signal_quality_snapshot=signal_quality_snapshot,
+        execution_quality_snapshot=execution_quality_snapshot,
+        execution_lineage=execution_lineage,
+        entity_chain=prediction_trace_entity_chain,
+        latest_signal_snapshot=latest_signal_snapshot,
+        hard_gate_result=hard_gate_result,
+    )
 
     return {
         "strategy_id": strategy["id"],
@@ -1960,7 +2519,9 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "forward_ic_5d": forward_ic_5d,
         "forward_sharpe_5d": forward_sharpe_5d,
         "signal_quality": signal_quality,
+        "signal_quality_snapshot": signal_quality_snapshot,
         "execution_quality": execution_quality_contract,
+        "execution_quality_snapshot": execution_quality_snapshot,
         "execution_diagnostics": execution_diagnostics,
         "primary_horizon": primary_horizon,
         "secondary_horizon": secondary_horizon,
@@ -2004,6 +2565,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "pipeline_stage": pipeline_stage,
         "promotion_ready": promotion_ready,
         "deprecation_risk": deprecation_risk,
+        "prediction_trace_ledger": prediction_trace_ledger,
         "blockers": blockers,
         "risk_flags": risk_flags,
         "gate_blockers": gate_blockers,

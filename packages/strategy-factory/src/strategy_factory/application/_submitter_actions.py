@@ -38,12 +38,17 @@ from .utils import (
     _update_strategy_status as _local_update_strategy_status,
     get_strategy_factory_package as _local_get_strategy_factory_package,
 )
+from .research_protocol_contract import (
+    adapt_research_validation_contract_for_submission,
+    normalize_prediction_trace_id,
+)
 from ..domain.constants import (
     FACTORY_SUBMISSION_MIN_BACKTEST_TRADES,
     FACTORY_SUBMISSION_MIN_EVENT_TARGET_COVERAGE,
     FACTORY_SUBMISSION_REJECT_GENERIC_AI_NAMES,
     FACTORY_SUBMISSION_REQUIRE_STRICT_PASS_FOR_REFRESH,
     FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH,
+    STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE,
     STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED,
     SUBMIT_CONCURRENCY,
 )
@@ -63,8 +68,413 @@ _LEGACY_SUBMITTER_MODULE = "akshare_mcp.services.strategy_factory.submitter"
 _LEGACY_SUBMISSION_GATE_MODULE = "akshare_mcp.services.strategy_factory.submission_gate"
 _LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
 
+
+def _compact_unique(values: Any, *, limit: int = 12) -> list[str]:
+    items: list[str] = []
+    for value in list(values or []):
+        token = str(value or "").strip()
+        if token and token not in items:
+            items.append(token)
+        if len(items) >= max(1, int(limit or 12)):
+            break
+    return items
+
+
+def _candidate_trace_ids(candidate: dict[str, Any]) -> list[str]:
+    trace_id = normalize_prediction_trace_id(
+        candidate.get("prediction_trace_id"),
+        candidate.get("trace_id"),
+        fallback=dict(candidate.get("params") or {}).get("prediction_trace_id"),
+    )
+    return [trace_id] if trace_id else []
+
+
+def _candidate_artifact_ids(candidate: dict[str, Any]) -> list[str]:
+    provenance = dict(candidate.get("candidate_provenance") or {})
+    params = dict(candidate.get("params") or {})
+    return _compact_unique(
+        [
+            provenance.get("source_candidate_artifact_id"),
+            provenance.get("source_generation_artifact_id"),
+            provenance.get("source_validation_artifact_id"),
+            provenance.get("memory_record_id"),
+            candidate.get("hypothesis_artifact_id"),
+            candidate.get("experiment_id"),
+            candidate.get("multiple_testing_registry_record_id"),
+            params.get("source_candidate_artifact_id"),
+            params.get("source_generation_artifact_id"),
+            params.get("source_validation_artifact_id"),
+            params.get("candidate_memory_record_id"),
+            params.get("multiple_testing_registry_record_id"),
+            params.get("task_run_id"),
+        ]
+    )
+
+
+def _candidate_retrieval_context_ids(candidate: dict[str, Any]) -> list[str]:
+    provenance = dict(candidate.get("candidate_provenance") or {})
+    research_task = dict(candidate.get("research_task") or {})
+    params = dict(candidate.get("params") or {})
+    return _compact_unique(
+        [
+            research_task.get("task_id"),
+            research_task.get("event_id"),
+            candidate.get("task_run_id"),
+            candidate.get("multiple_testing_registry_record_id"),
+            provenance.get("memory_record_id"),
+            params.get("task_run_id"),
+            params.get("multiple_testing_registry_record_id"),
+            params.get("candidate_memory_record_id"),
+            params.get("vector_profile_id"),
+        ]
+    )
+
+
+def _candidate_family_outcome_summary(
+    candidate: dict[str, Any],
+    *,
+    final_status: str | None = None,
+) -> dict[str, Any]:
+    provenance = dict(candidate.get("candidate_provenance") or {})
+    family = (
+        provenance.get("candidate_family")
+        or candidate.get("candidate_family")
+        or dict(candidate.get("params") or {}).get("candidate_family")
+        or candidate.get("strategy_type")
+    )
+    return {
+        "candidate_family": str(family or "").strip().lower() or None,
+        "strategy_type": str(candidate.get("strategy_type") or "").strip().lower() or None,
+        "spec_completeness": str(candidate.get("spec_completeness") or "").strip().lower() or None,
+        "final_status": str(final_status or "").strip().lower() or None,
+    }
+
+
+def _candidate_hard_failures(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    hard_failures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in list(candidate.get("hard_failures") or []):
+        payload = dict(raw or {})
+        field_name = str(payload.get("field") or "").strip()
+        reason_code = str(payload.get("reason_code") or payload.get("issue") or field_name).strip()
+        if not reason_code:
+            continue
+        dedupe_key = (field_name, reason_code)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized = {
+            "reason_code": reason_code,
+            "issue": str(payload.get("issue") or "hard_failure").strip() or "hard_failure",
+            "severity": "reject",
+            "decision": "reject",
+        }
+        if field_name:
+            normalized["field"] = field_name
+        detail = str(payload.get("detail") or "").strip()
+        if detail:
+            normalized["detail"] = detail
+        hard_failures.append(normalized)
+    for raw in list(candidate.get("completion_issues") or []):
+        payload = dict(raw or {})
+        decision = str(payload.get("decision") or payload.get("severity") or "").strip().lower()
+        if decision != "reject":
+            continue
+        field_name = str(payload.get("field") or "").strip()
+        reason_code = str(payload.get("reason_code") or payload.get("issue") or field_name).strip()
+        if not reason_code:
+            continue
+        dedupe_key = (field_name, reason_code)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized = {
+            "reason_code": reason_code,
+            "issue": str(payload.get("issue") or "hard_failure").strip() or "hard_failure",
+            "severity": "reject",
+            "decision": "reject",
+        }
+        if field_name:
+            normalized["field"] = field_name
+        hard_failures.append(normalized)
+    return hard_failures
+
+
+def _gate_a_revision_actions(candidate: dict[str, Any]) -> list[str]:
+    actions: list[str] = []
+    for issue in list(candidate.get("completion_issues") or []):
+        payload = dict(issue or {})
+        field_name = str(payload.get("field") or "").strip()
+        if field_name:
+            action = f"provide_required_research_field:{field_name}"
+            if action not in actions:
+                actions.append(action)
+    for field_name in list(candidate.get("semantic_contract_missing_fields") or []):
+        token = str(field_name or "").strip()
+        if token:
+            action = f"repair_semantic_contract_field:{token}"
+            if action not in actions:
+                actions.append(action)
+    if bool(candidate.get("execution_semantic_gap")):
+        action = "repair_execution_semantic_gap"
+        if action not in actions:
+            actions.append(action)
+    return actions
+
+
+def _gate_a_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    completion_issues = [dict(item or {}) for item in list(candidate.get("completion_issues") or []) if isinstance(item, dict)]
+    hard_failures = _candidate_hard_failures(candidate)
+    hard_failure_codes = _compact_unique(
+        [dict(item or {}).get("reason_code") for item in hard_failures]
+    )
+    blocking_reasons = [
+        str(item.get("reason_code") or item.get("issue") or item.get("field") or "").strip()
+        for item in completion_issues
+        if str(item.get("reason_code") or item.get("issue") or item.get("field") or "").strip()
+    ]
+    if bool(candidate.get("execution_semantic_gap")) and "execution_semantic_gap" not in blocking_reasons:
+        blocking_reasons.append("execution_semantic_gap")
+    for field_name in list(candidate.get("semantic_contract_missing_fields") or []):
+        token = str(field_name or "").strip()
+        if token:
+            code = f"semantic_contract_missing:{token}"
+            if code not in blocking_reasons:
+                blocking_reasons.append(code)
+    for code in hard_failure_codes:
+        if code not in blocking_reasons:
+            blocking_reasons.append(code)
+    evidence_gap_codes = [
+        str(item.get("reason_code") or item.get("issue") or item.get("field") or "").strip()
+        for item in completion_issues
+        if str(item.get("decision") or item.get("severity") or "").strip().lower() != "reject"
+        and str(item.get("reason_code") or item.get("issue") or item.get("field") or "").strip()
+    ]
+    decision = "reject" if hard_failures else "revise" if blocking_reasons else "pass"
+    return {
+        "contract_version": "strategy_factory.gate_artifact.v2",
+        "gate_name": "gate_a",
+        "stage": "gate_a",
+        "decision": decision,
+        "status": "blocked" if blocking_reasons else "passed",
+        "hard_failures": hard_failures,
+        "evidence_gap_codes": _compact_unique(evidence_gap_codes),
+        "artifact_ids": _candidate_artifact_ids(candidate),
+        "retrieval_context_ids": _candidate_retrieval_context_ids(candidate),
+        "trace_ids": _candidate_trace_ids(candidate),
+        "family_outcome_summary": _candidate_family_outcome_summary(candidate),
+        "blocking_reasons": blocking_reasons,
+        "warnings": ["spec_completeness_incomplete"] if str(candidate.get("spec_completeness") or "").strip() == "incomplete" else [],
+        "revision_actions": _gate_a_revision_actions(candidate),
+        "evidence_refs": _candidate_trace_ids(candidate),
+        "legacy_gate_mapping": ["gate_0", "pre_gate", "gate_1"],
+        "spec_completeness": candidate.get("spec_completeness"),
+    }
+
+
+def _gate_b_payload(candidate: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
+    blocking_reasons = [str(item).strip() for item in list(gate.get("reason_codes") or []) if str(item).strip()]
+    warnings = [str(item).strip() for item in list(gate.get("warning_codes") or []) if str(item).strip()]
+    review_decision = str(
+        dict(gate.get("business_admission_decision") or {}).get("decision")
+        or gate.get("gate_b_review_decision")
+        or ("pass" if gate.get("passed") else "reject" if blocking_reasons else "pending")
+    ).strip().lower() or "pending"
+    decision = "block" if blocking_reasons else "pass" if gate.get("passed") else "pending"
+    return {
+        "contract_version": "strategy_factory.gate_artifact.v2",
+        "gate_name": "gate_b",
+        "stage": "gate_b",
+        "decision": decision,
+        "review_decision": review_decision,
+        "status": "blocked" if blocking_reasons else "passed" if gate.get("passed") else "pending",
+        "hard_failures": [
+            {
+                "reason_code": code,
+                "issue": "submission_gate_blocker",
+                "severity": "reject",
+                "decision": "reject",
+            }
+            for code in blocking_reasons
+        ],
+        "evidence_gap_codes": warnings,
+        "artifact_ids": _candidate_artifact_ids(candidate),
+        "retrieval_context_ids": _candidate_retrieval_context_ids(candidate),
+        "trace_ids": _candidate_trace_ids(candidate),
+        "family_outcome_summary": _candidate_family_outcome_summary(candidate),
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "evidence_refs": _candidate_trace_ids(candidate),
+        "legacy_gate_mapping": ["gate_2", "gate_3"],
+        "business_admission_decision": dict(gate.get("business_admission_decision") or {}),
+        "benchmark_comparison": dict(gate.get("benchmark_comparison") or {}),
+        "cost_sensitivity_summary": dict(gate.get("cost_sensitivity_summary") or {}),
+        "cash_sleeve_audit": dict(gate.get("cash_sleeve_audit") or {}),
+        "family_holding_bucket": dict(gate.get("family_holding_bucket") or {}),
+    }
+
+
+def _gate_c_payload(candidate: dict[str, Any], gate: dict[str, Any], final_status: str) -> dict[str, Any]:
+    blockers = [str(item).strip() for item in list(candidate.get("gate_blockers") or []) if str(item).strip()]
+    execution_audit_status = str(
+        candidate.get("execution_audit_gate_status")
+        or gate.get("execution_audit_gate_status")
+        or ""
+    ).strip()
+    evidence_gap_codes = list(candidate.get("evidence_gap_codes") or [])
+    if execution_audit_status in {"missing", "bootstrap_pending", "insufficient_samples", "insufficient_evidence"}:
+        evidence_gap_codes.append(f"execution_audit_gate:{execution_audit_status}")
+    decision = "block" if blockers else "observe" if final_status else "pending"
+    return {
+        "contract_version": "strategy_factory.gate_artifact.v2",
+        "gate_name": "gate_c",
+        "stage": "gate_c",
+        "decision": decision,
+        "status": "blocked" if blockers else "observe" if final_status else "pending",
+        "hard_failures": [
+            {
+                "reason_code": code,
+                "issue": "promotion_gate_blocker",
+                "severity": "reject",
+                "decision": "reject",
+            }
+            for code in blockers
+        ],
+        "evidence_gap_codes": _compact_unique(evidence_gap_codes),
+        "artifact_ids": _compact_unique(
+            [
+                candidate.get("paper_account_id"),
+                candidate.get("incubation_account_id"),
+                candidate.get("promotion_review_id"),
+                candidate.get("vector_profile_id"),
+            ]
+        ),
+        "retrieval_context_ids": _candidate_retrieval_context_ids(candidate),
+        "trace_ids": _candidate_trace_ids(candidate),
+        "family_outcome_summary": _candidate_family_outcome_summary(
+            candidate,
+            final_status=final_status,
+        ),
+        "blocking_reasons": blockers,
+        "warnings": [],
+        "evidence_refs": _candidate_trace_ids(candidate),
+        "legacy_gate_mapping": [
+            "signal_quality",
+            "execution_quality",
+            "execution_audit_gate_status",
+            "hard_gate_result",
+            "promotion_ready",
+        ],
+        "signal_quality": candidate.get("signal_quality"),
+        "execution_quality": candidate.get("execution_quality"),
+        "execution_audit_gate_status": execution_audit_status or None,
+        "hard_gate_result": candidate.get("hard_gate_result") or gate.get("hard_gate_result"),
+        "promotion_ready": bool(candidate.get("promotion_ready")),
+    }
+
+
+def _enrich_quality_report_v2(
+    quality_report: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    gate: dict[str, Any],
+    final_status: str,
+) -> dict[str, Any]:
+    report = dict(quality_report or {})
+    summary = dict(report.get("summary") or {})
+    prediction_trace_id = normalize_prediction_trace_id(
+        candidate.get("prediction_trace_id"),
+        candidate.get("trace_id"),
+        fallback=summary.get("trace_id"),
+    )
+    gate_a = _gate_a_payload(candidate)
+    gate_b = _gate_b_payload(candidate, gate)
+    gate_c = _gate_c_payload(candidate, gate, final_status)
+    for key, value in (
+        ("prediction_trace_id", prediction_trace_id),
+        ("trace_id", prediction_trace_id),
+        ("research_protocol_version", candidate.get("research_protocol_version")),
+        ("candidate_contract_version", candidate.get("candidate_contract_version")),
+        ("spec_completeness", candidate.get("spec_completeness")),
+        ("field_provenance_summary", dict(candidate.get("field_provenance_summary") or {})),
+        ("completion_issues", list(candidate.get("completion_issues") or [])),
+        ("hard_failures", list(candidate.get("hard_failures") or [])),
+        ("gate_a", gate_a),
+        ("gate_b", gate_b),
+        ("gate_c", gate_c),
+    ):
+        if value in (None, "", [], {}):
+            continue
+        summary[key] = value
+        report[key] = value
+    report["summary"] = summary
+    return report
+
 def _compat_setting(name: str, default):
     return get_compat_value(_LEGACY_SUBMITTER_MODULE, name, default)
+
+
+def _normalized_spec_completeness_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in {"warn", "revise", "reject"}:
+        return "warn"
+    return mode
+
+
+def _spec_completeness_mode() -> str:
+    return _normalized_spec_completeness_mode(
+        _compat_setting("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE)
+    )
+
+
+def _build_gate_a_spec_override(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if str(candidate.get("spec_completeness") or "complete").strip().lower() != "incomplete":
+        return None
+    mode = _spec_completeness_mode()
+    hard_failure_codes = _compact_unique(
+        [dict(item or {}).get("reason_code") for item in _candidate_hard_failures(candidate)]
+    )
+    if mode == "warn" and not hard_failure_codes:
+        return None
+    gate_a = _gate_a_payload(candidate)
+    blocking_reasons = [str(item).strip() for item in list(gate_a.get("blocking_reasons") or []) if str(item).strip()]
+    revision_actions = [str(item).strip() for item in list(gate_a.get("revision_actions") or []) if str(item).strip()]
+    decision = "reject" if (mode == "reject" or hard_failure_codes) else "revise"
+    trigger = (
+        "research_protocol_hard_failure"
+        if hard_failure_codes
+        else "research_protocol_required_fields_rejected"
+        if decision == "reject"
+        else "research_protocol_required_fields_need_revision"
+    )
+    reasons = list(dict.fromkeys([trigger, *hard_failure_codes, *blocking_reasons]))
+    warning_codes = ["spec_completeness_incomplete"]
+    return normalize_quality_gate_result(
+        {
+            "passed": False,
+            "passed_strict": False,
+            "provisional_pass": False,
+            "reasons": reasons,
+            "reason_codes": reasons,
+            "warning_codes": warning_codes,
+            "warnings": warning_codes,
+            "admission_stage": "gate_a",
+            "incubation_pass_mode": decision,
+            "research_candidate_ready": decision == "revise",
+            "incubation_candidate_ready": False,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": False,
+            "strict_incubation_blocked": True,
+            "admission_block_reasons": reasons,
+            "gate_protocol": f"strategy_factory.research_protocol.v2:gate_a_{decision}",
+            "gate_a_decision": decision,
+            "spec_completeness_mode": mode,
+            "spec_completeness": "incomplete",
+            "completion_issues": list(candidate.get("completion_issues") or []),
+            "hard_failures": list(candidate.get("hard_failures") or []),
+            "revision_actions": revision_actions,
+        }
+    )
 
 
 def _auto_name(*args, **kwargs):
@@ -251,11 +661,15 @@ class _StrategySubmitterActionsMixin:
                 if result.get("passed"):
                     passed += 1
                 gate_3 = dict(result.get("gate_3") or {})
+                gate_a_decision = str(gate_3.get("gate_a_decision") or "").strip().lower()
+                gate_a_short_circuit = gate_a_decision in {"revise", "reject"} and str(
+                    gate_3.get("admission_stage") or ""
+                ).strip().lower() == "gate_a"
                 if gate_3.get("passed"):
                     gate_3_passed += 1
                     if gate_3.get("provisional_pass"):
                         gate_3_provisional_passed += 1
-                else:
+                elif not gate_a_short_circuit:
                     gate_3_failed += 1
                     for code in gate_3.get("reason_codes") or []:
                         normalized = str(code or "").strip()
@@ -338,6 +752,7 @@ class _StrategySubmitterActionsMixin:
                 candidate["confidence_contract"] = synthesize_confidence_contract(candidate)
                 semantic_audit = audit_candidate_semantic_contract(candidate)
                 candidate = _apply_candidate_semantic_contract(candidate, semantic_audit)
+            gate_a_override = _build_gate_a_spec_override(candidate)
             data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
             candidate = apply_resolved_candidate_envelope(
                 {
@@ -373,23 +788,83 @@ class _StrategySubmitterActionsMixin:
                     "dsl_signature": str((data.get("params") or {}).get("dsl_signature") or ""),
                     "factor_signature": str((data.get("params") or {}).get("factor_signature") or ""),
                     "entry_exit_signature": str((data.get("params") or {}).get("entry_exit_signature") or ""),
+                    "prediction_trace_id": str(
+                        (data.get("params") or {}).get("prediction_trace_id")
+                        or candidate.get("prediction_trace_id")
+                        or ""
+                    ),
+                    "trace_id": str(
+                        (data.get("params") or {}).get("trace_id")
+                        or candidate.get("trace_id")
+                        or ""
+                    ),
+                    "research_validation_contract": dict(
+                        (data.get("params") or {}).get("research_validation_contract")
+                        or candidate.get("research_validation_contract")
+                        or {}
+                    ),
+                    "research_validation_contract_submission_adapter": dict(
+                        (data.get("params") or {}).get("research_validation_contract_submission_adapter")
+                        or candidate.get("research_validation_contract_submission_adapter")
+                        or {}
+                    ),
+                    "research_protocol_version": str(
+                        (data.get("params") or {}).get("research_protocol_version")
+                        or candidate.get("research_protocol_version")
+                        or ""
+                    ),
+                    "candidate_contract_version": str(
+                        (data.get("params") or {}).get("candidate_contract_version")
+                        or candidate.get("candidate_contract_version")
+                        or ""
+                    ),
+                    "spec_completeness": str(
+                        (data.get("params") or {}).get("spec_completeness")
+                        or candidate.get("spec_completeness")
+                        or ""
+                    ),
+                    "field_provenance": dict(
+                        (data.get("params") or {}).get("field_provenance")
+                        or candidate.get("field_provenance")
+                        or {}
+                    ),
+                    "field_provenance_summary": dict(
+                        (data.get("params") or {}).get("field_provenance_summary")
+                        or candidate.get("field_provenance_summary")
+                        or {}
+                    ),
+                    "completion_issues": list(
+                        (data.get("params") or {}).get("completion_issues")
+                        or candidate.get("completion_issues")
+                        or []
+                    ),
+                    "hard_failures": list(
+                        (data.get("params") or {}).get("hard_failures")
+                        or candidate.get("hard_failures")
+                        or []
+                    ),
                 }
             )
             if _semantic_contract_feature_enabled():
                 candidate = _apply_candidate_semantic_contract(candidate, semantic_audit)
-            validation_report, risk_report = await self._evaluate_reports(candidate, db)
-            gate = await run_submission_quality_gate(
-                db,
-                {**data, "status": existing_status if refresh_existing else "submitted"},
-                validation_report=validation_report,
-                risk_report=risk_report,
-                backtest_metrics={
-                    **dict(metrics or {}),
-                    "trade_count": metrics.get("trade_count"),
-                    "trades_count": metrics.get("trades_count"),
-                },
-                incubation_budget_track=str(candidate.get("incubation_budget", {}).get("track") or "formal_incubation"),
-            )
+            validation_report = None
+            risk_report = None
+            if gate_a_override is None:
+                validation_report, risk_report = await self._evaluate_reports(candidate, db)
+                gate = await run_submission_quality_gate(
+                    db,
+                    {**data, "status": existing_status if refresh_existing else "submitted"},
+                    validation_report=validation_report,
+                    risk_report=risk_report,
+                    backtest_metrics={
+                        **dict(metrics or {}),
+                        "trade_count": metrics.get("trade_count"),
+                        "trades_count": metrics.get("trades_count"),
+                    },
+                    incubation_budget_track=str(candidate.get("incubation_budget", {}).get("track") or "formal_incubation"),
+                )
+            else:
+                gate = dict(gate_a_override)
             gate = self._apply_factory_submission_policy(
                 candidate,
                 name=name,
@@ -454,6 +929,61 @@ class _StrategySubmitterActionsMixin:
                     "dsl_signature": str((data.get("params") or {}).get("dsl_signature") or ""),
                     "factor_signature": str((data.get("params") or {}).get("factor_signature") or ""),
                     "entry_exit_signature": str((data.get("params") or {}).get("entry_exit_signature") or ""),
+                    "prediction_trace_id": str(
+                        (data.get("params") or {}).get("prediction_trace_id")
+                        or candidate.get("prediction_trace_id")
+                        or ""
+                    ),
+                    "trace_id": str(
+                        (data.get("params") or {}).get("trace_id")
+                        or candidate.get("trace_id")
+                        or ""
+                    ),
+                    "research_validation_contract": dict(
+                        (data.get("params") or {}).get("research_validation_contract")
+                        or candidate.get("research_validation_contract")
+                        or {}
+                    ),
+                    "research_validation_contract_submission_adapter": dict(
+                        (data.get("params") or {}).get("research_validation_contract_submission_adapter")
+                        or candidate.get("research_validation_contract_submission_adapter")
+                        or {}
+                    ),
+                    "research_protocol_version": str(
+                        (data.get("params") or {}).get("research_protocol_version")
+                        or candidate.get("research_protocol_version")
+                        or ""
+                    ),
+                    "candidate_contract_version": str(
+                        (data.get("params") or {}).get("candidate_contract_version")
+                        or candidate.get("candidate_contract_version")
+                        or ""
+                    ),
+                    "spec_completeness": str(
+                        (data.get("params") or {}).get("spec_completeness")
+                        or candidate.get("spec_completeness")
+                        or ""
+                    ),
+                    "field_provenance": dict(
+                        (data.get("params") or {}).get("field_provenance")
+                        or candidate.get("field_provenance")
+                        or {}
+                    ),
+                    "field_provenance_summary": dict(
+                        (data.get("params") or {}).get("field_provenance_summary")
+                        or candidate.get("field_provenance_summary")
+                        or {}
+                    ),
+                    "completion_issues": list(
+                        (data.get("params") or {}).get("completion_issues")
+                        or candidate.get("completion_issues")
+                        or []
+                    ),
+                    "hard_failures": list(
+                        (data.get("params") or {}).get("hard_failures")
+                        or candidate.get("hard_failures")
+                        or []
+                    ),
                 }
             )
             should_persist_strategy = not refresh_existing or bool(gate.get("passed"))
@@ -483,6 +1013,12 @@ class _StrategySubmitterActionsMixin:
                 risk_report=risk_report,
                 final_status=final_status,
                 submission_lane=submission_lane,
+            )
+            quality_report = _enrich_quality_report_v2(
+                quality_report,
+                candidate=candidate,
+                gate=gate,
+                final_status=final_status,
             )
             quality_summary = dict(quality_report.get("summary") or {})
             quality_summary["candidate_contract_hash"] = candidate.get("candidate_contract_hash")
@@ -691,9 +1227,19 @@ class _StrategySubmitterActionsMixin:
             feedback_generator_mode_control_mode = str(
                 feedback_metrics.get("generator_mode_control_mode") or "normal"
             ).strip().lower() or "normal"
+            prediction_trace_id = normalize_prediction_trace_id(
+                candidate.get("prediction_trace_id"),
+                candidate.get("trace_id"),
+                fallback=quality_summary.get("prediction_trace_id"),
+            )
+            gate_a_summary = _gate_a_payload(candidate)
+            gate_b_summary = _gate_b_payload(candidate, gate)
+            gate_c_summary = _gate_c_payload({**candidate, **post_gate}, gate, final_status)
 
             summary = {
                 "strategy_id": strategy_id,
+                "prediction_trace_id": prediction_trace_id or None,
+                "trace_id": prediction_trace_id or None,
                 "experiment_id": candidate.get("experiment_id"),
                 "generator_type": candidate.get("generator_type"),
                 "name": name,
@@ -706,7 +1252,26 @@ class _StrategySubmitterActionsMixin:
                 "research_candidate_ready": bool(gate.get("research_candidate_ready")),
                 "incubation_candidate_ready": bool(gate.get("incubation_candidate_ready")),
                 "live_candidate_ready": bool(gate.get("live_candidate_ready")),
+                "gate_b_review_decision": gate.get("gate_b_review_decision"),
+                "business_admission_decision": dict(gate.get("business_admission_decision") or {}),
+                "benchmark_comparison": dict(gate.get("benchmark_comparison") or {}),
+                "cost_sensitivity_summary": dict(gate.get("cost_sensitivity_summary") or {}),
+                "cash_sleeve_audit": dict(gate.get("cash_sleeve_audit") or {}),
+                "family_holding_bucket": dict(gate.get("family_holding_bucket") or {}),
                 "submission_lane": submission_lane,
+                "formal_track_requested": bool(
+                    post_gate.get("formal_track_requested", submission_action.get("formal_track_requested"))
+                ),
+                "formal_track_eligible": bool(
+                    post_gate.get("formal_track_eligible", submission_action.get("formal_track_eligible"))
+                ),
+                "formal_track_blockers": list(
+                    post_gate.get("formal_track_blockers", submission_action.get("formal_track_blockers") or [])
+                ),
+                "runtime_bootstrap_reason": post_gate.get(
+                    "runtime_bootstrap_reason",
+                    submission_action.get("runtime_bootstrap_reason"),
+                ),
                 "submission_action_type": resolved_submission_action_type,
                 "submission_action_trigger": resolved_submission_action_trigger,
                 "submission_action_gaps": resolved_submission_action_gaps,
@@ -792,6 +1357,15 @@ class _StrategySubmitterActionsMixin:
                 "execution_contract_hash": candidate.get("execution_contract_hash"),
                 "tested_object_hash": candidate.get("tested_object_hash"),
                 "candidate_identity_signature": candidate.get("candidate_identity_signature"),
+                "research_protocol_version": candidate.get("research_protocol_version"),
+                "candidate_contract_version": candidate.get("candidate_contract_version"),
+                "spec_completeness": candidate.get("spec_completeness"),
+                "field_provenance_summary": dict(candidate.get("field_provenance_summary") or {}),
+                "completion_issues": list(candidate.get("completion_issues") or []),
+                "hard_failures": list(candidate.get("hard_failures") or []),
+                "gate_a": gate_a_summary,
+                "gate_b": gate_b_summary,
+                "gate_c": gate_c_summary,
                 "candidate_contract_snapshot": dict(candidate.get("candidate_contract_snapshot") or {}),
                 "candidate_lineage_contract": dict(candidate.get("candidate_lineage_contract") or {}),
                 "logic_signature": candidate.get("logic_signature"),
@@ -943,6 +1517,19 @@ class _StrategySubmitterActionsMixin:
             existing_params = dict(existing.get("params") or {})
             normalized_task = _normalize_research_task_contract(candidate.get("research_task") or existing_params.get("research_task") or {})
             candidate_provenance = cls._candidate_provenance(candidate, existing)
+            research_validation_contract = dict(
+                candidate.get("research_validation_contract")
+                or existing_params.get("research_validation_contract")
+                or {}
+            )
+            research_validation_contract_submission_adapter = adapt_research_validation_contract_for_submission(
+                research_validation_contract
+            )
+            prediction_trace_id = normalize_prediction_trace_id(
+                candidate.get("prediction_trace_id"),
+                candidate.get("trace_id"),
+                fallback=existing_params.get("prediction_trace_id") or existing_params.get("trace_id"),
+            )
 
             def _assign_if_present(target: dict, key: str, value) -> None:
                 if value not in (None, [], {}, ""):
@@ -969,6 +1556,66 @@ class _StrategySubmitterActionsMixin:
                 "constraint_check": dict(candidate.get("constraint_check") or existing_params.get("constraint_check") or {}),
                 "task_signature": _build_task_signature(normalized_task),
             }
+            if research_validation_contract_submission_adapter:
+                stored_params["validation_profile"] = {
+                    **dict(research_validation_contract_submission_adapter.get("validation_profile") or {}),
+                    **dict(stored_params.get("validation_profile") or {}),
+                }
+            _assign_if_present(stored_params, "research_validation_contract", research_validation_contract)
+            _assign_if_present(
+                stored_params,
+                "research_validation_contract_submission_adapter",
+                research_validation_contract_submission_adapter,
+            )
+            _assign_if_present(
+                stored_params,
+                "research_protocol_version",
+                candidate.get("research_protocol_version")
+                or existing_params.get("research_protocol_version")
+                or research_validation_contract_submission_adapter.get("research_protocol_version"),
+            )
+            _assign_if_present(
+                stored_params,
+                "candidate_contract_version",
+                candidate.get("candidate_contract_version") or existing_params.get("candidate_contract_version"),
+            )
+            _assign_if_present(
+                stored_params,
+                "spec_completeness",
+                candidate.get("spec_completeness") or existing_params.get("spec_completeness"),
+            )
+            _assign_if_present(
+                stored_params,
+                "field_provenance",
+                dict(candidate.get("field_provenance") or existing_params.get("field_provenance") or {}),
+            )
+            _assign_if_present(
+                stored_params,
+                "field_provenance_summary",
+                dict(
+                    candidate.get("field_provenance_summary")
+                    or existing_params.get("field_provenance_summary")
+                    or research_validation_contract_submission_adapter.get("field_provenance_summary")
+                    or {}
+                ),
+            )
+            _assign_if_present(
+                stored_params,
+                "completion_issues",
+                list(
+                    candidate.get("completion_issues")
+                    or existing_params.get("completion_issues")
+                    or research_validation_contract_submission_adapter.get("completion_issues")
+                    or []
+                ),
+            )
+            _assign_if_present(
+                stored_params,
+                "hard_failures",
+                list(candidate.get("hard_failures") or existing_params.get("hard_failures") or []),
+            )
+            _assign_if_present(stored_params, "prediction_trace_id", prediction_trace_id)
+            _assign_if_present(stored_params, "trace_id", prediction_trace_id)
             _assign_if_present(
                 stored_params,
                 "evidence_chain",
@@ -1100,6 +1747,14 @@ class _StrategySubmitterActionsMixin:
                 "params": stored_params,
                 "factor_weights": dict((candidate["params"] or {}).get("factor_weights", existing.get("factor_weights") or {})),
                 "status": existing.get("status") or "draft",
+                "prediction_trace_id": prediction_trace_id or None,
+                "trace_id": prediction_trace_id or None,
+                "research_protocol_version": stored_params.get("research_protocol_version"),
+                "candidate_contract_version": stored_params.get("candidate_contract_version"),
+                "spec_completeness": stored_params.get("spec_completeness"),
+                "field_provenance_summary": dict(stored_params.get("field_provenance_summary") or {}),
+                "completion_issues": list(stored_params.get("completion_issues") or []),
+                "hard_failures": list(stored_params.get("hard_failures") or []),
                 "tags": list(
                     dict.fromkeys([*(existing.get("tags") or []), "auto_generated", "factory", candidate["strategy_type"], *(candidate.get("tags") or [])])
                 ),
@@ -1627,6 +2282,7 @@ class _StrategySubmitterActionsMixin:
                 normalized_gate,
                 candidate=candidate,
             )
+            gate_a_decision = str(normalized_gate.get("gate_a_decision") or "").strip().lower()
             readiness_fields = (
                 "research_candidate_ready",
                 "incubation_candidate_ready",
@@ -1637,6 +2293,38 @@ class _StrategySubmitterActionsMixin:
                 normalized_gate["research_candidate_ready"] = True
                 normalized_gate["incubation_candidate_ready"] = True
             admission_block_reasons = list(normalized_gate.get("admission_block_reasons") or normalized_gate.get("reasons") or [])
+            strict_formal_ready = bool(normalized_gate.get("strict_incubation_ready")) or (
+                str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
+            )
+            formal_track_requested = str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+            formal_track_blockers: list[str] = []
+            if formal_track_requested:
+                if not bool(runtime_bootstrap.get("runtime_bootstrap_eligible")):
+                    formal_track_blockers.append(
+                        str(runtime_bootstrap.get("runtime_bootstrap_reason") or "runtime_bootstrap_not_eligible")
+                    )
+                if bool(runtime_bootstrap.get("execution_semantic_gap")):
+                    formal_track_blockers.extend(
+                        list(runtime_bootstrap.get("execution_semantic_gap_reasons") or [])
+                        or ["execution_semantic_gap"]
+                    )
+                if not bool(runtime_bootstrap.get("semantic_runtime_match")):
+                    formal_track_blockers.append("semantic_runtime_mismatch")
+                if bool(runtime_bootstrap.get("proxy_runtime_used")):
+                    formal_track_blockers.append("proxy_runtime_not_allowed_for_formal_incubation")
+                if bool(runtime_bootstrap.get("diagnostic_only")):
+                    formal_track_blockers.append("diagnostic_only_runtime")
+                readiness_tier = (
+                    str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() or "unknown"
+                )
+                if readiness_tier != "formal_runtime_ready":
+                    formal_track_blockers.append(f"execution_readiness_tier:{readiness_tier}")
+                if not strict_formal_ready:
+                    formal_track_blockers.append("strict_incubation_pass_required_for_formal_track")
+            formal_track_blockers = list(
+                dict.fromkeys([item for item in formal_track_blockers if str(item).strip()])
+            )
+            formal_track_eligible = bool(formal_track_requested and not formal_track_blockers)
             if refresh_existing:
                 action_type = "refresh_existing"
                 submission_lane = "refresh_existing"
@@ -1645,6 +2333,24 @@ class _StrategySubmitterActionsMixin:
                 gaps = []
                 fallback_conditions = ["manual_review_if_contract_changes"]
                 next_step = "existing_status_preserved"
+                completed = True
+            elif gate_a_decision == "revise" and not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "draft"
+                trigger = "gate_a_revision_required"
+                gaps = admission_block_reasons
+                fallback_conditions = ["supply_required_research_protocol_fields_and_replay_submission"]
+                next_step = "research"
+                completed = True
+            elif gate_a_decision == "reject" and not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "rejected"
+                final_status = "rejected"
+                trigger = "gate_a_reject"
+                gaps = admission_block_reasons
+                fallback_conditions = ["restore_required_research_protocol_fields_before_submission_replay"]
+                next_step = "research"
                 completed = True
             elif not bool(normalized_gate.get("passed")):
                 action_type = "research_only"
@@ -1695,19 +2401,7 @@ class _StrategySubmitterActionsMixin:
                     ]
                     next_step = "pool_admission"
                     completed = False
-            elif (
-                runtime_bootstrap.get("runtime_bootstrap_eligible")
-                and str(incubation_budget_track or "").strip().lower() == "formal_incubation"
-                and not bool(runtime_bootstrap.get("execution_semantic_gap"))
-                and bool(runtime_bootstrap.get("semantic_runtime_match"))
-                and not bool(runtime_bootstrap.get("proxy_runtime_used"))
-                and not bool(runtime_bootstrap.get("diagnostic_only"))
-                and str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() == "formal_runtime_ready"
-                and (
-                    bool(normalized_gate.get("strict_incubation_ready"))
-                    or str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
-                )
-            ):
+            elif formal_track_eligible:
                 action_type = "incubation"
                 submission_lane = "formal_incubation"
                 final_status = "incubating"
@@ -1731,9 +2425,7 @@ class _StrategySubmitterActionsMixin:
                 ]
                 next_step = "runtime_review"
                 completed = False
-            elif (
-                str(incubation_budget_track or "").strip().lower() == "formal_incubation"
-            ):
+            elif formal_track_requested:
                 action_type = "research_only"
                 submission_lane = "deferred_submission"
                 final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
@@ -1742,7 +2434,7 @@ class _StrategySubmitterActionsMixin:
                     dict.fromkeys(
                         [
                             *list(admission_block_reasons),
-                            str(runtime_bootstrap.get("runtime_bootstrap_reason") or "strict_incubation_pass_required_for_formal_track"),
+                            *formal_track_blockers,
                         ]
                     )
                 )
@@ -1780,6 +2472,9 @@ class _StrategySubmitterActionsMixin:
                 "submission_lane": submission_lane,
                 "final_status": final_status,
                 "completed": bool(completed),
+                "formal_track_requested": formal_track_requested,
+                "formal_track_eligible": formal_track_eligible,
+                "formal_track_blockers": list(formal_track_blockers),
                 **runtime_bootstrap,
             }
             return {
@@ -1792,6 +2487,9 @@ class _StrategySubmitterActionsMixin:
                 "submission_action_completed": bool(completed),
                 "submission_lane": submission_lane,
                 "final_status": final_status,
+                "formal_track_requested": formal_track_requested,
+                "formal_track_eligible": formal_track_eligible,
+                "formal_track_blockers": list(formal_track_blockers),
                 **runtime_bootstrap,
             }
 
@@ -1846,6 +2544,9 @@ class _StrategySubmitterActionsMixin:
                 "runtime_bootstrap_reason",
                 "runtime_bootstrap_budget_tier",
                 "runtime_playbook_present",
+                "formal_track_requested",
+                "formal_track_eligible",
+                "formal_track_blockers",
                 "execution_semantic_mode",
                 "execution_semantic_gap",
                 "execution_semantic_gap_reasons",
@@ -2230,15 +2931,16 @@ class _StrategySubmitterActionsMixin:
                     incubation_pipeline,
                 )
             else:
+                final_status = str(action_audit.get("final_status") or "rejected")
+                transition_reason = str(action_audit.get("submission_action_trigger") or "quality_gate_failed")
                 await _update_strategy_status(
                     db,
                     strategy_id,
-                    "rejected",
+                    final_status,
                     actor_id="strategy_factory",
-                    reason="quality_gate_failed",
+                    reason=transition_reason,
                     metadata={"quality_gate": gate, "validation_grade": quality_report["summary"].get("validation_grade")},
                 )
-                final_status = "rejected"
                 self._apply_submission_action_audit(
                     quality_report,
                     final_status=final_status,
@@ -2453,6 +3155,12 @@ class _StrategySubmitterActionsMixin:
                 risk_report=risk_report,
                 final_status=final_status,
                 submission_lane=submission_lane,
+            )
+            quality_report = _enrich_quality_report_v2(
+                quality_report,
+                candidate=candidate,
+                gate=gate,
+                final_status=final_status,
             )
             post_gate = await self._handle_post_gate(
                 strategy_id,

@@ -602,6 +602,14 @@ async def test_execution_quality_marks_bootstrap_pending_when_runtime_evidence_e
     assert quality["evidence_status"] == "ready"
     assert quality["execution_audit_gate_status"] == "bootstrap_pending"
     assert "execution_audit_bootstrap_pending" in quality["execution_audit_gate_reasons"]
+    assert quality["approximate"] is True
+    assert "missing_order_linkage" in quality["evidence_gap_codes"]
+    assert "missing_trade_linkage" in quality["evidence_gap_codes"]
+    assert "missing_position_linkage" in quality["evidence_gap_codes"]
+
+    snapshot = lifecycle_mod._build_execution_quality_snapshot(quality)
+    assert snapshot["status"] == "insufficient_evidence"
+    assert "execution_audit_gate:bootstrap_pending" in snapshot["evidence_gap_codes"]
 
 
 @pytest.mark.asyncio
@@ -893,3 +901,252 @@ async def test_phase_5_runtime_lineage_and_round_trip_verification(monkeypatch):
     assert verification["coverage"]["strategy_signal_step_lineage_count"] >= 2
     assert verification["coverage"]["runtime_action_signal_count"] == 2
     assert verification["lineage_source"]["status"] == "native_ready"
+
+
+@pytest.mark.asyncio
+async def test_incubation_overview_prediction_trace_ledger_prefers_entity_chain():
+    db = _StrategyDB()
+    strategy = {
+        "id": "strat_phase5_overview",
+        "name": "phase5-overview",
+        "status": "incubating",
+        "strategy_type": "dsl_rule",
+        "paper_account_id": "paper_acc_overview",
+        "target_symbols": ["600519"],
+        "params": {
+            "dsl_signature": "rsi_reversal_v7",
+            "research_protocol_version": "strategy_factory.research_protocol.v2",
+        },
+    }
+
+    await db.save_paper_account(
+        {
+            "id": "paper_acc_overview",
+            "strategy_id": strategy["id"],
+            "initial_capital": 100000.0,
+            "current_capital": 101500.0,
+            "total_value": 101500.0,
+        }
+    )
+    await db.save_paper_nav(
+        {
+            "account_id": "paper_acc_overview",
+            "nav_date": "2026-04-14",
+            "total_value": 100800.0,
+            "cash": 100800.0,
+            "market_value": 0.0,
+            "daily_return": 0.008,
+        }
+    )
+    await db.save_paper_nav(
+        {
+            "account_id": "paper_acc_overview",
+            "nav_date": "2026-04-15",
+            "total_value": 101500.0,
+            "cash": 101500.0,
+            "market_value": 0.0,
+            "daily_return": 0.007,
+        }
+    )
+    await db.save_paper_order(
+        {
+            "id": 901,
+            "account_id": "paper_acc_overview",
+            "strategy_id": strategy["id"],
+            "signal_id": "sig_overview_1",
+            "position_id": "pos_overview_1",
+            "signal_date": "2026-04-10",
+            "code": "600519",
+            "direction": "buy",
+            "shares": 100,
+            "price": 10.0,
+            "status": "filled",
+        }
+    )
+    await db.save_paper_order(
+        {
+            "id": 902,
+            "account_id": "paper_acc_overview",
+            "strategy_id": strategy["id"],
+            "signal_id": "sig_overview_1",
+            "position_id": "pos_overview_1",
+            "signal_date": "2026-04-15",
+            "code": "600519",
+            "direction": "sell",
+            "shares": 100,
+            "price": 11.5,
+            "status": "filled",
+        }
+    )
+    await db.save_paper_trade(
+        {
+            "id": "trade_overview_1",
+            "account_id": "paper_acc_overview",
+            "strategy_id": strategy["id"],
+            "source_order_id": "901",
+            "signal_id": "sig_overview_1",
+            "position_id": "pos_overview_1",
+            "stock_code": "600519",
+            "trade_type": "buy",
+            "quantity": 100,
+            "price": 10.0,
+            "amount": 1000.0,
+            "commission": 1.0,
+            "trade_time": "2026-04-10T09:31:00+00:00",
+        }
+    )
+    await db.save_paper_trade(
+        {
+            "id": "trade_overview_2",
+            "account_id": "paper_acc_overview",
+            "strategy_id": strategy["id"],
+            "source_order_id": "902",
+            "signal_id": "sig_overview_1",
+            "position_id": "pos_overview_1",
+            "stock_code": "600519",
+            "trade_type": "sell",
+            "quantity": 100,
+            "price": 11.5,
+            "amount": 1150.0,
+            "commission": 1.0,
+            "trade_time": "2026-04-15T09:31:00+00:00",
+        }
+    )
+    await db.save_strategy_trade_position(
+        {
+            "position_id": "pos_overview_1",
+            "strategy_id": strategy["id"],
+            "account_id": "paper_acc_overview",
+            "signal_id": "sig_overview_1",
+            "code": "600519",
+            "status": "closed",
+            "entry_order_id": "901",
+            "exit_order_id": "902",
+            "entry_trade_id": "trade_overview_1",
+            "exit_trade_id": "trade_overview_2",
+            "entry_amount": 1000.0,
+            "entry_commission": 1.0,
+            "exit_amount": 1150.0,
+            "exit_commission": 1.0,
+            "realized_pnl": 148.0,
+            "realized_return": 0.148,
+            "pnl_conversion_efficiency": 0.148,
+            "execution_conversion_efficiency": 1.0,
+            "trade_expectancy": 0.148,
+            "audit_eligible": True,
+            "opened_at": "2026-04-10T09:31:00+00:00",
+            "closed_at": "2026-04-15T09:31:00+00:00",
+            "last_trade_time": "2026-04-15T09:31:00+00:00",
+        }
+    )
+    await db.save_strategy_trade_position_fill(
+        {
+            "fill_id": "fill_overview_1",
+            "position_id": "pos_overview_1",
+            "trade_id": "trade_overview_1",
+            "order_id": "901",
+            "signal_id": "sig_overview_1",
+            "strategy_id": strategy["id"],
+            "account_id": "paper_acc_overview",
+            "code": "600519",
+            "fill_side": "buy",
+            "quantity": 100,
+            "price": 10.0,
+            "amount": 1000.0,
+            "commission": 1.0,
+            "trade_time": "2026-04-10T09:31:00+00:00",
+        }
+    )
+    await db.save_strategy_trade_position_fill(
+        {
+            "fill_id": "fill_overview_2",
+            "position_id": "pos_overview_1",
+            "trade_id": "trade_overview_2",
+            "order_id": "902",
+            "signal_id": "sig_overview_1",
+            "strategy_id": strategy["id"],
+            "account_id": "paper_acc_overview",
+            "code": "600519",
+            "fill_side": "sell",
+            "quantity": 100,
+            "price": 11.5,
+            "amount": 1150.0,
+            "commission": 1.0,
+            "trade_time": "2026-04-15T09:31:00+00:00",
+        }
+    )
+    await db.save_strategy_signal_evidence(
+        {
+            "signal_id": "sig_overview_1",
+            "strategy_id": strategy["id"],
+            "signal_date": "2026-04-10",
+            "signal_ts": "2026-04-10T09:30:00+00:00",
+            "evidence_id": "evidence_overview_1",
+            "code": "600519",
+            "created_at": "2026-04-10T09:30:00+00:00",
+        }
+    )
+    await db.save_strategy_signal_event_snapshot(
+        {
+            "id": "snapshot_overview_1",
+            "strategy_id": strategy["id"],
+            "code": "600519",
+            "as_of_date": "2026-04-15",
+            "created_at": "2026-04-15T15:00:00+00:00",
+            "metadata": {"latest_nonzero_signal_date": "2026-04-15"},
+        }
+    )
+    db._strategy_trade_audit_summaries[strategy["id"]] = {
+        "realized_trade_count": 25,
+        "trade_expectancy": 0.08,
+        "pnl_conversion_efficiency": 0.07,
+        "execution_conversion_efficiency": 0.24,
+        "realized_pnl_total": 148.0,
+        "mapped_position_count": 1,
+        "incomplete_position_count": 0,
+    }
+    db._signal_stats[strategy["id"]] = {
+        "raw_signal_count": 24,
+        "signals_with_forward_returns_count": 24,
+        "observed_forward_return_count": 24,
+        "total_signals": 24,
+        "hit_rate": {5: 0.61},
+        "forward_ic": {5: 0.09},
+        "forward_sharpe": {5: 1.12},
+    }
+    await db.save_strategy_metrics(strategy["id"], "all", {"sharpe_ratio": 1.15, "max_drawdown": -0.06})
+    await db.save_strategy_quality_report(
+        strategy["id"],
+        "submission",
+        {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "strict_incubation_ready": True,
+                "live_candidate_ready": True,
+                "candidate_family": "mean_reversion",
+                "holding_period_bucket": "swing",
+            },
+        },
+    )
+
+    overview = await lifecycle_mod.build_incubation_overview(db, strategy)
+
+    ledger = overview["prediction_trace_ledger"]
+    execution_snapshot = overview["execution_quality_snapshot"]
+    assert execution_snapshot["status"] == "strong"
+    assert ledger["signal_event"]["source_mode"] == "entity_backed"
+    assert ledger["signal_event"]["latest_signal_snapshot_id"] == "snapshot_overview_1"
+    assert ledger["signal_event"]["recent_signal_ids"] == ["sig_overview_1", "snapshot_overview_1"]
+    assert ledger["intended_order"]["available"] is True
+    assert ledger["intended_order"]["order_ids"] == ["902", "901"]
+    assert ledger["actual_fill"]["available"] is True
+    assert ledger["actual_fill"]["trade_ids"] == ["trade_overview_2", "trade_overview_1"]
+    assert ledger["position_round_trip"]["available"] is True
+    assert ledger["position_round_trip"]["position_ids"] == ["pos_overview_1"]
+    assert ledger["pnl_audit_summary"]["available"] is True
+    assert ledger["pnl_audit_summary"]["nav_row_count"] == 2
+    assert ledger["gate_decisions"]["execution_audit_gate_status"] == "passed"
+    assert "missing_pnl_audit_summary" not in ledger["evidence_gap_codes"]

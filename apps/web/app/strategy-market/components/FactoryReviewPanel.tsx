@@ -96,7 +96,8 @@ function qualityBadgeVariant(
   value: unknown,
 ): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
   const normalized = String(value ?? '').trim().toLowerCase();
-  if (normalized === 'strong' || normalized === 'comparable_ready') return 'success';
+  if (normalized === 'strong' || normalized === 'comparable_ready' || normalized === 'passed') return 'success';
+  if (normalized === 'candidate') return 'info';
   if (normalized === 'mixed' || normalized === 'diagnostic_ready') return 'info';
   if (normalized === 'insufficient_evidence' || normalized === 'insufficient') return 'warning';
   if (normalized === 'weak' || normalized === 'missing') return 'danger';
@@ -111,6 +112,8 @@ function qualityLabelText(value: unknown) {
   if (normalized === 'insufficient_evidence') return '证据不足';
   if (normalized === 'missing') return '缺失';
   if (normalized === 'insufficient') return '样本不足';
+  if (normalized === 'candidate') return '候选';
+  if (normalized === 'passed') return '通过';
   if (normalized === 'diagnostic_ready') return '诊断可用';
   if (normalized === 'comparable_ready') return '可比较';
   return normalized || '-';
@@ -238,12 +241,52 @@ export function FactoryReviewPanel({
   );
   const activeSectionLoading = sectionLoading[activeSection] || loading;
   const highConfidencePanel = summaryState.highConfidencePanel;
+  const incubationRecord = incubation as Record<string, unknown> | null | undefined;
   const showHighConfidencePanel = highConfidenceQualityUiEnabled && [
     highConfidencePanel.predictionQualityLabel,
     highConfidencePanel.executionQualityLabel,
     highConfidencePanel.confidenceContractStatus,
     highConfidencePanel.qualityDiagnosis,
   ].some(Boolean);
+  const signalSnapshotStatus = String(
+    incubationRecord?.signal_quality_snapshot
+      && typeof incubationRecord.signal_quality_snapshot === 'object'
+      ? (incubationRecord.signal_quality_snapshot as Record<string, unknown>).status
+      : highConfidencePanel.predictionQualityLabel,
+  ).trim().toLowerCase();
+  const executionSnapshotStatus = String(
+    incubationRecord?.execution_quality_snapshot
+      && typeof incubationRecord.execution_quality_snapshot === 'object'
+      ? (incubationRecord.execution_quality_snapshot as Record<string, unknown>).status
+      : highConfidencePanel.executionQualityLabel,
+  ).trim().toLowerCase();
+  const predictionTraceLedger = (
+    incubationRecord?.prediction_trace_ledger
+    && typeof incubationRecord.prediction_trace_ledger === 'object'
+  ) ? incubationRecord.prediction_trace_ledger as Record<string, unknown> : {};
+  const traceEvidenceGapCodes = Array.isArray(predictionTraceLedger.evidence_gap_codes)
+    ? predictionTraceLedger.evidence_gap_codes.map((item) => String(item))
+    : [];
+  const hardGateReasons = (
+    incubationRecord?.hard_gate_result
+    && typeof incubationRecord.hard_gate_result === 'object'
+    && Array.isArray((incubationRecord.hard_gate_result as Record<string, unknown>).reasons)
+  )
+    ? ((incubationRecord.hard_gate_result as Record<string, unknown>).reasons as unknown[]).map((item) => String(item))
+    : [];
+  const traceBlockingCodes = new Set([
+    'missing_actual_fill',
+    'missing_position_round_trip',
+    'missing_pnl_audit',
+    'missing_pnl_audit_summary',
+  ]);
+  const promotionBlockedBySnapshots = (
+    (signalSnapshotStatus && signalSnapshotStatus !== 'strong')
+    || (executionSnapshotStatus && !['strong', 'passed'].includes(executionSnapshotStatus))
+    || hardGateReasons.length > 0
+    || traceEvidenceGapCodes.some((item) => traceBlockingCodes.has(item))
+  );
+  const promotionReadyBadge = Boolean(incubation?.promotion_ready) && !promotionBlockedBySnapshots;
 
   return (
     <div className="mt-4 space-y-4">
@@ -479,12 +522,27 @@ export function FactoryReviewPanel({
               <KpiCard title="前向Sharpe(5D)" value={fmtNum(incubation?.forward_sharpe_5d ?? latestMetric?.forward_sharpe_5d, 4)} />
             </div>
             <div className="flex gap-2 flex-wrap text-sm">
-              <Badge variant={incubation?.promotion_ready ? 'success' : 'warning'}>
-                {incubation?.promotion_ready ? '达到上架条件' : '仍在观察中'}
+              <Badge variant={promotionReadyBadge ? 'success' : 'warning'}>
+                {promotionReadyBadge ? '达到上架条件' : '快照/Trace 仍在观察中'}
               </Badge>
               <Badge variant={incubation?.deprecation_risk ? 'danger' : 'neutral'}>
                 {incubation?.deprecation_risk ? '存在淘汰风险' : '暂无淘汰风险'}
               </Badge>
+              {signalSnapshotStatus ? (
+                <Badge variant={qualityBadgeVariant(signalSnapshotStatus)}>
+                  Signal Snapshot: {qualityLabelText(signalSnapshotStatus)}
+                </Badge>
+              ) : null}
+              {executionSnapshotStatus ? (
+                <Badge variant={qualityBadgeVariant(executionSnapshotStatus)}>
+                  Execution Snapshot: {qualityLabelText(executionSnapshotStatus)}
+                </Badge>
+              ) : null}
+              {traceEvidenceGapCodes.length ? (
+                <Badge variant="warning">
+                  Trace 缺口 {traceEvidenceGapCodes.length}
+                </Badge>
+              ) : null}
               {currentAccount?.account_id ? <Badge variant="info">模拟盘账户: {currentAccount.account_id}</Badge> : null}
               {latestMetric?.decision ? <Badge variant={latestMetric.decision === 'promote' ? 'success' : latestMetric.decision === 'halt' ? 'danger' : 'warning'}>最新决策: {latestMetric.decision}</Badge> : null}
             </div>

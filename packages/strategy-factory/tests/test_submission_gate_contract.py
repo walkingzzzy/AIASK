@@ -1333,8 +1333,166 @@ async def test_submission_gate_blocks_live_admission_when_only_proxy_multiple_te
     assert result["research_candidate_ready"] is True
     assert result["incubation_candidate_ready"] is False
     assert result["live_candidate_ready"] is False
-    assert result["admission_stage"] == "research"
-    assert "final_strategy_missing_semantic_contract" in result["admission_block_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_rejects_candidate_when_research_protocol_benchmark_gate_fails(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "trade_rule_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "wf_ic_ir": 0.42,
+            "pkf_ic": 0.05,
+            "bootstrap_ci_lower": 0.01,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "ma_cross",
+            "research_validation_contract": {
+                "contract_version": "strategy_factory.research_protocol.v2",
+                "effective_contract": {
+                    "baseline_reference": {"name": "510300"},
+                    "cash_sleeve_policy": {"enabled": True, "schedule_clock": "monthly"},
+                    "cost_sensitivity_grid": {"slippage_bps_grid": [0, 5, 10]},
+                    "admission_thresholds": {
+                        "validation_profile": {
+                            "profile": "trade_rule_validation",
+                            "validation_focus": "target_plus_representative",
+                            "primary_validation_layer": "target",
+                        },
+                        "business_admission_gate": {
+                            "benchmark_return_multiple_min": 2.0,
+                            "benchmark_drawdown_mode": "lte",
+                            "cost_sensitivity_required_bps": [0, 5, 10],
+                        },
+                    },
+                    "family_holding_bucket": {"family": "510300_default", "holding_bucket": "medium"},
+                },
+                "field_provenance_summary": {"missing_required_fields": []},
+                "spec_completeness": "complete",
+            },
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.84,
+            "trade_count": 14,
+            "avg_holding_days": 11,
+            "turnover_proxy": 0.52,
+            "target_layer_oos_return": 0.06,
+            "benchmark_oos_cagr": 0.04,
+            "max_drawdown": 0.15,
+            "benchmark_oos_max_drawdown": 0.12,
+            "primary_validation_layer": "target",
+            "cost_sensitivity_results": {
+                "0": {"slippage_bps": 0, "post_cost_sharpe": 1.02},
+                "5": {"slippage_bps": 5, "post_cost_sharpe": 0.88},
+                "10": {"slippage_bps": 10, "post_cost_sharpe": 0.71},
+            },
+            "cash_sleeve": {"enabled": True, "schedule_clock": "monthly"},
+        },
+        risk_report={"stress_loss_percent": -8.0},
+    )
+
+    assert result["passed"] is False
+    assert result["gate_b_review_decision"] == "reject"
+    assert result["business_admission_decision"]["decision"] == "reject"
+    assert result["benchmark_comparison"]["passed"] is False
+    assert result["research_candidate_ready"] is False
+    assert result["admission_stage"] == "rejected"
+    assert "business_gate_benchmark_return_multiple_failed" in result["reason_codes"]
+    assert result["cost_sensitivity_summary"]["observed_bps"] == [0.0, 5.0, 10.0]
+    assert result["cash_sleeve_audit"]["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_uses_spec_completeness_mode_for_research_protocol_required_fields(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "trade_rule_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "wf_ic_ir": 0.42,
+            "pkf_ic": 0.05,
+            "bootstrap_ci_lower": 0.01,
+        }
+
+    monkeypatch.setattr(submission_gate_mod, "STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", "reject")
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "ma_cross",
+            "research_validation_contract": {
+                "contract_version": "strategy_factory.research_protocol.v2",
+                "effective_contract": {
+                    "admission_thresholds": {
+                        "validation_profile": {
+                            "profile": "trade_rule_validation",
+                            "validation_focus": "target_plus_representative",
+                            "primary_validation_layer": "target",
+                        }
+                    }
+                },
+                "field_provenance_summary": {
+                    "missing_required_fields": [
+                        "baseline_reference",
+                        "cash_sleeve_policy",
+                        "cost_sensitivity_grid",
+                        "family_holding_bucket",
+                    ]
+                },
+                "completion_issues": [
+                    {
+                        "field": "baseline_reference",
+                        "decision": "revise",
+                        "reason_code": "research_protocol_required_field_missing",
+                    }
+                ],
+                "spec_completeness": "incomplete",
+            },
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.82,
+            "trade_count": 10,
+            "target_layer_oos_return": 0.15,
+            "max_drawdown": 0.14,
+            "primary_validation_layer": "target",
+        },
+        risk_report={"stress_loss_percent": -8.0},
+    )
+
+    assert result["passed"] is False
+    assert result["gate_b_review_decision"] == "reject"
+    assert result["business_admission_decision"]["decision"] == "reject"
+    assert "research_protocol_required_fields_rejected" in result["reason_codes"]
+    assert "research_protocol_missing_baseline_reference" in result["reason_codes"]
+    assert result["admission_stage"] == "rejected"
+    assert "research_protocol_required_fields_rejected" in result["admission_block_reasons"]
     assert result["admission_evaluations"]["live"]["passed"] is False
 
 

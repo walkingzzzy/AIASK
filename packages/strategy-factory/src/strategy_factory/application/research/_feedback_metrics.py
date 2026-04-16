@@ -38,6 +38,14 @@ def resolve_search_route_action(
     control_mode = normalize_text(plan.get("feedback_control_mode")) or "normal"
     zero_signal_ratio = builder_cls._safe_float(feedback_metrics.get("zero_signal_ratio"))
     evidence_debt_ratio = builder_cls._safe_float(feedback_metrics.get("evidence_debt_ratio"))
+    gate_failure_rate = builder_cls._safe_float(feedback_metrics.get("gate_failure_rate"))
+    trace_completeness_ratio = builder_cls._safe_float(
+        feedback_metrics.get("trace_completeness_ratio"),
+        1.0,
+    )
+    admission_quality_objective = builder_cls._safe_float(
+        feedback_metrics.get("admission_quality_objective")
+    )
     promotion_ready_ratio = builder_cls._safe_float(
         feedback_metrics.get("promotion_ready_ratio"),
         1.0,
@@ -62,6 +70,8 @@ def resolve_search_route_action(
         return "family_cooldown"
     if control_mode == "cooldown":
         return "family_cooldown"
+    if gate_failure_rate >= 0.65 and admission_quality_objective <= 0.20:
+        return "family_cooldown"
     if (
         raw_validation_d_rate >= 0.75
         and raw_validation_a_rate <= 0.0
@@ -78,6 +88,8 @@ def resolve_search_route_action(
         or raw_validation_b_rate >= 0.3
         or raw_validation_total_score_mean >= 58.0
         or quality_score >= 0.35
+        or admission_quality_objective >= 0.35
+        or trace_completeness_ratio >= 0.55
     ):
         return "family_explore"
     if zero_signal_ratio >= 0.3 or evidence_debt_ratio >= 0.35:

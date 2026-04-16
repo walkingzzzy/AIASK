@@ -166,11 +166,20 @@ export function buildFactoryReviewViewModel({
   const incubationRecord = asRecord(incubation);
   const reportSummary = asRecord((review as Record<string, unknown> | null)?.summary);
   const evidenceAlignmentAudit = asRecord((review as Record<string, unknown> | null)?.evidence_alignment_audit);
+  const signalQualitySnapshot = asRecord(
+    incubationRecord.signal_quality_snapshot ?? reportSummary.signal_quality_snapshot,
+  );
+  const executionQualitySnapshot = asRecord(
+    incubationRecord.execution_quality_snapshot ?? reportSummary.execution_quality_snapshot,
+  );
+  const predictionTraceLedger = asRecord(
+    incubationRecord.prediction_trace_ledger ?? reportSummary.prediction_trace_ledger,
+  );
   const signalQuality = asRecord(
-    incubationRecord.signal_quality ?? reportSummary.signal_quality,
+    incubationRecord.signal_quality ?? reportSummary.signal_quality ?? signalQualitySnapshot,
   );
   const executionQuality = asRecord(
-    incubationRecord.execution_quality ?? reportSummary.execution_quality,
+    incubationRecord.execution_quality ?? reportSummary.execution_quality ?? executionQualitySnapshot,
   );
   const executionAudit = asRecord(executionQuality.audit);
   const executionDiagnostics = asRecord(incubationRecord.execution_diagnostics);
@@ -221,10 +230,13 @@ export function buildFactoryReviewViewModel({
       predictionQualityLabel: highConfidenceText(
         incubationRecord.prediction_quality_label,
         reportSummary.prediction_quality_label,
+        signalQualitySnapshot.status,
       ),
       executionQualityLabel: highConfidenceText(
         incubationRecord.execution_quality_label,
         reportSummary.execution_quality_label,
+        executionQuality.execution_quality_label,
+        executionQualitySnapshot.status,
       ),
       confidenceContractStatus: highConfidenceText(
         incubationRecord.confidence_contract_status,
@@ -300,6 +312,30 @@ export function buildFactoryReviewViewModel({
       { item: '硬门状态', value: latestIncubationPipelineSnapshot?.gate_status ?? '-' },
       { item: '硬门原因', value: shortText((latestIncubationPipelineSnapshot?.gate_reasons ?? []).join(' / ') || '-', 48) },
       { item: '硬门结果', value: hardGateResult.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
+      { item: 'Signal Snapshot', value: String(signalQualitySnapshot.status ?? '-') },
+      { item: 'Execution Snapshot', value: String(executionQualitySnapshot.status ?? '-') },
+      {
+        item: 'Trace Ledger',
+        value: formatIssueSummary(
+          [
+            String(predictionTraceLedger.prediction_trace_id ?? ''),
+            predictionTraceLedger.contract_version ? 'v2' : '',
+            Array.isArray(predictionTraceLedger.evidence_gap_codes)
+              ? `gaps:${predictionTraceLedger.evidence_gap_codes.length}`
+              : '',
+          ],
+          48,
+        ),
+      },
+      {
+        item: 'Trace 缺口',
+        value: formatIssueSummary(
+          Array.isArray(predictionTraceLedger.evidence_gap_codes)
+            ? predictionTraceLedger.evidence_gap_codes.map((item) => String(item))
+            : [],
+          64,
+        ),
+      },
       {
         item: '硬门语义',
         value: formatIssueSummary(
