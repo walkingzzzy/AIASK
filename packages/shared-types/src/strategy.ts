@@ -395,6 +395,7 @@ export type FactoryQualityBaseline = {
 
 export type FactoryRunSummary = {
     trace_id?: string;
+    prediction_trace_id?: string;
     lifecycle_feedback_input_contract_version?: string;
     lifecycle_feedback_input_available?: boolean;
     budget_feedback_available?: boolean;
@@ -543,6 +544,14 @@ export type FactoryStatusResponse = {
     confidence_diagnostics_enabled?: boolean;
     execution_audit_enabled?: boolean;
     quality_ui_v2_enabled?: boolean;
+    research_protocol_v2_enabled?: boolean;
+    gate_model_v2_enabled?: boolean;
+    trace_ledger_v2_enabled?: boolean;
+    feedback_v2_enabled?: boolean;
+    trace_ledger_v2_implemented?: boolean;
+    governance_gate_report_v2_implemented?: boolean;
+    execution_audit_entity_chain_available?: boolean;
+    spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     signal_quality_registry?: Record<string, unknown>;
     feature_flags?: {
         high_confidence_enabled?: boolean;
@@ -550,6 +559,11 @@ export type FactoryStatusResponse = {
         confidence_diagnostics_enabled?: boolean;
         execution_audit_enabled?: boolean;
         quality_ui_v2_enabled?: boolean;
+        research_protocol_v2_enabled?: boolean;
+        gate_model_v2_enabled?: boolean;
+        trace_ledger_v2_enabled?: boolean;
+        feedback_v2_enabled?: boolean;
+        spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     };
     last_result?: {
         status?: string;
@@ -584,6 +598,14 @@ export type CapabilityResponse = {
     confidence_diagnostics_enabled?: boolean;
     execution_audit_enabled?: boolean;
     quality_ui_v2_enabled?: boolean;
+    research_protocol_v2_enabled?: boolean;
+    gate_model_v2_enabled?: boolean;
+    trace_ledger_v2_enabled?: boolean;
+    feedback_v2_enabled?: boolean;
+    trace_ledger_v2_implemented?: boolean;
+    governance_gate_report_v2_implemented?: boolean;
+    execution_audit_entity_chain_available?: boolean;
+    spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     signal_quality_registry?: Record<string, unknown>;
     high_confidence_feature_flags?: {
         high_confidence_enabled?: boolean;
@@ -591,6 +613,11 @@ export type CapabilityResponse = {
         confidence_diagnostics_enabled?: boolean;
         execution_audit_enabled?: boolean;
         quality_ui_v2_enabled?: boolean;
+        research_protocol_v2_enabled?: boolean;
+        gate_model_v2_enabled?: boolean;
+        trace_ledger_v2_enabled?: boolean;
+        feedback_v2_enabled?: boolean;
+        spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     };
 };
 
@@ -616,10 +643,12 @@ export type FactoryRunsResponse = {
         run_id?: string;
         status?: string;
         trace_id?: string | null;
+        prediction_trace_id?: string | null;
     } | null;
     items?: Array<{
         run_id?: string;
         trace_id?: string | null;
+        prediction_trace_id?: string | null;
         status?: string;
         started_at?: string;
         completed_at?: string | null;
@@ -648,6 +677,7 @@ export type FactoryRunsResponse = {
 
 export type FactoryGovernanceReasonTopEntry = {
     reason?: string;
+    reason_code?: string;
     count?: number;
 };
 
@@ -714,6 +744,7 @@ export type FactoryGovernanceStrategyBrief = {
     name?: string | null;
     status?: string | null;
     submission_lane?: string | null;
+    submission_action_trigger?: string | null;
     submission_action_type?: string | null;
     primary_validation_layer?: string | null;
     refresh_mode?: string | null;
@@ -756,6 +787,10 @@ export type FactoryGovernanceStrategyBrief = {
     created_strategy_pool?: boolean;
     created_audit_only?: boolean;
     refreshed_existing?: boolean;
+    formal_track_requested?: boolean;
+    formal_track_eligible?: boolean;
+    formal_track_blockers?: string[];
+    hard_failures?: FactoryHardFailure[];
     live_candidate_ready?: boolean;
     live_review_ready?: boolean;
     runtime_bootstrap_eligible?: boolean | null;
@@ -778,6 +813,175 @@ export type FactoryGovernanceEvidenceStrategyBrief = FactoryGovernanceStrategyBr
     has_multiple_testing_registry?: boolean;
 };
 
+export type FactoryGateStageResult = {
+    contract_version?: string;
+    gate_name?: string;
+    stage?: string;
+    decision?: string;
+    status?: string;
+    blocking_reasons?: Array<string | FactoryGovernanceReasonTopEntry>;
+    hard_failures?: FactoryHardFailure[];
+    evidence_gap_codes?: string[];
+    artifact_ids?: string[];
+    retrieval_context_ids?: string[];
+    trace_ids?: string[];
+    family_outcome_summary?: FactoryGateFamilyOutcomeSummary;
+    warnings?: string[];
+    revision_actions?: string[];
+    evidence_refs?: string[];
+    legacy_gate_mapping?: string[];
+    spec_completeness?: string;
+    input_count?: number;
+    gate_0_passed?: number;
+    pre_gate_passed?: number;
+    gate_1_passed?: number;
+    spec_completeness_counts?: Record<string, number>;
+    gate_2_input?: number;
+    gate_2_passed?: number;
+    gate_2_failed?: number;
+    gate_3_input?: number;
+    gate_3_passed?: number;
+    gate_3_failed?: number;
+    gate_3_provisional_passed?: number;
+    signal_quality_distribution?: Record<string, number>;
+    execution_quality_distribution?: Record<string, number>;
+    execution_audit_gate_status_distribution?: Record<string, number>;
+    hard_gate_result_distribution?: Record<string, number>;
+    promotion_ready_count?: number;
+    promotion_ready_rate?: number;
+};
+
+export type FactoryProtocolVersionsSummary = {
+    research_protocol_version_counts?: Record<string, number>;
+    candidate_contract_version_counts?: Record<string, number>;
+    spec_completeness_counts?: Record<string, number>;
+};
+
+export type FactoryHardFailure = {
+    reason_code?: string;
+    issue?: string;
+    field?: string;
+    severity?: string;
+    decision?: string;
+    message?: string;
+    detail?: string;
+};
+
+export type FactoryCompletionIssue = {
+    field?: string;
+    issue?: string;
+    reason_code?: string;
+    severity?: string;
+    decision?: string;
+    provenance?: string;
+    message?: string;
+};
+
+export type FactoryGateFamilyOutcomeSummary = {
+    family_counts?: FactoryGovernanceCountMap;
+    status_counts?: FactoryGovernanceCountMap;
+    submission_lane_counts?: FactoryGovernanceCountMap;
+};
+
+export type FactoryPredictionTraceSummary = {
+    contract_version?: string;
+    trace_count?: number;
+    missing_count?: number;
+    sample_trace_ids?: string[];
+};
+
+export type FactoryPredictionTraceLedgerNode = Record<string, unknown> & {
+    available?: boolean;
+    source_mode?: 'entity_backed' | 'summary_fallback' | string;
+    count?: number;
+    ids?: string[];
+    status?: string | null;
+    as_of?: string | null;
+};
+
+export type FactoryPredictionTraceLedgerEntry = {
+    prediction_trace_id?: string | null;
+    source_count?: number;
+    artifact_ids?: string[];
+    retrieval_context_ids?: string[];
+    family_outcome_summary?: FactoryGateFamilyOutcomeSummary;
+    hypothesis_spec?: FactoryPredictionTraceLedgerNode;
+    signal_event?: FactoryPredictionTraceLedgerNode;
+    intended_order?: FactoryPredictionTraceLedgerNode;
+    actual_fill?: FactoryPredictionTraceLedgerNode;
+    position_round_trip?: FactoryPredictionTraceLedgerNode;
+    pnl_audit_summary?: FactoryPredictionTraceLedgerNode;
+    gate_decisions?: StrategyPredictionTraceGateDecisions;
+    evidence_gap_codes?: string[];
+};
+
+export type FactoryPredictionTraceLedgerSummary = {
+    contract_version?: string;
+    trace_count?: number;
+    missing_trace_count?: number;
+    entries?: FactoryPredictionTraceLedgerEntry[];
+};
+
+export type StrategyPredictionTraceGateDecisions = {
+    execution_audit_gate_status?: string | null;
+    promotion_ready?: boolean;
+    hard_gate_passed?: boolean;
+    failure_reasons?: string[];
+};
+
+export type StrategyPredictionTraceLedgerView = {
+    contract_version?: string;
+    prediction_trace_id?: string | null;
+    strategy_id?: string | null;
+    hypothesis_spec?: FactoryPredictionTraceLedgerNode;
+    signal_event?: FactoryPredictionTraceLedgerNode;
+    intended_order?: FactoryPredictionTraceLedgerNode;
+    actual_fill?: FactoryPredictionTraceLedgerNode;
+    position_round_trip?: FactoryPredictionTraceLedgerNode;
+    pnl_audit_summary?: FactoryPredictionTraceLedgerNode;
+    gate_decisions?: StrategyPredictionTraceGateDecisions;
+    evidence_gap_codes?: string[];
+};
+
+export type SignalQualitySnapshot = {
+    contract_version?: string;
+    status?: 'insufficient_evidence' | 'weak' | 'candidate' | 'strong' | string;
+    primary_horizon?: number;
+    secondary_horizon?: number;
+    primary_effective_n?: number;
+    secondary_effective_n?: number;
+    primary_skill_lcb?: number | null;
+    secondary_skill_lcb?: number | null;
+    recent_primary_skill_lcb?: number | null;
+    stability_gap?: number | null;
+    coverage_ratio?: number;
+    signal_coverage_ratio?: number | null;
+    observed_forward_days?: number[];
+    missing_forward_days?: number[];
+};
+
+export type ExecutionQualitySnapshot = {
+    contract_version?: string;
+    status?: 'passed' | 'insufficient_evidence' | string;
+    evidence_status?: string | null;
+    evidence_gap_codes?: string[];
+    execution_audit_gate_status?: string;
+    realized_trade_count?: number;
+    order_count?: number;
+    trade_count?: number;
+    mapped_position_count?: number;
+    incomplete_position_count?: number;
+    realized_pnl_total?: number | null;
+    fill_rate?: number | null;
+    round_trip_close_rate?: number | null;
+    trade_expectancy?: number | null;
+    pnl_conversion_efficiency?: number | null;
+    execution_conversion_efficiency?: number | null;
+    realized_slippage_vs_model?: number | null;
+    missed_trade_ratio?: number | null;
+    hard_gate_ready?: boolean;
+};
+
 export type FactoryGovernanceGateArtifact = {
     contract_version?: string;
     available?: boolean;
@@ -798,6 +1002,13 @@ export type FactoryGovernanceGateArtifact = {
     backtest_failed_reason_counts?: FactoryGovernanceCountMap;
     backtest_thresholds_by_type?: Record<string, Record<string, unknown>>;
     gate_3_failure_reason_topn?: FactoryGovernanceReasonTopEntry[];
+    gate_a?: FactoryGateStageResult;
+    gate_b?: FactoryGateStageResult;
+    gate_c?: FactoryGateStageResult;
+    legacy_gate_mapping?: Record<string, unknown>;
+    protocol_versions?: FactoryProtocolVersionsSummary;
+    prediction_trace_summary?: FactoryPredictionTraceSummary;
+    prediction_trace_ledger?: FactoryPredictionTraceLedgerSummary;
 };
 
 export type FactoryGovernanceDedupArtifact = {
@@ -921,16 +1132,25 @@ export type FactoryGovernancePlaneArtifact = {
     available?: boolean;
     plane?: string;
     gate_artifact?: FactoryGovernanceGateArtifact;
+    gate_artifact_v2?: FactoryGovernanceGateArtifact;
     dedup_artifact?: FactoryGovernanceDedupArtifact;
     submission_artifact?: FactoryGovernanceSubmissionArtifact;
     evidence_artifact?: FactoryGovernanceEvidenceArtifact;
     source_chain?: string[];
+    gate_a?: FactoryGateStageResult;
+    gate_b?: FactoryGateStageResult;
+    gate_c?: FactoryGateStageResult;
+    legacy_gate_mapping?: Record<string, unknown>;
+    protocol_versions?: FactoryProtocolVersionsSummary;
+    prediction_trace_summary?: FactoryPredictionTraceSummary;
+    prediction_trace_ledger?: FactoryPredictionTraceLedgerSummary;
 };
 
 export type FactoryRunDetailResponse = {
     dto_version?: string;
     run_id?: string;
     trace_id?: string | null;
+    prediction_trace_id?: string | null;
     status?: string;
     started_at?: string;
     completed_at?: string | null;
@@ -947,9 +1167,16 @@ export type FactoryRunDetailResponse = {
     evidence_artifact?: Record<string, unknown>;
     governance_plane?: FactoryGovernancePlaneArtifact;
     gate_artifact?: FactoryGovernanceGateArtifact;
+    gate_artifact_v2?: FactoryGovernanceGateArtifact;
     dedup_artifact?: FactoryGovernanceDedupArtifact;
     submission_artifact?: FactoryGovernanceSubmissionArtifact;
     governance_evidence_artifact?: FactoryGovernanceEvidenceArtifact;
+    gate_a?: FactoryGateStageResult;
+    gate_b?: FactoryGateStageResult;
+    gate_c?: FactoryGateStageResult;
+    protocol_versions?: FactoryProtocolVersionsSummary;
+    prediction_trace_summary?: FactoryPredictionTraceSummary;
+    prediction_trace_ledger?: FactoryPredictionTraceLedgerSummary;
     feedback_summary?: Record<string, unknown>;
     incubation_summary?: Record<string, unknown>;
     live_ready_summary?: Record<string, unknown>;
@@ -1041,6 +1268,16 @@ export type ReviewReportResponse = {
     reports?: Array<{
         report_type?: string;
         updated_at?: string;
+        prediction_trace_id?: string | null;
+        trace_id?: string | null;
+        research_protocol_version?: string;
+        candidate_contract_version?: string;
+        spec_completeness?: string;
+        field_provenance_summary?: Record<string, unknown>;
+        completion_issues?: FactoryCompletionIssue[];
+        gate_a?: FactoryGateStageResult;
+        gate_b?: FactoryGateStageResult;
+        gate_c?: FactoryGateStageResult;
         summary?: {
             review_source?: string;
             validation_grade?: string;
@@ -1058,8 +1295,28 @@ export type ReviewReportResponse = {
             contradiction_count?: number;
             proxy_dependency_score?: number;
             legacy_semantic_contract?: boolean;
+            prediction_trace_id?: string | null;
+            trace_id?: string | null;
+            research_protocol_version?: string;
+            candidate_contract_version?: string;
+            spec_completeness?: string;
+            field_provenance_summary?: Record<string, unknown>;
+            completion_issues?: FactoryCompletionIssue[];
+            gate_a?: FactoryGateStageResult;
+            gate_b?: FactoryGateStageResult;
+            gate_c?: FactoryGateStageResult;
         };
     }>;
+    prediction_trace_id?: string | null;
+    trace_id?: string | null;
+    research_protocol_version?: string;
+    candidate_contract_version?: string;
+    spec_completeness?: string;
+    field_provenance_summary?: Record<string, unknown>;
+    completion_issues?: FactoryCompletionIssue[];
+    gate_a?: FactoryGateStageResult;
+    gate_b?: FactoryGateStageResult;
+    gate_c?: FactoryGateStageResult;
     summary?: {
         status_after_review?: string;
         validation_grade?: string;
@@ -1085,6 +1342,16 @@ export type ReviewReportResponse = {
         contradiction_count?: number;
         proxy_dependency_score?: number;
         legacy_semantic_contract?: boolean;
+        prediction_trace_id?: string | null;
+        trace_id?: string | null;
+        research_protocol_version?: string;
+        candidate_contract_version?: string;
+        spec_completeness?: string;
+        field_provenance_summary?: Record<string, unknown>;
+        completion_issues?: FactoryCompletionIssue[];
+        gate_a?: FactoryGateStageResult;
+        gate_b?: FactoryGateStageResult;
+        gate_c?: FactoryGateStageResult;
     };
     quality_gate?: {
         wf_ic_ir?: number;
@@ -1257,8 +1524,11 @@ export type IncubationOverviewResponse = {
     strict_live_alignment_gap?: boolean;
     strict_live_alignment_status?: string | null;
     signal_quality?: Record<string, unknown>;
+    signal_quality_snapshot?: SignalQualitySnapshot;
     execution_quality?: Record<string, unknown>;
+    execution_quality_snapshot?: ExecutionQualitySnapshot;
     execution_diagnostics?: Record<string, unknown>;
+    prediction_trace_ledger?: StrategyPredictionTraceLedgerView;
     prediction_quality_label?: 'weak' | 'insufficient_evidence' | 'mixed' | 'strong';
     execution_quality_label?: 'weak' | 'insufficient_evidence' | 'mixed' | 'strong';
     quality_diagnosis?: string | null;

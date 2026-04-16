@@ -1,8 +1,11 @@
 from strategy_factory.application.governance_plane_contract import (
     DEDUP_ARTIFACT_CONTRACT_VERSION,
     GATE_ARTIFACT_CONTRACT_VERSION,
+    GATE_ARTIFACT_V2_CONTRACT_VERSION,
     GOVERNANCE_EVIDENCE_ARTIFACT_CONTRACT_VERSION,
     GOVERNANCE_PLANE_CONTRACT_VERSION,
+    GOVERNANCE_PLANE_V2_CONTRACT_VERSION,
+    PREDICTION_TRACE_CONTRACT_VERSION,
     SUBMISSION_ARTIFACT_CONTRACT_VERSION,
     build_governance_plane_artifact,
 )
@@ -233,6 +236,7 @@ def test_governance_plane_contract_builds_gate_dedup_submission_and_evidence_art
         "governance.dedup_artifact",
         "governance.submission_artifact",
         "governance.evidence_artifact",
+        "governance.gate_artifact_v2",
     ]
 
 
@@ -245,6 +249,171 @@ def test_governance_plane_contract_supports_empty_runs():
     assert artifact["dedup_artifact"]["available"] is False
     assert artifact["submission_artifact"]["available"] is False
     assert artifact["evidence_artifact"]["available"] is False
+
+
+def test_governance_plane_contract_dual_writes_v2_gate_and_trace_views():
+    artifact = build_governance_plane_artifact(
+        candidates=[
+            {
+                "prediction_trace_id": "pred_trace_1",
+                "research_protocol_version": "strategy_factory.research_protocol.v2",
+                "candidate_contract_version": "strategy_factory.candidate_contract.v2",
+                "spec_completeness": "incomplete",
+                "completion_issues": [
+                    {"field": "walk_forward_config", "reason_code": "research_protocol_required_field_legacy_default"}
+                ],
+                "execution_semantic_gap": True,
+            }
+        ],
+        quality_gate_report={
+            "gate_0": {"passed_count": 1, "failed_count": 0},
+            "pre_gate": {"passed_count": 1, "failed_count": 0},
+            "gate_1": {"passed_count": 1, "failed_count": 0},
+            "gate_2": {"input_count": 1, "passed_count": 1, "failed_count": 0},
+            "gate_3": {"input_count": 1, "passed_count": 1, "failed_count": 0},
+        },
+        submit_result={
+            "submitted": 1,
+            "gate_3_passed": 1,
+            "strategies": [
+                {
+                    "strategy_id": "sid_v2",
+                    "prediction_trace_id": "pred_trace_1",
+                    "research_protocol_version": "strategy_factory.research_protocol.v2",
+                    "candidate_contract_version": "strategy_factory.candidate_contract.v2",
+                    "spec_completeness": "incomplete",
+                    "execution_audit_gate_status": "ready",
+                    "promotion_ready": False,
+                }
+            ],
+        },
+    )
+
+    assert artifact["gate_artifact_v2"]["contract_version"] == GATE_ARTIFACT_V2_CONTRACT_VERSION
+    assert artifact["governance_plane_v2"]["contract_version"] == GOVERNANCE_PLANE_V2_CONTRACT_VERSION
+    assert artifact["prediction_trace_summary"]["contract_version"] == PREDICTION_TRACE_CONTRACT_VERSION
+    assert artifact["gate_a"]["gate_name"] == "gate_a"
+    assert artifact["gate_a"]["decision"] == "reject"
+    assert artifact["gate_a"]["hard_failures"][0]["reason_code"] == "execution_semantic_gap"
+    assert artifact["gate_a"]["evidence_gap_codes"] == ["research_protocol_required_field_legacy_default"]
+    assert artifact["gate_a"]["status"] == "blocked"
+    assert artifact["gate_b"]["status"] == "passed"
+    assert artifact["gate_c"]["status"] == "observe"
+    assert (
+        artifact["protocol_versions"]["research_protocol_version_counts"]["strategy_factory.research_protocol.v2"]
+        == 2
+    )
+    assert artifact["prediction_trace_summary"]["trace_count"] == 1
+    assert artifact["prediction_trace_summary"]["missing_count"] == 1
+    assert artifact["prediction_trace_ledger"]["trace_count"] == 1
+    assert artifact["governance_plane_v2"]["prediction_trace_ledger"]["entries"][0]["prediction_trace_id"] == "pred_trace_1"
+
+
+def test_governance_plane_contract_trace_ledger_does_not_treat_account_only_as_intended_order():
+    artifact = build_governance_plane_artifact(
+        submit_result={
+            "submitted": 1,
+            "strategies": [
+                {
+                    "strategy_id": "sid_account_only",
+                    "prediction_trace_id": "pred_trace_account_only",
+                    "paper_account_id": "paper_only_1",
+                    "execution_quality_snapshot": {
+                        "order_count": 0,
+                        "trade_count": 0,
+                        "realized_trade_count": 0,
+                    },
+                }
+            ],
+        }
+    )
+
+    entry = artifact["prediction_trace_ledger"]["entries"][0]
+    assert entry["prediction_trace_id"] == "pred_trace_account_only"
+    assert entry["intended_order"]["available"] is False
+    assert entry["intended_order"]["source_mode"] == "summary_fallback"
+    assert "missing_intended_order" in entry["evidence_gap_codes"]
+
+
+def test_governance_plane_contract_prefers_strategy_level_prediction_trace_ledger():
+    artifact = build_governance_plane_artifact(
+        submit_result={
+            "submitted": 1,
+            "strategies": [
+                {
+                    "strategy_id": "sid_entity_1",
+                    "prediction_trace_id": "pred_trace_entity_1",
+                    "prediction_trace_ledger": {
+                        "prediction_trace_id": "pred_trace_entity_1",
+                        "hypothesis_spec": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 1,
+                            "dsl_signature": "rsi_reversal_v7",
+                        },
+                        "signal_event": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 3,
+                            "recent_signal_ids": ["sig_3", "sig_2", "sig_1"],
+                            "latest_signal_snapshot_id": "snap_1",
+                        },
+                        "intended_order": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 2,
+                            "order_ids": ["ord_2", "ord_1"],
+                            "paper_account_id": "acct_1",
+                        },
+                        "actual_fill": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 2,
+                            "trade_ids": ["trd_2", "trd_1"],
+                            "realized_trade_count": 2,
+                        },
+                        "position_round_trip": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 1,
+                            "position_ids": ["pos_1"],
+                            "closed_position_count": 1,
+                            "round_trip_close_rate": 1.0,
+                        },
+                        "pnl_audit_summary": {
+                            "available": True,
+                            "source_mode": "entity_backed",
+                            "count": 5,
+                            "nav_row_count": 5,
+                            "realized_pnl_total": 1234.5,
+                            "trade_expectancy": 0.08,
+                        },
+                        "gate_decisions": {
+                            "execution_audit_gate_status": "passed",
+                            "promotion_ready": True,
+                            "hard_gate_passed": True,
+                            "failure_reasons": [],
+                        },
+                        "evidence_gap_codes": [],
+                    },
+                    "candidate_family": "mean_reversion",
+                    "status": "incubating",
+                    "submission_lane": "paper",
+                }
+            ],
+        }
+    )
+
+    entry = artifact["prediction_trace_ledger"]["entries"][0]
+    assert entry["signal_event"]["source_mode"] == "entity_backed"
+    assert entry["signal_event"]["count"] == 3
+    assert entry["signal_event"]["recent_signal_ids"] == ["sig_3", "sig_2", "sig_1"]
+    assert entry["intended_order"]["order_ids"] == ["ord_2", "ord_1"]
+    assert entry["actual_fill"]["trade_ids"] == ["trd_2", "trd_1"]
+    assert entry["position_round_trip"]["position_ids"] == ["pos_1"]
+    assert entry["pnl_audit_summary"]["realized_pnl_total"] == 1234.5
+    assert entry["gate_decisions"]["execution_audit_gate_status"] == "passed"
+    assert entry["gate_decisions"]["hard_gate_passed"] is True
 
 
 def test_governance_plane_contract_aggregates_raw_family_panel_from_quality_summary():

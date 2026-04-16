@@ -25,8 +25,14 @@ import type {
   FactoryGovernanceEvidenceArtifact,
   FactoryGovernanceEvidenceStrategyBrief,
   FactoryGenerationLaneQualityItem,
+  FactoryGateStageResult,
   FactoryGovernanceGateArtifact,
   FactoryGovernancePlaneArtifact,
+  FactoryPredictionTraceLedgerEntry,
+  FactoryPredictionTraceLedgerNode,
+  FactoryPredictionTraceLedgerSummary,
+  FactoryPredictionTraceSummary,
+  FactoryProtocolVersionsSummary,
   FactoryGovernanceSubmissionArtifact,
   FactoryGovernanceStrategyBrief,
   FactoryQualityBaseline,
@@ -37,6 +43,7 @@ import type {
   FactoryStatusResponse,
   FactoryValidationFamilyQualityPanelItem,
   RunStatusFilter,
+  StrategyPredictionTraceGateDecisions,
   TrendMetricKey,
 } from '../types';
 
@@ -368,6 +375,46 @@ function previewBadgeVariant(status: unknown): 'success' | 'danger' | 'warning' 
     return 'warning';
   }
   return 'info';
+}
+
+function toLedgerEntries(value: unknown): FactoryPredictionTraceLedgerEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is FactoryPredictionTraceLedgerEntry => isObjectRecord(item));
+}
+
+function asLedgerNode(value: unknown): Partial<FactoryPredictionTraceLedgerNode> {
+  return asTypedObject<FactoryPredictionTraceLedgerNode>(value);
+}
+
+function asTraceGateDecisions(value: unknown): Partial<StrategyPredictionTraceGateDecisions> {
+  return asTypedObject<StrategyPredictionTraceGateDecisions>(value);
+}
+
+function traceNodeHasFallback(node: Partial<FactoryPredictionTraceLedgerNode> | undefined) {
+  return String(node?.source_mode ?? '').trim().toLowerCase() === 'summary_fallback';
+}
+
+function traceNodeSummary(node: Partial<FactoryPredictionTraceLedgerNode> | undefined) {
+  const available = Boolean(node?.available);
+  const count = toDisplayNumber(node?.count);
+  const status = toDisplayText(node?.status);
+  return [
+    available ? 'Y' : 'N',
+    count != null ? String(count) : '-',
+    status ?? '-',
+  ].join(' / ');
+}
+
+function traceNodeDetails(node: Partial<FactoryPredictionTraceLedgerNode> | undefined, preferredKeys: string[]) {
+  const payload = node ?? {};
+  return preferredKeys
+    .map((key) => [key, payload[key as keyof FactoryPredictionTraceLedgerNode]] as const)
+    .filter(([, value]) => {
+      if (value == null || value === '') return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (isObjectRecord(value)) return Object.keys(value).length > 0;
+      return true;
+    });
 }
 
 function providerControlBadgeVariant(
@@ -2345,12 +2392,166 @@ function FactoryResearchPlanePanel({ detail }: { detail: FactoryRunDetailRespons
   );
 }
 
+function FactoryPredictionTraceLedgerPanel({
+  ledger,
+  predictionTraceId,
+}: {
+  ledger: Partial<FactoryPredictionTraceLedgerSummary>;
+  predictionTraceId?: string | null;
+}) {
+  const entries = toLedgerEntries(ledger.entries);
+  if (entries.length === 0) return null;
+
+  const renderNodeCell = (
+    nodeLike: unknown,
+    detailKeys: string[],
+  ) => {
+    const node = asLedgerNode(nodeLike);
+    const fallback = traceNodeHasFallback(node);
+    const detailRows = traceNodeDetails(node, detailKeys);
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>{traceNodeSummary(node)}</span>
+          {fallback ? <Badge variant="warning">降级</Badge> : null}
+        </div>
+        {detailRows.length > 0 && (
+          <details className="text-[11px] text-text-secondary">
+            <summary className="cursor-pointer select-none">详情</summary>
+            <div className="mt-1 space-y-1">
+              {detailRows.map(([key, raw]) => (
+                <div key={String(key)}>
+                  {String(key)}: {Array.isArray(raw) ? raw.join(' / ') : isObjectRecord(raw) ? formatArtifactObjectSummary(raw) : String(raw)}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">Prediction Trace Ledger</div>
+        <div className="text-xs text-text-secondary">
+          Trace 数：{entries.length}
+          {predictionTraceId ? ` · 当前 ${predictionTraceId}` : ''}
+        </div>
+      </div>
+      <div className="overflow-x-auto rounded border border-border bg-surface">
+        <table className="min-w-full text-xs text-left text-text-secondary">
+          <thead className="bg-surface-alt text-text-primary">
+            <tr>
+              <th className="px-3 py-2 font-medium">trace_id</th>
+              <th className="px-3 py-2 font-medium">signal</th>
+              <th className="px-3 py-2 font-medium">order</th>
+              <th className="px-3 py-2 font-medium">fill</th>
+              <th className="px-3 py-2 font-medium">round_trip</th>
+              <th className="px-3 py-2 font-medium">pnl</th>
+              <th className="px-3 py-2 font-medium">gate</th>
+              <th className="px-3 py-2 font-medium">gaps</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry, idx) => {
+              const signalNode = asLedgerNode(entry.signal_event);
+              const orderNode = asLedgerNode(entry.intended_order);
+              const fillNode = asLedgerNode(entry.actual_fill);
+              const roundTripNode = asLedgerNode(entry.position_round_trip);
+              const pnlNode = asLedgerNode(entry.pnl_audit_summary);
+              const gateDecisions = asTraceGateDecisions(entry.gate_decisions);
+              const hasFallback = [signalNode, orderNode, fillNode, roundTripNode, pnlNode].some(traceNodeHasFallback);
+              const familyOutcomeSummary = asTypedObject<Record<string, unknown>>(entry.family_outcome_summary);
+              const gapCodes = toDisplayTextList(entry.evidence_gap_codes, 8);
+              return (
+                <tr key={String(entry.prediction_trace_id ?? idx)} className="border-t border-border align-top">
+                  <td className="px-3 py-2">
+                    <div className="space-y-1">
+                      <div className="font-medium text-text-primary break-all">
+                        {String(entry.prediction_trace_id ?? '-')}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {hasFallback ? <Badge variant="warning">summary_fallback</Badge> : <Badge variant="success">entity_backed</Badge>}
+                        {predictionTraceId && entry.prediction_trace_id === predictionTraceId ? <Badge variant="info">当前</Badge> : null}
+                      </div>
+                      <details className="text-[11px] text-text-secondary">
+                        <summary className="cursor-pointer select-none">展开</summary>
+                        <div className="mt-1 space-y-1">
+                          <div>artifact_ids: {toDisplayTextList(entry.artifact_ids, 8).join(' / ') || '-'}</div>
+                          <div>retrieval_context_ids: {toDisplayTextList(entry.retrieval_context_ids, 8).join(' / ') || '-'}</div>
+                          <div>family_outcome: {formatArtifactObjectSummary(familyOutcomeSummary, 6)}</div>
+                        </div>
+                      </details>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">{renderNodeCell(signalNode, ['latest_signal_snapshot_id', 'recent_signal_ids', 'signal_evidence_count', 'runtime_action_count'])}</td>
+                  <td className="px-3 py-2">{renderNodeCell(orderNode, ['paper_account_id', 'order_ids', 'order_status_counts'])}</td>
+                  <td className="px-3 py-2">{renderNodeCell(fillNode, ['trade_ids', 'linked_signal_count', 'linked_position_count', 'realized_trade_count'])}</td>
+                  <td className="px-3 py-2">{renderNodeCell(roundTripNode, ['position_ids', 'mapped_position_count', 'closed_position_count', 'round_trip_close_rate', 'incomplete_position_count'])}</td>
+                  <td className="px-3 py-2">{renderNodeCell(pnlNode, ['nav_row_count', 'realized_pnl_total', 'trade_expectancy', 'pnl_conversion_efficiency', 'execution_conversion_efficiency'])}</td>
+                  <td className="px-3 py-2">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap gap-1">
+                        {toDisplayText(gateDecisions.execution_audit_gate_status) ? (
+                          <Badge variant={previewBadgeVariant(gateDecisions.execution_audit_gate_status)}>
+                            {formatTaskLabel(gateDecisions.execution_audit_gate_status)}
+                          </Badge>
+                        ) : null}
+                        <Badge variant={gateDecisions.hard_gate_passed ? 'success' : 'neutral'}>
+                          hard_gate {gateDecisions.hard_gate_passed ? 'pass' : 'hold'}
+                        </Badge>
+                        <Badge variant={gateDecisions.promotion_ready ? 'success' : 'warning'}>
+                          promotion {gateDecisions.promotion_ready ? 'ready' : 'hold'}
+                        </Badge>
+                      </div>
+                      {toDisplayTextList(gateDecisions.failure_reasons, 6).length > 0 ? (
+                        <details className="text-[11px] text-text-secondary">
+                          <summary className="cursor-pointer select-none">failure_reasons</summary>
+                          <div className="mt-1 break-all">{toDisplayTextList(gateDecisions.failure_reasons, 6).join(' / ')}</div>
+                        </details>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap gap-1">
+                        {gapCodes.length > 0 ? gapCodes.map((code) => (
+                          <Badge key={code} variant="warning">{code}</Badge>
+                        )) : <span>-</span>}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailResponse }) {
   const governancePlane = asTypedObject<FactoryGovernancePlaneArtifact>(detail.governance_plane);
   const gateArtifact = asTypedObject<FactoryGovernanceGateArtifact>(detail.gate_artifact);
+  const gateArtifactV2 = asTypedObject<FactoryGovernanceGateArtifact>(detail.gate_artifact_v2);
   const dedupArtifact = asTypedObject<FactoryGovernanceDedupArtifact>(detail.dedup_artifact);
   const submissionArtifact = asTypedObject<FactoryGovernanceSubmissionArtifact>(detail.submission_artifact);
   const governanceEvidenceArtifact = asTypedObject<FactoryGovernanceEvidenceArtifact>(detail.governance_evidence_artifact);
+  const gateA = asTypedObject<FactoryGateStageResult>(detail.gate_a ?? gateArtifactV2.gate_a ?? governancePlane.gate_a);
+  const gateB = asTypedObject<FactoryGateStageResult>(detail.gate_b ?? gateArtifactV2.gate_b ?? governancePlane.gate_b);
+  const gateC = asTypedObject<FactoryGateStageResult>(detail.gate_c ?? gateArtifactV2.gate_c ?? governancePlane.gate_c);
+  const protocolVersions = asTypedObject<FactoryProtocolVersionsSummary>(
+    detail.protocol_versions ?? gateArtifactV2.protocol_versions ?? governancePlane.protocol_versions,
+  );
+  const predictionTraceSummary = asTypedObject<FactoryPredictionTraceSummary>(
+    detail.prediction_trace_summary ?? gateArtifactV2.prediction_trace_summary ?? governancePlane.prediction_trace_summary,
+  );
+  const predictionTraceLedger = asTypedObject<FactoryPredictionTraceLedgerSummary>(
+    detail.prediction_trace_ledger ?? gateArtifactV2.prediction_trace_ledger ?? governancePlane.prediction_trace_ledger,
+  );
   const sourceChain = Array.isArray(governancePlane.source_chain)
     ? governancePlane.source_chain.map((item) => String(item)).filter(Boolean)
     : [];
@@ -2382,6 +2583,15 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
   const incubationBudgetSummary = asTypedObject<Record<string, unknown>>(submissionArtifact.incubation_budget_summary);
   const incubationFamilyCounts = toDisplayCountEntries(incubationBudgetSummary.family_counts);
   const backtestThresholdsByType = asTypedObject<Record<string, Record<string, unknown>>>(gateArtifact.backtest_thresholds_by_type);
+  const gateStageRows = [
+    { label: 'Gate A', gate: gateA },
+    { label: 'Gate B', gate: gateB },
+    { label: 'Gate C', gate: gateC },
+  ].filter(({ gate }) => Object.keys(gate).length > 0);
+  const sampleTraceIds = Array.isArray(predictionTraceSummary.sample_trace_ids)
+    ? predictionTraceSummary.sample_trace_ids.map((item) => String(item)).filter(Boolean)
+    : [];
+  const predictionTraceLedgerEntries = toLedgerEntries(predictionTraceLedger.entries);
   const hasAuditSliceCoverage = [
     submissionArtifact.constraint_check_count,
     submissionArtifact.validation_profile_count,
@@ -2429,6 +2639,64 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
         </div>
       )}
 
+      {(gateStageRows.length > 0 || Object.keys(protocolVersions).length > 0 || predictionTraceLedgerEntries.length > 0 || sampleTraceIds.length > 0 || detail.prediction_trace_id) && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">V2 门禁与追踪</div>
+          {gateStageRows.length > 0 && (
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+              {gateStageRows.map(({ label, gate }) => {
+                const blockingReasons = Array.isArray(gate.blocking_reasons)
+                  ? gate.blocking_reasons
+                    .map((item) => (typeof item === 'string' ? item : String(item.reason ?? item.reason_code ?? item.count ?? '')))
+                    .filter(Boolean)
+                  : [];
+                const revisionActions = Array.isArray(gate.revision_actions)
+                  ? gate.revision_actions.map((item) => String(item)).filter(Boolean)
+                  : [];
+                return (
+                  <div key={label} className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-medium text-text-primary">{label}</div>
+                      <Badge variant={previewBadgeVariant(gate.status)}>{formatTaskLabel(gate.status ?? 'pending')}</Badge>
+                    </div>
+                    <div>契约：{formatArtifactValue(gate.contract_version)}</div>
+                    <div>阻断：{blockingReasons.slice(0, 2).join(' / ') || '-'}</div>
+                    <div>修订：{revisionActions.slice(0, 2).join(' / ') || '-'}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 text-xs text-text-secondary">
+            <div>研究协议：{formatCountSummary(protocolVersions.research_protocol_version_counts ?? {}) || '-'}</div>
+            <div>候选契约：{formatCountSummary(protocolVersions.candidate_contract_version_counts ?? {}) || '-'}</div>
+            <div>完整性：{formatCountSummary(protocolVersions.spec_completeness_counts ?? {}) || '-'}</div>
+          </div>
+          {(detail.prediction_trace_id || predictionTraceSummary.trace_count != null) && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">
+                Trace 覆盖：{formatArtifactValue(predictionTraceSummary.trace_count)} / 缺失 {formatArtifactValue(predictionTraceSummary.missing_count)}
+              </div>
+              {predictionTraceLedgerEntries.length > 0 ? (
+                <FactoryPredictionTraceLedgerPanel
+                  ledger={predictionTraceLedger}
+                  predictionTraceId={detail.prediction_trace_id ?? null}
+                />
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {detail.prediction_trace_id ? <Badge variant="info">{String(detail.prediction_trace_id)}</Badge> : null}
+                  {sampleTraceIds.filter((item) => item !== detail.prediction_trace_id).slice(0, 4).map((item) => (
+                    <Badge key={item} variant="neutral">
+                      {item}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         <FactoryArtifactCard
           title="Gate Artifact"
@@ -2439,6 +2707,14 @@ function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailRespo
             { key: 'gate_3_passed', label: 'Gate-3 通过' },
             { key: 'gate_3_failed', label: 'Gate-3 失败' },
             { key: 'gate_3_provisional_passed', label: '临时通过' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Gate Artifact V2"
+          artifact={gateArtifactV2}
+          fields={[
+            { key: 'available', label: 'V2 可用' },
+            { key: 'contract_version', label: '契约版本' },
           ]}
         />
         <FactoryArtifactCard
@@ -3417,6 +3693,44 @@ function FactoryRunDetailPanel({
   );
 }
 
+function FactoryCapabilityStateStrip({ factoryStatus }: { factoryStatus: FactoryStatusResponse | null | undefined }) {
+  if (!factoryStatus) return null;
+
+  const items = [
+    {
+      key: 'trace-ledger',
+      label: 'Trace Ledger V2',
+      implemented: Boolean(factoryStatus.trace_ledger_v2_implemented),
+      enabled: Boolean(factoryStatus.trace_ledger_v2_enabled),
+    },
+    {
+      key: 'gate-report',
+      label: 'Gate Report V2',
+      implemented: Boolean(factoryStatus.governance_gate_report_v2_implemented),
+      enabled: Boolean(factoryStatus.gate_model_v2_enabled),
+    },
+    {
+      key: 'entity-chain',
+      label: 'Execution Entity Chain',
+      implemented: Boolean(factoryStatus.execution_audit_entity_chain_available),
+      enabled: Boolean(factoryStatus.execution_audit_entity_chain_available),
+    },
+  ];
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt px-3 py-3 text-xs text-text-secondary">
+      <div className="font-medium text-text-primary">治理能力读面</div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.map((item) => (
+          <Badge key={item.key} variant={item.implemented ? (item.enabled ? 'success' : 'warning') : 'neutral'}>
+            {item.label} {item.implemented ? '已实现' : '未实现'} / {item.enabled ? '已启用' : '未启用'}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- main export ---------- */
 
 export type FactoryDashboardProps = {
@@ -3488,6 +3802,7 @@ export function FactoryDashboard({
           <h3 className="m-0">策略工厂运行态</h3>
           <p className="m-0 mt-1 text-sm text-text-secondary">
             调度状态：{factoryStatus?.running ? '运行中' : '未启动'} · 上次运行：{factoryStatus?.last_run ?? '暂无'}
+            {factoryStatus?.spec_completeness_mode ? ` · 完整性模式：${factoryStatus.spec_completeness_mode}` : ''}
             {latestSnapshot?.snapshot_date ? ` · 最新快照：${latestSnapshot.snapshot_date}` : ''}
           </p>
         </div>
@@ -3523,6 +3838,7 @@ export function FactoryDashboard({
       <FactorySignalQualityRegistryPanel factoryStatus={factoryStatus} />
       <FactoryProviderDiagnosticsPanel factoryStatus={factoryStatus} />
       <FactoryFeedbackLoopPanel title="P3 反馈闭环" summary={factorySummary} compact />
+      <FactoryCapabilityStateStrip factoryStatus={factoryStatus} />
       <div className="mt-3 flex flex-wrap gap-2">
         {capabilityBadges.map((item) => (
           <Badge key={item.key} variant={item.enabled ? 'success' : 'neutral'}>

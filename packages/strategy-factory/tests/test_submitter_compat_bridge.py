@@ -204,11 +204,22 @@ async def test_submitter_applies_incubation_budget_tracks(monkeypatch):
 
     strategy_status = {item["name"]: item["status"] for item in result["strategies"]}
     strategy_tracks = {item["name"]: item["incubation_budget_track"] for item in result["strategies"]}
+    strategy_lanes = {item["name"]: item["submission_lane"] for item in result["strategies"]}
+    formal_track_requested = {item["name"]: item["formal_track_requested"] for item in result["strategies"]}
+    formal_track_eligible = {item["name"]: item["formal_track_eligible"] for item in result["strategies"]}
+    formal_track_blockers = {item["name"]: item["formal_track_blockers"] for item in result["strategies"]}
 
-    assert strategy_status["formal_candidate"] == "incubating"
+    assert strategy_status["formal_candidate"] == "submitted"
     assert strategy_status["observe_candidate"] == "submitted"
     assert strategy_tracks["formal_candidate"] == "formal_incubation"
     assert strategy_tracks["observe_candidate"] == "observe_incubation"
+    assert strategy_lanes["formal_candidate"] == "observe_incubation"
+    assert strategy_lanes["observe_candidate"] == "observe_incubation"
+    assert formal_track_requested["formal_candidate"] is True
+    assert formal_track_requested["observe_candidate"] is False
+    assert formal_track_eligible["formal_candidate"] is False
+    assert formal_track_blockers["formal_candidate"] == ["execution_readiness_tier:unknown"]
+    assert formal_track_blockers["observe_candidate"] == []
     assert result["created"] == 2
     assert result["created_total"] == 2
     assert result["created_strategy_pool"] == 2
@@ -216,7 +227,84 @@ async def test_submitter_applies_incubation_budget_tracks(monkeypatch):
     assert result["incubation_budget_summary"]["track_counts"]["formal_incubation"] == 1
     assert result["incubation_budget_summary"]["track_counts"]["observe_incubation"] == 1
     assert incubation_gateway.ensure_account.await_count == 2
-    incubation_gateway.run_pipeline.assert_awaited_once()
+    incubation_gateway.run_pipeline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_status", "expected_trigger"),
+    [
+        ("revise", "draft", "gate_a_revision_required"),
+        ("reject", "rejected", "gate_a_reject"),
+    ],
+)
+async def test_submitter_enforces_spec_completeness_modes_before_submission_gate(
+    monkeypatch,
+    mode,
+    expected_status,
+    expected_trigger,
+):
+    submitter = StrategySubmitter()
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+
+    gate_mock = AsyncMock(return_value={"passed": True, "reason_codes": []})
+    monkeypatch.setattr(legacy_submission_gate, "run_submission_quality_gate", gate_mock)
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(submitter_actions, "STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", mode)
+
+    result = await submitter.submit(
+        [
+            {
+                "name": f"{mode}_candidate",
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "spawn_reason": f"spec-{mode}",
+                "prediction_trace_id": f"pred_{mode}_1",
+                "spec_completeness": "incomplete",
+                "research_protocol_version": "strategy_factory.research_protocol.v2",
+                "candidate_contract_version": "strategy_factory.candidate_contract.v2",
+                "completion_issues": [
+                    {
+                        "field": "walk_forward_config",
+                        "issue": "legacy_default_required_field",
+                        "reason_code": "research_protocol_required_field_legacy_default",
+                    }
+                ],
+                "backtest_metrics": {
+                    "sharpe_ratio": 0.8,
+                    "total_return": 0.12,
+                    "max_drawdown": 0.10,
+                    "trades_count": 6,
+                },
+            }
+        ],
+        {"date": "2026-04-15", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    gate_mock.assert_not_awaited()
+    assert result["submitted"] == 0
+    assert result["passed_quality_gate"] == 0
+    assert result["created_strategy_pool"] == 0
+    assert result["created_audit_only"] == 1
+
+    strategy = result["strategies"][0]
+    assert strategy["status"] == expected_status
+    assert strategy["submission_action_trigger"] == expected_trigger
+    assert strategy["spec_completeness"] == "incomplete"
+    assert strategy["prediction_trace_id"] == f"pred_{mode}_1"
+    assert strategy["gate_a"]["status"] == "blocked"
+    assert "provide_required_research_field:walk_forward_config" in strategy["gate_a"]["revision_actions"]
+
+    saved_report = db.save_strategy_quality_report.await_args.args[2]
+    assert saved_report["summary"]["spec_completeness"] == "incomplete"
+    assert saved_report["summary"]["gate_a"]["status"] == "blocked"
 
 
 @pytest.mark.asyncio
@@ -1054,6 +1142,13 @@ async def test_submitter_routes_live_ready_candidates_into_review_chain(monkeypa
                 "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
                 "target_symbols": ["600519"],
                 "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "holding_horizon": {"max_days": 10},
+                "trade_plan": {"entry_bias": "event_follow_through"},
+                "risk_rules": {"stop_loss_pct": 0.08},
+                "execution_assumptions": {"slippage_bps": 8},
+                "runtime_playbook": {"entry": "open", "exit": "stop_or_target"},
+                "semantic_runtime_match": True,
+                "execution_readiness_tier": "formal_runtime_ready",
                 "backtest_metrics": {
                     "sharpe_ratio": 1.2,
                     "total_return": 0.14,
@@ -1188,6 +1283,13 @@ async def test_submitter_applies_pool_admission_for_promoted_live_ready_candidat
                 "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
                 "target_symbols": ["600519"],
                 "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "holding_horizon": {"max_days": 10},
+                "trade_plan": {"entry_bias": "event_follow_through"},
+                "risk_rules": {"stop_loss_pct": 0.08},
+                "execution_assumptions": {"slippage_bps": 8},
+                "runtime_playbook": {"entry": "open", "exit": "stop_or_target"},
+                "semantic_runtime_match": True,
+                "execution_readiness_tier": "formal_runtime_ready",
                 "backtest_metrics": {
                     "sharpe_ratio": 1.4,
                     "total_return": 0.18,

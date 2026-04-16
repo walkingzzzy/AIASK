@@ -245,70 +245,55 @@ def _normalize_strategy_manager_params(kwargs: Any = "{}", params: Any = None) -
 async def _handle_vector_profiles(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip() or None
     limit = min(max(int(params.get("limit", 20)), 1), 200)
+    from ...services.vector_platform import get_strategy_vector_platform
     if params.get("similar_to"):
-        from ...services.vector_platform import get_strategy_vector_platform
         rows = await get_strategy_vector_platform().find_similar_profiles(db, str(params.get("similar_to")), limit=limit)
     else:
-        if hasattr(db, "list_strategy_vector_profiles"):
-            rows = await db.list_strategy_vector_profiles(
-                strategy_id=sid,
-                profile_type=params.get("profile_type"),
-                limit=limit,
-            )
-        elif hasattr(db, "list_vector_profiles"):
-            unified_rows = await db.list_vector_profiles(
-                entity_type="strategy",
-                entity_id=sid,
-                profile_type=params.get("profile_type"),
-                limit=limit,
-            )
-            rows = [
-                {
-                    **dict(item),
-                    "strategy_id": item.get("strategy_id") or item.get("entity_id"),
-                    "index_name": item.get("index_name") or dict(item.get("metadata") or {}).get("index_name"),
-                    "index_version": item.get("index_version") or item.get("version"),
-                    "source": item.get("source") or "unified_profile",
-                }
-                for item in list(unified_rows or [])
-            ]
-        else:
-            rows = []
+        rows = await get_strategy_vector_platform().list_profiles(
+            db,
+            strategy_id=sid,
+            profile_type=params.get("profile_type"),
+            index_name=(str(params.get("index_name") or "").strip() or None),
+            index_version=(str(params.get("index_version") or "").strip() or None),
+            limit=limit,
+        )
     return ok({"items": rows, "count": len(rows)})
 
 
 async def _handle_vector_indexes(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 20)), 1), 200)
     rows = await db.list_vector_index_registry(index_name=params.get("index_name"), status=params.get("status"), limit=limit) if hasattr(db, "list_vector_index_registry") else []
-    return ok({"items": rows, "count": len(rows)})
+    items = [
+        {
+            **dict(item or {}),
+            "source": dict(item or {}).get("source") or "legacy_registry",
+            "source_of_truth": "legacy_strategy_vector_tables",
+            "table_family": "legacy_strategy_vector_tables",
+            "legacy_only": True,
+        }
+        for item in list(rows or [])
+    ]
+    return ok(
+        {
+            "items": items,
+            "count": len(items),
+            "source_of_truth": "legacy_strategy_vector_tables",
+            "table_family": "legacy_strategy_vector_tables",
+            "legacy_only": True,
+        }
+    )
 
 
 async def _handle_vector_index_snapshots(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 20)), 1), 200)
-    if hasattr(db, "list_strategy_vector_index_snapshots"):
-        rows = await db.list_strategy_vector_index_snapshots(
-            index_name=(str(params.get("index_name") or "").strip() or None),
-            index_version=(str(params.get("index_version") or "").strip() or None),
-            status=(str(params.get("status") or "").strip() or None),
-            limit=limit,
-        )
-    elif hasattr(db, "list_vector_index_snapshots"):
-        unified_rows = await db.list_vector_index_snapshots(
-            collection_name=(str(params.get("collection_name") or "").strip() or None),
-            index_version=(str(params.get("index_version") or "").strip() or None),
-            status=(str(params.get("status") or "").strip() or None),
-            limit=limit,
-        )
-        rows = [
-            {
-                **dict(item),
-                "index_name": item.get("index_name") or dict(item.get("metadata") or {}).get("index_name") or params.get("index_name"),
-                "source": item.get("source") or "unified_snapshot",
-            }
-            for item in list(unified_rows or [])
-        ]
-    else:
-        rows = []
+    from ...services.vector_platform import get_strategy_vector_platform
+    rows = await get_strategy_vector_platform().list_index_snapshots(
+        db,
+        index_name=(str(params.get("index_name") or "").strip() or None),
+        index_version=(str(params.get("index_version") or "").strip() or None),
+        status=(str(params.get("status") or "").strip() or None),
+        limit=limit,
+    )
     latest = rows[0] if rows else None
     return ok({"items": rows, "count": len(rows), "latest": latest})
 
@@ -380,21 +365,200 @@ async def _handle_vector_health(db, params: dict) -> dict:
     return ok(result)
 
 
+def _empty_vector_cleanup_deleted() -> dict[str, int]:
+    return {
+        "vector_index_registry": 0,
+        "vector_index_snapshots": 0,
+        "vector_profiles": 0,
+        "vector_profile_store": 0,
+        "vector_index_items": 0,
+        "vector_index_item_store": 0,
+        "hnsw_indexes": 0,
+    }
+
+
+def _merge_vector_cleanup_deleted(target: dict[str, int], payload: dict | None) -> dict[str, int]:
+    merged = dict(target or _empty_vector_cleanup_deleted())
+    for key, value in dict(payload or {}).items():
+        merged[key] = int(merged.get(key) or 0) + int(value or 0)
+    return merged
+
+
+def _unique_cleanup_values(values: list[Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in list(values or []):
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _decorate_legacy_cleanup_result(index_name: str, result: dict) -> dict:
+    payload = dict(result or {})
+    payload["index_name"] = str(payload.get("index_name") or index_name)
+    payload["cleanup_scope"] = "legacy"
+    payload["health_mode"] = "legacy"
+    payload["source_of_truth"] = "legacy_strategy_vector_tables"
+    payload["table_family"] = "legacy_strategy_vector_tables"
+    payload["legacy_only"] = True
+    payload.setdefault("target_version_keys", [str(item) for item in payload.get("target_versions") or [] if str(item).strip()])
+    payload.setdefault("deleted", _empty_vector_cleanup_deleted())
+    return payload
+
+
+def _aggregate_vector_cleanup_results(
+    *,
+    index_name: str,
+    requested_scope: str,
+    executed_scope: str,
+    scope_results: dict[str, dict],
+    dry_run: bool,
+    keep_versions: int,
+    fallback_used: bool = False,
+    fallback_reason: str | None = None,
+) -> dict:
+    ordered_scopes = [scope for scope in ("unified", "legacy") if scope in scope_results]
+    if requested_scope != "both" and executed_scope in scope_results:
+        summary = dict(scope_results[executed_scope] or {})
+        summary["requested_scope"] = requested_scope
+        summary["cleanup_scope"] = executed_scope
+        summary["fallback_used"] = bool(fallback_used)
+        summary["fallback_reason"] = fallback_reason
+        if len(ordered_scopes) > 1:
+            summary["scopes"] = dict(scope_results)
+        return summary
+    if len(ordered_scopes) == 1:
+        summary = dict(scope_results[ordered_scopes[0]] or {})
+        summary["requested_scope"] = requested_scope
+        summary["cleanup_scope"] = executed_scope
+        summary["fallback_used"] = bool(fallback_used)
+        summary["fallback_reason"] = fallback_reason
+        return summary
+
+    protected_versions: list[str] = []
+    target_versions: list[str] = []
+    target_version_keys: list[str] = []
+    hnsw_indexes_to_drop: list[str] = []
+    version_details: list[dict] = []
+    deleted = _empty_vector_cleanup_deleted()
+    collections: list[dict] = []
+    for scope in ordered_scopes:
+        payload = dict(scope_results.get(scope) or {})
+        protected_versions.extend(payload.get("protected_versions") or [])
+        target_versions.extend(payload.get("target_versions") or [])
+        target_version_keys.extend(payload.get("target_version_keys") or [])
+        hnsw_indexes_to_drop.extend(payload.get("hnsw_indexes_to_drop") or [])
+        version_details.extend(payload.get("version_details") or [])
+        deleted = _merge_vector_cleanup_deleted(deleted, payload.get("deleted"))
+        collections.extend(payload.get("collections") or [])
+
+    return {
+        "index_name": index_name,
+        "requested_scope": requested_scope,
+        "cleanup_scope": executed_scope,
+        "health_mode": "mixed",
+        "source_of_truth": "mixed_vector_tables",
+        "table_family": "mixed_vector_tables",
+        "legacy_only": False,
+        "dry_run": bool(dry_run),
+        "keep_versions": max(0, int(keep_versions or 0)),
+        "protected_versions": _unique_cleanup_values(protected_versions),
+        "target_versions": _unique_cleanup_values(target_versions),
+        "target_version_keys": _unique_cleanup_values(target_version_keys),
+        "hnsw_indexes_to_drop": _unique_cleanup_values(hnsw_indexes_to_drop),
+        "deleted": deleted,
+        "version_details": version_details,
+        "collection_count": len(collections),
+        "collections": collections,
+        "scopes": dict(scope_results),
+        "fallback_used": bool(fallback_used),
+        "fallback_reason": fallback_reason,
+    }
+
+
 async def _handle_vector_cleanup(db, params: dict) -> dict:
-    if not hasattr(db, "cleanup_strategy_vector_history"):
-        return fail("vector cleanup unsupported")
+    from ...services.vector_governance import get_strategy_vector_governance_service
+
+    requested_scope = str(params.get("scope") or "").strip().lower() or "unified"
+    if requested_scope not in {"unified", "legacy", "both"}:
+        return fail("scope must be one of unified, legacy, both")
     protect_versions = params.get("protect_versions") or []
     if isinstance(protect_versions, str):
         protect_versions = [item.strip() for item in protect_versions.split(',') if item.strip()]
-    result = await db.cleanup_strategy_vector_history(
-        index_name=str(params.get("index_name") or 'strategy_behavior'),
-        keep_versions=max(int(params.get("keep_versions", 1)), 0),
-        dry_run=parse_bool(params.get("dry_run"), True),
-        cleanup_hnsw=parse_bool(params.get("cleanup_hnsw"), True),
-        limit_versions=min(max(int(params.get("limit_versions", 200)), 1), 500),
-        protect_versions=protect_versions,
+    index_name = str(params.get("index_name") or "strategy_behavior")
+    keep_versions = max(int(params.get("keep_versions", 1)), 0)
+    dry_run = parse_bool(params.get("dry_run"), True)
+    cleanup_hnsw = parse_bool(params.get("cleanup_hnsw"), True)
+    limit_versions = min(max(int(params.get("limit_versions", 200)), 1), 500)
+
+    scope_results: dict[str, dict] = {}
+    if requested_scope in {"unified", "both"}:
+        scope_results["unified"] = await get_strategy_vector_governance_service().cleanup_unified_history(
+            db,
+            index_name=index_name,
+            keep_versions=keep_versions,
+            dry_run=dry_run,
+            cleanup_hnsw=cleanup_hnsw,
+            limit_versions=limit_versions,
+            protect_versions=protect_versions,
+        )
+    if requested_scope in {"legacy", "both"}:
+        if not hasattr(db, "cleanup_strategy_vector_history"):
+            return fail("legacy vector cleanup unsupported")
+        scope_results["legacy"] = _decorate_legacy_cleanup_result(
+            index_name,
+            await db.cleanup_strategy_vector_history(
+                index_name=index_name,
+                keep_versions=keep_versions,
+                dry_run=dry_run,
+                cleanup_hnsw=cleanup_hnsw,
+                limit_versions=limit_versions,
+                protect_versions=protect_versions,
+            ),
+        )
+
+    executed_scope = requested_scope
+    fallback_used = False
+    fallback_reason = None
+    if requested_scope == "unified":
+        unified_result = dict(scope_results.get("unified") or {})
+        unified_reason = str(unified_result.get("reason") or "").strip()
+        if (
+            unified_reason in {"no_unified_collections", "unified_cleanup_unsupported"}
+            and hasattr(db, "cleanup_strategy_vector_history")
+        ):
+            scope_results["legacy"] = _decorate_legacy_cleanup_result(
+                index_name,
+                await db.cleanup_strategy_vector_history(
+                    index_name=index_name,
+                    keep_versions=keep_versions,
+                    dry_run=dry_run,
+                    cleanup_hnsw=cleanup_hnsw,
+                    limit_versions=limit_versions,
+                    protect_versions=protect_versions,
+                ),
+            )
+            executed_scope = "legacy"
+            fallback_used = True
+            fallback_reason = unified_reason
+
+    if not scope_results:
+        return fail("vector cleanup unsupported")
+    return ok(
+        _aggregate_vector_cleanup_results(
+            index_name=index_name,
+            requested_scope=requested_scope,
+            executed_scope=executed_scope,
+            scope_results=scope_results,
+            dry_run=dry_run,
+            keep_versions=keep_versions,
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+        )
     )
-    return ok(result)
 
 
 async def _handle_ai_generate(db, params: dict) -> dict:

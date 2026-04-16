@@ -1043,6 +1043,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   async vectorCleanup(
     params: {
       index_name?: string;
+      scope?: string;
       keep_versions?: number;
       dry_run?: boolean;
       cleanup_hnsw?: boolean;

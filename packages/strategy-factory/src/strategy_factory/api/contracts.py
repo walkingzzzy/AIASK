@@ -72,6 +72,20 @@ class StrategyExecutionAssumptions:
     capacity_participation_rate: float = 0.0
     adv_ratio_limit: float = 0.0
     capacity_bucket: Optional[str] = None
+    margin_rate: Optional[float] = None
+    contract_multiplier: Optional[int] = None
+    liquidity_bucket: Optional[str] = None
+    max_contracts_per_rebalance: Optional[int] = None
+
+
+@dataclass
+class StrategyInstrumentProfile:
+    """Instrument semantics for non-equity candidates."""
+
+    asset_class: str = "equity"
+    underlying: Optional[str] = None
+    curve_legs: list[JSONDict] = field(default_factory=list)
+    roll_rule: JSONDict = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +95,28 @@ class StrategyValidationProfile:
     profile: str = "trade_rule_validation"
     validation_focus: str = "target_plus_representative"
     primary_validation_layer: str = "target"
+
+
+@dataclass
+class ResearchValidationContract:
+    """Normalized research admission contract shared across factory flows."""
+
+    contract_version: str = "strategy_factory.research_protocol.v2"
+    walk_forward_config: JSONDict = field(default_factory=dict)
+    baseline_reference: JSONDict = field(default_factory=dict)
+    cash_sleeve_policy: JSONDict = field(default_factory=dict)
+    cost_sensitivity_grid: JSONDict = field(default_factory=dict)
+    capacity_execution: JSONDict = field(default_factory=dict)
+    multiple_testing: JSONDict = field(default_factory=dict)
+    admission_thresholds: JSONDict = field(default_factory=dict)
+    family_holding_bucket: JSONDict = field(default_factory=dict)
+    effective_contract: JSONDict = field(default_factory=dict)
+    recommended_defaults: JSONDict = field(default_factory=dict)
+    field_provenance: dict[str, str] = field(default_factory=dict)
+    field_provenance_summary: JSONDict = field(default_factory=dict)
+    spec_completeness: str = "complete"
+    completion_issues: list[JSONDict] = field(default_factory=list)
+    hard_failures: list[JSONDict] = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +150,10 @@ class FactoryBacktestAssumptions:
     capacity_participation_rate: float = 0.0
     adv_ratio_limit: float = 0.0
     capacity_bucket: Optional[str] = None
+    margin_rate: Optional[float] = None
+    contract_multiplier: Optional[int] = None
+    liquidity_bucket: Optional[str] = None
+    max_contracts_per_rebalance: Optional[int] = None
     position_assumption: str = "single_name_full_notional"
     target_weight_scheme: str = "single_name"
     target_weight_map: JSONDict = field(default_factory=dict)
@@ -141,6 +181,10 @@ class FactoryBacktestAssumptions:
             "capacity_participation_rate": float(self.capacity_participation_rate),
             "adv_ratio_limit": float(self.adv_ratio_limit),
             "capacity_bucket": self.capacity_bucket,
+            "margin_rate": float(self.margin_rate) if self.margin_rate is not None else None,
+            "contract_multiplier": int(self.contract_multiplier) if self.contract_multiplier is not None else None,
+            "liquidity_bucket": self.liquidity_bucket,
+            "max_contracts_per_rebalance": int(self.max_contracts_per_rebalance) if self.max_contracts_per_rebalance is not None else None,
             "position_assumption": str(self.position_assumption or "single_name_full_notional"),
             "target_weight_scheme": str(self.target_weight_scheme or "single_name"),
             "target_weight_map": dict(self.target_weight_map or {}),
@@ -165,6 +209,10 @@ class FactoryBacktestAssumptions:
             "capacity_participation_rate": float(self.capacity_participation_rate),
             "adv_ratio_limit": float(self.adv_ratio_limit),
             "capacity_bucket": self.capacity_bucket,
+            "margin_rate": float(self.margin_rate) if self.margin_rate is not None else None,
+            "contract_multiplier": int(self.contract_multiplier) if self.contract_multiplier is not None else None,
+            "liquidity_bucket": self.liquidity_bucket,
+            "max_contracts_per_rebalance": int(self.max_contracts_per_rebalance) if self.max_contracts_per_rebalance is not None else None,
             "position_assumption": str(self.position_assumption or "single_name_full_notional"),
             "target_weight_scheme": str(self.target_weight_scheme or "single_name"),
             "target_weight_map": dict(self.target_weight_map or {}),

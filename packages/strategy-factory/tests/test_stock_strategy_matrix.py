@@ -446,6 +446,55 @@ async def test_stock_strategy_matrix_planner_uses_factor_research_family_prefere
 
 
 @pytest.mark.asyncio
+async def test_stock_strategy_matrix_planner_caps_mean_reversion_short_share(monkeypatch):
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 6)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 6)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK", 1)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD", 10)
+
+    class _DB:
+        async def list_stock_universe(self, limit=500, offset=0):
+            del limit, offset
+            return [
+                {"code": "300001", "name": "成长A", "industry": "制造", "sector": "制造", "market_cap": 120_000_000_000, "pe_ratio": 22, "pb_ratio": 2.2},
+                {"code": "300002", "name": "成长B", "industry": "制造", "sector": "制造", "market_cap": 118_000_000_000, "pe_ratio": 23, "pb_ratio": 2.3},
+                {"code": "300003", "name": "成长C", "industry": "制造", "sector": "制造", "market_cap": 116_000_000_000, "pe_ratio": 24, "pb_ratio": 2.4},
+                {"code": "300004", "name": "成长D", "industry": "制造", "sector": "制造", "market_cap": 114_000_000_000, "pe_ratio": 25, "pb_ratio": 2.5},
+                {"code": "300005", "name": "成长E", "industry": "制造", "sector": "制造", "market_cap": 112_000_000_000, "pe_ratio": 26, "pb_ratio": 2.6},
+                {"code": "300006", "name": "成长F", "industry": "制造", "sector": "制造", "market_cap": 110_000_000_000, "pe_ratio": 27, "pb_ratio": 2.7},
+            ]
+
+    report = await StockStrategyMatrixPlanner().plan(
+        _DB(),
+        {
+            "date": "2026-04-02",
+            "fear_greed_index": 55,
+            "fg_level": "neutral",
+            "hot_sectors": [],
+            "cold_sectors": [],
+            "factor_research": {
+                "active_factors": [],
+                "family_preference_order": ["mean_reversion_short", "ma_cross"],
+                "summary": {
+                    "family_preference_order": ["mean_reversion_short", "ma_cross"],
+                    "family_preference_source_mode": "preferred_strategy_types",
+                },
+            },
+        },
+    )
+
+    tasks = list(report["tasks"])
+    mean_reversion_count = sum(1 for task in tasks if task["candidate_family"] == "mean_reversion_short")
+
+    assert len(tasks) == 6
+    assert mean_reversion_count <= 2
+    assert report["summary"]["family_task_caps"]["mean_reversion_short"] == 2
+    assert any(task["candidate_family"] == "ma_cross" for task in tasks)
+
+
+@pytest.mark.asyncio
 async def test_stock_strategy_matrix_planner_interleaves_passes_when_first_family_is_uniform(monkeypatch):
     monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
     monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK", 3)

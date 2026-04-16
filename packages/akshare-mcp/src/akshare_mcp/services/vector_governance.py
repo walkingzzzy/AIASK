@@ -10,6 +10,37 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
+def _empty_cleanup_deleted() -> dict[str, int]:
+    return {
+        'vector_index_registry': 0,
+        'vector_index_snapshots': 0,
+        'vector_profiles': 0,
+        'vector_profile_store': 0,
+        'vector_index_items': 0,
+        'vector_index_item_store': 0,
+        'hnsw_indexes': 0,
+    }
+
+
+def _merge_cleanup_deleted(target: dict[str, int], payload: dict | None) -> dict[str, int]:
+    merged = dict(target or _empty_cleanup_deleted())
+    for key, value in dict(payload or {}).items():
+        merged[key] = int(merged.get(key) or 0) + int(value or 0)
+    return merged
+
+
+def _unique_strings(values) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in list(values or []):
+        normalized = str(item or '').strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
 class StrategyVectorGovernanceService:
     async def _record_domain_event(self, db, *, event_type: str, source: str, payload: dict, correlation_id: str | None = None):
         if hasattr(db, 'save_strategy_domain_event'):
@@ -158,6 +189,146 @@ class StrategyVectorGovernanceService:
             'stale_items': stale,
         }
 
+    async def cleanup_unified_history(
+        self,
+        db,
+        *,
+        index_name: str = 'strategy_behavior',
+        keep_versions: int = 1,
+        dry_run: bool = True,
+        cleanup_hnsw: bool = True,
+        limit_versions: int = 200,
+        protect_versions: Optional[list[str]] = None,
+    ) -> dict:
+        from .vector_platform import get_strategy_vector_platform
+
+        platform = get_strategy_vector_platform()
+        collections = await platform._list_unified_strategy_collections(db, index_name=index_name)
+        if not collections:
+            return {
+                'index_name': index_name,
+                'requested_scope': 'unified',
+                'cleanup_scope': 'unified',
+                'health_mode': 'unified',
+                'source_of_truth': 'unified_vector_tables',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
+                'dry_run': bool(dry_run),
+                'keep_versions': max(0, int(keep_versions or 0)),
+                'collection_count': 0,
+                'collections': [],
+                'protected_versions': [],
+                'target_versions': [],
+                'target_version_keys': [],
+                'hnsw_indexes_to_drop': [],
+                'deleted': _empty_cleanup_deleted(),
+                'version_details': [],
+                'reason': 'no_unified_collections',
+            }
+        if not hasattr(db, 'cleanup_vector_collection_history'):
+            return {
+                'index_name': index_name,
+                'requested_scope': 'unified',
+                'cleanup_scope': 'unified',
+                'health_mode': 'unified',
+                'source_of_truth': 'unified_vector_tables',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
+                'dry_run': bool(dry_run),
+                'keep_versions': max(0, int(keep_versions or 0)),
+                'collection_count': len(collections),
+                'collections': [
+                    {'collection_name': item.get('collection_name'), 'active_version': item.get('active_version')}
+                    for item in collections
+                ],
+                'protected_versions': [],
+                'target_versions': [],
+                'target_version_keys': [],
+                'hnsw_indexes_to_drop': [],
+                'deleted': _empty_cleanup_deleted(),
+                'version_details': [],
+                'reason': 'unified_cleanup_unsupported',
+            }
+
+        collection_summaries: list[dict] = []
+        deleted = _empty_cleanup_deleted()
+        protected_versions: list[str] = []
+        target_versions: list[str] = []
+        target_version_keys: list[str] = []
+        hnsw_indexes_to_drop: list[str] = []
+        version_details: list[dict] = []
+
+        for collection in collections:
+            collection_name = str(collection.get('collection_name') or '').strip()
+            profile_type = str(dict(collection.get('metadata') or {}).get('profile_type') or '').strip() or None
+            summary = await db.cleanup_vector_collection_history(
+                collection_name=collection_name,
+                keep_versions=keep_versions,
+                dry_run=dry_run,
+                cleanup_hnsw=cleanup_hnsw,
+                limit_versions=limit_versions,
+                protect_versions=protect_versions,
+                profile_type=profile_type,
+            )
+            normalized_summary = {
+                **dict(summary or {}),
+                'index_name': index_name,
+                'collection_name': collection_name,
+                'source_of_truth': 'unified_vector_tables',
+                'cleanup_scope': 'unified',
+                'health_mode': 'unified',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
+            }
+            collection_summaries.append(normalized_summary)
+            deleted = _merge_cleanup_deleted(deleted, normalized_summary.get('deleted'))
+            protected_versions.extend(normalized_summary.get('protected_versions') or [])
+            target_versions.extend(normalized_summary.get('target_versions') or [])
+            target_version_keys.extend(
+                normalized_summary.get('target_version_keys')
+                or [f'{collection_name}@{version}' for version in normalized_summary.get('target_versions') or []]
+            )
+            hnsw_indexes_to_drop.extend(normalized_summary.get('hnsw_indexes_to_drop') or [])
+            version_details.extend(
+                [
+                    {
+                        'collection_name': collection_name,
+                        **dict(item or {}),
+                    }
+                    for item in normalized_summary.get('version_details') or []
+                ]
+            )
+
+        return {
+            'index_name': index_name,
+            'requested_scope': 'unified',
+            'cleanup_scope': 'unified',
+            'health_mode': 'unified',
+            'source_of_truth': 'unified_vector_tables',
+            'table_family': 'unified_vector_tables',
+            'legacy_only': False,
+            'dry_run': bool(dry_run),
+            'keep_versions': max(0, int(keep_versions or 0)),
+            'collection_count': len(collection_summaries),
+            'collections': [
+                {
+                    'collection_name': item.get('collection_name'),
+                    'active_version': item.get('active_version'),
+                    'latest_snapshot_version': item.get('latest_snapshot_version'),
+                    'reason': item.get('reason'),
+                }
+                for item in collection_summaries
+            ],
+            'target_versions': _unique_strings(target_versions),
+            'target_version_keys': _unique_strings(target_version_keys),
+            'protected_versions': _unique_strings(protected_versions),
+            'hnsw_indexes_to_drop': _unique_strings(hnsw_indexes_to_drop),
+            'deleted': deleted,
+            'version_details': version_details[: max(1, min(int(limit_versions or 200), 1000))],
+            'scopes': {'unified': collection_summaries},
+            'reason': None if collection_summaries else 'no_unified_collections',
+        }
+
     async def rebuild_index(
         self,
         db,
@@ -214,6 +385,37 @@ class StrategyVectorGovernanceService:
                 index_name=index_name,
                 index_version=resolved_version,
             )
+            degraded_count = int(build_result.get('degraded_count') or 0)
+            if degraded_count > 0:
+                result = {
+                    'task_run_id': task_run.get('id'),
+                    'index_name': index_name,
+                    'index_version': resolved_version,
+                    'strategy_count': len(strategies),
+                    'built_profiles': int(build_result.get('count') or 0),
+                    'degraded_profiles': degraded_count,
+                    'failed_profiles': int(build_result.get('failed_count') or 0),
+                    'status': 'degraded',
+                    'degraded': True,
+                    'quality_flags': list(build_result.get('quality_flags') or ['unified_write_failed']),
+                    'reason': 'unified_profile_write_degraded',
+                    'degraded_items': list(build_result.get('degraded_items') or []),
+                }
+                if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
+                    await db.update_strategy_task_run(
+                        task_run['id'],
+                        status='completed',
+                        result=result,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                await self._record_domain_event(
+                    db,
+                    event_type='vector_index.rebuild_degraded',
+                    source='vector_governance',
+                    correlation_id=correlation_id,
+                    payload=result,
+                )
+                return result
             persist_result = await platform.build_persisted_ann_index(
                 db,
                 index_name=index_name,
@@ -290,6 +492,9 @@ class StrategyVectorGovernanceService:
                 'bucket_count': int(persist_result.get('bucket_count') or 0),
                 'active_registry': active_registry,
                 'reconcile': reconcile,
+                'degraded': bool(persist_result.get('degraded')),
+                'quality_flags': list(persist_result.get('quality_flags') or []),
+                'qa': persist_result.get('qa'),
             }
             if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
                 await db.update_strategy_task_run(task_run['id'], status='completed', result=result, completed_at=datetime.now(timezone.utc).isoformat())

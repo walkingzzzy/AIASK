@@ -1,0 +1,21 @@
+{
+  "asset_name": "原油",
+  "asset_code": "SC",
+  "source_dir": "/Users/mac/Desktop/股票/原油",
+  "output_dir": "/Users/mac/Desktop/股票/原油/ai_ready",
+  "generated_at": "2026-04-15T13:04:53",
+  "source_file_count": 7,
+  "document_count": 7,
+  "chunk_count": 17,
+  "dataset_count": 18,
+  "groups": {
+    "strategy_notes": 2,
+    "price_trend": 3,
+    "spread_statistics": 2
+  },
+  "compatibility": {
+    "market_documents": "metadata/market_documents.jsonl",
+    "market_doc_chunks": "metadata/market_doc_chunks.jsonl",
+    "datasets": "metadata/datasets.jsonl"
+  }
+}

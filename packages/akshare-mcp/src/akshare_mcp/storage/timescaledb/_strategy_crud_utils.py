@@ -181,6 +181,31 @@ class _StrategyCrudUtilsMixin:
                 f" WITH (m = {int(params['m'])}, ef_construction = {int(params['ef_construction'])})"
             )
 
+        @classmethod
+        def _resolve_pgvector_index_build_settings(cls, index_params: Optional[dict] = None) -> dict:
+            params = dict(index_params or {})
+            maintenance_work_mem = (
+                params.get("maintenance_work_mem")
+                or os.getenv("STRATEGY_VECTOR_INDEX_BUILD_MAINTENANCE_WORK_MEM")
+                or os.getenv("PGVECTOR_INDEX_BUILD_MAINTENANCE_WORK_MEM")
+                or os.getenv("VECTOR_INDEX_BUILD_MAINTENANCE_WORK_MEM")
+                or "256MB"
+            )
+            max_parallel_maintenance_workers = (
+                params.get("max_parallel_maintenance_workers")
+                or os.getenv("STRATEGY_VECTOR_INDEX_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS")
+                or os.getenv("PGVECTOR_INDEX_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS")
+                or os.getenv("VECTOR_INDEX_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS")
+                or 1
+            )
+            return {
+                "maintenance_work_mem": str(maintenance_work_mem or "").strip() or None,
+                "max_parallel_maintenance_workers": cls._coerce_positive_int(
+                    max_parallel_maintenance_workers,
+                    1,
+                ),
+            }
+
         def _decode_strategy_row(self, row: dict) -> dict:
             result = dict(row)
             result["params"] = self._decode_json_field(result.get("params"), {})

@@ -279,6 +279,28 @@ class _StrategyVectorPlatformBackendMixin:
             return f'unified_{normalized}' if normalized else 'unified_unknown'
 
         @staticmethod
+        def _unified_result_source(retrieval_mode: Optional[str]) -> str:
+            normalized = str(retrieval_mode or '').strip().lower()
+            if normalized == 'unified_pgvector_ann':
+                return 'unified_ann'
+            if normalized == 'unified_pgvector_exact':
+                return 'unified_profile_exact'
+            if normalized == 'unified_exact_json':
+                return 'unified_exact_json'
+            return 'unified_unknown'
+
+        @staticmethod
+        def _legacy_result_source(retrieval_mode: Optional[str]) -> str:
+            normalized = str(retrieval_mode or '').strip().lower()
+            if normalized in {'persisted_ann', 'pgvector_ann'}:
+                return 'legacy_ann'
+            if normalized == 'pgvector_exact':
+                return 'legacy_profile_exact'
+            if normalized == 'full_scan':
+                return 'legacy_full_scan'
+            return 'legacy_unknown'
+
+        @staticmethod
         def _signature(strategy: dict, profile_type: str, vector_method: str) -> str:
             payload = {
                 'strategy_id': strategy.get('id'),

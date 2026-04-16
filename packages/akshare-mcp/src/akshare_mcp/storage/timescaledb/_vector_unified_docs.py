@@ -34,16 +34,25 @@ class _VectorUnifiedDocsMixin:
 
             dense_rows: dict[str, dict] = {}
             if query_embedding:
-                dense_result = await self.search_vector_collection(
-                    collection_name="market_doc_chunks",
-                    query_embedding=query_embedding,
-                    profile_type=doc_types[0] if len(list(doc_types or [])) == 1 else None,
-                    stock_code=stock_code,
-                    limit=max(10, min(int(limit or 10) * 3, 100)),
-                    metric="cosine",
-                )
-                for row in list((dense_result or {}).get("items") or []):
-                    dense_rows[str(row.get("entity_id") or "")] = row
+                dense_limit = max(10, min(int(limit or 10) * 3, 100))
+                for scoped_collection_name, scoped_profile_type in self._market_doc_search_scopes(doc_types):
+                    dense_result = await self.search_vector_collection(
+                        collection_name=scoped_collection_name,
+                        query_embedding=query_embedding,
+                        profile_type=scoped_profile_type,
+                        stock_code=stock_code,
+                        limit=dense_limit,
+                        metric="cosine",
+                    )
+                    for row in list((dense_result or {}).get("items") or []):
+                        entity_id = str(row.get("entity_id") or "")
+                        if not entity_id:
+                            continue
+                        current = dense_rows.get(entity_id)
+                        current_similarity = float((current or {}).get("similarity") or -1.0)
+                        candidate_similarity = float(row.get("similarity") or -1.0)
+                        if current is None or candidate_similarity > current_similarity:
+                            dense_rows[entity_id] = row
 
             async with self.acquire() as conn:
                 params: list[Any] = []

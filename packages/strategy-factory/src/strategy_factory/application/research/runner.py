@@ -25,6 +25,8 @@ from ..services.readiness_service import resolve_factor_refresh_trigger
 
 logger = logging.getLogger(__name__)
 
+_GATE_1_MIN_KLINES = 30
+
 
 @dataclass(slots=True)
 class ResearchGenerationResult:
@@ -156,10 +158,18 @@ class ResearchPlaneRunner:
     ) -> ResearchGenerationResult:
         spawner = self._factory_pkg.StrategySpawner()
         local_candidates = list(spawner.spawn(snapshot) or [])
+        local_candidates, target_sanitization = await self._sanitize_local_spawn_targets(
+            local_candidates,
+            db,
+        )
         local_spawn_report = (
             spawner.get_last_report()
             if hasattr(spawner, "get_last_report")
             else {"summary": {"candidate_count": len(local_candidates)}}
+        )
+        local_spawn_report = self._annotate_local_spawn_report(
+            local_spawn_report,
+            target_sanitization=target_sanitization,
         )
         autonomy_stage: dict[str, Any] = {"generated_count": 0}
         autonomy_candidates: list[dict[str, Any]] = []
@@ -234,6 +244,144 @@ class ResearchPlaneRunner:
             params["factory_cooldown_skip_count"] = factory_cooldown_skip_count
             params["factory_selected_count"] = factory_selected_count
             ai_candidate["params"] = params
+
+    @staticmethod
+    def _synthetic_local_spawn_targets(candidate: dict[str, Any]) -> list[str]:
+        research_task = dict(candidate.get("research_task") or {})
+        if not bool(research_task.get("synthetic_local_spawn")):
+            return []
+        target_symbols = research_task.get("target_symbols")
+        if not target_symbols:
+            target_symbols = candidate.get("target_symbols")
+        return [
+            str(code).strip()
+            for code in list(target_symbols or [])
+            if str(code).strip()
+        ]
+
+    @classmethod
+    async def _sanitize_local_spawn_targets(
+        cls,
+        candidates: list[dict[str, Any]],
+        db: Any,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        get_klines = getattr(db, "get_klines", None)
+        if not candidates or not inspect.iscoroutinefunction(get_klines):
+            return list(candidates or []), {
+                "enabled": False,
+                "checked_candidate_count": 0,
+                "pruned_candidate_count": 0,
+                "pruned_symbol_count": 0,
+                "insufficient_kline_codes": [],
+            }
+
+        unique_codes: list[str] = []
+        for candidate in list(candidates or []):
+            for code in cls._synthetic_local_spawn_targets(candidate):
+                if code not in unique_codes:
+                    unique_codes.append(code)
+
+        if not unique_codes:
+            return list(candidates or []), {
+                "enabled": True,
+                "checked_candidate_count": 0,
+                "pruned_candidate_count": 0,
+                "pruned_symbol_count": 0,
+                "insufficient_kline_codes": [],
+            }
+
+        async def _fetch_history_count(code: str) -> tuple[str, int]:
+            try:
+                klines = await get_klines(code, limit=60)
+            except Exception:
+                return code, 0
+            return code, len(list(klines or []))
+
+        history_counts = dict(await asyncio.gather(*[_fetch_history_count(code) for code in unique_codes]))
+        insufficient_codes = sorted(
+            code for code, count in history_counts.items()
+            if int(count or 0) < _GATE_1_MIN_KLINES
+        )
+        if not insufficient_codes:
+            return list(candidates or []), {
+                "enabled": True,
+                "checked_candidate_count": len(unique_codes),
+                "pruned_candidate_count": 0,
+                "pruned_symbol_count": 0,
+                "insufficient_kline_codes": [],
+            }
+
+        sanitized_candidates: list[dict[str, Any]] = []
+        pruned_candidate_count = 0
+        pruned_symbol_count = 0
+        for candidate in list(candidates or []):
+            target_symbols = cls._synthetic_local_spawn_targets(candidate)
+            if not target_symbols:
+                sanitized_candidates.append(candidate)
+                continue
+            kept_symbols = [
+                code for code in target_symbols
+                if int(history_counts.get(code) or 0) >= _GATE_1_MIN_KLINES
+            ]
+            if not kept_symbols or kept_symbols == target_symbols:
+                sanitized_candidates.append(candidate)
+                continue
+
+            pruned_candidate_count += 1
+            pruned_symbol_count += len(target_symbols) - len(kept_symbols)
+            item = dict(candidate or {})
+            params = dict(item.get("params") or {})
+            research_task = dict(item.get("research_task") or {})
+            explicit_pool = {"selection_mode": "explicit", "symbols": list(kept_symbols)}
+
+            research_task["target_symbols"] = list(kept_symbols)
+            research_task["stock_pool"] = explicit_pool
+            research_task["gate_1_representative_count"] = min(3, len(kept_symbols))
+            if research_task.get("target_symbols_signature") is not None:
+                research_task["target_symbols_signature"] = ",".join(kept_symbols)
+
+            params["target_symbols"] = list(kept_symbols)
+            params["requested_target_symbols"] = list(kept_symbols)
+            params["stock_pool"] = explicit_pool
+
+            item["research_task"] = research_task
+            item["requested_target_symbols"] = list(kept_symbols)
+            item["target_symbols"] = list(kept_symbols)
+            item["stock_pool"] = explicit_pool
+            item["params"] = params
+            sanitized_candidates.append(item)
+
+        return sanitized_candidates, {
+            "enabled": True,
+            "checked_candidate_count": len(unique_codes),
+            "pruned_candidate_count": pruned_candidate_count,
+            "pruned_symbol_count": pruned_symbol_count,
+            "insufficient_kline_codes": insufficient_codes,
+        }
+
+    @staticmethod
+    def _annotate_local_spawn_report(
+        report: dict[str, Any],
+        *,
+        target_sanitization: dict[str, Any],
+    ) -> dict[str, Any]:
+        annotated = dict(report or {})
+        summary = dict(annotated.get("summary") or {})
+        summary["target_symbol_sanitization_enabled"] = bool(target_sanitization.get("enabled"))
+        summary["target_symbol_sanitization_checked_candidate_count"] = int(
+            target_sanitization.get("checked_candidate_count") or 0
+        )
+        summary["target_symbol_sanitization_pruned_candidate_count"] = int(
+            target_sanitization.get("pruned_candidate_count") or 0
+        )
+        summary["target_symbol_sanitization_pruned_symbol_count"] = int(
+            target_sanitization.get("pruned_symbol_count") or 0
+        )
+        summary["target_symbol_sanitization_insufficient_kline_codes"] = list(
+            target_sanitization.get("insufficient_kline_codes") or []
+        )
+        annotated["summary"] = summary
+        return annotated
 
 
 __all__ = [

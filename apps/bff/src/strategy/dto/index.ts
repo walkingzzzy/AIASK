@@ -215,6 +215,7 @@ export class VectorHealthQueryDto {
 
 export class VectorCleanupDto {
   @IsOptional() @IsString() index_name?: string;
+  @IsOptional() @IsString() scope?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(200) keep_versions?: number;
   @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() dry_run?: boolean;
   @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() cleanup_hnsw?: boolean;

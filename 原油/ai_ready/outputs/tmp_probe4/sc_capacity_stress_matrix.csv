@@ -1,0 +1,11 @@
+strategy,capital,annualized_return,post_cost_sharpe,max_drawdown,win_rate,trade_count,capacity_limit_contracts,binding_constraint,participation_cap,margin_cap,max_contracts_cap,drawdown_cap
+trend,1000000,0.10492,0.784204,-0.299234,0.7,10,8,drawdown,14,11,22,8
+trend,5000000,0.050644,0.814788,-0.137811,0.7,10,14,participation,14,55,22,40
+trend,10000000,0.026975,0.797176,-0.077051,0.7,10,14,participation,14,110,22,81
+trend,30000000,0.009422,0.783428,-0.027881,0.7,10,14,participation,14,332,22,244
+trend,100000000,0.002876,0.778136,-0.008622,0.7,10,14,participation,14,1108,22,814
+spread,1000000,0.005075,0.286509,-0.02944,0.333333,3,2,margin,19,2,24,45
+spread,5000000,0.004834,0.24592,-0.03444,0.333333,3,11,margin,19,11,24,225
+spread,10000000,0.002962,0.270655,-0.018012,0.333333,3,19,participation,19,22,24,450
+spread,30000000,0.000993,0.269269,-0.006004,0.333333,3,19,participation,19,68,24,1350
+spread,100000000,0.000298,0.268779,-0.001801,0.333333,3,19,participation,19,228,24,4500

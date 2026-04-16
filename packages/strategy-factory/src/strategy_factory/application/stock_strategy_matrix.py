@@ -27,6 +27,8 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
 
     _MIN_HISTORY_BARS = 100
     _HISTORY_COUNT_CHUNK_SIZE = 400
+    _HIGH_CONFLICT_FAMILY_SHARE_CAP = 0.2
+    _HIGH_CONFLICT_FAMILY_ABS_CAP = 4
 
     def __init__(self) -> None:
         self.last_report: dict[str, Any] = {
@@ -173,13 +175,49 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
     @staticmethod
     def _default_failure_penalty_for_family(family: str, *, family_rank: int) -> float:
         normalized_family = str(family or "").strip().lower()
-        if normalized_family in {"momentum", "growth_factor", "volatility_breakout", "gap_fill"}:
+        if normalized_family == "mean_reversion_short":
+            base_penalty = 0.28
+        elif normalized_family in {"momentum", "growth_factor", "volatility_breakout", "gap_fill"}:
             base_penalty = 0.22
         elif normalized_family in {"quality_factor", "value_factor"}:
             base_penalty = 0.08
         else:
             base_penalty = 0.14
         return round(min(base_penalty + max(family_rank - 1, 0) * 0.03, 0.45), 4)
+
+    @classmethod
+    def _family_task_cap(cls, family: str, *, effective_task_budget: int) -> int | None:
+        normalized_family = str(family or "").strip().lower()
+        if normalized_family != "mean_reversion_short":
+            return None
+        dynamic_cap = int(math.ceil(max(1, int(effective_task_budget or 1)) * cls._HIGH_CONFLICT_FAMILY_SHARE_CAP))
+        return max(1, min(cls._HIGH_CONFLICT_FAMILY_ABS_CAP, dynamic_cap))
+
+    @classmethod
+    def _apply_family_pressure_caps(
+        cls,
+        tasks: list[dict[str, Any]],
+        *,
+        effective_task_budget: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        if not tasks:
+            return [], {}
+
+        kept: list[dict[str, Any]] = []
+        family_counts: dict[str, int] = {}
+        family_caps: dict[str, int] = {}
+        for raw_task in tasks:
+            task = dict(raw_task or {})
+            family = str(task.get("candidate_family") or "").strip().lower()
+            cap = cls._family_task_cap(family, effective_task_budget=effective_task_budget)
+            if cap is not None:
+                family_caps[family] = cap
+                if int(family_counts.get(family) or 0) >= cap:
+                    continue
+            kept.append(task)
+            if family:
+                family_counts[family] = family_counts.get(family, 0) + 1
+        return kept, family_caps
 
     @classmethod
     def _default_family_plans(
@@ -1063,6 +1101,15 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 planned_allocation_pass_counts[pass_key] = pass_count
 
         planned_tasks = self._interleave_tasks_by_family(planned_tasks)
+        planned_tasks, family_task_caps = self._apply_family_pressure_caps(
+            planned_tasks,
+            effective_task_budget=effective_task_budget,
+        )
+        planned_family_counts = {}
+        for task in planned_tasks:
+            family = str(task.get("candidate_family") or "").strip().lower()
+            if family:
+                planned_family_counts[family] = planned_family_counts.get(family, 0) + 1
         for plan_slot, task in enumerate(planned_tasks, 1):
             task["matrix_plan_slot"] = plan_slot
 
@@ -1195,6 +1242,7 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 "stock_coverage_ratio": stock_coverage_ratio,
                 "family_preference_order": family_preference_order,
                 "family_preference_source": family_preference_source,
+                "family_task_caps": family_task_caps,
                 "allocation_mode": (
                     "factor_research_stock_family_allocation"
                     if allocation_applied_count > 0

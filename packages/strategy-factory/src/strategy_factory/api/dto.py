@@ -81,6 +81,7 @@ class FactoryRunSummaryDTO:
 
     run_id: str
     trace_id: str
+    prediction_trace_id: str
     status: str
     started_at: str
     completed_at: Optional[str]
@@ -152,6 +153,13 @@ class FactoryRunSummaryDTO:
         submission_artifact = dict(
             (_normalize_governance_plane_detail(d).get("submission_artifact") or {})
         )
+        governance_plane = _normalize_governance_plane_detail(d)
+        prediction_trace_summary = dict(governance_plane.get("prediction_trace_summary") or {})
+        sample_prediction_trace_ids = [
+            str(item or "").strip()
+            for item in list(prediction_trace_summary.get("sample_trace_ids") or [])
+            if str(item or "").strip()
+        ]
         raw_stages = dict(d.get("stages") or {})
         submit_stage = (
             dict(raw_stages.get("submit") or {})
@@ -233,6 +241,16 @@ class FactoryRunSummaryDTO:
         return cls(
             run_id=str(d.get("run_id") or ""),
             trace_id=str(d.get("trace_id") or summary.get("trace_id") or ""),
+            prediction_trace_id=(
+                str(
+                    d.get("prediction_trace_id")
+                    or summary.get("prediction_trace_id")
+                    or (sample_prediction_trace_ids[0] if sample_prediction_trace_ids else "")
+                    or d.get("trace_id")
+                    or summary.get("trace_id")
+                    or ""
+                )
+            ),
             status=status,
             started_at=str(d.get("started_at") or ""),
             completed_at=d.get("completed_at"),
@@ -529,6 +547,7 @@ class FactoryRunSummaryDTO:
         result: dict[str, Any] = {
             "run_id": self.run_id,
             "trace_id": self.trace_id,
+            "prediction_trace_id": self.prediction_trace_id or self.trace_id,
             "status": self.status,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
@@ -644,9 +663,15 @@ class FactoryRunDetailDTO:
     evidence_artifact: dict[str, Any] = field(default_factory=dict)
     governance_plane: dict[str, Any] = field(default_factory=dict)
     gate_artifact: dict[str, Any] = field(default_factory=dict)
+    gate_artifact_v2: dict[str, Any] = field(default_factory=dict)
     dedup_artifact: dict[str, Any] = field(default_factory=dict)
     submission_artifact: dict[str, Any] = field(default_factory=dict)
     governance_evidence_artifact: dict[str, Any] = field(default_factory=dict)
+    gate_a: dict[str, Any] = field(default_factory=dict)
+    gate_b: dict[str, Any] = field(default_factory=dict)
+    gate_c: dict[str, Any] = field(default_factory=dict)
+    protocol_versions: dict[str, Any] = field(default_factory=dict)
+    prediction_trace_summary: dict[str, Any] = field(default_factory=dict)
     feedback_summary: dict[str, Any] = field(default_factory=dict)
     incubation_summary: dict[str, Any] = field(default_factory=dict)
     live_ready_summary: dict[str, Any] = field(default_factory=dict)
@@ -681,9 +706,15 @@ class FactoryRunDetailDTO:
             evidence_artifact=dict(research_plane.get("evidence_artifact") or {}),
             governance_plane=governance_plane,
             gate_artifact=dict(governance_plane.get("gate_artifact") or {}),
+            gate_artifact_v2=dict(governance_plane.get("gate_artifact_v2") or {}),
             dedup_artifact=dict(governance_plane.get("dedup_artifact") or {}),
             submission_artifact=dict(governance_plane.get("submission_artifact") or {}),
             governance_evidence_artifact=dict(governance_plane.get("evidence_artifact") or {}),
+            gate_a=dict(governance_plane.get("gate_a") or {}),
+            gate_b=dict(governance_plane.get("gate_b") or {}),
+            gate_c=dict(governance_plane.get("gate_c") or {}),
+            protocol_versions=dict(governance_plane.get("protocol_versions") or {}),
+            prediction_trace_summary=dict(governance_plane.get("prediction_trace_summary") or {}),
             feedback_summary=dict(raw_summary.get("feedback_summary") or {}),
             incubation_summary=dict(raw_summary.get("incubation_summary") or {}),
             live_ready_summary=dict(raw_summary.get("live_ready_summary") or {}),
@@ -703,9 +734,15 @@ class FactoryRunDetailDTO:
             "evidence_artifact": self.evidence_artifact,
             "governance_plane": self.governance_plane,
             "gate_artifact": self.gate_artifact,
+            "gate_artifact_v2": self.gate_artifact_v2,
             "dedup_artifact": self.dedup_artifact,
             "submission_artifact": self.submission_artifact,
             "governance_evidence_artifact": self.governance_evidence_artifact,
+            "gate_a": self.gate_a,
+            "gate_b": self.gate_b,
+            "gate_c": self.gate_c,
+            "protocol_versions": self.protocol_versions,
+            "prediction_trace_summary": self.prediction_trace_summary,
             "feedback_summary": self.feedback_summary,
             "incubation_summary": self.incubation_summary,
             "live_ready_summary": self.live_ready_summary,
@@ -749,7 +786,15 @@ class FactoryStatusDTO:
     confidence_diagnostics_enabled: bool = False
     execution_audit_enabled: bool = False
     quality_ui_v2_enabled: bool = False
-    feature_flags: dict[str, bool] = field(default_factory=dict)
+    research_protocol_v2_enabled: bool = False
+    gate_model_v2_enabled: bool = False
+    trace_ledger_v2_enabled: bool = False
+    feedback_v2_enabled: bool = False
+    trace_ledger_v2_implemented: bool = False
+    governance_gate_report_v2_implemented: bool = False
+    execution_audit_entity_chain_available: bool = False
+    spec_completeness_mode: str = "warn"
+    feature_flags: dict[str, Any] = field(default_factory=dict)
     last_stock_family_allocation_count: int = 0
     last_family_preference_order: list[str] = field(default_factory=list)
     last_family_preference_source_mode: Optional[str] = None
@@ -823,6 +868,26 @@ class FactoryStatusDTO:
                 if d.get("quality_ui_v2_enabled") is not None
                 else dict(d.get("feature_flags") or {}).get("quality_ui_v2_enabled")
             ),
+            "research_protocol_v2_enabled": bool(
+                d.get("research_protocol_v2_enabled")
+                if d.get("research_protocol_v2_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("research_protocol_v2_enabled")
+            ),
+            "gate_model_v2_enabled": bool(
+                d.get("gate_model_v2_enabled")
+                if d.get("gate_model_v2_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("gate_model_v2_enabled")
+            ),
+            "trace_ledger_v2_enabled": bool(
+                d.get("trace_ledger_v2_enabled")
+                if d.get("trace_ledger_v2_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("trace_ledger_v2_enabled")
+            ),
+            "feedback_v2_enabled": bool(
+                d.get("feedback_v2_enabled")
+                if d.get("feedback_v2_enabled") is not None
+                else dict(d.get("feature_flags") or {}).get("feedback_v2_enabled")
+            ),
         }
         return cls(
             running=bool(d.get("running")),
@@ -842,6 +907,21 @@ class FactoryStatusDTO:
             confidence_diagnostics_enabled=feature_flags["confidence_diagnostics_enabled"],
             execution_audit_enabled=feature_flags["execution_audit_enabled"],
             quality_ui_v2_enabled=feature_flags["quality_ui_v2_enabled"],
+            research_protocol_v2_enabled=feature_flags["research_protocol_v2_enabled"],
+            gate_model_v2_enabled=feature_flags["gate_model_v2_enabled"],
+            trace_ledger_v2_enabled=feature_flags["trace_ledger_v2_enabled"],
+            feedback_v2_enabled=feature_flags["feedback_v2_enabled"],
+            trace_ledger_v2_implemented=bool(d.get("trace_ledger_v2_implemented")),
+            governance_gate_report_v2_implemented=bool(d.get("governance_gate_report_v2_implemented")),
+            execution_audit_entity_chain_available=bool(d.get("execution_audit_entity_chain_available")),
+            spec_completeness_mode=(
+                str(
+                    d.get("spec_completeness_mode")
+                    or dict(d.get("feature_flags") or {}).get("spec_completeness_mode")
+                    or "warn"
+                ).strip()
+                or "warn"
+            ),
             feature_flags=feature_flags,
             last_stock_family_allocation_count=int(
                 last_summary.get("stock_family_allocation_count") or 0
@@ -1097,16 +1177,29 @@ class FactoryStatusDTO:
             "confidence_diagnostics_enabled": self.confidence_diagnostics_enabled,
             "execution_audit_enabled": self.execution_audit_enabled,
             "quality_ui_v2_enabled": self.quality_ui_v2_enabled,
+            "research_protocol_v2_enabled": self.research_protocol_v2_enabled,
+            "gate_model_v2_enabled": self.gate_model_v2_enabled,
+            "trace_ledger_v2_enabled": self.trace_ledger_v2_enabled,
+            "feedback_v2_enabled": self.feedback_v2_enabled,
+            "trace_ledger_v2_implemented": self.trace_ledger_v2_implemented,
+            "governance_gate_report_v2_implemented": self.governance_gate_report_v2_implemented,
+            "execution_audit_entity_chain_available": self.execution_audit_entity_chain_available,
+            "spec_completeness_mode": self.spec_completeness_mode,
             "feature_flags": {
                 "high_confidence_enabled": self.high_confidence_enabled,
                 "evidence_contract_enabled": self.evidence_contract_enabled,
                 "confidence_diagnostics_enabled": self.confidence_diagnostics_enabled,
                 "execution_audit_enabled": self.execution_audit_enabled,
                 "quality_ui_v2_enabled": self.quality_ui_v2_enabled,
+                "research_protocol_v2_enabled": self.research_protocol_v2_enabled,
+                "gate_model_v2_enabled": self.gate_model_v2_enabled,
+                "trace_ledger_v2_enabled": self.trace_ledger_v2_enabled,
+                "feedback_v2_enabled": self.feedback_v2_enabled,
+                "spec_completeness_mode": self.spec_completeness_mode,
                 **{
                     str(key): bool(value)
                     for key, value in dict(self.feature_flags).items()
-                    if str(key).strip()
+                    if str(key).strip() and not isinstance(value, str)
                 },
             },
             "last_stock_family_allocation_count": self.last_stock_family_allocation_count,
@@ -1224,6 +1317,7 @@ def _normalize_governance_plane_detail(data: dict[str, Any]) -> dict[str, Any]:
         or {}
     )
     return build_governance_plane_artifact(
+        candidates=list(raw.get("candidates") or []),
         quality_gate_report=quality_gate_report,
         backtest_report=backtest_report,
         dedup_report=dedup_report,

@@ -1,0 +1,536 @@
+{
+  "strategy_context": {
+    "adapter_name": "futures_calendar_research_adapter",
+    "underlying": "SC",
+    "data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+    "window": {
+      "start": "2018-07-26",
+      "end": "2025-02-19"
+    },
+    "memo_summary": "# 原油跨月价差交易备忘\n\n## 研究目标\n通过对历史行情的分析找到规律从而找到合适的交易品种\n\n## 选品原则\n- 有较长的历史行情或可以借鉴的相关性高的品种\n- 有比较明确的“规律”如下：\n- 比较稳定的生贴水结构：排除一些季节性品种、交割不连续合约，这类品种不是不能做而是要更多的考虑强弱月的关系。\n- 比较明确的价格与价差间关系：例如行情上涨、下跌时价差波动的方向和幅度\n- 对时间的理解：例如ec交易对时间的把握及交割时交割对期现价差的影响等，如股指有分红月等一些对价差产生一些除行情波动外的一些方向性的影响\n\n## SC 案例说明\n![SC case figure](assets/crude_oil_strategy_memo/figure_02.jpeg)\n\n- 上图中，红色线为sc主力连、其他线依次为sc1-2、sc2-3...这里的1、2不是月份而是第一合约-第二合约，那么每个月都会有sc2-3变sc1-2，sc3-4变sc2-3的过程，这么显示与我们日常交易的价差不同，是为了更好的表现趋势和升贴水的变化。\n\n### 图中观察\n- 单边价格变化>价差变化且同向\n- Sc1-2>Sc2-3>Sc3-4...且同向\n- Sc1-2（蓝线）我们从图中看到的价格波动在每一次月份变更时的波动是由合约转换导致，24次换月统计中有17次由贴水转升水，可以中中找到的规律：在没有趋势行情下越靠近交割升水越明显，但升水幅度有限。\n- Sc1-2（蓝线）随单边价格上涨时贴水幅度扩大，且贴水幅度远大于上面所讲的升水幅度变化。\n- 由上面几点我们可以看出日常交易，喜欢卖近买远的原因是因为回归次数多，但一旦出现趋势上涨行情时风险很大。\n- 利用上面的特征把握交易机会的选择，收益来源应该从趋势和波动两方面考虑，并制定相应的交易策略\n\n## 交易策略\n### 趋势策略\n- 优先捕捉上涨趋势，可",
+    "roll_rule_summary": "# SC 价差数据说明与换月规则\n\n## 换月规则\n- 到期换月， 交易日期保证1个月。\n- 所以作为第一个sc的交易月份1809选取20180726为计算的首日\n\n## 数据口径\n- 除去开盘前3分钟和收盘前3份钟的 1分钟盘口的买卖中间价，每天取平均数。\n\n## 图表说明\n- x轴为19年-2025年，实际时间为20180726-20250219\n- y轴为价差， 其中颜色用于区分各个阶段1-2的价差\n\n## Excel 字段说明\n- 按月份划分工作表：`1-2` 代表第 1 合约与第 2 合约的价差，`all` 为全量汇总。\n\n```text\ntrading_date_x, Cont01, Price01, 1-2, 2-3, 3-4, 4-5, 5-6, 6-7, 7-8, 8-9, 9-10, 10-11, 11-12\n```\n\n## AI 调用提示\n- 先检索本说明文档，再联动 `tables/timeseries/` 与 `tables/statistics/` 下的 CSV，可避免误解字段口径。\n- 若进入 `market_doc_chunks`，建议 `doc_typ",
+    "strategies": [
+      {
+        "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p05",
+        "name": "SC Trend Carry M4",
+        "family": "trend",
+        "instrument_profile": {
+          "asset_class": "futures",
+          "underlying": "SC",
+          "curve_legs": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 4
+            }
+          ],
+          "roll_rule": {
+            "rule_type": "constant_maturity_roll",
+            "exit_before_front_delivery_days": 3,
+            "front_contract_column": "contract_01"
+          },
+          "annual_volatility_realized_252d": 0.290749,
+          "annual_volatility": 0.290749,
+          "atr14_pct_realized": 0.012762,
+          "atr14_pct": 0.012762,
+          "gap_p95_realized": 0.037485,
+          "gap_p95": 0.037485,
+          "intraday_range_p90": 0.02813,
+          "trend_efficiency_60d_realized": 0.148574,
+          "trend_efficiency_60d": 0.148574,
+          "turnover_median": 1.0,
+          "volume_ratio_p80": 1.0,
+          "volume_ratio_p90": 1.0,
+          "turnover_rate_p80": 1.0,
+          "turnover_rate_p90": 1.0,
+          "measurement_source": "sc_calendar_research_adapter",
+          "measurement_sources": {
+            "annual_volatility_realized_252d": "research_adapter",
+            "atr14_pct_realized": "research_adapter",
+            "gap_p95_realized": "research_adapter",
+            "intraday_range_p90": "research_adapter",
+            "trend_efficiency_60d_realized": "research_adapter",
+            "volume_ratio_p80": "research_adapter_proxy",
+            "volume_ratio_p90": "research_adapter_proxy",
+            "turnover_rate_p80": "research_adapter_proxy",
+            "turnover_rate_p90": "research_adapter_proxy"
+          },
+          "measured_profile_complete": true,
+          "board_bucket": "futures",
+          "symbol": "SC"
+        },
+        "parameters": {
+          "leg_month": 4,
+          "carry_threshold": 1.0,
+          "volatility_cap": 0.03,
+          "price_to_ma60_cap": 1.12,
+          "stop_loss_pct": 0.05,
+          "near_premium_floor": -2.0,
+          "exit_premium_floor": -3.0,
+          "ma_fast_window": 20,
+          "ma_slow_window": 60,
+          "slope_window": 10
+        },
+        "summary": {
+          "annualized_return": 0.10492,
+          "total_return": 0.875966,
+          "sharpe_ratio": 0.836835,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "trade_density": 1.585903,
+          "forward_sharpe_5d": 4.855949,
+          "alpha_decay": 0.0,
+          "ending_equity": 1875966.259107
+        },
+        "execution_assumptions": {
+          "initial_capital": 1000000,
+          "commission_rate": 5e-05,
+          "slippage_bps": 3.5,
+          "slippage_model": "fixed_plus_capacity_scaled",
+          "market_impact_bps": 1.8,
+          "tradability_filter": true,
+          "capacity_participation_rate": 0.1,
+          "margin_rate": 0.15,
+          "contract_multiplier": 1000,
+          "liquidity_bucket": "far_month_light",
+          "max_contracts_per_rebalance": 22,
+          "market_ruleset": "cn_futures",
+          "sell_tax_rate": 0.0,
+          "min_trade_lot": 1,
+          "t_plus_one": false
+        },
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_pct": 0.05,
+            "time_stop_days": 25,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        }
+      },
+      {
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+        "name": "SC Spread 1-2",
+        "family": "spread",
+        "instrument_profile": {
+          "asset_class": "futures",
+          "underlying": "SC",
+          "curve_legs": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 1
+            },
+            {
+              "side": "short",
+              "leg_type": "month_offset",
+              "month": 2
+            }
+          ],
+          "roll_rule": {
+            "rule_type": "calendar_spread_roll",
+            "exit_before_front_delivery_days": 3,
+            "front_contract_column": "contract_01"
+          },
+          "annual_volatility_realized_252d": NaN,
+          "annual_volatility": NaN,
+          "atr14_pct_realized": 1.037783,
+          "atr14_pct": 1.037783,
+          "gap_p95_realized": 3.184778,
+          "gap_p95": 3.184778,
+          "intraday_range_p90": 1.641534,
+          "trend_efficiency_60d_realized": 0.199337,
+          "trend_efficiency_60d": 0.199337,
+          "turnover_median": 1.0,
+          "volume_ratio_p80": 1.0,
+          "volume_ratio_p90": 1.0,
+          "turnover_rate_p80": 1.0,
+          "turnover_rate_p90": 1.0,
+          "measurement_source": "sc_calendar_research_adapter",
+          "measurement_sources": {
+            "annual_volatility_realized_252d": "research_adapter",
+            "atr14_pct_realized": "research_adapter",
+            "gap_p95_realized": "research_adapter",
+            "intraday_range_p90": "research_adapter",
+            "trend_efficiency_60d_realized": "research_adapter",
+            "volume_ratio_p80": "research_adapter_proxy",
+            "volume_ratio_p90": "research_adapter_proxy",
+            "turnover_rate_p80": "research_adapter_proxy",
+            "turnover_rate_p90": "research_adapter_proxy"
+          },
+          "measured_profile_complete": true,
+          "board_bucket": "futures",
+          "symbol": "SC"
+        },
+        "parameters": {
+          "leg_name": "1_2",
+          "entry_z_low": -0.75,
+          "entry_z_high": 0.25,
+          "exit_z": 1.25,
+          "stop_move": -3.0,
+          "slope_floor": 0.0,
+          "max_holding_days": 30,
+          "require_price_trend": true,
+          "z_window": 40,
+          "near_premium_floor": -2.0,
+          "exit_premium_floor": -3.0
+        },
+        "summary": {
+          "annualized_return": 0.005075,
+          "total_return": 0.032437,
+          "sharpe_ratio": 0.577411,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "trade_density": 0.475771,
+          "forward_sharpe_5d": 5.657207,
+          "alpha_decay": 0.0,
+          "ending_equity": 1032437.297211
+        },
+        "execution_assumptions": {
+          "initial_capital": 1000000,
+          "commission_rate": 5e-05,
+          "slippage_bps": 3.5,
+          "slippage_model": "fixed_plus_capacity_scaled",
+          "market_impact_bps": 1.8,
+          "tradability_filter": true,
+          "capacity_participation_rate": 0.1,
+          "margin_rate": 0.15,
+          "contract_multiplier": 1000,
+          "liquidity_bucket": "near_month_high",
+          "max_contracts_per_rebalance": 24,
+          "market_ruleset": "cn_futures",
+          "sell_tax_rate": 0.0,
+          "min_trade_lot": 1,
+          "t_plus_one": false
+        },
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_abs_move": 3.0,
+            "time_stop_days": 30,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        }
+      }
+    ]
+  },
+  "backtest_summary": {
+    "leaderboard": [
+      {
+        "family": "trend",
+        "rank": 1,
+        "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p05",
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "trend",
+        "rank": 2,
+        "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p07",
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "trend",
+        "rank": 3,
+        "strategy_code": "trend_m4_carry1p0_vol0p04_stop0p05",
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "trend",
+        "rank": 4,
+        "strategy_code": "trend_m4_carry1p0_vol0p04_stop0p07",
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "trend",
+        "rank": 5,
+        "strategy_code": "trend_m4_carry1p0_vol0p05_stop0p05",
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "spread",
+        "rank": 1,
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "trade_count": 3,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "spread",
+        "rank": 2,
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold45_trend",
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "trade_count": 3,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "spread",
+        "rank": 3,
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "trade_count": 3,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "spread",
+        "rank": 4,
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold45_trend",
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "trade_count": 3,
+        "alpha_decay": 0.0
+      },
+      {
+        "family": "spread",
+        "rank": 5,
+        "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop5p0_hold30_trend",
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "trade_count": 3,
+        "alpha_decay": 0.0
+      }
+    ],
+    "selection_rule": "先筛 annualized_return>10% 且 trade_count>=6；若无候选达标，则回退为按 annualized_return / post_cost_sharpe / win_rate / drawdown / trade_count 选最优候选。"
+  },
+  "regime_panel": {
+    "trend_m4_carry1p0_vol0p03_stop0p05": {
+      "overall": {
+        "annualized_return": 0.10492,
+        "sharpe_ratio": 0.836835,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "win_rate": 0.7,
+        "trade_count": 10
+      },
+      "backwardation": {
+        "annualized_return": 0.105486,
+        "sharpe_ratio": 0.794184,
+        "max_drawdown": -0.299234,
+        "trade_count": 10,
+        "win_rate": 0.7
+      },
+      "contango_or_flat": {
+        "annualized_return": -0.000512,
+        "sharpe_ratio": -0.016952,
+        "max_drawdown": -0.044961,
+        "trade_count": 0,
+        "win_rate": 0.0
+      }
+    },
+    "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend": {
+      "overall": {
+        "annualized_return": 0.005075,
+        "sharpe_ratio": 0.577411,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "win_rate": 0.333333,
+        "trade_count": 3
+      },
+      "backwardation": {
+        "annualized_return": 0.00728,
+        "sharpe_ratio": 0.419041,
+        "max_drawdown": -0.015938,
+        "trade_count": 3,
+        "win_rate": 0.333333
+      },
+      "contango_or_flat": {
+        "annualized_return": -0.002189,
+        "sharpe_ratio": -0.485175,
+        "max_drawdown": -0.01372,
+        "trade_count": 0,
+        "win_rate": 0.0
+      }
+    }
+  },
+  "capacity_panel": {
+    "trend_m4_carry1p0_vol0p03_stop0p05": [
+      {
+        "capital": 1000000,
+        "annualized_return": 0.10492,
+        "post_cost_sharpe": 0.784204,
+        "max_drawdown": -0.299234,
+        "win_rate": 0.7,
+        "trade_count": 10,
+        "capacity_limit_contracts": 8,
+        "binding_constraint": "drawdown",
+        "participation_cap": 14,
+        "margin_cap": 11,
+        "max_contracts_cap": 22,
+        "drawdown_cap": 8
+      },
+      {
+        "capital": 5000000,
+        "annualized_return": 0.050644,
+        "post_cost_sharpe": 0.814788,
+        "max_drawdown": -0.137811,
+        "win_rate": 0.7,
+        "trade_count": 10,
+        "capacity_limit_contracts": 14,
+        "binding_constraint": "participation",
+        "participation_cap": 14,
+        "margin_cap": 55,
+        "max_contracts_cap": 22,
+        "drawdown_cap": 40
+      },
+      {
+        "capital": 10000000,
+        "annualized_return": 0.026975,
+        "post_cost_sharpe": 0.797176,
+        "max_drawdown": -0.077051,
+        "win_rate": 0.7,
+        "trade_count": 10,
+        "capacity_limit_contracts": 14,
+        "binding_constraint": "participation",
+        "participation_cap": 14,
+        "margin_cap": 110,
+        "max_contracts_cap": 22,
+        "drawdown_cap": 81
+      },
+      {
+        "capital": 30000000,
+        "annualized_return": 0.009422,
+        "post_cost_sharpe": 0.783428,
+        "max_drawdown": -0.027881,
+        "win_rate": 0.7,
+        "trade_count": 10,
+        "capacity_limit_contracts": 14,
+        "binding_constraint": "participation",
+        "participation_cap": 14,
+        "margin_cap": 332,
+        "max_contracts_cap": 22,
+        "drawdown_cap": 244
+      },
+      {
+        "capital": 100000000,
+        "annualized_return": 0.002876,
+        "post_cost_sharpe": 0.778136,
+        "max_drawdown": -0.008622,
+        "win_rate": 0.7,
+        "trade_count": 10,
+        "capacity_limit_contracts": 14,
+        "binding_constraint": "participation",
+        "participation_cap": 14,
+        "margin_cap": 1108,
+        "max_contracts_cap": 22,
+        "drawdown_cap": 814
+      }
+    ],
+    "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend": [
+      {
+        "capital": 1000000,
+        "annualized_return": 0.005075,
+        "post_cost_sharpe": 0.286509,
+        "max_drawdown": -0.02944,
+        "win_rate": 0.333333,
+        "trade_count": 3,
+        "capacity_limit_contracts": 2,
+        "binding_constraint": "margin",
+        "participation_cap": 19,
+        "margin_cap": 2,
+        "max_contracts_cap": 24,
+        "drawdown_cap": 45
+      },
+      {
+        "capital": 5000000,
+        "annualized_return": 0.004834,
+        "post_cost_sharpe": 0.24592,
+        "max_drawdown": -0.03444,
+        "win_rate": 0.333333,
+        "trade_count": 3,
+        "capacity_limit_contracts": 11,
+        "binding_constraint": "margin",
+        "participation_cap": 19,
+        "margin_cap": 11,
+        "max_contracts_cap": 24,
+        "drawdown_cap": 225
+      },
+      {
+        "capital": 10000000,
+        "annualized_return": 0.002962,
+        "post_cost_sharpe": 0.270655,
+        "max_drawdown": -0.018012,
+        "win_rate": 0.333333,
+        "trade_count": 3,
+        "capacity_limit_contracts": 19,
+        "binding_constraint": "participation",
+        "participation_cap": 19,
+        "margin_cap": 22,
+        "max_contracts_cap": 24,
+        "drawdown_cap": 450
+      },
+      {
+        "capital": 30000000,
+        "annualized_return": 0.000993,
+        "post_cost_sharpe": 0.269269,
+        "max_drawdown": -0.006004,
+        "win_rate": 0.333333,
+        "trade_count": 3,
+        "capacity_limit_contracts": 19,
+        "binding_constraint": "participation",
+        "participation_cap": 19,
+        "margin_cap": 68,
+        "max_contracts_cap": 24,
+        "drawdown_cap": 1350
+      },
+      {
+        "capital": 100000000,
+        "annualized_return": 0.000298,
+        "post_cost_sharpe": 0.268779,
+        "max_drawdown": -0.001801,
+        "win_rate": 0.333333,
+        "trade_count": 3,
+        "capacity_limit_contracts": 19,
+        "binding_constraint": "participation",
+        "participation_cap": 19,
+        "margin_cap": 228,
+        "max_contracts_cap": 24,
+        "drawdown_cap": 4500
+      }
+    ]
+  },
+  "generalization_seed": {
+    "logic_abstraction": [
+      "稳定 backwardation + 近端不出现极端升水时，远月 carry 与趋势延续可以共振。",
+      "spread z-score 回落但曲线单调性未破坏时，买近抛远更适合作为主交易方向。",
+      "容量评估必须把 far-month 流动性折扣、gross margin 与交割保护同时纳入。"
+    ],
+    "failure_modes": [
+      "现货持续弱势导致近端异常升水，期限结构反转。",
+      "极端行情下单边趋势主导，短 spread 方向风险急剧放大。",
+      "远月流动性恶化使得成本和回撤同步恶化。"
+    ]
+  }
+}

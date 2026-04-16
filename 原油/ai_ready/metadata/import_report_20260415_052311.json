@@ -1,0 +1,23 @@
+{
+  "mode": "dry_run",
+  "plan": {
+    "pack_dir": "/Users/mac/Desktop/股票/原油/ai_ready",
+    "asset_code": "SC",
+    "asset_name": "原油",
+    "document_count": 7,
+    "chunk_count": 17,
+    "dataset_count": 18,
+    "doc_type_counts": {
+      "research": 7
+    },
+    "doc_without_chunks": [],
+    "manifest_generated_at": "2026-04-15T13:04:53"
+  },
+  "documents_to_import": 7,
+  "chunks_to_import": 17,
+  "datasets_available": 18,
+  "embed_requested": false,
+  "vector_version": null,
+  "pack_dir": "/Users/mac/Desktop/股票/原油/ai_ready",
+  "generated_at": "2026-04-15T05:23:11.971057+00:00"
+}

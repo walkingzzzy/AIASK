@@ -6,6 +6,8 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ..vector_collection_scope import LEGACY_MARKET_DOC_COLLECTION, normalize_profile_type, resolve_vector_collection_name
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -212,9 +214,399 @@ def _build_bucket_layout(
         "metadata": {
             "skipped_profiles": skipped,
             "dominant_dim": dominant_dim,
+            "vector_dim_counts": {str(key): int(value) for key, value in sorted(dim_counts.items())},
             "cluster_sizes": {_bucket_label(idx): len(members) for idx, members in enumerate(bucket_members)},
         },
     }, items
+
+
+async def audit_vector_collection_quality(
+    db,
+    *,
+    collection_name: str,
+    profile_type: str | None = None,
+    profile_version: str | None = None,
+    index_version: str | None = None,
+    expected_profile_count: int | None = None,
+    expect_active: bool = False,
+) -> dict[str, Any]:
+    resolved_collection = resolve_vector_collection_name(collection_name, profile_type)
+    resolved_profile_type = normalize_profile_type(profile_type)
+    resolved_profile_version = str(profile_version or "").strip() or None
+    resolved_index_version = str(index_version or "").strip() or None
+
+    profile_rows_count = 0
+    index_item_rows_count = 0
+    profile_store_missing_count: int | None = None
+    index_item_store_missing_count: int | None = None
+    profile_dim_mismatch_count = 0
+    index_item_dim_mismatch_count = 0
+    active_snapshot_count = 0
+    profile_types: list[str] = []
+    index_item_profile_types: list[str] = []
+    snapshot_profile_types: list[str] = []
+    profile_vector_dims: list[int] = []
+    index_item_vector_dims: list[int] = []
+    snapshot_vector_dims: list[int] = []
+
+    if hasattr(db, "acquire"):
+        try:
+            async with db.acquire() as conn:
+                profile_where = ["collection_name = $1"]
+                profile_args: list[Any] = [resolved_collection]
+                profile_idx = 2
+                if resolved_profile_version:
+                    profile_where.append(f"version = ${profile_idx}")
+                    profile_args.append(resolved_profile_version)
+                    profile_idx += 1
+                if resolved_profile_type:
+                    profile_where.append(f"COALESCE(profile_type, '') = ${profile_idx}")
+                    profile_args.append(resolved_profile_type)
+                    profile_idx += 1
+                profile_where_sql = " AND ".join(profile_where)
+
+                item_where = ["collection_name = $1"]
+                item_args: list[Any] = [resolved_collection]
+                item_idx = 2
+                if resolved_index_version:
+                    item_where.append(f"index_version = ${item_idx}")
+                    item_args.append(resolved_index_version)
+                    item_idx += 1
+                if resolved_profile_type:
+                    item_where.append(f"COALESCE(profile_type, '') = ${item_idx}")
+                    item_args.append(resolved_profile_type)
+                    item_idx += 1
+                item_where_sql = " AND ".join(item_where)
+
+                snapshot_where = ["collection_name = $1"]
+                snapshot_args: list[Any] = [resolved_collection]
+                snapshot_idx = 2
+                if resolved_index_version:
+                    snapshot_where.append(f"index_version = ${snapshot_idx}")
+                    snapshot_args.append(resolved_index_version)
+                    snapshot_idx += 1
+                if resolved_profile_type:
+                    snapshot_where.append(f"COALESCE(profile_type, '') = ${snapshot_idx}")
+                    snapshot_args.append(resolved_profile_type)
+                    snapshot_idx += 1
+                snapshot_where_sql = " AND ".join(snapshot_where)
+                active_scope_where = ["collection_name = $1"]
+                active_scope_args: list[Any] = [resolved_collection]
+                active_scope_idx = 2
+                if resolved_profile_type:
+                    active_scope_where.append(f"COALESCE(profile_type, '') = ${active_scope_idx}")
+                    active_scope_args.append(resolved_profile_type)
+                    active_scope_idx += 1
+                active_scope_where_sql = " AND ".join(active_scope_where)
+
+                profile_rows_count = int(
+                    await conn.fetchval(
+                        f"SELECT COUNT(*) FROM vector_profiles WHERE {profile_where_sql}",
+                        *profile_args,
+                    )
+                    or 0
+                )
+                index_item_rows_count = int(
+                    await conn.fetchval(
+                        f"SELECT COUNT(*) FROM vector_index_items WHERE {item_where_sql}",
+                        *item_args,
+                    )
+                    or 0
+                )
+                profile_dim_mismatch_count = int(
+                    await conn.fetchval(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM vector_profiles
+                        WHERE {profile_where_sql}
+                          AND vector_dim <> jsonb_array_length(embedding_json)
+                        """,
+                        *profile_args,
+                    )
+                    or 0
+                )
+                index_item_dim_mismatch_count = int(
+                    await conn.fetchval(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM vector_index_items
+                        WHERE {item_where_sql}
+                          AND vector_dim <> jsonb_array_length(embedding_json)
+                        """,
+                        *item_args,
+                    )
+                    or 0
+                )
+                active_snapshot_count = int(
+                    await conn.fetchval(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM vector_index_snapshots
+                        WHERE {active_scope_where_sql}
+                          AND status = 'active'
+                        """,
+                        *active_scope_args,
+                    )
+                    or 0
+                )
+
+                profile_type_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT COALESCE(profile_type, '') AS profile_type
+                    FROM vector_profiles
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR version = $2)
+                    ORDER BY COALESCE(profile_type, '')
+                    """,
+                    resolved_collection,
+                    resolved_profile_version,
+                )
+                item_type_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT COALESCE(profile_type, '') AS profile_type
+                    FROM vector_index_items
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR index_version = $2)
+                    ORDER BY COALESCE(profile_type, '')
+                    """,
+                    resolved_collection,
+                    resolved_index_version,
+                )
+                snapshot_type_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT COALESCE(profile_type, '') AS profile_type
+                    FROM vector_index_snapshots
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR index_version = $2)
+                    ORDER BY COALESCE(profile_type, '')
+                    """,
+                    resolved_collection,
+                    resolved_index_version,
+                )
+                profile_dim_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT vector_dim
+                    FROM vector_profiles
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR version = $2)
+                      AND ($3::text IS NULL OR COALESCE(profile_type, '') = $3)
+                    ORDER BY vector_dim
+                    """,
+                    resolved_collection,
+                    resolved_profile_version,
+                    resolved_profile_type,
+                )
+                item_dim_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT vector_dim
+                    FROM vector_index_items
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR index_version = $2)
+                      AND ($3::text IS NULL OR COALESCE(profile_type, '') = $3)
+                    ORDER BY vector_dim
+                    """,
+                    resolved_collection,
+                    resolved_index_version,
+                    resolved_profile_type,
+                )
+                snapshot_dim_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT vector_dim
+                    FROM vector_index_snapshots
+                    WHERE collection_name = $1
+                      AND ($2::text IS NULL OR index_version = $2)
+                      AND ($3::text IS NULL OR COALESCE(profile_type, '') = $3)
+                    ORDER BY vector_dim
+                    """,
+                    resolved_collection,
+                    resolved_index_version,
+                    resolved_profile_type,
+                )
+                profile_types = [str(dict(row).get("profile_type") or "") for row in profile_type_rows]
+                index_item_profile_types = [str(dict(row).get("profile_type") or "") for row in item_type_rows]
+                snapshot_profile_types = [str(dict(row).get("profile_type") or "") for row in snapshot_type_rows]
+                profile_vector_dims = [int(dict(row).get("vector_dim") or 0) for row in profile_dim_rows if int(dict(row).get("vector_dim") or 0) > 0]
+                index_item_vector_dims = [int(dict(row).get("vector_dim") or 0) for row in item_dim_rows if int(dict(row).get("vector_dim") or 0) > 0]
+                snapshot_vector_dims = [int(dict(row).get("vector_dim") or 0) for row in snapshot_dim_rows if int(dict(row).get("vector_dim") or 0) > 0]
+
+                if getattr(db, "supports_pgvector", lambda: False)():
+                    profile_store_where_sql = (
+                        profile_where_sql
+                        .replace("collection_name", "p.collection_name")
+                        .replace("version", "p.version")
+                        .replace("COALESCE(profile_type, '')", "COALESCE(p.profile_type, '')")
+                    )
+                    item_store_where_sql = (
+                        item_where_sql
+                        .replace("collection_name", "i.collection_name")
+                        .replace("index_version", "i.index_version")
+                        .replace("COALESCE(profile_type, '')", "COALESCE(i.profile_type, '')")
+                    )
+                    profile_store_missing_count = int(
+                        await conn.fetchval(
+                            f"""
+                            SELECT COUNT(*)
+                            FROM vector_profiles p
+                            LEFT JOIN vector_profile_store ps ON ps.profile_id = p.id
+                            WHERE {profile_store_where_sql}
+                              AND ps.profile_id IS NULL
+                            """,
+                            *profile_args,
+                        )
+                        or 0
+                    )
+                    index_item_store_missing_count = int(
+                        await conn.fetchval(
+                            f"""
+                            SELECT COUNT(*)
+                            FROM vector_index_items i
+                            LEFT JOIN vector_index_item_store iv ON iv.item_id = i.id
+                            WHERE {item_store_where_sql}
+                              AND iv.item_id IS NULL
+                            """,
+                            *item_args,
+                        )
+                        or 0
+                    )
+        except Exception:
+            profile_rows_count = 0
+            index_item_rows_count = 0
+            profile_store_missing_count = None
+            index_item_store_missing_count = None
+            profile_dim_mismatch_count = 0
+            index_item_dim_mismatch_count = 0
+            active_snapshot_count = 0
+            profile_types = []
+            index_item_profile_types = []
+            snapshot_profile_types = []
+            profile_vector_dims = []
+            index_item_vector_dims = []
+            snapshot_vector_dims = []
+
+    if profile_rows_count == 0 and hasattr(db, "list_vector_profiles"):
+        rows = await db.list_vector_profiles(
+            collection_name=resolved_collection,
+            profile_type=resolved_profile_type,
+            version=resolved_profile_version,
+            limit=100000,
+        )
+        profile_rows_count = len(list(rows or []))
+        profile_dim_mismatch_count = sum(
+            1
+            for row in list(rows or [])
+            if int((row or {}).get("vector_dim") or len((row or {}).get("embedding") or [])) != len((row or {}).get("embedding") or [])
+        )
+        if not profile_types:
+            profile_types = sorted({str((row or {}).get("profile_type") or "") for row in list(rows or [])})
+
+    if index_item_rows_count == 0 and hasattr(db, "list_vector_index_items") and resolved_index_version:
+        item_rows = await db.list_vector_index_items(
+            collection_name=resolved_collection,
+            index_version=resolved_index_version,
+            profile_type=resolved_profile_type,
+            limit=100000,
+        )
+        index_item_rows_count = len(list(item_rows or []))
+        index_item_dim_mismatch_count = sum(
+            1
+            for row in list(item_rows or [])
+            if int((row or {}).get("vector_dim") or len((row or {}).get("embedding") or [])) != len((row or {}).get("embedding") or [])
+        )
+        if not index_item_profile_types:
+            index_item_profile_types = sorted({str((row or {}).get("profile_type") or "") for row in list(item_rows or [])})
+
+    if active_snapshot_count == 0 and hasattr(db, "list_vector_index_snapshots"):
+        snapshot_rows = await db.list_vector_index_snapshots(
+            collection_name=resolved_collection,
+            profile_type=resolved_profile_type,
+            limit=1000,
+        )
+        active_snapshot_count = sum(1 for row in list(snapshot_rows or []) if str((row or {}).get("status") or "").strip().lower() == "active")
+        if not snapshot_profile_types:
+            snapshot_profile_types = sorted({str((row or {}).get("profile_type") or "") for row in list(snapshot_rows or [])})
+
+    expected_count = max(0, int(expected_profile_count or profile_rows_count))
+    coverage_ratio = 1.0 if expected_count <= 0 else round(float(index_item_rows_count) / float(max(expected_count, 1)), 6)
+
+    coverage_ok = expected_count <= 0 or index_item_rows_count >= expected_count
+    orphan_checked = profile_store_missing_count is not None and index_item_store_missing_count is not None
+    orphan_ok = (profile_store_missing_count or 0) == 0 and (index_item_store_missing_count or 0) == 0 if orphan_checked else True
+    dim_ok = profile_dim_mismatch_count == 0 and index_item_dim_mismatch_count == 0
+    vector_dim_ok = len(profile_vector_dims) <= 1 and len(index_item_vector_dims) <= 1 and len(snapshot_vector_dims) <= 1
+    if expect_active:
+        active_ok = active_snapshot_count == 1
+    else:
+        active_ok = active_snapshot_count <= 1
+
+    expected_type_set = {resolved_profile_type} if resolved_profile_type else set()
+    observed_type_set = {
+        item for item in (profile_types + index_item_profile_types + snapshot_profile_types) if str(item or "").strip()
+    }
+    profile_type_ok = True
+    if expected_type_set:
+        profile_type_ok = observed_type_set.issubset(expected_type_set)
+    elif len(observed_type_set) > 1:
+        profile_type_ok = False
+
+    quality_flags: list[str] = []
+    if not coverage_ok:
+        quality_flags.append("insufficient_index_coverage")
+    if orphan_checked and not orphan_ok:
+        quality_flags.append("orphan_store_rows")
+    if not dim_ok:
+        quality_flags.append("embedding_dim_mismatch")
+    if not vector_dim_ok:
+        quality_flags.append("mixed_vector_dimensions")
+    if not active_ok:
+        quality_flags.append("active_snapshot_not_unique")
+    if not profile_type_ok:
+        quality_flags.append("profile_type_inconsistent")
+
+    checks = {
+        "coverage": {
+            "status": "passed" if coverage_ok else "degraded",
+            "expected_profile_count": expected_count,
+            "indexed_item_count": index_item_rows_count,
+            "coverage_ratio": coverage_ratio,
+        },
+        "orphan_check": {
+            "status": "passed" if orphan_ok else ("degraded" if orphan_checked else "skipped"),
+            "checked": orphan_checked,
+            "missing_profile_store_rows": profile_store_missing_count,
+            "missing_index_item_store_rows": index_item_store_missing_count,
+        },
+        "dim_check": {
+            "status": "passed" if dim_ok and vector_dim_ok else "degraded",
+            "profile_dim_mismatch_count": profile_dim_mismatch_count,
+            "index_item_dim_mismatch_count": index_item_dim_mismatch_count,
+            "profile_vector_dims": profile_vector_dims,
+            "index_item_vector_dims": index_item_vector_dims,
+            "snapshot_vector_dims": snapshot_vector_dims,
+        },
+        "active_snapshot_uniqueness": {
+            "status": "passed" if active_ok else "degraded",
+            "expect_active": bool(expect_active),
+            "active_snapshot_count": active_snapshot_count,
+        },
+        "profile_type_consistency": {
+            "status": "passed" if profile_type_ok else "degraded",
+            "expected_profile_type": resolved_profile_type,
+            "profile_types": profile_types,
+            "index_item_profile_types": index_item_profile_types,
+            "snapshot_profile_types": snapshot_profile_types,
+        },
+    }
+    degraded = bool(quality_flags)
+    return {
+        "collection_name": resolved_collection,
+        "profile_type": resolved_profile_type,
+        "profile_version": resolved_profile_version,
+        "index_version": resolved_index_version,
+        "status": "degraded" if degraded else "passed",
+        "degraded": degraded,
+        "quality_flags": quality_flags,
+        "checks": checks,
+    }
 
 
 async def build_vector_collection_snapshot(
@@ -229,23 +621,44 @@ async def build_vector_collection_snapshot(
     activate: bool = True,
     source: str = "vector_governance",
 ) -> dict[str, Any]:
-    resolved_collection = str(collection_name or "").strip()
+    resolved_profile_type = normalize_profile_type(profile_type)
+    resolved_collection = resolve_vector_collection_name(collection_name, resolved_profile_type)
     if not resolved_collection:
         raise ValueError("collection_name is required")
+    if str(collection_name or "").strip() == LEGACY_MARKET_DOC_COLLECTION and not resolved_profile_type:
+        return {
+            "collection_name": resolved_collection,
+            "requested_collection_name": str(collection_name or "").strip() or None,
+            "profile_type": None,
+            "profile_version": version,
+            "index_version": index_version,
+            "status": "failed",
+            "degraded": True,
+            "quality_flags": ["profile_type_required_for_market_doc_collection"],
+            "sample_count": 0,
+            "items_count": 0,
+            "bucket_count": 0,
+            "snapshot": None,
+            "profile_index_name": None,
+            "item_index_name": None,
+            "reason": "profile_type_required_for_market_doc_collection",
+        }
     resolved_limit_profiles = _normalize_positive_int(limit_profiles, 5000, minimum=1, maximum=100000)
     rows = await db.list_vector_profiles(
         collection_name=resolved_collection,
-        profile_type=profile_type,
+        profile_type=resolved_profile_type,
         version=version,
         limit=resolved_limit_profiles,
     )
     if not rows:
         return {
             "collection_name": resolved_collection,
-            "profile_type": profile_type,
+            "profile_type": resolved_profile_type,
             "profile_version": version,
             "index_version": index_version,
             "status": "skipped",
+            "degraded": False,
+            "quality_flags": [],
             "sample_count": 0,
             "items_count": 0,
             "bucket_count": 0,
@@ -279,11 +692,36 @@ async def build_vector_collection_snapshot(
             "reason": "no_profiles_for_version",
         }
 
+    vector_dim_counts: dict[int, int] = {}
+    for row in filtered_rows:
+        resolved_dim = int(dict(row).get("vector_dim") or len(dict(row).get("embedding") or []) or 0)
+        if resolved_dim > 0:
+            vector_dim_counts[resolved_dim] = int(vector_dim_counts.get(resolved_dim) or 0) + 1
+    if len(vector_dim_counts) > 1:
+        return {
+            "collection_name": resolved_collection,
+            "requested_collection_name": str(collection_name or "").strip() or None,
+            "profile_type": resolved_profile_type,
+            "profile_version": resolved_profile_version,
+            "index_version": index_version,
+            "status": "failed",
+            "degraded": True,
+            "quality_flags": ["mixed_vector_dimensions"],
+            "sample_count": len(filtered_rows),
+            "items_count": 0,
+            "bucket_count": 0,
+            "snapshot": None,
+            "profile_index_name": None,
+            "item_index_name": None,
+            "reason": "mixed_vector_dimensions",
+            "vector_dim_counts": {str(key): int(value) for key, value in sorted(vector_dim_counts.items())},
+        }
+
     resolved_index_version = str(index_version or resolved_profile_version or f"auto_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}").strip()
     resolved_metric = str(first_row.get("metric") or (collection or {}).get("metric") or "cosine").strip().lower()
     resolved_model_id = str(first_row.get("model_id") or (collection or {}).get("model_id") or "unknown").strip()
-    resolved_vector_dim = int(first_row.get("vector_dim") or len(first_row.get("embedding") or []) or 0)
-    resolved_profile_type = str(profile_type or first_row.get("profile_type") or "").strip() or None
+    resolved_vector_dim = next(iter(vector_dim_counts.keys())) if vector_dim_counts else int(first_row.get("vector_dim") or len(first_row.get("embedding") or []) or 0)
+    resolved_profile_type = str(resolved_profile_type or first_row.get("profile_type") or "").strip() or None
     resolved_bucket_count = _normalize_positive_int(
         bucket_count,
         default=max(1, min(int(math.sqrt(len(filtered_rows))) or 1, 256)),
@@ -383,6 +821,53 @@ async def build_vector_collection_snapshot(
                 "item_index_name": item_index_name,
                 "centroids": list(layout.get("centroids") or []),
                 "layout": dict(layout.get("metadata") or {}),
+                "vector_dim_counts": {str(key): int(value) for key, value in sorted(vector_dim_counts.items())},
+            },
+            "built_at": _now_iso(),
+            "activated_at": _now_iso() if activate else None,
+        }
+    )
+    qa = await audit_vector_collection_quality(
+        db,
+        collection_name=resolved_collection,
+        profile_type=resolved_profile_type,
+        profile_version=resolved_profile_version,
+        index_version=resolved_index_version,
+        expected_profile_count=len(filtered_rows),
+        expect_active=bool(activate),
+    )
+    snapshot = await db.save_vector_index_snapshot(
+        {
+            "collection_name": resolved_collection,
+            "index_version": resolved_index_version,
+            "status": final_status,
+            "model_id": resolved_model_id,
+            "profile_type": resolved_profile_type,
+            "metric": resolved_metric,
+            "vector_dim": resolved_vector_dim,
+            "sample_count": len(filtered_rows),
+            "bucket_count": resolved_bucket_count,
+            "index_params": {
+                "bucket_strategy": "centroid_kmeans",
+                "limit_profiles": resolved_limit_profiles,
+                "neighbor_count": 2,
+            },
+            "metrics": {
+                "items_count": int(replace_result.get("count") or 0),
+                "avg_coarse_score": round(
+                    float(sum(float(item.get("coarse_score") or 0.0) for item in items) / max(len(items), 1)),
+                    6,
+                ) if items else 0.0,
+            },
+            "metadata": {
+                "profile_version": resolved_profile_version,
+                "source": source,
+                "profile_index_name": profile_index_name,
+                "item_index_name": item_index_name,
+                "centroids": list(layout.get("centroids") or []),
+                "layout": dict(layout.get("metadata") or {}),
+                "qa": qa,
+                "vector_dim_counts": {str(key): int(value) for key, value in sorted(vector_dim_counts.items())},
             },
             "built_at": _now_iso(),
             "activated_at": _now_iso() if activate else None,
@@ -390,10 +875,15 @@ async def build_vector_collection_snapshot(
     )
     return {
         "collection_name": resolved_collection,
+        "requested_collection_name": str(collection_name or "").strip() or None,
         "profile_type": resolved_profile_type,
         "profile_version": resolved_profile_version,
         "index_version": resolved_index_version,
-        "status": final_status,
+        "status": "degraded" if qa.get("degraded") else final_status,
+        "snapshot_status": final_status,
+        "degraded": bool(qa.get("degraded")),
+        "quality_flags": list(qa.get("quality_flags") or []),
+        "qa": qa,
         "sample_count": len(filtered_rows),
         "items_count": int(replace_result.get("count") or 0),
         "bucket_count": resolved_bucket_count,

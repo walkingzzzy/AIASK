@@ -45,6 +45,18 @@ def _load_signal_quality_registry_snapshot():
         return {}
 
 
+def _execution_audit_entity_chain_available(db) -> bool:
+    required_methods = (
+        "list_strategy_paper_orders",
+        "list_strategy_paper_trades",
+        "list_strategy_trade_positions",
+        "list_strategy_trade_position_fills",
+        "get_strategy_trade_audit_summary",
+        "get_paper_nav_rows",
+    )
+    return all(hasattr(db, method) for method in required_methods)
+
+
 async def _resolved(value):
     return value
 
@@ -67,14 +79,45 @@ def _resolve_strategy_status_filter(raw_status, *, default: str = "visible"):
 
 
 async def _load_similar_vector_profiles(db, strategy_id: str) -> list:
-    if not hasattr(db, "list_strategy_vector_profiles"):
-        return []
     try:
         from ...services.vector_platform import get_strategy_vector_platform
         return await get_strategy_vector_platform().find_similar_profiles(db, strategy_id, limit=5)
     except Exception as exc:
         logger.warning("strategy_manager.detail similar profiles failed for %s: %s", strategy_id, exc)
         return []
+
+
+async def _load_vector_profiles(db, strategy_id: str, *, limit: int = 3) -> list:
+    try:
+        from ...services.vector_platform import get_strategy_vector_platform
+
+        return await get_strategy_vector_platform().list_profiles(
+            db,
+            strategy_id=strategy_id,
+            limit=max(1, min(int(limit or 3), 20)),
+        )
+    except Exception as exc:
+        logger.warning("strategy_manager.detail vector profiles failed for %s: %s", strategy_id, exc)
+        if hasattr(db, "list_strategy_vector_profiles"):
+            return await db.list_strategy_vector_profiles(strategy_id=strategy_id, limit=max(1, min(int(limit or 3), 20)))
+        return []
+
+
+async def _load_latest_vector_index_snapshot(db, index_name: str = "strategy_behavior") -> dict | None:
+    try:
+        from ...services.vector_platform import get_strategy_vector_platform
+
+        rows = await get_strategy_vector_platform().list_index_snapshots(
+            db,
+            index_name=index_name,
+            limit=1,
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        logger.warning("strategy_manager.detail latest vector snapshot failed for %s: %s", index_name, exc)
+        if hasattr(db, "get_latest_strategy_vector_index_snapshot"):
+            return await db.get_latest_strategy_vector_index_snapshot(index_name)
+        return None
 
 
 def _extract_strategy_market_summary_value(strategy: dict, key: str):
@@ -218,9 +261,9 @@ async def handle_detail(db, params: dict) -> dict:
         db.list_strategy_runtime_alerts(strategy_id=sid, status="open_or_ack", limit=5) if hasattr(db, "list_strategy_runtime_alerts") else _resolved([]),
         db.get_latest_strategy_promotion_review(sid) if hasattr(db, "get_latest_strategy_promotion_review") else _resolved(None),
         db.get_latest_strategy_projection_snapshot(sid) if hasattr(db, "get_latest_strategy_projection_snapshot") else _resolved(None),
-        db.get_latest_strategy_vector_index_snapshot('strategy_behavior') if hasattr(db, "get_latest_strategy_vector_index_snapshot") else _resolved(None),
+        _load_latest_vector_index_snapshot(db, 'strategy_behavior'),
         db.get_latest_strategy_incubation_pipeline_snapshot(sid) if hasattr(db, "get_latest_strategy_incubation_pipeline_snapshot") else _resolved(None),
-        db.list_strategy_vector_profiles(strategy_id=sid, limit=3) if hasattr(db, "list_strategy_vector_profiles") else _resolved([]),
+        _load_vector_profiles(db, sid, limit=3),
         _load_similar_vector_profiles(db, sid),
         db.list_strategy_domain_events(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_domain_events") else _resolved([]),
         db.list_strategy_task_runs(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_task_runs") else _resolved([]),
@@ -407,6 +450,18 @@ async def handle_capabilities(db, params: dict) -> dict:
         "execution_audit_enabled": bool(factory_constants.get("STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED")),
         "execution_audit_verification": hasattr(db, "get_execution_audit_verification"),
         "quality_ui_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_QUALITY_UI_V2_ENABLED")),
+        "research_protocol_v2_enabled": bool(
+            factory_constants.get("STRATEGY_FACTORY_RESEARCH_PROTOCOL_V2_ENABLED")
+        ),
+        "gate_model_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_GATE_MODEL_V2_ENABLED")),
+        "trace_ledger_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_TRACE_LEDGER_V2_ENABLED")),
+        "feedback_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_FEEDBACK_V2_ENABLED")),
+        "trace_ledger_v2_implemented": True,
+        "governance_gate_report_v2_implemented": True,
+        "execution_audit_entity_chain_available": _execution_audit_entity_chain_available(db),
+        "spec_completeness_mode": str(
+            factory_constants.get("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE") or "warn"
+        ),
         "high_confidence_feature_flags": high_confidence_feature_flags,
         "signal_quality_registry": _load_signal_quality_registry_snapshot(),
         "paper_incubation": hasattr(db, "save_strategy_incubation_account") and hasattr(db, "save_strategy_incubation_metric"),
@@ -426,8 +481,10 @@ async def handle_capabilities(db, params: dict) -> dict:
         "vector_governance": hasattr(db, "save_vector_index_registry") and hasattr(db, "list_strategy_vector_profiles"),
         "persistent_vector_index": hasattr(db, "save_strategy_vector_index_snapshot") and hasattr(db, "replace_strategy_vector_index_items"),
         "ann_vector_search": hasattr(db, "list_strategy_vector_index_items") and hasattr(db, "save_strategy_vector_index_snapshot"),
-        "vector_health": hasattr(db, "get_strategy_vector_health"),
-        "vector_cleanup": hasattr(db, "cleanup_strategy_vector_history"),
+        "vector_health": hasattr(db, "get_strategy_vector_health") or (
+            hasattr(db, "list_vector_collections") and hasattr(db, "list_vector_index_snapshots")
+        ),
+        "vector_cleanup": hasattr(db, "cleanup_strategy_vector_history") or hasattr(db, "cleanup_vector_collection_history"),
         "ai_generation": hasattr(db, "save_strategy_generation_experiment") and hasattr(db, "save_strategy_task_run"),
         "multi_agent_review": hasattr(db, "save_strategy_generation_experiment"),
         "quality_governance": hasattr(db, "save_strategy_quality_report") and hasattr(db, "list_strategy_status_events"),

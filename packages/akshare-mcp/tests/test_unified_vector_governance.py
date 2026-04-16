@@ -73,8 +73,35 @@ class _GovernanceDb:
         return item
 
     async def replace_vector_index_items(self, collection_name, index_version, items):
-        self.replaced_items = list(items)
+        self.replaced_items = [
+            {
+                **dict(item),
+                "collection_name": collection_name,
+                "index_version": index_version,
+            }
+            for item in list(items)
+        ]
         return {"collection_name": collection_name, "index_version": index_version, "count": len(items)}
+
+    async def list_vector_index_snapshots(self, **kwargs):
+        rows = list(self.snapshots)
+        if kwargs.get("collection_name"):
+            rows = [row for row in rows if row.get("collection_name") == kwargs.get("collection_name")]
+        if kwargs.get("index_version"):
+            rows = [row for row in rows if row.get("index_version") == kwargs.get("index_version")]
+        if kwargs.get("profile_type"):
+            rows = [row for row in rows if row.get("profile_type") == kwargs.get("profile_type")]
+        return [dict(row) for row in rows]
+
+    async def list_vector_index_items(self, **kwargs):
+        rows = list(self.replaced_items)
+        if kwargs.get("collection_name"):
+            rows = [row for row in rows if row.get("collection_name") == kwargs.get("collection_name")]
+        if kwargs.get("index_version"):
+            rows = [row for row in rows if row.get("index_version") == kwargs.get("index_version")]
+        if kwargs.get("profile_type"):
+            rows = [row for row in rows if row.get("profile_type") == kwargs.get("profile_type")]
+        return [dict(row) for row in rows]
 
     async def ensure_vector_profile_pgvector_index(self, **kwargs):
         assert kwargs["collection_name"] == "stock_profile_embeddings"
@@ -99,6 +126,8 @@ async def test_build_vector_collection_snapshot_updates_active_version_and_items
     )
 
     assert result["status"] == "active"
+    assert result["degraded"] is False
+    assert result["quality_flags"] == []
     assert result["sample_count"] == 2
     assert result["items_count"] == 2
     assert db.collection["active_version"] == "snap_v1"
@@ -107,9 +136,94 @@ async def test_build_vector_collection_snapshot_updates_active_version_and_items
     assert db.snapshots[-1]["status"] == "active"
     assert db.snapshots[-1]["metadata"]["profile_version"] == "v1"
     assert db.snapshots[-1]["metadata"]["centroids"]
+    assert db.snapshots[-1]["metadata"]["qa"]["status"] == "passed"
     assert db.snapshots[-1]["index_params"]["bucket_strategy"] == "centroid_kmeans"
     assert db.replaced_items[0]["bucket_id"].startswith("b_")
     assert db.replaced_items[0]["coarse_score"] <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_build_vector_collection_snapshot_marks_quality_degraded_when_scope_has_multiple_active_snapshots():
+    db = _GovernanceDb()
+    db.snapshots.append(
+        {
+            "collection_name": "stock_profile_embeddings",
+            "index_version": "snap_old",
+            "status": "active",
+            "profile_type": "both",
+            "metadata": {"profile_version": "v0"},
+        }
+    )
+
+    result = await build_vector_collection_snapshot(
+        db,
+        collection_name="stock_profile_embeddings",
+        version="v1",
+        index_version="snap_v1",
+        profile_type="both",
+        activate=True,
+    )
+
+    assert result["status"] == "degraded"
+    assert result["degraded"] is True
+    assert "active_snapshot_not_unique" in result["quality_flags"]
+
+
+class _MixedDimGovernanceDb(_GovernanceDb):
+    async def list_vector_profiles(self, **kwargs):
+        assert kwargs["collection_name"] == "stock_profile_embeddings"
+        assert kwargs["profile_type"] == "both"
+        assert kwargs["version"] == "v1"
+        return [
+            {
+                "id": 1,
+                "collection_name": "stock_profile_embeddings",
+                "entity_type": "stock_profile",
+                "entity_id": "600519|both",
+                "stock_code": "600519",
+                "profile_type": "both",
+                "model_id": "stock-profile-v1",
+                "vector_dim": 256,
+                "metric": "cosine",
+                "version": "v1",
+                "embedding": [0.1] * 256,
+                "metadata": {"stock_name": "贵州茅台"},
+            },
+            {
+                "id": 2,
+                "collection_name": "stock_profile_embeddings",
+                "entity_type": "stock_profile",
+                "entity_id": "000001|both",
+                "stock_code": "000001",
+                "profile_type": "both",
+                "model_id": "stock-profile-v1",
+                "vector_dim": 1536,
+                "metric": "cosine",
+                "version": "v1",
+                "embedding": [0.2] * 1536,
+                "metadata": {"stock_name": "平安银行"},
+            },
+        ]
+
+
+@pytest.mark.asyncio
+async def test_build_vector_collection_snapshot_fails_on_mixed_vector_dimensions():
+    db = _MixedDimGovernanceDb()
+
+    result = await build_vector_collection_snapshot(
+        db,
+        collection_name="stock_profile_embeddings",
+        version="v1",
+        index_version="snap_v1",
+        profile_type="both",
+        activate=True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["degraded"] is True
+    assert result["reason"] == "mixed_vector_dimensions"
+    assert result["quality_flags"] == ["mixed_vector_dimensions"]
+    assert result["vector_dim_counts"] == {"256": 1, "1536": 1}
 
 
 class _SearchAdapter(VectorUnifiedMixin):

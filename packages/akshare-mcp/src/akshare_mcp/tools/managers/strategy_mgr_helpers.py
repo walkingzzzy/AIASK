@@ -1476,6 +1476,9 @@ def normalize_quality_report_contract(
         "promotion_review_recommendation",
         "pool_admission_applied",
         "promotion_applied_transition",
+        "formal_track_requested",
+        "formal_track_eligible",
+        "formal_track_blockers",
         "submission_action",
         "submission_action_type",
         "submission_action_trigger",
@@ -1517,6 +1520,28 @@ def normalize_quality_report_contract(
         spawn_reason=summary.get("spawn_reason"),
         submission_audit=submission_audit or None,
     )
+    normalized_summary = dict(normalized.get("summary") or {})
+    for field_name in (
+        "prediction_trace_id",
+        "trace_id",
+        "research_protocol_version",
+        "candidate_contract_version",
+        "spec_completeness",
+        "field_provenance_summary",
+        "completion_issues",
+        "hard_failures",
+        "gate_a",
+        "gate_b",
+        "gate_c",
+    ):
+        value = raw.get(field_name)
+        if value in (None, "", [], {}):
+            value = summary.get(field_name)
+        if value in (None, "", [], {}):
+            continue
+        normalized[field_name] = deepcopy(value)
+        normalized_summary[field_name] = deepcopy(value)
+    normalized["summary"] = normalized_summary
     return {**raw, **normalized}
 
 
@@ -1591,9 +1616,16 @@ def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
         "evidence_artifact": dict(dto.get("evidence_artifact") or {}),
         "governance_plane": dict(dto.get("governance_plane") or raw.get("governance_plane") or {}),
         "gate_artifact": dict(dto.get("gate_artifact") or {}),
+        "gate_artifact_v2": dict(dto.get("gate_artifact_v2") or {}),
         "dedup_artifact": dict(dto.get("dedup_artifact") or {}),
         "submission_artifact": submission_artifact,
         "governance_evidence_artifact": dict(dto.get("governance_evidence_artifact") or {}),
+        "gate_a": dict(dto.get("gate_a") or {}),
+        "gate_b": dict(dto.get("gate_b") or {}),
+        "gate_c": dict(dto.get("gate_c") or {}),
+        "protocol_versions": dict(dto.get("protocol_versions") or {}),
+        "prediction_trace_summary": dict(dto.get("prediction_trace_summary") or {}),
+        "prediction_trace_ledger": dict(dto.get("prediction_trace_ledger") or {}),
         "feedback_summary": dict(dto.get("feedback_summary") or {}),
         "incubation_summary": dict(dto.get("incubation_summary") or {}),
         "live_ready_summary": dict(dto.get("live_ready_summary") or {}),

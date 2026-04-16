@@ -7,6 +7,8 @@ import json
 from datetime import date, datetime
 from typing import Any, Iterable, Optional
 
+from ...vector_collection_scope import resolve_dimension_scoped_version, resolve_vector_collection_name
+
 
 class MarketContextMixin:
     """DB persistence helpers for news/notices/research/fund-flow context."""
@@ -364,18 +366,32 @@ class MarketContextMixin:
         overlap: int = 120,
         collection_name: str = "market_doc_chunks",
         version: str = "v1",
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         code = str(stock_code or "").strip()
         normalized_doc_type = str(doc_type or "").strip().lower()
         documents = [dict(item) for item in list(items or []) if isinstance(item, dict)]
         if not code or not normalized_doc_type or not documents:
-            return {"documents": 0, "chunks": 0, "embedded_chunks": 0}
+            return {
+                "documents": 0,
+                "chunks": 0,
+                "embedded_chunks": 0,
+                "collection_name": resolve_vector_collection_name(collection_name, normalized_doc_type),
+                "vector_status": "skipped",
+                "degraded": False,
+                "quality_flags": [],
+                "vector_error": None,
+                "embedding_attempted": 0,
+                "embedding_coverage": 0.0,
+            }
+        resolved_collection_name = resolve_vector_collection_name(collection_name, normalized_doc_type)
 
         inserted_docs = 0
         inserted_chunks = 0
         inserted_labels = 0
         chunk_rows: list[dict[str, Any]] = []
         headline_rows: list[dict[str, Any]] = []
+        quality_flags: list[str] = []
+        vector_error: Optional[str] = None
         async with self.acquire() as conn:
             async with conn.transaction():
                 for item in documents:
@@ -538,37 +554,80 @@ class MarketContextMixin:
                         )
 
         embedded_chunks = 0
+        embedding_attempted = 0
+        vector_status = "disabled" if not embed else "not_requested"
+        degraded = False
+        profile_version_counts: dict[str, int] = {}
+        vector_dims: set[int] = set()
         if embed and chunk_rows and hasattr(self, "save_vector_profile"):
             try:
                 from ...services.text_embedding import get_strategy_text_embedding_service
 
                 service = get_strategy_text_embedding_service()
                 if service.is_enabled():
+                    vector_status = "running"
                     profile_type = normalized_doc_type
-                    ensured_index = False
+                    ensured_index_keys: set[tuple[str, int]] = set()
+                    existing_collection = None
+                    if hasattr(self, "get_vector_collection"):
+                        try:
+                            existing_collection = await self.get_vector_collection(resolved_collection_name)
+                        except Exception:
+                            existing_collection = None
                     for chunk in chunk_rows:
-                        vector = await service.embed_text(str(chunk.get("chunk_text") or ""))
+                        embedding_attempted += 1
+                        if hasattr(service, "embed_text_with_info"):
+                            embedding_result = await service.embed_text_with_info(str(chunk.get("chunk_text") or ""))
+                            vector = list(dict(embedding_result or {}).get("embedding") or [])
+                            embedding_provider = str(dict(embedding_result or {}).get("provider") or "")
+                            requested_provider = str(dict(embedding_result or {}).get("requested_provider") or "")
+                            fallback_used = bool(dict(embedding_result or {}).get("fallback_used"))
+                            fallback_error = dict(embedding_result or {}).get("fallback_error")
+                        else:
+                            vector = await service.embed_text(str(chunk.get("chunk_text") or ""))
+                            embedding_provider = ""
+                            requested_provider = ""
+                            fallback_used = False
+                            fallback_error = None
                         if not vector:
+                            degraded = True
+                            if "empty_embedding" not in quality_flags:
+                                quality_flags.append("empty_embedding")
                             continue
                         model_id = str(getattr(getattr(service, "config", None), "model", None) or "text-embedding-3-small")
                         vector_dim = len(vector)
+                        vector_dims.add(int(vector_dim))
+                        profile_version = resolve_dimension_scoped_version(version, vector_dim)
+                        profile_version_counts[profile_version] = int(profile_version_counts.get(profile_version) or 0) + 1
+                        collection_vector_dim = int(existing_collection.get("vector_dim") or 0) if isinstance(existing_collection, dict) else 0
+                        collection_vector_dim = max(collection_vector_dim, int(vector_dim or 0))
                         await self.save_vector_collection(
                             {
-                                "collection_name": collection_name,
+                                "collection_name": resolved_collection_name,
                                 "entity_family": "document_chunk",
                                 "backend": self.get_vector_backend(),
                                 "metric": "cosine",
                                 "model_id": model_id,
-                                "vector_dim": vector_dim,
+                                "vector_dim": collection_vector_dim or vector_dim,
                                 "normalization": "unit",
                                 "status": "active",
-                                "metadata": {"domain": "market", "doc_type": normalized_doc_type},
+                                "metadata": {
+                                    "domain": "market",
+                                    "doc_type": normalized_doc_type,
+                                    "base_version": str(version or "v1"),
+                                    "active_profile_versions": sorted(profile_version_counts.keys()),
+                                },
                             }
                         )
+                        existing_collection = {
+                            **dict(existing_collection or {}),
+                            "vector_dim": collection_vector_dim or vector_dim,
+                            "model_id": model_id,
+                        }
                         entity_id = f"{chunk.get('doc_uid')}:{chunk.get('chunk_no')}"
                         await self.save_vector_profile(
                             {
-                                "collection_name": collection_name,
+                                "collection_name": resolved_collection_name,
                                 "entity_type": "market_doc_chunk",
                                 "entity_id": entity_id,
                                 "stock_code": chunk.get("stock_code"),
@@ -576,7 +635,7 @@ class MarketContextMixin:
                                 "model_id": model_id,
                                 "vector_dim": vector_dim,
                                 "metric": "cosine",
-                                "version": version,
+                                "version": profile_version,
                                 "signature": hashlib.sha1(
                                     f"{entity_id}|{model_id}|{chunk.get('chunk_text')}".encode("utf-8")
                                 ).hexdigest(),
@@ -592,27 +651,64 @@ class MarketContextMixin:
                                     "published_at": chunk.get("published_at").isoformat() if isinstance(chunk.get("published_at"), datetime) else None,
                                     "url": chunk.get("url"),
                                     "author": chunk.get("author"),
+                                    "base_version": str(version or "v1"),
+                                    "profile_version": profile_version,
+                                    "embedding_provider": embedding_provider or None,
+                                    "requested_embedding_provider": requested_provider or None,
+                                    "embedding_fallback_used": fallback_used,
+                                    "embedding_fallback_error": fallback_error,
                                 },
                             }
                         )
                         embedded_chunks += 1
-                        if not ensured_index and hasattr(self, "ensure_vector_profile_pgvector_index"):
+                        index_key = (profile_version, int(vector_dim or 0))
+                        if index_key not in ensured_index_keys and hasattr(self, "ensure_vector_profile_pgvector_index"):
                             await self.ensure_vector_profile_pgvector_index(
-                                collection_name=collection_name,
-                                version=version,
+                                collection_name=resolved_collection_name,
+                                version=profile_version,
                                 vector_dim=vector_dim,
                                 profile_type=profile_type,
                                 metric="cosine",
                             )
-                            ensured_index = True
-            except Exception:
-                pass
+                            ensured_index_keys.add(index_key)
+                        if fallback_used:
+                            degraded = True
+                            if "embedding_provider_fallback_used" not in quality_flags:
+                                quality_flags.append("embedding_provider_fallback_used")
+                    if embedded_chunks >= len(chunk_rows):
+                        vector_status = "ready"
+                    else:
+                        degraded = True
+                        vector_status = "degraded"
+                        if "partial_embedding_coverage" not in quality_flags:
+                            quality_flags.append("partial_embedding_coverage")
+                else:
+                    degraded = True
+                    vector_status = "degraded"
+                    if "embedding_service_disabled" not in quality_flags:
+                        quality_flags.append("embedding_service_disabled")
+            except Exception as exc:
+                degraded = True
+                vector_status = "degraded"
+                vector_error = f"{type(exc).__name__}: {exc}"
+                if "vector_generation_failed" not in quality_flags:
+                    quality_flags.append("vector_generation_failed")
 
         return {
             "documents": inserted_docs,
             "chunks": inserted_chunks,
             "embedded_chunks": embedded_chunks,
             "headline_labels": inserted_labels,
+            "collection_name": resolved_collection_name,
+            "vector_status": vector_status,
+            "degraded": degraded,
+            "quality_flags": quality_flags,
+            "vector_error": vector_error,
+            "embedding_attempted": embedding_attempted,
+            "embedding_coverage": round(float(embedded_chunks) / float(max(len(chunk_rows), 1)), 6) if chunk_rows else 0.0,
+            "profile_versions": sorted(profile_version_counts.keys()),
+            "profile_version_counts": profile_version_counts,
+            "vector_dims": sorted(vector_dims),
         }
 
     async def save_vector_documents(self, stock_code: str, doc_type: str, items: Iterable[dict[str, Any]]) -> int:

@@ -566,24 +566,35 @@ class StrategyVectorMixin:
             return None
         opclass = self._pgvector_opclass(metric)
         with_clause = self._pgvector_hnsw_with_clause(index_params)
+        build_settings = self._resolve_pgvector_index_build_settings(index_params)
         idx_name = self._pgvector_partial_index_name('idx_svi_pg_hnsw', index_name, index_version, resolved_dim, metric)
         async with self.acquire() as conn:
-            sql = await conn.fetchval(
-                """
-                SELECT format(
-                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
-                    $1::text, $2::int, $3::text, $4::text, $5::text, $6::text, $7::int
+            async with conn.transaction():
+                sql = await conn.fetchval(
+                    """
+                    SELECT format(
+                        'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
+                        $1::text, $2::int, $3::text, $4::text, $5::text, $6::text, $7::int
+                    )
+                    """,
+                    idx_name,
+                    resolved_dim,
+                    opclass,
+                    with_clause,
+                    str(index_name or ''),
+                    str(index_version or ''),
+                    resolved_dim,
                 )
-                """,
-                idx_name,
-                resolved_dim,
-                opclass,
-                with_clause,
-                str(index_name or ''),
-                str(index_version or ''),
-                resolved_dim,
-            )
-            await conn.execute(sql)
+                if build_settings.get("maintenance_work_mem"):
+                    await conn.execute(
+                        "SELECT set_config('maintenance_work_mem', $1, true)",
+                        str(build_settings["maintenance_work_mem"]),
+                    )
+                await conn.execute(
+                    "SELECT set_config('max_parallel_maintenance_workers', $1, true)",
+                    str(int(build_settings.get("max_parallel_maintenance_workers") or 1)),
+                )
+                await conn.execute(sql)
         return idx_name
 
     async def ensure_strategy_vector_profile_pgvector_index(
@@ -602,6 +613,7 @@ class StrategyVectorMixin:
             return None
         opclass = self._pgvector_opclass(metric)
         with_clause = self._pgvector_hnsw_with_clause(index_params)
+        build_settings = self._resolve_pgvector_index_build_settings(index_params)
         idx_name = self._pgvector_partial_index_name(
             'idx_svp_pg_hnsw',
             index_name,
@@ -627,16 +639,26 @@ class StrategyVectorMixin:
             format_placeholders = ["$1::text", "$2::int", "$3::text", "$4::text", "$5::text", "$6::text", "$7::int"]
             if profile_type:
                 format_placeholders.append(f"${len(format_args)}::text")
-            sql = await conn.fetchval(
-                f"""
-                SELECT format(
-                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE {where_sql}',
-                    {', '.join(format_placeholders)}
+            async with conn.transaction():
+                sql = await conn.fetchval(
+                    f"""
+                    SELECT format(
+                        'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE {where_sql}',
+                        {', '.join(format_placeholders)}
+                    )
+                    """,
+                    *format_args,
                 )
-                """,
-                *format_args,
-            )
-            await conn.execute(sql)
+                if build_settings.get("maintenance_work_mem"):
+                    await conn.execute(
+                        "SELECT set_config('maintenance_work_mem', $1, true)",
+                        str(build_settings["maintenance_work_mem"]),
+                    )
+                await conn.execute(
+                    "SELECT set_config('max_parallel_maintenance_workers', $1, true)",
+                    str(int(build_settings.get("max_parallel_maintenance_workers") or 1)),
+                )
+                await conn.execute(sql)
         return idx_name
 
     async def list_strategy_vector_hnsw_indexes(

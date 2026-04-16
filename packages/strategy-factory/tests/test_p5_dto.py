@@ -683,12 +683,25 @@ class TestFactoryStatusDTO:
             "confidence_diagnostics_enabled": False,
             "execution_audit_enabled": False,
             "quality_ui_v2_enabled": False,
+            "research_protocol_v2_enabled": True,
+            "gate_model_v2_enabled": True,
+            "trace_ledger_v2_enabled": True,
+            "feedback_v2_enabled": False,
+            "trace_ledger_v2_implemented": True,
+            "governance_gate_report_v2_implemented": True,
+            "execution_audit_entity_chain_available": True,
+            "spec_completeness_mode": "revise",
             "feature_flags": {
                 "high_confidence_enabled": False,
                 "evidence_contract_enabled": False,
                 "confidence_diagnostics_enabled": False,
                 "execution_audit_enabled": False,
                 "quality_ui_v2_enabled": False,
+                "research_protocol_v2_enabled": True,
+                "gate_model_v2_enabled": True,
+                "trace_ledger_v2_enabled": True,
+                "feedback_v2_enabled": False,
+                "spec_completeness_mode": "revise",
             },
             "quality_baseline": {
                 "contract_version": "strategy_factory.quality_baseline.v1",
@@ -725,6 +738,13 @@ class TestFactoryStatusDTO:
         assert dto.high_confidence_enabled is False
         assert dto.evidence_contract_enabled is False
         assert dto.feature_flags["quality_ui_v2_enabled"] is False
+        assert dto.research_protocol_v2_enabled is True
+        assert dto.gate_model_v2_enabled is True
+        assert dto.trace_ledger_v2_enabled is True
+        assert dto.trace_ledger_v2_implemented is True
+        assert dto.governance_gate_report_v2_implemented is True
+        assert dto.execution_audit_entity_chain_available is True
+        assert dto.spec_completeness_mode == "revise"
 
     def test_last_status_none_when_no_last_result(self):
         data = {**self._sample_status(), "last_result": None}
@@ -748,6 +768,13 @@ class TestFactoryStatusDTO:
         assert d["quality_baseline"]["submitted_strategy_cohort"]["factory_strategy_count"] == 2
         assert d["feature_flags"]["high_confidence_enabled"] is False
         assert d["execution_audit_enabled"] is False
+        assert d["research_protocol_v2_enabled"] is True
+        assert d["gate_model_v2_enabled"] is True
+        assert d["trace_ledger_v2_enabled"] is True
+        assert d["trace_ledger_v2_implemented"] is True
+        assert d["governance_gate_report_v2_implemented"] is True
+        assert d["execution_audit_entity_chain_available"] is True
+        assert d["spec_completeness_mode"] == "revise"
 
     def test_from_dict_falls_back_to_last_submission_artifact_quality_panel(self):
         data = self._sample_status()
@@ -794,12 +821,22 @@ class TestFactoryStatusDTO:
         data.pop("confidence_diagnostics_enabled", None)
         data.pop("execution_audit_enabled", None)
         data.pop("quality_ui_v2_enabled", None)
+        data.pop("research_protocol_v2_enabled", None)
+        data.pop("gate_model_v2_enabled", None)
+        data.pop("trace_ledger_v2_enabled", None)
+        data.pop("feedback_v2_enabled", None)
+        data.pop("spec_completeness_mode", None)
         data["feature_flags"] = {
             "high_confidence_enabled": True,
             "evidence_contract_enabled": True,
             "confidence_diagnostics_enabled": True,
             "execution_audit_enabled": True,
             "quality_ui_v2_enabled": True,
+            "research_protocol_v2_enabled": True,
+            "gate_model_v2_enabled": True,
+            "trace_ledger_v2_enabled": True,
+            "feedback_v2_enabled": True,
+            "spec_completeness_mode": "reject",
         }
 
         dto = FactoryStatusDTO.from_dict(data)
@@ -809,6 +846,11 @@ class TestFactoryStatusDTO:
         assert dto.confidence_diagnostics_enabled is True
         assert dto.execution_audit_enabled is True
         assert dto.quality_ui_v2_enabled is True
+        assert dto.research_protocol_v2_enabled is True
+        assert dto.gate_model_v2_enabled is True
+        assert dto.trace_ledger_v2_enabled is True
+        assert dto.feedback_v2_enabled is True
+        assert dto.spec_completeness_mode == "reject"
 
 
 # ---------------------------------------------------------------------------

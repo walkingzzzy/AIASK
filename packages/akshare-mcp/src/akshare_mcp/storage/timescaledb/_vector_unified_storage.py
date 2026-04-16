@@ -207,13 +207,13 @@ class _VectorUnifiedStorageMixin:
             limit: int = 20,
             metric: str = "cosine",
         ) -> dict:
-            resolved_collection = str(collection_name or "").strip()
+            requested_collection = str(collection_name or "").strip()
             resolved_limit = max(1, min(int(limit or 20), 500))
             resolved_query_embedding = [float(item) for item in list(query_embedding or [])]
-            if not resolved_collection or not resolved_query_embedding:
+            if not requested_collection or not resolved_query_embedding:
                 return {
                     "items": [],
-                    "collection_name": resolved_collection,
+                    "collection_name": requested_collection,
                     "backend_used": "unavailable",
                     "fallback_used": False,
                     "fallback_reason": "empty_query",
@@ -222,7 +222,22 @@ class _VectorUnifiedStorageMixin:
                     "profile_version": version,
                 }
 
-            collection = await self.get_vector_collection(resolved_collection)
+            resolved_collection = requested_collection
+            collection = None
+            collection_candidates = self._vector_collection_candidates(requested_collection, profile_type)
+            collection_resolution = "requested"
+            for candidate in collection_candidates:
+                collection = await self.get_vector_collection(candidate)
+                if collection:
+                    resolved_collection = candidate
+                    if candidate != requested_collection:
+                        collection_resolution = "profile_scoped"
+                    break
+            if collection is None and collection_candidates:
+                resolved_collection = collection_candidates[0]
+                if resolved_collection != requested_collection:
+                    collection_resolution = "profile_scoped_unseeded"
+
             active_version = str((collection or {}).get("active_version") or "").strip() or None
             resolved_index_version = str(index_version or active_version or "").strip() or None
             snapshot = None
@@ -231,6 +246,7 @@ class _VectorUnifiedStorageMixin:
                 snapshots = await self.list_vector_index_snapshots(
                     collection_name=resolved_collection,
                     index_version=resolved_index_version,
+                    profile_type=profile_type,
                     latest_only=True,
                     limit=1,
                 )
@@ -282,6 +298,7 @@ class _VectorUnifiedStorageMixin:
                             "snapshot": snapshot,
                             "query_bucket_id": query_bucket_id,
                             "candidate_bucket_ids": candidate_bucket_ids,
+                            "collection_resolution": collection_resolution,
                         }
                     ann_fallback_reason = "index_item_empty_result"
                 except Exception as exc:
@@ -316,6 +333,7 @@ class _VectorUnifiedStorageMixin:
                         "snapshot": snapshot,
                         "query_bucket_id": query_bucket_id,
                         "candidate_bucket_ids": candidate_bucket_ids,
+                        "collection_resolution": collection_resolution,
                     }
                 profile_fallback_reason = "pgvector_empty_result"
             except Exception as exc:
@@ -405,10 +423,16 @@ class _VectorUnifiedStorageMixin:
                 "snapshot": snapshot,
                 "query_bucket_id": query_bucket_id,
                 "candidate_bucket_ids": candidate_bucket_ids,
+                "collection_resolution": collection_resolution,
             }
 
         async def save_vector_index_snapshot(self, snapshot: dict) -> dict:
             payload = dict(snapshot or {})
+            resolved_collection_name = self._resolve_vector_collection_name(
+                payload.get("collection_name"),
+                payload.get("profile_type"),
+            )
+            activation_requested = bool(payload.get("activated_at")) or str(payload.get("status") or "").strip().lower() == "active"
             async with self.acquire() as conn:
                 row = await conn.fetchrow(
                     """
@@ -432,7 +456,7 @@ class _VectorUnifiedStorageMixin:
                         activated_at = EXCLUDED.activated_at
                     RETURNING *
                     """,
-                    str(payload.get("collection_name") or ""),
+                    resolved_collection_name,
                     str(payload.get("index_version") or "v1"),
                     str(payload.get("status") or "building"),
                     str(payload.get("model_id") or "unknown"),
@@ -447,7 +471,47 @@ class _VectorUnifiedStorageMixin:
                     self._coerce_timestamp(payload.get("built_at")),
                     self._coerce_timestamp(payload.get("activated_at")),
                 )
-                if payload.get("activated_at"):
+                if activation_requested:
+                    stale_sql = """
+                        UPDATE vector_index_snapshots
+                        SET status = 'stale',
+                            metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb
+                        WHERE collection_name = $1
+                          AND index_version != $2
+                          AND status = 'active'
+                    """
+                    stale_args: list[Any] = [
+                        resolved_collection_name,
+                        str(payload.get("index_version") or "v1"),
+                    ]
+                    profile_type = self._normalize_profile_type(payload.get("profile_type"))
+                    if profile_type:
+                        stale_sql += " AND COALESCE(profile_type, '') = $3"
+                        stale_args.append(profile_type)
+                        stale_args.append(
+                            json.dumps(
+                                {
+                                    "replaced_by": str(payload.get("index_version") or "v1"),
+                                    "stale_reason": "superseded_activation",
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                            )
+                        )
+                    else:
+                        stale_sql += " AND $3::text IS NULL"
+                        stale_args.append(None)
+                        stale_args.append(
+                            json.dumps(
+                                {
+                                    "replaced_by": str(payload.get("index_version") or "v1"),
+                                    "stale_reason": "superseded_activation",
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                            )
+                        )
+                    await conn.execute(stale_sql, *stale_args)
                     await conn.execute(
                         """
                         UPDATE vector_collections
@@ -455,7 +519,7 @@ class _VectorUnifiedStorageMixin:
                             updated_at = NOW()
                         WHERE collection_name = $1
                         """,
-                        str(payload.get("collection_name") or ""),
+                        resolved_collection_name,
                         str(payload.get("index_version") or "v1"),
                     )
             return self._decode_unified_vector_snapshot(dict(row))
@@ -551,6 +615,7 @@ class _VectorUnifiedStorageMixin:
             *,
             collection_name: Optional[str] = None,
             index_version: Optional[str] = None,
+            profile_type: Optional[str] = None,
             status: Optional[str] = None,
             latest_only: bool = False,
             limit: int = 100,
@@ -567,6 +632,10 @@ class _VectorUnifiedStorageMixin:
                     where_parts.append(f"index_version = ${idx}")
                     params.append(index_version)
                     idx += 1
+                if profile_type:
+                    where_parts.append(f"COALESCE(profile_type, '') = ${idx}")
+                    params.append(str(profile_type or "").strip())
+                    idx += 1
                 if status:
                     where_parts.append(f"status = ${idx}")
                     params.append(status)
@@ -578,7 +647,7 @@ class _VectorUnifiedStorageMixin:
                         WITH ranked AS (
                             SELECT *,
                                    ROW_NUMBER() OVER (
-                                       PARTITION BY collection_name, index_version
+                                       PARTITION BY collection_name, index_version, COALESCE(profile_type, '')
                                        ORDER BY {order_sql}
                                    ) AS rn
                             FROM vector_index_snapshots

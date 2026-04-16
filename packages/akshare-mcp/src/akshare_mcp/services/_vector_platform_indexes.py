@@ -320,6 +320,9 @@ class _StrategyVectorPlatformIndexesMixin:
                 'profile_count': int(layout.get('profile_count') or len(items)),
                 'unified_snapshot': unified_snapshot,
                 'unified_collection_name': unified_collection_name,
+                'degraded': bool((unified_snapshot or {}).get('degraded')),
+                'quality_flags': list((unified_snapshot or {}).get('quality_flags') or []),
+                'qa': (unified_snapshot or {}).get('qa'),
             }
 
         async def _get_latest_snapshot(self, db, index_name: str, index_version: Optional[str] = None) -> Optional[dict]:
@@ -417,6 +420,9 @@ class _StrategyVectorPlatformIndexesMixin:
                             'collection_name': mapped.get('collection_name'),
                             'model_id': mapped.get('model_id'),
                             'vector_dim': mapped.get('vector_dim'),
+                            'source_of_truth': 'unified_vector_tables',
+                            'table_family': 'unified_vector_tables',
+                            'legacy_only': False,
                         }
             snapshot = await self._get_latest_snapshot(db, index_name, index_version=index_version)
             if snapshot:
@@ -426,6 +432,9 @@ class _StrategyVectorPlatformIndexesMixin:
                     'backend': str(snapshot.get('backend') or self.backend_name(db)),
                     'status': str(snapshot.get('status') or 'active'),
                     'source': 'snapshot',
+                    'source_of_truth': 'legacy_strategy_vector_tables',
+                    'table_family': 'legacy_strategy_vector_tables',
+                    'legacy_only': True,
                 }
             if hasattr(db, 'list_vector_index_registry'):
                 rows = await db.list_vector_index_registry(index_name=index_name, status='active', limit=20)
@@ -439,6 +448,9 @@ class _StrategyVectorPlatformIndexesMixin:
                         'backend': str(row.get('backend') or self.backend_name(db)),
                         'status': str(row.get('status') or 'active'),
                         'source': 'registry',
+                        'source_of_truth': 'legacy_strategy_vector_tables',
+                        'table_family': 'legacy_strategy_vector_tables',
+                        'legacy_only': True,
                     }
             return None
 
@@ -453,6 +465,24 @@ class _StrategyVectorPlatformIndexesMixin:
             collections = await self._list_unified_strategy_collections(db, index_name=index_name)
             if not collections or not hasattr(db, 'list_vector_index_snapshots'):
                 return None
+            zero_counts = {
+                'profiles': 0,
+                'profile_store': 0,
+                'index_snapshots': 0,
+                'index_items': 0,
+                'index_item_store': 0,
+            }
+            legacy_counts = dict(zero_counts)
+            if hasattr(db, 'get_strategy_vector_health'):
+                try:
+                    legacy_health = await db.get_strategy_vector_health(
+                        index_name=index_name,
+                        limit_versions=1,
+                        include_hnsw_indexes=False,
+                    )
+                    legacy_counts.update(dict((legacy_health or {}).get('counts') or {}))
+                except Exception:
+                    legacy_counts = dict(zero_counts)
             counts = {
                 'profiles': 0,
                 'profile_store': 0,
@@ -565,6 +595,26 @@ class _StrategyVectorPlatformIndexesMixin:
                     'vector_index_item_store': getattr(db, 'supports_pgvector', lambda: False)(),
                 },
                 'counts': counts,
+                'unified_counts': dict(counts),
+                'legacy_counts': legacy_counts,
+                'source_of_truth': 'unified_vector_tables',
+                'cleanup_scope': 'unified',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
+                'unified_available': True,
+                'legacy_available': hasattr(db, 'get_strategy_vector_health'),
+                'collection_count': len(collections),
+                'collections': [
+                    {
+                        'collection_name': item.get('collection_name'),
+                        'active_version': item.get('active_version'),
+                        'metric': item.get('metric'),
+                        'model_id': item.get('model_id'),
+                        'vector_dim': item.get('vector_dim'),
+                        'status': item.get('status'),
+                    }
+                    for item in collections
+                ],
                 'latest_snapshot': latest_snapshot,
                 'versions': versions[: max(1, min(int(limit_versions or 20), 200))],
                 'hnsw_indexes': hnsw_indexes,

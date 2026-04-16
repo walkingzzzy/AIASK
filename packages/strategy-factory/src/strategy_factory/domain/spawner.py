@@ -16,11 +16,15 @@ from .constants import (
     preferred_strategy_types_for_factor,
 )
 from .parameter_distribution_registry import ParameterDistributionRegistry
+from .targets import _normalize_target_codes
 
 
 class StrategySpawner:
     """根据每日数据快照生成候选策略。"""
     _TREND_CLUSTER_TYPES = frozenset({"momentum", "ma_cross", "volatility_breakout", "sector_rotation"})
+    _LOCAL_GENERATION_CAPS = {
+        "mean_reversion_short": 1,
+    }
     _DIVERSIFICATION_GROUPS = {
         "quality_defensive": frozenset({"quality_factor", "value_factor", "macro_timing"}),
         "mean_reversion": frozenset({"rsi", "gap_fill", "mean_reversion_short"}),
@@ -40,6 +44,38 @@ class StrategySpawner:
         "sector_rotation": "cycle_resource",
         "margin_divergence": "cycle_resource",
         "ma_cross": "cycle_resource",
+    }
+    _SNAPSHOT_TARGET_SYMBOL_BUDGET_BY_TYPE = {
+        "momentum": 3,
+        "ma_cross": 3,
+        "rsi": 3,
+        "volatility_breakout": 3,
+        "gap_fill": 2,
+        "mean_reversion_short": 2,
+        "value_factor": 4,
+        "quality_factor": 4,
+        "growth_factor": 4,
+        "multi_factor": 4,
+        "macro_timing": 4,
+        "sector_rotation": 4,
+        "north_capital_track": 3,
+        "margin_divergence": 3,
+    }
+    _SNAPSHOT_TARGET_FAMILY_ALIASES = {
+        "momentum": ("momentum", "ma_cross", "growth_factor"),
+        "ma_cross": ("ma_cross", "momentum", "quality_factor"),
+        "rsi": ("rsi", "gap_fill", "mean_reversion_short", "value_factor"),
+        "volatility_breakout": ("volatility_breakout", "momentum", "ma_cross"),
+        "gap_fill": ("gap_fill", "rsi", "mean_reversion_short"),
+        "mean_reversion_short": ("mean_reversion_short", "rsi", "gap_fill", "value_factor"),
+        "value_factor": ("value_factor", "quality_factor", "multi_factor"),
+        "quality_factor": ("quality_factor", "value_factor", "multi_factor"),
+        "growth_factor": ("growth_factor", "momentum", "quality_factor"),
+        "multi_factor": ("multi_factor", "quality_factor", "value_factor", "growth_factor"),
+        "macro_timing": ("macro_timing", "quality_factor", "value_factor", "ma_cross"),
+        "sector_rotation": ("sector_rotation", "north_capital_track", "quality_factor", "ma_cross"),
+        "north_capital_track": ("north_capital_track", "sector_rotation", "quality_factor", "growth_factor"),
+        "margin_divergence": ("margin_divergence", "sector_rotation", "value_factor", "quality_factor"),
     }
 
     def __init__(self):
@@ -125,6 +161,14 @@ class StrategySpawner:
             profile = cls._POOL_PROFILE_BY_TYPE.get(strategy_type, "unknown")
             distribution[profile] = distribution.get(profile, 0) + 1
         return distribution
+
+    @classmethod
+    def _local_generation_cap(cls, strategy_type: str) -> Optional[int]:
+        normalized = str(strategy_type or "").strip().lower()
+        if not normalized:
+            return None
+        cap = cls._LOCAL_GENERATION_CAPS.get(normalized)
+        return int(cap) if cap is not None else None
 
     @staticmethod
     def _build_spawn_report(
@@ -283,6 +327,155 @@ class StrategySpawner:
                         derived.append(strategy_type)
         return derived
 
+    @classmethod
+    def _snapshot_target_symbol_budget(cls, strategy_type: str) -> int:
+        normalized = str(strategy_type or "").strip().lower()
+        return max(0, int(cls._SNAPSHOT_TARGET_SYMBOL_BUDGET_BY_TYPE.get(normalized, 0) or 0))
+
+    @classmethod
+    def _snapshot_target_family_aliases(cls, strategy_type: str) -> tuple[str, ...]:
+        normalized = str(strategy_type or "").strip().lower()
+        aliases = cls._SNAPSHOT_TARGET_FAMILY_ALIASES.get(normalized)
+        if aliases:
+            return tuple(str(item).strip().lower() for item in aliases if str(item).strip())
+        return (normalized,) if normalized else tuple()
+
+    @classmethod
+    def _snapshot_target_symbols(cls, strategy_type: str, snapshot: dict) -> List[str]:
+        budget = cls._snapshot_target_symbol_budget(strategy_type)
+        aliases = cls._snapshot_target_family_aliases(strategy_type)
+        if budget <= 0 or not aliases:
+            return []
+
+        allocation = dict(cls._factor_research(snapshot).get("stock_family_allocation") or {})
+        ranked_matches: list[tuple[float, str]] = []
+        for raw_code, raw_item in allocation.items():
+            code = str(raw_code or "").strip()
+            payload = dict(raw_item or {})
+            if not code:
+                continue
+            plans = [
+                dict(plan or {})
+                for plan in list(payload.get("family_plans") or [])
+                if isinstance(plan, dict)
+            ]
+            families = [
+                str(item or "").strip().lower()
+                for item in list(payload.get("families") or [])
+                if str(item or "").strip()
+            ]
+
+            matched_alias_index: Optional[int] = None
+            matched_rank: Optional[int] = None
+            matched_budget = 0.0
+            matched_penalty = 0.0
+            for alias_index, alias in enumerate(aliases):
+                if plans:
+                    for fallback_rank, plan in enumerate(plans, 1):
+                        family = str(plan.get("family") or "").strip().lower()
+                        if family != alias:
+                            continue
+                        matched_alias_index = alias_index
+                        matched_rank = max(1, int(plan.get("family_rank") or fallback_rank))
+                        matched_budget = max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan.get("budget_weight") or plan.get("budget")),
+                                1.0,
+                            ),
+                        )
+                        matched_penalty = max(
+                            0.0,
+                            min(cls._safe_float(plan.get("failure_penalty")), 1.0),
+                        )
+                        break
+                    if matched_alias_index is not None:
+                        break
+                elif alias in families:
+                    matched_alias_index = alias_index
+                    matched_rank = max(1, families.index(alias) + 1)
+                    break
+            if matched_alias_index is None:
+                continue
+
+            priority = max(0.0, min(cls._safe_float(payload.get("priority")), 1.0))
+            top_family = str(payload.get("top_family") or "").strip().lower()
+            source_bonus = 1.5 if str(payload.get("source_mode") or "").strip().lower() == "stock_universe_projection" else 0.0
+            alias_bonus = max(0.0, 8.0 - matched_alias_index * 2.0)
+            rank_bonus = max(0.0, 16.0 - (max(1, int(matched_rank or 1)) - 1) * 4.0)
+            exact_bonus = 4.0 if top_family == str(strategy_type or "").strip().lower() else 0.0
+            score = (
+                priority * 100.0
+                + alias_bonus
+                + rank_bonus
+                + matched_budget * 10.0
+                - matched_penalty * 12.0
+                + source_bonus
+                + exact_bonus
+            )
+            ranked_matches.append((round(score, 4), code))
+
+        ranked_matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return _normalize_target_codes([code for _score, code in ranked_matches], limit=budget)
+
+    @classmethod
+    def _apply_snapshot_target_alignment(cls, candidate: dict, snapshot: dict) -> dict:
+        item = dict(candidate or {})
+        if not item:
+            return {}
+        strategy_type = str(item.get("strategy_type") or "").strip().lower()
+        if not strategy_type:
+            return item
+        existing_targets = _normalize_target_codes(
+            [
+                item.get("requested_target_symbols"),
+                item.get("target_symbols"),
+                item.get("stock_pool"),
+                dict(item.get("research_task") or {}).get("target_symbols"),
+                dict(item.get("research_task") or {}).get("stock_pool"),
+            ],
+            limit=12,
+        )
+        if existing_targets:
+            return item
+
+        target_symbols = cls._snapshot_target_symbols(strategy_type, snapshot)
+        if not target_symbols:
+            return item
+
+        candidate_family = str(item.get("candidate_family") or strategy_type).strip().lower() or strategy_type
+        research_task = {
+            **dict(item.get("research_task") or {}),
+            "task_source": "snapshot",
+            "preferred_strategy_types": [strategy_type],
+            "allowed_strategy_types": [strategy_type],
+            "strategy_preferences": [strategy_type],
+            "candidate_family": candidate_family,
+            "target_symbols": list(target_symbols),
+            "stock_pool": {"selection_mode": "explicit", "symbols": list(target_symbols)},
+            "target_symbol_policy": "strict_intersection",
+            "universe_expansion_policy": "forbid",
+            "validation_focus": "candidate_target_only",
+            "preference_strength": "soft",
+            "preference_reason": f"snapshot_local_spawn:{strategy_type}",
+            "gate_1_representative_count": min(3, len(target_symbols)),
+            "synthetic_local_spawn": True,
+        }
+        tags = list(item.get("tags") or [])
+        for tag in ("targeted_universe", "synthetic_local_spawn"):
+            if tag not in tags:
+                tags.append(tag)
+
+        return {
+            **item,
+            "candidate_family": candidate_family,
+            "research_task": research_task,
+            "requested_target_symbols": list(target_symbols),
+            "target_symbols": list(target_symbols),
+            "stock_pool": {"selection_mode": "explicit", "symbols": list(target_symbols)},
+            "tags": tags,
+        }
+
     def spawn(self, snapshot: dict) -> List[dict]:
         event_ready = self._event_research_ready(snapshot)
         event_ready_supplemental = self._event_ready_supports_local_fill(snapshot)
@@ -294,7 +487,10 @@ class StrategySpawner:
         )
         signal_candidates += self._expand_signal_variants(snapshot, signal_candidates)
         quota_candidates = self._fill_gaps(snapshot, signal_candidates)
-        candidates = [*signal_candidates, *quota_candidates]
+        candidates = [
+            self._apply_snapshot_target_alignment(candidate, snapshot)
+            for candidate in [*signal_candidates, *quota_candidates]
+        ]
         self.last_report = self._build_spawn_report(
             candidates,
             event_ready=event_ready,
@@ -535,6 +731,10 @@ class StrategySpawner:
         for strategy_type in ranked_types:
             if len(out) >= expansion_budget:
                 break
+            generation_cap = self._local_generation_cap(strategy_type)
+            existing_total_for_type = int(current_counts.get(strategy_type) or 0) + int(variation_counts.get(strategy_type) or 0)
+            if generation_cap is not None and existing_total_for_type >= generation_cap:
+                continue
             desired_variants = min(
                 3,
                 max(
@@ -542,6 +742,8 @@ class StrategySpawner:
                     int(current_counts.get(strategy_type) or 0) - 1 + (1 if int(threshold_hits.get(strategy_type) or 0) >= 3 else 0),
                 ),
             )
+            if generation_cap is not None:
+                desired_variants = min(desired_variants, max(0, generation_cap - existing_total_for_type))
             for _ in range(desired_variants):
                 if len(out) >= expansion_budget:
                     break
@@ -718,6 +920,11 @@ class StrategySpawner:
                 return False
             current = int(current_counts.get(strategy_type) or 0) + int(fill_counts.get(strategy_type) or 0)
             desired_generated_count = 1 if preferred_rank > 2 else 2
+            generation_cap = self._local_generation_cap(strategy_type)
+            if generation_cap is not None:
+                desired_generated_count = min(desired_generated_count, generation_cap)
+                if current >= generation_cap:
+                    return False
             if current >= desired_generated_count:
                 return False
             existing_total = len(current_candidates) + len(out)
@@ -811,35 +1018,107 @@ class StrategySpawner:
         delta = max(0.01, base * 0.15)
         return round(max(lo, min(hi, base + random.uniform(-delta, delta))), 2)
 
-    def _legacy_varied_defaults(self, strategy_type: str, idx: int) -> dict:
+    @staticmethod
+    def _snapshot_regime_inputs(snapshot: Optional[dict] = None) -> dict[str, float]:
+        payload = dict(snapshot or {})
+        return {
+            "fear_greed": StrategySpawner._safe_float(payload.get("fear_greed_index") or 50.0),
+            "volatility": StrategySpawner._safe_float(dict(payload.get("fg_components") or {}).get("volatility") or 50.0),
+            "north_3d": StrategySpawner._safe_float(payload.get("north_fund_3d_net") or 0.0),
+            "margin_5d": StrategySpawner._safe_float(payload.get("margin_5d_change_pct") or 0.0),
+        }
+
+    def _legacy_varied_defaults(self, strategy_type: str, idx: int, snapshot: Optional[dict] = None) -> dict:
+        regime = self._snapshot_regime_inputs(snapshot)
+        fear_greed = regime["fear_greed"]
+        volatility = regime["volatility"]
+        north_3d = regime["north_3d"]
+        margin_5d = regime["margin_5d"]
+
         if strategy_type == "momentum":
-            lookbacks = [10, 20, 30]
+            if fear_greed >= 68 and north_3d > 0 and margin_5d > 0:
+                lookbacks = [5, 10, 20]
+                threshold_base = 0.016
+            elif fear_greed <= 42 or north_3d < 0 or volatility >= 65:
+                lookbacks = [20, 30, 45]
+                threshold_base = 0.028
+            else:
+                lookbacks = [10, 20, 30]
+                threshold_base = 0.022
             lookback = lookbacks[idx % len(lookbacks)]
-            return {"lookback": self._jitter(lookback, 5, 40), "threshold": self._jitter_f(0.02, 0.005, 0.05)}
+            return {
+                "lookback": self._jitter(lookback, 5, 50),
+                "threshold": self._jitter_f(threshold_base, 0.008, 0.05),
+            }
         if strategy_type == "ma_cross":
-            pairs = [(5, 20), (10, 30), (5, 60)]
+            if volatility >= 65 or fear_greed <= 45:
+                pairs = [(8, 34), (10, 55), (13, 89)]
+            elif fear_greed >= 68 and north_3d > 0:
+                pairs = [(5, 21), (8, 34), (13, 55)]
+            else:
+                pairs = [(5, 20), (8, 34), (13, 55)]
             short_period, long_period = pairs[idx % len(pairs)]
             short_period = self._jitter(short_period, 3, 15)
-            long_period = self._jitter(long_period, max(short_period + 5, 15), 80)
+            long_period = self._jitter(long_period, max(short_period + 8, 18), 120)
             return {"short_period": short_period, "long_period": long_period}
         if strategy_type == "rsi":
-            periods = [6, 14, 21]
+            if fear_greed <= 40 or north_3d < 0:
+                periods = [6, 10, 14]
+                oversold_base = 22
+                overbought_base = 76
+            else:
+                periods = [10, 14, 21]
+                oversold_base = 24
+                overbought_base = 72
             period = periods[idx % len(periods)]
-            return {"rsi_period": self._jitter(period, 4, 28), "oversold": self._jitter(30, 20, 40), "overbought": self._jitter(70, 60, 80)}
+            return {
+                "rsi_period": self._jitter(period, 4, 28),
+                "oversold": self._jitter(oversold_base, 18, 34),
+                "overbought": self._jitter(overbought_base, 64, 82),
+            }
         if strategy_type == "volatility_breakout":
-            lookbacks = [10, 15, 20]
+            lookbacks = [8, 13, 21] if volatility >= 60 else [10, 15, 20]
             lookback = lookbacks[idx % len(lookbacks)]
-            return {"lookback": self._jitter(lookback, 5, 30), "threshold": self._jitter_f(0.025, 0.01, 0.06)}
+            threshold_base = 0.03 if volatility >= 60 else 0.025
+            return {"lookback": self._jitter(lookback, 5, 30), "threshold": self._jitter_f(threshold_base, 0.01, 0.06)}
         if strategy_type == "gap_fill":
-            return {"rsi_period": self._jitter(5, 3, 10), "oversold": self._jitter(24, 18, 35), "overbought": self._jitter(58, 50, 70)}
+            oversold_base = 22 if fear_greed <= 45 else 20
+            overbought_base = 66 if volatility >= 60 else 62
+            return {
+                "rsi_period": self._jitter(5 if fear_greed <= 45 else 7, 3, 12),
+                "oversold": self._jitter(oversold_base, 16, 30),
+                "overbought": self._jitter(overbought_base, 56, 74),
+            }
         if strategy_type == "mean_reversion_short":
-            return {"rsi_period": self._jitter(6, 3, 12), "oversold": self._jitter(26, 18, 35), "overbought": self._jitter(62, 50, 75)}
+            oversold_base = 20 if fear_greed <= 38 or north_3d < 0 else 18
+            overbought_base = 76 if volatility >= 55 else 72
+            base_period = 8 if fear_greed <= 38 or volatility <= 40 else 10
+            return {
+                "rsi_period": self._jitter(base_period, 4, 14),
+                "oversold": self._jitter(oversold_base, 16, 26),
+                "overbought": self._jitter(overbought_base, 68, 82),
+            }
         if strategy_type == "value_factor":
-            return {"lookback": self._jitter(60, 30, 90), "buy_quantile": self._jitter_f(0.8, 0.7, 0.9), "sell_quantile": self._jitter_f(0.2, 0.1, 0.3)}
+            lookback_base = 72 if north_3d < 0 or fear_greed <= 45 else 60
+            return {
+                "lookback": self._jitter(lookback_base, 30, 100),
+                "buy_quantile": self._jitter_f(0.82, 0.72, 0.9),
+                "sell_quantile": self._jitter_f(0.18, 0.1, 0.28),
+            }
         if strategy_type == "quality_factor":
-            return {"lookback": self._jitter(60, 30, 90), "buy_quantile": self._jitter_f(0.8, 0.7, 0.9), "sell_quantile": self._jitter_f(0.2, 0.1, 0.3)}
+            lookback_base = 72 if volatility >= 60 or north_3d < 0 else 60
+            return {
+                "lookback": self._jitter(lookback_base, 30, 100),
+                "buy_quantile": self._jitter_f(0.8, 0.72, 0.9),
+                "sell_quantile": self._jitter_f(0.2, 0.1, 0.28),
+            }
         if strategy_type == "growth_factor":
-            return {"lookback": self._jitter(40, 25, 70), "buy_quantile": self._jitter_f(0.8, 0.7, 0.9), "sell_quantile": self._jitter_f(0.2, 0.1, 0.3)}
+            lookback_base = 36 if north_3d > 0 and fear_greed >= 60 else 48
+            return {
+                "lookback": self._jitter(lookback_base, 25, 80),
+                "buy_quantile": self._jitter_f(0.82, 0.72, 0.92),
+                "sell_quantile": self._jitter_f(0.18, 0.08, 0.28),
+            }
         if strategy_type == "multi_factor":
             weights = {
                 "value": random.uniform(0.2, 0.5),
@@ -848,16 +1127,26 @@ class StrategySpawner:
             }
             total = sum(weights.values())
             weights = {key: round(value / total, 2) for key, value in weights.items()}
-            return {"factor_weights": weights, "lookback": self._jitter(60, 30, 90)}
+            lookback_base = 72 if north_3d < 0 else 60
+            return {"factor_weights": weights, "lookback": self._jitter(lookback_base, 30, 100)}
         if strategy_type == "macro_timing":
-            return {"fear_threshold": self._jitter(35, 25, 45), "greed_threshold": self._jitter(65, 55, 75), "lookback": self._jitter(20, 10, 35)}
+            return {
+                "fear_threshold": self._jitter(35 if north_3d < 0 else 32, 24, 45),
+                "greed_threshold": self._jitter(68 if north_3d > 0 else 64, 55, 78),
+                "lookback": self._jitter(24 if volatility >= 60 else 20, 10, 40),
+            }
         if strategy_type == "sector_rotation":
             weights = {"momentum": 0.45, "quality": 0.3, "value": 0.25}
-            return {"factor_weights": weights, "lookback": self._jitter(20, 10, 40)}
+            return {"factor_weights": weights, "lookback": self._jitter(24 if volatility >= 60 else 20, 10, 45)}
         if strategy_type == "north_capital_track":
-            return {"lookback": self._jitter(15, 5, 30), "threshold": self._jitter_f(0.015, 0.005, 0.04)}
+            threshold_base = 0.012 if north_3d > 0 else 0.018
+            return {"lookback": self._jitter(15, 5, 30), "threshold": self._jitter_f(threshold_base, 0.005, 0.04)}
         if strategy_type == "margin_divergence":
-            return {"fear_threshold": self._jitter(40, 30, 50), "greed_threshold": self._jitter(60, 50, 70), "lookback": self._jitter(15, 8, 25)}
+            return {
+                "fear_threshold": self._jitter(42 if margin_5d < 0 else 38, 30, 50),
+                "greed_threshold": self._jitter(62 if margin_5d > 0 else 58, 50, 72),
+                "lookback": self._jitter(15, 8, 28),
+            }
         return {}
 
     def _resolved_varied_defaults(
@@ -876,7 +1165,7 @@ class StrategySpawner:
                 str(sampled.get("source") or "historical_distribution"),
                 int(sampled.get("sample_count") or 0),
             )
-        return self._legacy_varied_defaults(strategy_type, idx), "fixed_defaults", 0
+        return self._legacy_varied_defaults(strategy_type, idx, snapshot=snapshot), "fixed_defaults", 0
 
     def _varied_defaults(self, strategy_type: str, idx: int, snapshot: Optional[dict] = None) -> dict:
         params, _, _ = self._resolved_varied_defaults(strategy_type, idx, snapshot=snapshot)

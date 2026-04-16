@@ -41,6 +41,11 @@ class _DualWriteDb:
         return dict(item)
 
 
+class _BrokenUnifiedWriteDb(_DualWriteDb):
+    async def save_vector_profile(self, payload):
+        raise RuntimeError("unified write failed")
+
+
 class _UnifiedStrategyDb:
     def __init__(self):
         self.collections = [
@@ -194,6 +199,69 @@ class _UnifiedStrategyDb:
         }
 
 
+class _UnifiedCleanupDb(_UnifiedStrategyDb):
+    def __init__(self):
+        super().__init__()
+        self.unified_cleanup_calls: list[dict[str, Any]] = []
+        self.legacy_cleanup_calls: list[dict[str, Any]] = []
+
+    async def cleanup_vector_collection_history(self, **kwargs):
+        self.unified_cleanup_calls.append(dict(kwargs))
+        collection_name = str(kwargs.get('collection_name') or 'strategy_behavior_embeddings')
+        dry_run = bool(kwargs.get('dry_run', True))
+        deleted = {
+            'vector_index_registry': 0,
+            'vector_index_snapshots': 1 if not dry_run else 0,
+            'vector_profiles': 1 if not dry_run else 0,
+            'vector_profile_store': 1 if not dry_run else 0,
+            'vector_index_items': 1 if not dry_run else 0,
+            'vector_index_item_store': 1 if not dry_run else 0,
+            'hnsw_indexes': 1 if not dry_run else 0,
+        }
+        return {
+            'collection_name': collection_name,
+            'active_version': 'u_v1',
+            'latest_snapshot_version': 'u_v1',
+            'dry_run': dry_run,
+            'keep_versions': int(kwargs.get('keep_versions') or 1),
+            'protected_versions': ['u_v1'],
+            'target_versions': ['u_v0'],
+            'target_version_keys': [f'{collection_name}@u_v0'],
+            'hnsw_indexes_to_drop': [f'idx_{collection_name}_u_v0'],
+            'deleted': deleted,
+            'version_details': [{'index_version': 'u_v0', 'profile_rows': 1}],
+            'reason': None,
+        }
+
+    async def cleanup_strategy_vector_history(self, **kwargs):
+        self.legacy_cleanup_calls.append(dict(kwargs))
+        dry_run = bool(kwargs.get('dry_run', True))
+        return {
+            'index_name': str(kwargs.get('index_name') or 'strategy_behavior'),
+            'dry_run': dry_run,
+            'keep_versions': int(kwargs.get('keep_versions') or 1),
+            'protected_versions': ['legacy_v1'],
+            'target_versions': ['legacy_v0'],
+            'target_version_keys': ['legacy_v0'],
+            'hnsw_indexes_to_drop': ['idx_legacy_v0'],
+            'deleted': {
+                'vector_index_registry': 1 if not dry_run else 0,
+                'vector_index_snapshots': 1 if not dry_run else 0,
+                'vector_profiles': 0,
+                'vector_profile_store': 0,
+                'vector_index_items': 0,
+                'vector_index_item_store': 0,
+                'hnsw_indexes': 1 if not dry_run else 0,
+            },
+            'version_details': [{'index_version': 'legacy_v0', 'profile_rows': 0}],
+        }
+
+
+class _LegacyFallbackCleanupDb(_UnifiedCleanupDb):
+    async def list_vector_collections(self, **_kwargs):
+        return []
+
+
 class _DummyMCP:
     def tool(self, **_kwargs):
         def _decorator(fn):
@@ -248,6 +316,40 @@ async def test_build_strategy_profile_dual_writes_unified_vector_profile(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_build_strategy_profile_marks_degraded_when_unified_write_fails(monkeypatch):
+    import strategy_factory
+
+    async def _fake_build_strategy_panels(*_args, **_kwargs):
+        return {
+            'strategy_returns': np.linspace(0.001, 0.04, 40, dtype=np.float64),
+            'holdings': [{'code': '600519', 'weight': 0.4}],
+            'factor_panel': np.ones((40, 3), dtype=np.float64),
+            'return_panel': np.full((40, 3), 0.01, dtype=np.float64),
+        }
+
+    monkeypatch.setattr(strategy_factory, 'build_strategy_panels', _fake_build_strategy_panels)
+
+    platform = StrategyVectorPlatform()
+    monkeypatch.setattr(platform.engine, 'kline_to_vector', lambda _klines, _method: np.asarray([0.2, 0.4, 0.6]))
+    db = _BrokenUnifiedWriteDb()
+
+    result = await platform.build_strategy_profile(
+        db,
+        {'id': 'sid_degraded', 'name': 'Broken Unified', 'strategy_type': 'momentum', 'params': {'lookback': 20}},
+        vector_method='price_volume',
+        index_name='strategy_behavior',
+        index_version='u_v1',
+    )
+
+    assert result is not None
+    assert result['status'] == 'degraded'
+    assert result['degraded'] is True
+    assert result['quality_flags'] == ['unified_write_failed']
+    assert db.saved_registries[-1]['status'] == 'degraded'
+    assert db.saved_registries[-1]['metadata']['degraded'] is True
+
+
+@pytest.mark.asyncio
 async def test_search_similar_prefers_unified_vector_collection():
     platform = StrategyVectorPlatform()
     db = _UnifiedStrategyDb()
@@ -267,9 +369,15 @@ async def test_search_similar_prefers_unified_vector_collection():
     assert result['fallback_used'] is False
     assert result['active_index']['source'] == 'unified_snapshot'
     assert result['active_index']['collection_name'] == 'strategy_behavior_embeddings'
+    assert result['active_index']['source_of_truth'] == 'unified_vector_tables'
+    assert result['source_of_truth'] == 'unified_vector_tables'
+    assert result['collection_name'] == 'strategy_behavior_embeddings'
+    assert result['result_source'] == 'unified_ann'
     assert result['items'][0]['strategy_id'] == 'sid_peer'
     assert result['items'][0]['retrieval_mode'] == 'unified_pgvector_ann'
     assert result['items'][0]['collection_name'] == 'strategy_behavior_embeddings'
+    assert result['items'][0]['result_source'] == 'unified_ann'
+    assert result['items'][0]['source_of_truth'] == 'unified_vector_tables'
 
 
 @pytest.mark.asyncio
@@ -300,8 +408,75 @@ async def test_unified_health_check_reports_counts_without_legacy_tables():
     result = await platform.health_check(db, index_name='strategy_behavior', limit_versions=10)
 
     assert result['health_mode'] == 'unified'
+    assert result['source_of_truth'] == 'unified_vector_tables'
+    assert result['cleanup_scope'] == 'unified'
     assert result['backend_requested'] == 'pgvector'
     assert result['backend_used'] == 'pgvector'
     assert result['counts']['profiles'] == 2
     assert result['counts']['index_items'] == 1
+    assert result['unified_counts']['profiles'] == 2
+    assert result['legacy_counts']['profiles'] == 0
+    assert result['collection_count'] == 1
     assert result['active_index']['collection_name'] == 'strategy_behavior_embeddings'
+
+
+@pytest.mark.asyncio
+async def test_strategy_manager_vector_cleanup_defaults_to_unified_scope(monkeypatch):
+    mcp = _DummyMCP()
+    sm_mod.register_strategy_manager(mcp)
+    db = _UnifiedCleanupDb()
+    monkeypatch.setattr(sm_mod, 'get_db', lambda: db)
+
+    cleanup = await mcp.strategy_manager(action='vector_cleanup', kwargs='{"index_name":"strategy_behavior"}')
+
+    assert cleanup['success'] is True
+    assert cleanup['data']['requested_scope'] == 'unified'
+    assert cleanup['data']['cleanup_scope'] == 'unified'
+    assert cleanup['data']['source_of_truth'] == 'unified_vector_tables'
+    assert cleanup['data']['collection_count'] == 1
+    assert cleanup['data']['target_version_keys'] == ['strategy_behavior_embeddings@u_v0']
+    assert db.unified_cleanup_calls[0]['collection_name'] == 'strategy_behavior_embeddings'
+    assert db.legacy_cleanup_calls == []
+
+
+@pytest.mark.asyncio
+async def test_strategy_manager_vector_cleanup_supports_both_scope(monkeypatch):
+    mcp = _DummyMCP()
+    sm_mod.register_strategy_manager(mcp)
+    db = _UnifiedCleanupDb()
+    monkeypatch.setattr(sm_mod, 'get_db', lambda: db)
+
+    cleanup = await mcp.strategy_manager(
+        action='vector_cleanup',
+        kwargs='{"index_name":"strategy_behavior","scope":"both","dry_run":false}',
+    )
+
+    assert cleanup['success'] is True
+    assert cleanup['data']['cleanup_scope'] == 'both'
+    assert cleanup['data']['health_mode'] == 'mixed'
+    assert cleanup['data']['source_of_truth'] == 'mixed_vector_tables'
+    assert cleanup['data']['deleted']['vector_profiles'] == 1
+    assert cleanup['data']['deleted']['vector_index_registry'] == 1
+    assert cleanup['data']['scopes']['legacy']['cleanup_scope'] == 'legacy'
+    assert cleanup['data']['scopes']['unified']['cleanup_scope'] == 'unified'
+    assert len(db.unified_cleanup_calls) == 1
+    assert len(db.legacy_cleanup_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_strategy_manager_vector_cleanup_falls_back_to_legacy_when_unified_missing(monkeypatch):
+    mcp = _DummyMCP()
+    sm_mod.register_strategy_manager(mcp)
+    db = _LegacyFallbackCleanupDb()
+    monkeypatch.setattr(sm_mod, 'get_db', lambda: db)
+
+    cleanup = await mcp.strategy_manager(action='vector_cleanup', kwargs='{"index_name":"strategy_behavior"}')
+
+    assert cleanup['success'] is True
+    assert cleanup['data']['requested_scope'] == 'unified'
+    assert cleanup['data']['cleanup_scope'] == 'legacy'
+    assert cleanup['data']['fallback_used'] is True
+    assert cleanup['data']['fallback_reason'] == 'no_unified_collections'
+    assert cleanup['data']['source_of_truth'] == 'legacy_strategy_vector_tables'
+    assert len(db.unified_cleanup_calls) == 0
+    assert len(db.legacy_cleanup_calls) == 1

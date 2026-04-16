@@ -115,6 +115,7 @@ class StrategyTextEmbeddingService:
     def __init__(self, config: Optional[StrategyTextEmbeddingConfig] = None):
         self.config = config or StrategyTextEmbeddingConfig.from_env()
         self._cache: dict[str, list[float]] = {}
+        self._cache_info: dict[str, dict[str, Any]] = {}
         self._client = self._build_client()
         self._sentence_transformer = None
         self._created_at = datetime.now().astimezone()
@@ -587,6 +588,54 @@ class StrategyTextEmbeddingService:
             self._cache[cache_key] = normalized_values
             self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)
             return list(normalized_values)
+        except Exception as exc:
+            self._mark_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
+            raise
+
+    async def embed_text_with_info(self, text: str, *, model: Optional[str] = None) -> dict[str, Any]:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            raise StrategyTextEmbeddingError("embedding text is empty")
+        provider = self._resolve_provider()
+        resolved_model = str(model or self.config.model or self.config.local_model_path or "").strip()
+        cache_key = hashlib.sha1(f"{provider}\n{resolved_model}\n{normalized}".encode("utf-8")).hexdigest()
+        cached = self._cache.get(cache_key)
+        cached_info = dict(self._cache_info.get(cache_key) or {})
+        if cached is not None:
+            return {
+                "embedding": list(cached),
+                "provider": str(cached_info.get("provider") or provider),
+                "requested_provider": str(cached_info.get("requested_provider") or provider),
+                "model": str(cached_info.get("model") or resolved_model or "") or None,
+                "fallback_used": bool(cached_info.get("fallback_used")),
+                "fallback_error": cached_info.get("fallback_error"),
+                "cached": True,
+                "vector_dim": int(cached_info.get("vector_dim") or len(cached)),
+            }
+        started = time.perf_counter()
+        try:
+            values, used_provider, fallback_error = await self._embed_with_runtime_fallback(
+                provider,
+                normalized,
+                model=resolved_model,
+            )
+            normalized_values = self._normalize_vector(values)
+            info = {
+                "provider": used_provider,
+                "requested_provider": provider,
+                "model": resolved_model or None,
+                "fallback_used": used_provider != provider,
+                "fallback_error": fallback_error,
+                "vector_dim": len(normalized_values),
+            }
+            self._cache[cache_key] = normalized_values
+            self._cache_info[cache_key] = dict(info)
+            self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)
+            return {
+                "embedding": list(normalized_values),
+                **info,
+                "cached": False,
+            }
         except Exception as exc:
             self._mark_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
             raise

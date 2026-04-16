@@ -20,8 +20,38 @@ class _FakeSpawner:
         return self._report
 
 
+class _SyntheticTargetSpawner:
+    def __init__(self):
+        self._report = {"summary": {"candidate_count": 1}}
+
+    def spawn(self, _snapshot):
+        return [
+            {
+                "strategy_type": "ma_cross",
+                "target_symbols": ["920185", "689009", "688981"],
+                "requested_target_symbols": ["920185", "689009", "688981"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["920185", "689009", "688981"]},
+                "research_task": {
+                    "task_source": "snapshot",
+                    "synthetic_local_spawn": True,
+                    "target_symbols": ["920185", "689009", "688981"],
+                    "target_symbols_signature": "920185,689009,688981",
+                    "stock_pool": {"selection_mode": "explicit", "symbols": ["920185", "689009", "688981"]},
+                    "gate_1_representative_count": 3,
+                },
+            }
+        ]
+
+    def get_last_report(self):
+        return self._report
+
+
 class _FakeFactoryPkg:
     StrategySpawner = _FakeSpawner
+
+
+class _SyntheticTargetFactoryPkg:
+    StrategySpawner = _SyntheticTargetSpawner
 
 
 class _FakeScheduler:
@@ -69,6 +99,14 @@ class _FakeScheduler:
             ],
             "experiments": [{"experiment_id": "exp_alpha", "status": "recorded"}],
         }
+
+
+class _FakeKlineDb:
+    def __init__(self, counts):
+        self._counts = dict(counts)
+
+    async def get_klines(self, code, limit=60):
+        return [{"close": 1.0}] * min(limit, int(self._counts.get(code, 0)))
 
 
 class _FakeFactorGateway:
@@ -152,3 +190,26 @@ async def test_research_plane_runner_run_generation_separates_research_boundarie
     assert result.autonomy_candidates[0]["params"]["factory_attempt_count"] == 3
     assert result.autonomy_candidates[0]["params"]["factory_global_attempt_count"] == 3
     assert result.autonomy_candidates[1]["params"]["factory_network_request_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_research_plane_runner_prunes_insufficient_kline_codes_from_synthetic_local_spawn():
+    runner = ResearchPlaneRunner(_FakeScheduler(), _SyntheticTargetFactoryPkg())
+    db = _FakeKlineDb({"920185": 11, "689009": 60, "688981": 60})
+
+    result = await runner.run_generation(db=db, snapshot={})
+
+    candidate = result.local_candidates[0]
+    assert sorted(candidate["target_symbols"]) == ["688981", "689009"]
+    assert sorted(candidate["requested_target_symbols"]) == ["688981", "689009"]
+    assert sorted(candidate["stock_pool"]["symbols"]) == ["688981", "689009"]
+    assert sorted(candidate["params"]["target_symbols"]) == ["688981", "689009"]
+    assert sorted(candidate["research_task"]["target_symbols"]) == ["688981", "689009"]
+    assert sorted(candidate["research_task"]["target_symbols_signature"].split(",")) == ["688981", "689009"]
+    assert candidate["research_task"]["gate_1_representative_count"] == 2
+
+    summary = result.local_spawn_report["summary"]
+    assert summary["target_symbol_sanitization_enabled"] is True
+    assert summary["target_symbol_sanitization_pruned_candidate_count"] == 1
+    assert summary["target_symbol_sanitization_pruned_symbol_count"] == 1
+    assert summary["target_symbol_sanitization_insufficient_kline_codes"] == ["920185"]

@@ -80,12 +80,31 @@ class _StrategyVectorPlatformSearchMixin:
                 or (active_index or {}).get('backend')
                 or requested_backend
             )
+            source_of_truth = str(
+                first.get('source_of_truth')
+                or (active_index or {}).get('source_of_truth')
+                or ('legacy_strategy_vector_tables' if rows else '')
+            )
+            collection_name = str(
+                first.get('collection_name')
+                or (active_index or {}).get('collection_name')
+                or ''
+            ).strip() or None
+            result_source = str(
+                first.get('result_source')
+                or ('unified_ann' if source_of_truth == 'unified_vector_tables' and rows else '')
+                or ('legacy_ann' if rows else '')
+            ).strip() or None
             return {
                 'items': rows,
                 'count': len(rows),
                 'index_name': resolved_index_name,
                 'index_version': resolved_index_version,
                 'active_index': active_index,
+                'collection_name': collection_name,
+                'source_of_truth': source_of_truth or None,
+                'table_family': first.get('table_family') or (active_index or {}).get('table_family'),
+                'result_source': result_source,
                 **self._merge_backend_audit(
                     backend_requested=requested_backend,
                     backend_used=backend_used,
@@ -172,6 +191,14 @@ class _StrategyVectorPlatformSearchMixin:
                 limit_versions=limit_versions,
                 include_hnsw_indexes=include_hnsw_indexes,
             )
+            legacy_counts = dict((result or {}).get('counts') or {})
+            zero_counts = {
+                'profiles': 0,
+                'profile_store': 0,
+                'index_snapshots': 0,
+                'index_items': 0,
+                'index_item_store': 0,
+            }
             active_index = await self.get_active_index(db, index_name=index_name)
             backend_requested = self.requested_backend_name(db)
             backend_used = str((active_index or {}).get('backend') or result.get('backend') or backend_requested)
@@ -182,6 +209,15 @@ class _StrategyVectorPlatformSearchMixin:
             )
             return {
                 **result,
+                'health_mode': str(result.get('health_mode') or 'legacy'),
+                'source_of_truth': str(result.get('source_of_truth') or 'legacy_strategy_vector_tables'),
+                'cleanup_scope': str(result.get('cleanup_scope') or 'legacy'),
+                'table_family': str(result.get('table_family') or 'legacy_strategy_vector_tables'),
+                'legacy_only': bool(result.get('legacy_only', True)),
+                'unified_available': bool(hasattr(db, 'list_vector_collections') and hasattr(db, 'list_vector_index_snapshots')),
+                'legacy_available': True,
+                'unified_counts': dict(result.get('unified_counts') or zero_counts),
+                'legacy_counts': dict(result.get('legacy_counts') or legacy_counts),
                 'active_index': active_index,
                 'text_embedding': {
                     'service': embedding_status,
@@ -246,6 +282,7 @@ class _StrategyVectorPlatformSearchMixin:
                 resolved_strategy_id = str(item.get('entity_id') or '').strip()
                 if not resolved_strategy_id:
                     continue
+                retrieval_mode = self._unified_retrieval_mode(backend_used)
                 results.append({
                     'profile_id': item.get('profile_id') or item.get('id') or metadata.get('legacy_profile_id'),
                     'strategy_id': resolved_strategy_id,
@@ -263,12 +300,16 @@ class _StrategyVectorPlatformSearchMixin:
                     'index_version': str((search_result or {}).get('index_version') or query_profile.get('version') or index_version or ''),
                     'signature': item.get('signature') or metadata.get('signature'),
                     'candidate_count': len(items),
-                    'retrieval_mode': self._unified_retrieval_mode(backend_used),
+                    'retrieval_mode': retrieval_mode,
+                    'result_source': self._unified_result_source(retrieval_mode),
                     'collection_name': query_profile.get('collection_name') or collection.get('collection_name'),
                     'model_id': item.get('model_id') or query_profile.get('model_id') or collection.get('model_id'),
                     'metadata': metadata,
                     'search_fallback_used': fallback_used,
                     'search_fallback_reason': fallback_reason,
+                    'source_of_truth': 'unified_vector_tables',
+                    'table_family': 'unified_vector_tables',
+                    'legacy_only': False,
                 })
             results.sort(key=lambda row: (row.get('similarity', 0), row.get('coarse_score', 0)), reverse=True)
             return results[: max(1, min(int(limit or 5), 20))]
@@ -353,7 +394,11 @@ class _StrategyVectorPlatformSearchMixin:
                             'signature': dict(item.get('metadata') or {}).get('signature'),
                             'candidate_count': max(candidate_count, len(pg_rows)),
                             'retrieval_mode': 'pgvector_ann',
+                            'result_source': 'legacy_ann',
                             'metadata': item.get('metadata') or {},
+                            'source_of_truth': 'legacy_strategy_vector_tables',
+                            'table_family': 'legacy_strategy_vector_tables',
+                            'legacy_only': True,
                         })
                     results.sort(key=lambda row: (row.get('similarity', 0), row.get('coarse_score', 0)), reverse=True)
                     return results[: max(1, min(int(limit or 5), 20))]
@@ -400,7 +445,11 @@ class _StrategyVectorPlatformSearchMixin:
                     'signature': dict(item.get('metadata') or {}).get('signature'),
                     'candidate_count': max(candidate_count, len(items) - 1),
                     'retrieval_mode': 'persisted_ann',
+                    'result_source': 'legacy_ann',
                     'metadata': item.get('metadata') or {},
+                    'source_of_truth': 'legacy_strategy_vector_tables',
+                    'table_family': 'legacy_strategy_vector_tables',
+                    'legacy_only': True,
                 })
             results.sort(key=lambda row: (row.get('similarity', 0), row.get('coarse_score', 0)), reverse=True)
             return results[: max(1, min(int(limit or 5), 20))]
@@ -455,11 +504,15 @@ class _StrategyVectorPlatformSearchMixin:
                             **item,
                             'similarity': round(float(item.get('similarity') or 0.0), 6),
                             'retrieval_mode': 'pgvector_exact',
+                            'result_source': 'legacy_profile_exact',
                             'candidate_count': max(candidate_count, len(pg_rows)),
                             'index_name': self._resolved_index_name(index_name, item),
                             'query_bucket_id': None,
                             'bucket_id': None,
                             'backend': 'pgvector',
+                            'source_of_truth': 'legacy_strategy_vector_tables',
+                            'table_family': 'legacy_strategy_vector_tables',
+                            'legacy_only': True,
                         })
                     results.sort(key=lambda row: row.get('similarity', 0), reverse=True)
                     return results[: max(1, min(int(limit or 5), 20))]
@@ -487,10 +540,14 @@ class _StrategyVectorPlatformSearchMixin:
                     **item,
                     'similarity': round(float(similarity), 6),
                     'retrieval_mode': 'full_scan',
+                    'result_source': 'legacy_full_scan',
                     'candidate_count': candidate_count,
                     'index_name': self._resolved_index_name(index_name, item),
                     'query_bucket_id': None,
                     'bucket_id': None,
+                    'source_of_truth': 'legacy_strategy_vector_tables',
+                    'table_family': 'legacy_strategy_vector_tables',
+                    'legacy_only': True,
                 })
             results.sort(key=lambda row: row.get('similarity', 0), reverse=True)
             return results[: max(1, min(int(limit or 5), 20))]

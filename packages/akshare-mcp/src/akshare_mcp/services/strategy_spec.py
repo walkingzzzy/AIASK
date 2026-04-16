@@ -5,10 +5,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from uuid import uuid4
 
 from strategy_factory.application.market_evidence import (
     build_market_fact_gate_audit,
     normalize_market_evidence_facts,
+)
+from strategy_factory.application.research_protocol_contract import (
+    CANDIDATE_CONTRACT_V2,
+    build_research_validation_contract,
+    normalize_field_provenance_token,
+    normalize_prediction_trace_id,
 )
 
 
@@ -205,6 +212,8 @@ def _primary_target_code(target_symbols: list[str]) -> str:
 def _normalize_board_bucket(value: Any, *, code: str = "") -> str:
     token = str(value or "").strip().lower()
     aliases = {
+        "futures": "futures",
+        "commodity_futures": "futures",
         "star": "star",
         "star_market": "star",
         "科创板": "star",
@@ -221,6 +230,8 @@ def _normalize_board_bucket(value: Any, *, code: str = "") -> str:
     if token in aliases:
         return aliases[token]
     normalized_code = str(code or "").split(".")[0].strip()
+    if normalized_code.isalpha():
+        return "futures"
     if normalized_code.startswith("688"):
         return "star"
     if normalized_code.startswith(("300", "301")):
@@ -470,7 +481,7 @@ def _normalize_instrument_profile(
         if any(source != "default" for source in measured_sources.values())
         else "default_board_profile"
     )
-    return {
+    normalized = {
         "annual_volatility_realized_252d": annual_volatility_realized_252d,
         "annual_volatility": annual_volatility_realized_252d,
         "atr14_pct_realized": atr14_pct_realized,
@@ -498,6 +509,18 @@ def _normalize_instrument_profile(
         ) if _safe_float(payload.get("market_cap"), defaults.get("market_cap") or 0.0) > 0 else defaults.get("market_cap"),
         "symbol": code or payload.get("symbol") or defaults.get("symbol"),
     }
+    for extra_key in (
+        "asset_class",
+        "underlying",
+        "curve_legs",
+        "roll_rule",
+    ):
+        value = payload.get(extra_key)
+        if value not in _EMPTY_VALUES:
+            normalized[extra_key] = value
+    if str(normalized.get("asset_class") or "").strip().lower() == "futures":
+        normalized["board_bucket"] = "futures"
+    return normalized
 
 
 def _derive_half_life_semantics(alpha_half_life: Any) -> dict[str, Any]:
@@ -2229,6 +2252,52 @@ def _resolve_source_label(*labeled_values: tuple[str, Any]) -> str:
     return "default"
 
 
+def _default_research_validation_contract_payload() -> dict[str, Any]:
+    try:
+        from .research_510300_v3 import build_default_research_validation_contract
+
+        return dict(build_default_research_validation_contract() or {})
+    except Exception:
+        return {
+            "contract_version": "strategy_factory.research_protocol.v2",
+            "walk_forward_config": {"train_months": 60, "test_months": 12, "step_months": 12},
+            "baseline_reference": {
+                "name": "510300_baseline_reference",
+                "baseline_slippage_bps": 5.0,
+                "stress_slippage_bps": 10.0,
+            },
+            "cash_sleeve_policy": {
+                "enabled": False,
+                "schedule_clock": "prev_close_signal_next_open_execute_same_close_cash_rebuild",
+            },
+            "cost_sensitivity_grid": {"base_slippage_bps": 5.0, "stress_slippage_bps": 10.0},
+            "capacity_execution": {"schedule_clock": "prev_close_signal_next_open_execute_same_close_cash_rebuild"},
+            "multiple_testing": {
+                "mode": "formal_runtime",
+                "white_reality_check_enabled": True,
+                "hansen_spa_enabled": True,
+                "pbo_enabled": True,
+            },
+            "admission_thresholds": {
+                "validation_profile": {
+                    "profile": "trade_rule_validation",
+                    "validation_focus": "target_plus_representative",
+                    "primary_validation_layer": "target",
+                }
+            },
+            "family_holding_bucket": {"family": "default", "holding_bucket": "medium"},
+        }
+
+
+def _classify_holding_bucket(holding_horizon: dict[str, Any]) -> str:
+    max_days = _safe_int(dict(holding_horizon or {}).get("max_days"), 0)
+    if max_days <= 5:
+        return "short"
+    if max_days <= 15:
+        return "medium"
+    return "long"
+
+
 def _trade_plan_nodes_for_provenance(trade_plan: dict[str, Any]) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
 
@@ -2588,6 +2657,33 @@ class StrategySpec:
             source_candidate_params.get("backtest_metrics"),
         )
         task_source = _task_source(research_task, event_context)
+        prediction_trace_id = normalize_prediction_trace_id(
+            _scalar_value(
+                metadata.get("prediction_trace_id"),
+                source_candidate.get("prediction_trace_id"),
+                dict(self.params or {}).get("prediction_trace_id"),
+                source_candidate_params.get("prediction_trace_id"),
+            ),
+            _scalar_value(
+                metadata.get("trace_id"),
+                source_candidate.get("trace_id"),
+                dict(self.params or {}).get("trace_id"),
+                source_candidate_params.get("trace_id"),
+            ),
+            fallback=f"pred_{uuid4().hex[:12]}",
+        )
+        explicit_research_validation_contract = _dict_value(
+            metadata.get("research_validation_contract"),
+            source_candidate.get("research_validation_contract"),
+            dict(self.params or {}).get("research_validation_contract"),
+            source_candidate_params.get("research_validation_contract"),
+        )
+        research_validation_contract_source = _resolve_source_label(
+            ("metadata", metadata.get("research_validation_contract")),
+            ("source_candidate", source_candidate.get("research_validation_contract")),
+            ("params", dict(self.params or {}).get("research_validation_contract")),
+            ("source_candidate_params", source_candidate_params.get("research_validation_contract")),
+        )
         holding_rationale = _scalar_value(
             metadata.get("holding_rationale"),
             source_candidate.get("holding_rationale"),
@@ -2826,10 +2922,20 @@ class StrategySpec:
             source_candidate.get("capacity_assumption"),
             hypothesis_artifact.get("capacity_assumption"),
         )
+        capacity_assumption_source = _resolve_source_label(
+            ("metadata", metadata.get("capacity_assumption")),
+            ("source_candidate", source_candidate.get("capacity_assumption")),
+            ("hypothesis_artifact", hypothesis_artifact.get("capacity_assumption")),
+        )
         cost_sensitivity_grid = _dict_value(
             metadata.get("cost_sensitivity_grid"),
             source_candidate.get("cost_sensitivity_grid"),
             hypothesis_artifact.get("cost_sensitivity_grid"),
+        )
+        cost_sensitivity_grid_source = _resolve_source_label(
+            ("metadata", metadata.get("cost_sensitivity_grid")),
+            ("source_candidate", source_candidate.get("cost_sensitivity_grid")),
+            ("hypothesis_artifact", hypothesis_artifact.get("cost_sensitivity_grid")),
         )
         instrument_profile = _normalize_instrument_profile(
             _dict_value(
@@ -3034,6 +3140,144 @@ class StrategySpec:
                 ]
             )
         )
+        default_research_validation_contract = _default_research_validation_contract_payload()
+        holding_bucket = _classify_holding_bucket(holding_horizon)
+        capacity_execution_contract = (
+            explicit_research_validation_contract.get("capacity_execution")
+            or {
+                **dict(capacity_assumption or {}),
+                "capacity_bucket": capacity_bucket,
+                "position_model": position_model,
+                "max_position_pct": portfolio_spec.get("max_position_pct"),
+                "market_impact_bps": execution_assumptions.get("market_impact_bps"),
+                "slippage_bps": execution_assumptions.get("slippage_bps"),
+                "commission_rate": execution_assumptions.get("commission_rate"),
+                "tradability_filter": execution_assumptions.get("tradability_filter"),
+            }
+        )
+        family_holding_bucket_contract = (
+            explicit_research_validation_contract.get("family_holding_bucket")
+            or {
+                "family": family_specialization.get("family")
+                or family_specialization.get("family_id")
+                or self.strategy_type,
+                "holding_bucket": holding_bucket,
+                "expected_turnover_band": expected_turnover_band,
+            }
+        )
+        effective_research_sections = {
+            "walk_forward_config": dict(explicit_research_validation_contract.get("walk_forward_config") or {}),
+            "baseline_reference": dict(explicit_research_validation_contract.get("baseline_reference") or {}),
+            "cash_sleeve_policy": dict(explicit_research_validation_contract.get("cash_sleeve_policy") or {}),
+            "cost_sensitivity_grid": dict(
+                explicit_research_validation_contract.get("cost_sensitivity_grid")
+                or dict(cost_sensitivity_grid)
+                or {}
+            ),
+            "capacity_execution": dict(capacity_execution_contract or {}),
+            "multiple_testing": dict(explicit_research_validation_contract.get("multiple_testing") or {}),
+            "admission_thresholds": dict(explicit_research_validation_contract.get("admission_thresholds") or {}),
+            "family_holding_bucket": dict(family_holding_bucket_contract or {}),
+        }
+        research_field_provenance = {
+            "walk_forward_config": normalize_field_provenance_token(
+                research_validation_contract_source
+                if effective_research_sections["walk_forward_config"]
+                else "missing"
+            ),
+            "baseline_reference": normalize_field_provenance_token(
+                research_validation_contract_source
+                if effective_research_sections["baseline_reference"]
+                else "missing"
+            ),
+            "cash_sleeve_policy": normalize_field_provenance_token(
+                research_validation_contract_source
+                if effective_research_sections["cash_sleeve_policy"]
+                else "missing"
+            ),
+            "cost_sensitivity_grid": normalize_field_provenance_token(
+                research_validation_contract_source
+                if explicit_research_validation_contract.get("cost_sensitivity_grid")
+                else cost_sensitivity_grid_source
+                if effective_research_sections["cost_sensitivity_grid"]
+                else "missing"
+            ),
+            "capacity_execution": normalize_field_provenance_token(
+                research_validation_contract_source
+                if explicit_research_validation_contract.get("capacity_execution")
+                else capacity_assumption_source
+                if effective_research_sections["capacity_execution"]
+                else "missing"
+            ),
+            "multiple_testing": normalize_field_provenance_token(
+                research_validation_contract_source
+                if effective_research_sections["multiple_testing"]
+                else "missing"
+            ),
+            "admission_thresholds": normalize_field_provenance_token(
+                research_validation_contract_source
+                if effective_research_sections["admission_thresholds"]
+                else "missing"
+            ),
+            "family_holding_bucket": normalize_field_provenance_token(
+                research_validation_contract_source
+                if explicit_research_validation_contract.get("family_holding_bucket")
+                else "derived"
+                if effective_research_sections["family_holding_bucket"]
+                else "missing"
+            ),
+        }
+        recommended_defaults = {
+            field_name: dict(default_research_validation_contract.get(field_name) or {})
+            for field_name in effective_research_sections
+            if not effective_research_sections.get(field_name)
+            and dict(default_research_validation_contract.get(field_name) or {})
+        }
+        research_contract_hard_failures: list[dict[str, Any]] = []
+        for field_name in list(runtime_semantic_diagnostics.get("semantic_contract_missing_fields") or []):
+            token = str(field_name or "").strip()
+            if token:
+                research_contract_hard_failures.append(
+                    {
+                        "field": token,
+                        "issue": "semantic_contract_missing_field",
+                        "reason_code": f"semantic_contract_missing:{token}",
+                        "detail": "runtime semantic contract is not executable without this field",
+                    }
+                )
+        for reason_code in execution_semantic_gap_reasons:
+            token = str(reason_code or "").strip()
+            if token:
+                research_contract_hard_failures.append(
+                    {
+                        "issue": "execution_semantic_gap",
+                        "reason_code": token,
+                    }
+                )
+        research_validation_contract = build_research_validation_contract(
+            walk_forward_config=effective_research_sections.get("walk_forward_config"),
+            baseline_reference=effective_research_sections.get("baseline_reference"),
+            cash_sleeve_policy=effective_research_sections.get("cash_sleeve_policy"),
+            cost_sensitivity_grid=effective_research_sections.get("cost_sensitivity_grid"),
+            capacity_execution=effective_research_sections.get("capacity_execution"),
+            multiple_testing=effective_research_sections.get("multiple_testing"),
+            admission_thresholds=effective_research_sections.get("admission_thresholds"),
+            family_holding_bucket=effective_research_sections.get("family_holding_bucket"),
+            field_provenance=research_field_provenance,
+            recommended_defaults=recommended_defaults,
+            hard_failures=research_contract_hard_failures,
+        )
+        research_protocol_version = str(
+            research_validation_contract.get("contract_version")
+            or default_research_validation_contract.get("contract_version")
+            or "strategy_factory.research_protocol.v2"
+        ).strip() or "strategy_factory.research_protocol.v2"
+        candidate_contract_version = CANDIDATE_CONTRACT_V2
+        field_provenance = dict(research_validation_contract.get("field_provenance") or {})
+        field_provenance_summary = dict(research_validation_contract.get("field_provenance_summary") or {})
+        spec_completeness = str(research_validation_contract.get("spec_completeness") or "complete").strip() or "complete"
+        completion_issues = list(research_validation_contract.get("completion_issues") or [])
+        research_hard_failures = list(research_validation_contract.get("hard_failures") or [])
         candidate_params = {
             **dict(self.params or {}),
             "target_symbols": list(target_symbols),
@@ -3096,6 +3340,16 @@ class StrategySpec:
                 hypothesis_artifact.get("validation_focus"),
                 validation_profile.get("validation_focus"),
             ),
+            "prediction_trace_id": prediction_trace_id,
+            "trace_id": prediction_trace_id,
+            "research_validation_contract": dict(research_validation_contract),
+            "research_protocol_version": research_protocol_version,
+            "candidate_contract_version": candidate_contract_version,
+            "field_provenance": dict(field_provenance),
+            "field_provenance_summary": dict(field_provenance_summary),
+            "spec_completeness": spec_completeness,
+            "completion_issues": list(completion_issues),
+            "hard_failures": list(research_hard_failures),
         }
         if market_facts:
             candidate_params["market_facts"] = list(market_facts)
@@ -3217,6 +3471,16 @@ class StrategySpec:
             'parent_strategy_id': _scalar_value(metadata.get('parent_strategy_id'), source_candidate.get('parent_strategy_id')),
             'pipeline_provenance': _dict_value(metadata.get('pipeline_provenance')),
             'experiment_id': experiment_id,
+            'prediction_trace_id': prediction_trace_id,
+            'trace_id': prediction_trace_id,
+            'research_validation_contract': dict(research_validation_contract),
+            'research_protocol_version': research_protocol_version,
+            'candidate_contract_version': candidate_contract_version,
+            'field_provenance': dict(field_provenance),
+            'field_provenance_summary': dict(field_provenance_summary),
+            'spec_completeness': spec_completeness,
+            'completion_issues': list(completion_issues),
+            'hard_failures': list(research_hard_failures),
             'tags': list(dict.fromkeys(['ai_generated', source, self.strategy_type, *(self.tags or [])])),
         }
         if backtest_metrics:

@@ -1017,6 +1017,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
         "rebalance_rule": candidate_contract_value(payload, "rebalance_rule", {}),
         "portfolio_spec": _as_dict(candidate_contract_value(payload, "portfolio_spec", {})),
         "execution_assumptions": _as_dict(candidate_contract_value(payload, "execution_assumptions", {})),
+        "instrument_profile": _as_dict(candidate_contract_value(payload, "instrument_profile", {})),
         "economic_semantics": economic_semantics,
         "validation_profile": validation_profile,
         "lineage": _resolve_lineage(payload, research_task=normalized_task),
@@ -1035,7 +1036,15 @@ def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
     if "had_explicit_research_task" in existing_envelope:
         had_explicit_research_task = bool(existing_envelope.get("had_explicit_research_task"))
     else:
-        had_explicit_research_task = bool(payload.get("research_task") or params.get("research_task"))
+        had_explicit_research_task = False
+        for raw_task in (payload.get("research_task"), params.get("research_task")):
+            task_payload = dict(raw_task or {}) if isinstance(raw_task, Mapping) else {}
+            if not task_payload:
+                continue
+            if bool(task_payload.get("synthetic_local_spawn")):
+                continue
+            had_explicit_research_task = True
+            break
     normalized_task = _normalize_research_task_contract(
         existing_envelope.get("normalized_research_task")
         or candidate_contract_value(payload, "research_task", {})
@@ -1350,6 +1359,22 @@ def build_factory_backtest_assumptions(candidate: Optional[Mapping[str, Any]]) -
             execution_assumptions.get("capacity_bucket")
             or economic_semantics.get("capacity_bucket")
         ) or None,
+        margin_rate=(
+            _safe_float(execution_assumptions.get("margin_rate"))
+            if execution_assumptions.get("margin_rate") is not None
+            else None
+        ),
+        contract_multiplier=(
+            _safe_int(execution_assumptions.get("contract_multiplier"))
+            if execution_assumptions.get("contract_multiplier") is not None
+            else None
+        ),
+        liquidity_bucket=_string(execution_assumptions.get("liquidity_bucket")) or None,
+        max_contracts_per_rebalance=(
+            _safe_int(execution_assumptions.get("max_contracts_per_rebalance"))
+            if execution_assumptions.get("max_contracts_per_rebalance") is not None
+            else None
+        ),
         position_assumption=_string(
             portfolio_spec.get("position_assumption")
             or economic_semantics.get("position_model")

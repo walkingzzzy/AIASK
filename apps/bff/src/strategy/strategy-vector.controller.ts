@@ -99,6 +99,7 @@ export class StrategyVectorController {
   async vectorCleanup(@Body() body: VectorCleanupDto, @Req() req: Req_) {
     const data = await this.svc.vectorCleanup({
       index_name: body.index_name,
+      scope: body.scope,
       keep_versions: body.keep_versions,
       dry_run: body.dry_run,
       cleanup_hnsw: body.cleanup_hnsw,

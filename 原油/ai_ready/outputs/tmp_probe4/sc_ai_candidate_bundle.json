@@ -1,0 +1,3688 @@
+{
+  "llm_status": "provider_disabled",
+  "llm_reason": "probe",
+  "baseline_candidates": [
+    {
+      "status": "submitted",
+      "name": "SC Trend Carry M4",
+      "strategy_type": "dsl_rule",
+      "generator_mode": "futures_calendar_research_adapter",
+      "candidate_family": "sc_trend",
+      "target_symbols": [
+        "SC"
+      ],
+      "stock_pool": {
+        "selection_mode": "explicit",
+        "symbols": [
+          "SC"
+        ],
+        "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+      },
+      "research_task": {
+        "task_id": "sc_calendar_full_sample_20180726_20250219",
+        "task_source": "snapshot",
+        "opportunity_type": "sc_trend_calendar",
+        "target_symbols": [
+          "SC"
+        ],
+        "preferred_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "allowed_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "validation_focus": "candidate_target_only"
+      },
+      "hypothesis": "Backwardation carry 与远月趋势延续在近端未出现异常升水时可共振放大。",
+      "hypothesis_artifact": {
+        "alpha_hypothesis": "Backwardation carry 与远月趋势延续在近端未出现异常升水时可共振放大。",
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_pct": 0.05,
+            "time_stop_days": 25,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        },
+        "target_universe_hypothesis": {
+          "target_symbols": [
+            "SC"
+          ],
+          "target_symbol_policy": "prefer_intersection",
+          "selection_mode": "explicit"
+        },
+        "family_hint": "trend",
+        "holding_rationale": "SC 远月方向单边依赖 backwardation carry + 趋势延续。",
+        "alpha_half_life": 12,
+        "cost_sensitivity_grid": {
+          "base_case": {
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "market_impact_bps": 1.8,
+            "capacity_participation_rate": 0.1
+          },
+          "stress_case": {
+            "commission_rate": 7.5e-05,
+            "slippage_bps": 5.25,
+            "market_impact_bps": 3.15,
+            "capacity_participation_rate": 0.075
+          }
+        },
+        "position_model": "single_futures_directional",
+        "capacity_assumption": {
+          "capital_buckets": [
+            {
+              "capital": 1000000,
+              "annualized_return": 0.10492,
+              "post_cost_sharpe": 0.784204,
+              "max_drawdown": -0.299234,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 8,
+              "binding_constraint": "drawdown",
+              "participation_cap": 14,
+              "margin_cap": 11,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 8
+            },
+            {
+              "capital": 5000000,
+              "annualized_return": 0.050644,
+              "post_cost_sharpe": 0.814788,
+              "max_drawdown": -0.137811,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 55,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 40
+            },
+            {
+              "capital": 10000000,
+              "annualized_return": 0.026975,
+              "post_cost_sharpe": 0.797176,
+              "max_drawdown": -0.077051,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 110,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 81
+            },
+            {
+              "capital": 30000000,
+              "annualized_return": 0.009422,
+              "post_cost_sharpe": 0.783428,
+              "max_drawdown": -0.027881,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 332,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 244
+            },
+            {
+              "capital": 100000000,
+              "annualized_return": 0.002876,
+              "post_cost_sharpe": 0.778136,
+              "max_drawdown": -0.008622,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 1108,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 814
+            }
+          ],
+          "liquidity_reference_contracts": 180,
+          "far_month_liquidity_haircut": 0.78
+        },
+        "market_regime_assumption": {
+          "preferred_regime": "backwardation",
+          "avoid_regime": "extreme_near_month_premium",
+          "regime_panel": {
+            "overall": {
+              "annualized_return": 0.10492,
+              "sharpe_ratio": 0.836835,
+              "post_cost_sharpe": 0.784204,
+              "max_drawdown": -0.299234,
+              "win_rate": 0.7,
+              "trade_count": 10
+            },
+            "backwardation": {
+              "annualized_return": 0.105486,
+              "sharpe_ratio": 0.794184,
+              "max_drawdown": -0.299234,
+              "trade_count": 10,
+              "win_rate": 0.7
+            },
+            "contango_or_flat": {
+              "annualized_return": -0.000512,
+              "sharpe_ratio": -0.016952,
+              "max_drawdown": -0.044961,
+              "trade_count": 0,
+              "win_rate": 0.0
+            }
+          }
+        },
+        "validation_focus": "candidate_target_only"
+      },
+      "evidence_chain": {
+        "evidences": [
+          {
+            "evidence_id": "trend_memo",
+            "source_type": "local_research_memo",
+            "direction": "supportive",
+            "summary": "本地研究备忘强调 SC 远月 carry 与近端升贴水切换特征，支持趋势 + 跨月套利双族。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_05_crude_oil_strategy_memo.md"
+          },
+          {
+            "evidence_id": "trend_roll_rule",
+            "source_type": "data_definition",
+            "direction": "supportive",
+            "summary": "本地数据说明明确到期换月与交割保护口径，适合作为常数期限研究适配器的 roll 规则。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_07_sc_spread_data_notes.md"
+          },
+          {
+            "evidence_id": "trend_backtest",
+            "source_type": "full_sample_backtest",
+            "direction": "supportive",
+            "summary": "全样本后成本年化 10.49%，post-cost Sharpe 0.78，最大回撤 -29.92%。"
+          },
+          {
+            "evidence_id": "trend_regime",
+            "source_type": "regime_panel",
+            "direction": "supportive",
+            "summary": "backwardation 年化 10.55%，contango/flat 年化 -0.05%。"
+          }
+        ]
+      },
+      "prediction_contract": {
+        "claims": [
+          {
+            "claim_id": "claim_trend_1",
+            "expected_move": "up",
+            "expected_horizon": 15,
+            "evidence_ids": [
+              "trend_memo",
+              "trend_backtest",
+              "trend_regime"
+            ],
+            "failure_condition": "near_month_extreme_premium_or_trend_break"
+          }
+        ]
+      },
+      "confidence_contract": {
+        "prediction_quality": {
+          "support_samples": 10,
+          "historical_hit_rate": 0.7,
+          "post_cost_sharpe": 0.784204,
+          "alpha_decay": 0.0
+        }
+      },
+      "holding_horizon": {
+        "min_days": 5,
+        "max_days": 25,
+        "rebalance_interval_days": 1,
+        "cooldown_window_days": 2,
+        "expected_turnover_band": "medium"
+      },
+      "trade_plan": {
+        "entry": {
+          "node_id": "entry_trend_1",
+          "claim_ids": [
+            "claim_trend_1"
+          ],
+          "entry_bias": "carry_trend_follow"
+        },
+        "exit": {
+          "node_id": "exit_trend_1",
+          "claim_ids": [
+            "claim_trend_1"
+          ],
+          "exit_bias": "trend_decay_or_delivery_protection"
+        },
+        "steps": [
+          {
+            "node_id": "step_trend_hold",
+            "claim_ids": [
+              "claim_trend_1"
+            ],
+            "summary": "保持第 3/4 月常数期限多头，roll node 前主动收缩。"
+          }
+        ]
+      },
+      "risk_rules": {
+        "stop_loss_pct": 0.05,
+        "time_stop_days": 25,
+        "delivery_protection_days": 3,
+        "near_month_premium_floor": -3.0
+      },
+      "position_sizing": {
+        "mode": "margin_budget",
+        "position_assumption": "single_futures_directional",
+        "margin_budget_fraction": 0.85
+      },
+      "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+      "rebalance_rule": {
+        "mode": "roll_or_signal",
+        "frequency_days": 1,
+        "roll_guard_days": 3
+      },
+      "portfolio_spec": {
+        "position_assumption": "single_futures_directional",
+        "target_weight_scheme": "single_contract_margin_budget",
+        "max_position_pct": 0.85,
+        "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+      },
+      "execution_assumptions": {
+        "initial_capital": 1000000,
+        "commission_rate": 5e-05,
+        "slippage_bps": 3.5,
+        "slippage_model": "fixed_plus_capacity_scaled",
+        "market_impact_bps": 1.8,
+        "tradability_filter": true,
+        "capacity_participation_rate": 0.1,
+        "margin_rate": 0.15,
+        "contract_multiplier": 1000,
+        "liquidity_bucket": "far_month_light",
+        "max_contracts_per_rebalance": 22,
+        "market_ruleset": "cn_futures",
+        "sell_tax_rate": 0.0,
+        "min_trade_lot": 1,
+        "t_plus_one": false
+      },
+      "validation_profile": {
+        "profile": "trade_rule_validation",
+        "validation_focus": "candidate_target_only",
+        "primary_validation_layer": "target"
+      },
+      "instrument_profile": {
+        "asset_class": "futures",
+        "underlying": "SC",
+        "curve_legs": [
+          {
+            "side": "long",
+            "leg_type": "month_offset",
+            "month": 4
+          }
+        ],
+        "roll_rule": {
+          "rule_type": "constant_maturity_roll",
+          "exit_before_front_delivery_days": 3,
+          "front_contract_column": "contract_01"
+        },
+        "annual_volatility_realized_252d": 0.290749,
+        "annual_volatility": 0.290749,
+        "atr14_pct_realized": 0.012762,
+        "atr14_pct": 0.012762,
+        "gap_p95_realized": 0.037485,
+        "gap_p95": 0.037485,
+        "intraday_range_p90": 0.02813,
+        "trend_efficiency_60d_realized": 0.148574,
+        "trend_efficiency_60d": 0.148574,
+        "turnover_median": 1.0,
+        "volume_ratio_p80": 1.0,
+        "volume_ratio_p90": 1.0,
+        "turnover_rate_p80": 1.0,
+        "turnover_rate_p90": 1.0,
+        "measurement_source": "sc_calendar_research_adapter",
+        "measurement_sources": {
+          "annual_volatility_realized_252d": "research_adapter",
+          "atr14_pct_realized": "research_adapter",
+          "gap_p95_realized": "research_adapter",
+          "intraday_range_p90": "research_adapter",
+          "trend_efficiency_60d_realized": "research_adapter",
+          "volume_ratio_p80": "research_adapter_proxy",
+          "volume_ratio_p90": "research_adapter_proxy",
+          "turnover_rate_p80": "research_adapter_proxy",
+          "turnover_rate_p90": "research_adapter_proxy"
+        },
+        "measured_profile_complete": true,
+        "board_bucket": "futures",
+        "symbol": "SC"
+      },
+      "constraint_check": {
+        "coverage_ratio": 1.0,
+        "intersection_ratio": 1.0,
+        "target_overlap_count": 1,
+        "constraint_violation": false,
+        "alignment_contract_violation": false
+      },
+      "candidate_provenance": {
+        "generator_mode": "futures_calendar_research_adapter",
+        "source_data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+        "factory_target_status": "submitted"
+      },
+      "tags": [
+        "futures",
+        "calendar_trend",
+        "gate3_candidate",
+        "submitted"
+      ],
+      "dsl": {
+        "version": "1.0",
+        "timeframe": "daily",
+        "entry": {
+          "all": [
+            {
+              "op": "gt",
+              "left": {
+                "field": "close"
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "trade_plan_node_id": "entry_trend_1"
+            },
+            {
+              "op": "gt",
+              "left": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 60
+              }
+            }
+          ]
+        },
+        "exit": {
+          "any": [
+            {
+              "op": "lt",
+              "left": {
+                "field": "close"
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "trade_plan_node_id": "exit_trend_1"
+            },
+            {
+              "op": "lt",
+              "left": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 60
+              }
+            }
+          ]
+        },
+        "metadata": {
+          "signal_reference_series": "price_04",
+          "trade_leg_definition": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 4
+            }
+          ],
+          "target_symbols": [
+            "SC"
+          ],
+          "stock_pool": {
+            "selection_mode": "explicit",
+            "symbols": [
+              "SC"
+            ]
+          },
+          "portfolio_spec": {
+            "position_assumption": "single_futures_directional",
+            "target_weight_scheme": "single_contract_margin_budget",
+            "max_position_pct": 0.85,
+            "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "far_month_light",
+            "max_contracts_per_rebalance": 22,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "target"
+          },
+          "targeting_policy": {
+            "target_symbol_policy": "prefer_intersection",
+            "universe_expansion_policy": "allow_market_fallback",
+            "validation_focus": "candidate_target_only"
+          },
+          "constraint_check": {
+            "coverage_ratio": 1.0,
+            "intersection_ratio": 1.0,
+            "target_overlap_count": 1,
+            "constraint_violation": false,
+            "alignment_contract_violation": false
+          },
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 4
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "constant_maturity_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": 0.290749,
+            "annual_volatility": 0.290749,
+            "atr14_pct_realized": 0.012762,
+            "atr14_pct": 0.012762,
+            "gap_p95_realized": 0.037485,
+            "gap_p95": 0.037485,
+            "intraday_range_p90": 0.02813,
+            "trend_efficiency_60d_realized": 0.148574,
+            "trend_efficiency_60d": 0.148574,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          }
+        }
+      }
+    },
+    {
+      "status": "submitted",
+      "name": "SC Spread 1-2",
+      "strategy_type": "dsl_rule",
+      "generator_mode": "futures_calendar_research_adapter",
+      "candidate_family": "sc_spread",
+      "target_symbols": [
+        "SC"
+      ],
+      "stock_pool": {
+        "selection_mode": "explicit",
+        "symbols": [
+          "SC"
+        ],
+        "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+      },
+      "research_task": {
+        "task_id": "sc_calendar_full_sample_20180726_20250219",
+        "task_source": "snapshot",
+        "opportunity_type": "sc_spread_calendar",
+        "target_symbols": [
+          "SC"
+        ],
+        "preferred_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "allowed_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "validation_focus": "candidate_target_only"
+      },
+      "hypothesis": "SC 期限结构在 backwardation 主导阶段具备稳定 carry，温和 pullback 后的 2-4/3-4 远端跨月更适合买近抛远并持有到结构修复。",
+      "hypothesis_artifact": {
+        "alpha_hypothesis": "SC 期限结构在 backwardation 主导阶段具备稳定 carry，温和 pullback 后的 2-4/3-4 远端跨月更适合买近抛远并持有到结构修复。",
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_abs_move": 3.0,
+            "time_stop_days": 30,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        },
+        "target_universe_hypothesis": {
+          "target_symbols": [
+            "SC"
+          ],
+          "target_symbol_policy": "prefer_intersection",
+          "selection_mode": "explicit"
+        },
+        "family_hint": "spread",
+        "holding_rationale": "买近抛远跨月对冲依赖 spread pullback 后的期限结构修复。",
+        "alpha_half_life": 8,
+        "cost_sensitivity_grid": {
+          "base_case": {
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "market_impact_bps": 1.8,
+            "capacity_participation_rate": 0.1
+          },
+          "stress_case": {
+            "commission_rate": 7.5e-05,
+            "slippage_bps": 5.25,
+            "market_impact_bps": 3.15,
+            "capacity_participation_rate": 0.075
+          }
+        },
+        "position_model": "paired_futures_spread",
+        "capacity_assumption": {
+          "capital_buckets": [
+            {
+              "capital": 1000000,
+              "annualized_return": 0.005075,
+              "post_cost_sharpe": 0.286509,
+              "max_drawdown": -0.02944,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 2,
+              "binding_constraint": "margin",
+              "participation_cap": 19,
+              "margin_cap": 2,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 45
+            },
+            {
+              "capital": 5000000,
+              "annualized_return": 0.004834,
+              "post_cost_sharpe": 0.24592,
+              "max_drawdown": -0.03444,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 11,
+              "binding_constraint": "margin",
+              "participation_cap": 19,
+              "margin_cap": 11,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 225
+            },
+            {
+              "capital": 10000000,
+              "annualized_return": 0.002962,
+              "post_cost_sharpe": 0.270655,
+              "max_drawdown": -0.018012,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 22,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 450
+            },
+            {
+              "capital": 30000000,
+              "annualized_return": 0.000993,
+              "post_cost_sharpe": 0.269269,
+              "max_drawdown": -0.006004,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 68,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 1350
+            },
+            {
+              "capital": 100000000,
+              "annualized_return": 0.000298,
+              "post_cost_sharpe": 0.268779,
+              "max_drawdown": -0.001801,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 228,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 4500
+            }
+          ],
+          "liquidity_reference_contracts": 210,
+          "far_month_liquidity_haircut": 0.95
+        },
+        "market_regime_assumption": {
+          "preferred_regime": "backwardation",
+          "avoid_regime": "extreme_near_month_premium",
+          "regime_panel": {
+            "overall": {
+              "annualized_return": 0.005075,
+              "sharpe_ratio": 0.577411,
+              "post_cost_sharpe": 0.286509,
+              "max_drawdown": -0.02944,
+              "win_rate": 0.333333,
+              "trade_count": 3
+            },
+            "backwardation": {
+              "annualized_return": 0.00728,
+              "sharpe_ratio": 0.419041,
+              "max_drawdown": -0.015938,
+              "trade_count": 3,
+              "win_rate": 0.333333
+            },
+            "contango_or_flat": {
+              "annualized_return": -0.002189,
+              "sharpe_ratio": -0.485175,
+              "max_drawdown": -0.01372,
+              "trade_count": 0,
+              "win_rate": 0.0
+            }
+          }
+        },
+        "validation_focus": "candidate_target_only"
+      },
+      "evidence_chain": {
+        "evidences": [
+          {
+            "evidence_id": "spread_memo",
+            "source_type": "local_research_memo",
+            "direction": "supportive",
+            "summary": "本地研究备忘强调 SC 远月 carry 与近端升贴水切换特征，支持趋势 + 跨月套利双族。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_05_crude_oil_strategy_memo.md"
+          },
+          {
+            "evidence_id": "spread_roll_rule",
+            "source_type": "data_definition",
+            "direction": "supportive",
+            "summary": "本地数据说明明确到期换月与交割保护口径，适合作为常数期限研究适配器的 roll 规则。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_07_sc_spread_data_notes.md"
+          },
+          {
+            "evidence_id": "spread_backtest",
+            "source_type": "full_sample_backtest",
+            "direction": "supportive",
+            "summary": "全样本后成本年化 0.51%，post-cost Sharpe 0.29，最大回撤 -2.94%。"
+          },
+          {
+            "evidence_id": "spread_regime",
+            "source_type": "regime_panel",
+            "direction": "supportive",
+            "summary": "backwardation 年化 0.73%，contango/flat 年化 -0.22%。"
+          }
+        ]
+      },
+      "prediction_contract": {
+        "claims": [
+          {
+            "claim_id": "claim_spread_1",
+            "expected_move": "spread_widen",
+            "expected_horizon": 30,
+            "evidence_ids": [
+              "spread_memo",
+              "spread_backtest",
+              "spread_regime"
+            ],
+            "failure_condition": "term_structure_reversal_or_delivery_pressure"
+          }
+        ]
+      },
+      "confidence_contract": {
+        "prediction_quality": {
+          "support_samples": 3,
+          "historical_hit_rate": 0.333333,
+          "post_cost_sharpe": 0.286509,
+          "alpha_decay": 0.0
+        }
+      },
+      "holding_horizon": {
+        "min_days": 3,
+        "max_days": 30,
+        "rebalance_interval_days": 1,
+        "cooldown_window_days": 1,
+        "expected_turnover_band": "medium"
+      },
+      "trade_plan": {
+        "entry": {
+          "node_id": "entry_spread_1",
+          "claim_ids": [
+            "claim_spread_1"
+          ],
+          "entry_bias": "buy_near_sell_far_on_pullback"
+        },
+        "exit": {
+          "node_id": "exit_spread_1",
+          "claim_ids": [
+            "claim_spread_1"
+          ],
+          "exit_bias": "mean_reversion_or_delivery_protection"
+        },
+        "steps": [
+          {
+            "node_id": "step_spread_hold",
+            "claim_ids": [
+              "claim_spread_1"
+            ],
+            "summary": "维持买近抛远对冲，温和 pullback 后等待价差修复，时间止盈或交割保护离场。"
+          }
+        ]
+      },
+      "risk_rules": {
+        "stop_loss_abs_move": 3.0,
+        "time_stop_days": 30,
+        "delivery_protection_days": 3,
+        "near_month_premium_floor": -3.0
+      },
+      "position_sizing": {
+        "mode": "paired_margin_budget",
+        "position_assumption": "paired_futures_spread",
+        "margin_budget_fraction": 0.7
+      },
+      "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+      "rebalance_rule": {
+        "mode": "signal_or_roll",
+        "frequency_days": 1,
+        "roll_guard_days": 3
+      },
+      "portfolio_spec": {
+        "position_assumption": "paired_futures_spread",
+        "target_weight_scheme": "paired_margin_budget",
+        "max_position_pct": 0.7,
+        "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+      },
+      "execution_assumptions": {
+        "initial_capital": 1000000,
+        "commission_rate": 5e-05,
+        "slippage_bps": 3.5,
+        "slippage_model": "fixed_plus_capacity_scaled",
+        "market_impact_bps": 1.8,
+        "tradability_filter": true,
+        "capacity_participation_rate": 0.1,
+        "margin_rate": 0.15,
+        "contract_multiplier": 1000,
+        "liquidity_bucket": "near_month_high",
+        "max_contracts_per_rebalance": 24,
+        "market_ruleset": "cn_futures",
+        "sell_tax_rate": 0.0,
+        "min_trade_lot": 1,
+        "t_plus_one": false
+      },
+      "validation_profile": {
+        "profile": "trade_rule_validation",
+        "validation_focus": "candidate_target_only",
+        "primary_validation_layer": "target"
+      },
+      "instrument_profile": {
+        "asset_class": "futures",
+        "underlying": "SC",
+        "curve_legs": [
+          {
+            "side": "long",
+            "leg_type": "month_offset",
+            "month": 1
+          },
+          {
+            "side": "short",
+            "leg_type": "month_offset",
+            "month": 2
+          }
+        ],
+        "roll_rule": {
+          "rule_type": "calendar_spread_roll",
+          "exit_before_front_delivery_days": 3,
+          "front_contract_column": "contract_01"
+        },
+        "annual_volatility_realized_252d": NaN,
+        "annual_volatility": NaN,
+        "atr14_pct_realized": 1.037783,
+        "atr14_pct": 1.037783,
+        "gap_p95_realized": 3.184778,
+        "gap_p95": 3.184778,
+        "intraday_range_p90": 1.641534,
+        "trend_efficiency_60d_realized": 0.199337,
+        "trend_efficiency_60d": 0.199337,
+        "turnover_median": 1.0,
+        "volume_ratio_p80": 1.0,
+        "volume_ratio_p90": 1.0,
+        "turnover_rate_p80": 1.0,
+        "turnover_rate_p90": 1.0,
+        "measurement_source": "sc_calendar_research_adapter",
+        "measurement_sources": {
+          "annual_volatility_realized_252d": "research_adapter",
+          "atr14_pct_realized": "research_adapter",
+          "gap_p95_realized": "research_adapter",
+          "intraday_range_p90": "research_adapter",
+          "trend_efficiency_60d_realized": "research_adapter",
+          "volume_ratio_p80": "research_adapter_proxy",
+          "volume_ratio_p90": "research_adapter_proxy",
+          "turnover_rate_p80": "research_adapter_proxy",
+          "turnover_rate_p90": "research_adapter_proxy"
+        },
+        "measured_profile_complete": true,
+        "board_bucket": "futures",
+        "symbol": "SC"
+      },
+      "constraint_check": {
+        "coverage_ratio": 1.0,
+        "intersection_ratio": 1.0,
+        "target_overlap_count": 1,
+        "constraint_violation": false,
+        "alignment_contract_violation": false
+      },
+      "candidate_provenance": {
+        "generator_mode": "futures_calendar_research_adapter",
+        "source_data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+        "factory_target_status": "submitted"
+      },
+      "tags": [
+        "futures",
+        "calendar_spread",
+        "gate3_candidate",
+        "submitted"
+      ],
+      "dsl": {
+        "version": "1.0",
+        "timeframe": "daily",
+        "entry": {
+          "all": [
+            {
+              "op": "gte",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": -0.75
+              },
+              "trade_plan_node_id": "entry_spread_1"
+            },
+            {
+              "op": "lte",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": 0.25
+              }
+            }
+          ]
+        },
+        "exit": {
+          "any": [
+            {
+              "op": "gt",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": 1.25
+              },
+              "trade_plan_node_id": "exit_spread_1"
+            }
+          ]
+        },
+        "metadata": {
+          "signal_reference_series": "spread_1_2",
+          "trade_leg_definition": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 1
+            },
+            {
+              "side": "short",
+              "leg_type": "month_offset",
+              "month": 2
+            }
+          ],
+          "mark_to_market_mode": "actual_contract_legs",
+          "entry_z_band": {
+            "low": -0.75,
+            "high": 0.25
+          },
+          "target_symbols": [
+            "SC"
+          ],
+          "stock_pool": {
+            "selection_mode": "explicit",
+            "symbols": [
+              "SC"
+            ]
+          },
+          "portfolio_spec": {
+            "position_assumption": "paired_futures_spread",
+            "target_weight_scheme": "paired_margin_budget",
+            "max_position_pct": 0.7,
+            "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "near_month_high",
+            "max_contracts_per_rebalance": 24,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "target"
+          },
+          "targeting_policy": {
+            "target_symbol_policy": "prefer_intersection",
+            "universe_expansion_policy": "allow_market_fallback",
+            "validation_focus": "candidate_target_only"
+          },
+          "constraint_check": {
+            "coverage_ratio": 1.0,
+            "intersection_ratio": 1.0,
+            "target_overlap_count": 1,
+            "constraint_violation": false,
+            "alignment_contract_violation": false
+          },
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 1
+              },
+              {
+                "side": "short",
+                "leg_type": "month_offset",
+                "month": 2
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "calendar_spread_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": NaN,
+            "annual_volatility": NaN,
+            "atr14_pct_realized": 1.037783,
+            "atr14_pct": 1.037783,
+            "gap_p95_realized": 3.184778,
+            "gap_p95": 3.184778,
+            "intraday_range_p90": 1.641534,
+            "trend_efficiency_60d_realized": 0.199337,
+            "trend_efficiency_60d": 0.199337,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          }
+        }
+      }
+    }
+  ],
+  "optimized_candidates": [
+    {
+      "status": "submitted",
+      "name": "SC Trend Carry M4",
+      "strategy_type": "dsl_rule",
+      "generator_mode": "futures_calendar_research_adapter",
+      "candidate_family": "sc_trend",
+      "target_symbols": [
+        "SC"
+      ],
+      "stock_pool": {
+        "selection_mode": "explicit",
+        "symbols": [
+          "SC"
+        ],
+        "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+      },
+      "research_task": {
+        "task_id": "sc_calendar_full_sample_20180726_20250219",
+        "task_source": "snapshot",
+        "opportunity_type": "sc_trend_calendar",
+        "target_symbols": [
+          "SC"
+        ],
+        "preferred_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "allowed_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "validation_focus": "candidate_target_only"
+      },
+      "hypothesis": "Backwardation carry 与远月趋势延续在近端未出现异常升水时可共振放大。",
+      "hypothesis_artifact": {
+        "alpha_hypothesis": "Backwardation carry 与远月趋势延续在近端未出现异常升水时可共振放大。",
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_pct": 0.05,
+            "time_stop_days": 25,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        },
+        "target_universe_hypothesis": {
+          "target_symbols": [
+            "SC"
+          ],
+          "target_symbol_policy": "prefer_intersection",
+          "selection_mode": "explicit"
+        },
+        "family_hint": "trend",
+        "holding_rationale": "SC 远月方向单边依赖 backwardation carry + 趋势延续。",
+        "alpha_half_life": 12,
+        "cost_sensitivity_grid": {
+          "base_case": {
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "market_impact_bps": 1.8,
+            "capacity_participation_rate": 0.1
+          },
+          "stress_case": {
+            "commission_rate": 7.5e-05,
+            "slippage_bps": 5.25,
+            "market_impact_bps": 3.15,
+            "capacity_participation_rate": 0.075
+          }
+        },
+        "position_model": "single_futures_directional",
+        "capacity_assumption": {
+          "capital_buckets": [
+            {
+              "capital": 1000000,
+              "annualized_return": 0.10492,
+              "post_cost_sharpe": 0.784204,
+              "max_drawdown": -0.299234,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 8,
+              "binding_constraint": "drawdown",
+              "participation_cap": 14,
+              "margin_cap": 11,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 8
+            },
+            {
+              "capital": 5000000,
+              "annualized_return": 0.050644,
+              "post_cost_sharpe": 0.814788,
+              "max_drawdown": -0.137811,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 55,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 40
+            },
+            {
+              "capital": 10000000,
+              "annualized_return": 0.026975,
+              "post_cost_sharpe": 0.797176,
+              "max_drawdown": -0.077051,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 110,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 81
+            },
+            {
+              "capital": 30000000,
+              "annualized_return": 0.009422,
+              "post_cost_sharpe": 0.783428,
+              "max_drawdown": -0.027881,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 332,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 244
+            },
+            {
+              "capital": 100000000,
+              "annualized_return": 0.002876,
+              "post_cost_sharpe": 0.778136,
+              "max_drawdown": -0.008622,
+              "win_rate": 0.7,
+              "trade_count": 10,
+              "capacity_limit_contracts": 14,
+              "binding_constraint": "participation",
+              "participation_cap": 14,
+              "margin_cap": 1108,
+              "max_contracts_cap": 22,
+              "drawdown_cap": 814
+            }
+          ],
+          "liquidity_reference_contracts": 180,
+          "far_month_liquidity_haircut": 0.78
+        },
+        "market_regime_assumption": {
+          "preferred_regime": "backwardation",
+          "avoid_regime": "extreme_near_month_premium",
+          "regime_panel": {
+            "overall": {
+              "annualized_return": 0.10492,
+              "sharpe_ratio": 0.836835,
+              "post_cost_sharpe": 0.784204,
+              "max_drawdown": -0.299234,
+              "win_rate": 0.7,
+              "trade_count": 10
+            },
+            "backwardation": {
+              "annualized_return": 0.105486,
+              "sharpe_ratio": 0.794184,
+              "max_drawdown": -0.299234,
+              "trade_count": 10,
+              "win_rate": 0.7
+            },
+            "contango_or_flat": {
+              "annualized_return": -0.000512,
+              "sharpe_ratio": -0.016952,
+              "max_drawdown": -0.044961,
+              "trade_count": 0,
+              "win_rate": 0.0
+            }
+          }
+        },
+        "validation_focus": "candidate_target_only"
+      },
+      "evidence_chain": {
+        "evidences": [
+          {
+            "evidence_id": "trend_memo",
+            "source_type": "local_research_memo",
+            "direction": "supportive",
+            "summary": "本地研究备忘强调 SC 远月 carry 与近端升贴水切换特征，支持趋势 + 跨月套利双族。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_05_crude_oil_strategy_memo.md"
+          },
+          {
+            "evidence_id": "trend_roll_rule",
+            "source_type": "data_definition",
+            "direction": "supportive",
+            "summary": "本地数据说明明确到期换月与交割保护口径，适合作为常数期限研究适配器的 roll 规则。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_07_sc_spread_data_notes.md"
+          },
+          {
+            "evidence_id": "trend_backtest",
+            "source_type": "full_sample_backtest",
+            "direction": "supportive",
+            "summary": "全样本后成本年化 10.49%，post-cost Sharpe 0.78，最大回撤 -29.92%。"
+          },
+          {
+            "evidence_id": "trend_regime",
+            "source_type": "regime_panel",
+            "direction": "supportive",
+            "summary": "backwardation 年化 10.55%，contango/flat 年化 -0.05%。"
+          }
+        ]
+      },
+      "prediction_contract": {
+        "claims": [
+          {
+            "claim_id": "claim_trend_1",
+            "expected_move": "up",
+            "expected_horizon": 15,
+            "evidence_ids": [
+              "trend_memo",
+              "trend_backtest",
+              "trend_regime"
+            ],
+            "failure_condition": "near_month_extreme_premium_or_trend_break"
+          }
+        ]
+      },
+      "confidence_contract": {
+        "prediction_quality": {
+          "support_samples": 10,
+          "historical_hit_rate": 0.7,
+          "post_cost_sharpe": 0.784204,
+          "alpha_decay": 0.0
+        }
+      },
+      "holding_horizon": {
+        "min_days": 5,
+        "max_days": 25,
+        "rebalance_interval_days": 1,
+        "cooldown_window_days": 2,
+        "expected_turnover_band": "medium"
+      },
+      "trade_plan": {
+        "entry": {
+          "node_id": "entry_trend_1",
+          "claim_ids": [
+            "claim_trend_1"
+          ],
+          "entry_bias": "carry_trend_follow"
+        },
+        "exit": {
+          "node_id": "exit_trend_1",
+          "claim_ids": [
+            "claim_trend_1"
+          ],
+          "exit_bias": "trend_decay_or_delivery_protection"
+        },
+        "steps": [
+          {
+            "node_id": "step_trend_hold",
+            "claim_ids": [
+              "claim_trend_1"
+            ],
+            "summary": "保持第 3/4 月常数期限多头，roll node 前主动收缩。"
+          }
+        ]
+      },
+      "risk_rules": {
+        "stop_loss_pct": 0.05,
+        "time_stop_days": 25,
+        "delivery_protection_days": 3,
+        "near_month_premium_floor": -3.0
+      },
+      "position_sizing": {
+        "mode": "margin_budget",
+        "position_assumption": "single_futures_directional",
+        "margin_budget_fraction": 0.85
+      },
+      "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+      "rebalance_rule": {
+        "mode": "roll_or_signal",
+        "frequency_days": 1,
+        "roll_guard_days": 3
+      },
+      "portfolio_spec": {
+        "position_assumption": "single_futures_directional",
+        "target_weight_scheme": "single_contract_margin_budget",
+        "max_position_pct": 0.85,
+        "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+      },
+      "execution_assumptions": {
+        "initial_capital": 1000000,
+        "commission_rate": 5e-05,
+        "slippage_bps": 3.5,
+        "slippage_model": "fixed_plus_capacity_scaled",
+        "market_impact_bps": 1.8,
+        "tradability_filter": true,
+        "capacity_participation_rate": 0.1,
+        "margin_rate": 0.15,
+        "contract_multiplier": 1000,
+        "liquidity_bucket": "far_month_light",
+        "max_contracts_per_rebalance": 22,
+        "market_ruleset": "cn_futures",
+        "sell_tax_rate": 0.0,
+        "min_trade_lot": 1,
+        "t_plus_one": false
+      },
+      "validation_profile": {
+        "profile": "trade_rule_validation",
+        "validation_focus": "candidate_target_only",
+        "primary_validation_layer": "target"
+      },
+      "instrument_profile": {
+        "asset_class": "futures",
+        "underlying": "SC",
+        "curve_legs": [
+          {
+            "side": "long",
+            "leg_type": "month_offset",
+            "month": 4
+          }
+        ],
+        "roll_rule": {
+          "rule_type": "constant_maturity_roll",
+          "exit_before_front_delivery_days": 3,
+          "front_contract_column": "contract_01"
+        },
+        "annual_volatility_realized_252d": 0.290749,
+        "annual_volatility": 0.290749,
+        "atr14_pct_realized": 0.012762,
+        "atr14_pct": 0.012762,
+        "gap_p95_realized": 0.037485,
+        "gap_p95": 0.037485,
+        "intraday_range_p90": 0.02813,
+        "trend_efficiency_60d_realized": 0.148574,
+        "trend_efficiency_60d": 0.148574,
+        "turnover_median": 1.0,
+        "volume_ratio_p80": 1.0,
+        "volume_ratio_p90": 1.0,
+        "turnover_rate_p80": 1.0,
+        "turnover_rate_p90": 1.0,
+        "measurement_source": "sc_calendar_research_adapter",
+        "measurement_sources": {
+          "annual_volatility_realized_252d": "research_adapter",
+          "atr14_pct_realized": "research_adapter",
+          "gap_p95_realized": "research_adapter",
+          "intraday_range_p90": "research_adapter",
+          "trend_efficiency_60d_realized": "research_adapter",
+          "volume_ratio_p80": "research_adapter_proxy",
+          "volume_ratio_p90": "research_adapter_proxy",
+          "turnover_rate_p80": "research_adapter_proxy",
+          "turnover_rate_p90": "research_adapter_proxy"
+        },
+        "measured_profile_complete": true,
+        "board_bucket": "futures",
+        "symbol": "SC"
+      },
+      "constraint_check": {
+        "coverage_ratio": 1.0,
+        "intersection_ratio": 1.0,
+        "target_overlap_count": 1,
+        "constraint_violation": false,
+        "alignment_contract_violation": false
+      },
+      "candidate_provenance": {
+        "generator_mode": "futures_calendar_research_adapter",
+        "source_data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+        "factory_target_status": "submitted"
+      },
+      "tags": [
+        "futures",
+        "calendar_trend",
+        "gate3_candidate",
+        "submitted"
+      ],
+      "dsl": {
+        "version": "1.0",
+        "timeframe": "daily",
+        "entry": {
+          "all": [
+            {
+              "op": "gt",
+              "left": {
+                "field": "close"
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "trade_plan_node_id": "entry_trend_1"
+            },
+            {
+              "op": "gt",
+              "left": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 60
+              }
+            }
+          ]
+        },
+        "exit": {
+          "any": [
+            {
+              "op": "lt",
+              "left": {
+                "field": "close"
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "trade_plan_node_id": "exit_trend_1"
+            },
+            {
+              "op": "lt",
+              "left": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 20
+              },
+              "right": {
+                "indicator": "sma",
+                "field": "close",
+                "window": 60
+              }
+            }
+          ]
+        },
+        "metadata": {
+          "signal_reference_series": "price_04",
+          "trade_leg_definition": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 4
+            }
+          ],
+          "target_symbols": [
+            "SC"
+          ],
+          "stock_pool": {
+            "selection_mode": "explicit",
+            "symbols": [
+              "SC"
+            ]
+          },
+          "portfolio_spec": {
+            "position_assumption": "single_futures_directional",
+            "target_weight_scheme": "single_contract_margin_budget",
+            "max_position_pct": 0.85,
+            "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "far_month_light",
+            "max_contracts_per_rebalance": 22,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "target"
+          },
+          "targeting_policy": {
+            "target_symbol_policy": "prefer_intersection",
+            "universe_expansion_policy": "allow_market_fallback",
+            "validation_focus": "candidate_target_only"
+          },
+          "constraint_check": {
+            "coverage_ratio": 1.0,
+            "intersection_ratio": 1.0,
+            "target_overlap_count": 1,
+            "constraint_violation": false,
+            "alignment_contract_violation": false
+          },
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 4
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "constant_maturity_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": 0.290749,
+            "annual_volatility": 0.290749,
+            "atr14_pct_realized": 0.012762,
+            "atr14_pct": 0.012762,
+            "gap_p95_realized": 0.037485,
+            "gap_p95": 0.037485,
+            "intraday_range_p90": 0.02813,
+            "trend_efficiency_60d_realized": 0.148574,
+            "trend_efficiency_60d": 0.148574,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          }
+        }
+      }
+    },
+    {
+      "status": "submitted",
+      "name": "SC Spread 1-2",
+      "strategy_type": "dsl_rule",
+      "generator_mode": "futures_calendar_research_adapter",
+      "candidate_family": "sc_spread",
+      "target_symbols": [
+        "SC"
+      ],
+      "stock_pool": {
+        "selection_mode": "explicit",
+        "symbols": [
+          "SC"
+        ],
+        "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+      },
+      "research_task": {
+        "task_id": "sc_calendar_full_sample_20180726_20250219",
+        "task_source": "snapshot",
+        "opportunity_type": "sc_spread_calendar",
+        "target_symbols": [
+          "SC"
+        ],
+        "preferred_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "allowed_strategy_types": [
+          "dsl_rule",
+          "open_dsl"
+        ],
+        "validation_focus": "candidate_target_only"
+      },
+      "hypothesis": "SC 期限结构在 backwardation 主导阶段具备稳定 carry，温和 pullback 后的 2-4/3-4 远端跨月更适合买近抛远并持有到结构修复。",
+      "hypothesis_artifact": {
+        "alpha_hypothesis": "SC 期限结构在 backwardation 主导阶段具备稳定 carry，温和 pullback 后的 2-4/3-4 远端跨月更适合买近抛远并持有到结构修复。",
+        "failure_mode": {
+          "primary_failure_mode": "delivery_or_structure_reversal",
+          "stop_rule": {
+            "stop_loss_abs_move": 3.0,
+            "time_stop_days": 30,
+            "delivery_protection_days": 3,
+            "near_month_premium_floor": -3.0
+          }
+        },
+        "target_universe_hypothesis": {
+          "target_symbols": [
+            "SC"
+          ],
+          "target_symbol_policy": "prefer_intersection",
+          "selection_mode": "explicit"
+        },
+        "family_hint": "spread",
+        "holding_rationale": "买近抛远跨月对冲依赖 spread pullback 后的期限结构修复。",
+        "alpha_half_life": 8,
+        "cost_sensitivity_grid": {
+          "base_case": {
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "market_impact_bps": 1.8,
+            "capacity_participation_rate": 0.1
+          },
+          "stress_case": {
+            "commission_rate": 7.5e-05,
+            "slippage_bps": 5.25,
+            "market_impact_bps": 3.15,
+            "capacity_participation_rate": 0.075
+          }
+        },
+        "position_model": "paired_futures_spread",
+        "capacity_assumption": {
+          "capital_buckets": [
+            {
+              "capital": 1000000,
+              "annualized_return": 0.005075,
+              "post_cost_sharpe": 0.286509,
+              "max_drawdown": -0.02944,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 2,
+              "binding_constraint": "margin",
+              "participation_cap": 19,
+              "margin_cap": 2,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 45
+            },
+            {
+              "capital": 5000000,
+              "annualized_return": 0.004834,
+              "post_cost_sharpe": 0.24592,
+              "max_drawdown": -0.03444,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 11,
+              "binding_constraint": "margin",
+              "participation_cap": 19,
+              "margin_cap": 11,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 225
+            },
+            {
+              "capital": 10000000,
+              "annualized_return": 0.002962,
+              "post_cost_sharpe": 0.270655,
+              "max_drawdown": -0.018012,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 22,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 450
+            },
+            {
+              "capital": 30000000,
+              "annualized_return": 0.000993,
+              "post_cost_sharpe": 0.269269,
+              "max_drawdown": -0.006004,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 68,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 1350
+            },
+            {
+              "capital": 100000000,
+              "annualized_return": 0.000298,
+              "post_cost_sharpe": 0.268779,
+              "max_drawdown": -0.001801,
+              "win_rate": 0.333333,
+              "trade_count": 3,
+              "capacity_limit_contracts": 19,
+              "binding_constraint": "participation",
+              "participation_cap": 19,
+              "margin_cap": 228,
+              "max_contracts_cap": 24,
+              "drawdown_cap": 4500
+            }
+          ],
+          "liquidity_reference_contracts": 210,
+          "far_month_liquidity_haircut": 0.95
+        },
+        "market_regime_assumption": {
+          "preferred_regime": "backwardation",
+          "avoid_regime": "extreme_near_month_premium",
+          "regime_panel": {
+            "overall": {
+              "annualized_return": 0.005075,
+              "sharpe_ratio": 0.577411,
+              "post_cost_sharpe": 0.286509,
+              "max_drawdown": -0.02944,
+              "win_rate": 0.333333,
+              "trade_count": 3
+            },
+            "backwardation": {
+              "annualized_return": 0.00728,
+              "sharpe_ratio": 0.419041,
+              "max_drawdown": -0.015938,
+              "trade_count": 3,
+              "win_rate": 0.333333
+            },
+            "contango_or_flat": {
+              "annualized_return": -0.002189,
+              "sharpe_ratio": -0.485175,
+              "max_drawdown": -0.01372,
+              "trade_count": 0,
+              "win_rate": 0.0
+            }
+          }
+        },
+        "validation_focus": "candidate_target_only"
+      },
+      "evidence_chain": {
+        "evidences": [
+          {
+            "evidence_id": "spread_memo",
+            "source_type": "local_research_memo",
+            "direction": "supportive",
+            "summary": "本地研究备忘强调 SC 远月 carry 与近端升贴水切换特征，支持趋势 + 跨月套利双族。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_05_crude_oil_strategy_memo.md"
+          },
+          {
+            "evidence_id": "spread_roll_rule",
+            "source_type": "data_definition",
+            "direction": "supportive",
+            "summary": "本地数据说明明确到期换月与交割保护口径，适合作为常数期限研究适配器的 roll 规则。",
+            "source_path": "/Users/mac/Desktop/股票/原油/ai_ready/strategy_notes/doc_07_sc_spread_data_notes.md"
+          },
+          {
+            "evidence_id": "spread_backtest",
+            "source_type": "full_sample_backtest",
+            "direction": "supportive",
+            "summary": "全样本后成本年化 0.51%，post-cost Sharpe 0.29，最大回撤 -2.94%。"
+          },
+          {
+            "evidence_id": "spread_regime",
+            "source_type": "regime_panel",
+            "direction": "supportive",
+            "summary": "backwardation 年化 0.73%，contango/flat 年化 -0.22%。"
+          }
+        ]
+      },
+      "prediction_contract": {
+        "claims": [
+          {
+            "claim_id": "claim_spread_1",
+            "expected_move": "spread_widen",
+            "expected_horizon": 30,
+            "evidence_ids": [
+              "spread_memo",
+              "spread_backtest",
+              "spread_regime"
+            ],
+            "failure_condition": "term_structure_reversal_or_delivery_pressure"
+          }
+        ]
+      },
+      "confidence_contract": {
+        "prediction_quality": {
+          "support_samples": 3,
+          "historical_hit_rate": 0.333333,
+          "post_cost_sharpe": 0.286509,
+          "alpha_decay": 0.0
+        }
+      },
+      "holding_horizon": {
+        "min_days": 3,
+        "max_days": 30,
+        "rebalance_interval_days": 1,
+        "cooldown_window_days": 1,
+        "expected_turnover_band": "medium"
+      },
+      "trade_plan": {
+        "entry": {
+          "node_id": "entry_spread_1",
+          "claim_ids": [
+            "claim_spread_1"
+          ],
+          "entry_bias": "buy_near_sell_far_on_pullback"
+        },
+        "exit": {
+          "node_id": "exit_spread_1",
+          "claim_ids": [
+            "claim_spread_1"
+          ],
+          "exit_bias": "mean_reversion_or_delivery_protection"
+        },
+        "steps": [
+          {
+            "node_id": "step_spread_hold",
+            "claim_ids": [
+              "claim_spread_1"
+            ],
+            "summary": "维持买近抛远对冲，温和 pullback 后等待价差修复，时间止盈或交割保护离场。"
+          }
+        ]
+      },
+      "risk_rules": {
+        "stop_loss_abs_move": 3.0,
+        "time_stop_days": 30,
+        "delivery_protection_days": 3,
+        "near_month_premium_floor": -3.0
+      },
+      "position_sizing": {
+        "mode": "paired_margin_budget",
+        "position_assumption": "paired_futures_spread",
+        "margin_budget_fraction": 0.7
+      },
+      "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+      "rebalance_rule": {
+        "mode": "signal_or_roll",
+        "frequency_days": 1,
+        "roll_guard_days": 3
+      },
+      "portfolio_spec": {
+        "position_assumption": "paired_futures_spread",
+        "target_weight_scheme": "paired_margin_budget",
+        "max_position_pct": 0.7,
+        "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+      },
+      "execution_assumptions": {
+        "initial_capital": 1000000,
+        "commission_rate": 5e-05,
+        "slippage_bps": 3.5,
+        "slippage_model": "fixed_plus_capacity_scaled",
+        "market_impact_bps": 1.8,
+        "tradability_filter": true,
+        "capacity_participation_rate": 0.1,
+        "margin_rate": 0.15,
+        "contract_multiplier": 1000,
+        "liquidity_bucket": "near_month_high",
+        "max_contracts_per_rebalance": 24,
+        "market_ruleset": "cn_futures",
+        "sell_tax_rate": 0.0,
+        "min_trade_lot": 1,
+        "t_plus_one": false
+      },
+      "validation_profile": {
+        "profile": "trade_rule_validation",
+        "validation_focus": "candidate_target_only",
+        "primary_validation_layer": "target"
+      },
+      "instrument_profile": {
+        "asset_class": "futures",
+        "underlying": "SC",
+        "curve_legs": [
+          {
+            "side": "long",
+            "leg_type": "month_offset",
+            "month": 1
+          },
+          {
+            "side": "short",
+            "leg_type": "month_offset",
+            "month": 2
+          }
+        ],
+        "roll_rule": {
+          "rule_type": "calendar_spread_roll",
+          "exit_before_front_delivery_days": 3,
+          "front_contract_column": "contract_01"
+        },
+        "annual_volatility_realized_252d": NaN,
+        "annual_volatility": NaN,
+        "atr14_pct_realized": 1.037783,
+        "atr14_pct": 1.037783,
+        "gap_p95_realized": 3.184778,
+        "gap_p95": 3.184778,
+        "intraday_range_p90": 1.641534,
+        "trend_efficiency_60d_realized": 0.199337,
+        "trend_efficiency_60d": 0.199337,
+        "turnover_median": 1.0,
+        "volume_ratio_p80": 1.0,
+        "volume_ratio_p90": 1.0,
+        "turnover_rate_p80": 1.0,
+        "turnover_rate_p90": 1.0,
+        "measurement_source": "sc_calendar_research_adapter",
+        "measurement_sources": {
+          "annual_volatility_realized_252d": "research_adapter",
+          "atr14_pct_realized": "research_adapter",
+          "gap_p95_realized": "research_adapter",
+          "intraday_range_p90": "research_adapter",
+          "trend_efficiency_60d_realized": "research_adapter",
+          "volume_ratio_p80": "research_adapter_proxy",
+          "volume_ratio_p90": "research_adapter_proxy",
+          "turnover_rate_p80": "research_adapter_proxy",
+          "turnover_rate_p90": "research_adapter_proxy"
+        },
+        "measured_profile_complete": true,
+        "board_bucket": "futures",
+        "symbol": "SC"
+      },
+      "constraint_check": {
+        "coverage_ratio": 1.0,
+        "intersection_ratio": 1.0,
+        "target_overlap_count": 1,
+        "constraint_violation": false,
+        "alignment_contract_violation": false
+      },
+      "candidate_provenance": {
+        "generator_mode": "futures_calendar_research_adapter",
+        "source_data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+        "factory_target_status": "submitted"
+      },
+      "tags": [
+        "futures",
+        "calendar_spread",
+        "gate3_candidate",
+        "submitted"
+      ],
+      "dsl": {
+        "version": "1.0",
+        "timeframe": "daily",
+        "entry": {
+          "all": [
+            {
+              "op": "gte",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": -0.75
+              },
+              "trade_plan_node_id": "entry_spread_1"
+            },
+            {
+              "op": "lte",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": 0.25
+              }
+            }
+          ]
+        },
+        "exit": {
+          "any": [
+            {
+              "op": "gt",
+              "left": {
+                "indicator": "zscore",
+                "field": "close",
+                "window": 40
+              },
+              "right": {
+                "value": 1.25
+              },
+              "trade_plan_node_id": "exit_spread_1"
+            }
+          ]
+        },
+        "metadata": {
+          "signal_reference_series": "spread_1_2",
+          "trade_leg_definition": [
+            {
+              "side": "long",
+              "leg_type": "month_offset",
+              "month": 1
+            },
+            {
+              "side": "short",
+              "leg_type": "month_offset",
+              "month": 2
+            }
+          ],
+          "mark_to_market_mode": "actual_contract_legs",
+          "entry_z_band": {
+            "low": -0.75,
+            "high": 0.25
+          },
+          "target_symbols": [
+            "SC"
+          ],
+          "stock_pool": {
+            "selection_mode": "explicit",
+            "symbols": [
+              "SC"
+            ]
+          },
+          "portfolio_spec": {
+            "position_assumption": "paired_futures_spread",
+            "target_weight_scheme": "paired_margin_budget",
+            "max_position_pct": 0.7,
+            "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "near_month_high",
+            "max_contracts_per_rebalance": 24,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "target"
+          },
+          "targeting_policy": {
+            "target_symbol_policy": "prefer_intersection",
+            "universe_expansion_policy": "allow_market_fallback",
+            "validation_focus": "candidate_target_only"
+          },
+          "constraint_check": {
+            "coverage_ratio": 1.0,
+            "intersection_ratio": 1.0,
+            "target_overlap_count": 1,
+            "constraint_violation": false,
+            "alignment_contract_violation": false
+          },
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 1
+              },
+              {
+                "side": "short",
+                "leg_type": "month_offset",
+                "month": 2
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "calendar_spread_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": NaN,
+            "annual_volatility": NaN,
+            "atr14_pct_realized": 1.037783,
+            "atr14_pct": 1.037783,
+            "gap_p95_realized": 3.184778,
+            "gap_p95": 3.184778,
+            "intraday_range_p90": 1.641534,
+            "trend_efficiency_60d_realized": 0.199337,
+            "trend_efficiency_60d": 0.199337,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          }
+        }
+      }
+    }
+  ],
+  "compiled_dsl": {
+    "trend_m4_carry1p0_vol0p03_stop0p05": {
+      "strategy_type": "dsl_rule",
+      "params": {
+        "dsl": {
+          "version": "1.0",
+          "timeframe": "daily",
+          "entry": {
+            "all": [
+              {
+                "op": "gt",
+                "left": {
+                  "field": "close"
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                }
+              },
+              {
+                "op": "gt",
+                "left": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 33
+                }
+              }
+            ]
+          },
+          "exit": {
+            "any": [
+              {
+                "op": "lt",
+                "left": {
+                  "field": "close"
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                }
+              },
+              {
+                "op": "lt",
+                "left": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 33
+                }
+              }
+            ]
+          },
+          "metadata": {
+            "signal_reference_series": "price_04",
+            "trade_leg_definition": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 4
+              }
+            ],
+            "target_symbols": [
+              "SC"
+            ],
+            "stock_pool": {
+              "selection_mode": "explicit",
+              "symbols": [
+                "SC"
+              ]
+            },
+            "portfolio_spec": {
+              "position_assumption": "single_futures_directional",
+              "target_weight_scheme": "single_contract_margin_budget",
+              "max_position_pct": 0.85,
+              "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+            },
+            "execution_assumptions": {
+              "initial_capital": 1000000,
+              "commission_rate": 5e-05,
+              "slippage_bps": 3.5,
+              "slippage_model": "fixed_plus_capacity_scaled",
+              "market_impact_bps": 1.8,
+              "tradability_filter": true,
+              "capacity_participation_rate": 0.1,
+              "margin_rate": 0.15,
+              "contract_multiplier": 1000,
+              "liquidity_bucket": "far_month_light",
+              "max_contracts_per_rebalance": 22,
+              "market_ruleset": "cn_futures",
+              "sell_tax_rate": 0.0,
+              "min_trade_lot": 1,
+              "t_plus_one": false
+            },
+            "validation_profile": {
+              "profile": "trade_rule_validation",
+              "validation_focus": "candidate_target_only",
+              "primary_validation_layer": "target"
+            },
+            "targeting_policy": {
+              "target_symbol_policy": "prefer_intersection",
+              "universe_expansion_policy": "allow_market_fallback",
+              "validation_focus": "candidate_target_only"
+            },
+            "constraint_check": {
+              "coverage_ratio": 1.0,
+              "intersection_ratio": 1.0,
+              "target_overlap_count": 1,
+              "constraint_violation": false,
+              "alignment_contract_violation": false
+            },
+            "instrument_profile": {
+              "asset_class": "futures",
+              "underlying": "SC",
+              "curve_legs": [
+                {
+                  "side": "long",
+                  "leg_type": "month_offset",
+                  "month": 4
+                }
+              ],
+              "roll_rule": {
+                "rule_type": "constant_maturity_roll",
+                "exit_before_front_delivery_days": 3,
+                "front_contract_column": "contract_01"
+              },
+              "annual_volatility_realized_252d": 0.290749,
+              "annual_volatility": 0.290749,
+              "atr14_pct_realized": 0.012762,
+              "atr14_pct": 0.012762,
+              "gap_p95_realized": 0.037485,
+              "gap_p95": 0.037485,
+              "intraday_range_p90": 0.02813,
+              "trend_efficiency_60d_realized": 0.148574,
+              "trend_efficiency_60d": 0.148574,
+              "turnover_median": 1.0,
+              "volume_ratio_p80": 1.0,
+              "volume_ratio_p90": 1.0,
+              "turnover_rate_p80": 1.0,
+              "turnover_rate_p90": 1.0,
+              "measurement_source": "sc_calendar_research_adapter",
+              "measurement_sources": {
+                "annual_volatility_realized_252d": "research_adapter",
+                "atr14_pct_realized": "research_adapter",
+                "gap_p95_realized": "research_adapter",
+                "intraday_range_p90": "research_adapter",
+                "trend_efficiency_60d_realized": "research_adapter",
+                "volume_ratio_p80": "research_adapter_proxy",
+                "volume_ratio_p90": "research_adapter_proxy",
+                "turnover_rate_p80": "research_adapter_proxy",
+                "turnover_rate_p90": "research_adapter_proxy"
+              },
+              "measured_profile_complete": true,
+              "board_bucket": "futures",
+              "symbol": "SC"
+            }
+          },
+          "risk_rules": {}
+        },
+        "risk_rules": {
+          "stop_loss_pct": 0.05,
+          "time_stop_days": 25,
+          "delivery_protection_days": 3,
+          "near_month_premium_floor": -3.0
+        }
+      },
+      "name": "SC Trend Carry M4",
+      "description": "外部 AI 生成的 DSL 策略",
+      "tags": [
+        "futures",
+        "calendar_trend",
+        "gate3_candidate",
+        "submitted",
+        "dsl_rule"
+      ],
+      "metadata": {
+        "rationale": null,
+        "hypothesis": "Backwardation carry 与远月趋势延续在近端未出现异常升水时可共振放大。",
+        "holding_horizon": {
+          "min_days": 5,
+          "max_days": 25,
+          "rebalance_interval_days": 1,
+          "cooldown_window_days": 2,
+          "expected_turnover_band": "medium"
+        },
+        "trade_plan": {
+          "entry": {
+            "node_id": "entry_trend_1",
+            "claim_ids": [
+              "claim_trend_1"
+            ],
+            "entry_bias": "carry_trend_follow"
+          },
+          "exit": {
+            "node_id": "exit_trend_1",
+            "claim_ids": [
+              "claim_trend_1"
+            ],
+            "exit_bias": "trend_decay_or_delivery_protection"
+          },
+          "steps": [
+            {
+              "node_id": "step_trend_hold",
+              "claim_ids": [
+                "claim_trend_1"
+              ],
+              "summary": "保持第 3/4 月常数期限多头，roll node 前主动收缩。"
+            }
+          ]
+        },
+        "risk_rules": {
+          "stop_loss_pct": 0.05,
+          "time_stop_days": 25,
+          "delivery_protection_days": 3,
+          "near_month_premium_floor": -3.0
+        },
+        "position_sizing": {
+          "mode": "margin_budget",
+          "position_assumption": "single_futures_directional",
+          "margin_budget_fraction": 0.85
+        },
+        "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+        "stock_pool": {
+          "selection_mode": "explicit",
+          "symbols": [
+            "SC"
+          ],
+          "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+        },
+        "target_symbols": [
+          "SC"
+        ],
+        "dsl": {
+          "version": "1.0",
+          "timeframe": "daily",
+          "entry": {
+            "all": [
+              {
+                "op": "gt",
+                "left": {
+                  "field": "close"
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                }
+              },
+              {
+                "op": "gt",
+                "left": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 33
+                }
+              }
+            ]
+          },
+          "exit": {
+            "any": [
+              {
+                "op": "lt",
+                "left": {
+                  "field": "close"
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                }
+              },
+              {
+                "op": "lt",
+                "left": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 11
+                },
+                "right": {
+                  "indicator": "sma",
+                  "field": "close",
+                  "window": 33
+                }
+              }
+            ]
+          },
+          "metadata": {
+            "signal_reference_series": "price_04",
+            "trade_leg_definition": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 4
+              }
+            ],
+            "target_symbols": [
+              "SC"
+            ],
+            "stock_pool": {
+              "selection_mode": "explicit",
+              "symbols": [
+                "SC"
+              ]
+            },
+            "portfolio_spec": {
+              "position_assumption": "single_futures_directional",
+              "target_weight_scheme": "single_contract_margin_budget",
+              "max_position_pct": 0.85,
+              "position_sizing_rationale": "用 gross margin 约束远月方向仓位，不假设跨腿保证金优惠。"
+            },
+            "execution_assumptions": {
+              "initial_capital": 1000000,
+              "commission_rate": 5e-05,
+              "slippage_bps": 3.5,
+              "slippage_model": "fixed_plus_capacity_scaled",
+              "market_impact_bps": 1.8,
+              "tradability_filter": true,
+              "capacity_participation_rate": 0.1,
+              "margin_rate": 0.15,
+              "contract_multiplier": 1000,
+              "liquidity_bucket": "far_month_light",
+              "max_contracts_per_rebalance": 22,
+              "market_ruleset": "cn_futures",
+              "sell_tax_rate": 0.0,
+              "min_trade_lot": 1,
+              "t_plus_one": false
+            },
+            "validation_profile": {
+              "profile": "trade_rule_validation",
+              "validation_focus": "candidate_target_only",
+              "primary_validation_layer": "target"
+            },
+            "targeting_policy": {
+              "target_symbol_policy": "prefer_intersection",
+              "universe_expansion_policy": "allow_market_fallback",
+              "validation_focus": "candidate_target_only"
+            },
+            "constraint_check": {
+              "coverage_ratio": 1.0,
+              "intersection_ratio": 1.0,
+              "target_overlap_count": 1,
+              "constraint_violation": false,
+              "alignment_contract_violation": false
+            },
+            "instrument_profile": {
+              "asset_class": "futures",
+              "underlying": "SC",
+              "curve_legs": [
+                {
+                  "side": "long",
+                  "leg_type": "month_offset",
+                  "month": 4
+                }
+              ],
+              "roll_rule": {
+                "rule_type": "constant_maturity_roll",
+                "exit_before_front_delivery_days": 3,
+                "front_contract_column": "contract_01"
+              },
+              "annual_volatility_realized_252d": 0.290749,
+              "annual_volatility": 0.290749,
+              "atr14_pct_realized": 0.012762,
+              "atr14_pct": 0.012762,
+              "gap_p95_realized": 0.037485,
+              "gap_p95": 0.037485,
+              "intraday_range_p90": 0.02813,
+              "trend_efficiency_60d_realized": 0.148574,
+              "trend_efficiency_60d": 0.148574,
+              "turnover_median": 1.0,
+              "volume_ratio_p80": 1.0,
+              "volume_ratio_p90": 1.0,
+              "turnover_rate_p80": 1.0,
+              "turnover_rate_p90": 1.0,
+              "measurement_source": "sc_calendar_research_adapter",
+              "measurement_sources": {
+                "annual_volatility_realized_252d": "research_adapter",
+                "atr14_pct_realized": "research_adapter",
+                "gap_p95_realized": "research_adapter",
+                "intraday_range_p90": "research_adapter",
+                "trend_efficiency_60d_realized": "research_adapter",
+                "volume_ratio_p80": "research_adapter_proxy",
+                "volume_ratio_p90": "research_adapter_proxy",
+                "turnover_rate_p80": "research_adapter_proxy",
+                "turnover_rate_p90": "research_adapter_proxy"
+              },
+              "measured_profile_complete": true,
+              "board_bucket": "futures",
+              "symbol": "SC"
+            }
+          },
+          "risk_rules": {}
+        },
+        "dsl_tuning": {
+          "applied": true,
+          "selected_variant": "window_scale_0.55",
+          "before": {
+            "entry_count": 537,
+            "exit_count": 999,
+            "active_days": 1536,
+            "overlap_count": 0,
+            "score": 2.0
+          },
+          "after": {
+            "entry_count": 579,
+            "exit_count": 984,
+            "active_days": 1563,
+            "overlap_count": 0,
+            "score": 2.0
+          },
+          "variants_evaluated": 12,
+          "selection_basis": "predictive_edge",
+          "primary_horizon": 5,
+          "overall_skill": 0.00503,
+          "recent_skill": 0.005536,
+          "trade_expectancy": 0.00503,
+          "sample_count": 579,
+          "stability_gap": 0.000506,
+          "window_scale": 0.55,
+          "threshold_scale": 1.0
+        },
+        "dsl_activity": {
+          "entry_count": 579,
+          "exit_count": 984,
+          "active_days": 1563,
+          "overlap_count": 0,
+          "score": 2.0
+        },
+        "dsl_support_audit": {
+          "unsupported_rule_count": 0,
+          "unsupported_fields": [],
+          "unsupported_indicators": [],
+          "unsupported_compare_ops": [],
+          "unsupported_binary_ops": [],
+          "malformed_node_count": 0,
+          "fallback_node_count": 0
+        },
+        "claim_to_trade_plan_map": {
+          "claim_to_trade_step_ids": {
+            "claim_trend_1": [
+              "entry_trend_1",
+              "exit_trend_1",
+              "step_trend_hold"
+            ]
+          },
+          "trade_step_to_claim_ids": {
+            "entry_trend_1": [
+              "claim_trend_1"
+            ],
+            "exit_trend_1": [
+              "claim_trend_1"
+            ],
+            "step_trend_hold": [
+              "claim_trend_1"
+            ]
+          },
+          "mapped_claim_count": 1,
+          "unmapped_claim_ids": [],
+          "trade_step_count": 3
+        },
+        "trade_plan_to_dsl_map": {
+          "trade_step_to_dsl_sections": {
+            "entry_trend_1": [
+              "entry"
+            ],
+            "exit_trend_1": [
+              "exit"
+            ],
+            "step_trend_hold": []
+          },
+          "dsl_entry_trade_step_ids": [],
+          "dsl_exit_trade_step_ids": [],
+          "mapped_trade_step_count": 2,
+          "unmapped_trade_step_ids": [
+            "step_trend_hold"
+          ]
+        },
+        "unsupported_rule_count": 0,
+        "compile_failure_reasons": []
+      }
+    },
+    "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend": {
+      "strategy_type": "dsl_rule",
+      "params": {
+        "dsl": {
+          "version": "1.0",
+          "timeframe": "daily",
+          "entry": {
+            "all": [
+              {
+                "op": "gte",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": -0.75
+                }
+              },
+              {
+                "op": "lte",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": 0.25
+                }
+              }
+            ]
+          },
+          "exit": {
+            "any": [
+              {
+                "op": "gt",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": 1.25
+                }
+              }
+            ]
+          },
+          "metadata": {
+            "signal_reference_series": "spread_1_2",
+            "trade_leg_definition": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 1
+              },
+              {
+                "side": "short",
+                "leg_type": "month_offset",
+                "month": 2
+              }
+            ],
+            "mark_to_market_mode": "actual_contract_legs",
+            "entry_z_band": {
+              "low": -0.75,
+              "high": 0.25
+            },
+            "target_symbols": [
+              "SC"
+            ],
+            "stock_pool": {
+              "selection_mode": "explicit",
+              "symbols": [
+                "SC"
+              ]
+            },
+            "portfolio_spec": {
+              "position_assumption": "paired_futures_spread",
+              "target_weight_scheme": "paired_margin_budget",
+              "max_position_pct": 0.7,
+              "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+            },
+            "execution_assumptions": {
+              "initial_capital": 1000000,
+              "commission_rate": 5e-05,
+              "slippage_bps": 3.5,
+              "slippage_model": "fixed_plus_capacity_scaled",
+              "market_impact_bps": 1.8,
+              "tradability_filter": true,
+              "capacity_participation_rate": 0.1,
+              "margin_rate": 0.15,
+              "contract_multiplier": 1000,
+              "liquidity_bucket": "near_month_high",
+              "max_contracts_per_rebalance": 24,
+              "market_ruleset": "cn_futures",
+              "sell_tax_rate": 0.0,
+              "min_trade_lot": 1,
+              "t_plus_one": false
+            },
+            "validation_profile": {
+              "profile": "trade_rule_validation",
+              "validation_focus": "candidate_target_only",
+              "primary_validation_layer": "target"
+            },
+            "targeting_policy": {
+              "target_symbol_policy": "prefer_intersection",
+              "universe_expansion_policy": "allow_market_fallback",
+              "validation_focus": "candidate_target_only"
+            },
+            "constraint_check": {
+              "coverage_ratio": 1.0,
+              "intersection_ratio": 1.0,
+              "target_overlap_count": 1,
+              "constraint_violation": false,
+              "alignment_contract_violation": false
+            },
+            "instrument_profile": {
+              "asset_class": "futures",
+              "underlying": "SC",
+              "curve_legs": [
+                {
+                  "side": "long",
+                  "leg_type": "month_offset",
+                  "month": 1
+                },
+                {
+                  "side": "short",
+                  "leg_type": "month_offset",
+                  "month": 2
+                }
+              ],
+              "roll_rule": {
+                "rule_type": "calendar_spread_roll",
+                "exit_before_front_delivery_days": 3,
+                "front_contract_column": "contract_01"
+              },
+              "annual_volatility_realized_252d": NaN,
+              "annual_volatility": NaN,
+              "atr14_pct_realized": 1.037783,
+              "atr14_pct": 1.037783,
+              "gap_p95_realized": 3.184778,
+              "gap_p95": 3.184778,
+              "intraday_range_p90": 1.641534,
+              "trend_efficiency_60d_realized": 0.199337,
+              "trend_efficiency_60d": 0.199337,
+              "turnover_median": 1.0,
+              "volume_ratio_p80": 1.0,
+              "volume_ratio_p90": 1.0,
+              "turnover_rate_p80": 1.0,
+              "turnover_rate_p90": 1.0,
+              "measurement_source": "sc_calendar_research_adapter",
+              "measurement_sources": {
+                "annual_volatility_realized_252d": "research_adapter",
+                "atr14_pct_realized": "research_adapter",
+                "gap_p95_realized": "research_adapter",
+                "intraday_range_p90": "research_adapter",
+                "trend_efficiency_60d_realized": "research_adapter",
+                "volume_ratio_p80": "research_adapter_proxy",
+                "volume_ratio_p90": "research_adapter_proxy",
+                "turnover_rate_p80": "research_adapter_proxy",
+                "turnover_rate_p90": "research_adapter_proxy"
+              },
+              "measured_profile_complete": true,
+              "board_bucket": "futures",
+              "symbol": "SC"
+            }
+          },
+          "risk_rules": {}
+        },
+        "risk_rules": {
+          "stop_loss_abs_move": 3.0,
+          "time_stop_days": 30,
+          "delivery_protection_days": 3,
+          "near_month_premium_floor": -3.0
+        }
+      },
+      "name": "SC Spread 1-2",
+      "description": "外部 AI 生成的 DSL 策略",
+      "tags": [
+        "futures",
+        "calendar_spread",
+        "gate3_candidate",
+        "submitted",
+        "dsl_rule"
+      ],
+      "metadata": {
+        "rationale": null,
+        "hypothesis": "SC 期限结构在 backwardation 主导阶段具备稳定 carry，温和 pullback 后的 2-4/3-4 远端跨月更适合买近抛远并持有到结构修复。",
+        "holding_horizon": {
+          "min_days": 3,
+          "max_days": 30,
+          "rebalance_interval_days": 1,
+          "cooldown_window_days": 1,
+          "expected_turnover_band": "medium"
+        },
+        "trade_plan": {
+          "entry": {
+            "node_id": "entry_spread_1",
+            "claim_ids": [
+              "claim_spread_1"
+            ],
+            "entry_bias": "buy_near_sell_far_on_pullback"
+          },
+          "exit": {
+            "node_id": "exit_spread_1",
+            "claim_ids": [
+              "claim_spread_1"
+            ],
+            "exit_bias": "mean_reversion_or_delivery_protection"
+          },
+          "steps": [
+            {
+              "node_id": "step_spread_hold",
+              "claim_ids": [
+                "claim_spread_1"
+              ],
+              "summary": "维持买近抛远对冲，温和 pullback 后等待价差修复，时间止盈或交割保护离场。"
+            }
+          ]
+        },
+        "risk_rules": {
+          "stop_loss_abs_move": 3.0,
+          "time_stop_days": 30,
+          "delivery_protection_days": 3,
+          "near_month_premium_floor": -3.0
+        },
+        "position_sizing": {
+          "mode": "paired_margin_budget",
+          "position_assumption": "paired_futures_spread",
+          "margin_budget_fraction": 0.7
+        },
+        "execution_notes": "保守按 gross margin 与 far-month 流动性折扣约束仓位，交割保护窗口前主动减仓。",
+        "stock_pool": {
+          "selection_mode": "explicit",
+          "symbols": [
+            "SC"
+          ],
+          "rationale": "SC 主任务只使用本地 ai_ready 曲线，目标标的固定为原油 SC。"
+        },
+        "target_symbols": [
+          "SC"
+        ],
+        "dsl": {
+          "version": "1.0",
+          "timeframe": "daily",
+          "entry": {
+            "all": [
+              {
+                "op": "gte",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": -0.75
+                }
+              },
+              {
+                "op": "lte",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": 0.25
+                }
+              }
+            ]
+          },
+          "exit": {
+            "any": [
+              {
+                "op": "gt",
+                "left": {
+                  "indicator": "zscore",
+                  "field": "close",
+                  "window": 22
+                },
+                "right": {
+                  "value": 1.25
+                }
+              }
+            ]
+          },
+          "metadata": {
+            "signal_reference_series": "spread_1_2",
+            "trade_leg_definition": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 1
+              },
+              {
+                "side": "short",
+                "leg_type": "month_offset",
+                "month": 2
+              }
+            ],
+            "mark_to_market_mode": "actual_contract_legs",
+            "entry_z_band": {
+              "low": -0.75,
+              "high": 0.25
+            },
+            "target_symbols": [
+              "SC"
+            ],
+            "stock_pool": {
+              "selection_mode": "explicit",
+              "symbols": [
+                "SC"
+              ]
+            },
+            "portfolio_spec": {
+              "position_assumption": "paired_futures_spread",
+              "target_weight_scheme": "paired_margin_budget",
+              "max_position_pct": 0.7,
+              "position_sizing_rationale": "spread gross margin 保守计提，容量受 far-month haircut 限制。"
+            },
+            "execution_assumptions": {
+              "initial_capital": 1000000,
+              "commission_rate": 5e-05,
+              "slippage_bps": 3.5,
+              "slippage_model": "fixed_plus_capacity_scaled",
+              "market_impact_bps": 1.8,
+              "tradability_filter": true,
+              "capacity_participation_rate": 0.1,
+              "margin_rate": 0.15,
+              "contract_multiplier": 1000,
+              "liquidity_bucket": "near_month_high",
+              "max_contracts_per_rebalance": 24,
+              "market_ruleset": "cn_futures",
+              "sell_tax_rate": 0.0,
+              "min_trade_lot": 1,
+              "t_plus_one": false
+            },
+            "validation_profile": {
+              "profile": "trade_rule_validation",
+              "validation_focus": "candidate_target_only",
+              "primary_validation_layer": "target"
+            },
+            "targeting_policy": {
+              "target_symbol_policy": "prefer_intersection",
+              "universe_expansion_policy": "allow_market_fallback",
+              "validation_focus": "candidate_target_only"
+            },
+            "constraint_check": {
+              "coverage_ratio": 1.0,
+              "intersection_ratio": 1.0,
+              "target_overlap_count": 1,
+              "constraint_violation": false,
+              "alignment_contract_violation": false
+            },
+            "instrument_profile": {
+              "asset_class": "futures",
+              "underlying": "SC",
+              "curve_legs": [
+                {
+                  "side": "long",
+                  "leg_type": "month_offset",
+                  "month": 1
+                },
+                {
+                  "side": "short",
+                  "leg_type": "month_offset",
+                  "month": 2
+                }
+              ],
+              "roll_rule": {
+                "rule_type": "calendar_spread_roll",
+                "exit_before_front_delivery_days": 3,
+                "front_contract_column": "contract_01"
+              },
+              "annual_volatility_realized_252d": NaN,
+              "annual_volatility": NaN,
+              "atr14_pct_realized": 1.037783,
+              "atr14_pct": 1.037783,
+              "gap_p95_realized": 3.184778,
+              "gap_p95": 3.184778,
+              "intraday_range_p90": 1.641534,
+              "trend_efficiency_60d_realized": 0.199337,
+              "trend_efficiency_60d": 0.199337,
+              "turnover_median": 1.0,
+              "volume_ratio_p80": 1.0,
+              "volume_ratio_p90": 1.0,
+              "turnover_rate_p80": 1.0,
+              "turnover_rate_p90": 1.0,
+              "measurement_source": "sc_calendar_research_adapter",
+              "measurement_sources": {
+                "annual_volatility_realized_252d": "research_adapter",
+                "atr14_pct_realized": "research_adapter",
+                "gap_p95_realized": "research_adapter",
+                "intraday_range_p90": "research_adapter",
+                "trend_efficiency_60d_realized": "research_adapter",
+                "volume_ratio_p80": "research_adapter_proxy",
+                "volume_ratio_p90": "research_adapter_proxy",
+                "turnover_rate_p80": "research_adapter_proxy",
+                "turnover_rate_p90": "research_adapter_proxy"
+              },
+              "measured_profile_complete": true,
+              "board_bucket": "futures",
+              "symbol": "SC"
+            }
+          },
+          "risk_rules": {}
+        },
+        "dsl_tuning": {
+          "applied": true,
+          "selected_variant": "window_scale_0.55",
+          "before": {
+            "entry_count": 563,
+            "exit_count": 251,
+            "active_days": 814,
+            "overlap_count": 0,
+            "score": 2.0
+          },
+          "after": {
+            "entry_count": 542,
+            "exit_count": 249,
+            "active_days": 791,
+            "overlap_count": 0,
+            "score": 2.0
+          },
+          "variants_evaluated": 12,
+          "selection_basis": "predictive_edge",
+          "primary_horizon": 5,
+          "overall_skill": NaN,
+          "recent_skill": Infinity,
+          "trade_expectancy": NaN,
+          "sample_count": 541,
+          "stability_gap": NaN,
+          "window_scale": 0.55,
+          "threshold_scale": 1.0
+        },
+        "dsl_activity": {
+          "entry_count": 542,
+          "exit_count": 249,
+          "active_days": 791,
+          "overlap_count": 0,
+          "score": 2.0
+        },
+        "dsl_support_audit": {
+          "unsupported_rule_count": 0,
+          "unsupported_fields": [],
+          "unsupported_indicators": [],
+          "unsupported_compare_ops": [],
+          "unsupported_binary_ops": [],
+          "malformed_node_count": 0,
+          "fallback_node_count": 0
+        },
+        "claim_to_trade_plan_map": {
+          "claim_to_trade_step_ids": {
+            "claim_spread_1": [
+              "entry_spread_1",
+              "exit_spread_1",
+              "step_spread_hold"
+            ]
+          },
+          "trade_step_to_claim_ids": {
+            "entry_spread_1": [
+              "claim_spread_1"
+            ],
+            "exit_spread_1": [
+              "claim_spread_1"
+            ],
+            "step_spread_hold": [
+              "claim_spread_1"
+            ]
+          },
+          "mapped_claim_count": 1,
+          "unmapped_claim_ids": [],
+          "trade_step_count": 3
+        },
+        "trade_plan_to_dsl_map": {
+          "trade_step_to_dsl_sections": {
+            "entry_spread_1": [
+              "entry"
+            ],
+            "exit_spread_1": [
+              "exit"
+            ],
+            "step_spread_hold": []
+          },
+          "dsl_entry_trade_step_ids": [],
+          "dsl_exit_trade_step_ids": [],
+          "mapped_trade_step_count": 2,
+          "unmapped_trade_step_ids": [
+            "step_spread_hold"
+          ]
+        },
+        "unsupported_rule_count": 0,
+        "compile_failure_reasons": []
+      }
+    }
+  },
+  "research_context": {
+    "strategy_context": {
+      "adapter_name": "futures_calendar_research_adapter",
+      "underlying": "SC",
+      "data_path": "/Users/mac/Desktop/股票/原油/ai_ready/tables/timeseries/dataset_18_sc_spread_timeseries_all_daily.csv",
+      "window": {
+        "start": "2018-07-26",
+        "end": "2025-02-19"
+      },
+      "memo_summary": "# 原油跨月价差交易备忘\n\n## 研究目标\n通过对历史行情的分析找到规律从而找到合适的交易品种\n\n## 选品原则\n- 有较长的历史行情或可以借鉴的相关性高的品种\n- 有比较明确的“规律”如下：\n- 比较稳定的生贴水结构：排除一些季节性品种、交割不连续合约，这类品种不是不能做而是要更多的考虑强弱月的关系。\n- 比较明确的价格与价差间关系：例如行情上涨、下跌时价差波动的方向和幅度\n- 对时间的理解：例如ec交易对时间的把握及交割时交割对期现价差的影响等，如股指有分红月等一些对价差产生一些除行情波动外的一些方向性的影响\n\n## SC 案例说明\n![SC case figure](assets/crude_oil_strategy_memo/figure_02.jpeg)\n\n- 上图中，红色线为sc主力连、其他线依次为sc1-2、sc2-3...这里的1、2不是月份而是第一合约-第二合约，那么每个月都会有sc2-3变sc1-2，sc3-4变sc2-3的过程，这么显示与我们日常交易的价差不同，是为了更好的表现趋势和升贴水的变化。\n\n### 图中观察\n- 单边价格变化>价差变化且同向\n- Sc1-2>Sc2-3>Sc3-4...且同向\n- Sc1-2（蓝线）我们从图中看到的价格波动在每一次月份变更时的波动是由合约转换导致，24次换月统计中有17次由贴水转升水，可以中中找到的规律：在没有趋势行情下越靠近交割升水越明显，但升水幅度有限。\n- Sc1-2（蓝线）随单边价格上涨时贴水幅度扩大，且贴水幅度远大于上面所讲的升水幅度变化。\n- 由上面几点我们可以看出日常交易，喜欢卖近买远的原因是因为回归次数多，但一旦出现趋势上涨行情时风险很大。\n- 利用上面的特征把握交易机会的选择，收益来源应该从趋势和波动两方面考虑，并制定相应的交易策略\n\n## 交易策略\n### 趋势策略\n- 优先捕捉上涨趋势，可",
+      "roll_rule_summary": "# SC 价差数据说明与换月规则\n\n## 换月规则\n- 到期换月， 交易日期保证1个月。\n- 所以作为第一个sc的交易月份1809选取20180726为计算的首日\n\n## 数据口径\n- 除去开盘前3分钟和收盘前3份钟的 1分钟盘口的买卖中间价，每天取平均数。\n\n## 图表说明\n- x轴为19年-2025年，实际时间为20180726-20250219\n- y轴为价差， 其中颜色用于区分各个阶段1-2的价差\n\n## Excel 字段说明\n- 按月份划分工作表：`1-2` 代表第 1 合约与第 2 合约的价差，`all` 为全量汇总。\n\n```text\ntrading_date_x, Cont01, Price01, 1-2, 2-3, 3-4, 4-5, 5-6, 6-7, 7-8, 8-9, 9-10, 10-11, 11-12\n```\n\n## AI 调用提示\n- 先检索本说明文档，再联动 `tables/timeseries/` 与 `tables/statistics/` 下的 CSV，可避免误解字段口径。\n- 若进入 `market_doc_chunks`，建议 `doc_typ",
+      "strategies": [
+        {
+          "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p05",
+          "name": "SC Trend Carry M4",
+          "family": "trend",
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 4
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "constant_maturity_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": 0.290749,
+            "annual_volatility": 0.290749,
+            "atr14_pct_realized": 0.012762,
+            "atr14_pct": 0.012762,
+            "gap_p95_realized": 0.037485,
+            "gap_p95": 0.037485,
+            "intraday_range_p90": 0.02813,
+            "trend_efficiency_60d_realized": 0.148574,
+            "trend_efficiency_60d": 0.148574,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          },
+          "parameters": {
+            "leg_month": 4,
+            "carry_threshold": 1.0,
+            "volatility_cap": 0.03,
+            "price_to_ma60_cap": 1.12,
+            "stop_loss_pct": 0.05,
+            "near_premium_floor": -2.0,
+            "exit_premium_floor": -3.0,
+            "ma_fast_window": 20,
+            "ma_slow_window": 60,
+            "slope_window": 10
+          },
+          "summary": {
+            "annualized_return": 0.10492,
+            "total_return": 0.875966,
+            "sharpe_ratio": 0.836835,
+            "post_cost_sharpe": 0.784204,
+            "max_drawdown": -0.299234,
+            "win_rate": 0.7,
+            "trade_count": 10,
+            "trade_density": 1.585903,
+            "forward_sharpe_5d": 4.855949,
+            "alpha_decay": 0.0,
+            "ending_equity": 1875966.259107
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "far_month_light",
+            "max_contracts_per_rebalance": 22,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "failure_mode": {
+            "primary_failure_mode": "delivery_or_structure_reversal",
+            "stop_rule": {
+              "stop_loss_pct": 0.05,
+              "time_stop_days": 25,
+              "delivery_protection_days": 3,
+              "near_month_premium_floor": -3.0
+            }
+          }
+        },
+        {
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+          "name": "SC Spread 1-2",
+          "family": "spread",
+          "instrument_profile": {
+            "asset_class": "futures",
+            "underlying": "SC",
+            "curve_legs": [
+              {
+                "side": "long",
+                "leg_type": "month_offset",
+                "month": 1
+              },
+              {
+                "side": "short",
+                "leg_type": "month_offset",
+                "month": 2
+              }
+            ],
+            "roll_rule": {
+              "rule_type": "calendar_spread_roll",
+              "exit_before_front_delivery_days": 3,
+              "front_contract_column": "contract_01"
+            },
+            "annual_volatility_realized_252d": NaN,
+            "annual_volatility": NaN,
+            "atr14_pct_realized": 1.037783,
+            "atr14_pct": 1.037783,
+            "gap_p95_realized": 3.184778,
+            "gap_p95": 3.184778,
+            "intraday_range_p90": 1.641534,
+            "trend_efficiency_60d_realized": 0.199337,
+            "trend_efficiency_60d": 0.199337,
+            "turnover_median": 1.0,
+            "volume_ratio_p80": 1.0,
+            "volume_ratio_p90": 1.0,
+            "turnover_rate_p80": 1.0,
+            "turnover_rate_p90": 1.0,
+            "measurement_source": "sc_calendar_research_adapter",
+            "measurement_sources": {
+              "annual_volatility_realized_252d": "research_adapter",
+              "atr14_pct_realized": "research_adapter",
+              "gap_p95_realized": "research_adapter",
+              "intraday_range_p90": "research_adapter",
+              "trend_efficiency_60d_realized": "research_adapter",
+              "volume_ratio_p80": "research_adapter_proxy",
+              "volume_ratio_p90": "research_adapter_proxy",
+              "turnover_rate_p80": "research_adapter_proxy",
+              "turnover_rate_p90": "research_adapter_proxy"
+            },
+            "measured_profile_complete": true,
+            "board_bucket": "futures",
+            "symbol": "SC"
+          },
+          "parameters": {
+            "leg_name": "1_2",
+            "entry_z_low": -0.75,
+            "entry_z_high": 0.25,
+            "exit_z": 1.25,
+            "stop_move": -3.0,
+            "slope_floor": 0.0,
+            "max_holding_days": 30,
+            "require_price_trend": true,
+            "z_window": 40,
+            "near_premium_floor": -2.0,
+            "exit_premium_floor": -3.0
+          },
+          "summary": {
+            "annualized_return": 0.005075,
+            "total_return": 0.032437,
+            "sharpe_ratio": 0.577411,
+            "post_cost_sharpe": 0.286509,
+            "max_drawdown": -0.02944,
+            "win_rate": 0.333333,
+            "trade_count": 3,
+            "trade_density": 0.475771,
+            "forward_sharpe_5d": 5.657207,
+            "alpha_decay": 0.0,
+            "ending_equity": 1032437.297211
+          },
+          "execution_assumptions": {
+            "initial_capital": 1000000,
+            "commission_rate": 5e-05,
+            "slippage_bps": 3.5,
+            "slippage_model": "fixed_plus_capacity_scaled",
+            "market_impact_bps": 1.8,
+            "tradability_filter": true,
+            "capacity_participation_rate": 0.1,
+            "margin_rate": 0.15,
+            "contract_multiplier": 1000,
+            "liquidity_bucket": "near_month_high",
+            "max_contracts_per_rebalance": 24,
+            "market_ruleset": "cn_futures",
+            "sell_tax_rate": 0.0,
+            "min_trade_lot": 1,
+            "t_plus_one": false
+          },
+          "failure_mode": {
+            "primary_failure_mode": "delivery_or_structure_reversal",
+            "stop_rule": {
+              "stop_loss_abs_move": 3.0,
+              "time_stop_days": 30,
+              "delivery_protection_days": 3,
+              "near_month_premium_floor": -3.0
+            }
+          }
+        }
+      ]
+    },
+    "backtest_summary": {
+      "leaderboard": [
+        {
+          "family": "trend",
+          "rank": 1,
+          "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p05",
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "trend",
+          "rank": 2,
+          "strategy_code": "trend_m4_carry1p0_vol0p03_stop0p07",
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "trend",
+          "rank": 3,
+          "strategy_code": "trend_m4_carry1p0_vol0p04_stop0p05",
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "trend",
+          "rank": 4,
+          "strategy_code": "trend_m4_carry1p0_vol0p04_stop0p07",
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "trend",
+          "rank": 5,
+          "strategy_code": "trend_m4_carry1p0_vol0p05_stop0p05",
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "spread",
+          "rank": 1,
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "trade_count": 3,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "spread",
+          "rank": 2,
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold45_trend",
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "trade_count": 3,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "spread",
+          "rank": 3,
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend",
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "trade_count": 3,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "spread",
+          "rank": 4,
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold45_trend",
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "trade_count": 3,
+          "alpha_decay": 0.0
+        },
+        {
+          "family": "spread",
+          "rank": 5,
+          "strategy_code": "spread_1_2_bandn0p75_to_0p25_exit1p25_stop5p0_hold30_trend",
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "trade_count": 3,
+          "alpha_decay": 0.0
+        }
+      ],
+      "selection_rule": "先筛 annualized_return>10% 且 trade_count>=6；若无候选达标，则回退为按 annualized_return / post_cost_sharpe / win_rate / drawdown / trade_count 选最优候选。"
+    },
+    "regime_panel": {
+      "trend_m4_carry1p0_vol0p03_stop0p05": {
+        "overall": {
+          "annualized_return": 0.10492,
+          "sharpe_ratio": 0.836835,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "win_rate": 0.7,
+          "trade_count": 10
+        },
+        "backwardation": {
+          "annualized_return": 0.105486,
+          "sharpe_ratio": 0.794184,
+          "max_drawdown": -0.299234,
+          "trade_count": 10,
+          "win_rate": 0.7
+        },
+        "contango_or_flat": {
+          "annualized_return": -0.000512,
+          "sharpe_ratio": -0.016952,
+          "max_drawdown": -0.044961,
+          "trade_count": 0,
+          "win_rate": 0.0
+        }
+      },
+      "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend": {
+        "overall": {
+          "annualized_return": 0.005075,
+          "sharpe_ratio": 0.577411,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "win_rate": 0.333333,
+          "trade_count": 3
+        },
+        "backwardation": {
+          "annualized_return": 0.00728,
+          "sharpe_ratio": 0.419041,
+          "max_drawdown": -0.015938,
+          "trade_count": 3,
+          "win_rate": 0.333333
+        },
+        "contango_or_flat": {
+          "annualized_return": -0.002189,
+          "sharpe_ratio": -0.485175,
+          "max_drawdown": -0.01372,
+          "trade_count": 0,
+          "win_rate": 0.0
+        }
+      }
+    },
+    "capacity_panel": {
+      "trend_m4_carry1p0_vol0p03_stop0p05": [
+        {
+          "capital": 1000000,
+          "annualized_return": 0.10492,
+          "post_cost_sharpe": 0.784204,
+          "max_drawdown": -0.299234,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "capacity_limit_contracts": 8,
+          "binding_constraint": "drawdown",
+          "participation_cap": 14,
+          "margin_cap": 11,
+          "max_contracts_cap": 22,
+          "drawdown_cap": 8
+        },
+        {
+          "capital": 5000000,
+          "annualized_return": 0.050644,
+          "post_cost_sharpe": 0.814788,
+          "max_drawdown": -0.137811,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "capacity_limit_contracts": 14,
+          "binding_constraint": "participation",
+          "participation_cap": 14,
+          "margin_cap": 55,
+          "max_contracts_cap": 22,
+          "drawdown_cap": 40
+        },
+        {
+          "capital": 10000000,
+          "annualized_return": 0.026975,
+          "post_cost_sharpe": 0.797176,
+          "max_drawdown": -0.077051,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "capacity_limit_contracts": 14,
+          "binding_constraint": "participation",
+          "participation_cap": 14,
+          "margin_cap": 110,
+          "max_contracts_cap": 22,
+          "drawdown_cap": 81
+        },
+        {
+          "capital": 30000000,
+          "annualized_return": 0.009422,
+          "post_cost_sharpe": 0.783428,
+          "max_drawdown": -0.027881,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "capacity_limit_contracts": 14,
+          "binding_constraint": "participation",
+          "participation_cap": 14,
+          "margin_cap": 332,
+          "max_contracts_cap": 22,
+          "drawdown_cap": 244
+        },
+        {
+          "capital": 100000000,
+          "annualized_return": 0.002876,
+          "post_cost_sharpe": 0.778136,
+          "max_drawdown": -0.008622,
+          "win_rate": 0.7,
+          "trade_count": 10,
+          "capacity_limit_contracts": 14,
+          "binding_constraint": "participation",
+          "participation_cap": 14,
+          "margin_cap": 1108,
+          "max_contracts_cap": 22,
+          "drawdown_cap": 814
+        }
+      ],
+      "spread_1_2_bandn0p75_to_0p25_exit1p25_stop3p0_hold30_trend": [
+        {
+          "capital": 1000000,
+          "annualized_return": 0.005075,
+          "post_cost_sharpe": 0.286509,
+          "max_drawdown": -0.02944,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "capacity_limit_contracts": 2,
+          "binding_constraint": "margin",
+          "participation_cap": 19,
+          "margin_cap": 2,
+          "max_contracts_cap": 24,
+          "drawdown_cap": 45
+        },
+        {
+          "capital": 5000000,
+          "annualized_return": 0.004834,
+          "post_cost_sharpe": 0.24592,
+          "max_drawdown": -0.03444,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "capacity_limit_contracts": 11,
+          "binding_constraint": "margin",
+          "participation_cap": 19,
+          "margin_cap": 11,
+          "max_contracts_cap": 24,
+          "drawdown_cap": 225
+        },
+        {
+          "capital": 10000000,
+          "annualized_return": 0.002962,
+          "post_cost_sharpe": 0.270655,
+          "max_drawdown": -0.018012,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "capacity_limit_contracts": 19,
+          "binding_constraint": "participation",
+          "participation_cap": 19,
+          "margin_cap": 22,
+          "max_contracts_cap": 24,
+          "drawdown_cap": 450
+        },
+        {
+          "capital": 30000000,
+          "annualized_return": 0.000993,
+          "post_cost_sharpe": 0.269269,
+          "max_drawdown": -0.006004,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "capacity_limit_contracts": 19,
+          "binding_constraint": "participation",
+          "participation_cap": 19,
+          "margin_cap": 68,
+          "max_contracts_cap": 24,
+          "drawdown_cap": 1350
+        },
+        {
+          "capital": 100000000,
+          "annualized_return": 0.000298,
+          "post_cost_sharpe": 0.268779,
+          "max_drawdown": -0.001801,
+          "win_rate": 0.333333,
+          "trade_count": 3,
+          "capacity_limit_contracts": 19,
+          "binding_constraint": "participation",
+          "participation_cap": 19,
+          "margin_cap": 228,
+          "max_contracts_cap": 24,
+          "drawdown_cap": 4500
+        }
+      ]
+    },
+    "generalization_seed": {
+      "logic_abstraction": [
+        "稳定 backwardation + 近端不出现极端升水时，远月 carry 与趋势延续可以共振。",
+        "spread z-score 回落但曲线单调性未破坏时，买近抛远更适合作为主交易方向。",
+        "容量评估必须把 far-month 流动性折扣、gross margin 与交割保护同时纳入。"
+      ],
+      "failure_modes": [
+        "现货持续弱势导致近端异常升水，期限结构反转。",
+        "极端行情下单边趋势主导，短 spread 方向风险急剧放大。",
+        "远月流动性恶化使得成本和回撤同步恶化。"
+      ]
+    }
+  }
+}

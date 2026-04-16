@@ -258,3 +258,79 @@ def test_fill_gaps_avoids_momentum_quota_fill_and_limits_trend_cluster_ratio():
     assert summary["trend_cluster_ratio"] <= 0.5
     assert "pool_profile_distribution" in summary
     assert "diversification_debt" in summary
+
+
+def test_spawn_targets_snapshot_candidates_from_stock_family_allocation():
+    spawner = StrategySpawner()
+    snapshot = {
+        "fear_greed_index": 55,
+        "fg_components": {"volatility": 52},
+        "factor_ic": {},
+        "factor_ic_trend": {},
+        "north_fund_3d_net": 0,
+        "margin_5d_change_pct": 0,
+        "event_driven": {"event_count": 0, "tasks_ready_count": 0},
+        "completeness": {"completion_ratio": 1.0},
+        "factor_research": {
+            "stock_family_allocation": {
+                "600001": {
+                    "priority": 0.95,
+                    "top_family": "ma_cross",
+                    "source_mode": "stock_universe_projection",
+                    "family_plans": [
+                        {"family": "ma_cross", "family_rank": 1, "budget_weight": 0.55, "failure_penalty": 0.08},
+                        {"family": "quality_factor", "family_rank": 2, "budget_weight": 0.30, "failure_penalty": 0.12},
+                    ],
+                },
+                "600002": {
+                    "priority": 0.90,
+                    "top_family": "ma_cross",
+                    "source_mode": "stock_universe_projection",
+                    "family_plans": [
+                        {"family": "ma_cross", "family_rank": 1, "budget_weight": 0.50, "failure_penalty": 0.10},
+                    ],
+                },
+                "600003": {
+                    "priority": 0.82,
+                    "top_family": "momentum",
+                    "source_mode": "stock_universe_projection",
+                    "family_plans": [
+                        {"family": "momentum", "family_rank": 1, "budget_weight": 0.42, "failure_penalty": 0.16},
+                    ],
+                },
+            },
+        },
+    }
+
+    candidates = spawner.spawn(snapshot)
+    ma_cross = next(item for item in candidates if item["strategy_type"] == "ma_cross")
+
+    assert ma_cross["requested_target_symbols"][:2] == ["600001", "600002"]
+    assert ma_cross["target_symbols"][:2] == ["600001", "600002"]
+    assert ma_cross["stock_pool"]["symbols"][:2] == ["600001", "600002"]
+    assert ma_cross["research_task"]["synthetic_local_spawn"] is True
+    assert ma_cross["research_task"]["validation_focus"] == "candidate_target_only"
+    assert ma_cross["research_task"]["gate_1_representative_count"] >= 2
+    assert "targeted_universe" in ma_cross["tags"]
+
+
+def test_fill_gaps_caps_mean_reversion_short_after_first_local_candidate():
+    spawner = StrategySpawner()
+    snapshot = {
+        "fear_greed_index": 28,
+        "fg_components": {"volatility": 38},
+        "factor_ic": {},
+        "factor_ic_trend": {},
+        "north_fund_3d_net": -6e9,
+        "margin_5d_change_pct": -2.5,
+        "event_driven": {"event_count": 0, "tasks_ready_count": 0},
+        "completeness": {"completion_ratio": 1.0},
+    }
+    current_candidates = [
+        {"strategy_type": "mean_reversion_short"},
+        {"strategy_type": "rsi"},
+    ]
+
+    filled = spawner._fill_gaps(snapshot, current_candidates=current_candidates)
+
+    assert all(item["strategy_type"] != "mean_reversion_short" for item in filled)

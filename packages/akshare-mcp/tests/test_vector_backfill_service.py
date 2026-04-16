@@ -80,6 +80,8 @@ class _Db:
             "documents": len(batch),
             "chunks": len(batch) * 2,
             "embedded_chunks": len(batch) * 2 if kwargs.get("embed") else 0,
+            "profile_version_counts": {f"{kwargs.get('version', 'v1')}__d1536": len(batch) * 2} if kwargs.get("embed") else {},
+            "vector_dims": [1536] if kwargs.get("embed") else [],
         }
 
 
@@ -102,8 +104,31 @@ async def test_backfill_market_document_vectors_backfills_news_and_research_and_
     assert result["saved_chunks"] == 4
     assert result["embedded_chunks"] == 0
     assert result["version"] == "mem_v2"
+    assert result["profile_version_counts_by_doc_type"] == {}
     assert len(db.save_calls) == 2
     assert db.save_calls[0]["stock_code"] == "600519"
     assert db.save_calls[0]["doc_type"] == "news"
     assert db.save_calls[0]["kwargs"]["version"] == "mem_v2"
     assert db.save_calls[1]["doc_type"] == "research"
+
+
+@pytest.mark.asyncio
+async def test_backfill_market_document_vectors_reports_profile_versions_when_embedding_enabled():
+    db = _Db()
+
+    result = await backfill_market_document_vectors(
+        db,
+        doc_types=["news"],
+        limit=10,
+        batch_size=10,
+        embed=True,
+        version="mem_v3",
+    )
+
+    assert result["embedded_chunks"] == 2
+    assert result["profile_version_counts_by_doc_type"] == {
+        "news": {"mem_v3__d1536": 2},
+    }
+    assert result["vector_dims_by_doc_type"] == {
+        "news": [1536],
+    }

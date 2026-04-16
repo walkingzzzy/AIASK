@@ -95,6 +95,7 @@ class _StrategyVectorPlatformProfilesMixin:
                     },
                 })
                 unified_profile = None
+                unified_write_error = None
                 if hasattr(db, 'save_vector_collection') and hasattr(db, 'save_vector_profile'):
                     try:
                         await db.save_vector_collection({
@@ -149,15 +150,18 @@ class _StrategyVectorPlatformProfilesMixin:
                                 metric=metric,
                             )
                     except Exception as exc:
+                        unified_write_error = exc
                         logger.warning(
                             'StrategyVectorPlatform.build_strategy_profile unified dual-write failed for %s: %s',
                             strategy.get('id'),
                             exc,
                         )
+                degraded = unified_write_error is not None
+                quality_flags = ['unified_write_failed'] if degraded else []
                 await db.save_vector_index_registry({
                     'index_name': index_name,
                     'backend': self.backend_name(db),
-                    'status': 'active',
+                    'status': 'degraded' if degraded else 'active',
                     'profile_type': profile_type,
                     'vector_method': effective_vector_method,
                     'metric': metric,
@@ -171,6 +175,13 @@ class _StrategyVectorPlatformProfilesMixin:
                         'unified_profile_id': (unified_profile or {}).get('id'),
                         'model_id': model_id,
                         'audit': backend_audit,
+                        'degraded': degraded,
+                        'quality_flags': quality_flags,
+                        'unified_write_error': (
+                            f'{type(unified_write_error).__name__}: {unified_write_error}'
+                            if unified_write_error is not None
+                            else None
+                        ),
                     },
                 })
                 return {
@@ -178,6 +189,23 @@ class _StrategyVectorPlatformProfilesMixin:
                     'unified_collection_name': collection_name,
                     'unified_profile_id': (unified_profile or {}).get('id'),
                     'model_id': model_id,
+                    'status': 'degraded' if degraded else 'active',
+                    'degraded': degraded,
+                    'quality_flags': quality_flags,
+                    'quality': {
+                        'status': 'degraded' if degraded else 'passed',
+                        'checks': {
+                            'legacy_write': {'status': 'passed'},
+                            'unified_write': {
+                                'status': 'degraded' if degraded else 'passed',
+                                'error': (
+                                    f'{type(unified_write_error).__name__}: {unified_write_error}'
+                                    if unified_write_error is not None
+                                    else None
+                                ),
+                            },
+                        },
+                    },
                 }
             except Exception as exc:
                 logger.warning('StrategyVectorPlatform.build_strategy_profile failed for %s: %s', strategy.get('id'), exc)
@@ -207,12 +235,14 @@ class _StrategyVectorPlatformProfilesMixin:
                     )
 
             built_profiles = await asyncio.gather(*[_build_one(strategy) for strategy in list(strategies or [])])
-            items = [profile for profile in built_profiles if profile]
+            items = [profile for profile in built_profiles if profile and not profile.get('degraded')]
+            degraded_items = [profile for profile in built_profiles if profile and profile.get('degraded')]
+            failed_count = max(0, len(list(strategies or [])) - len(items) - len(degraded_items))
             if items:
                 await db.save_vector_index_registry({
                     'index_name': index_name,
                     'backend': self.backend_name(db),
-                    'status': 'active',
+                    'status': 'degraded' if degraded_items else 'active',
                     'profile_type': profile_type,
                     'vector_method': resolved_vector_method,
                     'metric': 'cosine',
@@ -220,6 +250,9 @@ class _StrategyVectorPlatformProfilesMixin:
                     'index_version': index_version,
                     'metadata': {
                         'profile_ids': [item.get('id') for item in items if item.get('id') is not None],
+                        'degraded_profile_ids': [item.get('id') for item in degraded_items if item.get('id') is not None],
+                        'degraded_count': len(degraded_items),
+                        'failed_count': failed_count,
                     },
                 })
                 if getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'ensure_strategy_vector_profile_pgvector_index'):
@@ -236,7 +269,15 @@ class _StrategyVectorPlatformProfilesMixin:
                             )
                         except Exception as exc:
                             logger.warning('StrategyVectorPlatform.build_profiles_for_strategies failed to create profile pgvector index: %s', exc)
-            return {'count': len(items), 'items': items}
+            return {
+                'count': len(items),
+                'items': items,
+                'degraded_count': len(degraded_items),
+                'degraded_items': degraded_items,
+                'failed_count': failed_count,
+                'quality_flags': ['unified_write_failed'] if degraded_items else [],
+                'degraded': bool(degraded_items),
+            }
 
         async def _list_unified_strategy_collections(
             self,
@@ -373,6 +414,10 @@ class _StrategyVectorPlatformProfilesMixin:
                 'collection_name': collection.get('collection_name') or row.get('collection_name'),
                 'model_id': row.get('model_id') or collection.get('model_id'),
                 'metadata': metadata,
+                'source': 'unified_profile',
+                'source_of_truth': 'unified_vector_tables',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
             }
 
         def _map_unified_snapshot_row(
@@ -406,6 +451,47 @@ class _StrategyVectorPlatformProfilesMixin:
                 'activated_at': snapshot.get('activated_at'),
                 'metadata': metadata,
                 'source': 'unified_snapshot',
+                'source_of_truth': 'unified_vector_tables',
+                'table_family': 'unified_vector_tables',
+                'legacy_only': False,
+            }
+
+        def _map_legacy_profile_row(
+            self,
+            row: dict,
+            *,
+            index_name: Optional[str] = None,
+        ) -> dict:
+            payload = dict(row or {})
+            metadata = dict(payload.get('metadata') or {})
+            resolved_index_name = str(index_name or payload.get('index_name') or metadata.get('index_name') or 'strategy_behavior')
+            resolved_index_version = str(payload.get('index_version') or metadata.get('index_version') or '')
+            return {
+                **payload,
+                'index_name': resolved_index_name,
+                'index_version': resolved_index_version,
+                'source': payload.get('source') or 'legacy_profile',
+                'source_of_truth': 'legacy_strategy_vector_tables',
+                'table_family': 'legacy_strategy_vector_tables',
+                'legacy_only': True,
+            }
+
+        def _map_legacy_snapshot_row(
+            self,
+            row: dict,
+            *,
+            index_name: Optional[str] = None,
+        ) -> dict:
+            payload = dict(row or {})
+            metadata = dict(payload.get('metadata') or {})
+            resolved_index_name = str(index_name or payload.get('index_name') or metadata.get('index_name') or 'strategy_behavior')
+            return {
+                **payload,
+                'index_name': resolved_index_name,
+                'source': payload.get('source') or 'legacy_snapshot',
+                'source_of_truth': 'legacy_strategy_vector_tables',
+                'table_family': 'legacy_strategy_vector_tables',
+                'legacy_only': True,
             }
 
         async def list_profiles(
@@ -447,7 +533,10 @@ class _StrategyVectorPlatformProfilesMixin:
                 index_version=index_version,
                 limit=resolved_limit,
             )
-            return list(rows or [])[:resolved_limit]
+            return [
+                self._map_legacy_profile_row(dict(row or {}), index_name=index_name)
+                for row in list(rows or [])[:resolved_limit]
+            ]
 
         async def list_index_snapshots(
             self,
@@ -493,7 +582,10 @@ class _StrategyVectorPlatformProfilesMixin:
                 status=status,
                 limit=resolved_limit,
             )
-            return list(rows or [])[:resolved_limit]
+            return [
+                self._map_legacy_snapshot_row(dict(row or {}), index_name=index_name)
+                for row in list(rows or [])[:resolved_limit]
+            ]
 
         async def _load_query_profile(
             self,

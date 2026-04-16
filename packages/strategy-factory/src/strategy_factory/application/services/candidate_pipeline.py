@@ -124,6 +124,7 @@ class CandidatePipeline:
             else {}
         )
         governance_plane = build_governance_plane_artifact(
+            candidates=candidates,
             quality_gate_report=quality_gate_report,
             backtest_report=backtest_report,
             dedup_report=dedup_report,

@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from akshare_mcp.services import vector_backfill as vector_backfill_mod
 from akshare_mcp.tools.managers import data_sync_manager as manager_mod
+from akshare_mcp.tools.managers import _data_sync_manager_support_sync as sync_support_mod
 
 
 class _DummyMCP:
@@ -212,6 +214,72 @@ async def test_data_sync_manager_supports_vector_backfill_market_docs_sync(monke
     assert data["results"]["args"]["doc_types"] == ["news", "research"]
     assert any("INSERT INTO sync_tasks" in item[0] for item in db.conn.executed)
     assert any("UPDATE sync_tasks" in item[0] for item in db.conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_sync_vector_backfill_market_docs_builds_snapshot_for_each_profile_version(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(sync_support_mod, "get_db", lambda: db)
+
+    async def _fake_backfill(*_args, **_kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "stock_codes": [],
+            "doc_types": ["news"],
+            "version": "mem_v2",
+            "limit": 200,
+            "batch_size": 50,
+            "embed": True,
+            "chunk_size": 800,
+            "overlap": 120,
+            "rebuild_existing": False,
+            "dry_run": False,
+            "include_legacy_research_docs": False,
+            "saved_docs": 12,
+            "saved_chunks": 28,
+            "embedded_chunks": 28,
+            "profile_version_counts_by_doc_type": {
+                "news": {
+                    "mem_v2__d256": 10,
+                    "mem_v2__d1536": 18,
+                }
+            },
+        }
+
+    snapshot_calls: list[dict] = []
+
+    async def _fake_snapshot_builder(*_args, **kwargs):
+        snapshot_calls.append(dict(kwargs))
+        return {
+            "collection_name": kwargs["collection_name"],
+            "profile_version": kwargs["version"],
+            "index_version": kwargs["index_version"],
+            "status": "built",
+        }
+
+    async def _fake_market_aux(_db):
+        return {"market_documents": 12}
+
+    monkeypatch.setattr(vector_backfill_mod, "backfill_market_document_vectors", _fake_backfill)
+    monkeypatch.setattr(sync_support_mod, "_maybe_build_backfill_snapshot", _fake_snapshot_builder)
+    monkeypatch.setattr(sync_support_mod, "_load_market_aux_status", _fake_market_aux)
+
+    result = await sync_support_mod._sync_vector_backfill_market_docs_now(
+        {
+            "doc_types": ["news"],
+            "build_snapshot": True,
+            "activate_snapshot": True,
+            "embed": True,
+        }
+    )
+
+    assert [call["version"] for call in snapshot_calls] == ["mem_v2__d256", "mem_v2__d1536"]
+    assert [call["index_version"] for call in snapshot_calls] == ["mem_v2__d256", "mem_v2__d1536"]
+    assert result["snapshot"] is None
+    assert len(result["snapshots"]) == 2
+    assert result["message"].endswith("snapshots=2")
 
 
 @pytest.mark.asyncio
@@ -504,7 +572,7 @@ async def test_data_sync_manager_factor_context_timeout_marks_task_failed(monkey
                 "dry_run": False,
                 "include_legacy_research_docs": False,
             },
-            "market_doc_chunks",
+            "market_doc_chunks__news",
             "v2",
         ),
         (

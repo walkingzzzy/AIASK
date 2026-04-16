@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 
 import pytest
@@ -114,6 +115,10 @@ class _Adapter(VectorUnifiedMixin):
             return json.loads(value)
         return value
 
+    @staticmethod
+    def _coerce_timestamp(value):
+        return value
+
     def supports_pgvector(self):
         return True
 
@@ -162,6 +167,23 @@ class _Adapter(VectorUnifiedMixin):
         params = cls._resolve_pgvector_hnsw_params(index_params)
         return f" WITH (m = {params['m']}, ef_construction = {params['ef_construction']})"
 
+    @classmethod
+    def _resolve_pgvector_index_build_settings(cls, index_params=None):
+        params = dict(index_params or {})
+        return {
+            "maintenance_work_mem": str(
+                params.get("maintenance_work_mem")
+                or os.getenv("VECTOR_INDEX_BUILD_MAINTENANCE_WORK_MEM")
+                or "256MB"
+            ),
+            "max_parallel_maintenance_workers": cls._coerce_positive_int(
+                params.get("max_parallel_maintenance_workers")
+                or os.getenv("VECTOR_INDEX_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS")
+                or 1,
+                1,
+            ),
+        }
+
 
 class _WindowConn:
     def __init__(self):
@@ -194,6 +216,10 @@ class _IndexSqlConn:
     def __init__(self):
         self.fetchval_calls: list[tuple[str, tuple]] = []
         self.executed_sql: list[str] = []
+        self.execute_calls: list[tuple[str, tuple]] = []
+
+    def transaction(self):
+        return _Txn()
 
     async def fetchval(self, query, *args):
         normalized = " ".join(str(query).split())
@@ -207,7 +233,9 @@ class _IndexSqlConn:
         )
 
     async def execute(self, query, *args):
-        self.executed_sql.append(" ".join(str(query).split()))
+        normalized = " ".join(str(query).split())
+        self.executed_sql.append(normalized)
+        self.execute_calls.append((normalized, args))
         return "OK"
 
 
@@ -243,6 +271,112 @@ class _HnswSearchConn:
                 "similarity": 0.98,
             }
         ]
+
+
+class _SnapshotSaveConn:
+    def __init__(self):
+        self.fetchrow_calls: list[tuple[str, tuple]] = []
+        self.execute_calls: list[tuple[str, tuple]] = []
+
+    async def fetchrow(self, query, *args):
+        normalized = " ".join(str(query).split())
+        self.fetchrow_calls.append((normalized, args))
+        return {
+            "collection_name": args[0],
+            "index_version": args[1],
+            "status": args[2],
+            "model_id": args[3],
+            "profile_type": args[4],
+            "metric": args[5],
+            "vector_dim": args[6],
+            "sample_count": args[7],
+            "bucket_count": args[8],
+            "index_params": json.loads(args[9]),
+            "metrics": json.loads(args[10]),
+            "metadata": json.loads(args[11]),
+            "built_at": args[12],
+            "activated_at": args[13],
+        }
+
+    async def execute(self, query, *args):
+        self.execute_calls.append((" ".join(str(query).split()), args))
+        return "UPDATE 1"
+
+
+class _CleanupConn:
+    def __init__(self):
+        self.execute_calls: list[tuple[str, tuple]] = []
+
+    def transaction(self):
+        return _Txn()
+
+    async def fetchrow(self, query, *args):
+        normalized = " ".join(str(query).split())
+        if "SELECT * FROM vector_collections" in normalized:
+            return {
+                "collection_name": "market_doc_chunks",
+                "active_version": "v_keep",
+                "backend": "pgvector",
+                "model_id": "text-embedding-3-small",
+            }
+        raise AssertionError(f"unexpected fetchrow: {normalized} args={args}")
+
+    async def fetch(self, query, *args):
+        normalized = " ".join(str(query).split())
+        if "FROM vector_profiles" in normalized and "GROUP BY version" in normalized:
+            return [
+                {"version": "v_keep", "profile_rows": 1, "last_seen": "2026-03-25T00:00:00+00:00"},
+                {"version": "v_old", "profile_rows": 1, "last_seen": "2026-03-24T00:00:00+00:00"},
+            ]
+        if "FROM vector_profile_store" in normalized and "GROUP BY version" in normalized:
+            return [
+                {"version": "v_keep", "profile_store_rows": 1, "last_seen": "2026-03-25T00:00:00+00:00"},
+                {"version": "v_old", "profile_store_rows": 1, "last_seen": "2026-03-24T00:00:00+00:00"},
+            ]
+        if "FROM vector_index_snapshots" in normalized and "ORDER BY" in normalized:
+            return [
+                {
+                    "index_version": "v_keep",
+                    "status": "active",
+                    "bucket_count": 1,
+                    "vector_dim": 3,
+                    "model_id": "text-embedding-3-small",
+                    "activated_at": "2026-03-25T00:00:00+00:00",
+                    "profile_type": "news",
+                },
+                {
+                    "index_version": "v_old",
+                    "status": "built",
+                    "bucket_count": 1,
+                    "vector_dim": 3,
+                    "model_id": "text-embedding-3-small",
+                    "created_at": "2026-03-24T00:00:00+00:00",
+                    "profile_type": "news",
+                },
+            ]
+        if "FROM vector_index_items" in normalized and "GROUP BY index_version" in normalized:
+            return [
+                {"version": "v_keep", "index_item_rows": 1, "last_seen": "2026-03-25T00:00:00+00:00"},
+                {"version": "v_old", "index_item_rows": 1, "last_seen": "2026-03-24T00:00:00+00:00"},
+            ]
+        if "FROM vector_index_item_store" in normalized and "GROUP BY index_version" in normalized:
+            return [
+                {"version": "v_keep", "index_item_store_rows": 1, "last_seen": "2026-03-25T00:00:00+00:00"},
+                {"version": "v_old", "index_item_store_rows": 1, "last_seen": "2026-03-24T00:00:00+00:00"},
+            ]
+        raise AssertionError(f"unexpected fetch: {normalized} args={args}")
+
+    async def execute(self, query, *args):
+        normalized = " ".join(str(query).split())
+        self.execute_calls.append((normalized, args))
+        if normalized.startswith("DELETE FROM"):
+            return "DELETE 1"
+        return "OK"
+
+
+class _CleanupAdapter(_Adapter):
+    async def list_vector_hnsw_indexes(self, **_kwargs):
+        return []
 
 
 @pytest.mark.asyncio
@@ -333,7 +467,31 @@ async def test_ensure_vector_profile_pgvector_index_includes_hnsw_with_clause():
     assert conn.fetchval_calls
     _, args = conn.fetchval_calls[0]
     assert args[3] == " WITH (m = 24, ef_construction = 96)"
-    assert "WITH (m = 24, ef_construction = 96)" in conn.executed_sql[0]
+    assert conn.executed_sql[0] == "SELECT set_config('maintenance_work_mem', $1, true)"
+    assert conn.executed_sql[1] == "SELECT set_config('max_parallel_maintenance_workers', $1, true)"
+    assert conn.execute_calls[0][1] == ("256MB",)
+    assert conn.execute_calls[1][1] == ("1",)
+    assert "WITH (m = 24, ef_construction = 96)" in conn.executed_sql[2]
+
+
+@pytest.mark.asyncio
+async def test_ensure_vector_profile_pgvector_index_uses_low_memory_build_defaults(monkeypatch):
+    conn = _IndexSqlConn()
+    adapter = _Adapter(conn)
+    monkeypatch.setenv("VECTOR_INDEX_BUILD_MAINTENANCE_WORK_MEM", "96MB")
+    monkeypatch.setenv("VECTOR_INDEX_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS", "1")
+
+    await adapter.ensure_vector_profile_pgvector_index(
+        collection_name="stock_profile_embeddings",
+        version="snap_v1",
+        vector_dim=32,
+        profile_type="both",
+    )
+
+    assert conn.executed_sql[0] == "SELECT set_config('maintenance_work_mem', $1, true)"
+    assert conn.executed_sql[1] == "SELECT set_config('max_parallel_maintenance_workers', $1, true)"
+    assert conn.execute_calls[0][1] == ("96MB",)
+    assert conn.execute_calls[1][1] == ("1",)
 
 
 @pytest.mark.asyncio
@@ -383,3 +541,57 @@ async def test_save_kline_pattern_window_coerces_string_dates_before_execute():
     assert conn.args[2].isoformat() == "2026-03-23"
     assert conn.args[3].isoformat() == "2026-03-04"
     assert row["window_uid"] == "kwin_demo"
+
+
+@pytest.mark.asyncio
+async def test_save_vector_index_snapshot_deactivates_prior_active_scope():
+    conn = _SnapshotSaveConn()
+    adapter = _Adapter(conn)
+
+    row = await adapter.save_vector_index_snapshot(
+        {
+            "collection_name": "market_doc_chunks",
+            "index_version": "snap_news_v2",
+            "status": "active",
+            "model_id": "text-embedding-3-small",
+            "profile_type": "news",
+            "metric": "cosine",
+            "vector_dim": 3,
+            "sample_count": 2,
+            "bucket_count": 1,
+            "index_params": {"neighbor_count": 2},
+            "metrics": {"items_count": 2},
+            "metadata": {"profile_version": "v2"},
+            "built_at": "2026-03-25T00:00:00+00:00",
+            "activated_at": "2026-03-25T00:00:01+00:00",
+        }
+    )
+
+    assert row["collection_name"] == "market_doc_chunks__news"
+    assert "UPDATE vector_index_snapshots SET status = 'stale'" in conn.execute_calls[0][0]
+    assert conn.execute_calls[0][1][0] == "market_doc_chunks__news"
+    assert conn.execute_calls[0][1][1] == "snap_news_v2"
+    assert conn.execute_calls[0][1][2] == "news"
+    assert "UPDATE vector_collections SET active_version = $2" in conn.execute_calls[1][0]
+    assert conn.execute_calls[1][1] == ("market_doc_chunks__news", "snap_news_v2")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_vector_collection_history_filters_store_deletes_by_profile_type():
+    conn = _CleanupConn()
+    adapter = _CleanupAdapter(conn)
+
+    summary = await adapter.cleanup_vector_collection_history(
+        collection_name="market_doc_chunks",
+        keep_versions=1,
+        dry_run=False,
+        profile_type="news",
+    )
+
+    delete_sql = {sql: args for sql, args in conn.execute_calls if sql.startswith("DELETE FROM")}
+    assert summary["deleted"]["vector_profile_store"] == 1
+    assert summary["deleted"]["vector_index_item_store"] == 1
+    assert "DELETE FROM vector_index_item_store WHERE collection_name = $1 AND index_version = ANY($2::text[]) AND COALESCE(profile_type, '') = $3" in delete_sql
+    assert delete_sql["DELETE FROM vector_index_item_store WHERE collection_name = $1 AND index_version = ANY($2::text[]) AND COALESCE(profile_type, '') = $3"][2] == "news"
+    assert "DELETE FROM vector_profile_store WHERE collection_name = $1 AND version = ANY($2::text[]) AND COALESCE(profile_type, '') = $3" in delete_sql
+    assert delete_sql["DELETE FROM vector_profile_store WHERE collection_name = $1 AND version = ANY($2::text[]) AND COALESCE(profile_type, '') = $3"][2] == "news"

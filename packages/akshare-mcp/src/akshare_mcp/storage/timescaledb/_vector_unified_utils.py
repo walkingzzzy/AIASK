@@ -8,8 +8,51 @@ import re
 from datetime import date, datetime
 from typing import Any, Iterable, List, Optional
 
+from ...vector_collection_scope import (
+    LEGACY_MARKET_DOC_COLLECTION,
+    MARKET_DOC_PROFILE_TYPES,
+    is_profile_scoped_collection,
+    market_doc_collection_name,
+    market_doc_search_scopes,
+    normalize_market_doc_types,
+    normalize_profile_type,
+    resolve_vector_collection_name,
+    vector_collection_candidates,
+)
+
 
 class _VectorUnifiedUtilsMixin:
+        LEGACY_MARKET_DOC_COLLECTION = LEGACY_MARKET_DOC_COLLECTION
+        MARKET_DOC_PROFILE_TYPES = MARKET_DOC_PROFILE_TYPES
+
+        @staticmethod
+        def _normalize_profile_type(value: Any) -> str | None:
+            return normalize_profile_type(value)
+
+        @staticmethod
+        def _resolve_vector_collection_name(collection_name: Any, profile_type: Any = None) -> str:
+            return resolve_vector_collection_name(collection_name, profile_type)
+
+        @staticmethod
+        def _vector_collection_candidates(collection_name: Any, profile_type: Any = None) -> List[str]:
+            return vector_collection_candidates(collection_name, profile_type)
+
+        @staticmethod
+        def _is_profile_scoped_collection(collection_name: Any) -> bool:
+            return is_profile_scoped_collection(collection_name)
+
+        @staticmethod
+        def _market_doc_collection_name(doc_type: Any) -> str:
+            return market_doc_collection_name(doc_type)
+
+        @staticmethod
+        def _normalize_market_doc_types(values: Any) -> List[str]:
+            return normalize_market_doc_types(values)
+
+        @staticmethod
+        def _market_doc_search_scopes(doc_types: Any = None) -> List[tuple[str, str | None]]:
+            return market_doc_search_scopes(doc_types)
+
         @staticmethod
         def _normalize_hybrid_query_text(value: Any) -> str:
             return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())

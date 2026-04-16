@@ -1197,11 +1197,17 @@ class TestStrategyManager:
         assert status_resp["data"]["bulk_stock_matrix_cursor"]["source"] == "persisted_run"
         assert status_resp["data"]["bulk_stock_matrix_cursor"]["resume_from_run_id"] == "run_hist_1"
         assert status_resp["data"]["bulk_stock_matrix_cursor"]["next_universe_offset"] == 1000
+        assert status_resp["data"]["trace_ledger_v2_implemented"] is True
+        assert status_resp["data"]["governance_gate_report_v2_implemented"] is True
+        assert status_resp["data"]["execution_audit_entity_chain_available"] is True
         assert run_resp["data"]["status"] == "success"
         assert capabilities_resp["data"]["factory_runs"] is True
         assert capabilities_resp["data"]["factory_bulk_lane"] is True
         assert capabilities_resp["data"]["factory_bulk_lane_enabled"] is True
         assert capabilities_resp["data"]["factory_pre_gate_enabled"] is True
+        assert capabilities_resp["data"]["trace_ledger_v2_implemented"] is True
+        assert capabilities_resp["data"]["governance_gate_report_v2_implemented"] is True
+        assert capabilities_resp["data"]["execution_audit_entity_chain_available"] is True
         assert runs_resp["data"]["count"] == 1
         assert runs_resp["data"]["items"][0]["run_id"] == "run_hist_1"
         assert runs_resp["data"]["items"][0]["candidates_spawned"] == 2

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..storage.timescaledb.vector_unified import VectorUnifiedMixin
+from ..vector_collection_scope import resolve_vector_collection_name
 
 
 def _normalize_positive_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 5000) -> int:
@@ -99,13 +100,13 @@ async def benchmark_vector_collection_search(
     metric: str = "cosine",
     persist_snapshot_metrics: bool = True,
 ) -> dict[str, Any]:
-    resolved_collection = str(collection_name or "").strip()
+    resolved_profile_type = str(profile_type or "").strip() or None
+    resolved_collection = resolve_vector_collection_name(collection_name, resolved_profile_type)
     if not resolved_collection:
         raise ValueError("collection_name is required")
     resolved_sample_size = _normalize_positive_int(sample_size, 30, minimum=1, maximum=500)
     resolved_top_k = _normalize_positive_int(top_k, 10, minimum=1, maximum=100)
     resolved_limit_profiles = _normalize_positive_int(limit_profiles, 5000, minimum=10, maximum=100000)
-    resolved_profile_type = str(profile_type or "").strip() or None
     resolved_metric = str(metric or "cosine").strip().lower() or "cosine"
 
     collection = await db.get_vector_collection(resolved_collection) if hasattr(db, "get_vector_collection") else None
@@ -117,6 +118,7 @@ async def benchmark_vector_collection_search(
         snapshots = await db.list_vector_index_snapshots(
             collection_name=resolved_collection,
             index_version=resolved_index_version,
+            profile_type=resolved_profile_type,
             latest_only=True,
             limit=1,
         )

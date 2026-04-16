@@ -107,6 +107,10 @@ export default function StrategyMarketPage() {
       { key: 'domain_events', label: '领域事件', enabled: factoryCapabilities.domain_events ?? false },
       { key: 'domain_projection', label: '事件投影', enabled: factoryCapabilities.domain_projection ?? false },
       { key: 'runtime_cycle', label: '运行闭环', enabled: factoryCapabilities.runtime_cycle ?? false },
+      { key: 'research_protocol_v2', label: '研究协议V2', enabled: factoryCapabilities.research_protocol_v2_enabled ?? false },
+      { key: 'gate_model_v2', label: '门禁模型V2', enabled: factoryCapabilities.gate_model_v2_enabled ?? false },
+      { key: 'trace_ledger_v2', label: '追踪账本V2', enabled: factoryCapabilities.trace_ledger_v2_enabled ?? false },
+      { key: 'feedback_v2', label: '反馈闭环V2', enabled: factoryCapabilities.feedback_v2_enabled ?? false },
     ],
     [factoryCapabilities],
   );

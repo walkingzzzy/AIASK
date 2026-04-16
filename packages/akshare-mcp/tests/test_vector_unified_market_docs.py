@@ -220,9 +220,20 @@ async def test_save_vector_documents_should_backfill_market_doc_chunks(monkeypat
         def is_enabled(self):
             return True
 
+        async def embed_text_with_info(self, text: str):
+            assert text
+            return {
+                "embedding": [0.1] * 1536,
+                "provider": "openai_compatible",
+                "requested_provider": "openai_compatible",
+                "fallback_used": False,
+                "fallback_error": None,
+                "vector_dim": 1536,
+            }
+
         async def embed_text(self, text: str):
             assert text
-            return [0.1, 0.2, 0.3]
+            return [0.1] * 1536
 
     monkeypatch.setattr(
         "akshare_mcp.services.text_embedding.get_strategy_text_embedding_service",
@@ -247,10 +258,12 @@ async def test_save_vector_documents_should_backfill_market_doc_chunks(monkeypat
     assert len(conn.market_doc_chunks) >= 2
     assert adapter.saved_collections
     assert adapter.saved_profiles
-    assert adapter.saved_profiles[0]["collection_name"] == "market_doc_chunks"
+    assert adapter.saved_profiles[0]["collection_name"] == "market_doc_chunks__news"
     assert adapter.saved_profiles[0]["entity_type"] == "market_doc_chunk"
     assert adapter.saved_profiles[0]["profile_type"] == "news"
-    assert adapter.ensured_indexes[0]["collection_name"] == "market_doc_chunks"
+    assert adapter.saved_profiles[0]["version"] == "v1__d1536"
+    assert adapter.ensured_indexes[0]["collection_name"] == "market_doc_chunks__news"
+    assert adapter.ensured_indexes[0]["version"] == "v1__d1536"
 
 
 @pytest.mark.asyncio
@@ -368,6 +381,7 @@ async def test_search_market_doc_chunks_hybrid_scores_and_orders_results():
     assert rows[0]["dense_score"] == 0.72
     assert rows[0]["lexical_score"] > 0
     assert rows[0]["hybrid_score"] > rows[1]["hybrid_score"]
-    assert adapter.search_vector_collection_calls[0]["collection_name"] == "market_doc_chunks"
+    assert adapter.search_vector_collection_calls[0]["collection_name"] == "market_doc_chunks__news"
     assert adapter.search_vector_collection_calls[0]["stock_code"] == "600519"
     assert adapter.search_vector_collection_calls[0]["profile_type"] == "news"
+    assert adapter.search_vector_collection_calls[1]["collection_name"] == "market_doc_chunks"

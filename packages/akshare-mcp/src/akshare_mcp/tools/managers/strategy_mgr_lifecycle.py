@@ -48,6 +48,18 @@ def _load_signal_quality_registry_snapshot():
     except Exception:
         return {}
 
+
+def _execution_audit_entity_chain_available(db) -> bool:
+    required_methods = (
+        "list_strategy_paper_orders",
+        "list_strategy_paper_trades",
+        "list_strategy_trade_positions",
+        "list_strategy_trade_position_fills",
+        "get_strategy_trade_audit_summary",
+        "get_paper_nav_rows",
+    )
+    return all(hasattr(db, method) for method in required_methods)
+
 _TRADE_AUDIT_BACKTEST_KEYS = (
     "post_cost_sharpe",
     "target_layer_oos_return",
@@ -565,6 +577,18 @@ async def handle_factory_status(db, params: dict) -> dict:
     )
     status["execution_audit_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED"))
     status["quality_ui_v2_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_QUALITY_UI_V2_ENABLED"))
+    status["research_protocol_v2_enabled"] = bool(
+        factory_constants.get("STRATEGY_FACTORY_RESEARCH_PROTOCOL_V2_ENABLED")
+    )
+    status["gate_model_v2_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_GATE_MODEL_V2_ENABLED"))
+    status["trace_ledger_v2_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_TRACE_LEDGER_V2_ENABLED"))
+    status["feedback_v2_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_FEEDBACK_V2_ENABLED"))
+    status["trace_ledger_v2_implemented"] = True
+    status["governance_gate_report_v2_implemented"] = True
+    status["execution_audit_entity_chain_available"] = _execution_audit_entity_chain_available(db)
+    status["spec_completeness_mode"] = str(
+        factory_constants.get("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE") or "warn"
+    )
     status["feature_flags"] = high_confidence_feature_flags
     status["signal_quality_registry"] = _load_signal_quality_registry_snapshot()
     status = {

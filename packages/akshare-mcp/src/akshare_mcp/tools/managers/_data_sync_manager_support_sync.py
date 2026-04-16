@@ -17,6 +17,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from ...storage import get_db
 from ...utils import ok, fail
+from ...vector_collection_scope import normalize_market_doc_types, resolve_vector_collection_name
 from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
@@ -189,7 +190,9 @@ async def _maybe_build_backfill_snapshot(
     kwargs: dict,
     collection_name: str,
     version: str | None,
+    index_version: str | None = None,
     source: str,
+    profile_type: str | None = None,
 ) -> dict | None:
     if not _as_bool(kwargs.get('build_snapshot', False), False):
         return None
@@ -197,7 +200,7 @@ async def _maybe_build_backfill_snapshot(
         return {
             'collection_name': collection_name,
             'profile_version': str(version or '').strip() or None,
-            'index_version': str(kwargs.get('index_version') or '').strip() or None,
+            'index_version': str(index_version or kwargs.get('index_version') or '').strip() or None,
             'status': 'skipped',
             'reason': 'dry_run',
         }
@@ -208,7 +211,8 @@ async def _maybe_build_backfill_snapshot(
         db,
         collection_name=collection_name,
         version=str(version or '').strip() or None,
-        index_version=str(kwargs.get('index_version') or '').strip() or None,
+        index_version=str(index_version or kwargs.get('index_version') or '').strip() or None,
+        profile_type=str(profile_type or '').strip() or None,
         activate=_as_bool(kwargs.get('activate_snapshot', True), True),
         source=source,
     )
@@ -234,13 +238,34 @@ async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
         dry_run=kwargs.get('dry_run', False),
         include_legacy_research_docs=kwargs.get('include_legacy_research_docs', False),
     )
-    snapshot = await _maybe_build_backfill_snapshot(
-        db,
-        kwargs=kwargs,
-        collection_name='market_doc_chunks',
-        version=result.get('version') or kwargs.get('version') or 'v1',
-        source='data_sync_manager.vector_backfill_market_docs',
-    )
+    snapshot_rows: list[dict] = []
+    requested_doc_types = normalize_market_doc_types(result.get('doc_types') or kwargs.get('doc_types'))
+    profile_versions_by_doc_type = dict(result.get('profile_version_counts_by_doc_type') or {})
+    if _as_bool(kwargs.get('build_snapshot', False), False):
+        for doc_type in requested_doc_types:
+            requested_collection = resolve_vector_collection_name('market_doc_chunks', doc_type)
+            version_rows = [
+                str(profile_version or '').strip()
+                for profile_version in dict(profile_versions_by_doc_type.get(doc_type) or {}).keys()
+                if str(profile_version or '').strip()
+            ]
+            if not version_rows:
+                version_rows = [str(result.get('version') or kwargs.get('version') or 'v1').strip()]
+            explicit_index_version = str(kwargs.get('index_version') or '').strip() or None
+            for profile_version in version_rows:
+                resolved_index_version = explicit_index_version if len(version_rows) == 1 else profile_version
+                snapshot = await _maybe_build_backfill_snapshot(
+                    db,
+                    kwargs=kwargs,
+                    collection_name=requested_collection,
+                    version=profile_version,
+                    index_version=resolved_index_version,
+                    source='data_sync_manager.vector_backfill_market_docs',
+                    profile_type=doc_type,
+                )
+                if snapshot:
+                    snapshot_rows.append(snapshot)
+    snapshot = snapshot_rows[0] if len(snapshot_rows) == 1 else None
     market_aux = await _load_market_aux_status(db)
     return {
         'success': 1,
@@ -266,12 +291,13 @@ async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
         },
         'backfill': result,
         'snapshot': snapshot,
+        'snapshots': snapshot_rows,
         'market_aux': market_aux,
         'message': (
             f"market_doc_backfill docs={int(result.get('saved_docs') or 0)} "
             f"chunks={int(result.get('saved_chunks') or 0)} "
             f"embedded={int(result.get('embedded_chunks') or 0)}"
-            + (f" snapshot={snapshot.get('status')}" if snapshot else "")
+            + (f" snapshots={len(snapshot_rows)}" if snapshot_rows else "")
         ),
     }
 

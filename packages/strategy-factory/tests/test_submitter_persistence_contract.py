@@ -31,6 +31,33 @@ def test_build_strategy_data_persists_extended_strategy_contract():
             "validation_profile": {"profile": "event_trade_validation", "validation_focus": "event_target_only"},
             "targeting_policy": {"target_symbol_policy": "strict_intersection"},
             "constraint_check": {"intersection_ratio": 1.0},
+            "prediction_trace_id": "pred_contract_001",
+            "research_protocol_version": "strategy_factory.research_protocol.v2",
+            "candidate_contract_version": "strategy_factory.candidate_contract.v2",
+            "spec_completeness": "complete",
+            "field_provenance_summary": {"counts": {"user": 8, "derived": 0, "legacy_default": 0}},
+            "completion_issues": [],
+            "research_validation_contract": {
+                "contract_version": "strategy_factory.research_protocol.v2",
+                "walk_forward_config": {"train_months": 60, "test_months": 12, "step_months": 12},
+                "baseline_reference": {"benchmark": "510300"},
+                "cash_sleeve_policy": {"enabled": True, "target_weight": 0.1},
+                "cost_sensitivity_grid": {"slippage_bps_grid": [4, 8, 12]},
+                "capacity_execution": {"capacity_bucket": "medium"},
+                "multiple_testing": {
+                    "validation_profile": {
+                        "profile": "event_trade_validation",
+                        "validation_focus": "event_target_only",
+                        "primary_validation_layer": "target",
+                    }
+                },
+                "admission_thresholds": {"profile": "event_trade_validation"},
+                "family_holding_bucket": {"family": "sentiment", "holding_bucket": "short"},
+                "field_provenance": {"walk_forward_config": "user"},
+                "field_provenance_summary": {"counts": {"user": 8, "derived": 0, "legacy_default": 0}},
+                "spec_completeness": "complete",
+                "completion_issues": [],
+            },
             "evidence_chain": {
                 "evidences": [
                     {
@@ -117,6 +144,14 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["expected_regime"] == ["trend", "event"]
     assert params["expected_holding_period"] == 10
     assert params["candidate_latest_validation_age_days"] == 1
+    assert params["prediction_trace_id"] == "pred_contract_001"
+    assert params["trace_id"] == "pred_contract_001"
+    assert params["research_protocol_version"] == "strategy_factory.research_protocol.v2"
+    assert params["candidate_contract_version"] == "strategy_factory.candidate_contract.v2"
+    assert params["spec_completeness"] == "complete"
+    assert params["research_validation_contract"]["contract_version"] == "strategy_factory.research_protocol.v2"
+    assert params["research_validation_contract_submission_adapter"]["research_protocol_version"] == "strategy_factory.research_protocol.v2"
+    assert params["research_validation_contract_submission_adapter"]["validation_profile"]["profile"] == "event_trade_validation"
     assert params["candidate_contract_hash"]
     assert params["tested_object_hash"]
     assert params["candidate_identity_signature"]
@@ -127,6 +162,9 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["candidate_contract_snapshot"]["prediction_contract"]["claims"][0]["claim_id"] == "claim_1"
     assert params["candidate_contract_snapshot"]["confidence_contract"]["status"] == "diagnostic_ready"
     assert params["candidate_lineage_contract"]["task_signature"].startswith("event_driven|evt_1|ai|")
+    assert data["prediction_trace_id"] == "pred_contract_001"
+    assert data["trace_id"] == "pred_contract_001"
+    assert data["research_protocol_version"] == "strategy_factory.research_protocol.v2"
 
 
 def test_candidate_report_params_merges_target_universe_contract():
@@ -185,6 +223,17 @@ def test_submitter_resolves_live_ready_candidates_to_live_review_lane():
         {
             "passed": True,
             "live_candidate_ready": True,
+            "validation_grade": "A",
+        },
+        candidate={
+            "strategy_type": "momentum",
+            "holding_horizon": {"max_days": 10},
+            "trade_plan": {"entry_bias": "trend_follow"},
+            "risk_rules": {"stop_loss_pct": 0.08},
+            "execution_assumptions": {"slippage_bps": 8},
+            "runtime_playbook": {"entry": "open", "exit": "stop_or_target"},
+            "semantic_runtime_match": True,
+            "execution_readiness_tier": "formal_runtime_ready",
         },
         refresh_existing=False,
         existing_status="draft",

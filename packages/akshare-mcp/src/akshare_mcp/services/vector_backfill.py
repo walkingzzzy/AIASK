@@ -251,13 +251,15 @@ async def _save_grouped_backfill_rows(
     version: str,
     rebuild_existing: bool,
     dry_run: bool,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     result = {
         "candidate_docs": 0,
         "skipped_existing_docs": 0,
         "saved_docs": 0,
         "saved_chunks": 0,
         "embedded_chunks": 0,
+        "profile_version_counts_by_doc_type": {},
+        "vector_dims_by_doc_type": {},
     }
     for (stock_code, doc_type), items in grouped_rows.items():
         prepared: list[dict[str, Any]] = []
@@ -292,6 +294,20 @@ async def _save_grouped_backfill_rows(
         result["saved_docs"] += int(saved.get("documents") or 0)
         result["saved_chunks"] += int(saved.get("chunks") or 0)
         result["embedded_chunks"] += int(saved.get("embedded_chunks") or 0)
+        version_counts = dict(saved.get("profile_version_counts") or {})
+        if version_counts:
+            bucket = result["profile_version_counts_by_doc_type"].setdefault(str(doc_type or "").strip().lower(), {})
+            for profile_version, count in version_counts.items():
+                key = str(profile_version or "").strip()
+                if not key:
+                    continue
+                bucket[key] = int(bucket.get(key) or 0) + int(count or 0)
+        vector_dims = [int(item) for item in list(saved.get("vector_dims") or []) if int(item or 0) > 0]
+        if vector_dims:
+            dims_bucket = result["vector_dims_by_doc_type"].setdefault(str(doc_type or "").strip().lower(), [])
+            for vector_dim in vector_dims:
+                if vector_dim not in dims_bucket:
+                    dims_bucket.append(vector_dim)
     return result
 
 
@@ -392,8 +408,25 @@ async def backfill_market_document_vectors(
                 rebuild_existing=resolved_rebuild_existing,
                 dry_run=resolved_dry_run,
             )
-            for key, value in saved.items():
-                results["sources"]["vector_documents"][key] += int(value or 0)
+            for key in ("candidate_docs", "skipped_existing_docs", "saved_docs", "saved_chunks", "embedded_chunks"):
+                results["sources"]["vector_documents"][key] += int(saved.get(key) or 0)
+            if saved.get("profile_version_counts_by_doc_type"):
+                bucket = results["sources"]["vector_documents"].setdefault("profile_version_counts_by_doc_type", {})
+                for doc_type, version_counts in dict(saved.get("profile_version_counts_by_doc_type") or {}).items():
+                    version_bucket = bucket.setdefault(str(doc_type or "").strip().lower(), {})
+                    for profile_version, count in dict(version_counts or {}).items():
+                        key = str(profile_version or "").strip()
+                        if not key:
+                            continue
+                        version_bucket[key] = int(version_bucket.get(key) or 0) + int(count or 0)
+            if saved.get("vector_dims_by_doc_type"):
+                bucket = results["sources"]["vector_documents"].setdefault("vector_dims_by_doc_type", {})
+                for doc_type, vector_dims in dict(saved.get("vector_dims_by_doc_type") or {}).items():
+                    dims_bucket = bucket.setdefault(str(doc_type or "").strip().lower(), [])
+                    for vector_dim in list(vector_dims or []):
+                        resolved_dim = int(vector_dim or 0)
+                        if resolved_dim > 0 and resolved_dim not in dims_bucket:
+                            dims_bucket.append(resolved_dim)
             remaining -= len(rows)
             if len(rows) < fetch_limit:
                 break
@@ -423,8 +456,25 @@ async def backfill_market_document_vectors(
                 rebuild_existing=resolved_rebuild_existing,
                 dry_run=resolved_dry_run,
             )
-            for key, value in saved.items():
-                results["sources"]["research_reports"][key] += int(value or 0)
+            for key in ("candidate_docs", "skipped_existing_docs", "saved_docs", "saved_chunks", "embedded_chunks"):
+                results["sources"]["research_reports"][key] += int(saved.get(key) or 0)
+            if saved.get("profile_version_counts_by_doc_type"):
+                bucket = results["sources"]["research_reports"].setdefault("profile_version_counts_by_doc_type", {})
+                for doc_type, version_counts in dict(saved.get("profile_version_counts_by_doc_type") or {}).items():
+                    version_bucket = bucket.setdefault(str(doc_type or "").strip().lower(), {})
+                    for profile_version, count in dict(version_counts or {}).items():
+                        key = str(profile_version or "").strip()
+                        if not key:
+                            continue
+                        version_bucket[key] = int(version_bucket.get(key) or 0) + int(count or 0)
+            if saved.get("vector_dims_by_doc_type"):
+                bucket = results["sources"]["research_reports"].setdefault("vector_dims_by_doc_type", {})
+                for doc_type, vector_dims in dict(saved.get("vector_dims_by_doc_type") or {}).items():
+                    dims_bucket = bucket.setdefault(str(doc_type or "").strip().lower(), [])
+                    for vector_dim in list(vector_dims or []):
+                        resolved_dim = int(vector_dim or 0)
+                        if resolved_dim > 0 and resolved_dim not in dims_bucket:
+                            dims_bucket.append(resolved_dim)
             remaining -= len(rows)
             if len(rows) < fetch_limit:
                 break
@@ -439,6 +489,24 @@ async def backfill_market_document_vectors(
     for source_result in results["sources"].values():
         for key in totals:
             totals[key] += int(source_result.get(key) or 0)
+    profile_version_counts_by_doc_type: dict[str, dict[str, int]] = {}
+    vector_dims_by_doc_type: dict[str, list[int]] = {}
+    for source_result in results["sources"].values():
+        for doc_type, version_counts in dict(source_result.get("profile_version_counts_by_doc_type") or {}).items():
+            bucket = profile_version_counts_by_doc_type.setdefault(str(doc_type or "").strip().lower(), {})
+            for profile_version, count in dict(version_counts or {}).items():
+                key = str(profile_version or "").strip()
+                if not key:
+                    continue
+                bucket[key] = int(bucket.get(key) or 0) + int(count or 0)
+        for doc_type, dims in dict(source_result.get("vector_dims_by_doc_type") or {}).items():
+            bucket = vector_dims_by_doc_type.setdefault(str(doc_type or "").strip().lower(), [])
+            for vector_dim in list(dims or []):
+                resolved_dim = int(vector_dim or 0)
+                if resolved_dim > 0 and resolved_dim not in bucket:
+                    bucket.append(resolved_dim)
     results.update(totals)
+    results["profile_version_counts_by_doc_type"] = profile_version_counts_by_doc_type
+    results["vector_dims_by_doc_type"] = vector_dims_by_doc_type
     results["processed_limit_reached"] = remaining <= 0
     return results

@@ -6,12 +6,14 @@ import pytest
 import akshare_mcp.services.strategy_factory.runtime as legacy_runtime
 
 from strategy_factory.application.quality_gates import (
+    _enrich_legacy_gate_0_candidate,
     gate_0_structural,
     gate_1_fast_screen,
     pre_gate_screen,
     run_gated_filter,
 )
 from strategy_factory.application.candidate_contract import apply_resolved_candidate_envelope
+from strategy_factory.domain.strategy_profile import apply_candidate_strategy_profile
 
 
 def _complete_candidate(candidate: dict) -> dict:
@@ -75,6 +77,108 @@ def test_gate_0_structural_rejects_incomplete_trade_contract():
     assert "holding_horizon" in missing_reason
     assert "trade_plan" in missing_reason
     assert "validation_profile" in missing_reason
+
+
+def test_gate_0_legacy_enrichment_accepts_spawn_candidate_with_synthetic_snapshot_context():
+    candidate = apply_resolved_candidate_envelope(
+        {
+            "strategy_type": "momentum",
+            "params": {"lookback": 10, "threshold": 0.02},
+            "spawn_reason": "quota fill candidate",
+            "generation_reason": {
+                "kind": "quota_fill",
+                "source": "quota_fill",
+                "summary": "quota fill candidate",
+                "trigger_signal": {},
+                "trigger_thresholds": [],
+                "quota_fill": None,
+            },
+            "trigger_signal": {},
+            "trigger_thresholds": [],
+            "quota_fill": None,
+        }
+    )
+
+    before = gate_0_structural(candidate)
+    assert before.passed is False
+    assert any(reason.startswith("missing_trade_fields:") for reason in before.reasons)
+
+    enriched = _enrich_legacy_gate_0_candidate(candidate)
+    after = gate_0_structural(enriched)
+
+    assert after.passed is True
+    assert enriched["holding_horizon"]["max_days"] == 10
+    assert enriched["trade_plan"]["entry_bias"] == "signal_confirmed"
+    assert enriched["risk_rules"]["max_holding_days"] == 10
+
+
+def test_gate_0_legacy_enrichment_accepts_profiled_spawn_candidate_with_snapshot_tags():
+    candidate = apply_resolved_candidate_envelope(
+        apply_candidate_strategy_profile(
+            {
+                "strategy_type": "ma_cross",
+                "params": {"short_period": 5, "long_period": 20},
+                "spawn_reason": "neutral ma_cross",
+                "generation_reason": {
+                    "kind": "signal_trigger",
+                    "source": "fear_greed",
+                    "summary": "neutral ma_cross",
+                    "trigger_signal": {"field": "fear_greed_index", "value": 57},
+                    "trigger_thresholds": [],
+                    "quota_fill": None,
+                },
+                "trigger_signal": {"field": "fear_greed_index", "value": 57},
+                "trigger_thresholds": [],
+                "quota_fill": None,
+            },
+            snapshot={"fear_greed_index": 57},
+        )
+    )
+
+    before = gate_0_structural(candidate)
+    assert before.passed is False
+
+    enriched = _enrich_legacy_gate_0_candidate(candidate)
+    after = gate_0_structural(enriched)
+
+    assert after.passed is True
+    assert enriched["holding_horizon"]["max_days"] == 10
+    assert enriched["rebalance_rule"]["mode"] == "signal_rebalance"
+
+
+def test_gate_0_legacy_enrichment_accepts_synthetic_targeted_snapshot_spawn_candidate():
+    candidate = apply_resolved_candidate_envelope(
+        {
+            "strategy_type": "quality_factor",
+            "params": {"lookback": 60, "buy_quantile": 0.8, "sell_quantile": 0.2},
+            "research_task": {
+                "task_source": "snapshot",
+                "preferred_strategy_types": ["quality_factor"],
+                "allowed_strategy_types": ["quality_factor"],
+                "candidate_family": "quality_factor",
+                "target_symbols": ["600519", "000858"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600519", "000858"]},
+                "validation_focus": "candidate_target_only",
+                "gate_1_representative_count": 2,
+                "synthetic_local_spawn": True,
+            },
+            "requested_target_symbols": ["600519", "000858"],
+            "target_symbols": ["600519", "000858"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519", "000858"]},
+            "tags": ["targeted_universe", "synthetic_local_spawn"],
+        }
+    )
+
+    before = gate_0_structural(candidate)
+    assert before.passed is False
+
+    enriched = _enrich_legacy_gate_0_candidate(candidate)
+    after = gate_0_structural(enriched)
+
+    assert after.passed is True
+    assert enriched["target_symbols"] == ["000858", "600519"] or enriched["target_symbols"] == ["600519", "000858"]
+    assert enriched["stock_pool"]["symbols"]
+    assert enriched["trade_plan"]["entry_bias"] == "signal_confirmed"
 
 
 @pytest.mark.asyncio
