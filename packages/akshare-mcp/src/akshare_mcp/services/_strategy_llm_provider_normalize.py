@@ -294,6 +294,34 @@ class _StrategyLLMProviderNormalizeMixin:
                 **canonical_profile,
             }
 
+        @classmethod
+        def _merge_precision_preferences(
+            cls,
+            validation_profile: dict[str, Any],
+            *,
+            candidate: dict[str, Any],
+            normalized_task: dict[str, Any],
+        ) -> dict[str, Any]:
+            merged = dict(validation_profile or {})
+            hypothesis_artifact = dict(candidate.get("hypothesis_artifact") or candidate.get("hypothesis_structured") or {})
+            explicit_profile = dict(candidate.get("validation_profile") or {})
+            for field_name in (
+                "objective_profile",
+                "trade_density_preference",
+                "entry_selectivity",
+                "regime_required",
+                "cost_robust_required",
+            ):
+                for value in (
+                    explicit_profile.get(field_name),
+                    hypothesis_artifact.get(field_name),
+                    normalized_task.get(field_name),
+                ):
+                    if value not in (None, "", [], {}):
+                        merged[field_name] = value
+                        break
+            return merged
+
         @staticmethod
         def _normalize_targeting_policy_payload(
             payload: Any,
@@ -393,6 +421,11 @@ class _StrategyLLMProviderNormalizeMixin:
                 strategy_type=strategy_type,
                 normalized_task=normalized_task,
                 validation_profile=candidate.get("validation_profile"),
+            )
+            validation_profile = cls._merge_precision_preferences(
+                validation_profile,
+                candidate=candidate,
+                normalized_task=normalized_task,
             )
             dsl_metadata = dict(compiled_dsl.get("metadata") or {})
             dsl_metadata.update(
@@ -606,6 +639,11 @@ class _StrategyLLMProviderNormalizeMixin:
                     strategy_type=strategy_type,
                     normalized_task=normalized_task,
                     validation_profile=candidate.get('validation_profile'),
+                )
+                validation_profile = cls._merge_precision_preferences(
+                    validation_profile,
+                    candidate=candidate,
+                    normalized_task=normalized_task,
                 )
             else:
                 portfolio_spec, portfolio_reject_reasons = cls._require_explicit_contract_dict(
@@ -832,6 +870,11 @@ class _StrategyLLMProviderNormalizeMixin:
                             'max_position_pct': 1.0,
                             'symbol_count': len(symbols),
                         },
+                        'objective_profile': 'high_precision',
+                        'trade_density_preference': 'low',
+                        'entry_selectivity': 'strict',
+                        'regime_required': True,
+                        'cost_robust_required': True,
                         'market_regime_assumption': {
                             'summary': '趋势延续需要市场流动性正常且目标股仍保持相对强势。',
                             'preferred_regime': 'trend_expansion',
@@ -893,6 +936,11 @@ class _StrategyLLMProviderNormalizeMixin:
                         'profile': 'trade_rule_validation',
                         'validation_focus': 'target_plus_representative',
                         'primary_validation_layer': 'target',
+                        'objective_profile': 'high_precision',
+                        'trade_density_preference': 'low',
+                        'entry_selectivity': 'strict',
+                        'regime_required': True,
+                        'cost_robust_required': True,
                     },
                     'target_symbols': list(symbols),
                     'stock_pool': stock_pool,
@@ -1281,8 +1329,60 @@ class _StrategyLLMProviderNormalizeMixin:
             }
 
         @classmethod
+        def _compact_structured_research_value(cls, value: Any, *, compact_level: int) -> Any:
+            list_limit = 8 if compact_level <= 0 else (4 if compact_level == 1 else 2)
+            dict_limit = 16 if compact_level <= 0 else (10 if compact_level == 1 else 6)
+            if isinstance(value, dict):
+                compacted: dict[str, Any] = {}
+                for index, (key, item) in enumerate(value.items()):
+                    if index >= dict_limit:
+                        break
+                    compact_item = cls._compact_structured_research_value(item, compact_level=compact_level)
+                    if compact_item in (None, [], {}, ""):
+                        continue
+                    compacted[str(key)] = compact_item
+                return compacted
+            if isinstance(value, list):
+                compacted_items = [
+                    cls._compact_structured_research_value(item, compact_level=compact_level)
+                    for item in value[:list_limit]
+                ]
+                return [item for item in compacted_items if item not in (None, [], {}, "")]
+            if isinstance(value, float):
+                return cls._round_number(value, digits=4)
+            return value
+
+        @classmethod
+        def _compact_structured_research_context_blocks(
+            cls,
+            context: dict[str, Any],
+            *,
+            compact_level: int,
+        ) -> dict[str, Any]:
+            compacted: dict[str, Any] = {}
+            for block_key in (
+                "strategy_context",
+                "backtest_summary",
+                "regime_panel",
+                "capacity_panel",
+                "generalization_seed",
+            ):
+                block_value = context.get(block_key)
+                if block_value in (None, [], {}, ""):
+                    continue
+                compacted[block_key] = cls._compact_structured_research_value(
+                    block_value,
+                    compact_level=compact_level,
+                )
+            return compacted
+
+        @classmethod
         def _compact_research_context(cls, research_context: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             context = dict(research_context or {})
+            structured_blocks = cls._compact_structured_research_context_blocks(
+                context,
+                compact_level=compact_level,
+            )
             market_regime = dict(context.get("market_regime") or {})
             market_breadth = dict(context.get("market_breadth") or {})
             symbol_limit = 4 if compact_level <= 0 else (2 if compact_level == 1 else 1)
@@ -1320,7 +1420,7 @@ class _StrategyLLMProviderNormalizeMixin:
             primary_symbol_codes = list(primary_symbol_codes_source or [])
             primary_candidate_codes = list(primary_candidate_codes_source or [])
             if compact_level >= 2:
-                return {
+                payload = {
                     "target_context_status": context.get("target_context_status") or task_target_context.get("status"),
                     "blocked_by_target_universe": bool(context.get("blocked_by_target_universe")),
                     "market_regime": {
@@ -1332,7 +1432,12 @@ class _StrategyLLMProviderNormalizeMixin:
                     "candidate_universe_symbols": primary_candidate_codes[:4],
                     "symbol_insight_codes": primary_symbol_codes[:2],
                 }
-            return {
+                return {
+                    key: value
+                    for key, value in {**payload, **structured_blocks}.items()
+                    if value not in (None, [], {}, "")
+                }
+            payload = {
                 "target_context_status": context.get("target_context_status") or task_target_context.get("status"),
                 "blocked_by_target_universe": bool(context.get("blocked_by_target_universe")),
                 "market_regime": {
@@ -1380,6 +1485,11 @@ class _StrategyLLMProviderNormalizeMixin:
                     "incubating_count": population_state.get("incubating_count"),
                     "top_categories": dict(list((population_state.get("top_categories") or {}).items())[: max(2, 5 - compact_level)]),
                 },
+            }
+            return {
+                key: value
+                for key, value in {**payload, **structured_blocks}.items()
+                if value not in (None, [], {}, "")
             }
 
         @classmethod

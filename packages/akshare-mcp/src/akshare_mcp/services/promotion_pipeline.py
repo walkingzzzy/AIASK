@@ -32,6 +32,18 @@ class StrategyPromotionPipelineService:
         return codes
 
     @classmethod
+    def _objective_profile(cls, overview: dict) -> str:
+        return cls._normalized_status(overview.get('objective_profile'))
+
+    @classmethod
+    def _precision_readiness(cls, overview: dict) -> str:
+        return cls._normalized_status(overview.get('precision_readiness'))
+
+    @classmethod
+    def _position_cycle_evidence(cls, overview: dict) -> dict:
+        return dict(overview.get('position_cycle_evidence') or {})
+
+    @classmethod
     def _hard_gate_reasons(cls, overview: dict) -> list[str]:
         payload = dict(overview.get('hard_gate_result') or {})
         reasons: list[str] = []
@@ -53,10 +65,16 @@ class StrategyPromotionPipelineService:
 
     @classmethod
     def _resolve_review_outcome(cls, overview: dict) -> tuple[str, str, list[str]]:
+        objective_profile = cls._objective_profile(overview)
         signal_status = cls._signal_snapshot_status(overview)
         execution_status = cls._execution_snapshot_status(overview)
         hard_gate_reasons = cls._hard_gate_reasons(overview)
         critical_trace_gaps = cls._primary_trace_gap_codes(overview)
+        position_cycle_evidence = cls._position_cycle_evidence(overview)
+        position_cycle_status = cls._normalized_status(position_cycle_evidence.get('status'))
+        precision_readiness = cls._precision_readiness(overview)
+        cost_robustness_summary = dict(overview.get('cost_robustness_summary') or {})
+        trade_density_summary = dict(overview.get('trade_density_summary') or {})
         blockers: list[str] = []
         blockers.extend(hard_gate_reasons)
         blockers.extend(code for code in critical_trace_gaps if code not in blockers)
@@ -66,6 +84,19 @@ class StrategyPromotionPipelineService:
             f'execution_quality_snapshot:{execution_status}' not in blockers
         ):
             blockers.append(f'execution_quality_snapshot:{execution_status}')
+        if objective_profile == 'high_precision':
+            if precision_readiness not in {'candidate', 'strong'}:
+                blockers.append(f'high_precision_precision_readiness:{precision_readiness or "missing"}')
+            if position_cycle_status in {'', 'weak', 'insufficient_evidence', 'observe'}:
+                blockers.append(
+                    f'high_precision_cycle_evidence:{position_cycle_status or "missing"}'
+                )
+            if trade_density_summary and not bool(trade_density_summary.get('passed')):
+                blockers.append('high_precision_trade_density_not_ready')
+            if cost_robustness_summary.get('required') and not bool(cost_robustness_summary.get('passed')):
+                blockers.append('high_precision_cost_fragility')
+            if overview.get('adverse_regime_avoidance') is False:
+                blockers.append('high_precision_adverse_regime_not_avoided')
         if overview.get('deprecation_risk'):
             return 'rejected', 'deprecate', blockers
         if (
@@ -79,10 +110,14 @@ class StrategyPromotionPipelineService:
 
     @classmethod
     def _score(cls, overview: dict, metric: Optional[dict]) -> float:
+        objective_profile = cls._objective_profile(overview)
         signal_status = cls._signal_snapshot_status(overview)
         execution_status = cls._execution_snapshot_status(overview)
         hard_gate_reasons = cls._hard_gate_reasons(overview)
         trace_gap_codes = cls._trace_evidence_gap_codes(overview)
+        precision_readiness = cls._precision_readiness(overview)
+        position_cycle_evidence = cls._position_cycle_evidence(overview)
+        position_cycle_status = cls._normalized_status(position_cycle_evidence.get('status'))
         score = 0.2
         if signal_status == 'strong':
             score += 0.24
@@ -110,6 +145,33 @@ class StrategyPromotionPipelineService:
             score -= 0.35
         score -= min(len(hard_gate_reasons), 5) * 0.08
         score -= min(len(trace_gap_codes), 5) * 0.05
+        if objective_profile == 'high_precision':
+            if precision_readiness == 'strong':
+                score += 0.12
+            elif precision_readiness == 'candidate':
+                score += 0.06
+            else:
+                score -= 0.08
+            if position_cycle_status == 'strong':
+                score += 0.10
+            elif position_cycle_status == 'candidate':
+                score += 0.05
+            else:
+                score -= 0.08
+            regime_consistency = float(position_cycle_evidence.get('regime_consistency') or 0)
+            cost_robustness = float(position_cycle_evidence.get('cost_robustness') or 0)
+            score += max(min(regime_consistency, 1.0), 0.0) * 0.06
+            score += max(min(cost_robustness, 1.0), 0.0) * 0.05
+            if dict(overview.get('trade_density_summary') or {}) and not bool(
+                dict(overview.get('trade_density_summary') or {}).get('passed')
+            ):
+                score -= 0.10
+            if dict(overview.get('cost_robustness_summary') or {}).get('required') and not bool(
+                dict(overview.get('cost_robustness_summary') or {}).get('passed')
+            ):
+                score -= 0.12
+            if overview.get('adverse_regime_avoidance') is False:
+                score -= 0.08
         if metric:
             sharpe = float(metric.get('sharpe_ratio') or 0)
             hit_rate = float(metric.get('hit_rate_5d') or 0)
@@ -156,6 +218,8 @@ class StrategyPromotionPipelineService:
             'blockers': blockers,
             'risk_flags': risk_flags,
             'summary': {
+                'objective_profile': overview.get('objective_profile'),
+                'precision_readiness': overview.get('precision_readiness'),
                 'promotion_ready': bool(overview.get('promotion_ready')),
                 'deprecation_risk': bool(overview.get('deprecation_risk')),
                 'validation_grade': overview.get('validation_grade'),
@@ -170,6 +234,13 @@ class StrategyPromotionPipelineService:
                 'observed_forward_days': overview.get('observed_forward_days') or [],
                 'signal_quality_snapshot': dict(overview.get('signal_quality_snapshot') or {}),
                 'execution_quality_snapshot': dict(overview.get('execution_quality_snapshot') or {}),
+                'position_cycle_evidence': dict(overview.get('position_cycle_evidence') or {}),
+                'regime_validation_summary': dict(overview.get('regime_validation_summary') or {}),
+                'cost_robustness_summary': dict(overview.get('cost_robustness_summary') or {}),
+                'trade_density_summary': dict(overview.get('trade_density_summary') or {}),
+                'regime_consistency': overview.get('regime_consistency'),
+                'payoff_asymmetry': overview.get('payoff_asymmetry'),
+                'adverse_regime_avoidance': overview.get('adverse_regime_avoidance'),
                 'prediction_trace_ledger': dict(overview.get('prediction_trace_ledger') or {}),
                 'evidence_gap_codes': self._trace_evidence_gap_codes(overview),
                 'hard_gate_reasons': self._hard_gate_reasons(overview),

@@ -1691,3 +1691,84 @@ async def test_submission_gate_keeps_factor_profile_below_live_thresholds(monkey
     assert result["admission_evaluations"]["incubation"]["passed"] is False
     assert result["admission_evaluations"]["live"]["passed"] is False
     assert result["admission_block_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_revises_high_precision_candidates_missing_precision_contract(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    def _fake_trade_gate(
+        _strategy,
+        profile,
+        _backtest_metrics,
+        _risk_report,
+        *,
+        admission_level="incubation",
+        attempt_adjustment=None,
+    ):
+        del attempt_adjustment
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "profile": profile["profile"],
+            "validation_focus": profile["validation_focus"],
+            "primary_validation_layer": profile["primary_validation_layer"],
+            "post_cost_sharpe": 0.88,
+            "target_layer_oos_return": 0.16,
+            "trade_count": 5,
+            "trade_density": 0.42,
+            "avg_holding_days": 11,
+            "thresholds": {},
+            "admission_level": admission_level,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_evaluate_trade_profile", _fake_trade_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "ma_cross",
+            "research_task": {
+                "objective_profile": "high_precision",
+            },
+            "validation_profile": {
+                "objective_profile": "high_precision",
+                "trade_density_preference": "low",
+                "regime_required": True,
+                "cost_robust_required": True,
+            },
+            "hypothesis_artifact": {
+                "market_regime_assumption": {
+                    "preferred_regime": "trend_up",
+                },
+                "holding_rationale": "Only hold when the post-breakout trend persists.",
+            },
+            "params": {"short_period": 5, "long_period": 20},
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.88,
+            "trade_count": 5,
+            "avg_holding_days": 11,
+            "trade_density": 0.42,
+            "target_layer_oos_return": 0.16,
+        },
+        risk_report={"stress_loss_percent": -8.0},
+    )
+
+    assert result["passed"] is False
+    assert result["gate_b_review_decision"] == "revise"
+    assert result["objective_profile"] == "high_precision"
+    assert result["precision_readiness"] == "revise"
+    assert result["regime_validation_summary"]["passed"] is False
+    assert result["cost_robustness_summary"]["required"] is True
+    assert "high_precision_missing_avoid_regime" in result["reasons"]
+    assert "high_precision_missing_failure_mode" in result["reasons"]
+    assert "high_precision_missing_entry_selectivity" in result["reasons"]
+    assert "high_precision_missing_cost_sensitivity_grid" in result["reasons"]

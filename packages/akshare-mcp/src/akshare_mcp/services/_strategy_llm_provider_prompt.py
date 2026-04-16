@@ -156,6 +156,52 @@ class _StrategyLLMProviderPromptMixin:
                     for key, value in compact_research_context.items()
                     if value not in (None, [], {}, "")
                 }
+            strategy_context_block = dict(
+                prompt_research_context.get('strategy_context')
+                or compact_research_context.get('strategy_context')
+                or {}
+            )
+            structured_research_context = any(
+                prompt_research_context.get(key) not in (None, [], {}, "")
+                for key in ('strategy_context', 'backtest_summary', 'regime_panel', 'capacity_panel', 'generalization_seed')
+            )
+            futures_instrument_profile = dict(strategy_context_block.get('instrument_profile') or {})
+            objective_profile = str(
+                normalized_task.get('objective_profile')
+                or strategy_context_block.get('objective_profile')
+                or prompt_research_context.get('objective_profile')
+                or compact_research_context.get('objective_profile')
+                or ''
+            ).strip().lower()
+            has_futures_research_context = (
+                str(futures_instrument_profile.get('asset_class') or '').strip().lower() == 'futures'
+            )
+            high_precision_requested = bool(
+                objective_profile == 'high_precision' or has_futures_research_context
+            )
+            candidate_domain_label = '期货跨月/日频' if has_futures_research_context else '股票日频'
+            structured_context_rule = (
+                '如果 research_context 提供了 strategy_context,backtest_summary,regime_panel,capacity_panel,generalization_seed，'
+                '必须把这些结构化研究块当作 primary evidence 使用，不能忽略，也不能被宽泛市场背景覆盖。'
+                if structured_research_context
+                else ''
+            )
+            futures_contract_rule = (
+                '如果 research_context.strategy_context.instrument_profile.asset_class=futures，'
+                'candidate 必须显式提供 instrument_profile，并保留 asset_class,underlying,curve_legs,roll_rule；'
+                'portfolio_spec.position_assumption 只能使用 paired_futures_spread 或 single_futures_directional；'
+                'execution_assumptions 必须额外包含 margin_rate,contract_multiplier,liquidity_bucket,max_contracts_per_rebalance；'
+                '如 DSL 信号基于价差或曲线投影序列，允许把该序列映射到 close，但必须在 dsl.metadata 中写明 signal_reference_series 与 trade_leg_definition。'
+                if has_futures_research_context
+                else ''
+            )
+            high_precision_rule = (
+                '当前任务追求 high_precision，高优先级候选必须低频、条件收窄、显式写出 preferred_regime 与 avoid_regime，'
+                '并在 hypothesis_artifact / validation_profile 中包含 objective_profile=high_precision,trade_density_preference,entry_selectivity,regime_required,cost_robust_required；'
+                '对“常驻市场、泛信号、无失败模式、无成本敏感性”的候选直接降权。'
+                if high_precision_requested
+                else ''
+            )
             max_target_symbols = max(
                 1,
                 int(
@@ -240,7 +286,7 @@ class _StrategyLLMProviderPromptMixin:
                 }
                 system_prompt = ''.join([
                     '你是量化策略助手，只返回严格 JSON。',
-                    f'先构造 hypothesis_artifact，再把 hypothesis lower 成最多 {compact_candidate_limit} 个可执行股票日频 DSL candidate。',
+                    f'先构造 hypothesis_artifact，再把 hypothesis lower 成最多 {compact_candidate_limit} 个可执行{candidate_domain_label} DSL candidate。',
                     '允许最多 1 个 candidate 走 open DSL 直出模式；只有在 hypothesis 与经济语义已经完整时才允许这样做。',
                     '如果 research_task 提供了 event_id/theme_code/direction/evidence_summary，必须围绕该事件证据输出。',
                     '不要 analysis，不要解释，不要 markdown。',
@@ -256,10 +302,13 @@ class _StrategyLLMProviderPromptMixin:
                     '如果走 open DSL 直出模式，generator_mode 必须是 llm_defined，tags 必须包含 open_dsl 和 llm_defined；且 holding_horizon,trade_plan,risk_rules,position_sizing,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,holding_rationale,cost_sensitivity_grid,position_model,capacity_assumption,market_regime_assumption 全都不能缺。',
                     'portfolio_spec / execution_assumptions / validation_profile 必须给出完整对象，不得省略，也不得依赖系统回填默认值。',
                     'validation_profile 必须使用工厂标准口径，不要自造 profile 名称或 layer；target-only / candidate_target_only 任务默认应回到 trade_rule_validation + target 这一类 canonical 合同。',
+                    structured_context_rule,
+                    futures_contract_rule,
+                    high_precision_rule,
                     target_context_only_rule,
                     explicit_same_theme_rule,
                     'dsl 必须是对象，且必须包含 version,timeframe,entry,exit,metadata。',
-                    'dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
+                    'dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check；期货上下文下还必须回填 instrument_profile。',
                     strict_snapshot_rule,
                     '字段仅限 open/high/low/close/volume；指标优先使用 sma,ema,roc,rsi,volume_ratio,adx,turnover_rate,upper_shadow_ratio,rolling_count,slope；',
                     '条件运算仅限 gt,gte,lt,lte,cross_above,cross_below；组合仅限 all,any,not。',
@@ -309,16 +358,23 @@ class _StrategyLLMProviderPromptMixin:
             event_rule = '如果 research_task 提供 event_id/theme_code/direction/evidence_summary，必须优先围绕该事件主题、方向和证据构建候选。'
             system_prompt = ''.join([
                 '你是量化策略研究员。必须输出严格 JSON，不要输出解释文本。',
-                '先基于输入的市场研究上下文给出结构化 analysis，并先形成 hypothesis_artifact，再 lower 为可执行的股票日频策略 DSL 候选。',
+                f'先基于输入的市场研究上下文给出结构化 analysis，并先形成 hypothesis_artifact，再 lower 为可执行的{candidate_domain_label}策略 DSL 候选。',
                 (
                     '你拿到的是程序整理后的定向研究上下文，必须只使用 research_context.task_target_context 中的真实标的证据。'
                     if targeted_context_only
-                    else '你拿到的是程序从股票数据库扫描、聚合、压缩后的研究上下文，必须优先使用 market_background_context / candidate_universe 中的真实股票数据。'
+                    else (
+                        '你拿到的是程序整理后的期货跨月研究上下文，必须优先使用 strategy_context/backtest_summary/regime_panel/capacity_panel/generalization_seed 中的真实研究证据。'
+                        if has_futures_research_context
+                        else '你拿到的是程序从股票数据库扫描、聚合、压缩后的研究上下文，必须优先使用 market_background_context / candidate_universe 中的真实股票数据。'
+                    )
                 ),
-                '每个候选策略必须明确目标股票或股票池，不允许只给抽象模板。',
+                '每个候选策略必须明确目标标的或标的池，不允许只给抽象模板。',
                 '如果提供了 research_task，必须围绕该任务的市场机会、行业或目标股票池生成候选，而不是泛化输出。',
                 context_rule,
                 event_rule,
+                structured_context_rule,
+                futures_contract_rule,
+                high_precision_rule,
                 '允许字段: open/high/low/close/volume。',
                 '允许指标: sma, ema, roc, rsi, stddev, zscore, highest, lowest, volume_ratio, atr, adx, turnover_rate, upper_shadow_ratio, rolling_count, slope。',
                 '允许条件运算: gt, gte, lt, lte, eq, ne, cross_above, cross_below。',
@@ -343,7 +399,7 @@ class _StrategyLLMProviderPromptMixin:
                 'validation_profile 必须使用工厂标准口径，不要自造 profile 名称或 layer；target-only / candidate_target_only 任务默认应回到 trade_rule_validation + target 这一类 canonical 合同。',
                 'open DSL 候选的 dsl 优先使用标准 entry/exit 结构；如果使用 signals.entry/signals.exit，也必须保持 {"op":"all|any","conditions":[...]} 的对象格式。',
                 'DSL 条件节点必须使用标准对象格式 {"op":...,"left":...,"right":...}，不要使用 {"gt":[...]} 这类简写。',
-                f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
+                f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check；期货上下文下还必须回填 instrument_profile。',
                 '不要生成 Python 代码，不要生成自然语言规则，只能生成 JSON DSL。',
             ])
             output_contract = {

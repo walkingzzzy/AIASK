@@ -29,6 +29,7 @@ FEEDBACK_METRIC_KEYS = (
     "gate_failure_rate",
     "trace_completeness_ratio",
     "admission_quality_objective",
+    "high_precision_objective",
     "raw_validation_a_rate",
     "raw_validation_b_rate",
     "raw_validation_c_rate",
@@ -184,6 +185,10 @@ _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "admission_quality_objective": (
         "admission_quality_objective",
         "bandit_admission_quality_objective",
+    ),
+    "high_precision_objective": (
+        "high_precision_objective",
+        "bandit_high_precision_objective",
     ),
     "raw_validation_a_rate": (
         "raw_validation_a_rate",
@@ -642,6 +647,24 @@ def normalize_feedback_input_contract(
         ),
         4,
     )
+    paper_hit_ratio = min(max(safe_float(normalized_summary.get("paper_hit_ratio"), 0.5), 0.0), 1.0)
+    paper_skill_lcb = min(max(safe_float(normalized_summary.get("paper_skill_lcb"), 0.0), -1.0), 1.0)
+    realized_turnover = min(max(safe_float(normalized_summary.get("realized_turnover"), 0.0), 0.0), 2.0)
+    high_precision_objective = round(
+        min(
+            max(
+                promotion_ready_ratio * 0.25
+                + trace_completeness_ratio * 0.15
+                + (1.0 - gate_failure_rate) * 0.15
+                + max(paper_hit_ratio - 0.5, 0.0) * 0.20
+                + max(paper_skill_lcb, 0.0) * 0.15
+                + max(0.8 - realized_turnover, 0.0) * 0.10,
+                0.0,
+            ),
+            1.0,
+        ),
+        4,
+    )
     normalized_summary.update(
         {
             "zero_signal_ratio": zero_signal_ratio,
@@ -653,6 +676,7 @@ def normalize_feedback_input_contract(
             "gate_failure_rate": gate_failure_rate,
             "trace_completeness_ratio": trace_completeness_ratio,
             "admission_quality_objective": admission_quality_objective,
+            "high_precision_objective": high_precision_objective,
         }
     )
     return {
@@ -1578,6 +1602,10 @@ def resolve_feedback_metrics(
         "promotion_ready_ratio": 1.0,
         "promotion_review_coverage_ratio": 1.0,
         "evidence_debt_ratio": 0.0,
+        "gate_failure_rate": 0.0,
+        "trace_completeness_ratio": 1.0,
+        "admission_quality_objective": 0.0,
+        "high_precision_objective": 0.0,
         "raw_validation_a_rate": 0.0,
         "raw_validation_b_rate": 0.0,
         "raw_validation_c_rate": 0.0,
@@ -1774,6 +1802,25 @@ def resolve_feedback_metrics(
         ),
         4,
     )
+    high_precision_failure_reasons: list[str] = []
+    if safe_float(resolved.get("realized_turnover"), 0.0) > 0.8:
+        high_precision_failure_reasons.append("overtrading")
+    if (
+        safe_float(resolved.get("paper_recent_skill_lcb"), safe_float(resolved.get("paper_skill_lcb"), 0.0)) < 0.0
+        and safe_float(resolved.get("paper_skill_lcb"), 0.0) > 0.0
+    ):
+        high_precision_failure_reasons.append("regime_mismatch")
+    if (
+        safe_float(resolved.get("execution_conversion_efficiency"), 0.0) < 0.12
+        or safe_float(resolved.get("capacity_crowding"), 0.0) > 0.45
+    ):
+        high_precision_failure_reasons.append("cost_fragility")
+    if (
+        safe_float(resolved.get("admission_quality_objective"), 0.0) < 0.35
+        and safe_float(resolved.get("trace_completeness_ratio"), 1.0) < 0.6
+    ):
+        high_precision_failure_reasons.append("weak_failure_mode")
+    resolved["high_precision_failure_reasons"] = high_precision_failure_reasons
     return resolved
 
 
@@ -2373,6 +2420,10 @@ def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
     promotion_review_score = max(0.0, min(safe_float(metrics.get("promotion_review_score"), 0.5), 1.0))
     promotion_review_status = normalize_text(metrics.get("promotion_review_status"))
     promotion_review_recommendation = normalize_text(metrics.get("promotion_review_recommendation"))
+    high_precision_objective = max(
+        0.0,
+        min(safe_float(metrics.get("high_precision_objective"), 0.0), 1.0),
+    )
 
     paper_bonus = (paper_hit_ratio - 0.5) * 0.7
     turnover_penalty = max(realized_turnover - 0.55, 0.0) * 0.25
@@ -2416,6 +2467,7 @@ def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
         - low_quality_penalty
         + submit_bonus
         + promotion_review_adjustment
+        + high_precision_objective * 0.10
     )
     return round(min(max(multiplier, 0.4), 1.75), 4)
 
@@ -2433,6 +2485,7 @@ def compute_skill_budget_multiplier(metrics: dict[str, Any]) -> float:
     multiplier += paper_recent_skill_lcb * 0.45
     multiplier -= max(paper_stability_gap - 0.05, 0.0) * 1.15
     multiplier -= max(0.60 - paper_coverage_ratio, 0.0) * 0.32
+    multiplier += _clamp(safe_float(metrics.get("high_precision_objective"), 0.0), 0.0, 1.0) * 0.08
     return round(min(max(multiplier, 0.3), 1.75), 4)
 
 
@@ -2472,6 +2525,10 @@ def compute_priority_adjustment(metrics: dict[str, Any]) -> float:
     promotion_review_score = max(0.0, min(safe_float(metrics.get("promotion_review_score"), 0.5), 1.0))
     promotion_review_status = normalize_text(metrics.get("promotion_review_status"))
     promotion_review_recommendation = normalize_text(metrics.get("promotion_review_recommendation"))
+    high_precision_objective = max(
+        0.0,
+        min(safe_float(metrics.get("high_precision_objective"), 0.0), 1.0),
+    )
 
     turnover_penalty = max(realized_turnover - 0.55, 0.0)
     crowding_penalty = max(capacity_crowding - 0.45, 0.0)
@@ -2503,6 +2560,7 @@ def compute_priority_adjustment(metrics: dict[str, Any]) -> float:
         - max(0.30 - (raw_validation_a_rate + raw_validation_b_rate), 0.0) * 8.0
         + min(ema_submit_count, 6.0) * 0.75
         + promotion_review_adjustment
+        + high_precision_objective * 2.5
     )
     return round(adjustment, 4)
 

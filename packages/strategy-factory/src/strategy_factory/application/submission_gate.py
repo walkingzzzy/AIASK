@@ -300,6 +300,11 @@ def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
     research_task = _normalize_research_task_contract(
         _strategy_payload_value(strategy, "research_task") or strategy.get("research_task") or {}
     )
+    raw_validation_profile = dict(
+        _strategy_payload_value(strategy, "validation_profile")
+        or strategy.get("validation_profile")
+        or {}
+    )
     research_protocol_adapter = dict(
         _strategy_payload_value(strategy, "research_validation_contract_submission_adapter")
         or strategy.get("research_validation_contract_submission_adapter")
@@ -326,6 +331,29 @@ def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
         "validation_focus": validation_focus,
         "primary_validation_layer": primary_validation_layer,
         "research_task": research_task,
+        "objective_profile": str(
+            raw_validation_profile.get("objective_profile")
+            or adapter_profile.get("objective_profile")
+            or research_task.get("objective_profile")
+            or ""
+        ).strip().lower() or None,
+        "trade_density_preference": str(
+            raw_validation_profile.get("trade_density_preference")
+            or adapter_profile.get("trade_density_preference")
+            or research_task.get("trade_density_preference")
+            or ""
+        ).strip().lower() or None,
+        "entry_selectivity": str(
+            raw_validation_profile.get("entry_selectivity")
+            or adapter_profile.get("entry_selectivity")
+            or ""
+        ).strip().lower() or None,
+        "regime_required": raw_validation_profile.get("regime_required")
+        if raw_validation_profile.get("regime_required") is not None
+        else adapter_profile.get("regime_required"),
+        "cost_robust_required": raw_validation_profile.get("cost_robust_required")
+        if raw_validation_profile.get("cost_robust_required") is not None
+        else adapter_profile.get("cost_robust_required"),
     }
 
 
@@ -345,6 +373,271 @@ def _resolve_research_protocol_submission_adapter(strategy: dict) -> dict[str, A
     if contract:
         return adapt_research_validation_contract_for_submission(contract)
     return {}
+
+
+def _normalize_boolish(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = _normalize_text(value)
+    if token in {"1", "true", "yes", "on", "required", "must"}:
+        return True
+    if token in {"0", "false", "no", "off", "optional"}:
+        return False
+    return bool(default)
+
+
+def _strip_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _review_decision_rank(value: Any) -> int:
+    token = _normalize_text(value)
+    if token == "reject":
+        return 3
+    if token == "revise":
+        return 2
+    if token == "pending":
+        return 1
+    return 0
+
+
+def _merge_review_decision(*values: Any) -> str:
+    resolved = "pass"
+    rank = -1
+    for value in values:
+        token = _normalize_text(value) or "pass"
+        token_rank = _review_decision_rank(token)
+        if token_rank > rank:
+            resolved = token
+            rank = token_rank
+    return resolved
+
+
+def _resolve_high_precision_context(strategy: dict, profile: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    validation_profile = dict(
+        _strategy_payload_value(payload, "validation_profile")
+        or payload.get("validation_profile")
+        or {}
+    )
+    research_task = dict(
+        _strategy_payload_value(payload, "research_task")
+        or payload.get("research_task")
+        or {}
+    )
+    research_context = dict(
+        _strategy_payload_value(payload, "research_context")
+        or payload.get("research_context")
+        or {}
+    )
+    hypothesis_artifact = dict(
+        _strategy_payload_value(payload, "hypothesis_artifact")
+        or payload.get("hypothesis_artifact")
+        or {}
+    )
+    market_regime_assumption = dict(
+        hypothesis_artifact.get("market_regime_assumption")
+        or _strategy_payload_value(payload, "market_regime_assumption")
+        or payload.get("market_regime_assumption")
+        or research_context.get("market_regime_assumption")
+        or {}
+    )
+    objective_profile = _normalize_text(
+        (profile or {}).get("objective_profile")
+        or validation_profile.get("objective_profile")
+        or hypothesis_artifact.get("objective_profile")
+        or research_task.get("objective_profile")
+        or research_context.get("objective_profile")
+    ) or None
+    if not objective_profile and str(payload.get("generator_mode") or "").strip().lower() == "futures_calendar_research_adapter":
+        objective_profile = "high_precision"
+    trade_density_preference = _normalize_text(
+        (profile or {}).get("trade_density_preference")
+        or validation_profile.get("trade_density_preference")
+        or hypothesis_artifact.get("trade_density_preference")
+        or research_task.get("trade_density_preference")
+    ) or ("low" if objective_profile == "high_precision" else None)
+    entry_selectivity = _normalize_text(
+        (profile or {}).get("entry_selectivity")
+        or validation_profile.get("entry_selectivity")
+        or hypothesis_artifact.get("entry_selectivity")
+    ) or None
+    return {
+        "objective_profile": objective_profile,
+        "trade_density_preference": trade_density_preference,
+        "entry_selectivity": entry_selectivity,
+        "regime_required": _normalize_boolish(
+            (profile or {}).get("regime_required")
+            if (profile or {}).get("regime_required") is not None
+            else validation_profile.get("regime_required")
+            if validation_profile.get("regime_required") is not None
+            else hypothesis_artifact.get("regime_required"),
+            default=objective_profile == "high_precision",
+        ),
+        "cost_robust_required": _normalize_boolish(
+            (profile or {}).get("cost_robust_required")
+            if (profile or {}).get("cost_robust_required") is not None
+            else validation_profile.get("cost_robust_required")
+            if validation_profile.get("cost_robust_required") is not None
+            else hypothesis_artifact.get("cost_robust_required"),
+            default=objective_profile == "high_precision",
+        ),
+        "preferred_regime": _strip_text(
+            market_regime_assumption.get("preferred_regime")
+            or validation_profile.get("preferred_regime")
+        ) or None,
+        "avoid_regime": _strip_text(
+            market_regime_assumption.get("avoid_regime")
+            or validation_profile.get("avoid_regime")
+        ) or None,
+        "holding_rationale": _strip_text(
+            hypothesis_artifact.get("holding_rationale")
+            or _strategy_payload_value(payload, "holding_rationale")
+            or payload.get("holding_rationale")
+        ) or None,
+        "failure_mode": hypothesis_artifact.get("failure_mode")
+        or _strategy_payload_value(payload, "failure_mode")
+        or payload.get("failure_mode"),
+        "cost_sensitivity_grid": dict(
+            hypothesis_artifact.get("cost_sensitivity_grid")
+            or _strategy_payload_value(payload, "cost_sensitivity_grid")
+            or payload.get("cost_sensitivity_grid")
+            or {}
+        ),
+    }
+
+
+def _evaluate_high_precision_admission(
+    strategy: dict,
+    profile: dict[str, Any],
+    gate_payload: Optional[dict[str, Any]],
+    *,
+    backtest_metrics: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    context = _resolve_high_precision_context(strategy, profile)
+    objective_profile = _normalize_text(context.get("objective_profile"))
+    if objective_profile != "high_precision":
+        return {
+            "available": False,
+            "decision": "pass",
+            "blocking_reasons": [],
+            "warnings": [],
+            "precision_readiness": None,
+            "regime_validation_summary": {},
+            "cost_robustness_summary": {},
+            "trade_density_summary": {},
+            "objective_profile": None,
+        }
+
+    metrics = dict(gate_payload or {})
+    if backtest_metrics:
+        metrics = {**dict(backtest_metrics or {}), **metrics}
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    preferred_regime = _strip_text(context.get("preferred_regime")) or None
+    avoid_regime = _strip_text(context.get("avoid_regime")) or None
+    holding_rationale = _strip_text(context.get("holding_rationale")) or None
+    failure_mode = context.get("failure_mode")
+    cost_sensitivity_grid = dict(context.get("cost_sensitivity_grid") or {})
+    trade_density_preference = _normalize_text(context.get("trade_density_preference")) or "low"
+    entry_selectivity = _normalize_text(context.get("entry_selectivity")) or None
+    regime_required = bool(context.get("regime_required"))
+    cost_robust_required = bool(context.get("cost_robust_required"))
+    trade_density = safe_metric_value(metrics, "trade_density")
+    density_limit = 0.75 if trade_density_preference == "low" else 1.05
+    density_passed = trade_density <= density_limit if trade_density > 0 else bool(entry_selectivity)
+
+    if not holding_rationale:
+        blocking_reasons.append("high_precision_missing_holding_rationale")
+    if failure_mode in (None, "", [], {}):
+        blocking_reasons.append("high_precision_missing_failure_mode")
+    if regime_required:
+        if not preferred_regime:
+            blocking_reasons.append("high_precision_missing_preferred_regime")
+        if not avoid_regime:
+            blocking_reasons.append("high_precision_missing_avoid_regime")
+    if not entry_selectivity:
+        blocking_reasons.append("high_precision_missing_entry_selectivity")
+    if trade_density > 0 and not density_passed:
+        blocking_reasons.append("high_precision_trade_density_exceeds_preference")
+    if cost_robust_required and not cost_sensitivity_grid:
+        blocking_reasons.append("high_precision_missing_cost_sensitivity_grid")
+
+    cost_scenarios = dict(metrics.get("cost_sensitivity_results") or metrics.get("cost_scenarios") or {})
+    observed_bps: list[float] = []
+    stress_post_cost_sharpe = None
+    if cost_scenarios:
+        for raw_key, raw_value in cost_scenarios.items():
+            row = dict(raw_value or {})
+            parsed_bps = safe_metric_value({"bps": raw_key}, "bps")
+            if parsed_bps <= 0 and row.get("slippage_bps") is not None:
+                parsed_bps = safe_metric_value(row, "slippage_bps")
+            if parsed_bps > 0 and parsed_bps not in observed_bps:
+                observed_bps.append(parsed_bps)
+        if observed_bps:
+            max_bps = max(observed_bps)
+            stress_row = {}
+            for raw_value in cost_scenarios.values():
+                row = dict(raw_value or {})
+                if safe_metric_value(row, "slippage_bps") == max_bps:
+                    stress_row = row
+                    break
+            stress_post_cost_sharpe = safe_metric_value(stress_row, "post_cost_sharpe")
+    if cost_robust_required and cost_sensitivity_grid and not observed_bps:
+        warnings.append("high_precision_cost_observation_pending")
+    if cost_robust_required and stress_post_cost_sharpe is not None and stress_post_cost_sharpe <= 0.0:
+        blocking_reasons.append("high_precision_cost_fragility")
+
+    post_cost_sharpe = safe_metric_value(metrics, "post_cost_sharpe")
+    trade_count = safe_metric_value(metrics, "trade_count", "trades_count")
+    regime_validation_summary = {
+        "available": True,
+        "objective_profile": objective_profile,
+        "preferred_regime": preferred_regime,
+        "avoid_regime": avoid_regime,
+        "regime_required": regime_required,
+        "passed": (not regime_required) or bool(preferred_regime and avoid_regime),
+    }
+    cost_robustness_summary = {
+        "available": bool(cost_sensitivity_grid),
+        "required": cost_robust_required,
+        "observed_bps": sorted(observed_bps),
+        "stress_post_cost_sharpe": round(float(stress_post_cost_sharpe), 4)
+        if stress_post_cost_sharpe is not None
+        else None,
+        "passed": bool(cost_sensitivity_grid) and (stress_post_cost_sharpe is None or stress_post_cost_sharpe > 0.0),
+    }
+    trade_density_summary = {
+        "available": True,
+        "preference": trade_density_preference,
+        "entry_selectivity": entry_selectivity,
+        "max_trade_density": round(density_limit, 4),
+        "observed_trade_density": round(trade_density, 4) if trade_density > 0 else None,
+        "passed": bool(density_passed),
+    }
+    if blocking_reasons:
+        decision = "reject" if "high_precision_trade_density_exceeds_preference" in blocking_reasons and trade_density > density_limit * 1.5 else "revise"
+    else:
+        decision = "pass"
+    if decision != "pass":
+        precision_readiness = decision
+    elif post_cost_sharpe >= 0.8 and trade_count >= 6 and density_passed:
+        precision_readiness = "strong"
+    elif post_cost_sharpe >= 0.45 and trade_count >= 3:
+        precision_readiness = "candidate"
+    else:
+        precision_readiness = "observe"
+    return {
+        "available": True,
+        "decision": decision,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "precision_readiness": precision_readiness,
+        "regime_validation_summary": regime_validation_summary,
+        "cost_robustness_summary": cost_robustness_summary,
+        "trade_density_summary": trade_density_summary,
+        "objective_profile": objective_profile,
+    }
 
 
 def _resolve_research_protocol_observed_payload(
@@ -1968,6 +2261,22 @@ def _attach_admission_evaluations(
     ).strip().lower()
     research_protocol_blockers = list(research_protocol_evaluation.get("blocking_reasons") or [])
     research_protocol_warnings = list(research_protocol_evaluation.get("warnings") or [])
+    high_precision_evaluation = _evaluate_high_precision_admission(
+        strategy,
+        profile,
+        normalized_gate,
+        backtest_metrics=backtest_metrics,
+    )
+    high_precision_available = bool(high_precision_evaluation.get("available"))
+    high_precision_review_decision = _normalize_text(
+        high_precision_evaluation.get("decision") or "pass"
+    ) or "pass"
+    high_precision_blockers = list(high_precision_evaluation.get("blocking_reasons") or [])
+    high_precision_warnings = list(high_precision_evaluation.get("warnings") or [])
+    merged_gate_b_review_decision = _merge_review_decision(
+        research_protocol_review_decision if research_protocol_available else "pass",
+        high_precision_review_decision if high_precision_available else "pass",
+    )
 
     if research_protocol_available:
         merged_gate_payload = {
@@ -1982,7 +2291,7 @@ def _attach_admission_evaluations(
             ),
             "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
             "family_holding_bucket": dict(research_protocol_evaluation.get("family_holding_bucket") or {}),
-            "gate_b_review_decision": research_protocol_review_decision,
+            "gate_b_review_decision": merged_gate_b_review_decision,
             "artifact_ids": list(research_protocol_evaluation.get("artifact_ids") or []),
             "retrieval_context_ids": list(research_protocol_evaluation.get("retrieval_context_ids") or []),
             "prediction_trace_id": research_protocol_evaluation.get("prediction_trace_id"),
@@ -1994,6 +2303,33 @@ def _attach_admission_evaluations(
                     "passed_strict": False,
                     "provisional_pass": False,
                     "reasons": _merge_text_items(normalized_gate.get("reasons"), research_protocol_blockers),
+                }
+            )
+        normalized_gate = normalize_quality_gate_result(merged_gate_payload)
+    if high_precision_available:
+        merged_gate_payload = {
+            **normalized_gate,
+            "warnings": _merge_text_items(normalized_gate.get("warnings"), high_precision_warnings),
+            "objective_profile": high_precision_evaluation.get("objective_profile"),
+            "precision_readiness": high_precision_evaluation.get("precision_readiness"),
+            "regime_validation_summary": dict(
+                high_precision_evaluation.get("regime_validation_summary") or {}
+            ),
+            "cost_robustness_summary": dict(
+                high_precision_evaluation.get("cost_robustness_summary") or {}
+            ),
+            "trade_density_summary": dict(
+                high_precision_evaluation.get("trade_density_summary") or {}
+            ),
+            "gate_b_review_decision": merged_gate_b_review_decision,
+        }
+        if high_precision_review_decision in {"revise", "reject"}:
+            merged_gate_payload.update(
+                {
+                    "passed": False,
+                    "passed_strict": False,
+                    "provisional_pass": False,
+                    "reasons": _merge_text_items(normalized_gate.get("reasons"), high_precision_blockers),
                 }
             )
         normalized_gate = normalize_quality_gate_result(merged_gate_payload)
@@ -2028,6 +2364,10 @@ def _attach_admission_evaluations(
             if research_protocol_review_decision in {"revise", "reject"}:
                 stage_reasons = _merge_text_items(stage_reasons, research_protocol_blockers)
             stage_warnings = _merge_text_items(stage_warnings, research_protocol_warnings)
+        if high_precision_available:
+            if high_precision_review_decision in {"revise", "reject"}:
+                stage_reasons = _merge_text_items(stage_reasons, high_precision_blockers)
+            stage_warnings = _merge_text_items(stage_warnings, high_precision_warnings)
         evaluations[admission_level] = {
             "passed": len(stage_reasons) == 0 and bool(stage_result.get("passed")),
             "reasons": stage_reasons,
@@ -2047,6 +2387,17 @@ def _attach_admission_evaluations(
                 "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
                 "family_holding_bucket": dict(
                     research_protocol_evaluation.get("family_holding_bucket") or {}
+                ),
+                "objective_profile": high_precision_evaluation.get("objective_profile"),
+                "precision_readiness": high_precision_evaluation.get("precision_readiness"),
+                "regime_validation_summary": dict(
+                    high_precision_evaluation.get("regime_validation_summary") or {}
+                ),
+                "cost_robustness_summary": dict(
+                    high_precision_evaluation.get("cost_robustness_summary") or {}
+                ),
+                "trade_density_summary": dict(
+                    high_precision_evaluation.get("trade_density_summary") or {}
                 ),
             },
         }
@@ -2131,9 +2482,9 @@ def _attach_admission_evaluations(
             "raw_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("raw_validation_grade"),
             "effective_validation_grade": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("effective_validation_grade"),
             "validation_grade_adjustment_reason": dict((evaluations.get("incubation") or {}).get("review_context") or {}).get("validation_grade_adjustment_reason"),
-            "gate_b_review_decision": research_protocol_review_decision if research_protocol_available else (
-                "pass" if normalized_gate.get("passed") else "reject"
-            ),
+            "gate_b_review_decision": merged_gate_b_review_decision if (
+                research_protocol_available or high_precision_available
+            ) else ("pass" if normalized_gate.get("passed") else "reject"),
             "business_admission_decision": dict(
                 research_protocol_evaluation.get("business_admission_decision") or {}
             ),
@@ -2143,6 +2494,17 @@ def _attach_admission_evaluations(
             ),
             "cash_sleeve_audit": dict(research_protocol_evaluation.get("cash_sleeve_audit") or {}),
             "family_holding_bucket": dict(research_protocol_evaluation.get("family_holding_bucket") or {}),
+            "objective_profile": high_precision_evaluation.get("objective_profile"),
+            "precision_readiness": high_precision_evaluation.get("precision_readiness"),
+            "regime_validation_summary": dict(
+                high_precision_evaluation.get("regime_validation_summary") or {}
+            ),
+            "cost_robustness_summary": dict(
+                high_precision_evaluation.get("cost_robustness_summary") or {}
+            ),
+            "trade_density_summary": dict(
+                high_precision_evaluation.get("trade_density_summary") or {}
+            ),
         }
     )
 

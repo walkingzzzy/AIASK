@@ -68,6 +68,19 @@ def _as_list(value: Any) -> list[Any]:
     return []
 
 
+def _normalize_boolish(value: Any, *, default: Optional[bool] = None) -> Optional[bool]:
+    if value in _EMPTY_VALUES:
+        return default
+    if isinstance(value, bool):
+        return value
+    token = _string(value).lower()
+    if token in {"1", "true", "yes", "on", "required", "must"}:
+        return True
+    if token in {"0", "false", "no", "off", "optional"}:
+        return False
+    return default
+
+
 def _direction_bucket(value: Any) -> Optional[str]:
     token = _string(value).lower()
     if not token:
@@ -314,6 +327,62 @@ def _coerce_market_regime_assumption(
         "task_source": task_source or None,
         "validation_focus": focus or None,
     }
+
+
+def _coerce_objective_profile(
+    explicit_profile: Any,
+    *,
+    provider_payload: Optional[dict[str, Any]] = None,
+    research_task: Optional[dict[str, Any]] = None,
+    validation_profile: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    for value in (
+        explicit_profile,
+        _as_dict(validation_profile).get("objective_profile"),
+        _as_dict(research_task).get("objective_profile"),
+        _as_dict(provider_payload).get("objective_profile"),
+        _as_dict(_as_dict(provider_payload).get("analysis")).get("objective_profile"),
+    ):
+        token = _string(value).lower()
+        if token:
+            return token
+    return None
+
+
+def _coerce_trade_density_preference(
+    explicit_preference: Any,
+    *,
+    objective_profile: Optional[str],
+    strategy_type: str,
+) -> Optional[str]:
+    token = _string(explicit_preference).lower()
+    if token in {"low", "medium", "high"}:
+        return token
+    if _string(objective_profile).lower() != "high_precision":
+        return None
+    family = _string(strategy_type).lower()
+    if family in {"momentum", "ma_cross", "volatility_breakout", "rsi", "gap_fill", "mean_reversion_short"}:
+        return "low"
+    return "medium"
+
+
+def _coerce_entry_selectivity(
+    explicit_selectivity: Any,
+    *,
+    objective_profile: Optional[str],
+    strategy_type: str,
+) -> Optional[str]:
+    token = _string(explicit_selectivity).lower()
+    if token:
+        return token
+    if _string(objective_profile).lower() != "high_precision":
+        return None
+    family = _string(strategy_type).lower()
+    if family in {"momentum", "ma_cross", "volatility_breakout"}:
+        return "strict"
+    if family in {"rsi", "gap_fill", "mean_reversion_short"}:
+        return "selective"
+    return "narrow"
 
 
 def _score_economic_semantics(hypothesis: dict[str, Any]) -> tuple[int, list[str]]:
@@ -627,6 +696,72 @@ class LLMHypothesisGenerator:
             ("validation_profile", validation_profile.get("validation_focus")),
             ("research_task", normalized_task.get("validation_focus")),
         )
+        objective_profile = choose(
+            "objective_profile",
+            ("hypothesis_artifact", explicit.get("objective_profile")),
+            ("validation_profile", validation_profile.get("objective_profile")),
+            (
+                "context_defaults",
+                _coerce_objective_profile(
+                    explicit.get("objective_profile"),
+                    provider_payload=provider,
+                    research_task=normalized_task,
+                    validation_profile=validation_profile,
+                ),
+            ),
+        )
+        trade_density_preference = choose(
+            "trade_density_preference",
+            ("hypothesis_artifact", explicit.get("trade_density_preference")),
+            ("validation_profile", validation_profile.get("trade_density_preference")),
+            (
+                "objective_profile",
+                _coerce_trade_density_preference(
+                    explicit.get("trade_density_preference")
+                    or validation_profile.get("trade_density_preference"),
+                    objective_profile=_string(objective_profile),
+                    strategy_type=_string(family_hint),
+                ),
+            ),
+        )
+        entry_selectivity = choose(
+            "entry_selectivity",
+            ("hypothesis_artifact", explicit.get("entry_selectivity")),
+            ("validation_profile", validation_profile.get("entry_selectivity")),
+            (
+                "objective_profile",
+                _coerce_entry_selectivity(
+                    explicit.get("entry_selectivity")
+                    or validation_profile.get("entry_selectivity"),
+                    objective_profile=_string(objective_profile),
+                    strategy_type=_string(family_hint),
+                ),
+            ),
+        )
+        regime_required = choose(
+            "regime_required",
+            ("hypothesis_artifact", explicit.get("regime_required")),
+            ("validation_profile", validation_profile.get("regime_required")),
+            (
+                "objective_profile",
+                _normalize_boolish(
+                    validation_profile.get("regime_required"),
+                    default=_string(objective_profile).lower() == "high_precision",
+                ),
+            ),
+        )
+        cost_robust_required = choose(
+            "cost_robust_required",
+            ("hypothesis_artifact", explicit.get("cost_robust_required")),
+            ("validation_profile", validation_profile.get("cost_robust_required")),
+            (
+                "objective_profile",
+                _normalize_boolish(
+                    validation_profile.get("cost_robust_required"),
+                    default=_string(objective_profile).lower() == "high_precision",
+                ),
+            ),
+        )
         market_regime_assumption = choose(
             "market_regime_assumption",
             ("hypothesis_artifact", explicit.get("market_regime_assumption")),
@@ -668,6 +803,11 @@ class LLMHypothesisGenerator:
             "capacity_assumption": capacity_assumption,
             "market_regime_assumption": market_regime_assumption,
             "validation_focus": _string(validation_focus).lower() or None,
+            "objective_profile": _string(objective_profile).lower() or None,
+            "trade_density_preference": _string(trade_density_preference).lower() or None,
+            "entry_selectivity": _string(entry_selectivity).lower() or None,
+            "regime_required": _normalize_boolish(regime_required, default=False),
+            "cost_robust_required": _normalize_boolish(cost_robust_required, default=False),
             "family_specific_hypothesis": dict(family_specific_hypothesis or {}),
         }
 

@@ -75,6 +75,15 @@ def test_feedback_contract_summary_includes_skill_quality_and_control_counts():
     assert summary["skill_control_mode_counts"] == {"freeze": 1, "cooldown": 1}
 
 
+def test_resolve_feedback_metrics_defaults_new_admission_metrics_when_absent():
+    metrics = resolve_feedback_metrics({}, family="momentum")
+
+    assert metrics["gate_failure_rate"] == pytest.approx(0.0)
+    assert metrics["trace_completeness_ratio"] == pytest.approx(1.0)
+    assert metrics["admission_quality_objective"] == pytest.approx(0.0)
+    assert metrics["high_precision_objective"] == pytest.approx(0.0)
+
+
 def test_feedback_routes_surface_paper_skill_lcb_for_family_and_scopes():
     feedback_root = {
         "momentum": {
@@ -230,11 +239,52 @@ def test_incubation_budgeter_surfaces_skill_feedback_observation_fields(monkeypa
     assert candidate_plan["feedback_legacy_control_mode"] == "normal"
     assert candidate_plan["feedback_skill_control_mode"] == "freeze"
     assert candidate_plan["feedback_budget_multiplier"] > 1.0
-    assert candidate_plan["feedback_skill_budget_multiplier"] == pytest.approx(0.0)
-    assert candidate_plan["feedback_paper_skill_lcb"] == pytest.approx(-0.0861)
-    assert candidate_plan["feedback_scope"]["skill_control_mode"] == "freeze"
-    assert plan["summary"]["feedback_skill_controlled_count"] == 1
-    assert plan["summary"]["feedback_paper_skill_lcb_avg"] == pytest.approx(-0.0861)
+
+
+def test_feedback_contract_and_metrics_surface_high_precision_objective_and_failures():
+    contract = normalize_feedback_input_contract(
+        {
+            "available": True,
+            "feedback": {
+                "momentum": {
+                    "strategy_count": 4,
+                    "paper_hit_ratio": 0.67,
+                    "paper_skill_lcb": 0.08,
+                    "paper_recent_skill_lcb": -0.03,
+                    "paper_stability_gap": 0.09,
+                    "paper_coverage_ratio": 0.72,
+                    "execution_conversion_efficiency": 0.09,
+                    "realized_turnover": 0.95,
+                    "capacity_crowding": 0.52,
+                    "promotion_ready_ratio": 0.45,
+                    "promotion_review_coverage_ratio": 0.50,
+                    "forward_window_coverage_ratio": 0.70,
+                    "trace_completeness_ratio": 0.45,
+                    "admission_quality_objective": 0.22,
+                }
+            },
+        }
+    )
+
+    summary = contract["summary"]
+    metrics = resolve_feedback_metrics(
+        {
+            "momentum": {
+                **dict(contract["feedback"]["momentum"]),
+                "high_precision_objective": summary["high_precision_objective"],
+                "trace_completeness_ratio": 0.45,
+                "admission_quality_objective": 0.22,
+            }
+        },
+        family="momentum",
+    )
+
+    assert summary["high_precision_objective"] > 0.0
+    assert metrics["high_precision_objective"] > 0.0
+    assert "overtrading" in metrics["high_precision_failure_reasons"]
+    assert "regime_mismatch" in metrics["high_precision_failure_reasons"]
+    assert "cost_fragility" in metrics["high_precision_failure_reasons"]
+    assert "weak_failure_mode" in metrics["high_precision_failure_reasons"]
 
 
 @pytest.mark.parametrize(

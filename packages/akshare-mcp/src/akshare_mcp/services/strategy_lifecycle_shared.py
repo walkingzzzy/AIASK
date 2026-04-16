@@ -130,6 +130,17 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _safe_boolish(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = _string(value).lower()
+    if token in {"1", "true", "yes", "on", "required", "must"}:
+        return True
+    if token in {"0", "false", "no", "off", "optional"}:
+        return False
+    return bool(default)
+
+
 def _contract_version_stable(value: Any, explicit_flag: Any = None) -> bool:
     if explicit_flag is not None:
         return bool(explicit_flag)
@@ -805,10 +816,172 @@ def _build_execution_quality_snapshot(execution_quality: Optional[dict[str, Any]
         "realized_slippage_vs_model": _safe_float(payload.get("realized_slippage_vs_model"))
         if payload.get("realized_slippage_vs_model") is not None
         else None,
+        "realized_vs_modeled_cost_gap": _safe_float(
+            payload.get("realized_vs_modeled_cost_gap")
+            if payload.get("realized_vs_modeled_cost_gap") is not None
+            else payload.get("realized_slippage_vs_model")
+        ),
+        "trade_density": _safe_float(payload.get("trade_density")),
+        "entry_quality": _safe_float(payload.get("entry_quality") or payload.get("fill_rate")),
+        "exit_discipline": _safe_float(
+            payload.get("exit_discipline") or payload.get("round_trip_close_rate")
+        ),
+        "regime_mismatch_events": list(payload.get("regime_mismatch_events") or []),
         "missed_trade_ratio": _safe_float(payload.get("missed_trade_ratio"))
         if payload.get("missed_trade_ratio") is not None
         else None,
         "hard_gate_ready": bool(payload.get("execution_hard_gate_passed")),
+    }
+
+
+def _resolve_high_precision_overview_context(
+    strategy: dict[str, Any],
+    *,
+    quality_report: Optional[dict[str, Any]],
+    quality_gate: Optional[dict[str, Any]],
+    quality_summary: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    validation_profile = dict(
+        _quality_report_field(quality_report, quality_gate, quality_summary, "validation_profile")
+        or dict(quality_report or {}).get("validation_profile")
+        or payload.get("validation_profile")
+        or params.get("validation_profile")
+        or {}
+    )
+    research_context = dict(payload.get("research_context") or params.get("research_context") or {})
+    hypothesis_artifact = dict(
+        payload.get("hypothesis_artifact")
+        or params.get("hypothesis_artifact")
+        or research_context.get("hypothesis_artifact")
+        or {}
+    )
+    market_regime_assumption = dict(
+        hypothesis_artifact.get("market_regime_assumption")
+        or payload.get("market_regime_assumption")
+        or params.get("market_regime_assumption")
+        or research_context.get("market_regime_assumption")
+        or {}
+    )
+    objective_profile = (
+        _string(_quality_report_field(quality_report, quality_gate, quality_summary, "objective_profile")).lower()
+        or _string(validation_profile.get("objective_profile")).lower()
+        or _string(hypothesis_artifact.get("objective_profile")).lower()
+        or _string(research_context.get("objective_profile")).lower()
+        or None
+    )
+    if not objective_profile and _string(payload.get("generator_mode")).lower() == "futures_calendar_research_adapter":
+        objective_profile = "high_precision"
+    return {
+        "objective_profile": objective_profile,
+        "precision_readiness": _string(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "precision_readiness")
+        ).lower()
+        or None,
+        "regime_validation_summary": dict(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "regime_validation_summary")
+            or {}
+        ),
+        "cost_robustness_summary": dict(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "cost_robustness_summary")
+            or {}
+        ),
+        "trade_density_summary": dict(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "trade_density_summary")
+            or {}
+        ),
+        "preferred_regime": _string(
+            market_regime_assumption.get("preferred_regime") or validation_profile.get("preferred_regime")
+        )
+        or None,
+        "avoid_regime": _string(
+            market_regime_assumption.get("avoid_regime") or validation_profile.get("avoid_regime")
+        )
+        or None,
+        "holding_rationale": _string(hypothesis_artifact.get("holding_rationale")) or None,
+        "failure_mode": hypothesis_artifact.get("failure_mode"),
+        "trade_density": _safe_float(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "trade_density")
+        ),
+        "avg_holding_days": _safe_float(
+            _quality_report_field(quality_report, quality_gate, quality_summary, "avg_holding_days")
+        ),
+        "cost_robust_required": _safe_boolish(
+            validation_profile.get("cost_robust_required")
+            if validation_profile.get("cost_robust_required") is not None
+            else hypothesis_artifact.get("cost_robust_required"),
+            default=objective_profile == "high_precision",
+        ),
+    }
+
+
+def _build_position_cycle_evidence(
+    *,
+    signal_quality: Optional[dict[str, Any]],
+    execution_quality: Optional[dict[str, Any]],
+    context: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    high_precision_context = dict(context or {})
+    if _string(high_precision_context.get("objective_profile")).lower() != "high_precision":
+        return {}
+    signal_payload = dict(signal_quality or {})
+    execution_payload = dict(execution_quality or {})
+    audit_payload = dict(execution_payload.get("audit") or {})
+    primary_horizon = _safe_int(signal_payload.get("primary_horizon"), 5)
+    primary_bucket = dict((signal_payload.get("by_horizon") or {}).get(str(primary_horizon)) or {})
+    cycle_count = max(
+        _safe_int(execution_payload.get("realized_trade_count")),
+        _safe_int(execution_payload.get("trade_count")),
+        _safe_int(primary_bucket.get("effective_n")),
+    )
+    cycle_hit_rate = _safe_float(
+        audit_payload.get("execution_win_rate")
+        if audit_payload.get("execution_win_rate") is not None
+        else primary_bucket.get("hit_rate")
+    )
+    cycle_hit_rate_lcb = _safe_float(primary_bucket.get("hit_rate_lcb"))
+    avg_holding_days = _safe_float(high_precision_context.get("avg_holding_days"))
+    regime_validation_summary = dict(high_precision_context.get("regime_validation_summary") or {})
+    cost_robustness_summary = dict(high_precision_context.get("cost_robustness_summary") or {})
+    trade_density_summary = dict(high_precision_context.get("trade_density_summary") or {})
+    regime_consistency = 1.0 if regime_validation_summary.get("passed") else (
+        0.0 if regime_validation_summary.get("available") else None
+    )
+    cost_robustness = 1.0 if cost_robustness_summary.get("passed") else (
+        0.0 if cost_robustness_summary.get("required") else None
+    )
+    payoff_asymmetry = _safe_float(
+        audit_payload.get("avg_win_loss_ratio")
+        if audit_payload.get("avg_win_loss_ratio") is not None
+        else execution_payload.get("avg_win_loss_ratio")
+    )
+    adverse_regime_avoidance = bool(
+        high_precision_context.get("avoid_regime") and regime_validation_summary.get("passed")
+    )
+    if cycle_count >= 6 and (cycle_hit_rate_lcb or 0.0) > 0.5 and (regime_consistency or 0.0) >= 0.75:
+        status = "strong"
+    elif cycle_count >= 3 and (cycle_hit_rate or 0.0) >= 0.55 and (regime_consistency or 0.0) >= 0.5:
+        status = "candidate"
+    else:
+        status = "insufficient_evidence"
+    return {
+        "contract_version": "strategy_factory.position_cycle_evidence.v1",
+        "status": status,
+        "cycle_count": cycle_count,
+        "cycle_hit_rate": cycle_hit_rate,
+        "cycle_hit_rate_lcb": cycle_hit_rate_lcb,
+        "avg_holding_days": avg_holding_days,
+        "regime_consistency": regime_consistency,
+        "cost_robustness": cost_robustness,
+        "trade_density": _safe_float(
+            trade_density_summary.get("observed_trade_density")
+            if trade_density_summary.get("observed_trade_density") is not None
+            else high_precision_context.get("trade_density")
+        ),
+        "trade_density_preference": _string(trade_density_summary.get("preference")) or None,
+        "payoff_asymmetry": payoff_asymmetry,
+        "adverse_regime_avoidance": adverse_regime_avoidance,
     }
 
 
@@ -948,6 +1121,11 @@ async def build_execution_quality(
         "missed_trade_ratio": missed_trade_ratio,
         "nav_conversion_proxy": nav_conversion_proxy,
         "realized_slippage_vs_model": None,
+        "realized_vs_modeled_cost_gap": None,
+        "trade_density": turnover_rate,
+        "entry_quality": fill_rate,
+        "exit_discipline": None,
+        "regime_mismatch_events": [],
         "prediction_quality_label": prediction_quality_label,
         "prediction_reasons": prediction_reasons,
         "execution_quality_label": execution_quality_label,
@@ -1003,6 +1181,13 @@ async def build_execution_quality(
                 "realized_slippage_vs_model": _safe_float(audit_summary.get("realized_slippage_vs_model"))
                 if audit_summary.get("realized_slippage_vs_model") is not None
                 else None,
+                "realized_vs_modeled_cost_gap": _safe_float(audit_summary.get("realized_slippage_vs_model"))
+                if audit_summary.get("realized_slippage_vs_model") is not None
+                else None,
+                "trade_density": turnover_rate,
+                "entry_quality": fill_rate,
+                "exit_discipline": _safe_ratio(realized_trade_count, mapped_position_count),
+                "regime_mismatch_events": list(audit_summary.get("regime_mismatch_events") or []),
                 "note": (
                     "Execution metrics include proxy conversion plus additive audit round-trip metrics "
                     "based on position_id-complete samples."
@@ -1044,6 +1229,8 @@ async def build_execution_quality(
         evidence_gap_codes.append("missing_round_trip_close_rate")
     if result.get("realized_slippage_vs_model") is None:
         evidence_gap_codes.append("missing_realized_slippage_vs_model")
+    if result.get("realized_vs_modeled_cost_gap") is None:
+        evidence_gap_codes.append("missing_realized_vs_modeled_cost_gap")
     if (
         _safe_int(result.get("nav_observation_days")) <= 0
         and result.get("realized_pnl_total") in (None, "")
@@ -1722,6 +1909,8 @@ def _build_prediction_trace_ledger_view(
         evidence_gap_codes.append("missing_pnl_audit")
     if list(execution_snapshot.get("evidence_gap_codes") or []):
         evidence_gap_codes.extend(list(execution_snapshot.get("evidence_gap_codes") or []))
+    if execution_snapshot.get("realized_vs_modeled_cost_gap") is None:
+        evidence_gap_codes.append("missing_realized_vs_modeled_cost_gap")
     gate_reasons = _unique_tokens(hard_gate.get("reasons") or [], limit=16)
     return {
         "contract_version": "strategy_factory.prediction_trace_ledger.v2",
@@ -1862,6 +2051,10 @@ def _build_prediction_trace_ledger_view(
             pnl_conversion_efficiency=execution_snapshot.get("pnl_conversion_efficiency"),
             execution_conversion_efficiency=execution_snapshot.get("execution_conversion_efficiency"),
             execution_audit_gate_status=execution_audit_gate_status,
+            realized_vs_modeled_cost_gap=execution_snapshot.get("realized_vs_modeled_cost_gap"),
+            entry_quality=execution_snapshot.get("entry_quality"),
+            exit_discipline=execution_snapshot.get("exit_discipline"),
+            regime_mismatch_events=list(execution_snapshot.get("regime_mismatch_events") or []),
         ),
         "gate_decisions": {
             "execution_audit_gate_status": execution_audit_gate_status,
@@ -2207,6 +2400,17 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
     )
     execution_quality_contract = _normalize_execution_quality_for_contract(execution_quality)
     execution_quality_snapshot = _build_execution_quality_snapshot(execution_quality)
+    high_precision_context = _resolve_high_precision_overview_context(
+        strategy,
+        quality_report=quality_report,
+        quality_gate=quality_gate,
+        quality_summary=quality_summary,
+    )
+    position_cycle_evidence = _build_position_cycle_evidence(
+        signal_quality=signal_quality,
+        execution_quality=execution_quality,
+        context=high_precision_context,
+    )
     confidence_contract_status, confidence_diagnostics = _build_confidence_diagnostics(
         strategy,
         quality_report,
@@ -2233,6 +2437,15 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         audit_summary=audit_summary,
         execution_audit_gate_status=execution_audit_gate_status,
     )
+    high_precision_stage_override = bool(
+        _string(high_precision_context.get("objective_profile")).lower() == "high_precision"
+        and signal_stage_without_execution_gate == "warmup"
+        and _string(position_cycle_evidence.get("status")).lower() in {"candidate", "strong"}
+    )
+    if high_precision_stage_override:
+        signal_stage_without_execution_gate = "observe"
+        if pipeline_stage == "warmup":
+            pipeline_stage = "observe" if execution_audit_gate_status != "failed_metrics" else "failed"
     action_plan = await resolve_incubation_action_plan(
         db,
         strategy,
@@ -2327,12 +2540,20 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
     if mdd > DEPRECATION_THRESHOLDS["mdd_critical"]:
         risk_flags.append(f"\u6700\u5927\u56de\u64a4 {mdd:.1%} > {DEPRECATION_THRESHOLDS['mdd_critical']:.0%}")
     if primary_effective_n < 20:
-        blockers.append(f"\u4e3b\u7a97\u53e3{primary_horizon}D\u6709\u6548\u6837\u672c {primary_effective_n} < 20")
+        message = f"\u4e3b\u7a97\u53e3{primary_horizon}D\u6709\u6548\u6837\u672c {primary_effective_n} < 20"
+        if high_precision_stage_override:
+            risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
+        else:
+            blockers.append(message)
     if primary_skill_lcb is None or primary_skill_lcb <= 0:
-        blockers.append(
+        message = (
             f"\u4e3b\u7a97\u53e3{primary_horizon}D skill LCB "
             f"{(primary_skill_lcb or 0.0):+.2%} \u2264 0"
         )
+        if high_precision_stage_override:
+            risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
+        else:
+            blockers.append(message)
     if coverage_ratio < 0.5:
         blockers.append(f"\u524d\u5411\u7a97\u53e3\u8986\u76d6\u7387 {coverage_ratio:.0%} < 50%")
     if secondary_effective_n >= 30 and secondary_skill_lcb is not None and secondary_skill_lcb <= 0:
@@ -2381,9 +2602,17 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         period_blockers: list[str] = []
         period_risk_flags: list[str] = []
         if days == primary_horizon and primary_effective_n < 20:
-            period_blockers.append(f"{label}\u6709\u6548\u6837\u672c {effective_n} < 20")
+            message = f"{label}\u6709\u6548\u6837\u672c {effective_n} < 20"
+            if high_precision_stage_override:
+                period_risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
+            else:
+                period_blockers.append(message)
         if days == primary_horizon and (skill_lcb is None or skill_lcb <= 0):
-            period_blockers.append(f"{label} skill LCB {(skill_lcb or 0.0):+.2%} \u2264 0")
+            message = f"{label} skill LCB {(skill_lcb or 0.0):+.2%} \u2264 0"
+            if high_precision_stage_override:
+                period_risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
+            else:
+                period_blockers.append(message)
         if days == secondary_horizon and secondary_effective_n >= 30 and skill_lcb is not None and skill_lcb <= 0:
             period_blockers.append(f"{label} skill LCB {skill_lcb:+.2%} \u2264 0")
         if stability_gap_bucket is not None and stability_gap_bucket > 0.08:
@@ -2523,6 +2752,15 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "execution_quality": execution_quality_contract,
         "execution_quality_snapshot": execution_quality_snapshot,
         "execution_diagnostics": execution_diagnostics,
+        "objective_profile": high_precision_context.get("objective_profile"),
+        "precision_readiness": high_precision_context.get("precision_readiness"),
+        "regime_validation_summary": dict(high_precision_context.get("regime_validation_summary") or {}),
+        "cost_robustness_summary": dict(high_precision_context.get("cost_robustness_summary") or {}),
+        "trade_density_summary": dict(high_precision_context.get("trade_density_summary") or {}),
+        "position_cycle_evidence": position_cycle_evidence,
+        "regime_consistency": position_cycle_evidence.get("regime_consistency"),
+        "payoff_asymmetry": position_cycle_evidence.get("payoff_asymmetry"),
+        "adverse_regime_avoidance": position_cycle_evidence.get("adverse_regime_avoidance"),
         "primary_horizon": primary_horizon,
         "secondary_horizon": secondary_horizon,
         "sample_count": _safe_int(signal_quality.get("primary_sample_count")),

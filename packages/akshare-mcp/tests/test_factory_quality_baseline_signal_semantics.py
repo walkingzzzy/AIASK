@@ -136,6 +136,92 @@ async def test_incubation_overview_keeps_warmup_execution_gap_and_slight_mdd_as_
 
 
 @pytest.mark.asyncio
+async def test_high_precision_overview_can_promote_warmup_to_observe_with_cycle_evidence():
+    db = _StrategyDB()
+    strategy = {
+        "id": "factory_high_precision_observe",
+        "name": "High Precision Observe Strategy",
+        "author_id": "strategy_factory",
+        "strategy_type": "momentum",
+        "status": "incubating",
+        "tags": ["factory", "auto_generated"],
+        "params": {"lookback": 20},
+    }
+    await db.save_strategy(strategy)
+    await db.save_strategy_metrics(
+        "factory_high_precision_observe",
+        "all",
+        {"sharpe_ratio": 0.91, "max_drawdown": 0.12},
+    )
+    await db.save_strategy_quality_report(
+        "factory_high_precision_observe",
+        "submission",
+        {
+            "passed": True,
+            "summary": {
+                "validation_grade": "B",
+                "raw_validation_grade": "B",
+                "effective_validation_grade": "B",
+                "raw_validation_total_score": 70.0,
+                "validation_total_score": 70.0,
+                "candidate_family": "momentum",
+                "holding_period_bucket": "trend",
+                "objective_profile": "high_precision",
+                "precision_readiness": "candidate",
+                "regime_validation_summary": {"available": True, "passed": True},
+                "cost_robustness_summary": {"available": True, "required": True, "passed": True},
+                "trade_density_summary": {"available": True, "preference": "low", "passed": True},
+                "strict_incubation_ready": True,
+                "incubation_candidate_ready": True,
+            },
+            "validation_profile": {"validation_focus": "target_only", "objective_profile": "high_precision"},
+        },
+    )
+    db._signal_stats["factory_high_precision_observe"] = {
+        "hit_rate": {1: 0.61, 5: 0.66, 10: 0.60, 20: 0.57},
+        "hit_rate_lcb": {1: 0.54, 5: 0.52, 10: 0.48, 20: 0.44},
+        "skill_lcb": {1: 0.02, 5: -0.01, 10: 0.01, 20: 0.0},
+        "recent_hit_rate": {1: 0.60, 5: 0.65, 10: 0.58, 20: 0.56},
+        "recent_skill_lcb": {1: 0.01, 5: -0.01, 10: 0.0, 20: 0.0},
+        "stability_gap": {1: 0.01, 5: 0.02, 10: 0.02, 20: 0.02},
+        "sample_count": {1: 7, 5: 7, 10: 6, 20: 5},
+        "effective_n": {1: 7, 5: 3, 10: 2, 20: 1},
+        "forward_ic": {1: 0.04, 5: 0.08, 10: 0.03, 20: 0.01},
+        "forward_sharpe": {1: 0.15, 5: 0.34, 10: 0.18, 20: 0.10},
+        "total_signals": 7,
+        "raw_signal_count": 7,
+        "signals_with_forward_returns_count": 7,
+        "observed_forward_return_count": 28,
+    }
+    db._strategy_trade_audit_summaries["factory_high_precision_observe"] = {
+        "realized_trade_count": 4,
+        "mapped_position_count": 4,
+        "incomplete_position_count": 0,
+        "trade_count": 4,
+        "order_count": 4,
+        "filled_order_count": 4,
+        "nav_observation_days": 10,
+        "trade_expectancy": 0.06,
+        "pnl_conversion_efficiency": 0.05,
+        "execution_conversion_efficiency": 0.32,
+        "execution_win_rate": 0.75,
+        "avg_win_loss_ratio": 1.7,
+        "realized_slippage_vs_model": 0.01,
+    }
+
+    overview = await build_incubation_overview(db, strategy)
+
+    assert overview["objective_profile"] == "high_precision"
+    assert overview["signal_stage_without_execution_gate"] == "observe"
+    assert overview["pipeline_stage"] == "observe"
+    assert overview["position_cycle_evidence"]["status"] in {"candidate", "strong"}
+    assert overview["position_cycle_evidence"]["cycle_count"] == 4
+    assert overview["regime_consistency"] == pytest.approx(1.0)
+    assert not any("主窗口" in blocker and "有效样本" in blocker for blocker in overview["blockers"])
+    assert any("主窗口" in flag and "有效样本" in flag for flag in overview["risk_flags"])
+
+
+@pytest.mark.asyncio
 async def test_incubation_overview_surfaces_confidence_diagnostics_without_changing_legacy_fields(monkeypatch):
     monkeypatch.setattr(lifecycle_mod, "STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED", True)
     db = _StrategyDB()
@@ -260,6 +346,26 @@ def test_strategy_spec_emits_runtime_playbook_defaults():
     assert candidate["params"]["runtime_playbook"]["incubation_policy"]["warmup_hard_timeout_days"] == 20
     assert candidate["params"]["runtime_playbook"]["derived_from_defaults"] is True
     assert candidate["params"]["runtime_playbook"]["source_trade_step_ids"] == ["entry_step_1", "exit_step_1"]
+
+
+def test_strategy_spec_emits_research_protocol_v2_and_prediction_trace():
+    candidate = StrategySpec(
+        strategy_type="momentum",
+        params={"lookback": 20, "threshold": 0.02},
+        name="research-protocol-v2-candidate",
+    ).to_candidate(source="unit_test", experiment_id="exp_research_protocol_v2")
+
+    assert candidate["candidate_contract_version"] == "strategy_factory.candidate_contract.v2"
+    assert candidate["research_protocol_version"] == "strategy_factory.research_protocol.v2"
+    assert candidate["prediction_trace_id"].startswith("pred_")
+    assert candidate["trace_id"] == candidate["prediction_trace_id"]
+    assert candidate["spec_completeness"] == "incomplete"
+    assert candidate["params"]["research_validation_contract"]["contract_version"] == "strategy_factory.research_protocol.v2"
+    assert candidate["params"]["field_provenance_summary"]["counts"]["missing"] >= 1
+    assert "legacy_default" not in candidate["params"]["field_provenance_summary"]["counts"]
+    assert candidate["params"]["research_validation_contract"]["recommended_defaults"]
+    assert candidate["params"]["completion_issues"]
+    assert candidate["params"]["completion_issues"][0]["decision"] == "revise"
 
 
 @pytest.mark.asyncio
