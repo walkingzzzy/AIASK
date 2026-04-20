@@ -107,6 +107,40 @@ def fit_platt_params(
     return (round(a, 6), round(b, 6))
 
 
+def fit_isotonic_table(
+    raw_scores: list[float],
+    labels: list[float],
+    *,
+    n_bins: int = 10,
+) -> list[tuple[float, float]]:
+    """拟合轻量级 isotonic 校准表。
+
+    说明：
+    - 这里不依赖 sklearn，使用分桶命中率并做单调化处理。
+    - 生产主路径优先使用 sklearn isotonic；本实现作为可靠 fallback。
+    """
+    if len(raw_scores) != len(labels) or not raw_scores:
+        return []
+
+    ordered = sorted(zip((float(s) for s in raw_scores), (float(y) for y in labels)), key=lambda item: item[0])
+    bucket_count = max(1, min(int(n_bins or 10), len(ordered)))
+    bucket_size = max(1, math.ceil(len(ordered) / bucket_count))
+    table: list[tuple[float, float]] = []
+    previous_prob = 0.0
+
+    for start in range(0, len(ordered), bucket_size):
+        bucket = ordered[start:start + bucket_size]
+        if not bucket:
+            continue
+        center = sum(item[0] for item in bucket) / len(bucket)
+        empirical = sum(item[1] for item in bucket) / len(bucket)
+        monotonic_prob = max(previous_prob, _clamp(empirical))
+        previous_prob = monotonic_prob
+        table.append((round(center, 6), round(monotonic_prob, 6)))
+
+    return table
+
+
 # ── Isotonic Calibration（保序回归） ─────────────────────────────────────────
 
 def isotonic_calibrate(
@@ -270,6 +304,126 @@ def expected_calibration_error(
     return round(ece, 6)
 
 
+@dataclass
+class CalibrationSeriesResult:
+    """批量概率校准结果。"""
+
+    probabilities: list[float]
+    method: str
+    backend_requested: str
+    backend_used: str
+    fallback_used: bool
+    fallback_reason: str | None = None
+    cv_folds: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "probabilities": [round(_clamp(value), 6) for value in self.probabilities],
+            "method": self.method,
+            "backend_requested": self.backend_requested,
+            "backend_used": self.backend_used,
+            "fallback_used": self.fallback_used,
+            "fallback_reason": self.fallback_reason,
+            "cv_folds": self.cv_folds,
+        }
+
+
+def calibrate_probability_series(
+    probabilities: list[float],
+    labels: list[float],
+    *,
+    raw_scores: list[float] | None = None,
+    method: Literal["auto", "sigmoid", "isotonic", "raw"] = "auto",
+    prefer_sklearn: bool = True,
+    cv: int = 3,
+) -> CalibrationSeriesResult:
+    """使用生产主路径优先、轻量实现兜底的批量概率校准。"""
+    probs = [_clamp(float(item)) for item in list(probabilities or [])]
+    ys = [float(item) for item in list(labels or [])]
+    scores = [float(item) for item in list(raw_scores or probs)]
+    if not probs or len(probs) != len(ys) or len(scores) != len(ys):
+        return CalibrationSeriesResult(
+            probabilities=probs,
+            method="raw",
+            backend_requested="none",
+            backend_used="raw",
+            fallback_used=False,
+        )
+
+    if method == "raw":
+        return CalibrationSeriesResult(
+            probabilities=probs,
+            method="raw",
+            backend_requested="raw",
+            backend_used="raw",
+            fallback_used=False,
+        )
+
+    normalized_method = "sigmoid" if method == "auto" else str(method or "sigmoid").strip().lower()
+    if normalized_method not in {"sigmoid", "isotonic"}:
+        normalized_method = "sigmoid"
+
+    if prefer_sklearn:
+        try:
+            import numpy as _np
+            from sklearn.base import BaseEstimator, ClassifierMixin
+            from sklearn.calibration import CalibratedClassifierCV
+
+            class _RawScoreEstimator(BaseEstimator, ClassifierMixin):
+                def fit(self, X, y):  # noqa: N802
+                    self.classes_ = _np.array(sorted(set(int(item) for item in y)))
+                    return self
+
+                def decision_function(self, X):  # noqa: N802
+                    return _np.asarray(X, dtype=float).reshape(-1)
+
+                def predict(self, X):  # noqa: N802
+                    return (self.decision_function(X) >= 0.5).astype(int)
+
+            class_values = [int(round(item)) for item in ys]
+            if len(set(class_values)) >= 2:
+                min_class_count = min(class_values.count(0), class_values.count(1))
+                resolved_cv = max(2, min(int(cv or 3), min_class_count))
+                X = _np.asarray(scores, dtype=float).reshape(-1, 1)
+                y = _np.asarray(class_values, dtype=int)
+                calibrator = CalibratedClassifierCV(
+                    estimator=_RawScoreEstimator(),
+                    method=normalized_method,
+                    cv=resolved_cv,
+                )
+                calibrated = calibrator.fit(X, y).predict_proba(X)[:, 1].tolist()
+                return CalibrationSeriesResult(
+                    probabilities=[_clamp(value) for value in calibrated],
+                    method=normalized_method,
+                    backend_requested="sklearn_calibrated_classifier_cv",
+                    backend_used="sklearn_calibrated_classifier_cv",
+                    fallback_used=False,
+                    cv_folds=resolved_cv,
+                )
+        except Exception as exc:
+            fallback_reason = f"sklearn_calibration_failed:{type(exc).__name__}"
+        else:
+            fallback_reason = "sklearn_calibration_insufficient_class_support"
+    else:
+        fallback_reason = "sklearn_disabled"
+
+    if normalized_method == "isotonic":
+        table = fit_isotonic_table(scores, ys)
+        calibrated = [isotonic_calibrate(score, table) for score in scores]
+    else:
+        a, b = fit_platt_params(scores, ys)
+        calibrated = [platt_scale(score, a=a, b=b) for score in scores]
+
+    return CalibrationSeriesResult(
+        probabilities=[_clamp(value) for value in calibrated],
+        method=normalized_method,
+        backend_requested="sklearn_calibrated_classifier_cv",
+        backend_used="builtin_lightweight",
+        fallback_used=True,
+        fallback_reason=fallback_reason,
+    )
+
+
 # ── Prediction Interval ───────────────────────────────────────────────────────
 
 @dataclass
@@ -374,6 +528,12 @@ class CalibrationQualityReport:
     calibration_method: str  # 'platt' / 'isotonic' / 'raw' / 'none'
     calibration_version: str
     quality_band: str  # 'good' / 'fair' / 'poor' / 'unknown'
+    calibration_backend: str = "builtin_lightweight"
+    backend_requested: str = "builtin_lightweight"
+    backend_used: str = "builtin_lightweight"
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    cv_folds: int | None = None
     notes: list[str] = field(default_factory=list)
 
     @staticmethod
@@ -405,6 +565,12 @@ class CalibrationQualityReport:
             "sample_size": self.sample_size,
             "calibration_method": self.calibration_method,
             "calibration_version": self.calibration_version,
+            "calibration_backend": self.calibration_backend,
+            "backend_requested": self.backend_requested,
+            "backend_used": self.backend_used,
+            "fallback_used": self.fallback_used,
+            "fallback_reason": self.fallback_reason,
+            "cv_folds": self.cv_folds,
             "quality_band": self.quality_band,
             "notes": self.notes,
         }
@@ -415,6 +581,12 @@ def build_calibration_quality_report(
     labels: list[float],
     calibration_method: str = "raw",
     calibration_version: str = "v0",
+    calibration_backend: str = "builtin_lightweight",
+    backend_requested: str = "builtin_lightweight",
+    backend_used: str = "builtin_lightweight",
+    fallback_used: bool = False,
+    fallback_reason: str | None = None,
+    cv_folds: int | None = None,
     n_bins: int = 10,
 ) -> CalibrationQualityReport:
     """根据预测概率和实际标签构建校准质量报告。
@@ -448,6 +620,8 @@ def build_calibration_quality_report(
         notes.append("ECE 超过 0.10，概率校准质量偏差，建议重新校准")
     if len(probabilities) < 30:
         notes.append(f"样本量仅 {len(probabilities)}，统计估计不稳定")
+    if fallback_used and fallback_reason:
+        notes.append(f"已降级到轻量校准路径: {fallback_reason}")
 
     return CalibrationQualityReport(
         brier_score=bs,
@@ -456,6 +630,12 @@ def build_calibration_quality_report(
         sample_size=len(probabilities),
         calibration_method=calibration_method,
         calibration_version=calibration_version,
+        calibration_backend=calibration_backend,
+        backend_requested=backend_requested,
+        backend_used=backend_used,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        cv_folds=cv_folds,
         quality_band=band,
         notes=notes,
     )

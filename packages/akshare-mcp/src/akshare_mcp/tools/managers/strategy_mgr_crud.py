@@ -9,6 +9,7 @@ from uuid import uuid4
 from ...storage import get_db
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
+    build_factory_capability_health,
     build_incubation_overview,
     compute_nav_series,
     get_latest_quality_report,
@@ -436,9 +437,16 @@ async def handle_capabilities(db, params: dict) -> dict:
 
     factory_constants = get_factory_constants()
     high_confidence_feature_flags = dict(factory_constants.get("HIGH_CONFIDENCE_FEATURE_FLAGS") or {})
+    latest_run = await db.get_latest_strategy_factory_run() if hasattr(db, "get_latest_strategy_factory_run") else None
+    capability_health = build_factory_capability_health(
+        db,
+        factory_constants=factory_constants,
+        latest_run=latest_run,
+    )
     return ok({
         "daily_snapshot": hasattr(db, "get_daily_snapshot") and hasattr(db, "list_daily_snapshots"),
         "factory_runs": hasattr(db, "save_strategy_factory_run") and hasattr(db, "get_latest_strategy_factory_run"),
+        "factory_dispatch": hasattr(db, "create_strategy_factory_dispatch") and hasattr(db, "get_strategy_factory_dispatch"),
         "factory_bulk_lane": hasattr(db, "list_stock_universe") and hasattr(db, "save_strategy_factory_run"),
         "factory_bulk_lane_enabled": bool(factory_constants.get("STOCK_STRATEGY_MATRIX_ENABLED")),
         "factory_pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
@@ -491,6 +499,7 @@ async def handle_capabilities(db, params: dict) -> dict:
         "domain_events": hasattr(db, "save_strategy_domain_event") and hasattr(db, "list_strategy_domain_events"),
         "domain_projection": hasattr(db, "list_strategy_status_events") and hasattr(db, "list_strategy_domain_events"),
         "runtime_cycle": hasattr(db, "save_strategy_task_run") and hasattr(db, "save_strategy_incubation_metric"),
+        "capability_health": capability_health,
     })
 
 

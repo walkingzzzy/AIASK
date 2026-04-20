@@ -83,12 +83,6 @@ PYTHONPATH=src:../strategy-factory/src \
 python -c "import akshare_mcp.server as s; m=s.mcp; print('tools', len(m._tool_manager.list_tools())); print('resources', len(m._resource_manager.list_resources())); print('prompts', len(m._prompt_manager.list_prompts()))"
 ```
 
-### pytest
-
-```bash
-pytest tests -q
-```
-
 ## 当前文档入口
 
 - 接入与 transport 安全： [../../docs/MCP_CONFIG_GUIDE.md](../../docs/MCP_CONFIG_GUIDE.md)
@@ -101,4 +95,3 @@ pytest tests -q
 
 - runtime 数量会变，任何静态数字都只能视为当前校验结果。
 - 当前仓库已支持 resources / prompts，不应继续沿用“只支持 tools”的旧文案。
-- 一些历史测试报告和阶段性材料仍保留在 `tests/` 或 `docs/archive/`，但它们不再代表当前默认事实。

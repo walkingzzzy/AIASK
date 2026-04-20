@@ -119,7 +119,7 @@ class AdvancedBacktestEngine:
         commission = float(params.get('commission', 0.0003) or 0.0)
         closes = np.array([float(k['close']) for k in klines], dtype=np.float64)
         volumes = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines], dtype=np.float64)
-        masks = _build_strategy_masks(strategy, closes, params, volumes=volumes)
+        masks = _build_strategy_masks(strategy, closes, params, volumes=volumes, klines=klines)
         if masks is None:
             return {'success': False, 'error': 'Insufficient data for strategy signals'}
 

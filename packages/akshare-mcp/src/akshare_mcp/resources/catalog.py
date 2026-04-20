@@ -113,5 +113,5 @@ def register(mcp) -> None:
             "name": str(name or "").strip(),
             "found": False,
             "error": f"workflow guide not found: {name}",
-            "available": sorted(["factor-governance", "stock-analysis", "strategy-promotion"]),
+            "available": sorted(["factor-governance", "stock-analysis", "stock-deep-analysis", "strategy-promotion"]),
         }

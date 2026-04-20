@@ -39,6 +39,10 @@ class ValidationResult:
         expectations_evaluated: int = 0,
         expectations_passed: int = 0,
         details: list[dict[str, Any]] | None = None,
+        backend_requested: str = "builtin",
+        backend_used: str = "builtin",
+        fallback_used: bool = False,
+        fallback_reason: str | None = None,
     ) -> None:
         self.passed = passed
         self.stats = stats
@@ -48,6 +52,10 @@ class ValidationResult:
         self.expectations_evaluated = expectations_evaluated
         self.expectations_passed = expectations_passed
         self.details = details or []
+        self.backend_requested = backend_requested
+        self.backend_used = backend_used
+        self.fallback_used = fallback_used
+        self.fallback_reason = fallback_reason
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,9 +65,30 @@ class ValidationResult:
             "backend": self.backend,
             "expectations_evaluated": self.expectations_evaluated,
             "expectations_passed": self.expectations_passed,
+            "backend_requested": self.backend_requested,
+            "backend_used": self.backend_used,
+            "fallback_used": self.fallback_used,
+            "fallback_reason": self.fallback_reason,
             "stats": self.stats,
             "details": self.details,
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ValidationResult":
+        return cls(
+            passed=bool(payload.get("passed")),
+            stats=dict(payload.get("stats") or {}),
+            validation_id=str(payload.get("validation_id") or ""),
+            method=str(payload.get("method") or "builtin"),
+            backend=str(payload.get("backend") or "builtin"),
+            expectations_evaluated=int(payload.get("expectations_evaluated") or 0),
+            expectations_passed=int(payload.get("expectations_passed") or 0),
+            details=list(payload.get("details") or []),
+            backend_requested=str(payload.get("backend_requested") or payload.get("backend") or "builtin"),
+            backend_used=str(payload.get("backend_used") or payload.get("backend") or "builtin"),
+            fallback_used=bool(payload.get("fallback_used", False)),
+            fallback_reason=str(payload.get("fallback_reason") or "") or None,
+        )
 
 
 # ── Abstract interface ────────────────────────────────────────────────────────
@@ -99,6 +128,8 @@ class BuiltinValidationAdapter(DataValidationAdapter):
     - required_fields: list of field names that must be present
     - min_record_count: minimum number of records
     - max_null_ratio: maximum allowed null ratio per field
+    - field_types: mapping of field -> expected python type name
+    - allowed_values: mapping of field -> allowed value list
     - min_quality_threshold: minimum quality score
     """
 
@@ -164,6 +195,49 @@ class BuiltinValidationAdapter(DataValidationAdapter):
                     "total_count": len(records),
                 })
 
+        field_types = dict(exp.get("field_types") or {})
+        for fld, expected_type in field_types.items():
+            total_checks += 1
+            normalized = str(expected_type or "").strip().lower()
+            values = [r.get(fld) for r in records if fld in r and r.get(fld) is not None]
+            type_map = {
+                "int": int,
+                "integer": int,
+                "float": float,
+                "number": (int, float),
+                "str": str,
+                "string": str,
+                "bool": bool,
+                "boolean": bool,
+            }
+            expected_cls = type_map.get(normalized)
+            ok = bool(expected_cls) and all(isinstance(value, expected_cls) for value in values)
+            if ok:
+                passed_checks += 1
+            details.append({
+                "expectation": f"field_types:{fld}",
+                "passed": ok,
+                "expected": normalized,
+                "checked_count": len(values),
+            })
+
+        allowed_values = dict(exp.get("allowed_values") or {})
+        for fld, allowed in allowed_values.items():
+            total_checks += 1
+            allowed_set = {item for item in list(allowed or [])}
+            values = [r.get(fld) for r in records if fld in r and r.get(fld) is not None]
+            invalid = [value for value in values if value not in allowed_set]
+            ok = len(invalid) == 0
+            if ok:
+                passed_checks += 1
+            details.append({
+                "expectation": f"allowed_values:{fld}",
+                "passed": ok,
+                "allowed_count": len(allowed_set),
+                "invalid_count": len(invalid),
+                "invalid_samples": invalid[:5],
+            })
+
         # Overall stats
         if total_checks == 0:
             total_checks = 1
@@ -190,6 +264,8 @@ class BuiltinValidationAdapter(DataValidationAdapter):
             expectations_evaluated=total_checks,
             expectations_passed=passed_checks,
             details=details,
+            backend_requested="builtin",
+            backend_used="builtin",
         )
 
     def create_checkpoint(
@@ -202,10 +278,15 @@ class BuiltinValidationAdapter(DataValidationAdapter):
             "checkpoint_name": checkpoint_name,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "backend": "builtin",
+            "backend_requested": "builtin",
+            "backend_used": "builtin",
+            "fallback_used": False,
+            "fallback_reason": None,
             "all_passed": all_passed,
             "validation_count": len(validation_results),
             "passed_count": sum(1 for r in validation_results if r.passed),
             "failed_count": sum(1 for r in validation_results if not r.passed),
+            "actions": [] if all_passed else ["raise_data_quality_alert"],
             "validations": [r.to_dict() for r in validation_results],
         }
 
@@ -224,11 +305,103 @@ class GreatExpectationsAdapter(DataValidationAdapter):
     def __init__(self) -> None:
         self._available = False
         self._fallback = BuiltinValidationAdapter()
+        self._gx = None
+        self._pd = None
         try:
-            import great_expectations  # noqa: F401
+            import great_expectations as gx
+            import pandas as pd
+
             self._available = True
+            self._gx = gx
+            self._pd = pd
         except ImportError:
             pass
+
+    @staticmethod
+    def _type_alias(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return {
+            "int": "int64",
+            "integer": "int64",
+            "float": "float64",
+            "number": "float64",
+            "str": "str",
+            "string": "str",
+            "bool": "bool",
+            "boolean": "bool",
+        }.get(normalized, normalized)
+
+    def _build_expectation_suite(
+        self,
+        expectations: dict[str, Any] | None,
+        *,
+        records: list[dict[str, Any]],
+    ):
+        assert self._gx is not None
+        from great_expectations.core.expectation_suite import ExpectationSuite
+        from great_expectations.expectations.expectation_configuration import (
+            ExpectationConfiguration,
+        )
+
+        exp = dict(expectations or {})
+        suite_expectations: list[Any] = []
+
+        min_count = int(exp.get("min_record_count", 0) or 0)
+        if min_count > 0:
+            suite_expectations.append(
+                ExpectationConfiguration(
+                    type="expect_table_row_count_to_be_between",
+                    kwargs={"min_value": min_count},
+                )
+            )
+
+        required_fields = [str(item).strip() for item in list(exp.get("required_fields") or []) if str(item).strip()]
+        for field in required_fields:
+            suite_expectations.append(
+                ExpectationConfiguration(
+                    type="expect_column_to_exist",
+                    kwargs={"column": field},
+                )
+            )
+
+        max_null_ratio = float(exp.get("max_null_ratio", 1.0) or 1.0)
+        if max_null_ratio < 1.0:
+            candidate_fields = set(required_fields)
+            for row in records:
+                if isinstance(row, dict):
+                    candidate_fields.update(str(key) for key in row.keys())
+            min_non_null_ratio = max(0.0, min(1.0, 1.0 - max_null_ratio))
+            for field in sorted(candidate_fields):
+                suite_expectations.append(
+                    ExpectationConfiguration(
+                        type="expect_column_proportion_of_non_null_values_to_be_between",
+                        kwargs={"column": field, "min_value": min_non_null_ratio},
+                    )
+                )
+
+        field_types = dict(exp.get("field_types") or {})
+        for field, expected_type in field_types.items():
+            suite_expectations.append(
+                ExpectationConfiguration(
+                    type="expect_column_values_to_be_of_type",
+                    kwargs={"column": str(field), "type_": self._type_alias(expected_type)},
+                )
+            )
+
+        allowed_values = dict(exp.get("allowed_values") or {})
+        for field, allowed in allowed_values.items():
+            suite_expectations.append(
+                ExpectationConfiguration(
+                    type="expect_column_values_to_be_in_set",
+                    kwargs={"column": str(field), "value_set": list(allowed or [])},
+                )
+            )
+
+        return ExpectationSuite(
+            name=f"runtime_suite_{uuid4().hex[:12]}",
+            expectations=suite_expectations,
+            meta={"source": "aiask_runtime_data_validation"},
+        )
 
     def validate_dataset(
         self,
@@ -236,17 +409,94 @@ class GreatExpectationsAdapter(DataValidationAdapter):
         expectations: dict[str, Any] | None = None,
     ) -> ValidationResult:
         if not self._available:
-            return self._fallback.validate_dataset(records, expectations)
+            result = self._fallback.validate_dataset(records, expectations)
+            result.backend = "builtin"
+            result.backend_requested = "great_expectations"
+            result.backend_used = "builtin"
+            result.fallback_used = True
+            result.fallback_reason = "great_expectations_not_installed"
+            return result
 
-        # GX integration placeholder:
-        # 1. Create an ephemeral data context
-        # 2. Build a BatchRequest from records
-        # 3. Apply expectations
-        # 4. Run validation
-        # For now, delegate to builtin
-        result = self._fallback.validate_dataset(records, expectations)
-        result.backend = "great_expectations"
-        return result
+        assert self._gx is not None
+        assert self._pd is not None
+
+        try:
+            frame = self._pd.DataFrame(list(records or []))
+            context = self._gx.get_context(mode="ephemeral")
+            datasource = context.data_sources.add_pandas(f"runtime_ds_{uuid4().hex[:10]}")
+            batch = datasource.read_dataframe(
+                frame,
+                asset_name=f"runtime_asset_{uuid4().hex[:10]}",
+                batch_metadata={"validation_id": f"val-{uuid4().hex[:12]}"},
+            )
+            suite = self._build_expectation_suite(expectations, records=list(records or []))
+            validation = batch.validate(expect=suite, result_format="SUMMARY")
+            payload = validation.to_json_dict()
+
+            results = list(payload.get("results") or [])
+            details: list[dict[str, Any]] = []
+            passed_checks = 0
+            for item in results:
+                row = dict(item or {})
+                success = bool(row.get("success"))
+                if success:
+                    passed_checks += 1
+                expectation_config = dict(row.get("expectation_config") or {})
+                kwargs = dict(expectation_config.get("kwargs") or {})
+                result_payload = dict(row.get("result") or {})
+                detail = {
+                    "expectation": expectation_config.get("type") or "unknown_expectation",
+                    "passed": success,
+                    "column": kwargs.get("column"),
+                    "expected": kwargs,
+                    "unexpected_count": result_payload.get("unexpected_count"),
+                    "unexpected_percent": result_payload.get("unexpected_percent"),
+                    "observed_value": result_payload.get("observed_value"),
+                }
+                if row.get("exception_info"):
+                    detail["exception_info"] = row.get("exception_info")
+                details.append(detail)
+
+            stats = {
+                "record_count": len(records),
+                "quality_score": round(
+                    passed_checks / max(len(results), 1),
+                    4,
+                ),
+                "min_quality_threshold": float(dict(expectations or {}).get("min_quality_threshold", 0.95)),
+                "gx_statistics": dict(payload.get("statistics") or {}),
+                "suite_name": payload.get("suite_name") or suite.name,
+            }
+
+            return ValidationResult(
+                passed=bool(payload.get("success")),
+                stats=stats,
+                validation_id=str(payload.get("id") or ""),
+                method="great_expectations_runtime",
+                backend="great_expectations",
+                expectations_evaluated=len(results),
+                expectations_passed=passed_checks,
+                details=details,
+                backend_requested="great_expectations",
+                backend_used="great_expectations",
+                fallback_used=False,
+                fallback_reason=None,
+            )
+        except Exception as exc:
+            result = self._fallback.validate_dataset(records, expectations)
+            result.backend = "builtin"
+            result.backend_requested = "great_expectations"
+            result.backend_used = "builtin"
+            result.fallback_used = True
+            result.fallback_reason = f"great_expectations_runtime_failed:{type(exc).__name__}"
+            result.details.append(
+                {
+                    "expectation": "great_expectations_runtime",
+                    "passed": False,
+                    "note": str(exc),
+                }
+            )
+            return result
 
     def create_checkpoint(
         self,
@@ -254,14 +504,32 @@ class GreatExpectationsAdapter(DataValidationAdapter):
         validation_results: list[ValidationResult],
     ) -> dict[str, Any]:
         if not self._available:
-            return self._fallback.create_checkpoint(checkpoint_name, validation_results)
+            cp = self._fallback.create_checkpoint(checkpoint_name, validation_results)
+            cp["backend_requested"] = "great_expectations"
+            cp["backend_used"] = "builtin"
+            cp["fallback_used"] = True
+            cp["fallback_reason"] = "great_expectations_not_installed"
+            return cp
 
-        cp = self._fallback.create_checkpoint(checkpoint_name, validation_results)
-        cp["backend"] = "great_expectations"
-        return cp
+        all_passed = all(result.passed for result in validation_results)
+        return {
+            "checkpoint_name": checkpoint_name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "backend": "great_expectations",
+            "backend_requested": "great_expectations",
+            "backend_used": "great_expectations",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "all_passed": all_passed,
+            "validation_count": len(validation_results),
+            "passed_count": sum(1 for result in validation_results if result.passed),
+            "failed_count": sum(1 for result in validation_results if not result.passed),
+            "actions": [] if all_passed else ["great_expectations_checkpoint_failed", "raise_data_quality_alert"],
+            "validations": [result.to_dict() for result in validation_results],
+        }
 
     def backend_name(self) -> str:
-        return "great_expectations" if self._available else "builtin_fallback"
+        return "great_expectations" if self._available else "great_expectations_requested_builtin_fallback"
 
 
 # ── Factory ───────────────────────────────────────────────────────────────────
@@ -275,7 +543,5 @@ def get_data_validation_adapter(prefer_gx: bool = True) -> DataValidationAdapter
         If True, try Great Expectations first, fallback to builtin.
     """
     if prefer_gx:
-        adapter = GreatExpectationsAdapter()
-        if adapter._available:
-            return adapter
+        return GreatExpectationsAdapter()
     return BuiltinValidationAdapter()

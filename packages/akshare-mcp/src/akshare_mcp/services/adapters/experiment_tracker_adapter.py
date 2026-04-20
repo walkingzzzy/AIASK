@@ -310,10 +310,8 @@ def get_experiment_tracker(prefer_mlflow: bool = True) -> ExperimentTrackerAdapt
         return _default_tracker
 
     if prefer_mlflow:
-        adapter = MlflowTrackerAdapter()
-        if adapter._available:
-            _default_tracker = adapter
-            return adapter
+        _default_tracker = MlflowTrackerAdapter()
+        return _default_tracker
 
     _default_tracker = BuiltinTrackerAdapter()
     return _default_tracker

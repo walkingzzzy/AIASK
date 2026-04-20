@@ -63,7 +63,35 @@ def _parallel_backtest_task_optimized_impl(
             oversold = params.get('oversold', 30)
             overbought = params.get('overbought', 70)
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = _backtest_rsi_jit(
-                closes, rsi_period, oversold, overbought, initial_capital, total_cost_rate
+                closes,
+                np.asarray(volumes if volumes is not None else np.zeros_like(closes), dtype=np.float64),
+                rsi_period,
+                oversold,
+                overbought,
+                0,
+                0,
+                6,
+                6.0,
+                -0.05,
+                0.015,
+                0,
+                6,
+                0.008,
+                24.0,
+                0,
+                8,
+                0.8,
+                0,
+                4,
+                0.55,
+                0.0015,
+                0,
+                -0.002,
+                0,
+                0,
+                6.0,
+                initial_capital,
+                total_cost_rate,
             )
         else:
             return {'code': code, 'success': False, 'error': f'Unknown strategy: {strategy}'}

@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from ..contracts.strategy_manager_contract import build_strategy_manager_input_schema
+
 STANDARD_ENVELOPE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -109,6 +111,43 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
             }
         ],
         tags=["workflow", "stock-analysis", "ai-friendly"],
+    ),
+    "analyze_stock_product_workflow": _contract(
+        name="analyze_stock_product_workflow",
+        title="Analyze Stock Product Workflow",
+        category="research",
+        description="Unified stock deep-analysis workflow with evidence normalization, integrity gate, agent review, synthesis and report bundle artifacts.",
+        required_params=["code"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "6-digit stock code or stock name"},
+                "task": {
+                    "type": "string",
+                    "enum": ["quick_scan", "deep_analysis", "recover_gaps", "rebuild_report", "trade_plan"],
+                },
+                "run_id": {"type": "string", "description": "Existing run id for rebuild_report"},
+                "investment_style": {"type": "string"},
+                "user_id": {"type": "string"},
+                "market": {"type": "string", "description": "Market scope; cn by default for phase 1"},
+                "as_of": {"type": "string", "description": "PIT cutoff date (ISO string). Omit for current time."},
+            },
+            "required": ["code"],
+            "additionalProperties": True,
+        },
+        side_effect_level="stateful",
+        freshness="intraday_quote_and_recent_fundamental_context",
+        examples=[
+            {
+                "description": "Run full deep analysis for a stock",
+                "arguments": {"code": "600519", "task": "deep_analysis", "investment_style": "balanced"},
+            },
+            {
+                "description": "Rebuild an existing HTML report bundle",
+                "arguments": {"code": "600519", "task": "rebuild_report", "run_id": "stock-analysis-run-600519-demo"},
+            },
+        ],
+        tags=["workflow", "stock-analysis", "product-surface", "lineage"],
     ),
     "factor_candidate_workflow": _contract(
         name="factor_candidate_workflow",
@@ -568,38 +607,7 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
             "resource://strategy/{id}/review for read-only snapshots."
         ),
         required_params=["action"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "help", "list", "detail", "create", "publish", "archive",
-                        "submit", "review_report", "review_report_recheck", "submission_replay",
-                        "lifecycle_scan", "capabilities",
-                        "factory_status", "factory_run_once", "factory_runs", "factory_run_detail",
-                        "execution_audit_verification", "events", "task_runs",
-                        "incubation_overview", "incubation_accounts", "incubation_metrics",
-                        "paper_account", "paper_orders", "paper_nav",
-                        "incubation_sync_run", "incubation_pipeline", "incubation_pipeline_run",
-                        "promotion_reviews", "promotion_review_run",
-                        "risk_events", "risk_snapshots", "risk_scan_run", "risk_recovery", "resolve_risk_event",
-                        "runtime_alerts", "runtime_alert_dispatch_run", "runtime_alert_ack",
-                        "runtime_control", "runtime_control_set",
-                        "runtime_cycle_status", "runtime_cycle_run",
-                        "vector_health", "vector_indexes", "vector_index_snapshots",
-                        "vector_profiles", "vector_ann_search", "vector_reconcile", "vector_rebuild", "vector_cleanup",
-                        "domain_events", "domain_projection", "domain_projection_snapshot", "domain_projection_rebuild",
-                        "ai_generate", "ai_experiments",
-                    ],
-                },
-                "params": {"type": "object"},
-                "kwargs": {"type": ["object", "string", "null"]},
-                "strategy_id": {"type": "string", "description": "Required for detail, review_report, submit, events, etc."},
-            },
-            "required": ["action"],
-            "additionalProperties": True,
-        },
+        input_schema=build_strategy_manager_input_schema(),
         side_effect_level="stateful",
         freshness="depends_on_strategy_lifecycle_and_factory_state",
         examples=[
@@ -696,6 +704,28 @@ WORKFLOW_GUIDES: dict[str, dict[str, Any]] = {
         "guardrails": [
             "Expose evidence and confidence separately.",
             "Do not treat heuristic decision output as a production-grade forecast.",
+        ],
+    },
+    "stock-deep-analysis": {
+        "name": "stock-deep-analysis",
+        "title": "Stock Deep Analysis Guide",
+        "recommended_tools": [
+            "analyze_stock_product_workflow",
+            "run_skill(skill_id=akshare-stock-deep-analysis)",
+            "resource://stock/{code}/deep-analysis",
+            "resource://analysis-run/{run_id}/summary",
+            "resource://analysis-run/{run_id}/report",
+            "stock-analysis-deep",
+        ],
+        "steps": [
+            "Resolve the stock target first; do not continue when name resolution is ambiguous.",
+            "Use a single product workflow run to materialize evidence, gap report, review, synthesis and report artifacts.",
+            "Read the persisted run summary or report resource instead of re-chaining raw tools in Web or BFF surfaces.",
+        ],
+        "guardrails": [
+            "Block final report publication when critical fields are missing.",
+            "Every qualitative section must cite evidence ids or explicit structured sources.",
+            "Keep quick_scan and deep_analysis distinct in output scope and report depth.",
         ],
     },
     "factor-governance": {

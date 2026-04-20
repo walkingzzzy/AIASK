@@ -49,10 +49,20 @@ def register(mcp) -> None:
 
             tracker = get_experiment_tracker()
             backend = tracker.backend_name()
+            backend_requested = "mlflow" if "mlflow" in backend or backend == "builtin_fallback" else "builtin"
+            backend_used = "mlflow" if backend == "mlflow" else "builtin"
+            fallback_used = backend_used != backend_requested or backend.endswith("fallback")
+            fallback_reason = "mlflow_not_installed" if fallback_used and backend_requested == "mlflow" else None
 
             if _action == "backend":
                 return ok_with_meta(
-                    {"backend": backend},
+                    {
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -74,7 +84,15 @@ def register(mcp) -> None:
                     tags=dict(tags or {}),
                 )
                 return ok_with_meta(
-                    {"run_id": new_run_id, "experiment_name": experiment_name, "backend": backend},
+                    {
+                        "run_id": new_run_id,
+                        "experiment_name": experiment_name,
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -96,7 +114,16 @@ def register(mcp) -> None:
                     )
                 tracker.log_metric(str(run_id), str(metric_key), float(metric_value), step=metric_step)
                 return ok_with_meta(
-                    {"run_id": run_id, "metric_key": metric_key, "metric_value": metric_value, "backend": backend},
+                    {
+                        "run_id": run_id,
+                        "metric_key": metric_key,
+                        "metric_value": metric_value,
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -115,7 +142,15 @@ def register(mcp) -> None:
                     )
                 tracker.log_artifact(str(run_id), str(artifact_key), dict(artifact_data))
                 return ok_with_meta(
-                    {"run_id": run_id, "artifact_key": artifact_key, "backend": backend},
+                    {
+                        "run_id": run_id,
+                        "artifact_key": artifact_key,
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -142,7 +177,14 @@ def register(mcp) -> None:
                         error_code="NOT_FOUND",
                     )
                 return ok_with_meta(
-                    {"run": run, "backend": backend},
+                    {
+                        "run": run,
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -153,7 +195,16 @@ def register(mcp) -> None:
             if _action == "list_runs":
                 runs = tracker.list_runs(experiment_name, limit=max(1, min(int(limit or 20), 200)))
                 return ok_with_meta(
-                    {"runs": runs, "count": len(runs), "experiment_name": experiment_name, "backend": backend},
+                    {
+                        "runs": runs,
+                        "count": len(runs),
+                        "experiment_name": experiment_name,
+                        "backend": backend,
+                        "backend_requested": backend_requested,
+                        "backend_used": backend_used,
+                        "fallback_used": fallback_used,
+                        "fallback_reason": fallback_reason,
+                    },
                     tool_name="experiment_tracker",
                     action=_action,
                     started_at=started_at,
@@ -195,12 +246,15 @@ def register(mcp) -> None:
         expectations: dict[str, Any] | None = None,
         dataset_id: str | None = None,
         minimum_quality_threshold: float = 0.95,
+        checkpoint_name: str | None = None,
+        validation_results: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Data validation adapter — validate datasets against expectations."""
         started_at = time.perf_counter()
         _action = str(action or "validate").strip().lower()
         try:
             from ..services.adapters.data_validation_adapter import get_data_validation_adapter
+            from ..services.adapters.data_validation_adapter import ValidationResult
 
             adapter = get_data_validation_adapter()
             backend = adapter.backend_name()
@@ -225,7 +279,7 @@ def register(mcp) -> None:
                         started_at=started_at,
                         error_code="PARAM_ERROR",
                     )
-                exp.setdefault("minimum_quality_threshold", minimum_quality_threshold)
+                exp.setdefault("min_quality_threshold", minimum_quality_threshold)
                 result = adapter.validate_dataset(rows, exp)
                 payload: dict[str, Any] = {
                     "dataset_id": dataset_id,
@@ -238,6 +292,10 @@ def register(mcp) -> None:
                     "expectations_passed": result.expectations_passed,
                     "details": result.details,
                     "minimum_quality_threshold": minimum_quality_threshold,
+                    "backend_requested": result.backend_requested,
+                    "backend_used": result.backend_used,
+                    "fallback_used": result.fallback_used,
+                    "fallback_reason": result.fallback_reason,
                 }
                 degraded = not result.passed
                 return ok_with_meta(
@@ -258,8 +316,45 @@ def register(mcp) -> None:
                     },
                 )
 
+            if _action == "checkpoint":
+                rows = [ValidationResult.from_dict(dict(item or {})) for item in list(validation_results or [])]
+                if not checkpoint_name:
+                    return fail_with_meta(
+                        "checkpoint_name is required for checkpoint",
+                        tool_name="data_validation",
+                        action=_action,
+                        started_at=started_at,
+                        error_code="PARAM_ERROR",
+                    )
+                if not rows:
+                    return fail_with_meta(
+                        "validation_results is required for checkpoint",
+                        tool_name="data_validation",
+                        action=_action,
+                        started_at=started_at,
+                        error_code="PARAM_ERROR",
+                    )
+                checkpoint = adapter.create_checkpoint(str(checkpoint_name), rows)
+                return ok_with_meta(
+                    checkpoint,
+                    tool_name="data_validation",
+                    action=_action,
+                    started_at=started_at,
+                    source_chain=[f"adapter.data_validation.{backend}"],
+                    extra_meta={
+                        "quality": {
+                            "status": "good" if checkpoint.get("all_passed") else "failed",
+                            "validation_count": checkpoint.get("validation_count"),
+                            "actions": checkpoint.get("actions"),
+                        },
+                        "side_effect": {"level": "read_only", "confirmation_required": False},
+                        "lineage": {"dataset_id": dataset_id, "checkpoint_name": checkpoint_name},
+                        "degraded": bool(checkpoint.get("fallback_used")),
+                    },
+                )
+
             return fail_with_meta(
-                f"Unknown action: {action}. Supported: backend, validate.",
+                f"Unknown action: {action}. Supported: backend, validate, checkpoint.",
                 tool_name="data_validation",
                 action=_action,
                 started_at=started_at,

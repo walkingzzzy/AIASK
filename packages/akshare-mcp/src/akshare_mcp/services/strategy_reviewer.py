@@ -19,6 +19,7 @@ class MultiAgentStrategyReviewer:
         'multi_factor',
         'macro_timing',
         'volatility_breakout',
+        'event_structure_breakout',
         'gap_fill',
         'mean_reversion_short',
         'sector_rotation',
@@ -26,7 +27,7 @@ class MultiAgentStrategyReviewer:
         'margin_divergence',
         'dsl_rule',
     }
-    _TREND_EXECUTABLE_DSL_TYPES = {'momentum', 'ma_cross', 'volatility_breakout'}
+    _TREND_EXECUTABLE_DSL_TYPES = {'momentum', 'ma_cross', 'volatility_breakout', 'event_structure_breakout'}
 
     @staticmethod
     def _factor_research_alignment(spec: StrategySpec, snapshot: dict) -> tuple[float, dict[str, Any]]:
@@ -62,7 +63,7 @@ class MultiAgentStrategyReviewer:
         fg = int(snapshot.get('fear_greed_index') or 50)
         stype = spec.strategy_type
         base_score = 0.6
-        if fg >= 60 and stype in {'momentum', 'ma_cross', 'volatility_breakout', 'north_capital_track'}:
+        if fg >= 60 and stype in {'momentum', 'ma_cross', 'volatility_breakout', 'event_structure_breakout', 'north_capital_track'}:
             base_score = 0.9
         elif fg < 45 and stype in {'rsi', 'value_factor', 'quality_factor', 'gap_fill', 'mean_reversion_short'}:
             base_score = 0.85

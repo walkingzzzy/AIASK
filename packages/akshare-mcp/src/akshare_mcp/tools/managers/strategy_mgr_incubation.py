@@ -1,6 +1,7 @@
 """Strategy manager incubation action handlers."""
 
 import logging
+from datetime import date
 
 from ...utils import fail, ok
 
@@ -79,8 +80,21 @@ async def handle_paper_nav(db, params: dict) -> dict:
 async def handle_incubation_sync_run(db, params: dict) -> dict:
     from ...services.incubation import get_strategy_incubation_service
 
+    def _coerce_date(value):
+        if not value:
+            return None
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except Exception:
+            return None
+
     sid = str(params.get("strategy_id") or params.get("id") or "").strip() or None
     signal_date = params.get("signal_date")
+    start_date = _coerce_date(params.get("start_date"))
+    end_date = _coerce_date(params.get("end_date"))
+    replay_history = bool(params.get("replay_history")) or start_date is not None or end_date is not None
     strategies = []
     if sid:
         strategy = await db.get_strategy(sid)
@@ -98,7 +112,20 @@ async def handle_incubation_sync_run(db, params: dict) -> dict:
                     continue
                 seen.add(strategy["id"])
                 strategies.append(strategy)
-    result = await get_strategy_incubation_service().process_strategies(db, strategies, signal_date=signal_date or None)
+    service = get_strategy_incubation_service()
+    if replay_history and hasattr(service, "replay_strategies_history"):
+        result = await service.replay_strategies_history(
+            db,
+            strategies,
+            start_date=start_date,
+            end_date=end_date,
+            include_market_days=bool(params.get("include_market_days", True)),
+            max_dates=min(max(int(params.get("max_dates", 1500)), 1), 5000),
+            force_close_open_positions=bool(params.get("force_close_open_positions")),
+            run_acceptance=bool(params.get("run_acceptance", True)),
+        )
+    else:
+        result = await service.process_strategies(db, strategies, signal_date=signal_date or None)
     return ok(result)
 
 

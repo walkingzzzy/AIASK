@@ -7,7 +7,7 @@ from .strategy_base import IStrategy
 
 logger = logging.getLogger(__name__)
 
-_EXECUTABLE_DSL_REQUIRED_TYPES = {"ma_cross", "momentum", "volatility_breakout"}
+_EXECUTABLE_DSL_REQUIRED_TYPES = {"ma_cross", "momentum", "volatility_breakout", "event_structure_breakout"}
 
 
 class StrategyRegistry:

@@ -10,6 +10,10 @@ import logging
 import time
 from typing import Any
 
+from ...contracts.strategy_manager_contract import (
+    STRATEGY_MANAGER_ACTIONS,
+    STRATEGY_MANAGER_REQUIRED_PARAMS,
+)
 from ...storage import get_db
 from ...utils import fail, ok
 from ..manager_protocol import build_manager_meta
@@ -38,6 +42,9 @@ from .strategy_mgr_crud import (
     handle_update_metrics,
 )
 from .strategy_mgr_lifecycle import (
+    handle_execution_audit_acceptance,
+    handle_factory_dispatch_run,
+    handle_factory_dispatch_status,
     handle_execution_audit_verification,
     handle_factory_run_detail,
     handle_factory_run_once,
@@ -85,20 +92,6 @@ from .strategy_mgr_helpers import (
 
 logger = logging.getLogger(__name__)
 _STRATEGY_MANAGER_IMPL = None
-
-STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
-    "detail": ("strategy_id", "id"),
-    "review_report": ("strategy_id", "id"),
-    "review_report_recheck": ("strategy_id", "id"),
-    "submission_replay": ("strategy_id", "id", "strategy_ids"),
-    "submit": ("strategy_id", "id"),
-    "events": ("strategy_id", "id"),
-    "incubation_overview": ("strategy_id", "id"),
-    "get_signals": ("strategy_id", "id"),
-    "get_forward_returns": ("strategy_id", "id"),
-    "get_signal_stats": ("strategy_id", "id"),
-    "vector_ann_search": ("strategy_id", "similar_to", "id"),
-}
 
 
 def _strategy_manager_error(code: str, message: str, *, detail: dict | None = None) -> dict:
@@ -190,9 +183,12 @@ ACTION_HANDLERS: dict[str, ...] = {
     "incubation_overview": handle_incubation_overview,
     "factory_status": handle_factory_status,
     "factory_run_once": handle_factory_run_once,
+    "factory_dispatch_run": handle_factory_dispatch_run,
+    "factory_dispatch_status": handle_factory_dispatch_status,
     "factory_runs": handle_factory_runs,
     "factory_run_detail": handle_factory_run_detail,
     "execution_audit_verification": handle_execution_audit_verification,
+    "execution_audit_acceptance": handle_execution_audit_acceptance,
     # Incubation (strategy_mgr_incubation)
     "incubation_accounts": handle_incubation_accounts,
     "incubation_metrics": handle_incubation_metrics,
@@ -620,6 +616,18 @@ ACTION_HANDLERS.update({
     "ai_experiments": _handle_ai_experiments,
     "task_runs": _handle_task_runs,
 })
+
+
+_HANDLER_ACTION_SET = set(ACTION_HANDLERS)
+_CONTRACT_ACTION_SET = set(STRATEGY_MANAGER_ACTIONS)
+if _HANDLER_ACTION_SET != _CONTRACT_ACTION_SET:
+    missing_from_contract = sorted(_HANDLER_ACTION_SET - _CONTRACT_ACTION_SET)
+    missing_from_handlers = sorted(_CONTRACT_ACTION_SET - _HANDLER_ACTION_SET)
+    raise RuntimeError(
+        "strategy_manager contract mismatch: "
+        f"missing_from_contract={missing_from_contract} "
+        f"missing_from_handlers={missing_from_handlers}"
+    )
 
 
 # ── MCP tool registration ───────────────────────────────────────────────────

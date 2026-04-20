@@ -275,14 +275,41 @@ def _backtest_momentum_jit(
 @jit(nopython=True)
 def _backtest_rsi_jit(
     closes: np.ndarray,
+    volumes: np.ndarray,
     rsi_period: int,
     oversold: float,
     overbought: float,
+    regime_filter_enabled: int,
+    noise_filter_enabled: int,
+    noise_window: int,
+    noise_ceiling: float,
+    bearish_regime_threshold: float,
+    regime_break_threshold: float,
+    repair_confirmation_enabled: int,
+    repair_confirmation_window: int,
+    repair_confirmation_rebound_pct: float,
+    repair_confirmation_rsi_reclaim: float,
+    liquidity_confirmation_enabled: int,
+    liquidity_window: int,
+    liquidity_volume_floor_ratio: float,
+    structure_confirmation_enabled: int,
+    structure_window: int,
+    structure_close_location_min: float,
+    structure_body_return_min: float,
+    mean_reversion_exit_min_hold_bars: int,
+    mean_reversion_exit_buffer: float,
+    max_hold_bars: int,
+    adverse_regime_exit_enabled: int,
+    adverse_noise_ceiling: float,
     initial_capital: float,
     total_cost_rate: float
 ) -> tuple:
     """Numba优化的RSI策略回测"""
     n = len(closes)
+    mean_window = max(6, rsi_period * 2)
+    exit_window = max(20, mean_window - 4)
+    regime_lookback = 30
+    regime_volatility_window = 20
 
     rsi = np.zeros(n)
     for i in range(rsi_period, n):
@@ -304,15 +331,202 @@ def _backtest_rsi_jit(
             rs = avg_gain / avg_loss
             rsi[i] = 100 - (100 / (1 + rs))
 
+    mean_line = np.zeros(n)
+    mean_ready = np.zeros(n, dtype=np.int8)
+    for i in range(mean_window - 1, n):
+        total = 0.0
+        for j in range(i - mean_window + 1, i + 1):
+            total += closes[j]
+        mean_line[i] = total / mean_window
+        mean_ready[i] = 1
+
+    exit_line = np.zeros(n)
+    exit_ready = np.zeros(n, dtype=np.int8)
+    for i in range(exit_window - 1, n):
+        total = 0.0
+        for j in range(i - exit_window + 1, i + 1):
+            total += closes[j]
+        exit_line[i] = total / exit_window
+        exit_ready[i] = 1
+
+    noise_ratio = np.zeros(n)
+    noise_ready = np.zeros(n, dtype=np.int8)
+    for i in range(max(noise_window, 2), n):
+        path_length = 0.0
+        for j in range(i - noise_window + 1, i + 1):
+            path_length += abs(closes[j] - closes[j - 1])
+        net_move = abs(closes[i] - closes[i - noise_window])
+        noise_ratio[i] = path_length / (net_move if net_move > 1e-6 else 1e-6)
+        noise_ready[i] = 1
+
+    volume_mean = np.zeros(n)
+    volume_ready = np.zeros(n, dtype=np.int8)
+    effective_liquidity_window = max(liquidity_window, 2)
+    if len(volumes) == n:
+        for i in range(effective_liquidity_window - 1, n):
+            total = 0.0
+            for j in range(i - effective_liquidity_window + 1, i + 1):
+                total += max(volumes[j], 0.0)
+            volume_mean[i] = total / effective_liquidity_window
+            volume_ready[i] = 1
+
     cash = initial_capital
     shares = 0
     equity = np.full(n, initial_capital)
     trades = 0
     wins = 0
     buy_price = 0.0
+    entry_index = -1
+    pending_confirmation = 0
+    confirmation_start_index = -1
+    confirmation_anchor_index = -1
+    confirmation_anchor_price = 0.0
+    start_index = max(
+        rsi_period,
+        mean_window - 1,
+        exit_window - 1,
+        regime_lookback,
+        regime_volatility_window,
+        noise_window,
+        effective_liquidity_window,
+        structure_window,
+    )
 
-    for i in range(rsi_period, n - 1):
-        if rsi[i] < oversold and shares == 0:
+    for i in range(start_index, n - 1):
+        if mean_ready[i] == 0 or mean_line[i] <= 0:
+            equity[i] = cash + shares * closes[i]
+            continue
+        deviation = (closes[i] - mean_line[i]) / mean_line[i]
+        regime_code = 0
+        base_close = closes[i - regime_lookback]
+        if base_close > 0:
+            ret_window = (closes[i] - base_close) / base_close
+            mean_return = 0.0
+            valid_count = 0
+            for j in range(i - regime_volatility_window + 1, i + 1):
+                if closes[j - 1] > 0:
+                    mean_return += (closes[j] - closes[j - 1]) / closes[j - 1]
+                    valid_count += 1
+            if valid_count > 0:
+                mean_return = mean_return / valid_count
+                variance = 0.0
+                for j in range(i - regime_volatility_window + 1, i + 1):
+                    if closes[j - 1] > 0:
+                        one_return = (closes[j] - closes[j - 1]) / closes[j - 1]
+                        diff = one_return - mean_return
+                        variance += diff * diff
+                annualized_volatility = ((variance / valid_count) ** 0.5) * (250.0 ** 0.5)
+                is_volatile = annualized_volatility >= 0.30
+                if ret_window <= bearish_regime_threshold:
+                    regime_code = 2 if is_volatile else 1
+                elif ret_window >= 0.05:
+                    regime_code = 4 if is_volatile else 3
+                else:
+                    regime_code = 6 if is_volatile else 5
+        regime_ready = 1
+        if regime_filter_enabled == 1:
+            regime_ready = 1 if (regime_code == 1 or regime_code == 2) else 0
+        noise_ready_flag = 1
+        if noise_filter_enabled == 1:
+            noise_ready_flag = 1 if (noise_ready[i] == 1 and noise_ratio[i] <= noise_ceiling) else 0
+        base_entry_ready = 1 if (
+            rsi[i] < oversold
+            and deviation <= -0.015
+            and regime_ready == 1
+            and noise_ready_flag == 1
+        ) else 0
+        entry_ready = 0
+        if shares == 0:
+            if repair_confirmation_enabled == 1:
+                if base_entry_ready == 1:
+                    if pending_confirmation == 0:
+                        pending_confirmation = 1
+                        confirmation_start_index = i
+                        confirmation_anchor_index = i
+                        confirmation_anchor_price = closes[i]
+                    elif closes[i] <= confirmation_anchor_price:
+                        confirmation_start_index = i
+                        confirmation_anchor_index = i
+                        confirmation_anchor_price = closes[i]
+                if pending_confirmation == 1:
+                    if closes[i] < confirmation_anchor_price:
+                        confirmation_anchor_index = i
+                        confirmation_anchor_price = closes[i]
+                    confirmation_window_expired = (
+                        repair_confirmation_window > 0
+                        and confirmation_start_index >= 0
+                        and (i - confirmation_start_index) > repair_confirmation_window
+                    )
+                    if regime_ready == 0 or noise_ready_flag == 0 or confirmation_window_expired:
+                        pending_confirmation = 0
+                        confirmation_start_index = -1
+                        confirmation_anchor_index = -1
+                        confirmation_anchor_price = 0.0
+                    else:
+                        liquidity_ready = 1
+                        if liquidity_confirmation_enabled == 1:
+                            liquidity_ready = 1 if (
+                                volume_ready[i] == 1
+                                and volume_mean[i] > 0.0
+                                and volumes[i] >= volume_mean[i] * liquidity_volume_floor_ratio
+                            ) else 0
+                        structure_ready = 1
+                        if structure_confirmation_enabled == 1:
+                            current_body_return = 0.0
+                            if i >= 1 and closes[i - 1] > 0.0:
+                                current_body_return = (closes[i] - closes[i - 1]) / closes[i - 1]
+                            prior_min_close = closes[i]
+                            for j in range(max(0, i - structure_window), i):
+                                if closes[j] < prior_min_close:
+                                    prior_min_close = closes[j]
+                            close_location_proxy = 1.0 if (i >= 1 and closes[i] >= closes[i - 1]) else 0.0
+                            structure_ready = 1 if (
+                                close_location_proxy >= structure_close_location_min
+                                and current_body_return >= structure_body_return_min
+                                and closes[i] >= prior_min_close
+                            ) else 0
+                        rebound_ready = (
+                            confirmation_anchor_price > 0.0
+                            and i > confirmation_anchor_index
+                            and i >= 1
+                            and rsi[i] >= repair_confirmation_rsi_reclaim
+                            and closes[i] >= closes[i - 1]
+                            and (closes[i] - confirmation_anchor_price) / confirmation_anchor_price
+                            >= repair_confirmation_rebound_pct
+                            and liquidity_ready == 1
+                            and structure_ready == 1
+                        )
+                        if rebound_ready:
+                            entry_ready = 1
+                            pending_confirmation = 0
+                            confirmation_start_index = -1
+                            confirmation_anchor_index = -1
+                            confirmation_anchor_price = 0.0
+            else:
+                entry_ready = base_entry_ready
+        regime_break = False
+        mean_reversion_exit = False
+        time_stop_exit = False
+        adverse_regime_exit = False
+        if shares > 0 and exit_ready[i] == 1 and exit_line[i] > 0:
+            regime_break = closes[i] < exit_line[i] * (1.0 - regime_break_threshold) and closes[i] < closes[i - 1]
+        if shares > 0:
+            bars_held = i - entry_index if entry_index >= 0 else 0
+            mean_reversion_exit = (
+                bars_held >= mean_reversion_exit_min_hold_bars
+                and deviation >= mean_reversion_exit_buffer
+            )
+            time_stop_exit = max_hold_bars > 0 and bars_held >= max_hold_bars
+            adverse_regime_exit = (
+                adverse_regime_exit_enabled == 1
+                and bars_held >= 1
+                and regime_code == 6
+                and noise_ready[i] == 1
+                and noise_ratio[i] >= adverse_noise_ceiling
+                and closes[i] < closes[i - 1]
+            )
+
+        if entry_ready == 1 and shares == 0:
             buy_price = closes[i + 1] * (1 + total_cost_rate)
             max_shares = int(cash / buy_price)
             if max_shares > 0:
@@ -320,8 +534,15 @@ def _backtest_rsi_jit(
                 shares = max_shares
                 cash -= cost
                 trades += 1
+                entry_index = i
 
-        elif rsi[i] > overbought and shares > 0:
+        elif shares > 0 and (
+            rsi[i] > overbought
+            or mean_reversion_exit
+            or regime_break
+            or time_stop_exit
+            or adverse_regime_exit
+        ):
             sell_price = closes[i + 1] * (1 - total_cost_rate)
             revenue = shares * sell_price
             profit = revenue - (shares * buy_price)
@@ -330,6 +551,7 @@ def _backtest_rsi_jit(
             cash += revenue
             shares = 0
             trades += 1
+            entry_index = -1
 
         equity[i] = cash + shares * closes[i]
 
@@ -346,16 +568,16 @@ def _backtest_rsi_jit(
     total_return = (final_capital - initial_capital) / initial_capital
 
     max_dd = 0.0
-    peak = equity[rsi_period]
-    for i in range(rsi_period, n):
+    peak = equity[start_index]
+    for i in range(start_index, n):
         if equity[i] > peak:
             peak = equity[i]
         dd = (peak - equity[i]) / peak if peak > 0 else 0
         if dd > max_dd:
             max_dd = dd
 
-    returns = np.diff(equity[rsi_period:]) / equity[rsi_period:-1]
-    valid_mask = equity[rsi_period:-1] > 0
+    returns = np.diff(equity[start_index:]) / equity[start_index:-1]
+    valid_mask = equity[start_index:-1] > 0
     returns = returns[valid_mask]
     sharpe = 0.0
     if len(returns) > 0:

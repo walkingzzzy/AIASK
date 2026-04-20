@@ -44,6 +44,10 @@ class StrategyPromotionPipelineService:
         return dict(overview.get('position_cycle_evidence') or {})
 
     @classmethod
+    def _event_prefilter_summary(cls, overview: dict) -> dict:
+        return dict(overview.get('event_prefilter_summary') or {})
+
+    @classmethod
     def _hard_gate_reasons(cls, overview: dict) -> list[str]:
         payload = dict(overview.get('hard_gate_result') or {})
         reasons: list[str] = []
@@ -75,6 +79,7 @@ class StrategyPromotionPipelineService:
         precision_readiness = cls._precision_readiness(overview)
         cost_robustness_summary = dict(overview.get('cost_robustness_summary') or {})
         trade_density_summary = dict(overview.get('trade_density_summary') or {})
+        event_prefilter_summary = cls._event_prefilter_summary(overview)
         blockers: list[str] = []
         blockers.extend(hard_gate_reasons)
         blockers.extend(code for code in critical_trace_gaps if code not in blockers)
@@ -95,6 +100,8 @@ class StrategyPromotionPipelineService:
                 blockers.append('high_precision_trade_density_not_ready')
             if cost_robustness_summary.get('required') and not bool(cost_robustness_summary.get('passed')):
                 blockers.append('high_precision_cost_fragility')
+            if event_prefilter_summary.get('required') and not bool(event_prefilter_summary.get('passed')):
+                blockers.append('high_precision_event_prefilter_not_ready')
             if overview.get('adverse_regime_avoidance') is False:
                 blockers.append('high_precision_adverse_regime_not_avoided')
         if overview.get('deprecation_risk'):
@@ -118,6 +125,7 @@ class StrategyPromotionPipelineService:
         precision_readiness = cls._precision_readiness(overview)
         position_cycle_evidence = cls._position_cycle_evidence(overview)
         position_cycle_status = cls._normalized_status(position_cycle_evidence.get('status'))
+        event_prefilter_summary = cls._event_prefilter_summary(overview)
         score = 0.2
         if signal_status == 'strong':
             score += 0.24
@@ -170,6 +178,8 @@ class StrategyPromotionPipelineService:
                 dict(overview.get('cost_robustness_summary') or {}).get('passed')
             ):
                 score -= 0.12
+            if event_prefilter_summary.get('required') and not bool(event_prefilter_summary.get('passed')):
+                score -= 0.10
             if overview.get('adverse_regime_avoidance') is False:
                 score -= 0.08
         if metric:
@@ -238,6 +248,9 @@ class StrategyPromotionPipelineService:
                 'regime_validation_summary': dict(overview.get('regime_validation_summary') or {}),
                 'cost_robustness_summary': dict(overview.get('cost_robustness_summary') or {}),
                 'trade_density_summary': dict(overview.get('trade_density_summary') or {}),
+                'event_prefilter_summary': dict(overview.get('event_prefilter_summary') or {}),
+                'event_anchor_summary': dict(overview.get('event_anchor_summary') or {}),
+                'backtest_metrics_contract_status': overview.get('backtest_metrics_contract_status'),
                 'regime_consistency': overview.get('regime_consistency'),
                 'payoff_asymmetry': overview.get('payoff_asymmetry'),
                 'adverse_regime_avoidance': overview.get('adverse_regime_avoidance'),

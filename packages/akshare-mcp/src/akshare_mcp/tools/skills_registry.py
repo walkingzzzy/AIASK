@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 
@@ -29,6 +31,7 @@ _FALLBACK_SKILLS: List[Dict[str, Any]] = [
 ]
 
 _SKILL_STATUS_VALUES = {"registered", "executable", "deprecated"}
+_QUOTED_VALUE_PATTERN = re.compile(r"""^(?P<quote>["'])(?P<body>.*)(?P=quote)$""")
 _ORCHESTRATED_SKILL_OUTPUT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -454,6 +457,49 @@ _SKILL_CONTRACTS.update(
             },
             "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
         },
+        "akshare-stock-deep-analysis": {
+            "supported_tasks": ["quick_scan", "deep_analysis", "recover_gaps", "rebuild_report", "trade_plan"],
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "enum": ["quick_scan", "deep_analysis", "recover_gaps", "rebuild_report", "trade_plan"],
+                    },
+                    "code": {"type": "string"},
+                    "stock_code": {"type": "string"},
+                    "symbol": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "investment_style": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "market": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+            "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
+        },
+        "akshare-trading-decision": {
+            "supported_tasks": ["trade_plan", "quick_scan", "deep_analysis", "recover_gaps", "rebuild_report"],
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "enum": ["trade_plan", "quick_scan", "deep_analysis", "recover_gaps", "rebuild_report"],
+                    },
+                    "code": {"type": "string"},
+                    "stock_code": {"type": "string"},
+                    "symbol": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "investment_style": {"type": "string"},
+                    "style": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "market": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+            "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
+        },
     }
 )
 
@@ -517,12 +563,57 @@ def _normalize_skill_status(value: Any) -> Optional[str]:
     return None
 
 
+def _strip_wrapping_quotes(value: str) -> str:
+    match = _QUOTED_VALUE_PATTERN.match(value.strip())
+    if not match:
+        return value.strip()
+    return match.group("body").strip()
+
+
+def _parse_frontmatter_value(value: str) -> Any:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    if text[0] in "[{":
+        try:
+            return json.loads(text)
+        except Exception:
+            try:
+                return ast.literal_eval(text)
+            except Exception:
+                return text
+
+    lowered = text.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"null", "none"}:
+        return None
+
+    if _QUOTED_VALUE_PATTERN.match(text):
+        return _strip_wrapping_quotes(text)
+
+    if re.fullmatch(r"-?\d+", text):
+        try:
+            return int(text)
+        except Exception:
+            return text
+    if re.fullmatch(r"-?\d+\.\d+", text):
+        try:
+            return float(text)
+        except Exception:
+            return text
+
+    return text
+
+
 def _parse_skill_md(md_path: Path) -> Dict[str, Any]:
     skill_id = md_path.parent.name
     name = skill_id
     description = ""
     status: Optional[str] = None
     deprecated: Optional[bool] = None
+    frontmatter: Dict[str, Any] = {}
 
     try:
         text = md_path.read_text(encoding="utf-8", errors="ignore")
@@ -536,11 +627,12 @@ def _parse_skill_md(md_path: Path) -> Dict[str, Any]:
                     continue
                 key, raw_value = stripped.split(":", 1)
                 key = key.strip().lower()
-                value = raw_value.strip()
+                value = _parse_frontmatter_value(raw_value.strip())
+                frontmatter[key] = value
                 if key == "name":
-                    name = value or name
+                    name = str(value or "").strip() or name
                 elif key == "description":
-                    description = value
+                    description = str(value or "").strip()
                 elif key == "status":
                     status = _normalize_skill_status(value)
                 elif key == "deprecated":
@@ -561,6 +653,10 @@ def _parse_skill_md(md_path: Path) -> Dict[str, Any]:
         "description": description,
         "path": str(md_path),
     }
+    for key, value in frontmatter.items():
+        if key in {"name", "description", "status", "deprecated"}:
+            continue
+        payload[key] = value
     if status is not None:
         payload["status"] = status
     if deprecated is not None:
@@ -608,6 +704,39 @@ def _load_skill_coverage_audit() -> Dict[str, Any] | None:
     return payload
 
 
+def _load_skill_capability_audit() -> Dict[str, Any] | None:
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return None
+    audit_path = repo_root / ".codex" / "skills" / "_meta" / "skill_capability_audit.json"
+    if not audit_path.is_file():
+        return None
+    try:
+        payload = json.loads(audit_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _is_repo_local_skill(skill: Dict[str, Any]) -> bool:
+    repo_root = _find_repo_root()
+    path = str(skill.get("path") or "")
+    if repo_root is None or not path:
+        return False
+    try:
+        resolved = Path(path).resolve()
+    except Exception:
+        return False
+    repo_skills_root = repo_root / ".codex" / "skills"
+    try:
+        resolved.relative_to(repo_skills_root)
+        return True
+    except Exception:
+        return False
+
+
 def _resolve_skill_status(skill: Dict[str, Any], *, handler_available: bool, contract: Dict[str, Any]) -> str:
     if contract.get("deprecated") or skill.get("deprecated"):
         return "deprecated"
@@ -637,10 +766,12 @@ def _enrich_skills(
             {
                 **skill,
                 "status": status,
+                "runtime_status": str(skill.get("runtime_status") or status),
                 "executable": executable,
                 "deprecated": status == "deprecated",
                 "handler_available": handler_available,
                 "execution_mode": execution_mode,
+                "repo_local": _is_repo_local_skill(skill),
                 "input_schema": contract.get("input_schema") or skill.get("input_schema"),
                 "output_schema": contract.get("output_schema") or skill.get("output_schema"),
                 "supported_tasks": list(contract.get("supported_tasks") or skill.get("supported_tasks") or []),
@@ -669,15 +800,53 @@ def _build_skill_registry_summary(
         if not skill.get("executable") and skill.get("status") != "deprecated"
     ][:20]
     audit = _load_skill_coverage_audit() or {}
+    capability_audit = _load_skill_capability_audit() or {}
     tool_reference_coverage = dict(audit.get("coverage") or {})
     tool_reference_coverage.update(
         {
             "tool_count": int(audit.get("tool_count") or 0),
+            "runtime_tool_count": int(audit.get("runtime_tool_count") or audit.get("tool_count") or 0),
             "skills_count": int(audit.get("skills_count") or 0),
             "generated_at": audit.get("generated_at"),
+            "tool_coverage_source": audit.get("tool_coverage_source"),
         }
     )
     executors = dict(audit.get("executors") or {})
+    repo_local_skills = [skill for skill in skills if skill.get("repo_local")]
+    repo_local_skill_ids = sorted(str(skill.get("id") or "") for skill in repo_local_skills if skill.get("id"))
+    runtime_contract_count = len([skill_id for skill_id in repo_local_skill_ids if skill_id in _SKILL_CONTRACTS])
+    runtime_executor_count = len([skill_id for skill_id in repo_local_skill_ids if skill_id in available_handlers])
+    capability_tier_breakdown: Dict[str, int] = {}
+    role_tag_breakdown: Dict[str, int] = {}
+    for skill in repo_local_skills:
+        tier = str(skill.get("capability_tier") or "unspecified").strip() or "unspecified"
+        capability_tier_breakdown[tier] = capability_tier_breakdown.get(tier, 0) + 1
+        for role in list(skill.get("role_tags") or []):
+            role_name = str(role or "").strip()
+            if not role_name:
+                continue
+            role_tag_breakdown[role_name] = role_tag_breakdown.get(role_name, 0) + 1
+
+    meta_conflicts = list(capability_audit.get("meta_conflicts") or [])
+    stale_meta_detected = bool(capability_audit.get("stale_meta_detected"))
+    if not capability_audit:
+        if runtime_contract_count != len(repo_local_skill_ids):
+            meta_conflicts.append(
+                {
+                    "type": "repo_local_contract_mismatch",
+                    "actual": len(repo_local_skill_ids),
+                    "runtime_contract_count": runtime_contract_count,
+                }
+            )
+        if runtime_executor_count != len(repo_local_skill_ids):
+            meta_conflicts.append(
+                {
+                    "type": "repo_local_executor_mismatch",
+                    "actual": len(repo_local_skill_ids),
+                    "runtime_executor_count": runtime_executor_count,
+                }
+            )
+        stale_meta_detected = bool(meta_conflicts)
     return {
         "total_count": total,
         "executable_count": executable,
@@ -686,9 +855,18 @@ def _build_skill_registry_summary(
         "executor_coverage_ratio": round(executable / total, 4) if total else 0.0,
         "executable_skill_ids": [skill.get("id") for skill in skills if skill.get("executable")],
         "execution_gap": execution_gap,
+        "repo_local_skill_count": len(repo_local_skill_ids),
+        "repo_local_skill_ids": repo_local_skill_ids,
+        "runtime_contract_count": runtime_contract_count,
+        "runtime_executor_count": runtime_executor_count,
+        "stale_meta_detected": stale_meta_detected,
+        "meta_conflicts": meta_conflicts,
+        "capability_tier_breakdown": capability_tier_breakdown,
+        "role_tag_breakdown": role_tag_breakdown,
         "available_handlers": sorted(available_handlers.keys()),
         "tool_reference_coverage": tool_reference_coverage or None,
         "executor_audit": executors or None,
+        "capability_audit": capability_audit or None,
     }
 
 

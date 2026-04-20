@@ -1,0 +1,128 @@
+"""Single-source strategy manager contract surface."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+STRATEGY_MANAGER_CONTRACT_VERSION = "strategy_manager.contract.v1"
+
+STRATEGY_MANAGER_ACTIONS = (
+    "help",
+    "create",
+    "publish",
+    "archive",
+    "list",
+    "detail",
+    "review_report",
+    "events",
+    "update_metrics",
+    "review",
+    "subscribe",
+    "unsubscribe",
+    "my_subscriptions",
+    "rank",
+    "capabilities",
+    "daily_snapshot",
+    "daily_snapshots",
+    "get_signals",
+    "get_forward_returns",
+    "get_signal_stats",
+    "review_report_recheck",
+    "submission_replay",
+    "submit",
+    "lifecycle_scan",
+    "incubation_overview",
+    "factory_status",
+    "factory_run_once",
+    "factory_dispatch_run",
+    "factory_dispatch_status",
+    "factory_runs",
+    "factory_run_detail",
+    "execution_audit_verification",
+    "execution_audit_acceptance",
+    "incubation_accounts",
+    "incubation_metrics",
+    "paper_account",
+    "paper_orders",
+    "paper_nav",
+    "incubation_sync_run",
+    "incubation_pipeline",
+    "incubation_pipeline_run",
+    "risk_events",
+    "risk_snapshots",
+    "risk_scan_run",
+    "risk_recovery",
+    "resolve_risk_event",
+    "runtime_alerts",
+    "runtime_alert_dispatch_run",
+    "runtime_alert_ack",
+    "runtime_control",
+    "runtime_control_set",
+    "promotion_reviews",
+    "promotion_review_run",
+    "runtime_cycle_status",
+    "runtime_cycle_run",
+    "domain_events",
+    "domain_projection",
+    "domain_projection_snapshot",
+    "domain_projection_rebuild",
+    "vector_profiles",
+    "vector_indexes",
+    "vector_index_snapshots",
+    "vector_ann_search",
+    "vector_reconcile",
+    "vector_rebuild",
+    "vector_health",
+    "vector_cleanup",
+    "ai_generate",
+    "ai_experiments",
+    "task_runs",
+)
+
+STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
+    "detail": ("strategy_id", "id"),
+    "review_report": ("strategy_id", "id"),
+    "review_report_recheck": ("strategy_id", "id"),
+    "submission_replay": ("strategy_id", "id", "strategy_ids"),
+    "submit": ("strategy_id", "id"),
+    "events": ("strategy_id", "id"),
+    "incubation_overview": ("strategy_id", "id"),
+    "factory_dispatch_status": ("dispatch_id",),
+    "get_signals": ("strategy_id", "id"),
+    "get_forward_returns": ("strategy_id", "id"),
+    "get_signal_stats": ("strategy_id", "id"),
+    "vector_ann_search": ("strategy_id", "similar_to", "id"),
+}
+
+
+def build_strategy_manager_input_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": list(STRATEGY_MANAGER_ACTIONS),
+            },
+            "params": {"type": "object"},
+            "kwargs": {"type": ["object", "string", "null"]},
+            "strategy_id": {
+                "type": "string",
+                "description": "Required for detail, review_report, submit, events, etc.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": True,
+    }
+
+
+def export_strategy_manager_contract_surface() -> dict[str, Any]:
+    return {
+        "contract_version": STRATEGY_MANAGER_CONTRACT_VERSION,
+        "actions": list(STRATEGY_MANAGER_ACTIONS),
+        "required_params": {
+            action: list(required_any)
+            for action, required_any in STRATEGY_MANAGER_REQUIRED_PARAMS.items()
+        },
+        "input_schema": deepcopy(build_strategy_manager_input_schema()),
+    }

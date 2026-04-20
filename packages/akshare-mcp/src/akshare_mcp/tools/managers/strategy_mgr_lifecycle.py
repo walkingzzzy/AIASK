@@ -3,11 +3,12 @@
 import inspect
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
     build_factory_recent_run_diagnostics,
+    build_factory_capability_health,
     build_factory_quality_baseline,
     build_incubation_overview,
     build_quality_report,
@@ -118,21 +119,68 @@ def _quality_report_submission_audit(report: Optional[dict]) -> dict:
 
 
 def _run_once_accepts_db_arg(run_once) -> bool:
-    """Prefer passing the current db, but tolerate legacy scheduler stubs."""
+    """Prefer passing the current db, but tolerate scheduler stubs used in tests."""
     try:
         params = list(inspect.signature(run_once).parameters.values())
     except (TypeError, ValueError):
         return True
     return any(
-        param.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        param.name == "db"
+        or param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.KEYWORD_ONLY,
             inspect.Parameter.VAR_KEYWORD,
         )
         for param in params
     )
+
+
+def _call_supports_parameter(callable_obj, name: str) -> bool:
+    try:
+        params = inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+
+
+def _hydrate_factory_run_artifacts(row: dict, artifacts: list[dict[str, Any]]) -> dict:
+    payload = dict(row or {})
+    artifact_items = [dict(item or {}) for item in list(artifacts or []) if isinstance(item, dict)]
+    artifact_by_type = {
+        str(item.get("artifact_type") or "").strip(): dict(item.get("payload_json") or {})
+        for item in artifact_items
+        if str(item.get("artifact_type") or "").strip()
+    }
+    if artifact_by_type.get("research_plane"):
+        payload["research_plane"] = dict(artifact_by_type.get("research_plane") or {})
+    if artifact_by_type.get("governance_plane"):
+        payload["governance_plane"] = dict(artifact_by_type.get("governance_plane") or {})
+    if artifact_by_type.get("quality_gate"):
+        payload["quality_gate"] = dict(artifact_by_type.get("quality_gate") or {})
+    if artifact_by_type.get("backtest_report"):
+        payload["backtest_report"] = dict(artifact_by_type.get("backtest_report") or {})
+    if artifact_by_type.get("shadow_diff"):
+        payload["parity_result"] = dict(artifact_by_type.get("shadow_diff") or {})
+    if artifact_by_type.get("task_artifact"):
+        payload["task_artifact"] = dict(artifact_by_type.get("task_artifact") or {})
+    if artifact_by_type.get("candidate_artifact"):
+        payload["candidate_artifact"] = dict(artifact_by_type.get("candidate_artifact") or {})
+    if artifact_by_type.get("evidence_artifact"):
+        payload["evidence_artifact"] = dict(artifact_by_type.get("evidence_artifact") or {})
+    if artifact_by_type.get("submission_audit"):
+        payload["submission_artifact"] = dict(artifact_by_type.get("submission_audit") or {})
+    payload["artifacts"] = artifact_items
+    payload["artifact_refs"] = list(payload.get("artifact_refs") or [
+        {
+            "artifact_type": item.get("artifact_type"),
+            "artifact_version": item.get("artifact_version"),
+            "payload_hash": item.get("payload_hash"),
+            "storage_mode": item.get("storage_mode"),
+        }
+        for item in artifact_items
+    ])
+    return payload
 
 
 def _select_latest_backtest_metrics(
@@ -379,60 +427,41 @@ async def handle_submit(db, params: dict) -> dict:
     if not validate_transition(current, "submitted"):
         return fail(f"Cannot submit from status: {current}")
 
-    await update_status(db, sid, "submitted", actor_id="strategy_manager", reason="manual_submit")
-
-    metrics_list = await db.get_strategy_metrics(sid) if hasattr(db, 'get_strategy_metrics') else []
-    backtest_metrics = next((item for item in metrics_list if item.get('period') in ('backtest', 'all')), {})
     latest_report = await get_latest_quality_report(db, sid)
-    gate_result = await run_quality_gate(
+    validation_report, risk_report, backtest_metrics = await _build_recheck_quality_inputs(
         db,
         strategy,
-        validation_report=(latest_report or {}).get('validation_report') or {},
-        risk_report=(latest_report or {}).get('risk_report') or {},
-        backtest_metrics=backtest_metrics,
+        latest_report,
     )
-    next_status = "incubating" if gate_result["passed"] else "rejected"
-    # Fix #5: 将实际的回测指标和已有报告数据保存到质量报告中
-    await save_quality_report(db, sid, build_quality_report(
-        strategy_id=sid,
-        strategy_type=strategy.get("strategy_type"),
-        quality_gate=gate_result,
-        validation_report=(latest_report or {}).get('validation_report') or {},
-        risk_report=(latest_report or {}).get('risk_report') or {},
-        dedup_report=(latest_report or {}).get('dedup_report') or {},
+    from strategy_factory import StrategySubmitter
+
+    submitter = StrategySubmitter()
+    snapshot = dict((latest_report or {}).get("snapshot") or {})
+    if not snapshot.get("date"):
+        snapshot["date"] = datetime.now(timezone.utc).date().isoformat()
+    replayed = await submitter.replay_existing_submission(
+        strategy,
+        snapshot,
+        db,
+        validation_report=validation_report,
+        risk_report=risk_report,
         backtest_metrics=backtest_metrics,
-        snapshot=(latest_report or {}).get('snapshot') or {},
-        status_after_review=next_status,
-        review_source="manager_submit",
-        report_type="submission",
-        submission_audit=_quality_report_submission_audit(latest_report),
-    ))
-    if gate_result["passed"]:
-        incubation_binding = None
-        vector_profile = None
-        await update_status(db, sid, "incubating", actor_id="strategy_manager", reason="quality_gate_provisional_passed" if gate_result.get("provisional_pass") else "quality_gate_passed", metadata={"quality_gate": gate_result})
-        try:
-            from ...services.incubation import get_strategy_incubation_service
-            incubation_binding = await get_strategy_incubation_service().ensure_account(db, strategy)
-        except Exception as exc:
-            logger.warning("strategy_manager.submit ensure_account failed for %s: %s", sid, exc)
-        try:
-            from ...services.vector_platform import get_strategy_vector_platform
-            vector_profile = await get_strategy_vector_platform().build_strategy_profile(db, strategy)
-        except Exception as exc:
-            logger.warning("strategy_manager.submit build_profile failed for %s: %s", sid, exc)
-        return ok({
-            "strategy_id": sid, "status": "incubating",
-            "quality_gate": "passed", "details": gate_result,
-            "incubation_account_id": ((incubation_binding or {}).get("account") or {}).get("id"),
-            "vector_profile_id": (vector_profile or {}).get("id"),
-        })
-    else:
-        await update_status(db, sid, "rejected", actor_id="strategy_manager", reason="quality_gate_failed", metadata={"quality_gate": gate_result})
-        return ok({
-            "strategy_id": sid, "status": "rejected",
-            "quality_gate": "failed", "details": gate_result,
-        })
+        latest_report=latest_report,
+    )
+    gate_result = dict(replayed.get("gate") or {})
+    return ok({
+        "strategy_id": sid,
+        "status": replayed.get("status"),
+        "quality_gate": "passed" if gate_result.get("passed") else "failed",
+        "details": gate_result,
+        "submission_lane": replayed.get("submission_lane"),
+        "incubation_budget_track": replayed.get("incubation_budget_track"),
+        "submission_action_trigger": replayed.get("submission_action_trigger"),
+        "paper_lane_ready": replayed.get("paper_lane_ready"),
+        "live_review_ready": replayed.get("live_review_ready"),
+        "incubation_account_id": ((replayed.get("incubation_binding") or {}).get("account") or {}).get("id"),
+        "vector_profile_id": (replayed.get("vector_profile") or {}).get("id"),
+    })
 
 
 async def handle_lifecycle_scan(db, params: dict) -> dict:
@@ -547,6 +576,29 @@ async def handle_factory_status(db, params: dict) -> dict:
                 source="persisted_run",
                 run_id=latest_run.get("run_id"),
             )
+    status["execution_mode"] = (
+        str(status.get("execution_mode") or "").strip()
+        or str((status.get("last_result") or {}).get("execution_mode") or "").strip()
+        or str((latest_run or {}).get("execution_mode") or "").strip()
+        or "legacy_primary"
+    )
+    status["engine_version"] = (
+        str(status.get("engine_version") or "").strip()
+        or str((status.get("last_result") or {}).get("engine_version") or "").strip()
+        or str((latest_run or {}).get("engine_version") or "").strip()
+        or "strategy_factory.v2"
+    )
+    status["latest_parity_result"] = dict(
+        status.get("latest_parity_result")
+        or (status.get("last_result") or {}).get("parity_result")
+        or (latest_run or {}).get("parity_result")
+        or {}
+    )
+    status["capability_health"] = build_factory_capability_health(
+        db,
+        factory_constants=factory_constants,
+        latest_run=status.get("last_result") or latest_run,
+    )
     status["quality_baseline"] = await build_factory_quality_baseline(
         db,
         latest_run=status.get("last_result") or latest_run,
@@ -603,9 +655,46 @@ async def handle_factory_run_once(db, params: dict) -> dict:
 
     scheduler = get_strategy_factory_scheduler()
     run_once = scheduler.run_once
+    execution_mode = params.get("execution_mode")
     if _run_once_accepts_db_arg(run_once):
-        return ok(await run_once(db))
+        if _call_supports_parameter(run_once, "execution_mode"):
+            return ok(await run_once(db=db, execution_mode=execution_mode))
+        return ok(await run_once(db=db))
     return ok(await run_once())
+
+
+async def handle_factory_dispatch_run(db, params: dict) -> dict:
+    from strategy_factory import get_strategy_factory_scheduler
+
+    scheduler = get_strategy_factory_scheduler()
+    dispatch_run = getattr(scheduler, "dispatch_run", None)
+    if not callable(dispatch_run):
+        return fail("factory dispatch is unavailable")
+    execution_mode = params.get("execution_mode")
+    if _run_once_accepts_db_arg(dispatch_run):
+        if _call_supports_parameter(dispatch_run, "execution_mode"):
+            return ok(await dispatch_run(db=db, execution_mode=execution_mode))
+        return ok(await dispatch_run(db=db))
+    return ok(await dispatch_run())
+
+
+async def handle_factory_dispatch_status(db, params: dict) -> dict:
+    from strategy_factory import get_strategy_factory_scheduler
+
+    dispatch_id = str(params.get("dispatch_id") or "").strip()
+    if not dispatch_id:
+        return fail("dispatch_id is required")
+    scheduler = get_strategy_factory_scheduler()
+    get_dispatch_status = getattr(scheduler, "get_dispatch_status", None)
+    if not callable(get_dispatch_status):
+        return fail("factory dispatch is unavailable")
+    if _run_once_accepts_db_arg(get_dispatch_status):
+        row = await get_dispatch_status(dispatch_id, db=db)
+    else:
+        row = await get_dispatch_status(dispatch_id)
+    if not row:
+        return fail(f"Factory dispatch not found: {dispatch_id}")
+    return ok(row)
 
 
 async def handle_factory_runs(db, params: dict) -> dict:
@@ -622,7 +711,20 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     row = await db.get_strategy_factory_run(run_id) if hasattr(db, "get_strategy_factory_run") else None
     if not row:
         return fail(f"Factory run not found: {run_id}")
-    return ok(await refresh_factory_run_detail_quality_contract(db, row))
+    artifact_rows = (
+        await db.list_strategy_factory_run_artifacts(run_id)
+        if hasattr(db, "list_strategy_factory_run_artifacts")
+        else []
+    )
+    hydrated_row = _hydrate_factory_run_artifacts(row, artifact_rows)
+    detail = await refresh_factory_run_detail_quality_contract(db, hydrated_row)
+    detail["artifacts"] = artifact_rows
+    detail["artifact_refs"] = list(
+        detail.get("artifact_refs")
+        or hydrated_row.get("artifact_refs")
+        or []
+    )
+    return ok(detail)
 
 
 async def handle_execution_audit_verification(db, params: dict) -> dict:
@@ -630,6 +732,19 @@ async def handle_execution_audit_verification(db, params: dict) -> dict:
         return fail("execution audit verification is unavailable")
     strategy_id = str(params.get("strategy_id") or params.get("id") or "").strip() or None
     return ok(await db.get_execution_audit_verification(strategy_id=strategy_id))
+
+
+async def handle_execution_audit_acceptance(db, params: dict) -> dict:
+    if not hasattr(db, "run_execution_audit_acceptance"):
+        return fail("execution audit acceptance is unavailable")
+    strategy_id = str(params.get("strategy_id") or params.get("id") or "").strip() or None
+    backfill = bool(params.get("backfill", True))
+    return ok(
+        await db.run_execution_audit_acceptance(
+            strategy_id=strategy_id,
+            backfill=backfill,
+        )
+    )
 
 
 # ── Quality gate runner ──────────────────────────────────────────────────────

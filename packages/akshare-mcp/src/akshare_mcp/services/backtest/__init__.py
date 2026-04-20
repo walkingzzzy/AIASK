@@ -26,6 +26,7 @@ from .multi_factor_strategy import MultiFactorStrategy
 from .macro_timing_strategy import MacroTimingStrategy
 from .expanded_factory_strategies import (
     VolatilityBreakoutStrategy,
+    EventStructureBreakoutStrategy,
     GapFillStrategy,
     MeanReversionShortStrategy,
     SectorRotationStrategy,
@@ -44,6 +45,7 @@ for _s in [ValueFactorStrategy, QualityFactorStrategy, GrowthFactorStrategy,
 
 for _s in [
     VolatilityBreakoutStrategy,
+    EventStructureBreakoutStrategy,
     GapFillStrategy,
     MeanReversionShortStrategy,
     SectorRotationStrategy,
@@ -72,6 +74,6 @@ __all__ = [
     'MaCrossStrategy', 'MomentumStrategy', 'RsiStrategy', 'BuyAndHoldStrategy', 'DslRuleStrategy',
     'ValueFactorStrategy', 'QualityFactorStrategy', 'GrowthFactorStrategy',
     'MultiFactorStrategy', 'MacroTimingStrategy',
-    'VolatilityBreakoutStrategy', 'GapFillStrategy', 'MeanReversionShortStrategy',
+    'VolatilityBreakoutStrategy', 'EventStructureBreakoutStrategy', 'GapFillStrategy', 'MeanReversionShortStrategy',
     'SectorRotationStrategy', 'NorthCapitalTrackStrategy', 'MarginDivergenceStrategy',
 ]

@@ -1,13 +1,15 @@
 """策略工厂兼容导出层（已废弃，请迁移至 ``strategy_factory`` 独立包）。
 
 真正实现已迁至同级独立包 ``packages/strategy-factory``。
-这里继续保留旧导入路径，目的是兼容历史调用方与 monkeypatch/patch 测试面。
+这里继续保留旧导入路径，目的是兼容历史调用方与少量 patch 测试面。
+``strategy_factory`` 主源码已经移除 legacy runtime / facade accessor；
+本模块不再对应任何隐藏运行时分流，只是旧 import 路径的兼容导出。
 
 .. deprecated::
    Direct imports from ``akshare_mcp.services.strategy_factory`` are deprecated.
    Use ``from strategy_factory.application import ...`` or
    ``from strategy_factory.api.facade import ...`` instead.
-   This compatibility shim will be removed in a future release.
+   This compatibility export layer will be removed in a future release.
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ from .utils import (
     get_strategy_factory_package,
 )
 
-# 旧路径仍保留单例语义，避免历史启动/测试代码行为变化。
+# 旧导入路径仍保留单例语义，避免历史启动/测试代码行为变化。
 _factory_scheduler: Optional[StrategyFactoryScheduler] = None
 
 

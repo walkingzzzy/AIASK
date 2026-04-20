@@ -296,7 +296,7 @@ def _coerce_market_regime_assumption(
             "task_source": task_source,
             "validation_focus": focus or None,
         }
-    if family in {"momentum", "ma_cross", "volatility_breakout"}:
+    if family in {"momentum", "ma_cross", "volatility_breakout", "event_structure_breakout"}:
         return {
             "summary": "趋势扩张或龙头持续阶段更容易兑现，震荡横盘时容易失效。",
             "preferred_regime": "trend_expansion",
@@ -361,7 +361,7 @@ def _coerce_trade_density_preference(
     if _string(objective_profile).lower() != "high_precision":
         return None
     family = _string(strategy_type).lower()
-    if family in {"momentum", "ma_cross", "volatility_breakout", "rsi", "gap_fill", "mean_reversion_short"}:
+    if family in {"momentum", "ma_cross", "volatility_breakout", "event_structure_breakout", "rsi", "gap_fill", "mean_reversion_short"}:
         return "low"
     return "medium"
 
@@ -378,7 +378,7 @@ def _coerce_entry_selectivity(
     if _string(objective_profile).lower() != "high_precision":
         return None
     family = _string(strategy_type).lower()
-    if family in {"momentum", "ma_cross", "volatility_breakout"}:
+    if family in {"momentum", "ma_cross", "volatility_breakout", "event_structure_breakout"}:
         return "strict"
     if family in {"rsi", "gap_fill", "mean_reversion_short"}:
         return "selective"

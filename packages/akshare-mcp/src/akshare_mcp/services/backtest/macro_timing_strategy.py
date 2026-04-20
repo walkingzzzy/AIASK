@@ -11,9 +11,9 @@ class MacroTimingStrategy(IStrategy):
     """宏观择时 — 从价格动量+波动率估算恐贪指数，低于恐惧阈值买入，高于贪婪阈值卖出"""
 
     def __init__(self):
-        self._fear_threshold = 35
-        self._greed_threshold = 65
-        self._lookback = 20
+        self._fear_threshold = 28
+        self._greed_threshold = 72
+        self._lookback = 30
 
     @classmethod
     def name(cls) -> str:
@@ -65,8 +65,20 @@ class MacroTimingStrategy(IStrategy):
             price_win = closes[i - lb:i + 1]
             vol_win = volumes[i - lb:i + 1] if volumes is not None else None
             fg = self._estimate_fear_greed(price_win, vol_win)
-            if fg <= self._fear_threshold:
+            prev_fg = fg
+            if i > lb:
+                prev_price_win = closes[i - lb:i]
+                prev_vol_win = volumes[i - lb:i] if volumes is not None else None
+                prev_fg = self._estimate_fear_greed(prev_price_win, prev_vol_win)
+            tail = price_win[-5:] if len(price_win) >= 5 else price_win
+            recent_floor = float(np.min(tail)) if len(tail) > 0 else float(closes[i])
+            rebound_ratio = ((float(closes[i]) - recent_floor) / recent_floor) if recent_floor > 0 else 0.0
+            rolling_mean = float(np.mean(price_win[:-1])) if len(price_win) > 1 else float(closes[i])
+            stabilization = rolling_mean <= 0 or float(closes[i]) >= rolling_mean * 0.97
+            if fg <= self._fear_threshold and fg >= prev_fg and rebound_ratio >= 0.01 and stabilization:
                 signals[i] = 1
-            elif fg >= self._greed_threshold:
+            elif fg >= self._greed_threshold or (
+                fg >= 55 and rolling_mean > 0 and float(closes[i]) < rolling_mean * 0.98
+            ):
                 signals[i] = -1
         return signals

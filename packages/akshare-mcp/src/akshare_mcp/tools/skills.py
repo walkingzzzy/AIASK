@@ -22,6 +22,7 @@ from .skills_registry import (
     _list_skill_roots as _list_skill_roots_from_registry,
     _skills_source as _skills_source_from_registry,
 )
+from ..services.stock_deep_analysis import run_stock_deep_analysis
 
 _normalize_params = _skills_support._normalize_params
 _skill_meta = _skills_support._skill_meta
@@ -163,6 +164,41 @@ async def _exec_quant_research_process(params: Dict[str, Any]) -> Dict[str, Any]
     return await _skills_quant_workflows.exec_quant_research_process(params)
 
 
+async def _exec_stock_deep_analysis(params: Dict[str, Any]) -> Dict[str, Any]:
+    task = str(params.get("task") or "deep_analysis").strip().lower() or "deep_analysis"
+    return await run_stock_deep_analysis(
+        code=str(params.get("code") or params.get("stock_code") or params.get("symbol") or ""),
+        task=task,
+        user_id=str(params.get("_triggered_by_user_id") or params.get("user_id") or "").strip() or None,
+        investment_style=str(params.get("investment_style") or params.get("style") or "balanced"),
+        market=str(params.get("market") or "cn"),
+        run_id=str(params.get("run_id") or "").strip() or None,
+    )
+
+
+async def _exec_trading_decision(params: Dict[str, Any]) -> Dict[str, Any]:
+    task = str(params.get("task") or "trade_plan").strip().lower() or "trade_plan"
+    if task == "trade_plan":
+        deep_payload = await run_stock_deep_analysis(
+            code=str(params.get("code") or params.get("stock_code") or params.get("symbol") or ""),
+            task="trade_plan",
+            user_id=str(params.get("_triggered_by_user_id") or params.get("user_id") or "").strip() or None,
+            investment_style=str(params.get("investment_style") or params.get("style") or "balanced"),
+            market=str(params.get("market") or "cn"),
+            run_id=str(params.get("run_id") or "").strip() or None,
+        )
+        return deep_payload
+
+    return await run_stock_deep_analysis(
+        code=str(params.get("code") or params.get("stock_code") or params.get("symbol") or ""),
+        task=task,
+        user_id=str(params.get("_triggered_by_user_id") or params.get("user_id") or "").strip() or None,
+        investment_style=str(params.get("investment_style") or params.get("style") or "balanced"),
+        market=str(params.get("market") or "cn"),
+        run_id=str(params.get("run_id") or "").strip() or None,
+    )
+
+
 _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "akshare-asset-allocation": _exec_asset_allocation,
     "akshare-fee-costs": _exec_fee_costs,
@@ -181,7 +217,9 @@ _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "akshare-quant-methods-foundation": _exec_quant_methods_foundation,
     "akshare-quant-ml-signals": _exec_quant_ml_signals,
     "akshare-quant-research-process": _exec_quant_research_process,
+    "akshare-stock-deep-analysis": _exec_stock_deep_analysis,
     "akshare-strategy-factory": _exec_strategy_factory,
+    "akshare-trading-decision": _exec_trading_decision,
     "akshare-fund-manager-pro": _exec_fund_manager_pro,
 }
 

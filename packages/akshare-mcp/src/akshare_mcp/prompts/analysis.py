@@ -7,6 +7,7 @@ import json
 
 from mcp.server.fastmcp.prompts.base import AssistantMessage, UserMessage
 
+from ..services.stock_deep_analysis import get_analysis_run_summary, get_latest_analysis_summary_for_code
 from ..services.artifact_registry import get_artifact_async
 from ..services.probability_calibration import build_calibration_quality_report
 from ..services.factor_prompt_builder import build_factor_mining_prompt
@@ -115,6 +116,70 @@ def register(mcp) -> None:
         return [
             AssistantMessage(content=rubric),
             UserMessage(content=json.dumps(context, ensure_ascii=False, indent=2, default=str)),
+        ]
+
+    @mcp.prompt(
+        name="stock-analysis-deep",
+        title="Stock Analysis Deep",
+        description="Assemble a deep-analysis prompt from persisted run artifacts or fall back to stock profile, financial and decision context",
+    )
+    async def stock_analysis_deep(code: str, focus: str | None = None, run_id: str | None = None):
+        resolved_code = str(code or "").strip()
+        if not resolved_code:
+            raise ValueError("code is required")
+
+        deep_context = await (
+            get_analysis_run_summary(run_id)
+            if str(run_id or "").strip()
+            else get_latest_analysis_summary_for_code(resolved_code)
+        )
+        if deep_context.get("found") is not False:
+            context = {
+                "code": resolved_code,
+                "resource_uri": (
+                    f"resource://analysis-run/{deep_context.get('run_id')}/summary"
+                    if deep_context.get("run_id")
+                    else f"resource://stock/{resolved_code}/deep-analysis"
+                ),
+                "deep_analysis": deep_context,
+                "focus": focus or "",
+            }
+            rubric = "\n".join(
+                [
+                    "请基于统一 run 工件输出个股深度分析结论：",
+                    "1. 先区分事实、推断、缺口与 fallback 标记。",
+                    "2. 每个核心结论都要引用 evidence id 或结构化来源字段。",
+                    "3. 单独说明风险与反证，不允许只给单向乐观叙事。",
+                    "4. 若 run 尚未通过 final check，明确指出不能直接发布报告。",
+                ]
+            )
+            return [
+                AssistantMessage(content=rubric),
+                UserMessage(content=json.dumps(context, ensure_ascii=False, indent=2, default=str)),
+            ]
+
+        profile_payload = await build_stock_profile_resource_payload(resolved_code)
+        financials = await _maybe_await(get_financials(resolved_code))
+        decision_summary = await _maybe_await(get_unified_decision_summary(code=resolved_code))
+        fallback_context = {
+            "code": resolved_code,
+            "resource_uri": f"resource://stock/{resolved_code}/profile",
+            "profile": profile_payload,
+            "financials": financials,
+            "decision_summary": decision_summary,
+            "focus": focus or "",
+        }
+        rubric = "\n".join(
+            [
+                "尚未发现持久化 deep-analysis run，请基于基础上下文生成候选深度分析：",
+                "1. 清楚标注当前属于 fallback 视图，而不是协议化 run 结果。",
+                "2. 输出缺口与后续动作，不要把候选结论伪装成已完成的正式报告。",
+                "3. 若需要正式产品化报告，应先运行 analyze_stock_product_workflow 或对应 skill。",
+            ]
+        )
+        return [
+            AssistantMessage(content=rubric),
+            UserMessage(content=json.dumps(fallback_context, ensure_ascii=False, indent=2, default=str)),
         ]
 
     @mcp.prompt(
