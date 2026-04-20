@@ -17,6 +17,15 @@ class ListAuditQueryDto {
 export class AuditController {
   constructor(private readonly auditStore: AuditStore) {}
 
+  @Get('status')
+  @Roles('admin')
+  status() {
+    return {
+      success: true,
+      data: this.auditStore.getStatus(),
+    };
+  }
+
   @Get('logs')
   @Roles('admin')
   async listLogs(@Query() query: ListAuditQueryDto) {
@@ -43,4 +52,3 @@ export class AuditController {
     };
   }
 }
-

@@ -111,6 +111,10 @@ export class IncubationSyncRunDto {
   @IsOptional() @IsString() signal_date?: string;
 }
 
+export class ExecutionAuditAcceptanceDto {
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() backfill?: boolean;
+}
+
 export class IncubationPipelineQueryDto {
   @IsOptional() @IsString() pipeline_stage?: string;
   @IsOptional() @IsString() pipeline_status?: string;

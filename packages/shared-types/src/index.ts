@@ -10,3 +10,4 @@ export * from './dashboard';
 export * from './performance';
 export * from './execution';
 export * from './workspace';
+export * from './analysis';

@@ -41,6 +41,12 @@ export class AdminController {
     return { success: true, data };
   }
 
+  @Post('dead-letters/seed')
+  async seedDeadLetters(@Body() body: { count?: number }) {
+    const data = await this.adminService.seedDeadLetters(body?.count);
+    return { success: true, data };
+  }
+
   @Post('dead-letters/:id/retry')
   async retryDeadLetter(@Param('id') id: string) {
     const data = await this.adminService.retryDeadLetter(id);

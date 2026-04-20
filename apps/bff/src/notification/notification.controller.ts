@@ -55,6 +55,14 @@ export class NotificationController {
         return { success: true, data: { count } };
     }
 
+    @Get('delivery-status')
+    deliveryStatus() {
+        return {
+            success: true,
+            data: this.notificationService.getDeliveryStatus(),
+        };
+    }
+
     @Post('mark-read')
     async markRead(@Req() req: { user?: { id?: string; sub?: string } }, @Body() body: MarkReadDto) {
         const count = await this.notificationService.markRead(this.userId(req), body.ids);

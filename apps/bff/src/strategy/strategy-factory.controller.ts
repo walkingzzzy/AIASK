@@ -38,6 +38,12 @@ export class StrategyFactoryController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('factory/dispatches/:dispatchId')
+  async factoryDispatchStatus(@Param('dispatchId') dispatchId: string, @Req() req: Req_) {
+    const data = await this.svc.factoryDispatchStatus(dispatchId);
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Get(':id/review-report')
   async reviewReport(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.reviewReport(id);

@@ -108,3 +108,63 @@ export type BacktestBatchResponse = {
     failed?: BacktestBatchFailure[];
     summary?: Record<string, unknown>;
 };
+
+export type BacktestOptimizationCandidate = {
+    candidateId?: string;
+    success?: boolean;
+    error?: string | null;
+    score?: number | null;
+    params?: Record<string, unknown>;
+    artifactId?: string | null;
+    metrics?: BacktestMetricSnapshot;
+};
+
+export type BacktestOptimizationResponse = {
+    sourceTool?: 'backtest_manager';
+    code?: string;
+    strategy?: string;
+    objective?: string;
+    evaluatedCount?: number;
+    parameterSpace?: Record<string, number[]>;
+    candidates?: BacktestOptimizationCandidate[];
+    bestCandidate?: BacktestOptimizationCandidate | null;
+    recommendedParams?: Record<string, unknown>;
+};
+
+export type BacktestWalkForwardFold = {
+    fold?: number;
+    trainStart?: string;
+    trainEnd?: string;
+    testStart?: string;
+    testEnd?: string;
+    trainArtifactId?: string | null;
+    testArtifactId?: string | null;
+    trainMetrics?: BacktestMetricSnapshot;
+    testMetrics?: BacktestMetricSnapshot;
+    score?: number | null;
+    passed?: boolean;
+    error?: string | null;
+};
+
+export type BacktestWalkForwardSummary = {
+    foldCount?: number;
+    positiveFoldRatio?: number;
+    avgTestSharpe?: number | null;
+    avgTestReturn?: number | null;
+    worstDrawdown?: number | null;
+    passed?: boolean;
+    stability?: string;
+    recommendation?: string;
+};
+
+export type BacktestWalkForwardResponse = {
+    sourceTool?: 'backtest_manager';
+    code?: string;
+    strategy?: string;
+    objective?: string;
+    trainDays?: number;
+    testDays?: number;
+    stepDays?: number;
+    folds?: BacktestWalkForwardFold[];
+    summary?: BacktestWalkForwardSummary;
+};

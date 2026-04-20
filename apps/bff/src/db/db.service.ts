@@ -4,6 +4,8 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { ObservabilityService } from '../observability/observability.service';
 
 @Injectable()
 export class DbService implements OnModuleInit, OnModuleDestroy {
@@ -11,7 +13,10 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
   private pool: Pool | null = null;
   private _healthy = false;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly observability: ObservabilityService,
+  ) {
     const url = this.configService.get<string>('DATABASE_URL', '').trim();
     if (!url) {
       this.logger.warn('未配置 DATABASE_URL，数据库持久化能力已禁用（回退内存模式）');
@@ -59,9 +64,11 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.pool.query('SELECT 1');
       this.logger.log('✓ 数据库连接正常');
+      this.observability.setDependencyState('postgres', true);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`✗ 数据库连接失败: ${msg}`);
+      this.observability.setDependencyState('postgres', false);
       return;
     }
 
@@ -69,9 +76,11 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.runMigrations();
       this._healthy = true;
+      this.observability.setDependencyState('postgres', true);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`✗ 数据库迁移失败: ${msg}`);
+      this.observability.setDependencyState('postgres', false);
       // 迁移失败仍标记为 unhealthy 但不阻塞启动
     }
   }
@@ -156,7 +165,25 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     if (!this.pool) {
       throw new Error('DATABASE_DISABLED');
     }
-    return this.pool.query<T>(sql, params);
+    const startedAt = performance.now();
+    try {
+      const result = await this.pool.query<T>(sql, params);
+      this.observability.recordDbQuery({
+        operation: sql.split(/\s+/)[0] || 'query',
+        durationMs: performance.now() - startedAt,
+        errored: false,
+      });
+      this.observability.setDependencyState('postgres', true);
+      return result;
+    } catch (error) {
+      this.observability.recordDbQuery({
+        operation: sql.split(/\s+/)[0] || 'query',
+        durationMs: performance.now() - startedAt,
+        errored: true,
+      });
+      this.observability.setDependencyState('postgres', false);
+      throw error;
+    }
   }
 
   async withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -191,4 +218,3 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     await this.pool.end();
   }
 }
-

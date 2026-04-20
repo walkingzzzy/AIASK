@@ -118,3 +118,41 @@ export type ToolMeta = {
     fetchedAt: string;
     cache: ToolCacheInfo;
 };
+
+export const MCP_JOB_STATUSES = [
+    'queued',
+    'running',
+    'succeeded',
+    'failed',
+] as const;
+
+export type McpJobStatus = typeof MCP_JOB_STATUSES[number];
+
+export type McpJobTarget = {
+    kind: 'tool';
+    name: string;
+    arguments?: ToolArgs;
+    timeout_ms?: number | null;
+};
+
+export type McpJobRecord = {
+    job_id: string;
+    status: McpJobStatus;
+    submitted_at: string;
+    started_at?: string | null;
+    completed_at?: string | null;
+    poll_path: string;
+    idempotency_key?: string | null;
+    target: McpJobTarget;
+    result?: unknown;
+    error?: string | null;
+    error_code?: string | null;
+    trace_id?: string | null;
+    meta?: Record<string, unknown>;
+};
+
+export type McpJobAcceptedResponse = {
+    accepted: boolean;
+    deduplicated?: boolean;
+    job: McpJobRecord;
+};

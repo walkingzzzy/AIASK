@@ -4,6 +4,7 @@ import {
   IncubationMetricsQueryDto,
   PaperOrdersQueryDto,
   PaperNavQueryDto,
+  ExecutionAuditAcceptanceDto,
   IncubationSyncRunDto,
   IncubationPipelineQueryDto,
   IncubationPipelineRunDto,
@@ -50,6 +51,18 @@ export class StrategyIncubationController {
   @Get(':id/paper-nav')
   async paperNav(@Param('id') id: string, @Query() q: PaperNavQueryDto, @Req() req: Req_) {
     const data = await this.svc.paperNav(id, { limit: q.limit });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/execution-audit')
+  async executionAuditAcceptance(@Param('id') id: string, @Query() q: ExecutionAuditAcceptanceDto, @Req() req: Req_) {
+    const data = await this.svc.executionAuditAcceptance(id, { backfill: q.backfill ?? false });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/execution-audit/run')
+  async runExecutionAuditAcceptance(@Param('id') id: string, @Body() body: ExecutionAuditAcceptanceDto, @Req() req: Req_) {
+    const data = await this.svc.executionAuditAcceptance(id, { backfill: body.backfill ?? true });
     return { success: true, data, traceId: tid(req) };
   }
 

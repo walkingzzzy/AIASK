@@ -30,10 +30,13 @@ export class DegradeInterceptor implements NestInterceptor {
             new ServiceUnavailableException({
               code: 'MCP_UNAVAILABLE',
               message: '上游能力暂不可用',
+              degraded: true,
+              acceptanceStatus: 'degraded',
               detail: {
                 upstream: detail,
                 fallback: {
                   enabled: true,
+                  status: 'degraded',
                   fallback_reason: 'mcp_bad_gateway',
                   source_chain: ['mcp_gateway', 'none'],
                   path: request.url ?? 'UNKNOWN',
@@ -45,4 +48,3 @@ export class DegradeInterceptor implements NestInterceptor {
     );
   }
 }
-

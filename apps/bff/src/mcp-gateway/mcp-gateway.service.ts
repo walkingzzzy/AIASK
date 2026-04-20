@@ -1,10 +1,17 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { existsSync } from 'node:fs';
 import { delimiter, isAbsolute, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { ObservabilityService } from '../observability/observability.service';
+
+type McpTransportMode = 'stdio' | 'streamable-http' | 'sse' | 'auto';
+type McpTransportKind = 'stdio' | 'streamable-http' | 'sse';
+type McpTransport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
 
 type McpHealth = {
   reachable: boolean;
@@ -15,16 +22,34 @@ type McpHealth = {
   message: string;
   poolSize?: number;
   activeConnections?: number;
+  transportMode?: McpTransportMode;
+  transportKind?: McpTransportKind | 'none';
+  degraded?: boolean;
+  fallbackReason?: string | null;
+  sourceChain?: string[];
+  endpoint?: string | null;
+  lastError?: string | null;
 };
 
 type McpStartupProfile = 'full' | 'worker' | 'tool-only';
 
+type McpConnectionMeta = {
+  requestedTransport: McpTransportMode;
+  transportKind: McpTransportKind;
+  degraded: boolean;
+  fallbackReason: string | null;
+  sourceChain: string[];
+  endpoint: string | null;
+  lastError: string | null;
+};
+
 interface PooledConnection {
   id: number;
   client: Client;
-  transport: StdioClientTransport;
+  transport: McpTransport;
   busy: boolean;
   connectPromise: Promise<void> | null;
+  meta: McpConnectionMeta;
 }
 
 type HealthCacheEntry = {
@@ -49,6 +74,12 @@ export class McpGatewayService implements OnModuleDestroy {
   private readonly poolAcquireTimeoutMs: number;
   private readonly toolCallTimeoutMs: number;
   private readonly healthCacheTtlMs: number;
+  private readonly transportMode: McpTransportMode;
+  private readonly streamableHttpUrl: string;
+  private readonly allowSseFallback: boolean;
+  private readonly allowStdioFallback: boolean;
+  private readonly streamableHttpTimeoutMs: number;
+  private readonly streamableHttpHeaders: Record<string, string>;
   private waitQueue: Waiter[] = [];
   private dedicatedConnections = new Map<string, PooledConnection>();
   private dedicatedWaitQueues = new Map<string, Waiter[]>();
@@ -59,8 +90,13 @@ export class McpGatewayService implements OnModuleDestroy {
   private totalToolErrors = 0;
   private readonly latencyHistoryMs: number[] = [];
   private readonly toolUsage = new Map<string, number>();
+  private lastTransportError: string | null = null;
+  private lastConnectionMeta: McpConnectionMeta | null = null;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly observability: ObservabilityService,
+  ) {
     this.poolSize = Math.max(
       1,
       Number(this.configService.get<string>('MCP_POOL_SIZE', '8')),
@@ -77,6 +113,17 @@ export class McpGatewayService implements OnModuleDestroy {
     this.healthCacheTtlMs = Math.max(
       1000,
       Number(this.configService.get<string>('MCP_HEALTH_CACHE_TTL_MS', '10000')),
+    );
+    this.transportMode = this.resolveTransportMode();
+    this.streamableHttpUrl = this.configService.get<string>('MCP_STREAMABLE_HTTP_URL', '').trim();
+    this.allowSseFallback = this.readBooleanConfig('MCP_STREAMABLE_HTTP_ALLOW_SSE_FALLBACK', true);
+    this.allowStdioFallback = this.readBooleanConfig('MCP_TRANSPORT_ALLOW_STDIO_FALLBACK', true);
+    this.streamableHttpTimeoutMs = Math.max(
+      1000,
+      Number(this.configService.get<string>('MCP_STREAMABLE_HTTP_TIMEOUT_MS', '10000')),
+    );
+    this.streamableHttpHeaders = this.parseHeaderConfig(
+      this.configService.get<string>('MCP_STREAMABLE_HTTP_HEADERS', ''),
     );
   }
 
@@ -122,10 +169,17 @@ export class McpGatewayService implements OnModuleDestroy {
             toolCount: count,
             expectedTools: resolvedExpectedTools,
             matched: count === resolvedExpectedTools,
-            source: 'stdio',
+            source: conn.meta.transportKind,
             message: expectedTools == null ? 'ok(dynamic-runtime-baseline)' : 'ok',
             poolSize: this.poolSize,
             activeConnections: this.pool.length,
+            transportMode: this.transportMode,
+            transportKind: conn.meta.transportKind,
+            degraded: conn.meta.degraded,
+            fallbackReason: conn.meta.fallbackReason,
+            sourceChain: conn.meta.sourceChain,
+            endpoint: conn.meta.endpoint,
+            lastError: conn.meta.lastError ?? this.lastTransportError,
           });
         }
       } finally {
@@ -135,15 +189,23 @@ export class McpGatewayService implements OnModuleDestroy {
       // ignore and fallthrough
     }
 
+    const transport = this.getTransportSnapshot();
     return this.cacheHealth({
       reachable: false,
       toolCount: null,
       expectedTools,
       matched: false,
-      source: 'none',
+      source: transport.transportKind,
       message: 'MCP not reachable or available_tools response format unknown',
       poolSize: this.poolSize,
       activeConnections: this.pool.length,
+      transportMode: transport.requestedTransport,
+      transportKind: transport.transportKind,
+      degraded: true,
+      fallbackReason: transport.fallbackReason,
+      sourceChain: transport.sourceChain,
+      endpoint: transport.endpoint,
+      lastError: transport.lastError,
     });
   }
 
@@ -162,10 +224,10 @@ export class McpGatewayService implements OnModuleDestroy {
         timeoutMs,
         `MCP tool ${name} timed out after ${timeoutMs}ms`,
       );
-      this.recordToolMetric(name, performance.now() - startedAt, false);
+      this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
       return this.normalizeToolResult(result);
     } catch (error) {
-      this.recordToolMetric(name, performance.now() - startedAt, true);
+      this.recordToolMetric(name, performance.now() - startedAt, true, conn.meta);
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
         await this.recycleConnection(conn, dedicated ? name : undefined);
@@ -186,10 +248,10 @@ export class McpGatewayService implements OnModuleDestroy {
         this.toolCallTimeoutMs,
         `MCP resource ${uri} timed out after ${this.toolCallTimeoutMs}ms`,
       );
-      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false);
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false, conn.meta);
       return this.normalizeResourceResult(result);
     } catch (error) {
-      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true);
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true, conn.meta);
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}] while reading resource, recycling connection`);
         await this.recycleConnection(conn);
@@ -206,6 +268,7 @@ export class McpGatewayService implements OnModuleDestroy {
     p99Latency: number;
     errorRate: number;
     tools: Array<{ name: string; calls: number }>;
+    transport: ReturnType<McpGatewayService['getTransportSnapshot']>;
   } {
     const samples = [...this.latencyHistoryMs].sort((a, b) => a - b);
     const avgLatency = samples.length > 0
@@ -227,6 +290,33 @@ export class McpGatewayService implements OnModuleDestroy {
         ? Number(((this.totalToolErrors / this.totalToolCalls) * 100).toFixed(2))
         : 0,
       tools: topTools,
+      transport: this.getTransportSnapshot(),
+    };
+  }
+
+  getTransportSnapshot(): {
+    requestedTransport: McpTransportMode;
+    transportKind: McpTransportKind | 'none';
+    degraded: boolean;
+    fallbackReason: string | null;
+    sourceChain: string[];
+    endpoint: string | null;
+    lastError: string | null;
+    healthyConnections: number;
+    dedicatedConnections: number;
+  } {
+    const liveConnections = [...this.pool, ...this.dedicatedConnections.values()];
+    const liveMeta = liveConnections[0]?.meta ?? this.lastConnectionMeta;
+    return {
+      requestedTransport: this.transportMode,
+      transportKind: liveMeta?.transportKind ?? 'none',
+      degraded: Boolean(liveMeta?.degraded || this.lastTransportError),
+      fallbackReason: liveMeta?.fallbackReason ?? null,
+      sourceChain: liveMeta?.sourceChain ?? [],
+      endpoint: liveMeta?.endpoint ?? (this.streamableHttpUrl || null),
+      lastError: liveMeta?.lastError ?? this.lastTransportError,
+      healthyConnections: liveConnections.length,
+      dedicatedConnections: this.dedicatedConnections.size,
     };
   }
 
@@ -328,46 +418,176 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   private async createConnection(id: number): Promise<PooledConnection> {
-    const cwd = this.resolveMcpCwd();
-    const command = this.resolveMcpCommand(cwd);
-    const args = this.parseArgs(
-      this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
+    const requestedTransport = this.transportMode;
+    const attemptedKinds: McpTransportKind[] = [];
+    const fallbackReasons: string[] = [];
+    let lastError: unknown = null;
+
+    for (const kind of this.resolveTransportCandidates()) {
+      if ((kind === 'streamable-http' || kind === 'sse') && !this.streamableHttpUrl) {
+        if (requestedTransport !== 'stdio') {
+          fallbackReasons.push('streamable_http_url_missing');
+        }
+        continue;
+      }
+      attemptedKinds.push(kind);
+      try {
+        const resolved = await this.connectTransport(id, kind);
+        const meta: McpConnectionMeta = {
+          requestedTransport,
+          transportKind: kind,
+          degraded: fallbackReasons.length > 0 || attemptedKinds.length > 1,
+          fallbackReason: fallbackReasons[0] ?? (attemptedKinds.length > 1 ? `${attemptedKinds[0]}_connect_failed` : null),
+          sourceChain: [...attemptedKinds],
+          endpoint: resolved.endpoint,
+          lastError: lastError ? this.formatError(lastError) : null,
+        };
+        this.lastTransportError = meta.lastError;
+        this.lastConnectionMeta = meta;
+        return { id, client: resolved.client, transport: resolved.transport, busy: false, connectPromise: null, meta };
+      } catch (error) {
+        lastError = error;
+        fallbackReasons.push(`${kind.replace(/-/g, '_')}_connect_failed`);
+        this.recordTransportError(error);
+      }
+    }
+
+    throw new Error(
+      `Unable to establish MCP connection via ${requestedTransport}; last error: ${this.formatError(lastError)}`,
     );
-    const startupProfile = this.resolveStartupProfile(id);
-    const env: Record<string, string> = {
-      ...Object.entries(process.env).reduce<Record<string, string>>((acc, [k, v]) => {
-        if (typeof v === 'string') acc[k] = v;
-        return acc;
-      }, {}),
-      PYTHONPATH: this.buildPythonPath(cwd),
-      PYTHONIOENCODING:
-        this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
-      AKSHARE_MCP_STARTUP_PROFILE: startupProfile,
-      AKSHARE_MCP_CONNECTION_SLOT: String(id),
+  }
+
+  private async connectTransport(
+    id: number,
+    kind: McpTransportKind,
+  ): Promise<{ client: Client; transport: McpTransport; endpoint: string | null }> {
+    if (kind === 'stdio') {
+      const cwd = this.resolveMcpCwd();
+      const command = this.resolveMcpCommand(cwd);
+      const args = this.parseArgs(
+        this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
+      );
+      const startupProfile = this.resolveStartupProfile(id);
+      const env: Record<string, string> = {
+        ...Object.entries(process.env).reduce<Record<string, string>>((acc, [k, v]) => {
+          if (typeof v === 'string') acc[k] = v;
+          return acc;
+        }, {}),
+        PYTHONPATH: this.buildPythonPath(cwd),
+        PYTHONIOENCODING:
+          this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
+        AKSHARE_MCP_STARTUP_PROFILE: startupProfile,
+        AKSHARE_MCP_CONNECTION_SLOT: String(id),
+      };
+      const transport = new StdioClientTransport({
+        command,
+        args,
+        cwd,
+        env,
+        stderr: 'inherit',
+      });
+      const client = this.createClient(id);
+      try {
+        await client.connect(transport);
+      } catch (error) {
+        try { await transport.close(); } catch { /* ignore */ }
+        throw error;
+      }
+      this.logger.log(`MCP pool connection[${id}] established (transport=stdio, profile=${startupProfile})`);
+      return { client, transport, endpoint: cwd };
+    }
+
+    const url = new URL(this.streamableHttpUrl);
+    const requestInit: RequestInit = {
+      headers: this.streamableHttpHeaders,
     };
+    const client = this.createClient(id);
 
-    const transport = new StdioClientTransport({
-      command,
-      args,
-      cwd,
-      env,
-      stderr: 'inherit',
+    if (kind === 'streamable-http') {
+      const transport = new StreamableHTTPClientTransport(url, {
+        requestInit,
+        reconnectionOptions: {
+          initialReconnectionDelay: 1000,
+          maxReconnectionDelay: Math.max(2000, this.streamableHttpTimeoutMs * 3),
+          reconnectionDelayGrowFactor: 1.5,
+          maxRetries: 2,
+        },
+      });
+      try {
+        await this.withTimeout(
+          client.connect(transport),
+          this.streamableHttpTimeoutMs,
+          `MCP Streamable HTTP connection timed out after ${this.streamableHttpTimeoutMs}ms`,
+        );
+      } catch (error) {
+        try { await transport.close(); } catch { /* ignore */ }
+        throw error;
+      }
+      this.logger.log(`MCP pool connection[${id}] established (transport=streamable-http, endpoint=${url.toString()})`);
+      return { client, transport, endpoint: url.toString() };
+    }
+
+    const transport = new SSEClientTransport(url, {
+      requestInit,
+      eventSourceInit: { fetch: globalThis.fetch as typeof globalThis.fetch },
     });
-
-    const client = new Client(
-      { name: `aiask-bff-pool-${id}`, version: '0.1.0' },
-      { capabilities: {} },
-    );
-
     try {
-      await client.connect(transport);
+      await this.withTimeout(
+        client.connect(transport),
+        this.streamableHttpTimeoutMs,
+        `MCP SSE connection timed out after ${this.streamableHttpTimeoutMs}ms`,
+      );
     } catch (error) {
       try { await transport.close(); } catch { /* ignore */ }
       throw error;
     }
+    this.logger.log(`MCP pool connection[${id}] established (transport=sse, endpoint=${url.toString()})`);
+    return { client, transport, endpoint: url.toString() };
+  }
 
-    this.logger.log(`MCP pool connection[${id}] established (profile=${startupProfile})`);
-    return { id, client, transport, busy: false, connectPromise: null };
+  private createClient(id: number): Client {
+    return new Client(
+      { name: `aiask-bff-pool-${id}`, version: '0.1.0' },
+      { capabilities: {} },
+    );
+  }
+
+  private resolveTransportCandidates(): McpTransportKind[] {
+    switch (this.transportMode) {
+      case 'stdio':
+        return ['stdio'];
+      case 'streamable-http':
+        return [
+          'streamable-http',
+          ...(this.allowSseFallback ? ['sse'] as const : []),
+          ...(this.allowStdioFallback ? ['stdio'] as const : []),
+        ];
+      case 'sse':
+        return [
+          'sse',
+          ...(this.allowStdioFallback ? ['stdio'] as const : []),
+        ];
+      case 'auto':
+      default:
+        if (!this.streamableHttpUrl) {
+          return ['stdio'];
+        }
+        return [
+          'streamable-http',
+          ...(this.allowSseFallback ? ['sse'] as const : []),
+          ...(this.allowStdioFallback ? ['stdio'] as const : []),
+        ];
+    }
+  }
+
+  private resolveTransportMode(): McpTransportMode {
+    const normalized = this.configService.get<string>('MCP_TRANSPORT', 'auto').trim().toLowerCase();
+    if (normalized === 'stdio') return 'stdio';
+    if (normalized === 'streamable-http' || normalized === 'streamable_http' || normalized === 'http') {
+      return 'streamable-http';
+    }
+    if (normalized === 'sse') return 'sse';
+    return 'auto';
   }
 
   private async recycleConnection(conn: PooledConnection, dedicatedTool?: string): Promise<void> {
@@ -378,6 +598,7 @@ export class McpGatewayService implements OnModuleDestroy {
       conn.client = fresh.client;
       conn.transport = fresh.transport;
       conn.connectPromise = fresh.connectPromise;
+      conn.meta = fresh.meta;
     } catch (err) {
       if (dedicatedTool) {
         this.dedicatedConnections.delete(dedicatedTool);
@@ -430,6 +651,40 @@ export class McpGatewayService implements OnModuleDestroy {
       msg.includes('broken pipe') ||
       msg.includes('timed out')
     );
+  }
+
+  private readBooleanConfig(key: string, fallback: boolean): boolean {
+    const raw = this.configService.get<string>(key);
+    if (raw == null || raw.trim().length === 0) return fallback;
+    return !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase());
+  }
+
+  private parseHeaderConfig(raw: string): Record<string, string> {
+    const trimmed = raw.trim();
+    if (!trimmed) return {};
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {};
+      }
+      return Object.entries(parsed).reduce<Record<string, string>>((acc, [key, value]) => {
+        if (value != null && String(value).trim()) {
+          acc[key] = String(value);
+        }
+        return acc;
+      }, {});
+    } catch {
+      return {};
+    }
+  }
+
+  private formatError(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return String(error);
+  }
+
+  private recordTransportError(error: unknown): void {
+    this.lastTransportError = this.formatError(error);
   }
 
   private waitForConnection(queue: Waiter[], timeoutMessage: string): Promise<PooledConnection> {
@@ -585,7 +840,12 @@ export class McpGatewayService implements OnModuleDestroy {
     return id < this.fullProfilePoolSlots ? 'worker' : 'tool-only';
   }
 
-  private recordToolMetric(name: string, latencyMs: number, errored: boolean): void {
+  private recordToolMetric(
+    name: string,
+    latencyMs: number,
+    errored: boolean,
+    meta?: McpConnectionMeta | null,
+  ): void {
     this.totalToolCalls += 1;
     if (errored) {
       this.totalToolErrors += 1;
@@ -597,6 +857,13 @@ export class McpGatewayService implements OnModuleDestroy {
     if (this.latencyHistoryMs.length > 500) {
       this.latencyHistoryMs.splice(0, this.latencyHistoryMs.length - 500);
     }
+    this.observability.recordMcpCall({
+      name: normalizedName,
+      latencyMs,
+      errored,
+      transportKind: meta?.transportKind ?? this.getTransportSnapshot().transportKind,
+      degraded: Boolean(meta?.degraded ?? this.getTransportSnapshot().degraded),
+    });
   }
 
   private withFallbackMetaDefaults(payload: unknown): unknown {

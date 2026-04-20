@@ -1,43 +1,49 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { HealthService } from './health.service';
-import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { Public } from '../rbac/public.decorator';
-import { CommonCacheService } from '../common/cache.service';
 
 @Controller('health')
 export class HealthController {
-  constructor(
-    private readonly healthService: HealthService,
-    private readonly mcpGatewayService: McpGatewayService,
-    private readonly cacheService: CommonCacheService,
-  ) { }
+  constructor(private readonly healthService: HealthService) { }
 
   @Public()
   @Get()
-  getHealth() {
+  async getHealth() {
     return this.healthService.getHealth();
+  }
+
+  @Public()
+  @Get('live')
+  async getLiveness() {
+    const base = await this.healthService.getHealth();
+    return {
+      success: true,
+      data: {
+        service: base.service,
+        status: 'ok',
+        probe: 'liveness',
+        startedAt: base.startedAt,
+        timestamp: base.timestamp,
+      },
+    };
   }
 
   @Public()
   @Get('mcp')
   async getMcpHealth() {
-    const base = this.healthService.getHealth();
-    const mcp = await this.mcpGatewayService.checkAvailableTools();
-
+    const base = await this.healthService.getHealth();
     return {
       success: true,
-      data: { ...base, mcp },
+      data: { ...base, mcp: base.mcp },
     };
   }
 
   @Public()
   @Get('ready')
   async getReadyHealth() {
-    const base = this.healthService.getHealth();
-    const mcp = await this.mcpGatewayService.checkAvailableTools();
-    const dbReady = !base.db.enabled || base.db.healthy;
-    const ready = dbReady && mcp.reachable;
-    const payload = { success: ready, data: { ...base, mcp } };
+    const base = await this.healthService.getHealth();
+    const ready = base.probes.readiness === 'ready';
+    const payload = { success: ready, data: base };
 
     if (!ready) {
       throw new ServiceUnavailableException(payload);
@@ -47,12 +53,35 @@ export class HealthController {
   }
 
   @Public()
+  @Get('startup')
+  async getStartupHealth() {
+    const base = await this.healthService.getHealth();
+    const started = base.probes.startup === 'complete';
+    const payload = {
+      success: started,
+      data: {
+        service: base.service,
+        status: started ? 'ok' : 'starting',
+        probe: 'startup',
+        startedAt: base.startedAt,
+        timestamp: base.timestamp,
+      },
+    };
+
+    if (!started) {
+      throw new ServiceUnavailableException(payload);
+    }
+
+    return payload;
+  }
+
+  @Public()
   @Get('cache')
-  getCacheHealth() {
-    const base = this.healthService.getHealth();
+  async getCacheHealth() {
+    const base = await this.healthService.getHealth();
     return {
       ...base,
-      cache: this.cacheService.getStats(),
+      cache: base.cache,
     };
   }
 

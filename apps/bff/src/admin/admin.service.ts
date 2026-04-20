@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { existsSync } from 'fs';
-import { readFile, rm, writeFile } from 'fs/promises';
-import { isAbsolute, resolve } from 'path';
+import { appendFile, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { dirname, isAbsolute, resolve } from 'path';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 import { AuthService } from '../auth/auth.service';
@@ -147,6 +147,44 @@ export class AdminService {
     } catch {
       return { removed: 0 };
     }
+  }
+
+  async seedDeadLetters(count = 1): Promise<{ added: number; path: string }> {
+    const safeCount = Math.max(1, Math.min(10, Number(count) || 1));
+    let toolPath = 'cache/dead_letters/kline_save_failures.jsonl';
+
+    try {
+      const raw = await this.callToolWithTimeout('get_dead_letters', { limit: 1 });
+      const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+      if (typeof result.path === 'string' && result.path.trim()) {
+        toolPath = result.path.trim();
+      }
+    } catch {
+      // fall back to the default cache path when MCP does not report the file location
+    }
+
+    const resolvedPath = this.resolveDeadLetterPath(toolPath);
+    const now = Date.now();
+    const records = Array.from({ length: safeCount }, (_, index) => ({
+      id: `pw-audit-dead-letter-${now}-${index + 1}`,
+      kind: 'save_failure',
+      stock_code: index % 2 === 0 ? '600519' : '000001',
+      retry: index === 0 ? 3 : 1,
+      enqueued_at: Math.floor((now - index * 60_000) / 1000),
+      failed_at: Math.floor((now + index) / 1000),
+      error: 'Playwright 审计样本：用于验证死信队列重试与清理动作',
+      klines_count: 0,
+      sample_dates: [],
+      source: 'bff.admin.seed_dead_letters',
+    }));
+
+    await mkdir(dirname(resolvedPath), { recursive: true });
+    await appendFile(
+      resolvedPath,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf-8',
+    );
+    return { added: records.length, path: resolvedPath };
   }
 
   async listUsers(): Promise<Array<{ id: string; username: string; role: string; status: string; createdAt?: string; lastActive?: string }>> {

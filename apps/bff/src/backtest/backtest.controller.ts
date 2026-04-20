@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { IsArray, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
+import { IsArray, IsIn, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
 import { BacktestService } from './backtest.service';
 
 class RunBacktestDto {
@@ -48,6 +48,20 @@ class BatchBacktestDto {
   @IsOptional() @IsNumberString() commission?: string;
   @IsOptional() @IsNumberString() shortPeriod?: string;
   @IsOptional() @IsNumberString() longPeriod?: string;
+}
+
+class OptimizeBacktestDto extends RunBacktestDto {
+  @IsOptional() @IsString() @IsIn(['balanced', 'sharpe', 'total_return']) objective?: string;
+  @IsOptional() @IsNumberString() topN?: string;
+  @IsOptional() @IsNumberString() maxCandidates?: string;
+}
+
+class WalkForwardBacktestDto extends RunBacktestDto {
+  @IsOptional() @IsString() @IsIn(['balanced', 'sharpe', 'total_return']) objective?: string;
+  @IsOptional() @IsNumberString() trainDays?: string;
+  @IsOptional() @IsNumberString() testDays?: string;
+  @IsOptional() @IsNumberString() stepDays?: string;
+  @IsOptional() @IsNumberString() maxFolds?: string;
 }
 
 @Controller('backtest')
@@ -122,6 +136,68 @@ export class BacktestController {
       longPeriod: body.longPeriod ? Number(body.longPeriod) : undefined,
     });
     const traceId = req.traceId || req.headers?.['x-trace-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Post('optimize')
+  async optimize(
+    @Body() body: OptimizeBacktestDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const toNum = (v?: string) => v != null ? Number(v) : undefined;
+    const data = await this.backtestService.optimize({
+      code: body.code,
+      strategy: body.strategy ?? 'ma_cross',
+      startDate: body.startDate,
+      endDate: body.endDate,
+      initialCapital: toNum(body.initialCapital),
+      shortPeriod: toNum(body.shortPeriod),
+      longPeriod: toNum(body.longPeriod),
+      lookback: toNum(body.lookback),
+      threshold: toNum(body.threshold),
+      rsiPeriod: toNum(body.rsiPeriod),
+      oversold: toNum(body.oversold),
+      overbought: toNum(body.overbought),
+      commission: toNum(body.commission),
+      slippage: toNum(body.slippage),
+      objective: body.objective as 'balanced' | 'sharpe' | 'total_return' | undefined,
+      topN: toNum(body.topN),
+      maxCandidates: toNum(body.maxCandidates),
+    });
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Post('walk-forward')
+  async walkForward(
+    @Body() body: WalkForwardBacktestDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const toNum = (v?: string) => v != null ? Number(v) : undefined;
+    const data = await this.backtestService.walkForward({
+      code: body.code,
+      strategy: body.strategy ?? 'ma_cross',
+      startDate: body.startDate,
+      endDate: body.endDate,
+      initialCapital: toNum(body.initialCapital),
+      shortPeriod: toNum(body.shortPeriod),
+      longPeriod: toNum(body.longPeriod),
+      lookback: toNum(body.lookback),
+      threshold: toNum(body.threshold),
+      rsiPeriod: toNum(body.rsiPeriod),
+      oversold: toNum(body.oversold),
+      overbought: toNum(body.overbought),
+      commission: toNum(body.commission),
+      slippage: toNum(body.slippage),
+      objective: body.objective as 'balanced' | 'sharpe' | 'total_return' | undefined,
+      trainDays: toNum(body.trainDays),
+      testDays: toNum(body.testDays),
+      stepDays: toNum(body.stepDays),
+      maxFolds: toNum(body.maxFolds),
+    });
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 }

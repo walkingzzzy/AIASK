@@ -22,6 +22,7 @@ import { RiskModule } from './risk/risk.module';
 import { FundFlowModule } from './fund-flow/fund-flow.module';
 import { FactorModule } from './factor/factor.module';
 import { AssistantModule } from './assistant/assistant.module';
+import { AnalysisModule } from './analysis/analysis.module';
 import { ValuationModule } from './valuation/valuation.module';
 import { TechnicalModule } from './technical/technical.module';
 import { SentimentModule } from './sentiment/sentiment.module';
@@ -44,6 +45,9 @@ import { EventModule } from './event/event.module';
 import { ExecutionModule } from './execution/execution.module';
 import { PerformanceModule } from './performance/performance.module';
 import { WorkspaceModule } from './workspace/workspace.module';
+import { ObservabilityModule } from './observability/observability.module';
+import { ObservabilityInterceptor } from './observability/observability.interceptor';
+import { McpJobsModule } from './mcp-jobs/mcp-jobs.module';
 
 const DEFAULT_HTTP_THROTTLE_TTL_MS = 60_000;
 const DEFAULT_HTTP_THROTTLE_LIMIT = 600;
@@ -56,6 +60,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ObservabilityModule,
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -76,6 +81,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
     DbModule,
     CommonCacheModule,
     McpGatewayModule,
+    McpJobsModule,
     AuthModule,
     HealthModule,
     MarketModule,
@@ -88,6 +94,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
     FundFlowModule,
     FactorModule,
     AssistantModule,
+    AnalysisModule,
     ValuationModule,
     TechnicalModule,
     SentimentModule,
@@ -115,6 +122,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: TradingThrottleGuard },
+    { provide: APP_INTERCEPTOR, useClass: ObservabilityInterceptor },
     { provide: APP_INTERCEPTOR, useClass: DegradeInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
