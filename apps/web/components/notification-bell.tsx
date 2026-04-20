@@ -63,6 +63,8 @@ export function NotificationBell() {
     refetchInterval: pollingEnabled ? 30000 : false,
     staleTime: 30000,
     redirectOnUnauthorized: false,
+    nonFatal: true,
+    fallbackData: { count: 0 },
   });
   const recentQ = useApiQuery<unknown>(
     notificationsEnabled && open && pageVisible && bffAvailability.reachable ? '/notifications/list?limit=10' : null,
@@ -71,6 +73,8 @@ export function NotificationBell() {
       refetchInterval: open && pageVisible ? 30000 : false,
       staleTime: 30000,
       redirectOnUnauthorized: false,
+      nonFatal: true,
+      fallbackData: { items: [] },
     },
   );
   const markAllReadApi = useApiMutation<{ markedCount?: number }>({

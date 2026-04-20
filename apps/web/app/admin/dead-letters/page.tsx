@@ -2,11 +2,14 @@
 
 import Link from 'next/link';
 import { useState, useMemo } from 'react';
-import { PageContainer, SectionCard, Badge, KpiCard, KpiGrid } from '@/components/ui';
+import { PageContainer, SectionCard, Badge, DataTable, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
+import { isPermissionDeniedErrorMessage } from '@/lib/api';
 import { apiKeys } from '@/lib/query-keys';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 type DeadLetterItem = {
     id: string;
@@ -57,6 +60,8 @@ function getPriorityMeta(item: DeadLetterItem) {
 export default function DeadLettersPage() {
     const [retrying, setRetrying] = useState<string | null>(null);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+    const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
     const dlQ = useApiQuery<unknown>('/admin/dead-letters', {
         refetchInterval: 15000,
@@ -137,62 +142,94 @@ export default function DeadLettersPage() {
     };
 
     if (dlQ.error) {
+        const permissionDenied = isPermissionDeniedErrorMessage(dlQ.error);
         return (
             <PageContainer>
                 <div className="flex items-center justify-between mb-4">
                     <h1 className="text-lg font-semibold">📭 死信队列</h1>
                 </div>
-                <ErrorState text={dlQ.error} hint="当前页面需要管理员权限；请求失败时不再显示“无死信消息”。" onRetry={() => dlQ.refetch()} />
+                {permissionDenied ? (
+                    <SectionCard className="p-4">
+                        <EmptyState
+                            variant="full"
+                            text="当前账号无权查看死信队列"
+                            hint="如果这是预期的权限拒绝，请保留该状态并避免继续重试写操作；如果当前账号应该拥有管理员权限，请先核对登录身份与角色。"
+                            action={
+                                <>
+                                    <Link href="/admin" className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">返回管理后台</Link>
+                                    <Link href="/admin/tools" className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">检查工具健康</Link>
+                                </>
+                            }
+                        />
+                    </SectionCard>
+                ) : (
+                    <ErrorState text={dlQ.error} hint="当前页面需要管理员权限；请求失败时不再显示“无死信消息”。" onRetry={() => dlQ.refetch()} />
+                )}
             </PageContainer>
         );
     }
 
     return (
         <PageContainer>
-            <div className="flex items-center justify-between mb-4">
-                <div>
-                    <h1 className="text-lg font-semibold">📭 死信队列</h1>
-                    <p className="mt-1 text-sm text-text-secondary">优先处理反复失败的任务，避免后台异常持续堆积并反复影响用户操作。</p>
-                </div>
-                {letters.length > 0 ? (
-                    <button
-                        type="button"
-                        onClick={handleClearAll}
-                        disabled={clearApi.isPending}
-                        className="text-xs px-3 py-1.5 bg-danger/20 text-danger rounded-lg cursor-pointer border border-danger/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {clearApi.isPending ? '清除中...' : '清除全部'}
-                    </button>
-                ) : null}
+            <div className="mb-4">
+                <h1 className="text-lg font-semibold">📭 死信队列</h1>
+                <p className="mt-1 text-sm text-text-secondary">首屏只保留待处理概览和主表，排障说明与危险动作全部下沉。</p>
             </div>
             {actionError ? <ErrorState text={actionError} /> : null}
 
             {letters.length > 0 ? (
-                <>
-                    <KpiGrid cols={4} className="mb-4">
-                        <KpiCard title="待处理死信" value={summary.total} />
-                        <KpiCard title="24 小时新增" value={summary.recent} />
-                        <KpiCard title="反复失败" value={summary.repeated} className={summary.repeated > 0 ? 'ring-1 ring-warning/30' : ''} />
-                        <KpiCard title="需要人工处理" value={summary.urgent} className={summary.urgent > 0 ? 'ring-1 ring-danger/30' : ''} />
-                    </KpiGrid>
-
-                    {summary.urgent > 0 ? (
-                        <SectionCard className="mb-4 border border-danger/20">
-                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                <div>
-                                    <div className="text-sm font-medium text-danger">有 {summary.urgent} 条死信已经连续失败多次</div>
-                                    <p className="mb-0 mt-1 text-xs leading-5 text-text-secondary">
-                                        这类任务通常不是简单重试就能恢复。建议先排查工具健康、缓存状态或上游依赖，再回到这里处理。
-                                    </p>
+                <SectionCard className="mb-4 p-4">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                        <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text-primary">当前待处理概览</div>
+                            <div className="mt-1 text-sm text-text-secondary">
+                                待处理 {summary.total} 条 ｜ 需人工处理 {summary.urgent} 条 ｜ 最近 24 小时新增 {summary.recent} 条
+                            </div>
+                            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                <div className="rounded-2xl border border-border bg-surface px-3 py-3">
+                                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">待处理死信</div>
+                                    <div className="mt-2 text-xl font-semibold text-text-primary">{summary.total}</div>
                                 </div>
+                                <div className="rounded-2xl border border-border bg-surface px-3 py-3">
+                                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">24 小时新增</div>
+                                    <div className="mt-2 text-xl font-semibold text-text-primary">{summary.recent}</div>
+                                </div>
+                                <div className="rounded-2xl border border-border bg-surface px-3 py-3">
+                                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">反复失败</div>
+                                    <div className="mt-2 text-xl font-semibold text-text-primary">{summary.repeated}</div>
+                                </div>
+                                <div className="rounded-2xl border border-border bg-surface px-3 py-3">
+                                    <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">需要人工处理</div>
+                                    <div className="mt-2 text-xl font-semibold text-text-primary">{summary.urgent}</div>
+                                </div>
+                            </div>
+                            {summary.urgent > 0 ? (
+                                <div className="mt-3 rounded-2xl border border-danger/20 bg-danger/5 px-3 py-3 text-sm text-text-secondary">
+                                    有 {summary.urgent} 条死信已经连续失败多次。建议先检查工具健康、缓存状态或上游依赖，再决定是否继续重试。
+                                </div>
+                            ) : null}
+                        </div>
+                        <details className="w-full rounded-2xl border border-danger/20 bg-danger/5 px-3 py-3 xl:max-w-[320px]" open={!compactLayout && summary.urgent > 0}>
+                            <summary className="cursor-pointer text-sm font-medium text-danger">危险操作与排障入口</summary>
+                            <div className="mt-3 space-y-3 text-xs text-text-secondary">
+                                <div>“清除全部”会直接清空待处理队列，仅在确认当前队列已经无保留价值时执行。</div>
                                 <div className="flex flex-wrap gap-2">
                                     <Link href="/admin/tools" className="rounded-full border border-danger/30 px-3 py-1 text-xs text-danger no-underline">检查工具健康</Link>
                                     <Link href="/admin/cache" className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">查看缓存状态</Link>
                                 </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setConfirmClearOpen(true)}
+                                    disabled={clearApi.isPending}
+                                    data-testid="dead-letters-clear-all-action"
+                                    className="w-full rounded-lg border border-danger/30 bg-danger/20 px-3 py-2 text-xs text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {clearApi.isPending ? '清除中...' : '清除全部'}
+                                </button>
                             </div>
-                        </SectionCard>
-                    ) : null}
-                </>
+                        </details>
+                    </div>
+                </SectionCard>
             ) : null}
 
             {letters.length === 0 ? (
@@ -213,51 +250,171 @@ export default function DeadLettersPage() {
                     )}
                 </SectionCard>
             ) : (
-                <div className="space-y-2">
-                    {sortedLetters.map((l) => {
-                        const priority = getPriorityMeta(l);
-                        return (
-                        <SectionCard key={l.id} className="p-3">
-                            <div className="flex items-start justify-between gap-2">
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <Badge variant="danger">{l.tool}</Badge>
-                                        <Badge variant={priority.variant}>{priority.label}</Badge>
-                                        <span className="text-[10px] text-text-secondary">
-                                            {l.timestampMs != null ? new Date(l.timestampMs).toLocaleString('zh-CN') : l.timestamp}
-                                        </span>
-                                        {l.retries > 0 && <span className="text-[10px] text-text-secondary">重试 {l.retries} 次</span>}
-                                    </div>
-                                    <p className="text-xs text-danger mb-1">{l.error}</p>
-                                    <p className="mb-0 text-[11px] leading-5 text-text-secondary">{priority.hint}</p>
-                                    {l.payload ? (
-                                        <details className="mt-2 rounded-lg border border-glass-border bg-black/10 px-3 py-2">
-                                            <summary className="cursor-pointer text-[11px] text-text-secondary">查看请求载荷</summary>
-                                            <pre className="mb-0 mt-2 whitespace-pre-wrap break-all text-[10px] text-text-muted">{l.payload}</pre>
-                                        </details>
-                                    ) : null}
-                                </div>
-                                <div className="flex flex-col items-end gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => handleRetry(l.id)}
-                                        disabled={retrying === l.id}
-                                        className="text-xs px-2 py-1 bg-primary/20 text-primary rounded cursor-pointer border border-primary/30 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {retrying === l.id ? '重试中...' : '🔄 重试'}
-                                    </button>
-                                    {l.priority === 'urgent' ? (
-                                        <Link href="/admin/tools" className="text-[11px] text-danger underline">
-                                            先排查工具
-                                        </Link>
-                                    ) : null}
-                                </div>
+                <SectionCard className="p-3">
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <div className="text-sm font-medium text-text-primary">死信主表</div>
+                            <div className="mt-1 text-sm text-text-secondary">
+                                默认只展示状态、时间和错误摘要；载荷与排障建议进入详情态。
                             </div>
-                        </SectionCard>
-                        );
-                    })}
-                </div>
+                        </div>
+                        <div className="text-xs text-text-secondary">
+                            当前记录 {sortedLetters.length} 条 ｜ 首先处理“需要人工处理”与“反复失败”
+                        </div>
+                    </div>
+                    <DataTable
+                        rows={sortedLetters as unknown as Record<string, unknown>[]}
+                        pageSize={8}
+                        maxHeight={560}
+                        rowKey="id"
+                        columns={[
+                            {
+                                key: 'tool',
+                                label: '来源',
+                                render: (value) => <Badge variant="danger">{String(value || '未知工具')}</Badge>,
+                            },
+                            {
+                                key: 'priority',
+                                label: '状态',
+                                render: (_value, row) => {
+                                    const item = row as unknown as DeadLetterItem;
+                                    const priority = getPriorityMeta(item);
+                                    return (
+                                        <div className="space-y-1">
+                                            <Badge variant={priority.variant}>{priority.label}</Badge>
+                                            <div className="text-[11px] text-text-secondary">重试 {item.retries} 次</div>
+                                        </div>
+                                    );
+                                },
+                            },
+                            {
+                                key: 'error',
+                                label: '错误摘要',
+                                render: (value, row) => {
+                                    const item = row as unknown as DeadLetterItem;
+                                    const priority = getPriorityMeta(item);
+                                    return (
+                                        <div className="space-y-1">
+                                            <div className="text-sm text-danger">{String(value || '未提供错误信息')}</div>
+                                            <div className="text-xs text-text-secondary">{priority.hint}</div>
+                                        </div>
+                                    );
+                                },
+                            },
+                            {
+                                key: 'timestamp',
+                                label: '最近失败',
+                                render: (_value, row) => {
+                                    const item = row as unknown as DeadLetterItem;
+                                    return item.timestampMs != null
+                                        ? new Date(item.timestampMs).toLocaleString('zh-CN')
+                                        : item.timestamp;
+                                },
+                            },
+                            {
+                                key: 'detail',
+                                label: '详情与操作',
+                                sortable: false,
+                                render: (_value, row) => {
+                                    const item = row as unknown as DeadLetterItem;
+                                    return (
+                                        <div className="space-y-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleRetry(item.id)}
+                                                disabled={retrying === item.id}
+                                                data-testid={`dead-letter-retry-${item.id}`}
+                                                className="rounded-lg border border-primary/30 bg-primary/20 px-3 py-1.5 text-xs text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                                {retrying === item.id ? '重试中...' : '🔄 重试'}
+                                            </button>
+                                            <details className="rounded-lg border border-glass-border bg-white/35 px-3 py-2">
+                                                <summary className="cursor-pointer text-xs text-text-secondary">查看载荷与排障建议</summary>
+                                                <div className="mt-2 space-y-2 text-xs text-text-secondary">
+                                                    <div>{getPriorityMeta(item).hint}</div>
+                                                    {item.priority === 'urgent' ? (
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <Link href="/admin/tools" className="text-danger underline">先排查工具</Link>
+                                                            <Link href="/admin/cache" className="text-text-secondary underline">查看缓存状态</Link>
+                                                        </div>
+                                                    ) : null}
+                                                    {item.payload ? (
+                                                        <pre className="whitespace-pre-wrap break-all rounded-lg border border-glass-border bg-black/10 p-2 text-[10px] text-text-muted">{item.payload}</pre>
+                                                    ) : null}
+                                                </div>
+                                            </details>
+                                        </div>
+                                    );
+                                },
+                            },
+                        ]}
+                        mobileCardRender={(row) => {
+                            const item = row as unknown as DeadLetterItem;
+                            const priority = getPriorityMeta(item);
+                            return (
+                                <div className="space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="space-y-1">
+                                            <Badge variant="danger">{item.tool}</Badge>
+                                            <div className="text-xs text-text-secondary">
+                                                {item.timestampMs != null ? new Date(item.timestampMs).toLocaleString('zh-CN') : item.timestamp}
+                                            </div>
+                                        </div>
+                                        <Badge variant={priority.variant}>{priority.label}</Badge>
+                                    </div>
+                                    <div className="text-sm text-danger">{item.error}</div>
+                                    <div className="text-xs text-text-secondary">{priority.hint}</div>
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="text-xs text-text-secondary">重试 {item.retries} 次</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRetry(item.id)}
+                                            disabled={retrying === item.id}
+                                            data-testid={`dead-letter-retry-${item.id}`}
+                                            className="rounded-lg border border-primary/30 bg-primary/20 px-3 py-1.5 text-xs text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {retrying === item.id ? '重试中...' : '🔄 重试'}
+                                        </button>
+                                    </div>
+                                    <details className="rounded-lg border border-glass-border bg-white/35 px-3 py-2">
+                                        <summary className="cursor-pointer text-xs text-text-secondary">查看载荷与排障建议</summary>
+                                        <div className="mt-2 space-y-2 text-xs text-text-secondary">
+                                            {item.priority === 'urgent' ? (
+                                                <div className="flex flex-wrap gap-2">
+                                                    <Link href="/admin/tools" className="text-danger underline">先排查工具</Link>
+                                                    <Link href="/admin/cache" className="text-text-secondary underline">查看缓存状态</Link>
+                                                </div>
+                                            ) : null}
+                                            {item.payload ? (
+                                                <pre className="whitespace-pre-wrap break-all rounded-lg border border-glass-border bg-black/10 p-2 text-[10px] text-text-muted">{item.payload}</pre>
+                                            ) : null}
+                                        </div>
+                                    </details>
+                                </div>
+                            );
+                        }}
+                    />
+                </SectionCard>
             )}
+            <ConfirmDialog
+                open={confirmClearOpen}
+                title="确认清空死信队列"
+                confirmText={clearApi.isPending ? '清除中...' : '确认清除'}
+                danger
+                confirmDisabled={clearApi.isPending}
+                onCancel={() => setConfirmClearOpen(false)}
+                onConfirm={() => {
+                    void handleClearAll();
+                    setConfirmClearOpen(false);
+                }}
+            >
+                <div className="space-y-2">
+                    <div>这会清空当前待处理死信，不适合在仍需排障取证时执行。</div>
+                    <div className="text-xs text-text-secondary">
+                        当前队列：{summary.total} 条 ｜ 其中需人工处理 {summary.urgent} 条
+                    </div>
+                </div>
+            </ConfirmDialog>
         </PageContainer>
     );
 }

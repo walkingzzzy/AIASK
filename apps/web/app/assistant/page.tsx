@@ -3,10 +3,12 @@
 import { useState } from 'react';
 import { Badge, PageContainer, StockCodeInput, DataTable } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import DecisionCard from '@/components/decision-card';
 import UnifiedDecisionPanel from '@/components/unified-decision-panel';
 import UnifiedDecisionDiffLogList from '@/components/unified-decision-diff-log-list';
@@ -75,6 +77,8 @@ const SECONDARY_ACTIONS = [
 ] as const;
 
 export default function AssistantPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const mobileOnly = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const { trigger, data: rawData, isPending, error, reset } = useApiMutation<unknown>();
   const {
@@ -185,13 +189,127 @@ export default function AssistantPage() {
     triggerDetails('/assistant/unified-decision/details', { method: 'POST' }, lastRequestBody);
   }
 
+  const advancedInputsContent = (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <div className="rounded-[24px] border border-white/50 bg-white/28 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Sell Inputs</div>
+            <h3 className="mb-0 mt-2 text-lg font-semibold text-text-primary">卖出分析参数</h3>
+          </div>
+          <Badge variant="warning">按需填写</Badge>
+        </div>
+        <div className="mt-4 flex flex-col gap-3">
+          <div className={NOTE_CARD_CLS}>仅在“卖出风险提示”时使用，避免无关参数打扰主流程。</div>
+          <div className="flex flex-wrap gap-3">
+            <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[220px]">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">买入价</span>
+              <input
+                id="assistant-buy-price"
+                value={sellBuyPrice}
+                onChange={(e) => {
+                  setSellBuyPrice(e.target.value);
+                  setFormError(null);
+                }}
+                placeholder="卖出分析必填"
+                className={FIELD_CLS}
+                inputMode="decimal"
+              />
+            </label>
+            <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[200px]">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">持有天数</span>
+              <input
+                id="assistant-holding-days"
+                value={sellHoldingDays}
+                onChange={(e) => {
+                  setSellHoldingDays(e.target.value);
+                  setFormError(null);
+                }}
+                placeholder="可选"
+                className={FIELD_CLS}
+                inputMode="numeric"
+              />
+            </label>
+          </div>
+          <p className="mb-0 text-xs text-text-secondary">
+            “卖出风险提示”会连同买入价和持有天数一起提交，避免出现成功返回但内容为空的假通过。
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-[24px] border border-white/50 bg-white/28 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Extended Inputs</div>
+            <h3 className="mb-0 mt-2 text-lg font-semibold text-text-primary">扩展分析参数</h3>
+          </div>
+          <Badge variant="info">可独立运行</Badge>
+        </div>
+        <div className="mt-4 flex flex-col gap-3">
+          <div className={NOTE_CARD_CLS}>
+            “产业链穿透”和“盘后复盘简报”不再强制要求股票代码，可按关键词或日期独立生成。
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[280px]">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">产业链关键词</span>
+              <input
+                id="assistant-industry-keyword"
+                value={industryKeyword}
+                onChange={(e) => {
+                  setIndustryKeyword(e.target.value);
+                  setFormError(null);
+                }}
+                placeholder="产业链穿透可选"
+                className={FIELD_CLS}
+              />
+            </label>
+            <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[220px]">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">复盘日期</span>
+              <input
+                id="assistant-daily-report-date"
+                type="date"
+                value={dailyReportDate}
+                onChange={(e) => {
+                  setDailyReportDate(e.target.value);
+                  setFormError(null);
+                }}
+                className={FIELD_CLS}
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => callAssistant(SECONDARY_ACTIONS[0].endpoint, SECONDARY_ACTIONS[0].actionLabel)}
+              className={CHIP_BUTTON_CLS}
+            >
+              运行产业链穿透
+            </button>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => callAssistant(SECONDARY_ACTIONS[1].endpoint, SECONDARY_ACTIONS[1].actionLabel)}
+              className={CHIP_BUTTON_CLS}
+            >
+              运行盘后复盘
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <PageContainer className="app-theme-research">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(320px,28vw,420px)]" style={{ minHeight: 'calc(100dvh - 140px)' }}>
+      <div
+        className={`grid gap-4 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_clamp(320px,28vw,420px)]'}`}
+        style={compactLayout ? undefined : { minHeight: 'calc(100dvh - 140px)' }}
+      >
         {/* ---- 左侧：诊断工具台（可滚动） ---- */}
-        <div className="min-h-0 xl:overflow-y-auto xl:pr-1">
+        <div className={compactLayout ? '' : 'min-h-0 xl:overflow-y-auto xl:pr-1'}>
           <section className="page-hero mb-4 p-5 sm:p-6">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_clamp(240px,22vw,340px)]">
+            <div className={`grid gap-5 ${compactLayout ? '' : 'lg:grid-cols-[minmax(0,1fr)_clamp(240px,22vw,340px)]'}`}>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="info">Diagnostic Workspace</Badge>
@@ -201,85 +319,50 @@ export default function AssistantPage() {
                 <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
                   AI 中心
                 </h1>
-                <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-                  诊断工具台与 AI 对话合二为一。左侧运行结构化分析，右侧自由对话、联动页面动作。
+                <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
+                  {compactLayout
+                    ? '先用一个主任务收敛判断，其余参数和扩展分析按需展开。'
+                    : '诊断工具台与 AI 对话合二为一。左侧运行结构化分析，右侧自由对话、联动页面动作。'}
                 </p>
-                <div className="mt-5 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={isPending}
-                    onClick={() => callAssistant(PRIMARY_ACTIONS[0].endpoint, PRIMARY_ACTIONS[0].actionLabel)}
-                    className={HERO_PRIMARY_BUTTON_CLS}
-                  >
-                    运行统一决策
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isPending}
-                    onClick={() => callAssistant(PRIMARY_ACTIONS[1].endpoint, PRIMARY_ACTIONS[1].actionLabel)}
-                    className={HERO_SECONDARY_BUTTON_CLS}
-                  >
-                    全方位体检
-                  </button>
+                <div className="mt-5 rounded-[24px] border border-white/45 bg-white/34 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前状态</div>
+                  <div className="mt-3 text-base font-semibold text-text-primary">
+                    {currentCodeLabel} ｜ {investmentStyleLabel}风格 ｜ {resultStateLabel}
+                  </div>
+                  <div className="mt-2 text-xs text-text-secondary">
+                    {mobileOnly ? '移动端默认只保留主任务和当前结果状态，其余说明按需展开。' : '主区先收敛主任务，扩展任务、参数和说明全部按需展开。'}
+                  </div>
                 </div>
+              </div>
 
-                <div className="mt-5 grid gap-3 sm:grid-cols-4">
-                  <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
-                    <div className="mt-3 text-2xl font-semibold text-text-primary">{currentCodeLabel}</div>
-                    <div className="mt-1 text-xs text-text-secondary">诊断默认聚焦标的</div>
-                  </div>
-                  <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">分析风格</div>
-                    <div className="mt-3 text-2xl font-semibold text-text-primary">{investmentStyleLabel}</div>
-                    <div className="mt-1 text-xs text-text-secondary">统一决策会读取该参数</div>
-                  </div>
-                  <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近任务</div>
-                    <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">
-                      {actionLabel || '尚未执行'}
+              <details className={PANEL_CLS}>
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开推荐流程与提示</summary>
+                <div className="mt-4 space-y-3">
+                  {(compactLayout ? heroNotes.slice(0, 2) : heroNotes).map((note) => (
+                    <div key={note} className={NOTE_CARD_CLS}>
+                      {note}
                     </div>
-                    <div className="mt-1 text-xs text-text-secondary">执行后结果会在下方集中展示</div>
-                  </div>
-                  <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">详情状态</div>
-                    <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{detailsStateLabel}</div>
-                    <div className="mt-1 text-xs text-text-secondary">统一决策支持继续展开更多细节</div>
+                  ))}
+                  <div className={NOTE_CARD_CLS}>
+                    最近任务：{actionLabel || '尚未执行'}；详情状态：{detailsStateLabel}。
                   </div>
                 </div>
-              </div>
-
-              <div className="grid gap-3">
-                <div className={PANEL_CLS}>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">推荐流程</div>
-                  <div className="mt-4 space-y-3">
-                    {heroNotes.map((note) => (
-                      <div key={note} className={NOTE_CARD_CLS}>
-                        {note}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className={PANEL_CLS}>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险提示</div>
-                  <div className="mt-4 metric-tile rounded-[24px] p-4 text-sm leading-7 text-text-secondary">
-                    本分析结果仅供参考，不构成投资建议。投资有风险，入市需谨慎。
-                  </div>
-                </div>
-              </div>
+              </details>
             </div>
           </section>
 
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_clamp(240px,22vw,320px)]">
+          <div className="grid gap-4">
             <div className={PANEL_CLS}>
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                   <div>
                     <div className="eyebrow">Task Setup</div>
                     <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">选择分析标的与报告类型</h2>
-                    <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-                      先判断当前是在做综合体检、交易验证，还是补充产业链与盘后总结。主任务和扩展任务都保留原有能力，但阅读顺序已经重新梳理。
-                    </p>
+                    {!compactLayout && !mobileOnly ? (
+                      <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
+                        先判断当前是在做综合体检、交易验证，还是补充产业链与盘后总结。主任务和扩展任务都保留原有能力，但阅读顺序已经重新梳理。
+                      </p>
+                    ) : null}
                   </div>
                   <div className="w-full lg:w-[280px]">
                     <StockCodeInput
@@ -304,8 +387,8 @@ export default function AssistantPage() {
                     <div className="mt-1 text-sm text-white/90">{PRIMARY_ACTIONS[0].description}</div>
                   </button>
 
-                  <div className="grid gap-3 md:grid-cols-3">
-                    {PRIMARY_ACTIONS.slice(1).map((action) => (
+                  <div className={`grid gap-3 ${compactLayout ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
+                    {PRIMARY_ACTIONS.slice(1, 2).map((action) => (
                       <button
                         key={action.endpoint}
                         type="button"
@@ -318,12 +401,23 @@ export default function AssistantPage() {
                       </button>
                     ))}
                   </div>
-                </div>
-
-                <div className="grid gap-4 border-t border-glass-border pt-4 lg:grid-cols-[minmax(0,0.82fr)_minmax(260px,0.78fr)]">
-                  <div className="grid gap-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">扩展任务</div>
-                    <div className="grid gap-3 md:grid-cols-2">
+                  <details className="rounded-[24px] border border-white/50 bg-white/24 p-4">
+                    <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开更多任务与参数</summary>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      {PRIMARY_ACTIONS.slice(2).map((action) => (
+                        <button
+                          key={action.endpoint}
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => callAssistant(action.endpoint, action.actionLabel)}
+                          className={action.className}
+                        >
+                          <div className="text-sm font-semibold">{action.label}</div>
+                          <div className="mt-1 text-xs opacity-80">{action.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
                       {SECONDARY_ACTIONS.map((action) => (
                         <button
                           key={action.endpoint}
@@ -337,84 +431,33 @@ export default function AssistantPage() {
                         </button>
                       ))}
                     </div>
-                  </div>
-
-                  <div className="metric-tile rounded-[24px] p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-                      统一决策参数
-                    </div>
-                    <div className="mt-4 grid gap-3">
-                      <label className="grid gap-2 text-xs text-text-secondary">
-                        <span className="font-medium uppercase tracking-[0.12em] text-text-muted">投资风格</span>
-                        <select
-                          value={investmentStyle}
-                          onChange={(e) => setInvestmentStyle(e.target.value as 'aggressive' | 'balanced' | 'conservative')}
-                          className={FIELD_CLS}
-                        >
-                          <option value="balanced">平衡</option>
-                          <option value="conservative">保守</option>
-                          <option value="aggressive">激进</option>
-                        </select>
-                      </label>
-                      <div className="text-xs text-text-secondary">
-                        仅"统一决策"会读取该风格参数，并结合你的登录画像动态调仓位。
+                    <div className="mt-4 metric-tile rounded-[24px] p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                        统一决策参数
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-text-secondary">
-                        <input type="checkbox" checked={legacyMode} onChange={(e) => setLegacyMode(e.target.checked)} />
-                        <span>同时拉取旧入口结果并生成差异对比</span>
-                      </label>
+                      <div className="mt-4 grid gap-3">
+                        <label className="grid gap-2 text-xs text-text-secondary">
+                          <span className="font-medium uppercase tracking-[0.12em] text-text-muted">投资风格</span>
+                          <select
+                            value={investmentStyle}
+                            onChange={(e) =>
+                              setInvestmentStyle(e.target.value as 'aggressive' | 'balanced' | 'conservative')
+                            }
+                            className={FIELD_CLS}
+                          >
+                            <option value="balanced">平衡</option>
+                            <option value="conservative">保守</option>
+                            <option value="aggressive">激进</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-text-secondary">
+                          <input type="checkbox" checked={legacyMode} onChange={(e) => setLegacyMode(e.target.checked)} />
+                          <span>同时拉取旧入口结果并生成差异对比</span>
+                        </label>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-4">
-              <div className={PANEL_CLS}>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">任务建议</div>
-                <div className="mt-4 space-y-3">
-                  <div className={NOTE_CARD_CLS}>&ldquo;统一决策&rdquo;适合快速收敛结论，&ldquo;全方位体检&rdquo;适合第一次接触一只股票。</div>
-                  <div className={NOTE_CARD_CLS}>买入/卖出分析更像交易校验步骤，最好放在综合判断之后。</div>
-                  <div className={NOTE_CARD_CLS}>
-                    如果你只是补行业线索或盘后摘要，扩展任务可以独立运行，不必强制输入股票代码。
-                  </div>
-                </div>
-              </div>
-              <div className={PANEL_CLS}>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前状态</div>
-                <div className="mt-4 grid gap-3">
-                  <div className="metric-tile rounded-[24px] p-4">
-                    <div className="metric-label">最近请求</div>
-                    <div className="mt-3 text-sm font-semibold text-text-primary">{actionLabel || '尚未发起'}</div>
-                    <div className="mt-2 text-xs text-text-secondary">
-                      {lastEndpoint || '执行任一任务后，这里会记录最近的分析入口。'}
-                    </div>
-                  </div>
-                  <div className="metric-tile rounded-[24px] p-4">
-                    <div className="metric-label">返回状态</div>
-                    <div className="mt-3 text-sm font-semibold text-text-primary">{resultStateLabel}</div>
-                    <div className="mt-2 text-xs text-text-secondary">
-                      {result ? '结果已进入下方结果区，可继续展开详情。' : '等待你从左侧选择一个任务入口。'}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      disabled={isPending}
-                      onClick={() => callAssistant(PRIMARY_ACTIONS[2].endpoint, PRIMARY_ACTIONS[2].actionLabel)}
-                      className={CHIP_BUTTON_CLS}
-                    >
-                      快速买入分析
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isPending}
-                      onClick={() => callAssistant(PRIMARY_ACTIONS[3].endpoint, PRIMARY_ACTIONS[3].actionLabel)}
-                      className={CHIP_BUTTON_CLS}
-                    >
-                      快速卖出分析
-                    </button>
-                  </div>
+                    <div className="mt-4">{advancedInputsContent}</div>
+                  </details>
                 </div>
               </div>
             </div>
@@ -429,12 +472,6 @@ export default function AssistantPage() {
           {formError || error ? <ErrorState text={formError || error!} hint="请检查标的代码和分析参数后重试" /> : null}
           {!formError && !error && detailsError ? (
             <ErrorState text={detailsError} hint="统一决策详情拉取失败，请稍后重试" />
-          ) : null}
-
-          {!isPending && !result && !error && !formError ? (
-            <div className={`${PANEL_CLS} mt-4 flex flex-col items-center justify-center p-12 text-center`}>
-              <EmptyState text="等待指令：先点击上方主按钮之一，这里会展示对应的结构化诊断结果。" />
-            </div>
           ) : null}
 
           {result ? (
@@ -490,118 +527,13 @@ export default function AssistantPage() {
             </div>
           ) : null}
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            <div className={PANEL_CLS}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="eyebrow">Sell Inputs</div>
-                  <h2 className="mb-0 mt-2 text-lg font-semibold text-text-primary">卖出分析参数</h2>
-                </div>
-                <Badge variant="warning">按需填写</Badge>
-              </div>
-              <div className="mt-4 flex flex-col gap-3">
-                <div className={NOTE_CARD_CLS}>仅在&ldquo;卖出风险提示&rdquo;时使用，避免无关参数打扰主流程。</div>
-                <div className="flex flex-wrap gap-3">
-                  <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[220px]">
-                    <span className="font-medium uppercase tracking-[0.12em] text-text-muted">买入价</span>
-                    <input
-                      id="assistant-buy-price"
-                      value={sellBuyPrice}
-                      onChange={(e) => {
-                        setSellBuyPrice(e.target.value);
-                        setFormError(null);
-                      }}
-                      placeholder="卖出分析必填"
-                      className={FIELD_CLS}
-                      inputMode="decimal"
-                    />
-                  </label>
-                  <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[200px]">
-                    <span className="font-medium uppercase tracking-[0.12em] text-text-muted">持有天数</span>
-                    <input
-                      id="assistant-holding-days"
-                      value={sellHoldingDays}
-                      onChange={(e) => {
-                        setSellHoldingDays(e.target.value);
-                        setFormError(null);
-                      }}
-                      placeholder="可选"
-                      className={FIELD_CLS}
-                      inputMode="numeric"
-                    />
-                  </label>
-                </div>
-                <p className="mb-0 text-xs text-text-secondary">
-                  &ldquo;卖出风险提示&rdquo;会连同买入价和持有天数一起提交，避免出现成功返回但内容为空的假通过。
-                </p>
-              </div>
-            </div>
-
-            <div className={PANEL_CLS}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="eyebrow">Extended Inputs</div>
-                  <h2 className="mb-0 mt-2 text-lg font-semibold text-text-primary">扩展分析参数</h2>
-                </div>
-                <Badge variant="info">可独立运行</Badge>
-              </div>
-              <div className="mt-4 flex flex-col gap-3">
-                <div className={NOTE_CARD_CLS}>
-                  &ldquo;产业链穿透&rdquo;和&ldquo;盘后复盘简报&rdquo;不再强制要求股票代码，可按关键词或日期独立生成。
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[280px]">
-                    <span className="font-medium uppercase tracking-[0.12em] text-text-muted">产业链关键词</span>
-                    <input
-                      id="assistant-industry-keyword"
-                      value={industryKeyword}
-                      onChange={(e) => {
-                        setIndustryKeyword(e.target.value);
-                        setFormError(null);
-                      }}
-                      placeholder="产业链穿透可选"
-                      className={FIELD_CLS}
-                    />
-                  </label>
-                  <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[220px]">
-                    <span className="font-medium uppercase tracking-[0.12em] text-text-muted">复盘日期</span>
-                    <input
-                      id="assistant-daily-report-date"
-                      type="date"
-                      value={dailyReportDate}
-                      onChange={(e) => {
-                        setDailyReportDate(e.target.value);
-                        setFormError(null);
-                      }}
-                      className={FIELD_CLS}
-                    />
-                  </label>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={isPending}
-                    onClick={() => callAssistant(SECONDARY_ACTIONS[0].endpoint, SECONDARY_ACTIONS[0].actionLabel)}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    运行产业链穿透
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isPending}
-                    onClick={() => callAssistant(SECONDARY_ACTIONS[1].endpoint, SECONDARY_ACTIONS[1].actionLabel)}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    运行盘后复盘
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* ---- 右侧：内嵌 AI 对话（桌面端常驻） ---- */}
-        <div className="hidden xl:flex min-h-0 sticky top-4 self-start" style={{ height: 'calc(100dvh - 140px)' }}>
+        <div
+          className={`${compactLayout ? 'hidden' : 'hidden xl:flex'} min-h-0 sticky top-4 self-start`}
+          style={{ height: 'calc(100dvh - 140px)' }}
+        >
           <CopilotDock variant="page" className="flex-1" />
         </div>
       </div>

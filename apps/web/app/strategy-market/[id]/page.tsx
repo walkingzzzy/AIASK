@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, TabBar } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import {
@@ -22,19 +23,25 @@ import { StrategyDetailHeroSection, StrategyDetailSidebar } from '../components/
 import { StrategyDetailOverviewTab } from '../components/StrategyDetailOverviewTab';
 import {
   StrategyDetailErrorState,
+  StrategyDetailEmptyState,
   StrategyDetailLoadingState,
 } from '../components/StrategyDetailStatusState';
 import { useStrategyDetailPage, type StrategyDetailTab } from '../hooks/use-strategy-detail-page';
 import type { FactoryReviewSection } from '../types';
+import { isSurfacePlaceholderId } from '@/lib/surface-contracts';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 export default function StrategyDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const params = useParams<{ id: string }>();
   const router = useRouter();
   const addToCart = useCartStore((state) => state.addStrategy);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
   const user = useAuthStore((state) => state.user);
   const userId = user?.id ?? user?.username ?? null;
+  const strategyId = params?.id ?? null;
+  const emptyDetailContract = isSurfacePlaceholderId(strategyId);
 
   const {
     detailLoading,
@@ -46,7 +53,7 @@ export default function StrategyDetailPage() {
     overview,
     trackingPanelProps,
     factoryPanelProps,
-  } = useStrategyDetailPage(id ?? null, userId);
+  } = useStrategyDetailPage(emptyDetailContract ? null : strategyId, userId);
 
   const {
     metrics,
@@ -91,12 +98,12 @@ export default function StrategyDetailPage() {
 
   const currentView = useMemo(
     () => ({
-      strategyId: strategy?.id ?? id ?? null,
+      strategyId: strategy?.id ?? strategyId ?? null,
       activeTab,
       factorySection: factoryPanelProps.activeSection,
       subscribed: isSubscribed,
     }),
-    [activeTab, factoryPanelProps.activeSection, id, isSubscribed, strategy?.id],
+    [activeTab, factoryPanelProps.activeSection, isSubscribed, strategy?.id, strategyId],
   );
 
   useEffect(() => {
@@ -109,8 +116,12 @@ export default function StrategyDetailPage() {
 
   usePageContext({
     pageKey,
-    title: strategy?.name ? `策略详情 · ${strategy.name}` : '策略详情',
-    summary: strategy
+    title: emptyDetailContract
+      ? '策略详情空态'
+      : strategy?.name ? `策略详情 · ${strategy.name}` : '策略详情',
+    summary: emptyDetailContract
+      ? '当前环境还没有可进入的策略详情数据，页面按空态契约渲染。'
+      : strategy
       ? `${strategy.name} 当前处于 ${strategy.status ?? '未知状态'}，当前工作流为 ${activeTabLabel}。订阅数 ${strategy.subscriber_count ?? 0}，风险事件 ${openRiskEvents.length}，向量画像 ${vectorProfiles.length}。`
       : detailLoading
         ? '策略详情加载中。'
@@ -118,13 +129,16 @@ export default function StrategyDetailPage() {
           ? '策略详情暂时无法加载。'
           : '策略详情待初始化。',
     tags: [
+      emptyDetailContract ? '空态契约' : null,
       strategy?.status ? String(strategy.status) : null,
       activeTabLabel,
       strategy?.author_id ? `作者 ${strategy.author_id}` : null,
       strategy?.subscriber_count != null ? `${strategy.subscriber_count} 订阅` : null,
       latestQualityReport?.summary?.validation_grade ? `评级 ${latestQualityReport.summary.validation_grade}` : null,
     ].filter((item): item is string => Boolean(item)),
-    suggestions: strategy
+    suggestions: emptyDetailContract
+      ? ['返回策略超市', '运行工厂生成策略', '稍后重新加载详情页']
+      : strategy
       ? [
           activeTab === 'overview' ? '切到实盘跟踪看信号与命中率' : '回概览确认样本期和质量门',
           activeTab === 'factory' ? '继续切换工厂审查分区' : '打开工厂审查看运行风控与实验事件',
@@ -132,7 +146,8 @@ export default function StrategyDetailPage() {
         ]
       : ['返回策略超市', '重新加载策略详情'],
     raw: {
-      strategyId: strategy?.id ?? id ?? null,
+      strategyId: emptyDetailContract ? null : strategy?.id ?? strategyId ?? null,
+      emptyDetailContract,
       activeTab,
       factorySection: factoryPanelProps.activeSection,
       subscribed: isSubscribed,
@@ -152,7 +167,34 @@ export default function StrategyDetailPage() {
   }
 
   const pageActions = useMemo(
-    () => [
+    () => emptyDetailContract
+      ? [
+          {
+            id: 'strategy-detail.empty.open-market',
+            label: '返回策略超市',
+            description: '回到策略列表继续筛选和比较',
+            keywords: ['策略超市', '返回列表'],
+            scope: 'page' as const,
+            pageKey,
+            run: () => {
+              router.push('/strategy-market');
+              return { message: '已返回策略超市' };
+            },
+          },
+          {
+            id: 'strategy-detail.empty.reload',
+            label: '重新加载策略详情',
+            description: '重新尝试加载当前空态详情页',
+            keywords: ['刷新', '重试'],
+            scope: 'page' as const,
+            pageKey,
+            run: () => {
+              window.location.reload();
+              return { message: '已重新加载策略详情' };
+            },
+          },
+        ]
+      : [
       {
         id: 'strategy-detail.open-market',
         label: '返回策略超市',
@@ -255,6 +297,7 @@ export default function StrategyDetailPage() {
     [
       addToCart,
       addWorkbenchTask,
+      emptyDetailContract,
       handleSubscribe,
       isSubscribed,
       pageKey,
@@ -269,13 +312,17 @@ export default function StrategyDetailPage() {
 
   usePageActions(pageActions);
 
+  if (emptyDetailContract) {
+    return <StrategyDetailEmptyState strategyId={strategyId} />;
+  }
+
   if (detailLoading) {
     return <StrategyDetailLoadingState />;
   }
 
   const missingStrategy = !strategy;
   if (detailError || missingStrategy) {
-    return <StrategyDetailErrorState strategyId={id ?? null} detailError={detailError} />;
+    return <StrategyDetailErrorState strategyId={strategyId} detailError={detailError} />;
   }
 
   const sampleStart = strategy.sample_start_date ?? paperNavRows[0]?.nav_date ?? null;
@@ -424,7 +471,9 @@ export default function StrategyDetailPage() {
         onOpenPortfolio={() => router.push(portfolioHref)}
       />
 
-      <WorkspaceToolbar pageKey={pageKey} currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      {!compactLayout ? (
+        <WorkspaceToolbar pageKey={pageKey} currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      ) : null}
       <TabBar tabs={DETAIL_TABS} active={activeTab} onChange={setActiveTab} />
       <WorkspaceSplitLayout pageKey={pageKey} primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>

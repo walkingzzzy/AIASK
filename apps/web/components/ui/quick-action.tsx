@@ -25,7 +25,7 @@ export function QuickAction({
         <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-xl text-primary">
           {icon}
         </span>
-        <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">任务入口</span>
+        <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">快速入口</span>
       </div>
       <div className="text-sm font-semibold text-text-primary">{title}</div>
       {description ? <div className="mt-1 text-xs leading-5 text-text-secondary">{description}</div> : null}
@@ -47,6 +47,6 @@ export function QuickActionGrid({
       ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
       : cols === 4
         ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4'
-        : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-5';
+        : 'grid-cols-2 xl:grid-cols-5';
   return <div className={`grid gap-3 ${colClass} ${className}`}>{children}</div>;
 }

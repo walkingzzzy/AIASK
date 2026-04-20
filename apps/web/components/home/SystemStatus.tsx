@@ -71,6 +71,12 @@ function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboa
 
 function HealthDetails({ healthQ, health, mcp }: Pick<SystemStatusProps, 'healthQ' | 'health' | 'mcp'>) {
   const bffBase = getBffBaseUrl();
+  const degradedReasons = Array.isArray(health?.degradedReasons) ? health.degradedReasons as string[] : [];
+  const serviceStatus = String(health?.status ?? 'unknown');
+  const mcpTransport = String(mcp.transportKind ?? mcp.source ?? '-');
+  const readiness = String((health?.probes as Record<string, unknown> | undefined)?.readiness ?? '-');
+  const notificationStatus = (health?.notifications as Record<string, unknown> | undefined) ?? {};
+  const auditStatus = (health?.audit as Record<string, unknown> | undefined) ?? {};
 
   return (
     <details className="mt-6">
@@ -80,10 +86,22 @@ function HealthDetails({ healthQ, health, mcp }: Pick<SystemStatusProps, 'health
           : healthQ.isPending ? <Skeleton height={60} />
             : health ? (
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>服务: <Badge variant={String(health.status) === 'ok' ? 'success' : 'warning'}>{String(health.status ?? '-')}</Badge></div>
+                <div>服务: <Badge variant={serviceStatus === 'ok' ? 'success' : serviceStatus === 'degraded' ? 'warning' : 'danger'}>{serviceStatus}</Badge></div>
                 <div>MCP: <Badge variant={mcp.reachable ? 'success' : 'danger'}>{mcp.reachable ? '已连接' : '未连接'}</Badge></div>
+                <div>Readiness: <Badge variant={readiness === 'ready' ? 'success' : readiness === 'degraded' ? 'warning' : 'danger'}>{readiness}</Badge></div>
+                <div>Transport: <Badge variant={Boolean(mcp.degraded) ? 'warning' : 'success'}>{mcpTransport}</Badge></div>
                 <div>工具数: {String(mcp.toolCount ?? '-')} / {String(mcp.expectedTools ?? '-')}</div>
                 <div>匹配: <Badge variant={mcp.matched ? 'success' : 'warning'}>{String(mcp.matched ?? '-')}</Badge></div>
+                <div>审计后端: <Badge variant={Boolean(auditStatus.degraded) ? 'warning' : 'success'}>{String(auditStatus.activeBackend ?? '-')}</Badge></div>
+                <div>通知外送: <Badge variant={notificationStatus.configured ? (Number(notificationStatus.failed ?? 0) > 0 ? 'warning' : 'success') : 'warning'}>{notificationStatus.configured ? '已配置' : '未配置'}</Badge></div>
+                {degradedReasons.length > 0 ? (
+                  <div className="col-span-2">
+                    降级原因:
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {degradedReasons.slice(0, 6).map((reason) => <Badge key={reason} variant="warning">{reason}</Badge>)}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : <EmptyState text={`暂无健康数据：${bffBase}`} />}
       </SectionCard>

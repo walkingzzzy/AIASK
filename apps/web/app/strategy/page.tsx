@@ -1,7 +1,19 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
-import { Badge, ConfirmDialog, DataTable, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
+import { FormEvent, useCallback, useMemo, useState } from 'react';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
+import {
+  Badge,
+  ConfirmDialog,
+  DataTable,
+  KpiCard,
+  KpiGrid,
+  PageContainer,
+  SectionCard,
+  StockCodeInput,
+  TabBar,
+} from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
@@ -44,6 +56,13 @@ type PendingPortfolioAction =
   | { type: 'create'; summary: string; payload: { name: string; initialCapital: string } }
   | { type: 'add'; summary: string; payload: HoldingOp }
   | { type: 'remove'; summary: string; portfolioId: string; code: string };
+type WorkspaceTab = 'experiment' | 'deployment' | 'risk';
+
+const WORKSPACE_TABS: Array<{ key: WorkspaceTab; label: string }> = [
+  { key: 'experiment', label: '试验' },
+  { key: 'deployment', label: '落地' },
+  { key: 'risk', label: '风控' },
+];
 
 function WorkbenchField({
   id,
@@ -78,6 +97,7 @@ export default function StrategyPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [strategy, setStrategy] = useState('ma_cross');
   const [artifactId, setArtifactId] = useState('');
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('experiment');
   const [formError, setFormError] = useState<string | null>(null);
   const [portfolioName, setPortfolioName] = useState('我的策略组合');
   const [holdingOp, setHoldingOp] = useState<HoldingOp>({
@@ -136,6 +156,7 @@ export default function StrategyPage() {
     try {
       const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, { code: trimmedCode, strategy });
       setArtifactId(String(data?.artifactId ?? ''));
+      setWorkspaceTab('experiment');
     } catch {
       /* captured */
     }
@@ -145,6 +166,7 @@ export default function StrategyPage() {
     const path = '/backtest/list?limit=10';
     if (path === backtestListPath) backtestListQ.refetch();
     else setBacktestListPath(path);
+    setWorkspaceTab('experiment');
   }
 
   function loadMetrics(id = artifactId) {
@@ -155,6 +177,7 @@ export default function StrategyPage() {
     }
     if (nextId !== artifactId) setArtifactId(nextId);
     else metricsQ.refetch();
+    setWorkspaceTab('experiment');
   }
 
   async function executeCreatePortfolio(payload: { name: string; initialCapital: string }) {
@@ -168,6 +191,7 @@ export default function StrategyPage() {
       const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(createdId)}`;
       if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch();
       else setPortfolioDetailPath(detailPath);
+      setWorkspaceTab('deployment');
     }
     const listPath = '/portfolio/list';
     if (listPath === portfolioListPath) portfolioListQ.refetch();
@@ -203,6 +227,7 @@ export default function StrategyPage() {
     const path = '/portfolio/list';
     if (path === portfolioListPath) portfolioListQ.refetch();
     else setPortfolioListPath(path);
+    setWorkspaceTab('deployment');
   }
 
   async function executeAddHolding(payload: HoldingOp) {
@@ -228,6 +253,7 @@ export default function StrategyPage() {
         return;
       }
       await executeAddHolding(holdingOp);
+      setWorkspaceTab('deployment');
     } catch {
       /* captured */
     }
@@ -260,6 +286,7 @@ export default function StrategyPage() {
         return;
       }
       await executeRemoveHolding(holdingOp.portfolioId, holdingOp.code);
+      setWorkspaceTab('deployment');
     } catch {
       /* captured */
     }
@@ -289,6 +316,7 @@ export default function StrategyPage() {
     const path = `/portfolio/get?portfolioId=${encodeURIComponent(holdingOp.portfolioId)}`;
     if (path === portfolioDetailPath) portfolioDetailQ.refetch();
     else setPortfolioDetailPath(path);
+    setWorkspaceTab('deployment');
   }
 
   function optimizePortfolio() {
@@ -298,6 +326,7 @@ export default function StrategyPage() {
       return;
     }
     optimizeApi.trigger('/portfolio/optimize', { method: 'POST' }, { portfolioId: holdingOp.portfolioId });
+    setWorkspaceTab('risk');
   }
 
   function analyzeRisk() {
@@ -307,6 +336,7 @@ export default function StrategyPage() {
       return;
     }
     riskAnalysisApi.trigger('/portfolio/risk-analysis', { method: 'POST' }, { portfolioId: holdingOp.portfolioId });
+    setWorkspaceTab('risk');
   }
 
   function runStressTest() {
@@ -316,6 +346,7 @@ export default function StrategyPage() {
       return;
     }
     stressTestApi.trigger('/portfolio/stress-test', { method: 'POST' }, { portfolioId: holdingOp.portfolioId });
+    setWorkspaceTab('risk');
   }
 
   const metrics = metricsQ.data?.metrics;
@@ -380,18 +411,382 @@ export default function StrategyPage() {
     return extractArray(stressData, 'scenarios', 'data') as Record<string, unknown>[];
   }, [stressData]);
 
+  const activeWorkspaceLabel = WORKSPACE_TABS.find((item) => item.key === workspaceTab)?.label ?? '试验';
+  const currentPortfolioId = holdingOp.portfolioId || '未绑定';
+  const nextStepLabel = artifactId
+    ? currentPortfolioId !== '未绑定'
+      ? '继续查看组合详情、优化或压力测试'
+      : '继续创建组合，把试验结果落地'
+    : '先跑出第一份回测 Artifact';
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      code,
+      strategy,
+      artifactId,
+      portfolioId: holdingOp.portfolioId,
+      holdingCode: holdingOp.code,
+      holdingShares: holdingOp.shares,
+      holdingCost: holdingOp.costPrice,
+      workspaceTab,
+    }),
+    [artifactId, code, holdingOp.code, holdingOp.costPrice, holdingOp.portfolioId, holdingOp.shares, strategy, workspaceTab],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.code === 'string') setCode(snapshot.code);
+    if (typeof snapshot.strategy === 'string') setStrategy(snapshot.strategy);
+    if (typeof snapshot.artifactId === 'string') setArtifactId(snapshot.artifactId);
+    if (typeof snapshot.workspaceTab === 'string' && WORKSPACE_TABS.some((item) => item.key === snapshot.workspaceTab)) {
+      setWorkspaceTab(snapshot.workspaceTab as WorkspaceTab);
+    }
+    setHoldingOp((prev) => ({
+      portfolioId: typeof snapshot.portfolioId === 'string' ? snapshot.portfolioId : prev.portfolioId,
+      code: typeof snapshot.holdingCode === 'string' ? snapshot.holdingCode : prev.code,
+      shares:
+        typeof snapshot.holdingShares === 'string' || typeof snapshot.holdingShares === 'number'
+          ? String(snapshot.holdingShares)
+          : prev.shares,
+      costPrice:
+        typeof snapshot.holdingCost === 'string' || typeof snapshot.holdingCost === 'number'
+          ? String(snapshot.holdingCost)
+          : prev.costPrice,
+    }));
+  }, [setCode]);
+
   const heroPrimaryButtonCls =
     'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
   const heroSecondaryButtonCls =
     'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-  const chipButtonCls = 'action-chip cursor-pointer text-xs text-text-primary';
   const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
   const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
 
-  return (
-    <PageContainer>
+  const experimentContent = (
+    <SectionCard tabAttached>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+          <div className="text-sm font-medium text-text-primary">运行新的回测</div>
+          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+            先确认标的和策略标识，再运行回测并保留 Artifact 供后续指标刷新。
+          </p>
+          <form onSubmit={runBacktest} className="mt-4 grid gap-3 lg:grid-cols-[160px_220px_auto_auto] lg:items-end">
+            <StockCodeInput
+              id="strategy-backtest-code"
+              label="股票代码"
+              value={code}
+              onChange={setCode}
+              error={codeError}
+            />
+            <WorkbenchField
+              id="strategy-backtest-name"
+              label="策略标识"
+              value={strategy}
+              onChange={setStrategy}
+              placeholder="例如 ma_cross"
+            />
+            <button type="submit" className={heroPrimaryButtonCls}>
+              运行回测
+            </button>
+            <button type="button" onClick={loadBacktests} className={heroSecondaryButtonCls}>
+              最近回测
+            </button>
+          </form>
+        </div>
+
+        <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+          <div className="text-sm font-medium text-text-primary">回测结果定位</div>
+          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+            把最近一次回测生成的 Artifact 留在手边，后续刷新收益指标时不需要重新跑完整流程。
+          </p>
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,260px)_auto] md:items-end">
+            <WorkbenchField
+              id="strategy-artifact-id"
+              label="Artifact ID"
+              value={artifactId}
+              onChange={setArtifactId}
+              placeholder="粘贴或保留最近一次回测的 artifactId"
+            />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => loadMetrics()} className={heroSecondaryButtonCls}>
+                刷新指标
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {metrics ? (
+        <KpiGrid cols={3} className="mt-4">
+          <KpiCard title="总收益" value={metrics.totalReturn != null ? fmtPct(Number(metrics.totalReturn)) : null} />
+          <KpiCard title="Sharpe" value={metrics.sharpe != null ? fmtNum(Number(metrics.sharpe), 2) : null} />
+          <KpiCard
+            title="最大回撤"
+            value={metrics.maxDrawdown != null ? fmtPct(Number(metrics.maxDrawdown)) : null}
+          />
+        </KpiGrid>
+      ) : null}
+
+      {backtestRows.length > 0 ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">最近回测</div>
+          <DataTable
+            rows={backtestRows}
+            columns={[
+              { key: 'backtestId', label: '回测ID' },
+              { key: 'code', label: '代码' },
+              { key: 'strategy', label: '策略' },
+              { key: 'startDate', label: '开始日期' },
+              { key: 'endDate', label: '结束日期' },
+              { key: 'totalReturn', label: '总收益', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
+              { key: 'maxDrawdown', label: '最大回撤', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
+              { key: 'sharpe', label: 'Sharpe', align: 'right', render: (value) => fmtNum(Number(value ?? 0), 2) },
+              { key: 'createdAt', label: '创建时间' },
+            ]}
+            pageSize={6}
+            searchable
+            onExport={() => exportCSV(backtestRows, 'strategy-backtests')}
+          />
+        </div>
+      ) : null}
+    </SectionCard>
+  );
+
+  const deploymentContent = (
+    <SectionCard tabAttached>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+          <div className="text-sm font-medium text-text-primary">创建组合</div>
+          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+            先建立组合容器，再继续做持仓落地和后续分析。
+          </p>
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,240px)_auto_auto] md:items-end">
+            <WorkbenchField
+              id="strategy-portfolio-name"
+              label="组合名称"
+              value={portfolioName}
+              onChange={setPortfolioName}
+              placeholder="例如 我的策略组合"
+            />
+            <button type="button" onClick={createPortfolio} className={heroPrimaryButtonCls}>
+              创建组合
+            </button>
+            <button type="button" onClick={loadPortfolios} className={heroSecondaryButtonCls}>
+              组合列表
+            </button>
+          </div>
+        </div>
+
+        <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+          <div className="text-sm font-medium text-text-primary">持仓与详情操作</div>
+          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+            把组合 ID、标的、股数和成本价收在同一块里，便于做加仓、减仓和详情查看。
+          </p>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[140px_140px_120px_120px_auto_auto_auto] lg:items-end">
+            <WorkbenchField
+              id="strategy-portfolio-id"
+              label="组合 ID"
+              value={holdingOp.portfolioId}
+              onChange={(value) => setHoldingOp({ ...holdingOp, portfolioId: value })}
+              placeholder="输入 portfolioId"
+            />
+            <WorkbenchField
+              id="strategy-holding-code"
+              label="股票代码"
+              value={holdingOp.code}
+              onChange={(value) => setHoldingOp({ ...holdingOp, code: value.slice(0, 6) })}
+              placeholder="6 位股票代码"
+            />
+            <WorkbenchField
+              id="strategy-holding-shares"
+              label="持仓股数"
+              value={holdingOp.shares}
+              onChange={(value) => setHoldingOp({ ...holdingOp, shares: value })}
+              placeholder="例如 100"
+            />
+            <WorkbenchField
+              id="strategy-holding-cost"
+              label="成本价"
+              value={holdingOp.costPrice}
+              onChange={(value) => setHoldingOp({ ...holdingOp, costPrice: value })}
+              placeholder="例如 12.56"
+            />
+            <button type="button" onClick={addHolding} className={heroSecondaryButtonCls}>
+              加仓
+            </button>
+            <button type="button" onClick={removeHolding} className={heroSecondaryButtonCls}>
+              减仓
+            </button>
+            <button type="button" onClick={loadPortfolioDetail} className={heroSecondaryButtonCls}>
+              查看详情
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {portfolioRows.length > 0 ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">组合列表</div>
+          <DataTable
+            rows={portfolioRows}
+            columns={[
+              { key: 'id', label: '组合ID' },
+              { key: 'name', label: '组合名称' },
+              { key: 'description', label: '描述' },
+              { key: 'strategyAllocationCount', label: '策略数', align: 'right' },
+              { key: 'strategyAllocationSummary', label: '策略配置' },
+              { key: 'currentValue', label: '当前资产', align: 'right', render: (value) => fmtNum(Number(value ?? 0), 2) },
+              { key: 'createdAt', label: '创建时间' },
+            ]}
+            pageSize={6}
+            searchable
+            onExport={() => exportCSV(portfolioRows, 'strategy-portfolios')}
+            onRowClick={(row) => {
+              const selectedId = String(row.id ?? '').trim();
+              if (!selectedId || selectedId === '-') return;
+              setHoldingOp((prev) => ({ ...prev, portfolioId: selectedId }));
+              const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(selectedId)}`;
+              if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch();
+              else setPortfolioDetailPath(detailPath);
+            }}
+          />
+        </div>
+      ) : null}
+
+      {detailObj ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">组合详情</div>
+          <KpiGrid cols={4} className="mb-4">
+            <KpiCard title="组合名称" value={detailObj.name != null ? String(detailObj.name) : null} />
+            <KpiCard title="总资产" value={detailObj.totalAssets != null ? fmtNum(Number(detailObj.totalAssets), 2) : null} />
+            <KpiCard
+              title="总收益"
+              value={detailObj.totalReturn != null ? fmtPct(Number(detailObj.totalReturn)) : null}
+              change={detailObj.totalReturn != null ? Number(detailObj.totalReturn) : null}
+            />
+            <KpiCard title="持仓数" value={detailHoldings.length || null} />
+          </KpiGrid>
+          {detailStrategies.length > 0 ? (
+            <DataTable
+              rows={detailStrategies}
+              columns={[
+                {
+                  key: 'strategyId',
+                  label: '策略ID',
+                  render: (_value, row) => String(row.strategyId ?? row.strategy_id ?? '-'),
+                },
+                { key: 'weight', label: '权重', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
+              ]}
+              className="mb-4"
+            />
+          ) : null}
+          {detailHoldings.length > 0 ? (
+            <DataTable
+              rows={detailHoldings}
+              pageSize={10}
+              onExport={() => exportCSV(detailHoldings, 'portfolio-holdings')}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </SectionCard>
+  );
+
+  const riskContent = (
+    <SectionCard tabAttached>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div>
+          <div className="text-sm font-medium text-text-primary">风控动作</div>
+          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+            以下动作默认基于当前填写的组合 ID 执行，适合在持仓落地后继续做优化、风险和压力校验。
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button type="button" onClick={optimizePortfolio} className={heroPrimaryButtonCls}>
+              优化配置
+            </button>
+            <button type="button" onClick={analyzeRisk} className={heroSecondaryButtonCls}>
+              风险分析
+            </button>
+            <button type="button" onClick={runStressTest} className={heroSecondaryButtonCls}>
+              压力测试
+            </button>
+          </div>
+        </div>
+
+        <div className="panel-soft rounded-[24px] p-4">
+          <div className="text-sm font-medium text-text-primary">当前执行上下文</div>
+          <div className="mt-3 space-y-3">
+            <div className={noteCardCls}>组合 ID：{holdingOp.portfolioId || '未填写'}</div>
+            <div className={noteCardCls}>优化结果：{optData?.optimization ? '已生成' : '未生成'}</div>
+            <div className={noteCardCls}>压力场景：{stressScenarios.length} 条</div>
+          </div>
+        </div>
+      </div>
+
+      {optData?.optimization ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">优化结果</div>
+          <KpiGrid cols={3} className="mb-4">
+            <KpiCard
+              title="预期收益"
+              value={optData.optimization.expectedReturn != null ? fmtPct(Number(optData.optimization.expectedReturn)) : null}
+            />
+            <KpiCard
+              title="预期风险"
+              value={optData.optimization.expectedRisk != null ? fmtPct(Number(optData.optimization.expectedRisk)) : null}
+            />
+            <KpiCard
+              title="夏普比率"
+              value={optData.optimization.sharpe != null ? fmtNum(Number(optData.optimization.sharpe), 2) : null}
+            />
+          </KpiGrid>
+          {optWeights.length > 0 ? (
+            <DataTable rows={optWeights} onExport={() => exportCSV(optWeights, 'optimization-weights')} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {riskData?.riskMetrics ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">风险指标</div>
+          <KpiGrid cols={5}>
+            <KpiCard title="VaR (95%)" value={riskData.riskMetrics.var95 != null ? fmtPct(Number(riskData.riskMetrics.var95)) : null} />
+            <KpiCard title="VaR (99%)" value={riskData.riskMetrics.var99 != null ? fmtPct(Number(riskData.riskMetrics.var99)) : null} />
+            <KpiCard title="CVaR" value={riskData.riskMetrics.cvar != null ? fmtPct(Number(riskData.riskMetrics.cvar)) : null} />
+            <KpiCard title="Beta" value={riskData.riskMetrics.beta != null ? fmtNum(Number(riskData.riskMetrics.beta), 2) : null} />
+            <KpiCard title="波动率" value={riskData.riskMetrics.volatility != null ? fmtPct(Number(riskData.riskMetrics.volatility)) : null} />
+          </KpiGrid>
+        </div>
+      ) : null}
+
+      {stressScenarios.length > 0 ? (
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-medium text-text-primary">压力测试</div>
+          <DataTable
+            rows={stressScenarios}
+            columns={[
+              { key: 'name', label: '场景' },
+              {
+                key: 'impact',
+                label: '影响',
+                align: 'right',
+                render: (value: unknown) => {
+                  const amount = Number(value);
+                  return <span style={{ color: amount < 0 ? '#ef4444' : '#10b981' }}>{fmtPct(amount)}</span>;
+                },
+              },
+              { key: 'description', label: '描述' },
+            ]}
+            onExport={() => exportCSV(stressScenarios, 'stress-test')}
+          />
+        </div>
+      ) : null}
+    </SectionCard>
+  );
+
+  const primaryContent = (
+    <>
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Strategy Workspace</Badge>
@@ -401,475 +796,125 @@ export default function StrategyPage() {
               <Badge variant={holdingOp.portfolioId ? 'success' : 'neutral'}>
                 {holdingOp.portfolioId ? `组合 ${holdingOp.portfolioId}` : '尚未绑定组合'}
               </Badge>
+              <Badge variant="neutral">{activeWorkspaceLabel}</Badge>
             </div>
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               策略工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这一页负责把策略试验和组合落地收进一条连续链路。先在试验区跑回测、确认 Artifact
-              与核心收益指标，再进入落地区创建组合、调仓，并继续做优化与风控分析。
+              默认只展开一个主任务。先跑回测形成 Artifact，再切到组合落地，最后进入优化和风控，不再把三段流程同时堆在一页里。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={loadBacktests} className={heroPrimaryButtonCls}>
-                查看最近回测
+              <button type="button" onClick={() => setWorkspaceTab('experiment')} className={heroPrimaryButtonCls}>
+                回到试验区
               </button>
               <button type="button" onClick={loadPortfolios} className={heroSecondaryButtonCls}>
                 加载组合列表
               </button>
-              <button type="button" onClick={optimizePortfolio} className={heroSecondaryButtonCls}>
-                优化配置
-              </button>
-              <button type="button" onClick={analyzeRisk} className={heroSecondaryButtonCls}>
-                风险分析
-              </button>
             </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">{strategy || '未设置策略标识'}</div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前视图 {activeWorkspaceLabel} ｜ 当前标的 {trimmedCode || '-'} ｜ 策略 {strategy}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Artifact</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{artifactId || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  Backtest {backtestApi.data?.backtestId != null ? String(backtestApi.data.backtestId) : '-'}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前组合</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{holdingOp.portfolioId || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  持仓 {detailHoldings.length} 条 · 策略 {detailStrategies.length} 条
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{portfolioRows.length}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {holdingOp.portfolioId ? '继续调仓、优化与压力测试' : '先创建组合或从列表选择组合'}
-                </div>
-              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                Artifact {artifactId || '-'} ｜ 当前组合 {currentPortfolioId} ｜ 持仓 {detailHoldings.length} 条
+              </p>
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={sidePanelCls}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前实验状态</div>
-              <div className="mt-3 text-base font-semibold text-text-primary">
-                {artifactId ? `已生成 Artifact ${artifactId}` : '等待第一次回测结果'}
-              </div>
-              <div className="mt-4 space-y-3">
-                <div className={noteCardCls}>
-                  收益摘要：
-                  <span className="font-medium text-text-primary">
-                    {metrics?.totalReturn != null ? fmtPct(Number(metrics.totalReturn)) : '尚未生成'}
-                  </span>
-                </div>
-                <div className={noteCardCls}>
-                  回撤：
-                  <span className="font-medium text-text-primary">
-                    {metrics?.maxDrawdown != null ? fmtPct(Number(metrics.maxDrawdown)) : '尚未生成'}
-                  </span>
-                </div>
-                <div className={noteCardCls}>
-                  组合上下文：
-                  <span className="font-medium text-text-primary">{holdingOp.portfolioId || '未绑定'}</span>
-                </div>
-              </div>
+          <details className={sidePanelCls} open>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              当前上下文与下一步
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className={noteCardCls}>当前标的：{trimmedCode || '未输入'} ｜ 策略：{strategy}</div>
+              <div className={noteCardCls}>Artifact：{artifactId || '尚未生成'} ｜ 组合：{currentPortfolioId}</div>
+              <div className={noteCardCls}>{nextStepLabel}</div>
             </div>
-
-            <div className={sidePanelCls}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-              <div className="mt-4 space-y-3">
-                <div className={noteCardCls}>1. 先跑回测，确认 Artifact、收益率和回撤是否在可接受区间。</div>
-                <div className={noteCardCls}>2. 再创建组合并把持仓逐步落地到组合里，不要一开始就直接做风控。</div>
-                <div className={noteCardCls}>3. 最后做优化、风险分析和压力测试，确认策略不是只在单一场景下成立。</div>
-              </div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
-      <KpiGrid cols={5} className="mb-4">
-        <KpiCard title="Artifact ID" value={artifactId || null} />
-        <KpiCard
-          title="Backtest ID"
-          value={backtestApi.data?.backtestId != null ? String(backtestApi.data.backtestId) : null}
-        />
-        <KpiCard
-          title="总收益"
-          value={metrics?.totalReturn != null ? fmtPct(Number(metrics.totalReturn)) : null}
-          change={metrics?.totalReturn != null ? Number(metrics.totalReturn) : null}
-        />
-        <KpiCard title="夏普比率" value={metrics?.sharpe != null ? fmtNum(Number(metrics.sharpe), 2) : null} />
-        <KpiCard title="最大回撤" value={metrics?.maxDrawdown != null ? fmtPct(Number(metrics.maxDrawdown)) : null} />
-      </KpiGrid>
-
-      <SectionCard className="p-4 sm:p-5">
+      <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Experiment Workspace</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">试验区 · 回测执行</h3>
+            <div className="eyebrow">Workspace Flow</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前主任务</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              试验区先确认标的和策略标识，再运行回测并保留 Artifact
-              供后续指标刷新。只有实验结果足够清晰，落地动作才有意义。
+              主区一次只展开一个阶段，避免试验、组合和风险内容在默认状态下连续堆叠。
             </p>
+          </div>
+          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+            回测 {backtestRows.length} 条 ｜ 组合 {portfolioRows.length} 个 ｜ 压力场景 {stressScenarios.length} 条
           </div>
         </div>
-
-        <div className="mt-4 grid gap-4 xl:grid-cols-2">
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="text-sm font-medium text-text-primary">运行新的回测</div>
-            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-              先确认标的和策略标识，再运行回测并保留 Artifact 供后续指标刷新。
-            </p>
-            <form onSubmit={runBacktest} className="mt-4 grid gap-3 lg:grid-cols-[160px_220px_auto_auto] lg:items-end">
-              <StockCodeInput
-                id="strategy-backtest-code"
-                label="股票代码"
-                value={code}
-                onChange={setCode}
-                error={codeError}
-              />
-              <WorkbenchField
-                id="strategy-backtest-name"
-                label="策略标识"
-                value={strategy}
-                onChange={setStrategy}
-                placeholder="例如 ma_cross"
-              />
-              <button type="submit" className={heroPrimaryButtonCls}>
-                运行回测
-              </button>
-              <button type="button" onClick={loadBacktests} className={chipButtonCls}>
-                最近回测
-              </button>
-            </form>
-          </div>
-
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="text-sm font-medium text-text-primary">回测结果定位</div>
-            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-              把最近一次回测生成的 Artifact 留在手边，后续刷新收益指标时不需要重新跑完整流程。
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,260px)_auto] md:items-end">
-              <WorkbenchField
-                id="strategy-artifact-id"
-                label="Artifact ID"
-                value={artifactId}
-                onChange={setArtifactId}
-                placeholder="粘贴或保留最近一次回测的 artifactId"
-              />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => loadMetrics()} className={chipButtonCls}>
-                  刷新指标
-                </button>
-              </div>
-            </div>
-          </div>
+        <div className="mt-4">
+          <TabBar tabs={WORKSPACE_TABS} active={workspaceTab} onChange={(key) => setWorkspaceTab(key as WorkspaceTab)} />
         </div>
+        {workspaceTab === 'experiment' ? experimentContent : null}
+        {workspaceTab === 'deployment' ? deploymentContent : null}
+        {workspaceTab === 'risk' ? riskContent : null}
+      </div>
+    </>
+  );
 
-        {backtestRows.length > 0 ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">最近回测</div>
-            <DataTable
-              rows={backtestRows}
-              columns={[
-                { key: 'backtestId', label: '回测ID' },
-                { key: 'code', label: '代码' },
-                { key: 'strategy', label: '策略' },
-                { key: 'startDate', label: '开始日期' },
-                { key: 'endDate', label: '结束日期' },
-                { key: 'totalReturn', label: '总收益', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
-                {
-                  key: 'maxDrawdown',
-                  label: '最大回撤',
-                  align: 'right',
-                  render: (value) => fmtPct(Number(value ?? 0)),
-                },
-                { key: 'sharpe', label: 'Sharpe', align: 'right', render: (value) => fmtNum(Number(value ?? 0), 2) },
-                { key: 'createdAt', label: '创建时间' },
-              ]}
-              pageSize={6}
-              searchable
-              onExport={() => exportCSV(backtestRows, 'strategy-backtests')}
-            />
-          </div>
-        ) : null}
-      </SectionCard>
-
-      <SectionCard className="p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="eyebrow">Deployment Workspace</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">落地区 · 组合管理</h3>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这里负责把试验结果真正放进组合。先建组合容器，再把选定策略和持仓逐步落地到组合里。
-            </p>
-          </div>
+  const summaryPanel = (
+    <div className={sidePanelCls}>
+      <div className="text-sm font-medium text-text-primary">摘要</div>
+      <div className="mt-3 space-y-3 text-xs text-text-secondary">
+        <div className={noteCardCls}>
+          Artifact：<span className="font-medium text-text-primary">{artifactId || '尚未生成'}</span>
         </div>
-
-        <div className="mt-4 grid gap-4 xl:grid-cols-2">
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="text-sm font-medium text-text-primary">创建组合</div>
-            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-              先建立组合容器，再继续做持仓落地和后续分析。
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,240px)_auto_auto] md:items-end">
-              <WorkbenchField
-                id="strategy-portfolio-name"
-                label="组合名称"
-                value={portfolioName}
-                onChange={setPortfolioName}
-                placeholder="例如 我的策略组合"
-              />
-              <button type="button" onClick={createPortfolio} className={heroPrimaryButtonCls}>
-                创建组合
-              </button>
-              <button type="button" onClick={loadPortfolios} className={chipButtonCls}>
-                组合列表
-              </button>
-            </div>
-          </div>
-
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="text-sm font-medium text-text-primary">持仓与详情操作</div>
-            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-              把组合 ID、标的、股数和成本价收在同一块里，便于在同一上下文里做加仓、减仓和详情查看。
-            </p>
-            <div className="mt-4 grid gap-3 lg:grid-cols-[140px_140px_120px_120px_auto_auto_auto] lg:items-end">
-              <WorkbenchField
-                id="strategy-portfolio-id"
-                label="组合 ID"
-                value={holdingOp.portfolioId}
-                onChange={(value) => setHoldingOp({ ...holdingOp, portfolioId: value })}
-                placeholder="输入 portfolioId"
-              />
-              <WorkbenchField
-                id="strategy-holding-code"
-                label="股票代码"
-                value={holdingOp.code}
-                onChange={(value) => setHoldingOp({ ...holdingOp, code: value.slice(0, 6) })}
-                placeholder="6 位股票代码"
-              />
-              <WorkbenchField
-                id="strategy-holding-shares"
-                label="持仓股数"
-                value={holdingOp.shares}
-                onChange={(value) => setHoldingOp({ ...holdingOp, shares: value })}
-                placeholder="例如 100"
-              />
-              <WorkbenchField
-                id="strategy-holding-cost"
-                label="成本价"
-                value={holdingOp.costPrice}
-                onChange={(value) => setHoldingOp({ ...holdingOp, costPrice: value })}
-                placeholder="例如 12.56"
-              />
-              <button type="button" onClick={addHolding} className={chipButtonCls}>
-                加仓
-              </button>
-              <button type="button" onClick={removeHolding} className={chipButtonCls}>
-                减仓
-              </button>
-              <button type="button" onClick={loadPortfolioDetail} className={chipButtonCls}>
-                查看详情
-              </button>
-            </div>
-          </div>
+        <div className={noteCardCls}>
+          当前组合：<span className="font-medium text-text-primary">{currentPortfolioId}</span>
         </div>
-
-        {portfolioRows.length > 0 ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">组合列表</div>
-            <DataTable
-              rows={portfolioRows}
-              columns={[
-                { key: 'id', label: '组合ID' },
-                { key: 'name', label: '组合名称' },
-                { key: 'description', label: '描述' },
-                { key: 'strategyAllocationCount', label: '策略数', align: 'right' },
-                { key: 'strategyAllocationSummary', label: '策略配置' },
-                {
-                  key: 'currentValue',
-                  label: '当前资产',
-                  align: 'right',
-                  render: (value) => fmtNum(Number(value ?? 0), 2),
-                },
-                { key: 'createdAt', label: '创建时间' },
-              ]}
-              pageSize={6}
-              searchable
-              onExport={() => exportCSV(portfolioRows, 'strategy-portfolios')}
-              onRowClick={(row) => {
-                const selectedId = String(row.id ?? '').trim();
-                if (!selectedId || selectedId === '-') return;
-                setHoldingOp((prev) => ({ ...prev, portfolioId: selectedId }));
-                const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(selectedId)}`;
-                if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch();
-                else setPortfolioDetailPath(detailPath);
-              }}
-            />
-          </div>
-        ) : null}
-
-        {detailObj ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">组合详情</div>
-            <KpiGrid cols={4} className="mb-4">
-              <KpiCard title="组合名称" value={detailObj.name != null ? String(detailObj.name) : null} />
-              <KpiCard
-                title="总资产"
-                value={detailObj.totalAssets != null ? fmtNum(Number(detailObj.totalAssets), 2) : null}
-              />
-              <KpiCard
-                title="总收益"
-                value={detailObj.totalReturn != null ? fmtPct(Number(detailObj.totalReturn)) : null}
-                change={detailObj.totalReturn != null ? Number(detailObj.totalReturn) : null}
-              />
-              <KpiCard title="持仓数" value={detailHoldings.length || null} />
-            </KpiGrid>
-            {detailStrategies.length > 0 ? (
-              <DataTable
-                rows={detailStrategies}
-                columns={[
-                  {
-                    key: 'strategyId',
-                    label: '策略ID',
-                    render: (_value, row) => String(row.strategyId ?? row.strategy_id ?? '-'),
-                  },
-                  { key: 'weight', label: '权重', align: 'right', render: (value) => fmtPct(Number(value ?? 0) * 100) },
-                ]}
-                className="mb-4"
-              />
-            ) : null}
-            {detailHoldings.length > 0 ? (
-              <DataTable
-                rows={detailHoldings}
-                pageSize={10}
-                onExport={() => exportCSV(detailHoldings, 'portfolio-holdings')}
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </SectionCard>
-
-      <SectionCard className="p-4 sm:p-5">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
-          <div>
-            <div className="eyebrow">Risk Workspace</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">落地区 · 组合优化与风控</h3>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              以下动作默认基于当前填写的组合 ID 执行，适合在持仓落地后继续做优化、风险和压力校验。
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={optimizePortfolio} className={heroPrimaryButtonCls}>
-                优化配置
-              </button>
-              <button type="button" onClick={analyzeRisk} className={heroSecondaryButtonCls}>
-                风险分析
-              </button>
-              <button type="button" onClick={runStressTest} className={heroSecondaryButtonCls}>
-                压力测试
-              </button>
-            </div>
-          </div>
-
-          <div className="panel-soft rounded-[24px] p-4">
-            <div className="text-sm font-medium text-text-primary">当前执行上下文</div>
-            <div className="mt-3 space-y-3">
-              <div className={noteCardCls}>组合 ID：{holdingOp.portfolioId || '未填写'}</div>
-              <div className={noteCardCls}>优化结果：{optData?.optimization ? '已生成' : '未生成'}</div>
-              <div className={noteCardCls}>压力场景：{stressScenarios.length} 条</div>
-            </div>
-          </div>
+        <div className={noteCardCls}>
+          当前指标：
+          <span className="font-medium text-text-primary">
+            {metrics?.totalReturn != null ? ` 总收益 ${fmtPct(Number(metrics.totalReturn))}` : ' 等待回测'}
+          </span>
         </div>
+      </div>
+    </div>
+  );
 
-        {optData?.optimization ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">优化结果</div>
-            <KpiGrid cols={3} className="mb-4">
-              <KpiCard
-                title="预期收益"
-                value={
-                  optData.optimization.expectedReturn != null
-                    ? fmtPct(Number(optData.optimization.expectedReturn))
-                    : null
-                }
-              />
-              <KpiCard
-                title="预期风险"
-                value={
-                  optData.optimization.expectedRisk != null ? fmtPct(Number(optData.optimization.expectedRisk)) : null
-                }
-              />
-              <KpiCard
-                title="夏普比率"
-                value={optData.optimization.sharpe != null ? fmtNum(Number(optData.optimization.sharpe), 2) : null}
-              />
-            </KpiGrid>
-            {optWeights.length > 0 ? (
-              <DataTable rows={optWeights} onExport={() => exportCSV(optWeights, 'optimization-weights')} />
-            ) : null}
-          </div>
-        ) : null}
+  const nextStepsPanel = (
+    <div className={sidePanelCls}>
+      <div className="text-sm font-medium text-text-primary">下一步动作</div>
+      <div className="mt-3 space-y-3">
+        <div className={noteCardCls}>1. 先在试验区跑回测，确认收益和回撤是否可接受。</div>
+        <div className={noteCardCls}>2. 再创建或选中组合，把持仓和策略配置落到组合里。</div>
+        <div className={noteCardCls}>3. 最后执行优化、风险分析和压力测试，确认不是单场景有效。</div>
+      </div>
+    </div>
+  );
 
-        {riskData?.riskMetrics ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">风险指标</div>
-            <KpiGrid cols={5}>
-              <KpiCard
-                title="VaR (95%)"
-                value={riskData.riskMetrics.var95 != null ? fmtPct(Number(riskData.riskMetrics.var95)) : null}
-              />
-              <KpiCard
-                title="VaR (99%)"
-                value={riskData.riskMetrics.var99 != null ? fmtPct(Number(riskData.riskMetrics.var99)) : null}
-              />
-              <KpiCard
-                title="CVaR"
-                value={riskData.riskMetrics.cvar != null ? fmtPct(Number(riskData.riskMetrics.cvar)) : null}
-              />
-              <KpiCard
-                title="Beta"
-                value={riskData.riskMetrics.beta != null ? fmtNum(Number(riskData.riskMetrics.beta), 2) : null}
-              />
-              <KpiCard
-                title="波动率"
-                value={riskData.riskMetrics.volatility != null ? fmtPct(Number(riskData.riskMetrics.volatility)) : null}
-              />
-            </KpiGrid>
-          </div>
-        ) : null}
+  const mobileSummary = (
+    <div className="panel-soft rounded-[24px] px-4 py-3 text-sm text-text-secondary">
+      {activeWorkspaceLabel} ｜ Artifact {artifactId || '-'} ｜ 组合 {currentPortfolioId}
+    </div>
+  );
 
-        {stressScenarios.length > 0 ? (
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-medium text-text-primary">压力测试</div>
-            <DataTable
-              rows={stressScenarios}
-              columns={[
-                { key: 'name', label: '场景' },
-                {
-                  key: 'impact',
-                  label: '影响',
-                  align: 'right',
-                  render: (value: unknown) => {
-                    const amount = Number(value);
-                    return <span style={{ color: amount < 0 ? '#ef4444' : '#10b981' }}>{fmtPct(amount)}</span>;
-                  },
-                },
-                { key: 'description', label: '描述' },
-              ]}
-              onExport={() => exportCSV(stressScenarios, 'stress-test')}
-            />
-          </div>
-        ) : null}
-      </SectionCard>
+  return (
+    <PageContainer>
+      <WorkspaceToolbar pageKey="strategy" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout
+        pageKey="strategy"
+        primary={primaryContent}
+        secondary={summaryPanel}
+        secondaryPanels={[
+          { key: 'summary', label: '摘要', content: summaryPanel },
+          { key: 'next', label: '下一步', content: nextStepsPanel },
+        ]}
+        mobileSummary={mobileSummary}
+        maxDefaultSections={0}
+      />
       <ConfirmDialog
         open={pendingAction != null}
         title={
@@ -888,7 +933,9 @@ export default function StrategyPage() {
         }
         danger={pendingAction?.type === 'remove'}
         onCancel={() => setPendingAction(null)}
-        onConfirm={() => { void handleConfirmAction(); }}
+        onConfirm={() => {
+          void handleConfirmAction();
+        }}
       >
         <div className="space-y-2">
           <div>当前操作已开启“组合调仓”二次确认。</div>

@@ -1,5 +1,1 @@
-import { redirect } from 'next/navigation';
-
-export default function ChatPage() {
-  redirect('/assistant');
-}
+export { default } from '@/app/assistant/page';

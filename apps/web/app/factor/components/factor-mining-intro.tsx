@@ -10,7 +10,7 @@ type FactorMiningIntroProps = {
 export default function FactorMiningIntro({ anyLoading, error }: FactorMiningIntroProps) {
   return (
     <SectionCard className="p-4 sm:p-5">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_340px]">
+      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.25fr)_340px]">
         <div>
           <div className="eyebrow">AI Mining Workspace</div>
           <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">AI 因子挖掘工作台</h3>

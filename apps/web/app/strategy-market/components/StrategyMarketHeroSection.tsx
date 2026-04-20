@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { AskAiButton } from '@/components/ask-ai-button';
 import { Badge } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   primaryRoundButtonCls,
   secondaryRoundButtonCls,
@@ -48,6 +50,8 @@ export function StrategyMarketHeroSection({
   onToggleCart,
   onToggleFactoryDetails,
 }: StrategyMarketHeroSectionProps) {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
       <div className="page-hero p-6 sm:p-7">
@@ -63,18 +67,30 @@ export function StrategyMarketHeroSection({
           </div>
         ) : null}
         <div className="mt-5 flex flex-wrap gap-2">
-          {capabilityBadges.slice(0, 8).map((item) => (
+          {capabilityBadges.slice(0, compactLayout ? 4 : 8).map((item) => (
             <Badge key={item.key} variant={item.enabled ? 'info' : 'neutral'}>
               {item.label}
             </Badge>
           ))}
         </div>
+        {compactLayout ? (
+          <details className="mt-3 rounded-[18px] border border-white/45 bg-white/24 px-3 py-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开更多工厂能力</summary>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {capabilityBadges.slice(4, 10).map((item) => (
+                <Badge key={item.key} variant={item.enabled ? 'info' : 'neutral'}>
+                  {item.label}
+                </Badge>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
 
       <section className="page-hero p-5">
         <div className="eyebrow">目录摘要</div>
         <h2 className="mt-2">当前目录</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
+        <div className={`mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-2 ${compactLayout ? 'grid-cols-2' : ''}`}>
           <div className="metric-tile px-4 py-3">
             <div className="metric-label">目录策略数</div>
             <div className="mt-2 text-2xl font-semibold text-text-primary">{strategyCount}</div>
@@ -83,18 +99,22 @@ export function StrategyMarketHeroSection({
             <div className="metric-label">已启用能力</div>
             <div className="mt-2 text-2xl font-semibold text-text-primary">{enabledCapabilityCount}</div>
           </div>
-          <div className="metric-tile px-4 py-3">
-            <div className="metric-label">最佳年化</div>
-            <div className={`mt-2 text-lg font-semibold ${(bestAnnualReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
-              {bestAnnualReturn == null || !Number.isFinite(bestAnnualReturn) ? '-' : fmtPct(bestAnnualReturn)}
-            </div>
-          </div>
-          <div className="metric-tile px-4 py-3">
-            <div className="metric-label">最佳 Sharpe</div>
-            <div className="mt-2 text-lg font-semibold text-text-primary">
-              {bestSharpe == null || !Number.isFinite(bestSharpe) ? '-' : fmtNum(bestSharpe, 2)}
-            </div>
-          </div>
+          {!compactLayout ? (
+            <>
+              <div className="metric-tile px-4 py-3">
+                <div className="metric-label">最佳年化</div>
+                <div className={`mt-2 text-lg font-semibold ${(bestAnnualReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
+                  {bestAnnualReturn == null || !Number.isFinite(bestAnnualReturn) ? '-' : fmtPct(bestAnnualReturn)}
+                </div>
+              </div>
+              <div className="metric-tile px-4 py-3">
+                <div className="metric-label">最佳 Sharpe</div>
+                <div className="mt-2 text-lg font-semibold text-text-primary">
+                  {bestSharpe == null || !Number.isFinite(bestSharpe) ? '-' : fmtNum(bestSharpe, 2)}
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <AskAiButton

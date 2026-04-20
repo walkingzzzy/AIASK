@@ -8,14 +8,17 @@ import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, PageContainer, TabBar, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
 import { ProgressBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { useMobile } from '@/hooks/use-mobile';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 const TABS = [
@@ -39,6 +42,9 @@ const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
 export default function SearchPage() {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
@@ -175,6 +181,15 @@ export default function SearchPage() {
         { label: '查看自选股', href: '/watchlist' },
         { label: '继续研究页', href: '/research' },
       ];
+  const mobileSummary = (
+    <div className="rounded-[20px] border border-white/50 bg-white/24 px-4 py-2 text-sm text-text-secondary">
+      <span className="font-medium text-text-primary">{activeTabLabel}</span>
+      <span className="mx-2 text-text-muted">/</span>
+      <span>{activePrompt}</span>
+      <span className="mx-2 text-text-muted">/</span>
+      <span>{rows.length} 条结果</span>
+    </div>
+  );
 
   usePageContext({
     pageKey: 'search',
@@ -299,7 +314,7 @@ export default function SearchPage() {
             <div>
               <div className="eyebrow">Search Canvas</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">输入、搜索与结果阅读顺序</h2>
-              <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">{tabDescription}</p>
+              {!compactLayout ? <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">{tabDescription}</p> : null}
             </div>
             <Badge variant="info">步骤 1</Badge>
           </div>
@@ -313,12 +328,12 @@ export default function SearchPage() {
             }}
           />
         </div>
-        <SectionCard tabAttached className="min-h-[560px]">
+        <SectionCard tabAttached className={compactLayout ? 'min-h-0' : 'min-h-[560px]'}>
           <div className="space-y-4">
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前输入焦点</div>
               <div className="mt-3 text-lg font-semibold text-text-primary">{activePrompt}</div>
-              <div className="mt-2 text-sm text-text-secondary">{tabDescription}</div>
+              {!compactLayout ? <div className="mt-2 text-sm text-text-secondary">{tabDescription}</div> : null}
             </div>
 
             {tab === 'semantic' ? (
@@ -388,45 +403,77 @@ export default function SearchPage() {
             {isPending ? <LoadingState text="搜索中..." /> : null}
             {error ? <ErrorState text={error} hint="请检查输入后重试" /> : null}
             {!isPending && !data && !error ? (
-              <EmptyState
-                text={tab === 'semantic' ? '输入主题词后开始语义搜索' : '输入股票代码后开始相似/形态搜索'}
-                hint={
-                  tab === 'semantic'
-                    ? '你可以先用“新能源龙头”“高股息银行”这类主题词快速找标的，再继续跳到个股详情、技术面或基本面页面。'
-                    : '推荐先从一只熟悉的股票开始，搜索结果出来后再进入个股详情、资金流、技术分析等下一步动作。'
-                }
-                action={
-                  <>
+              compactLayout ? (
+                <div className="rounded-[24px] border border-dashed border-white/55 bg-white/18 px-4 py-4 text-sm text-text-secondary">
+                  <div className="font-medium text-text-primary">
+                    {tab === 'semantic' ? '先输入主题词开始语义搜索' : '先输入股票代码开始搜索'}
+                  </div>
+                  <div className="mt-2 leading-6">
                     {tab === 'semantic'
-                      ? SEMANTIC_EXAMPLES.slice(0, 2).map((example) => (
-                          <button
-                            key={example}
-                            type="button"
-                            onClick={() => {
-                              setQuery(example);
-                              setQueryError(null);
-                            }}
-                            className={LINK_CHIP_CLS}
-                          >
-                            试试“{example}”
-                          </button>
-                        ))
-                      : STOCK_EXAMPLES.slice(0, 2).map((example) => (
-                          <button
-                            key={example}
-                            type="button"
-                            onClick={() => setCode(example)}
-                            className={LINK_CHIP_CLS}
-                          >
-                            示例 {example}
-                          </button>
-                        ))}
-                    <Link href="/watchlist" className={LINK_CHIP_CLS}>
-                      查看自选股
-                    </Link>
-                  </>
-                }
-              />
+                      ? '建议先用行业或风格词拉一轮候选，再决定是否进入个股详情。'
+                      : '建议先从熟悉标的开始，跑出第一组结果后再跳去详情、技术面或基本面页。'}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(tab === 'semantic' ? SEMANTIC_EXAMPLES : STOCK_EXAMPLES).slice(0, 2).map((example) => (
+                      <button
+                        key={example}
+                        type="button"
+                        onClick={() => {
+                          if (tab === 'semantic') {
+                            setQuery(example);
+                            setQueryError(null);
+                          } else {
+                            setCode(example);
+                          }
+                        }}
+                        className={LINK_CHIP_CLS}
+                      >
+                        {tab === 'semantic' ? example : `示例 ${example}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <EmptyState
+                  text={tab === 'semantic' ? '输入主题词后开始语义搜索' : '输入股票代码后开始相似/形态搜索'}
+                  hint={
+                    tab === 'semantic'
+                      ? '你可以先用“新能源龙头”“高股息银行”这类主题词快速找标的，再继续跳到个股详情、技术面或基本面页面。'
+                      : '推荐先从一只熟悉的股票开始，搜索结果出来后再进入个股详情、资金流、技术分析等下一步动作。'
+                  }
+                  action={
+                    <>
+                      {tab === 'semantic'
+                        ? SEMANTIC_EXAMPLES.slice(0, 2).map((example) => (
+                            <button
+                              key={example}
+                              type="button"
+                              onClick={() => {
+                                setQuery(example);
+                                setQueryError(null);
+                              }}
+                              className={LINK_CHIP_CLS}
+                            >
+                              试试“{example}”
+                            </button>
+                          ))
+                        : STOCK_EXAMPLES.slice(0, 2).map((example) => (
+                            <button
+                              key={example}
+                              type="button"
+                              onClick={() => setCode(example)}
+                              className={LINK_CHIP_CLS}
+                            >
+                              示例 {example}
+                            </button>
+                          ))}
+                      <Link href="/watchlist" className={LINK_CHIP_CLS}>
+                        查看自选股
+                      </Link>
+                    </>
+                  }
+                />
+              )
             ) : null}
 
             {rows.length ? (
@@ -495,7 +542,31 @@ export default function SearchPage() {
     </div>
   );
 
-  const workspacePanel = (
+  const workspacePanel = compactLayout ? (
+    <div className="space-y-3">
+      <div className="rounded-[24px] border border-white/50 bg-white/24 px-4 py-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">搜索工作区摘要</div>
+        <div className="mt-2 text-sm font-semibold text-text-primary">
+          {activeTabLabel} ｜ {rows.length} 条 ｜ {primaryCode || activePrompt}
+        </div>
+      </div>
+      <details className="rounded-[24px] border border-white/50 bg-white/24 px-4 py-3">
+        <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+          {primaryCode ? `围绕 ${primaryName || primaryCode} 继续深入` : '展开下一步联动'}
+        </summary>
+        <div className="mt-3 space-y-3">
+          <div className={NOTE_CARD_CLS}>{primaryCode ? heroNotes[0] : '先跑出一组候选结果，再决定是否进入详情页。'}</div>
+          <div className="flex flex-wrap gap-2">
+            {(primaryCode ? resultLinks.slice(0, 3) : quickJumpLinks.slice(0, 3)).map((link) => (
+              <Link key={link.href} href={link.href} className={LINK_CHIP_CLS}>
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+      </details>
+    </div>
+  ) : (
     <div className="grid gap-4 xl:h-full xl:grid-rows-[auto_auto_minmax(0,1fr)]">
       <div className={PANEL_CLS}>
         <div className="eyebrow">Workspace Summary</div>
@@ -583,7 +654,7 @@ export default function SearchPage() {
 
   return (
     <PageContainer className="app-theme-research">
-      <section className="page-hero mb-4 p-5 sm:p-6">
+      <section className="page-hero mb-4 p-4 sm:p-5">
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -593,93 +664,123 @@ export default function SearchPage() {
                 {rows.length > 0 ? `已返回 ${rows.length} 条结果` : '等待执行搜索'}
               </Badge>
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              智能搜索工作台
+            <h1 className="mb-0 mt-3 text-[1.7rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
+              {compactLayout ? '智能搜索' : '智能搜索工作台'}
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这次重构把搜索页从“单次查询入口”升级成连续工作台。输入、结果、下一步跳转和工作区摘要放在同一阅读动线上，减少找到标的后还要重新组织思路的切换成本。
-            </p>
+            {!compactLayout ? (
+              <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+                这次重构把搜索页从“单次查询入口”升级成连续工作台。输入、结果、下一步跳转和工作区摘要放在同一阅读动线上，减少找到标的后还要重新组织思路的切换成本。
+              </p>
+            ) : null}
             <div className="mt-5 flex flex-wrap gap-2">
               <button type="button" onClick={submit} disabled={isPending} className={HERO_PRIMARY_BUTTON_CLS}>
                 {isPending ? '搜索中...' : '执行当前搜索'}
               </button>
-              <AskAiButton
-                stockCode={primaryCode || trimmedCode || undefined}
-                summary={heroSummary}
-                prompt="请帮我解释当前搜索结果，并给出下一步研究建议"
-                label="解读当前结果"
-              />
+              {!compactLayout ? (
+                <AskAiButton
+                  stockCode={primaryCode || trimmedCode || undefined}
+                  summary={heroSummary}
+                  prompt="请帮我解释当前搜索结果，并给出下一步研究建议"
+                  label="解读当前结果"
+                />
+              ) : null}
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前模式</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">根据任务目标切换检索方式</div>
+            {compactLayout ? (
+              <div className="mt-3 rounded-[20px] border border-white/45 bg-white/28 px-4 py-3 text-sm text-text-secondary">
+                <span className="font-medium text-text-primary">{activeTabLabel}</span>
+                <span className="mx-2 text-text-muted">/</span>
+                <span>{activePrompt}</span>
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前输入</div>
-                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{activePrompt}</div>
-                <div className="mt-1 text-xs text-text-secondary">优先聚焦一个明确线索</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">优先结果</div>
-                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">
-                  {primaryCode ? `${primaryName || primaryCode}` : '等待结果'}
+            ) : (
+              <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
+                <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前模式</div>
+                  <div className="mt-3 text-lg font-semibold text-text-primary">{activeTabLabel}</div>
+                  <div className="mt-1 text-xs text-text-secondary">根据任务目标切换检索方式</div>
                 </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {primaryCode ? '已可继续联动到其他分析页面' : '执行一次搜索后自动刷新'}
+                <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前输入</div>
+                  <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{activePrompt}</div>
+                  <div className="mt-1 text-xs text-text-secondary">优先聚焦一个明确线索</div>
+                </div>
+                <div className="col-span-2 rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)] xl:col-span-1">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">优先结果</div>
+                  <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">
+                    {primaryCode ? `${primaryName || primaryCode}` : '等待结果'}
+                  </div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    {primaryCode ? '已可继续联动到其他分析页面' : '执行一次搜索后自动刷新'}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
+          {!compactLayout ? (
           <div className="grid gap-3">
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">使用建议</div>
+            <details className={PANEL_CLS} open={!compactLayout}>
+              <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                {compactLayout ? '展开使用建议与快速开始' : '使用建议'}
+              </summary>
               <div className="mt-4 space-y-3">
                 {heroNotes.map((note) => (
                   <div key={note} className={NOTE_CARD_CLS}>
                     {note}
                   </div>
                 ))}
-              </div>
-            </div>
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">快速开始</div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {(tab === 'semantic' ? SEMANTIC_EXAMPLES : STOCK_EXAMPLES).map((example) => (
-                  <button
-                    key={example}
-                    type="button"
-                    onClick={() => {
-                      if (tab === 'semantic') {
-                        setQuery(example);
-                        setQueryError(null);
-                      } else {
-                        setCode(example);
-                      }
-                    }}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    {tab === 'semantic' ? example : `示例 ${example}`}
+                <div className="flex flex-wrap gap-2">
+                  {(tab === 'semantic' ? SEMANTIC_EXAMPLES : STOCK_EXAMPLES).map((example) => (
+                    <button
+                      key={example}
+                      type="button"
+                      onClick={() => {
+                        if (tab === 'semantic') {
+                          setQuery(example);
+                          setQueryError(null);
+                        } else {
+                          setCode(example);
+                        }
+                      }}
+                      className={CHIP_BUTTON_CLS}
+                    >
+                      {tab === 'semantic' ? example : `示例 ${example}`}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setTab('semantic')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    切到语义搜索
                   </button>
-                ))}
+                  <button type="button" onClick={() => setTab('similar')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    切到相似股票
+                  </button>
+                </div>
+                {compactLayout ? (
+                  <div className={NOTE_CARD_CLS}>
+                    优先结果：{primaryCode ? `${primaryName || primaryCode}` : '等待结果'}。
+                    {primaryCode ? ' 结果已可联动到个股详情、技术面和研究页。' : ' 执行一次搜索后自动更新。'}
+                  </div>
+                ) : null}
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button type="button" onClick={() => setTab('semantic')} className={HERO_SECONDARY_BUTTON_CLS}>
-                  切到语义搜索
-                </button>
-                <button type="button" onClick={() => setTab('similar')} className={HERO_SECONDARY_BUTTON_CLS}>
-                  切到相似股票
-                </button>
-              </div>
-            </div>
+            </details>
           </div>
+          ) : null}
         </div>
       </section>
-      <WorkspaceToolbar pageKey="search" currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      <WorkspaceSplitLayout pageKey="search" primary={searchPanel} secondary={workspacePanel} className="items-start" />
+      {!compactLayout ? (
+        <WorkspaceToolbar pageKey="search" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      ) : null}
+      <WorkspaceSplitLayout
+        pageKey="search"
+        primary={searchPanel}
+        secondary={workspacePanel}
+        className="items-start"
+        collapseSecondaryBelow={RESPONSIVE_BREAKPOINTS.dockOverlay}
+        defaultMobileTab="primary"
+        maxDefaultSections={1}
+        mobileSummary={mobileSummary}
+      />
     </PageContainer>
   );
 }

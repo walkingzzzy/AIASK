@@ -47,6 +47,20 @@ export const metadata: Metadata = {
   manifest: '/manifest.json',
 };
 
+const themeBootstrapScript = `
+  (() => {
+    try {
+      const stored = localStorage.getItem('theme') || 'system';
+      const root = document.documentElement;
+      root.classList.remove('light', 'dark');
+      const next = stored === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : stored;
+      root.classList.add(next);
+    } catch {}
+  })();
+`;
+
 function LoadingFallback() {
   return (
     <div className="flex items-center justify-center min-h-screen">
@@ -63,11 +77,12 @@ function LoadingFallback() {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" className={`${appSans.variable} ${appMono.variable}`}>
+    <html lang="zh-CN" className={`${appSans.variable} ${appMono.variable}`} suppressHydrationWarning>
       <head>
         <script src="/runtime-config.js" />
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
       </head>
-      <body>
+      <body suppressHydrationWarning>
         <QueryProvider>
           <ToastProvider>
             <Suspense fallback={<LoadingFallback />}>

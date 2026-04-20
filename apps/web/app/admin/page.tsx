@@ -1,7 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge, Skeleton, QuickAction, QuickActionGrid } from '@/components/ui';
+import { useState } from 'react';
+import {
+  PageContainer,
+  SectionCard,
+  KpiGrid,
+  KpiCard,
+  Badge,
+  Skeleton,
+  QuickAction,
+  QuickActionGrid,
+} from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { ErrorState } from '@/components/status-state';
 
@@ -21,8 +31,8 @@ const QUICK_LINKS = [
 ];
 
 export default function AdminPage() {
+  const [lastManualRefreshAt, setLastManualRefreshAt] = useState<string | null>(null);
   const healthQ = useApiQuery<unknown>('/health/mcp', {
-    refetchInterval: 30000,
     staleTime: 15000,
     placeholderData: 'keepPrevious',
     parse: (raw) => raw,
@@ -33,9 +43,7 @@ export default function AdminPage() {
   const mcp = (data.mcp ?? {}) as Record<string, unknown>;
   const hasHealthSnapshot = healthQ.data != null;
   const loadingSnapshot = !hasHealthSnapshot && !healthQ.error;
-  const lastUpdated = typeof data.timestamp === 'string'
-    ? new Date(data.timestamp).toLocaleString('zh-CN')
-    : '-';
+  const lastUpdated = typeof data.timestamp === 'string' ? new Date(data.timestamp).toLocaleString('zh-CN') : '-';
 
   const issues: AdminIssue[] = [];
   if (hasHealthSnapshot && String(data.status ?? 'unknown') !== 'ok') {
@@ -70,22 +78,55 @@ export default function AdminPage() {
       tone: 'warning',
     });
   }
+  const snapshotState = healthQ.isFetching
+    ? '刷新中'
+    : !hasHealthSnapshot
+      ? '等待快照'
+      : issues.length > 0
+        ? '发现异常'
+        : '运行正常';
+  const snapshotHint = hasHealthSnapshot
+    ? `服务 ${String(data.status ?? '-') || '-'} / 数据库 ${db.enabled ? (db.healthy ? '健康' : '异常') : '未启用'} / MCP ${mcp.reachable ? '已连接' : '未连接'}`
+    : '首屏保持静态摘要；需要最新运行态时请手动刷新快照。';
+
+  async function refreshSnapshot() {
+    await healthQ.refetch();
+    setLastManualRefreshAt(new Date().toLocaleString('zh-CN'));
+  }
 
   return (
     <PageContainer>
       <h1 className="text-lg font-semibold mb-2">管理后台概览</h1>
-      <p className="mt-0 mb-4 text-sm text-text-secondary">把“先做什么”放在第一屏，把详细运行快照下沉到第二层，减少管理页一进来就被状态卡淹没的感觉。</p>
+      <p className="mt-0 mb-4 text-sm text-text-secondary">
+        把“先做什么”放在第一屏，把详细运行快照下沉到第二层，减少管理页一进来就被状态卡淹没的感觉。
+      </p>
 
       {healthQ.error ? (
-        <ErrorState text={healthQ.error} hint="请先确认管理员权限和 BFF 健康接口是否可达。" onRetry={() => healthQ.refetch()} />
+        <ErrorState
+          text={healthQ.error}
+          hint="请先确认管理员权限和 BFF 健康接口是否可达。"
+          onRetry={() => healthQ.refetch()}
+        />
       ) : null}
 
       <SectionCard className="p-4 mb-4 min-h-[176px]">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-          <h2 className="mt-0 mb-0 text-base font-semibold">优先处理</h2>
-          <Badge variant={issues.length > 0 ? 'danger' : 'success'}>
-            {issues.length > 0 ? `${issues.length} 个待处理项` : '当前无阻塞项'}
-          </Badge>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="mt-0 mb-0 text-base font-semibold">优先处理</h2>
+            <Badge variant={issues.length > 0 ? 'danger' : 'success'}>
+              {issues.length > 0 ? `${issues.length} 个待处理项` : '当前无阻塞项'}
+            </Badge>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshSnapshot()}
+            disabled={healthQ.isFetching}
+            data-testid="page-primary-action"
+            data-action-testid="admin-refresh-snapshot-action"
+            className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {healthQ.isFetching ? '刷新中...' : '刷新运行快照'}
+          </button>
         </div>
         {!hasHealthSnapshot ? (
           <div className="space-y-3">
@@ -108,16 +149,31 @@ export default function AdminPage() {
         ) : (
           <div className="rounded-xl border border-success/20 bg-success/5 p-3">
             <div className="text-sm font-medium text-success">当前系统未发现首屏阻塞项</div>
-            <p className="mt-1 mb-0 text-xs text-text-secondary">如果后续出现缓存异常、工具断连或同步失败，可从下方入口继续排查。</p>
+            <p className="mt-1 mb-0 text-xs text-text-secondary">
+              如果后续出现缓存异常、工具断连或同步失败，可从下方入口继续排查。
+            </p>
           </div>
         )}
+        <div
+          data-testid="page-primary-status"
+          className="mt-4 rounded-xl border border-border bg-surface-alt/35 p-3 text-sm"
+        >
+          <div className="font-medium text-text-primary">快照状态：{snapshotState}</div>
+          <p className="mt-1 mb-0 text-xs text-text-secondary">{snapshotHint}</p>
+          <p className="mt-2 mb-0 text-xs text-text-secondary">
+            最近快照：{lastUpdated}
+            {lastManualRefreshAt ? ` ｜ 手动刷新：${lastManualRefreshAt}` : ''}
+          </p>
+        </div>
       </SectionCard>
 
       <SectionCard className="p-4 mb-4">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
           <div>
             <h2 className="mt-0 mb-1 text-base font-semibold">第一步通常去这里</h2>
-            <p className="m-0 text-sm text-text-secondary">先排查工具、缓存和死信，再回来看详细快照，通常比一开始盯着所有状态字段更有效。</p>
+            <p className="m-0 text-sm text-text-secondary">
+              先排查工具、缓存和死信，再回来看详细快照，通常比一开始盯着所有状态字段更有效。
+            </p>
           </div>
           <Badge variant={issues.length > 0 ? 'warning' : 'info'}>
             {issues.length > 0 ? '优先看异常路径' : '可做例行巡检'}
@@ -134,9 +190,15 @@ export default function AdminPage() {
 
       <KpiGrid cols={4} className="mb-4">
         <KpiCard title="服务状态" value={hasHealthSnapshot ? String(data.status ?? '-') : '加载中'} />
-        <KpiCard title="数据库" value={hasHealthSnapshot ? (db.enabled ? (db.healthy ? '健康' : '异常') : '未启用') : '加载中'} />
+        <KpiCard
+          title="数据库"
+          value={hasHealthSnapshot ? (db.enabled ? (db.healthy ? '健康' : '异常') : '未启用') : '加载中'}
+        />
         <KpiCard title="MCP 连接" value={hasHealthSnapshot ? (mcp.reachable ? '已连接' : '未连接') : '加载中'} />
-        <KpiCard title="工具匹配" value={hasHealthSnapshot ? `${String(mcp.toolCount ?? 0)}/${String(mcp.expectedTools ?? 0)}` : '加载中'} />
+        <KpiCard
+          title="工具匹配"
+          value={hasHealthSnapshot ? `${String(mcp.toolCount ?? 0)}/${String(mcp.expectedTools ?? 0)}` : '加载中'}
+        />
       </KpiGrid>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -144,7 +206,11 @@ export default function AdminPage() {
           <h3 className="mt-0 text-sm font-semibold mb-3">常用入口</h3>
           <div className="space-y-2">
             {QUICK_LINKS.map((item) => (
-              <Link key={item.href} href={item.href} className="block rounded-lg border border-border px-3 py-3 no-underline text-inherit hover:bg-surface-alt/40">
+              <Link
+                key={item.href}
+                href={item.href}
+                className="block rounded-lg border border-border px-3 py-3 no-underline text-inherit hover:bg-surface-alt/40"
+              >
                 <div className="text-sm font-medium">{item.label}</div>
                 <div className="mt-1 text-xs text-text-secondary">{item.desc}</div>
               </Link>
@@ -165,7 +231,9 @@ export default function AdminPage() {
             <div className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">服务名</span>
-                <span className="font-medium">{hasHealthSnapshot ? String(data.service ?? 'aiask-bff') : '加载中'}</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? String(data.service ?? 'aiask-bff') : '加载中'}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">MCP 来源</span>
@@ -179,12 +247,16 @@ export default function AdminPage() {
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">数据库模式</span>
-                <span className="font-medium">{hasHealthSnapshot ? (db.enabled ? '持久化' : '内存模式') : '加载中'}</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? (db.enabled ? '持久化' : '内存模式') : '加载中'}
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">活跃连接 / 连接池</span>
                 <span className="font-medium">
-                  {hasHealthSnapshot ? `${String(mcp.activeConnections ?? '-')} / ${String(mcp.poolSize ?? '-')}` : '加载中'}
+                  {hasHealthSnapshot
+                    ? `${String(mcp.activeConnections ?? '-')} / ${String(mcp.poolSize ?? '-')}`
+                    : '加载中'}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-3">

@@ -1,6 +1,6 @@
 'use client';
 
-import { SectionCard, KpiCard, KpiGrid, Skeleton, QuickAction, QuickActionGrid } from '@/components/ui';
+import { SectionCard, Skeleton, QuickAction, QuickActionGrid } from '@/components/ui';
 import { EmptyState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -42,6 +42,9 @@ export interface PersonalDashboardProps {
 
   /* Quick actions */
   quickActions: DashboardQuickAction[];
+
+  /* Layout */
+  showSecondaryCards?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -61,7 +64,7 @@ function PersonalOverview({
         <div className="panel-soft rounded-[32px] p-5 sm:p-6">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-primary/15 bg-white/60 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-              Personal Desk
+              个人中心
             </span>
             <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1 text-xs text-text-primary">
               {paperPositions.length > 0 ? `${paperPositions.length} 个持仓` : '等待建立持仓'}
@@ -71,9 +74,9 @@ function PersonalOverview({
             欢迎回来，{nickname}
           </h2>
           <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
-            个人区现在更像首页第二阶段的工作台接力区。市场判断做完后，这里负责承接你的资产状态、自选重点和下一步行动，不再像传统后台那样只给一组孤立数字。
+            个人区用于承接你的资产状态、自选重点和下一步关注内容。市场信息看完后，可以在这里继续查看持仓、账户表现和需要优先处理的提醒。
           </p>
-          <div className="mt-5 grid gap-3 sm:grid-cols-4">
+          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
             <div className="metric-tile rounded-[22px] p-4">
               <div className="metric-label">总资产</div>
               <div className="mt-3 text-lg font-semibold text-text-primary">
@@ -107,7 +110,7 @@ function PersonalOverview({
           </div>
         </div>
         <div className="panel-soft rounded-[32px] p-5">
-          <div className="eyebrow">Focus Notes</div>
+          <div className="eyebrow">关注提示</div>
           <div className="mt-4 space-y-3 text-sm text-text-secondary">
             <div className="metric-tile rounded-[20px] p-4">
               <div className="metric-label">活跃告警</div>
@@ -119,7 +122,7 @@ function PersonalOverview({
               <div className="mt-2 text-lg font-semibold text-text-primary">
                 {fmtAmount(paperSummary.total_value ?? paperAccount.total_value)}
               </div>
-              <div className="mt-1 text-xs">如果现在还没有持仓，建议直接回到看盘或模拟交易入口建立今天的主工作流。</div>
+              <div className="mt-1 text-xs">如果现在还没有持仓，建议先回到看盘或模拟交易入口，建立今天的观察重点。</div>
             </div>
             <div className="metric-tile rounded-[20px] p-4">
               <div className="metric-label">今日节奏</div>
@@ -132,29 +135,6 @@ function PersonalOverview({
         </div>
       </div>
 
-      <div data-tour="dashboard">
-        <SectionCard className="min-h-[180px]">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-            <div>
-              <div className="eyebrow">Account Snapshot</div>
-              <h2 className="mt-2">个人总览</h2>
-            </div>
-            <Link href="/paper-trading" className="text-sm text-primary no-underline">
-              进入模拟盘
-            </Link>
-          </div>
-          <KpiGrid cols={4}>
-            <KpiCard title="总资产" value={fmtAmount(paperSummary.total_value ?? paperAccount.total_value)} />
-            <KpiCard
-              title="总收益率"
-              value={fmtPct(paperSummary.total_return_pct ?? 0)}
-              change={Number(paperSummary.total_return_pct ?? 0)}
-            />
-            <KpiCard title="持仓数" value={paperPositions.length} />
-            <KpiCard title="活跃告警" value={activeAlerts.length} />
-          </KpiGrid>
-        </SectionCard>
-      </div>
     </>
   );
 }
@@ -163,7 +143,7 @@ function PersonalOverview({
 /* 3-column: watchlist / positions / news                              */
 /* ------------------------------------------------------------------ */
 
-function ThreeColumnCards({
+export function PersonalSecondaryCards({
   watchlistItems,
   paperPositions,
   marketNews,
@@ -418,8 +398,8 @@ function QuickActions({ quickActions }: Pick<PersonalDashboardProps, 'quickActio
   return (
     <SectionCard className="min-h-[180px]">
       <div className="mb-4">
-        <div className="eyebrow">Next Actions</div>
-        <h2 className="mt-2">任务流入口</h2>
+        <div className="eyebrow">常用入口</div>
+        <h2 className="mt-2">快捷操作</h2>
       </div>
       <QuickActionGrid cols={5}>
         {quickActions.map((a) => (
@@ -435,6 +415,8 @@ function QuickActions({ quickActions }: Pick<PersonalDashboardProps, 'quickActio
 /* ------------------------------------------------------------------ */
 
 export function PersonalDashboard(props: PersonalDashboardProps) {
+  const showSecondaryCards = props.showSecondaryCards ?? true;
+
   return (
     <>
       <PersonalOverview
@@ -445,12 +427,14 @@ export function PersonalDashboard(props: PersonalDashboardProps) {
         activeAlerts={props.activeAlerts}
       />
       <QuickActions quickActions={props.quickActions} />
-      <ThreeColumnCards
-        watchlistItems={props.watchlistItems}
-        paperPositions={props.paperPositions}
-        marketNews={props.marketNews}
-        quoteMap={props.quoteMap}
-      />
+      {showSecondaryCards ? (
+        <PersonalSecondaryCards
+          watchlistItems={props.watchlistItems}
+          paperPositions={props.paperPositions}
+          marketNews={props.marketNews}
+          quoteMap={props.quoteMap}
+        />
+      ) : null}
     </>
   );
 }

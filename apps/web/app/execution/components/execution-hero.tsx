@@ -10,6 +10,7 @@ import {
 } from '@/app/execution/components/execution-panel-styles';
 
 type ExecutionHeroProps = {
+  compactMobile?: boolean;
   urgency: 'normal' | 'high';
   liveGatewayReady: boolean;
   activeExecutionCode: string;
@@ -36,6 +37,7 @@ type ExecutionHeroProps = {
 };
 
 export default function ExecutionHero({
+  compactMobile = false,
   urgency,
   liveGatewayReady,
   activeExecutionCode,
@@ -62,7 +64,7 @@ export default function ExecutionHero({
 }: ExecutionHeroProps) {
   return (
     <section className="page-hero p-5 sm:p-6">
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+      <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="info">Execution Workspace</Badge>
@@ -106,85 +108,119 @@ export default function ExecutionHero({
             ) : null}
           </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-4">
-            <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '-'}</div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {direction === 'buy' ? '买入方向' : '卖出方向'} · {quantity || '-'} 股
+          {!compactMobile ? (
+            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '-'}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {direction === 'buy' ? '买入方向' : '卖出方向'} · {quantity || '-'} 股
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">预估成交额</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">
+                  {estimatedAmount != null ? fmtNum(estimatedAmount) : '-'}
+                </div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {orderType === 'market'
+                    ? '市价单以实时价格成交'
+                    : orderType === 'limit'
+                      ? '按限价约束成交'
+                      : '按止损条件触发'}
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行单号</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{currentExecutionId || '-'}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {executionInsight?.status ? `状态 ${executionInsight.status}` : '提交后会自动回填执行状态'}
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">软闸门</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">
+                  {executionInsight?.warningCount ?? workbenchWarningCount}
+                </div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {executionInsight?.hasHighSeverity ? '存在高严重级告警' : '当前没有高严重级告警'}
+                </div>
               </div>
             </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">预估成交额</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">
-                {estimatedAmount != null ? fmtNum(estimatedAmount) : '-'}
+          ) : (
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '-'}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {direction === 'buy' ? '买入方向' : '卖出方向'} · {quantity || '-'} 股
+                </div>
               </div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {orderType === 'market'
-                  ? '市价单以实时价格成交'
-                  : orderType === 'limit'
-                    ? '按限价约束成交'
-                    : '按止损条件触发'}
-              </div>
-            </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行单号</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{currentExecutionId || '-'}</div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {executionInsight?.status ? `状态 ${executionInsight.status}` : '提交后会自动回填执行状态'}
+              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行单号</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{currentExecutionId || '-'}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {currentArtifactId ? `Artifact ${currentArtifactId}` : '提交后自动回填关联 artifact'}
+                </div>
               </div>
             </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">软闸门</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">
-                {executionInsight?.warningCount ?? workbenchWarningCount}
+          )}
+        </div>
+
+        {!compactMobile ? (
+          <div className="grid gap-3">
+            <div className={executionSidePanelCls}>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前执行摘要</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">{summaryText}</div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                <div className={executionNoteCardCls}>
+                  挂单数量：<span className="font-medium text-text-primary">{pendingOrderCount}</span>
+                </div>
+                <div className={executionNoteCardCls}>
+                  最近 Artifact：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span>
+                </div>
+                <div className={executionNoteCardCls}>
+                  真实订单 / 成交：
+                  <span className="font-medium text-text-primary">
+                    {liveOrderCount} / {liveFillCount}
+                  </span>
+                </div>
               </div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {executionInsight?.hasHighSeverity ? '存在高严重级告警' : '当前没有高严重级告警'}
+            </div>
+
+            <div className={executionSidePanelCls}>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">复盘建议</div>
+              <div className="mt-4 space-y-3">
+                {executionGuidance.slice(0, 3).map((item) => (
+                  <div key={item} className={executionNoteCardCls}>
+                    {item}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" onClick={onStatusQuery} className={executionChipButtonCls}>
+                  查询执行状态
+                </button>
+                <button type="button" onClick={onRefreshLiveGateway} className={executionChipButtonCls}>
+                  刷新网关
+                </button>
               </div>
             </div>
           </div>
-        </div>
-
-        <div className="grid gap-3">
+        ) : (
           <div className={executionSidePanelCls}>
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前执行摘要</div>
             <div className="mt-3 text-base font-semibold text-text-primary">{summaryText}</div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+            <div className="mt-4 space-y-3">
               <div className={executionNoteCardCls}>
                 挂单数量：<span className="font-medium text-text-primary">{pendingOrderCount}</span>
               </div>
               <div className={executionNoteCardCls}>
-                最近 Artifact：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span>
-              </div>
-              <div className={executionNoteCardCls}>
-                真实订单 / 成交：
-                <span className="font-medium text-text-primary">
-                  {liveOrderCount} / {liveFillCount}
-                </span>
+                {executionGuidance[0] ?? '先完成委托，再继续查询状态与复盘。'}
               </div>
             </div>
           </div>
-
-          <div className={executionSidePanelCls}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">复盘建议</div>
-            <div className="mt-4 space-y-3">
-              {executionGuidance.slice(0, 3).map((item) => (
-                <div key={item} className={executionNoteCardCls}>
-                  {item}
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={onStatusQuery} className={executionChipButtonCls}>
-                查询执行状态
-              </button>
-              <button type="button" onClick={onRefreshLiveGateway} className={executionChipButtonCls}>
-                刷新网关
-              </button>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </section>
   );

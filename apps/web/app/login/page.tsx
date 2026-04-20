@@ -10,17 +10,18 @@ const LOGIN_ACTION = '/api/auth/login';
 
 const LOGIN_HIGHLIGHTS = [
   {
-    title: '恢复工作流',
-    description: '登录后继续查看上次的行情视图、研究上下文和策略筛选结果。',
+    title: '市场与研究',
+    description: '登录后可直接回到行情、个股、自选和研究页面。',
   },
   {
-    title: '集中式看板',
-    description: '同一工作台里统一完成行情、回测、模拟盘和风险巡检。',
+    title: '策略与交易',
+    description: '策略超市、回测、模拟交易和风险中心会保留原有上下文。',
   },
-  {
-    title: '稳定提交链路',
-    description: '认证入口保持同源 POST 提交，并把 2FA 校验接回真实登录链路。',
-  },
+] as const;
+
+const LOGIN_CAPABILITIES = [
+  { label: '市场观察', value: '行情、个股、自选、告警' },
+  { label: '研究验证', value: '研究、策略、回测、模拟交易' },
 ] as const;
 
 export default function LoginPage() {
@@ -31,8 +32,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitLogin() {
     if (!hydrated || loading) return;
     setLoading(true);
     setError(null);
@@ -48,7 +48,12 @@ export default function LoginPage() {
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.message || `登录失败：HTTP ${response.status}`);
+        const nextError =
+          (body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object'
+            ? (body.error as { message?: string }).message
+            : null) ||
+          (body && typeof body === 'object' && 'message' in body ? String(body.message) : null);
+        throw new Error(nextError || `登录失败：HTTP ${response.status}`);
       }
 
       setLoggedIn();
@@ -60,20 +65,25 @@ export default function LoginPage() {
     }
   }
 
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void submitLogin();
+  }
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1180px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.14fr)_420px]">
         <section className="page-hero p-6 sm:p-8">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Login Workspace</Badge>
-            <Badge variant="neutral">AIASK Access</Badge>
+            <Badge variant="info">AIASK</Badge>
+            <Badge variant="neutral">登录入口</Badge>
           </div>
-          <h1 className="mt-3">继续你的行情、研究与交易工作流。</h1>
+          <h1 className="mt-3">登录后继续使用 AIASK 的市场、研究、策略与交易能力。</h1>
           <p className="page-lead mt-3 mb-0">
-            登录页现在接入和站内一致的玻璃化层级。左侧负责解释登录后能恢复什么工作流，右侧保持输入区专注，整体更轻、更通透，也更像一套连续的专业终端。
+            AIASK 是一个覆盖市场观察、研究分析、策略验证、模拟交易和风险管理的 A 股投研平台。登录后会优先回到你刚才请求的页面。
           </p>
 
-          <div className="mt-6 grid gap-3 md:grid-cols-3">
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
             {LOGIN_HIGHLIGHTS.map((item) => (
               <div key={item.title} className="metric-tile rounded-[22px] px-4 py-4">
                 <div className="metric-label">{item.title}</div>
@@ -85,25 +95,26 @@ export default function LoginPage() {
           <div className="panel-soft mt-6 rounded-[28px] p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">登录后可用</div>
-                <h2 className="mt-2">一个入口，继续完整投研链路</h2>
+                <div className="eyebrow">平台能力</div>
+                <h2 className="mt-2">登录后可继续访问的核心模块</h2>
               </div>
               <Link
                 href="/"
                 className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-secondary no-underline shadow-sm"
               >
-                返回首页
+                查看首页介绍
               </Link>
             </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="metric-tile rounded-[20px] px-4 py-3">
-                <div className="metric-label">高频模块</div>
-                <div className="mt-2 text-sm font-semibold text-text-primary">行情、策略、模拟交易、AI 工作台</div>
-              </div>
-              <div className="metric-tile rounded-[20px] px-4 py-3">
-                <div className="metric-label">状态恢复</div>
-                <div className="mt-2 text-sm font-semibold text-text-primary">继续上次视图、上下文跳转和自选动作</div>
-              </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              {LOGIN_CAPABILITIES.map((item) => (
+                <div key={item.label} className="metric-tile rounded-[20px] px-4 py-3">
+                  <div className="metric-label">{item.label}</div>
+                  <div className="mt-2 text-sm font-semibold text-text-primary">{item.value}</div>
+                </div>
+              ))}
+            </div>
+            <div className="metric-tile mt-4 rounded-[20px] px-4 py-3 text-sm leading-6 text-text-secondary">
+              登录页只是账户入口：优先回到 `redirect` 指定页面，没有指定时进入 `/market`。
             </div>
           </div>
         </section>
@@ -114,11 +125,9 @@ export default function LoginPage() {
             <Badge variant="neutral">Secure Entry</Badge>
           </div>
           <h2 className="mt-2">登录账号</h2>
-          <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
-            表单只保留必要字段。Hydration 完成前按钮保持禁用，避免浏览器回退为错误的原生提交体验。
-          </p>
+          <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">使用账号密码登录。已启用 2FA 的账户需要补充动态码或恢复码。</p>
 
-          <form onSubmit={onSubmit} method="post" action={LOGIN_ACTION} className="mt-6 grid gap-4" noValidate>
+          <form onSubmit={onSubmit} className="mt-6 grid gap-4" noValidate>
             <label htmlFor="login-username" className="grid gap-1.5">
               <span className="text-sm font-medium text-text-primary">用户名</span>
               <input
@@ -171,8 +180,10 @@ export default function LoginPage() {
             ) : null}
 
             <button
-              type="submit"
+              type="button"
+              onClick={() => void submitLogin()}
               disabled={!hydrated || loading}
+              data-testid="login-submit-action"
               className="min-h-11 rounded-full bg-primary px-4 py-2.5 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
             >
               {!hydrated ? '页面初始化中...' : loading ? '登录中...' : '登录'}
@@ -180,8 +191,7 @@ export default function LoginPage() {
           </form>
 
           <div className="panel-soft mt-4 rounded-[20px] px-4 py-3 text-xs leading-5 text-text-secondary">
-            已启用 2FA 的账户需要填写动态码或恢复码。登录成功后会维持现有跳转逻辑：优先回到 `redirect`
-            指定页面，否则进入 `/market`。
+            登录成功后会优先回到 `redirect` 指定页面，否则进入 `/market`。
           </div>
 
           <p className="mb-0 mt-4 text-sm text-text-secondary">

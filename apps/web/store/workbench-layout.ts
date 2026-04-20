@@ -3,7 +3,9 @@ import type {
   WorkspaceLayoutPreset,
   WorkspacePagePanelLayout,
   WorkspacePagePanelMode,
+  WorkspacePageKey,
 } from '@aiask/shared-types';
+import { getResponsivePagePanelDefault } from '@/lib/responsive-layout';
 
 export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLayout> = {
   research: {
@@ -46,12 +48,6 @@ export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLa
 
 export const DEFAULT_WORKSPACE_LAYOUT = WORKSPACE_LAYOUT_PRESETS.research;
 
-const DEFAULT_PAGE_PANEL_LAYOUT: WorkspacePagePanelLayout = {
-  mode: 'single',
-  secondaryPlacement: 'right',
-  secondarySize: 34,
-};
-
 function clamp(value: unknown, min: number, max: number, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -70,25 +66,34 @@ export function resolveWorkspacePagePanels(value: unknown): Record<string, Works
   return Object.entries(value as Record<string, unknown>).reduce<Record<string, WorkspacePagePanelLayout>>(
     (acc, [pageKey, panel]) => {
       if (!pageKey.trim()) return acc;
-      acc[pageKey] = resolveWorkspacePagePanel(panel);
+      acc[pageKey] = resolveWorkspacePagePanel(panel, pageKey);
       return acc;
     },
     {},
   );
 }
 
-export function resolveWorkspacePagePanel(panel?: WorkspacePagePanelLayout | null | unknown): WorkspacePagePanelLayout {
+export function resolveWorkspacePagePanel(
+  panel?: WorkspacePagePanelLayout | null | unknown,
+  pageKey: WorkspacePageKey = '',
+): WorkspacePagePanelLayout {
+  const fallback = getResponsivePagePanelDefault(pageKey);
   const normalizedPanel =
     panel && typeof panel === 'object' && !Array.isArray(panel) ? (panel as WorkspacePagePanelLayout) : null;
   const normalizedSecondarySize = clamp(
     normalizedPanel?.secondarySize,
     24,
     60,
-    DEFAULT_PAGE_PANEL_LAYOUT.secondarySize ?? 34,
+    fallback.secondarySize ?? 34,
   );
   return {
-    mode: normalizePagePanelMode(normalizedPanel?.mode),
-    secondaryPlacement: normalizedPanel?.secondaryPlacement === 'left' ? 'left' : 'right',
+    mode: normalizePagePanelMode(normalizedPanel?.mode ?? fallback.mode),
+    secondaryPlacement:
+      normalizedPanel?.secondaryPlacement === 'left'
+        ? 'left'
+        : fallback.secondaryPlacement === 'left'
+          ? 'left'
+          : 'right',
     // 38% 是早期默认值，会让主画布在工作台布局里显得过窄，统一迁移到新的更保守基线。
     secondarySize: normalizedSecondarySize === 38 ? 34 : normalizedSecondarySize,
   };

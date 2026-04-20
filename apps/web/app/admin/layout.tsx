@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
 
 const ADMIN_NAV = [
     { href: '/admin', label: '概览', icon: '📊' },
@@ -17,7 +17,7 @@ const ADMIN_NAV = [
  * Admin-specific layout with sidebar navigation.
  */
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-    const pathname = usePathname();
+    const pathname = useStablePathname();
 
     return (
         <div className="flex gap-4 min-h-[60vh]">

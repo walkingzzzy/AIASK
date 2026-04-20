@@ -223,9 +223,9 @@ function mergeLayout(current: WorkspaceLayout | null | undefined, patch: LayoutP
 function mergePagePanel(current: WorkspaceLayout['pagePanels'], pageKey: WorkspacePageKey, patch: PagePanelPatch) {
   const nextPanels = resolveWorkspacePagePanels(current);
   nextPanels[pageKey] = resolveWorkspacePagePanel({
-    ...resolveWorkspacePagePanel(nextPanels[pageKey]),
+    ...resolveWorkspacePagePanel(nextPanels[pageKey], pageKey),
     ...patch,
-  });
+  }, pageKey);
   return nextPanels;
 }
 

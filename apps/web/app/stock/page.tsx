@@ -1,14 +1,17 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PageContainer } from '@/components/ui';
+import { Badge, PageContainer } from '@/components/ui';
 import { ErrorState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { tradingInterval } from '@/lib/trading-hours';
 import { unwrapToolPayload } from '@/lib/tool-result';
@@ -40,6 +43,11 @@ type QuoteData = MarketQuoteResponseDto;
 type KlineData = MarketKlineResponseDto;
 
 export default function StockPage() {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const mobileOnlyDetected = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
+  const mobileOnly = hydrated ? mobileOnlyDetected : true;
   const { code, setCode, codeError, validate, resolvedCode } = useStockCode('600519');
   const [period, setPeriod] = useState<Period>('daily');
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
@@ -391,22 +399,83 @@ export default function StockPage() {
 
   return (
     <PageContainer className="app-theme-market space-y-4">
-      <StockHero
-        activeTabLabel={activeTabLabel}
-        title={quote ? `${quote.name} ${activeCode ?? ''}` : '个股详情工作台'}
-        loading={loading}
-        hasQuote={hasQuoteData}
-        askAiStockCode={contextCode || undefined}
-        askAiSummary={askAiSummary}
-        currentFocusCode={currentFocusCode}
-        refreshStatus={refreshStatus}
-        refreshTimeText={refreshTimeText}
-        amplitude={amplitude}
-        heroNotes={heroNotes}
-        quickLinks={quickLinks}
-        watchlistCode={contextCode || code.trim()}
-        watchlistName={String(quote?.name ?? '')}
-      />
+      {compactLayout ? (
+        <section className="page-hero p-4 sm:p-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="info">个股详情</Badge>
+            <Badge variant="neutral">{activeTabLabel}</Badge>
+            <Badge variant={hasQuoteData ? 'success' : loading ? 'warning' : 'neutral'}>
+              {hasQuoteData ? '报价已加载' : loading ? '加载中' : '等待查询'}
+            </Badge>
+          </div>
+          <h1 className="mb-0 mt-4 text-[1.75rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
+            {quote ? `${quote.name} ${activeCode ?? ''}` : '个股详情'}
+          </h1>
+          <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary">
+            先确认代码和周期，再看报价快照与当前标签页。行动卡和更多跳转已下沉，不再占满默认首屏。
+          </p>
+          <div className={`mt-4 grid gap-3 ${mobileOnly ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-4'}`}>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="metric-label">当前代码</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{currentFocusCode}</div>
+              <div className="mt-1 text-xs text-text-secondary">{refreshStatus}</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="metric-label">现价</div>
+              <div className={`mt-2 text-lg font-semibold ${chgColor}`}>{quote ? fmtNum(Number(quote.price), 2) : '-'}</div>
+              <div className="mt-1 text-xs text-text-secondary">当前标签 {activeTabLabel}</div>
+            </div>
+            {!mobileOnly ? (
+              <>
+                <div className="metric-tile rounded-[24px] p-4">
+                  <div className="metric-label">涨跌幅</div>
+                  <div className={`mt-2 text-lg font-semibold ${chgColor}`}>{quote ? fmtPct(priceChangePct) : '-'}</div>
+                  <div className="mt-1 text-xs text-text-secondary">报价快照已并入首屏</div>
+                </div>
+                <div className="metric-tile rounded-[24px] p-4">
+                  <div className="metric-label">当前振幅</div>
+                  <div className="mt-2 text-lg font-semibold text-text-primary">{amplitude}</div>
+                  <div className="mt-1 text-xs text-text-secondary">{refreshTimeText}</div>
+                </div>
+              </>
+            ) : null}
+          </div>
+          {mobileOnly ? (
+            <details className="mt-3 rounded-[22px] border border-white/45 bg-white/24 px-4 py-3">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开更多报价快照</summary>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="metric-tile rounded-[24px] p-4">
+                  <div className="metric-label">涨跌幅</div>
+                  <div className={`mt-2 text-lg font-semibold ${chgColor}`}>{quote ? fmtPct(priceChangePct) : '-'}</div>
+                  <div className="mt-1 text-xs text-text-secondary">报价快照已并入首屏</div>
+                </div>
+                <div className="metric-tile rounded-[24px] p-4">
+                  <div className="metric-label">当前振幅</div>
+                  <div className="mt-2 text-lg font-semibold text-text-primary">{amplitude}</div>
+                  <div className="mt-1 text-xs text-text-secondary">{refreshTimeText}</div>
+                </div>
+              </div>
+            </details>
+          ) : null}
+        </section>
+      ) : (
+        <StockHero
+          activeTabLabel={activeTabLabel}
+          title={quote ? `${quote.name} ${activeCode ?? ''}` : '个股详情工作台'}
+          loading={loading}
+          hasQuote={hasQuoteData}
+          askAiStockCode={contextCode || undefined}
+          askAiSummary={askAiSummary}
+          currentFocusCode={currentFocusCode}
+          refreshStatus={refreshStatus}
+          refreshTimeText={refreshTimeText}
+          amplitude={amplitude}
+          heroNotes={heroNotes}
+          quickLinks={quickLinks}
+          watchlistCode={contextCode || code.trim()}
+          watchlistName={String(quote?.name ?? '')}
+        />
+      )}
 
       <StockQueryShell
         code={code}
@@ -424,17 +493,28 @@ export default function StockPage() {
 
       {error ? <ErrorState text={error} /> : null}
 
-      <StockSnapshot
-        quote={quote}
-        loading={loading}
-        priceChangePct={priceChangePct}
-        chgColor={chgColor}
-        amplitude={amplitude}
-        quickLinks={quickLinks}
-        contextCode={contextCode}
-      />
+      {!compactLayout ? (
+        <StockSnapshot
+          quote={quote}
+          loading={loading}
+          priceChangePct={priceChangePct}
+          chgColor={chgColor}
+          amplitude={amplitude}
+          quickLinks={quickLinks}
+          contextCode={contextCode}
+        />
+      ) : null}
 
-      <StockActionCard actionCard={actionCard} hasQuote={hasQuoteData} />
+      {compactLayout ? (
+        <details className="panel-soft overflow-hidden rounded-[28px] p-4 sm:p-5">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开行动卡与下一步</summary>
+          <div className="mt-4">
+            <StockActionCard actionCard={actionCard} hasQuote={hasQuoteData} />
+          </div>
+        </details>
+      ) : (
+        <StockActionCard actionCard={actionCard} hasQuote={hasQuoteData} />
+      )}
 
       <StockDetailTabs
         infoTab={infoTab}

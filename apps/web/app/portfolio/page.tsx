@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { ConfirmDialog, PageContainer } from '@/components/ui';
+import { ConfirmDialog, PageContainer, Badge, SectionCard, TabBar } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -25,7 +25,6 @@ import {
   PortfolioStressTestSection,
 } from './components/portfolio-detail-sections';
 import {
-  PortfolioHeroSection,
   PortfolioOperationWorkspaceSection,
   PortfolioSidebarSummary,
 } from './components/portfolio-overview-sections';
@@ -46,6 +45,8 @@ export default function PortfolioPage() {
   const [portfolioId, setPortfolioId] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingPortfolioAction | null>(null);
+  const [lastPrimaryRefreshAt, setLastPrimaryRefreshAt] = useState<string | null>(null);
+  const [workspaceTab, setWorkspaceTab] = useState<'list' | 'compose' | 'detail' | 'ops'>('list');
 
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
@@ -214,7 +215,10 @@ export default function PortfolioPage() {
   const riskBars = useMemo(() => {
     const contribution = riskApi.data?.riskMetrics?.riskContribution;
     if (!contribution || typeof contribution !== 'object') return [];
-    return Object.entries(contribution).map(([key, value]) => ({ label: key, value: +(Number(value) * 100).toFixed(2) }));
+    return Object.entries(contribution).map(([key, value]) => ({
+      label: key,
+      value: +(Number(value) * 100).toFixed(2),
+    }));
   }, [riskApi.data]);
 
   const stressScenarios = useMemo(() => {
@@ -236,6 +240,30 @@ export default function PortfolioPage() {
       : selectedPortfolio
         ? fmtNum(Number(selectedPortfolio.currentValue ?? 0), 2)
         : '-';
+  const latestPortfolioRefreshAt =
+    [listQ.dataUpdatedAt, detailQ.dataUpdatedAt]
+      .filter((value): value is number => typeof value === 'number' && value > 0)
+      .sort((left, right) => right - left)[0] ?? null;
+  const latestPortfolioRefreshText = latestPortfolioRefreshAt
+    ? new Date(latestPortfolioRefreshAt).toLocaleString('zh-CN')
+    : '等待首个组合快照';
+
+  useEffect(() => {
+    if (activePortfolioId) {
+      setWorkspaceTab((prev) => (prev === 'list' ? 'detail' : prev));
+      return;
+    }
+    setWorkspaceTab((prev) => (prev === 'detail' || prev === 'ops' ? 'list' : prev));
+  }, [activePortfolioId]);
+
+  const refreshPortfolio = useCallback(async () => {
+    const tasks = [listQ.refetch()];
+    if (portfolioId.trim()) {
+      tasks.push(detailQ.refetch());
+    }
+    await Promise.allSettled(tasks);
+    setLastPrimaryRefreshAt(new Date().toLocaleString('zh-CN'));
+  }, [detailQ, listQ, portfolioId]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -291,7 +319,7 @@ export default function PortfolioPage() {
         scope: 'page' as const,
         pageKey: 'portfolio',
         run: async () => {
-          await Promise.allSettled([listQ.refetch(), detailQ.refetch()]);
+          await refreshPortfolio();
           return { message: '已刷新组合数据' };
         },
       },
@@ -332,7 +360,7 @@ export default function PortfolioPage() {
         },
       },
     ],
-    [analyzeRisk, detailQ, listQ, optimize, runStress],
+    [analyzeRisk, optimize, refreshPortfolio, runStress],
   );
 
   usePageActions(pageActions);
@@ -367,95 +395,208 @@ export default function PortfolioPage() {
 
   const primaryContent = (
     <>
-      <PortfolioHeroSection
-        activePortfolioId={activePortfolioId}
-        portfolioDisplayName={portfolioDisplayName}
-        portfolioNextStep={portfolioNextStep}
-        portfolioCount={portfolioList.length}
-        holdingCount={detailHoldings.length}
-        strategyCount={detailStrategies.length}
-        holdTrimmed={holdTrimmed}
-        currentAssetsDisplay={currentAssetsDisplay}
-        stressScenarioCount={stressScenarios.length}
-        hasOptimization={Boolean(optimizeApi.data?.optimization)}
-        hasRiskMetrics={Boolean(riskApi.data?.riskMetrics)}
-        onRefreshList={() => {
-          void listQ.refetch();
-        }}
-        onOptimize={optimize}
-        onAnalyzeRisk={analyzeRisk}
-        onRunStress={runStress}
-      />
+      <section className="page-hero mb-4 p-5 sm:p-6">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="info">Portfolio Workspace</Badge>
+              <Badge variant={activePortfolioId ? 'success' : 'warning'}>
+                {activePortfolioId ? `组合 ${portfolioDisplayName}` : '等待选择组合'}
+              </Badge>
+              <Badge variant={optimizeApi.data?.optimization ? 'success' : 'neutral'}>
+                {optimizeApi.data?.optimization ? '已有优化结果' : '尚未优化'}
+              </Badge>
+              <Badge variant={riskApi.data?.riskMetrics ? 'warning' : 'neutral'}>
+                {riskApi.data?.riskMetrics ? '已有风险分析' : '尚未分析'}
+              </Badge>
+            </div>
+            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
+              组合管理工作台
+            </h1>
+            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+              当前页面只保留一个活动工作流。先锁定目标组合，再决定是维护持仓、查看详情，还是继续做优化与风控。
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshPortfolio();
+                }}
+                data-testid="page-primary-action"
+                data-action-testid="portfolio-refresh-action"
+                className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                刷新组合列表
+              </button>
+            </div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前组合 {portfolioDisplayName} ｜ 当前视图 {workspaceTab === 'list' ? '组合列表' : workspaceTab === 'compose' ? '创建与加仓' : workspaceTab === 'detail' ? '组合详情' : '优化与风控'}
+              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                组合 {portfolioList.length} 个 ｜ 持仓 {detailHoldings.length} 条 ｜ 策略 {detailStrategies.length} 条
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">
+                最近数据：{latestPortfolioRefreshText}
+                {lastPrimaryRefreshAt ? ` ｜ 手动刷新：${lastPrimaryRefreshAt}` : ''}
+              </p>
+            </div>
+          </div>
+
+          <details className="panel-soft rounded-[28px] p-4 sm:p-5" open>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              当前聚焦与下一步
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className="metric-tile rounded-[22px] p-3 text-xs text-text-secondary">
+                当前组合：<span className="font-medium text-text-primary">{portfolioDisplayName}</span>
+              </div>
+              <div className="metric-tile rounded-[22px] p-3 text-xs text-text-secondary">
+                当前资产：<span className="font-medium text-text-primary">{currentAssetsDisplay}</span>
+              </div>
+              <div className="metric-tile rounded-[22px] p-3 text-xs text-text-secondary">{portfolioNextStep}</div>
+            </div>
+          </details>
+        </div>
+      </section>
 
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
-      <PortfolioOperationWorkspaceSection
-        activePortfolioId={activePortfolioId}
-        portfolioDisplayName={portfolioDisplayName}
-        portfolioNextStep={portfolioNextStep}
-        portfolioCount={portfolioList.length}
-        currentAssetsDisplay={currentAssetsDisplay}
-        portfolioId={portfolioId}
-        onPortfolioIdChange={setPortfolioId}
-        setFormError={setFormError}
-        onRefetchList={() => {
-          void listQ.refetch();
-        }}
-        onRefetchDetail={() => {
-          void detailQ.refetch();
-        }}
-        onOptimize={optimize}
-        onAnalyzeRisk={analyzeRisk}
-        onRunStress={runStress}
-        newName={newName}
-        onNewNameChange={setNewName}
-        newDesc={newDesc}
-        onNewDescChange={setNewDesc}
-        newCapital={newCapital}
-        onNewCapitalChange={setNewCapital}
-        onCreate={() => {
-          void handleCreate();
-        }}
-        createPending={createApi.isPending}
-        createSuccess={createApi.data != null}
-        holdCode={holdCode}
-        onHoldCodeChange={setHoldCode}
-        holdCodeError={holdCodeError}
-        holdShares={holdShares}
-        onHoldSharesChange={setHoldShares}
-        holdCost={holdCost}
-        onHoldCostChange={setHoldCost}
-        onAddHolding={() => {
-          void handleAddHolding();
-        }}
-        addHoldingPending={addHoldingApi.isPending}
-        addHoldingSuccess={addHoldingApi.data != null}
-      />
+      <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Workspace Flow</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前工作流</h2>
+            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+              主区一次只展开一个工作流，避免列表、表单、详情和风险卡片在移动端连续堆叠。
+            </p>
+          </div>
+          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+            组合 {portfolioList.length} 个 ｜ 当前组合 {activePortfolioId || '未选择'}
+          </div>
+        </div>
+        <div className="mt-4">
+          <TabBar
+            tabs={[
+              { key: 'list', label: '组合列表' },
+              { key: 'compose', label: '创建与加仓' },
+              { key: 'detail', label: '组合详情' },
+              { key: 'ops', label: '优化与风控' },
+            ]}
+            active={workspaceTab}
+            onChange={(key) => setWorkspaceTab(key as typeof workspaceTab)}
+          />
+        </div>
+        <SectionCard tabAttached>
+          {workspaceTab === 'list' ? (
+            <>
+              <PortfolioListSection
+                portfolioList={portfolioList}
+                activePortfolioId={activePortfolioId}
+                onSelectPortfolio={(selectedId) => {
+                  setPortfolioId(selectedId);
+                  setFormError(null);
+                  setWorkspaceTab('detail');
+                }}
+              />
+              {!activePortfolioId && portfolioList.length === 0 ? (
+                <EmptyState text="还没有组合数据" hint="先创建一个组合，或者稍后刷新组合列表。" />
+              ) : null}
+            </>
+          ) : null}
 
-      <PortfolioListSection
-        portfolioList={portfolioList}
-        activePortfolioId={activePortfolioId}
-        onSelectPortfolio={(selectedId) => {
-          setPortfolioId(selectedId);
-          setFormError(null);
-        }}
-      />
+          {workspaceTab === 'compose' ? (
+            <PortfolioOperationWorkspaceSection
+              activePortfolioId={activePortfolioId}
+              portfolioDisplayName={portfolioDisplayName}
+              portfolioNextStep={portfolioNextStep}
+              portfolioCount={portfolioList.length}
+              currentAssetsDisplay={currentAssetsDisplay}
+              portfolioId={portfolioId}
+              onPortfolioIdChange={setPortfolioId}
+              setFormError={setFormError}
+              onRefetchList={() => {
+                void listQ.refetch();
+              }}
+              onRefetchDetail={() => {
+                void detailQ.refetch();
+              }}
+              onOptimize={optimize}
+              onAnalyzeRisk={analyzeRisk}
+              onRunStress={runStress}
+              newName={newName}
+              onNewNameChange={setNewName}
+              newDesc={newDesc}
+              onNewDescChange={setNewDesc}
+              newCapital={newCapital}
+              onNewCapitalChange={setNewCapital}
+              onCreate={() => {
+                void handleCreate();
+              }}
+              createPending={createApi.isPending}
+              createSuccess={createApi.data != null}
+              holdCode={holdCode}
+              onHoldCodeChange={setHoldCode}
+              holdCodeError={holdCodeError}
+              holdShares={holdShares}
+              onHoldSharesChange={setHoldShares}
+              holdCost={holdCost}
+              onHoldCostChange={setHoldCost}
+              onAddHolding={() => {
+                void handleAddHolding();
+              }}
+              addHoldingPending={addHoldingApi.isPending}
+              addHoldingSuccess={addHoldingApi.data != null}
+            />
+          ) : null}
 
-      <PortfolioEmptySelectionSection activePortfolioId={activePortfolioId} />
-      {!activePortfolioId && portfolioList.length === 0 ? (
-        <EmptyState text="还没有组合数据" hint="先创建一个组合，或者稍后刷新组合列表。" />
-      ) : null}
+          {workspaceTab === 'detail' ? (
+            <>
+              <PortfolioEmptySelectionSection activePortfolioId={activePortfolioId} />
+              <PortfolioDetailSection
+                detailObj={detailObj}
+                detailHoldings={detailHoldings}
+                detailStrategies={detailStrategies}
+              />
+              <PortfolioChartsSection weightSlices={weightSlices} riskBars={riskBars} />
+            </>
+          ) : null}
 
-      <PortfolioDetailSection
-        detailObj={detailObj}
-        detailHoldings={detailHoldings}
-        detailStrategies={detailStrategies}
-      />
-      <PortfolioChartsSection weightSlices={weightSlices} riskBars={riskBars} />
-      <PortfolioOptimizationSummarySection optimization={optimizeApi.data?.optimization} />
-      <PortfolioRiskMetricsSection riskMetrics={riskApi.data?.riskMetrics} />
-      <PortfolioStressTestSection stressScenarios={stressScenarios} />
+          {workspaceTab === 'ops' ? (
+            <>
+              <SectionCard className="mt-0 p-4 sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="eyebrow">Risk Workspace</div>
+                    <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">优化与风控</h3>
+                    <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                      这里默认只承接优化、风险与压力测试动作，不再把组合列表和创建表单留在同一首屏里。
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" onClick={optimize} className="action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]">
+                    优化配置
+                  </button>
+                  <button type="button" onClick={analyzeRisk} className="action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]">
+                    风险分析
+                  </button>
+                  <button type="button" onClick={runStress} className="action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]">
+                    压力测试
+                  </button>
+                </div>
+              </SectionCard>
+              <PortfolioOptimizationSummarySection optimization={optimizeApi.data?.optimization} />
+              <PortfolioRiskMetricsSection riskMetrics={riskApi.data?.riskMetrics} />
+              <PortfolioStressTestSection stressScenarios={stressScenarios} />
+            </>
+          ) : null}
+        </SectionCard>
+      </div>
     </>
   );
 
@@ -477,7 +618,17 @@ export default function PortfolioPage() {
   return (
     <PageContainer>
       <WorkspaceToolbar pageKey="portfolio" currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      <WorkspaceSplitLayout pageKey="portfolio" primary={primaryContent} secondary={secondaryContent} />
+      <WorkspaceSplitLayout
+        pageKey="portfolio"
+        primary={primaryContent}
+        secondary={secondaryContent}
+        mobileSummary={
+          <div className="panel-soft rounded-[24px] px-4 py-3 text-sm text-text-secondary">
+            组合 {portfolioDisplayName} ｜ 持仓 {detailHoldings.length} 条 ｜ 当前视图 {workspaceTab}
+          </div>
+        }
+        maxDefaultSections={0}
+      />
       <ConfirmDialog
         open={pendingAction != null}
         title={pendingAction?.type === 'create' ? '确认创建组合' : '确认添加持仓'}

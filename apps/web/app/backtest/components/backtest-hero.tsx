@@ -45,7 +45,7 @@ export default function BacktestHero({
 }: BacktestHeroProps) {
   return (
     <section className="page-hero mb-4 p-5 sm:p-6">
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+      <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="info">Backtest Workspace</Badge>

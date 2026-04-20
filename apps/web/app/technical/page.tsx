@@ -13,6 +13,7 @@ import {
   KpiCard,
 } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { LineChart, COLORS } from '@/components/charts';
@@ -21,6 +22,7 @@ import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 const TABS = [
   { key: 'indicators', label: '技术指标' },
@@ -93,6 +95,7 @@ function parseIndicators(raw: unknown) {
 }
 
 export default function TechnicalPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('indicators');
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
   const [period, setPeriod] = useState('daily');
@@ -194,8 +197,7 @@ export default function TechnicalPage() {
     tab === 'available' ? availablePath != null : tab === 'indicators' ? indicatorBody != null : patternBody != null;
   const rawData = activeQ.data;
   const isAutoBootstrapping = tab === 'indicators' && resolvedCode && indicatorBody == null;
-  const isPending =
-    isAutoBootstrapping || (hasRequested && (activeQ.isPending || (activeQ.isFetching && rawData == null)));
+  const isPending = isAutoBootstrapping || (hasRequested && (activeQ.isPending || (activeQ.isFetching && rawData == null)));
   const isSubmitting = hasRequested && activeQ.isPending;
   const fetchError = activeQ.error;
   const mcpErr = rawData ? extractToolError(rawData) : null;
@@ -213,46 +215,43 @@ export default function TechnicalPage() {
   const rows = useMemo(() => {
     if (!unwrapped) return [];
     if (tab === 'indicators') return [];
-    if (tab === 'patterns')
-      return extractArray(unwrapped, 'patterns', 'results').filter((row) => row && typeof row === 'object');
+    if (tab === 'patterns') return extractArray(unwrapped, 'patterns', 'results').filter((row) => row && typeof row === 'object');
     return extractArray(unwrapped, 'patterns', 'available').filter((row) => row && typeof row === 'object');
   }, [tab, unwrapped]);
   const hasIndicatorData = indicatorSeries.length > 0 || indicatorSummary.length > 0;
+  const indicatorCategories = useMemo(() => {
+    const longest = indicatorSeries.reduce((max, series) => Math.max(max, series.data.length), 0);
+    return Array.from({ length: longest }, (_, index) => String(index + 1));
+  }, [indicatorSeries]);
   const explanation = useMemo(() => {
     if (!rawData || error) return null;
-
     if (tab === 'indicators') {
       if (!hasIndicatorData) {
         return {
           title: '当前指标信号不足',
-          description:
-            '这通常意味着参数过窄或指标组合过多，建议先回到日线 120 根加常用三件套，确认趋势和动量是否一致。',
+          description: '这通常意味着参数过窄或指标组合过多，建议先回到日线 120 根加常用三件套，确认趋势和动量是否一致。',
         };
       }
       return {
         title: '先用指标确认趋势与动量',
-        description:
-          '这一屏更适合回答“当前趋势是否延续、动量是否转弱”。看完后建议继续去个股详情、资金流或回测页验证信号是否具备可执行性。',
+        description: '更适合回答“当前趋势是否延续、动量是否转弱”。看完后再去个股详情、资金流或回测页验证信号是否具备可执行性。',
       };
     }
-
     if (tab === 'patterns') {
       return rows.length > 0
         ? {
             title: '形态结果适合做二次确认',
-            description:
-              'K 线形态更偏提示信号，不建议单独下结论。下一步优先叠加情绪、资金流和风险页，确认这类形态是否有资金或预期配合。',
+            description: 'K 线形态更偏提示信号，不建议单独下结论。下一步优先叠加情绪、资金流和风险页。',
           }
         : {
             title: '未识别到典型形态',
-            description: '说明当前价格结构相对平稳，可切换周线或扩大观察窗口，再观察是否出现更明确的突破或反转模式。',
+            description: '当前价格结构相对平稳，可切换周线或扩大观察窗口，再观察是否出现更明确的突破或反转模式。',
           };
     }
-
     return rows.length > 0
       ? {
           title: '先确认有哪些可用形态',
-          description: '可用形态列表更适合作为识别前的准备动作。明确名称和方向后，再回到上一页对具体股票做筛查。',
+          description: '能力库更适合作为识别前的准备动作。明确名称和方向后，再回到上一页对具体股票做筛查。',
         }
       : {
           title: '形态库暂未返回',
@@ -276,7 +275,7 @@ export default function TechnicalPage() {
   return (
     <PageContainer>
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Technical Workspace</Badge>
@@ -289,112 +288,60 @@ export default function TechnicalPage() {
               技术分析工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这里负责把指标、形态识别和能力清单收进同一套阅读流。先确定股票与周期，再判断趋势、动量和形态是否互相支持，最后再决定跳到资金流、情绪或回测页做交叉验证。
+              先确定股票与周期，再看一个主结果块。参数矩阵、推荐预设和联动跳转都收进按需展开区。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={submit} disabled={isSubmitting} className={HERO_PRIMARY_BUTTON_CLS}>
-                {isSubmitting
-                  ? '处理中...'
-                  : tab === 'available'
-                    ? '查看可用形态'
-                    : tab === 'indicators'
-                      ? '计算指标'
-                      : '识别形态'}
-              </button>
-              <button type="button" onClick={runRecommendedAnalysis} className={HERO_SECONDARY_BUTTON_CLS}>
-                使用推荐参数
+              <button type="button" onClick={runRecommendedAnalysis} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
+                运行推荐分析
               </button>
             </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前模式</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">决定当前读取的是指标、形态还是能力库</div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前焦点：{tab === 'available' ? '可用形态库' : `${focusCode} · ${periodLabel}`}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {tab === 'available' ? '-' : focusCode}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {tab === 'available' ? '能力库不依赖单只股票' : `${periodLabel} · ${limit} 根`}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">结果规模</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {tab === 'indicators' ? indicatorSeries.length + indicatorSummary.length : rows.length}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">帮助判断当前结果是否足够继续解读</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近更新</div>
-                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{lastUpdatedText || '-'}</div>
-              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">{requestSummary}</p>
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前焦点</div>
-              <div className="mt-3 text-base font-semibold text-text-primary">
-                {tab === 'available' ? '可用形态库' : focusCode}
-              </div>
+          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              解读与下一步
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className={NOTE_CARD_CLS}>当前结论：{explanation?.title ?? '等待结果返回'}</div>
+              <div className={NOTE_CARD_CLS}>最近更新：{lastUpdatedText || '尚未更新'}</div>
               {resolvedCode && tab !== 'available' ? (
-                <div className="mt-3 flex items-center gap-2">
+                <div className="flex items-center gap-2">
                   <StockLink code={resolvedCode} name={resolvedCode} />
                   <WatchlistButton code={resolvedCode} name="" />
                 </div>
               ) : null}
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  查询摘要：<span className="font-medium text-text-primary">{requestSummary}</span>
+              <details>
+                <summary className="cursor-pointer text-sm text-text-primary">展开联动入口</summary>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {actionLinks.map((link) => (
+                    <Link key={link.href} href={link.href} className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+                      {link.label}
+                    </Link>
+                  ))}
                 </div>
-                <div className={NOTE_CARD_CLS}>
-                  当前结论：
-                  <span className="font-medium text-text-primary">{explanation?.title ?? '等待结果返回'}</span>
-                </div>
-              </div>
+              </details>
             </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">关联跳转</div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {actionLinks.map((link) => (
-                  <Link key={link.href} href={link.href} className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
-                    {link.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
-
-      {resolvedCode && tab !== 'available' ? (
-        <KpiGrid cols={4} className="mb-4">
-          <KpiCard title="当前标的" value={focusCode} />
-          <KpiCard title="当前周期" value={periodLabel} />
-          <KpiCard title="K 线数量" value={limit} />
-          <KpiCard
-            title="结果条数"
-            value={tab === 'indicators' ? indicatorSeries.length + indicatorSummary.length : rows.length}
-          />
-        </KpiGrid>
-      ) : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="eyebrow">Technical Setup</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">参数工作台</h2>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">参数与结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这里负责确定分析对象、周期和指标组合。配置区只关注输入，不在这里展示结果图表，避免查询前后界面结构剧烈跳动。
+              当前模式一次只展示一个主结果区域，参数扩展折叠后再展开。
             </p>
-          </div>
-          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            当前模式：<span className="font-medium text-text-primary">{activeTabLabel}</span>
           </div>
         </div>
 
@@ -406,21 +353,10 @@ export default function TechnicalPage() {
           {tab !== 'available' ? (
             <div className="space-y-4">
               <div className="grid gap-4 xl:grid-cols-[260px_180px_120px_auto] xl:items-end">
-                <StockCodeInput
-                  id="technical-stock-code"
-                  label="股票代码"
-                  value={code}
-                  onChange={setCode}
-                  error={codeError}
-                />
+                <StockCodeInput id="technical-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
                 <label htmlFor="technical-period" className="grid gap-2 text-xs text-text-secondary">
                   <span className="font-medium uppercase tracking-[0.12em] text-text-muted">观察周期</span>
-                  <select
-                    id="technical-period"
-                    value={period}
-                    onChange={(e) => setPeriod(e.target.value)}
-                    className={FIELD_CLS}
-                  >
+                  <select id="technical-period" value={period} onChange={(e) => setPeriod(e.target.value)} className={FIELD_CLS}>
                     <option value="daily">日线</option>
                     <option value="weekly">周线</option>
                     <option value="monthly">月线</option>
@@ -428,12 +364,7 @@ export default function TechnicalPage() {
                 </label>
                 <label htmlFor="technical-limit" className="grid gap-2 text-xs text-text-secondary">
                   <span className="font-medium uppercase tracking-[0.12em] text-text-muted">K 线数量</span>
-                  <input
-                    id="technical-limit"
-                    value={limit}
-                    onChange={(e) => setLimit(e.target.value)}
-                    className={FIELD_CLS}
-                  />
+                  <input id="technical-limit" value={limit} onChange={(e) => setLimit(e.target.value)} className={FIELD_CLS} />
                 </label>
                 <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                   <button type="button" disabled={isSubmitting} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
@@ -445,21 +376,54 @@ export default function TechnicalPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                {PERIOD_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => {
-                      setPeriod(preset.period);
-                      setLimit(preset.limit);
-                    }}
-                    className={`${CHIP_BUTTON_CLS} ${period === preset.period && limit === preset.limit ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
+              <details className="rounded-[22px] border border-glass-border bg-white/35 px-4 py-3">
+                <summary className="cursor-pointer text-sm font-medium text-text-primary">参数展开</summary>
+                <div className="mt-3 space-y-4">
+                  <div className="flex flex-wrap gap-2">
+                    {PERIOD_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          setPeriod(preset.period);
+                          setLimit(preset.limit);
+                        }}
+                        className={`${CHIP_BUTTON_CLS} ${period === preset.period && limit === preset.limit ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {tab === 'indicators' ? (
+                    <>
+                      <div>
+                        <div className="text-sm font-medium text-text-primary">指标选择</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {INDICATOR_OPTIONS.map((indicator) => (
+                            <button
+                              key={indicator}
+                              type="button"
+                              onClick={() => toggleIndicator(indicator)}
+                              className={`${CHIP_BUTTON_CLS} ${selectedIndicators.includes(indicator) ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
+                            >
+                              {indicator}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {INDICATOR_PRESETS.map((preset) => (
+                          <button key={preset.label} type="button" onClick={() => setSelectedIndicators([...preset.values])} className={CHIP_BUTTON_CLS}>
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              </details>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
@@ -469,39 +433,6 @@ export default function TechnicalPage() {
               <div className="text-sm text-text-secondary">先查看系统当前支持的 K 线形态库，再决定识别方向。</div>
             </div>
           )}
-
-          {tab === 'indicators' ? (
-            <div className="mt-4 space-y-4">
-              <div>
-                <div className="text-sm font-medium text-text-primary">指标选择</div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {INDICATOR_OPTIONS.map((indicator) => (
-                    <button
-                      key={indicator}
-                      type="button"
-                      onClick={() => toggleIndicator(indicator)}
-                      className={`${CHIP_BUTTON_CLS} ${selectedIndicators.includes(indicator) ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-                    >
-                      {indicator}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                {INDICATOR_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => setSelectedIndicators([...preset.values])}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
         </SectionCard>
       </div>
 
@@ -509,159 +440,71 @@ export default function TechnicalPage() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="eyebrow">Result View</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">结果与解释</h2>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">技术结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              结果区先给出解释层，再展示图表或表格，帮助你决定要不要继续跳到情绪、资金流或回测页做第二次验证。
+              结果区只保留一个主结果块，解读和联动入口已经下沉到折叠区。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            {requestSummary}
-            {lastUpdatedText ? ` ｜ 更新：${lastUpdatedText}` : ''}
+            当前模式：<span className="font-medium text-text-primary">{activeTabLabel}</span>
           </div>
         </div>
 
-        {isPending ? <LoadingState text={isAutoBootstrapping ? '正在自动加载默认指标...' : '计算中...'} /> : null}
-        {error ? <ErrorState text={error} hint="请检查参数后重试" /> : null}
+        {error ? <ErrorState text={error} /> : null}
+        {isPending ? <LoadingState text="处理中..." /> : null}
 
-        {!isPending && !rawData && !error ? (
-          <EmptyState
-            text={
-              tab === 'available'
-                ? '先查看当前支持的形态库，再决定识别方向'
-                : tab === 'indicators'
-                  ? '先选择股票、周期与指标组合，再开始技术分析'
-                  : '先确认股票代码和 K 线数量，再识别近期形态'
-            }
-            hint={
-              tab === 'available'
-                ? '这一步适合先了解系统能识别哪些经典形态，再回到上一页做实盘筛查。'
-                : tab === 'indicators'
-                  ? '推荐先用日线 120 根加 MA / RSI / MACD 的组合，作为第一次分析入口。'
-                  : '推荐先从日线 120 根开始，适合观察近期是否出现吞没、十字星或突破信号。'
-            }
-            action={
-              <button type="button" onClick={runRecommendedAnalysis} className={CHIP_BUTTON_CLS}>
-                使用推荐参数
-              </button>
-            }
-          />
+        {!error && !isPending && !hasRequested ? (
+          <EmptyState text="先运行一次推荐分析或手动提交参数" hint="当前页面会把技术指标、形态识别和能力库都收进同一套阅读流。" />
         ) : null}
 
-        {rawData != null && !error && explanation ? (
-          <div className="metric-tile mt-4 rounded-[24px] p-4">
-            <div className="text-sm font-medium text-text-primary">{explanation.title}</div>
-            <p className="mb-0 mt-1 text-sm text-text-secondary">{explanation.description}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {actionLinks.map((link) => (
-                <Link key={link.href} href={link.href} className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
-                  {link.label}
-                </Link>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {rawData != null && !mcpErr && tab === 'indicators' ? (
+        {!error && !isPending && hasRequested && tab === 'indicators' ? (
           hasIndicatorData ? (
-            <div className="mt-4 space-y-4">
+            <div className="space-y-4">
               {indicatorSeries.length > 0 ? (
                 <LineChart
-                  categories={Array.from({ length: indicatorSeries[0].data.length }, (_, index) => String(index + 1))}
+                  categories={indicatorCategories}
                   series={indicatorSeries}
-                  height={360}
+                  height={compactLayout ? 220 : 280}
+                  yAxisName="指标值"
                 />
               ) : null}
               {indicatorSummary.length > 0 ? (
-                <div className="grid gap-3 lg:grid-cols-2">
-                  {indicatorSummary.map((item) => (
-                    <div key={item.key} className="metric-tile rounded-[24px] p-4">
-                      <div className="text-sm font-medium text-text-primary">{item.key}</div>
-                      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm">
-                        {item.entries.map(([entryKey, entryValue]) => (
-                          <span key={entryKey} className="text-text-secondary">
-                            {entryKey}：
-                            <span className="ml-1 font-medium text-text-primary">
-                              {typeof entryValue === 'number' ? fmtNum(entryValue, 2) : String(entryValue)}
-                            </span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <DataTable
+                  rows={indicatorSummary.map((item) => ({
+                    indicator: item.key,
+                    summary: item.entries.map(([key, value]) => `${key}:${String(value)}`).join(' ｜ '),
+                  }))}
+                  columns={[
+                    { key: 'indicator', label: '指标' },
+                    { key: 'summary', label: '摘要' },
+                  ]}
+                />
               ) : null}
+              <div className={NOTE_CARD_CLS}>{explanation?.description ?? '当前指标已经返回，可以继续去资金流或风险页交叉验证。'}</div>
             </div>
           ) : (
-            <EmptyState
-              text="当前参数下暂无可展示的指标结果"
-              hint="可以切换到日线 120 根，或减少指标数量后再次计算。"
-            />
+            <EmptyState text="当前没有可展示的指标结果" hint={explanation?.description ?? '建议扩大窗口或切换推荐参数后重试。'} />
           )
         ) : null}
 
-        {rawData != null && !mcpErr && tab === 'patterns' ? (
+        {!error && !isPending && hasRequested && tab !== 'indicators' ? (
           rows.length > 0 ? (
-            <div className="mt-4">
-              <DataTable
-                rows={rows as Record<string, unknown>[]}
-                columns={[
-                  { key: 'date', label: '日期' },
-                  { key: 'pattern', label: '形态' },
-                  { key: 'name', label: '名称' },
-                  {
-                    key: 'type',
-                    label: '类型',
-                    render: (value) => (
-                      <Badge
-                        variant={
-                          String(value) === 'bullish' ? 'success' : String(value) === 'bearish' ? 'danger' : 'info'
-                        }
-                      >
-                        {String(value)}
-                      </Badge>
-                    ),
-                  },
-                  { key: 'reliability', label: '可靠性' },
-                ]}
-                onExport={() => exportCSV(rows as Record<string, unknown>[], 'K线形态')}
-              />
+            <div className="space-y-4">
+              <DataTable rows={rows as Record<string, unknown>[]} onExport={() => exportCSV(rows as Record<string, unknown>[], 'technical-results')} />
+              <div className={NOTE_CARD_CLS}>{explanation?.description ?? '当前结果已经返回，可继续联动情绪、资金流和风险页。'}</div>
             </div>
           ) : (
-            <EmptyState
-              text="近期未识别到典型 K 线形态"
-              hint="这通常意味着价格波动较平缓，可以放大观察窗口或切换到周线再试。"
-            />
+            <EmptyState text={tab === 'available' ? '当前没有可用的形态库结果' : '当前没有识别到明确形态'} hint={explanation?.description ?? '可以切换周期或扩大观察窗口后重试。'} />
           )
         ) : null}
 
-        {rawData != null && !mcpErr && tab === 'available' ? (
-          rows.length > 0 ? (
-            <div className="mt-4">
-              <DataTable
-                rows={rows as Record<string, unknown>[]}
-                columns={[
-                  { key: 'name', label: '名称' },
-                  { key: 'pattern', label: '代码' },
-                  {
-                    key: 'bullish',
-                    label: '方向',
-                    render: (value) => (
-                      <Badge variant={value === true ? 'success' : value === false ? 'danger' : 'info'}>
-                        {value === true ? '看涨' : value === false ? '看跌' : '双向'}
-                      </Badge>
-                    ),
-                  },
-                  { key: 'reliability', label: '可靠性' },
-                ]}
-                onExport={() => exportCSV(rows as Record<string, unknown>[], '可用形态')}
-              />
-            </div>
-          ) : (
-            <EmptyState
-              text="当前没有返回可用形态列表"
-              hint="可稍后重试；如果持续为空，优先检查后端形态能力是否已就绪。"
-            />
-          )
+        {resolvedCode && tab !== 'available' && !error && !isPending && hasRequested ? (
+          <KpiGrid cols={4} className="mt-4">
+            <KpiCard title="当前标的" value={focusCode} />
+            <KpiCard title="当前周期" value={periodLabel} />
+            <KpiCard title="K 线数量" value={limit} />
+            <KpiCard title="结果条数" value={tab === 'indicators' ? indicatorSeries.length + indicatorSummary.length : rows.length} />
+          </KpiGrid>
         ) : null}
       </div>
     </PageContainer>

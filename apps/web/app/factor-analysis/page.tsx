@@ -1,13 +1,15 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { PageContainer, SectionCard, StockCodeInput, KpiCard, KpiGrid, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, StockCodeInput, Badge, TabBar } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 type FactorItem = { name: string; description: string; category: string };
 type LibraryResponse = { data?: { factors?: FactorItem[] } };
@@ -43,12 +45,20 @@ const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-const CHIP_LINK_CLS = 'action-chip text-xs no-underline text-inherit';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
 const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
+const RESULT_TABS = [
+  { key: 'setup', label: '配置' },
+  { key: 'ic', label: 'IC' },
+  { key: 'decay', label: '衰减' },
+  { key: 'groups', label: '分组收益' },
+] as const;
+type ResultTab = (typeof RESULT_TABS)[number]['key'];
 
 export default function FactorAnalysisPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
+  const [resultTab, setResultTab] = useState<ResultTab>('setup');
   const libraryQ = useApiQuery<LibraryResponse>(libraryLoaded ? '/factor/library' : null);
   const icApi = useApiMutation<IcResponse>();
   const btApi = useApiMutation<BacktestResponse>();
@@ -79,6 +89,7 @@ export default function FactorAnalysisPage() {
     btApi.trigger('/factor/backtest', { method: 'POST' }, body);
     setIcHistoryPath(`/factor/ic-history?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
     setDecayPath(`/factor/decay?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
+    setResultTab('ic');
   }
 
   const ic = icApi.data?.data;
@@ -121,11 +132,12 @@ export default function FactorAnalysisPage() {
   const factorOptions =
     factors.length > 0 ? factors : [{ name: factor, description: '当前默认研究因子', category: 'default' }];
   const activeFactorMeta = factorOptions.find((item) => item.name === factor);
+  const activeTabLabel = RESULT_TABS.find((item) => item.key === resultTab)?.label ?? '配置';
 
   return (
     <PageContainer className="app-theme-strategy">
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Factor Insight</Badge>
@@ -142,248 +154,184 @@ export default function FactorAnalysisPage() {
               因子洞察工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这个页面聚焦单一因子的快速判断: 先确认目标股票和分析维度，再同时拉起 IC、分组收益、IC
-              历史与衰减曲线，快速判断一个因子是不是值得继续深挖。
+              单因子页现在只保留一个活动视图。先确认标的与因子，再逐步看 IC、衰减和分组收益，不再把三块证据同时铺开。
             </p>
 
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={loadLibrary} className={HERO_PRIMARY_BUTTON_CLS}>
-                {libraryLoaded ? '刷新因子候选' : '加载因子库'}
-              </button>
-              <button type="button" onClick={runAnalysis} disabled={loading} className={HERO_SECONDARY_BUTTON_CLS}>
-                {loading ? '分析中...' : '运行分析'}
-              </button>
-              <a href="#factor-analysis-ic" className={CHIP_LINK_CLS}>
-                看 IC 走势
-              </a>
-              <a href="#factor-analysis-decay" className={CHIP_LINK_CLS}>
-                看衰减曲线
-              </a>
-              <a href="#factor-analysis-backtest" className={CHIP_LINK_CLS}>
-                看分组收益
-              </a>
-            </div>
+            {!compactLayout ? (
+              <div className="mt-5 flex flex-wrap gap-2">
+                <button type="button" onClick={loadLibrary} className={HERO_PRIMARY_BUTTON_CLS}>
+                  {libraryLoaded ? '刷新因子候选' : '加载因子库'}
+                </button>
+                <button type="button" onClick={runAnalysis} disabled={loading} className={HERO_SECONDARY_BUTTON_CLS}>
+                  {loading ? '分析中...' : '运行分析'}
+                </button>
+              </div>
+            ) : null}
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">目标股票</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
-                <div className="mt-1 text-xs text-text-secondary">与默认样本池合并后统一做横截面分析</div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前因子：{factor} ｜ 样本 {sampleUniverse.length} 只 ｜ 当前视图：{activeTabLabel}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">分析维度</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{factor}</div>
-                <div className="mt-1 text-xs text-text-secondary">{activeFactorMeta?.category || '默认分类'}</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本范围</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{sampleUniverse.length}</div>
-                <div className="mt-1 text-xs text-text-secondary">IC 窗口 20 期，最多展示 60 个观察点</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前状态</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {analysisReady ? fmtNum(ic?.ic ?? null, 4) : '-'}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {analysisReady ? '已生成第一层信号证据' : '先运行一次分析再看时序与衰减'}
-                </div>
-              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                {analysisReady
+                  ? `IC ${fmtNum(ic?.ic ?? null, 4)} ｜ 半衰期 ${decayView?.halfLife == null ? '-' : decayView.halfLife}`
+                  : '先运行一次分析，再决定继续看 IC、衰减还是分组收益。'}
+              </p>
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先确认因子名称与股票样本，避免在错误的研究语境上继续放大分析。</div>
-                <div className={NOTE_CARD_CLS}>2. 再看 IC、Rank IC 和分组收益，确认这个因子是否真的有方向性。</div>
-                <div className={NOTE_CARD_CLS}>
-                  3. 最后看 IC 时序和衰减曲线，判断它是稳定信号还是只在局部时间窗口有效。
-                </div>
+          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              研究顺序
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className={NOTE_CARD_CLS}>1. 先确认因子名称与股票样本。</div>
+              <div className={NOTE_CARD_CLS}>2. 再看 IC 和分组收益。</div>
+              <div className={NOTE_CARD_CLS}>3. 最后看衰减，确认它是否稳定。</div>
+              <div className={NOTE_CARD_CLS}>
+                当前说明：
+                <span className="font-medium text-text-primary"> {activeFactorMeta?.description || '当前默认研究因子'}</span>
               </div>
             </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前配置</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  因子：
-                  <span className="font-medium text-text-primary">{factor}</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  样本池：
-                  <span className="font-medium text-text-primary">{sampleUniverse.length} 只股票</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  因子说明：
-                  <span className="font-medium text-text-primary">
-                    {activeFactorMeta?.description || '当前默认使用单因子快速分析路径'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
       {loading ? <LoadingState text="因子分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
-      <KpiGrid cols={5} className="mb-4">
-        <KpiCard title="IC" value={analysisReady ? fmtNum(ic?.ic ?? null, 4) : null} />
-        <KpiCard title="IC IR" value={analysisReady ? fmtNum(ic?.ic_ir ?? null, 4) : null} />
-        <KpiCard title="P-Value" value={analysisReady ? fmtNum(ic?.p_value ?? null, 4) : null} />
-        <KpiCard title="信号半衰期" value={decayView?.halfLife == null ? null : `${decayView.halfLife}`} />
-        <KpiCard title="衰减样本数" value={decayView ? `${decayView.sampleCount}` : null} />
-      </KpiGrid>
-
-      <SectionCard className="p-4 sm:p-5">
+      <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Analysis Setup</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">分析配置</h3>
+            <div className="eyebrow">Analysis Workspace</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">单因子快判</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这一步只保留必要输入，减少“单因子快判”场景下的配置噪音。因子库可以提前加载，也可以在选择器聚焦时自动拉起。
+              默认只展开一个活动视图。先配参数，再依次看 IC、衰减和分组收益。
             </p>
           </div>
-        </div>
-
-        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_320px]">
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)_auto] lg:items-end">
-              <StockCodeInput
-                id="factor-analysis-stock-code"
-                label="股票代码"
-                value={code}
-                onChange={setCode}
-                error={codeError}
-                placeholder="如 600519"
-              />
-              <label htmlFor="factor-analysis-factor" className="grid gap-1 text-xs text-text-secondary">
-                <span>分析维度</span>
-                <select
-                  id="factor-analysis-factor"
-                  value={factor}
-                  onChange={(e) => setFactor(e.target.value)}
-                  onFocus={loadLibrary}
-                  className="w-full min-w-[220px] text-sm text-text-primary"
-                >
-                  {factorOptions.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.name} - {item.description}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" onClick={runAnalysis} disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
-                {loading ? '分析中...' : '运行分析'}
-              </button>
-            </div>
-            <div className={`${NOTE_CARD_CLS} mt-4`}>
-              当前会使用目标股票加默认样本池共 {sampleUniverse.length} 只股票，IC 历史窗口为 20 期，最多展示 60
-              个观察点。
-            </div>
-          </div>
-
-          <div className={SIDE_PANEL_CLS}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">结果预期</div>
-            <div className="mt-4 space-y-3">
-              <div className={NOTE_CARD_CLS}>IC 与 IC IR 会告诉你信号方向和稳定性。</div>
-              <div className={NOTE_CARD_CLS}>分组收益用来判断排序后是否能形成清晰收益层次。</div>
-              <div className={NOTE_CARD_CLS}>衰减曲线帮助判断信号是不是来得快、去得也快。</div>
-            </div>
+          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+            当前状态：<span className="font-medium text-text-primary">{analysisReady ? '已生成结果' : '等待运行'}</span>
           </div>
         </div>
-      </SectionCard>
 
-      <div id="factor-analysis-ic" className="scroll-mt-24">
-        <SectionCard className="p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="eyebrow">Signal Evidence</div>
-              <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">IC 时序走势</h3>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                这里同时看 IC 和 Rank IC，判断同一因子在时间序列上是持续有效，还是只在某段行情里短暂成立。
-              </p>
+        <div className="mt-4">
+          <TabBar tabs={RESULT_TABS} active={resultTab} onChange={(key) => setResultTab(key as ResultTab)} />
+        </div>
+
+        <SectionCard tabAttached>
+          {resultTab === 'setup' ? (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+                <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)_auto] lg:items-end">
+                  <StockCodeInput
+                    id="factor-analysis-stock-code"
+                    label="股票代码"
+                    value={code}
+                    onChange={setCode}
+                    error={codeError}
+                    placeholder="如 600519"
+                  />
+                  <label htmlFor="factor-analysis-factor" className="grid gap-1 text-xs text-text-secondary">
+                    <span>分析维度</span>
+                    <select
+                      id="factor-analysis-factor"
+                      value={factor}
+                      onChange={(e) => setFactor(e.target.value)}
+                      onFocus={loadLibrary}
+                      className="w-full min-w-[220px] text-sm text-text-primary"
+                    >
+                      {factorOptions.map((item) => (
+                        <option key={item.name} value={item.name}>
+                          {item.name} - {item.description}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" onClick={runAnalysis} disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
+                    {loading ? '分析中...' : '运行分析'}
+                  </button>
+                </div>
+                <div className={`${NOTE_CARD_CLS} mt-4`}>
+                  当前会使用目标股票加默认样本池共 {sampleUniverse.length} 只股票，IC 历史窗口为 20 期，最多展示 60 个观察点。
+                </div>
+              </div>
+              <details className={SIDE_PANEL_CLS} open={!compactLayout}>
+                <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                  结果预期
+                </summary>
+                <div className="mt-4 space-y-3">
+                  <div className={NOTE_CARD_CLS}>IC 与 IC IR 用来判断信号方向和稳定性。</div>
+                  <div className={NOTE_CARD_CLS}>分组收益用来判断排序后能否形成收益层次。</div>
+                  <div className={NOTE_CARD_CLS}>衰减曲线帮助判断信号是不是来得快、去得也快。</div>
+                </div>
+              </details>
             </div>
-            <a href="#factor-analysis-decay" className={CHIP_LINK_CLS}>
-              继续看衰减
-            </a>
-          </div>
+          ) : null}
 
-          <div className="mt-4">
-            {icHistory ? (
-              <LineChart
-                categories={icHistory.dates}
-                series={[
-                  { name: 'IC', data: icHistory.ic, color: '#1a73e8' },
-                  { name: 'Rank IC', data: icHistory.rankIc, color: '#f59e0b' },
-                ]}
-                height={260}
-                yAxisName="IC值"
-              />
-            ) : (
-              <EmptyState text="运行分析后，这里会显示 IC 与 Rank IC 的时序走势。" />
-            )}
-          </div>
-        </SectionCard>
-      </div>
-
-      <div id="factor-analysis-decay" className="scroll-mt-24">
-        <SectionCard className="p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="eyebrow">Decay Evidence</div>
-              <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">信号衰减曲线</h3>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                衰减越快，因子越可能只适合短窗口或更高频的执行节奏；衰减越慢，说明它更有机会支持中短期持有。
-              </p>
+          {resultTab === 'ic' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className={NOTE_CARD_CLS}>IC：<span className="font-medium text-text-primary"> {fmtNum(ic?.ic ?? null, 4)}</span></div>
+                <div className={NOTE_CARD_CLS}>IC IR：<span className="font-medium text-text-primary"> {fmtNum(ic?.ic_ir ?? null, 4)}</span></div>
+                <div className={NOTE_CARD_CLS}>P-Value：<span className="font-medium text-text-primary"> {fmtNum(ic?.p_value ?? null, 4)}</span></div>
+              </div>
+              {icHistory ? (
+                <LineChart
+                  categories={icHistory.dates}
+                  series={[
+                    { name: 'IC', data: icHistory.ic, color: '#1a73e8' },
+                    { name: 'Rank IC', data: icHistory.rankIc, color: '#f59e0b' },
+                  ]}
+                  height={260}
+                  yAxisName="IC值"
+                />
+              ) : (
+                <EmptyState text="运行分析后，这里会显示 IC 与 Rank IC 的时序走势。" />
+              )}
             </div>
-            <a href="#factor-analysis-backtest" className={CHIP_LINK_CLS}>
-              继续看分组收益
-            </a>
-          </div>
+          ) : null}
 
-          <div className="mt-4">
-            {decayView && decayView.dates.length > 0 ? (
-              <LineChart
-                categories={decayView.dates}
-                series={[{ name: 'Decay', data: decayView.values, color: '#10b981' }]}
-                height={240}
-                yAxisName="相对强度"
-              />
-            ) : (
-              <EmptyState text="运行分析后，这里会显示信号衰减曲线与半衰期。" />
-            )}
-          </div>
-        </SectionCard>
-      </div>
-
-      <div id="factor-analysis-backtest" className="scroll-mt-24">
-        <SectionCard className="p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="eyebrow">Cross-Section Return</div>
-              <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">因子分组回测收益</h3>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                这一层看的是“排序之后有没有收益层次”，它和 IC 一起构成单因子快判的主要证据。
-              </p>
+          {resultTab === 'decay' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className={NOTE_CARD_CLS}>
+                  信号半衰期：<span className="font-medium text-text-primary"> {decayView?.halfLife == null ? '-' : decayView.halfLife}</span>
+                </div>
+                <div className={NOTE_CARD_CLS}>
+                  衰减样本数：<span className="font-medium text-text-primary"> {decayView ? decayView.sampleCount : '-'}</span>
+                </div>
+              </div>
+              {decayView && decayView.dates.length > 0 ? (
+                <LineChart
+                  categories={decayView.dates}
+                  series={[{ name: 'Decay', data: decayView.values, color: '#10b981' }]}
+                  height={240}
+                  yAxisName="相对强度"
+                />
+              ) : (
+                <EmptyState text="运行分析后，这里会显示信号衰减曲线与半衰期。" />
+              )}
             </div>
-          </div>
+          ) : null}
 
-          <div className="mt-4">
-            {groupBars.cats.length > 0 ? (
-              <BarChart
-                items={groupBars.cats.map((cat, index) => ({ label: cat, value: groupBars.vals[index] }))}
-                height={280}
-                yAxisName="收益率"
-                colorByValue
-              />
-            ) : (
-              <EmptyState text="运行分析后，这里会展示分组收益柱状图。" />
-            )}
-          </div>
+          {resultTab === 'groups' ? (
+            <div className="space-y-4">
+              <div className={NOTE_CARD_CLS}>这一层看的是“排序之后有没有收益层次”，它和 IC 一起构成单因子快判的主要证据。</div>
+              {groupBars.cats.length > 0 ? (
+                <BarChart
+                  items={groupBars.cats.map((cat, index) => ({ label: cat, value: groupBars.vals[index] }))}
+                  height={280}
+                  yAxisName="收益率"
+                  colorByValue
+                />
+              ) : (
+                <EmptyState text="运行分析后，这里会展示分组收益柱状图。" />
+              )}
+            </div>
+          ) : null}
         </SectionCard>
       </div>
     </PageContainer>

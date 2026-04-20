@@ -13,6 +13,32 @@ type AuthFetchOptions = {
   redirectOnUnauthorized?: boolean;
 };
 
+export function isAbortLikeError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.name === 'AbortError'
+    || /abort(?:ed|error)|the user aborted a request|signal is aborted/i.test(error.message)
+  );
+}
+
+function buildAbortError(message = '请求已取消'): Error {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException(message, 'AbortError');
+  }
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+export function isPermissionDeniedErrorMessage(message: string | null | undefined): boolean {
+  return /(?:^|\b)403(?:\b|$)|forbidden|permission denied|权限|无权/i.test(String(message ?? ''));
+}
+
 async function redirectAfterAuthExpired(): Promise<never> {
   if (!redirecting) {
     redirecting = true;
@@ -42,6 +68,9 @@ async function authedFetchCore(path: string, init?: RequestInit, opts?: AuthFetc
     resp = await fetch(`${bffBase}${path}`, requestInit);
     markBffAvailable();
   } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw buildAbortError();
+    }
     markBffUnavailable();
     throw new Error(error instanceof Error ? '数据服务暂不可用' : '请求失败');
   }
@@ -53,7 +82,10 @@ async function authedFetchCore(path: string, init?: RequestInit, opts?: AuthFetc
         const retryResp = await fetch(`${bffBase}${path}`, requestInit);
         markBffAvailable();
         return retryResp;
-      } catch {
+      } catch (error) {
+        if (isAbortLikeError(error)) {
+          throw buildAbortError();
+        }
         markBffUnavailable();
         throw new Error('数据服务暂不可用');
       }

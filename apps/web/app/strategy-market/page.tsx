@@ -1,11 +1,11 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { PageContainer } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray } from '@/lib/data-utils';
 import { apiKeys } from '@/lib/query-keys';
 import { ensureRecordOrArray } from '@/lib/query-parse';
@@ -37,11 +37,16 @@ import {
   resolveCategoryLabel,
   type StrategySortKey,
 } from './components/strategy-market-support';
+import {
+  parseFactoryRunDetailResponse,
+  parseFactoryRunsResponse,
+  parseFactoryStatusResponse,
+} from './lib/contracts';
 
 const RANKING_PAGE_LIMIT = 20;
 
 export default function StrategyMarketPage() {
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const [category, setCategory] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [showFactoryDetails, setShowFactoryDetails] = useState(false);
@@ -54,16 +59,23 @@ export default function StrategyMarketPage() {
       parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
     },
   );
-  const factoryStatusQ = useApiQuery<FactoryStatusResponse>('/strategy-market/factory/status');
+  const factoryStatusQ = useApiQuery<FactoryStatusResponse>(
+    '/strategy-market/factory/status',
+    { parse: parseFactoryStatusResponse },
+  );
   const capabilitiesQ = useApiQuery<CapabilityResponse>('/strategy-market/capabilities');
   const dailySnapshotQ = useApiQuery<DailySnapshotResponse>('/strategy-market/daily-snapshot');
-  const factoryRunsQ = useApiQuery<FactoryRunsResponse>('/strategy-market/factory/runs?limit=5');
+  const factoryRunsQ = useApiQuery<FactoryRunsResponse>(
+    '/strategy-market/factory/runs?limit=5',
+    { parse: parseFactoryRunsResponse },
+  );
   const factoryObservabilityQ = useApiQuery<unknown>('/strategy-market/factory/observability', { staleTime: 15_000 });
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runStatusFilter, setRunStatusFilter] = useState<RunStatusFilter>('all');
   const [trendMetricKey, setTrendMetricKey] = useState<TrendMetricKey>('candidates_spawned');
   const factoryRunDetailQ = useApiQuery<FactoryRunDetailResponse>(
     expandedRunId ? `/strategy-market/factory/runs/${encodeURIComponent(expandedRunId)}` : null,
+    { parse: parseFactoryRunDetailResponse },
   );
   const runFactoryApi = useApiMutation({
     invalidates: [apiKeys.strategy()],

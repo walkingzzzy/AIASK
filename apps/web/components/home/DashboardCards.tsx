@@ -66,7 +66,7 @@ function CardGrid({
         <SectionCard key={card.key} className="min-h-[220px] p-5">
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Home Modules</div>
+              <div className="eyebrow">首页摘要</div>
               <h2 className="mt-2">{card.title}</h2>
             </div>
             <Link href={card.href} className="action-chip text-sm no-underline text-inherit">
@@ -105,7 +105,7 @@ function AnomalyFeed({
     <SectionCard className="min-h-[160px] p-5">
       <div className="mb-4 flex items-end justify-between gap-3">
         <div>
-          <div className="eyebrow">Anomaly Feed</div>
+          <div className="eyebrow">市场异动</div>
           <h2 className="mt-2">市场异动榜</h2>
         </div>
       </div>

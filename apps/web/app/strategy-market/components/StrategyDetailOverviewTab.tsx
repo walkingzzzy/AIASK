@@ -2,8 +2,10 @@
 
 import { LineChart, BarChart } from '@/components/charts';
 import { Badge, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { formatMultipleTestingMode } from '@/app/strategy-market/lib/strategy-detail-view';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import type {
   IncubationOverviewResponse,
   IncubationAccount,
@@ -53,16 +55,6 @@ type StrategyDetailOverviewTabProps = {
   userId: string | null;
   onReview: () => void;
 };
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
-}
 
 function qualityBadgeVariant(
   value: unknown,
@@ -131,55 +123,55 @@ export function StrategyDetailOverviewTab({
   userId,
   onReview,
 }: StrategyDetailOverviewTabProps) {
-  const incubationOverviewRecord = asRecord(incubationOverview);
-  const signalQuality = asRecord(incubationOverviewRecord.signal_quality);
-  const executionQuality = asRecord(incubationOverviewRecord.execution_quality);
-  const executionAudit = asRecord(executionQuality.audit);
-  const executionDiagnostics = asRecord(incubationOverviewRecord.execution_diagnostics);
-  const hardGateResult = asRecord(incubationOverviewRecord.hard_gate_result);
-  const semanticLineage = asRecord(incubationOverviewRecord.semantic_lineage);
-  const executionLineage = asRecord(incubationOverviewRecord.execution_lineage);
-  const runtimePlaybookProvenance = asRecord(
-    incubationOverviewRecord.runtime_playbook_provenance ?? semanticLineage.runtime_playbook_provenance,
-  );
-  const claimToTradePlanMap = asRecord(semanticLineage.claim_to_trade_plan_map);
-  const tradePlanToDslMap = asRecord(semanticLineage.trade_plan_to_dsl_map);
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const signalQuality = incubationOverview?.signal_quality;
+  const executionQuality = incubationOverview?.execution_quality;
+  const executionAudit = executionQuality?.audit;
+  const executionDiagnostics = incubationOverview?.execution_diagnostics;
+  const hardGateResult = incubationOverview?.hard_gate_result;
+  const semanticLineage = incubationOverview?.semantic_lineage;
+  const executionLineage = incubationOverview?.execution_lineage;
+  const runtimePlaybookProvenance = incubationOverview?.runtime_playbook_provenance ?? semanticLineage?.runtime_playbook_provenance;
   const predictionQualityLabel = String(
-    incubationOverviewRecord.prediction_quality_label ?? '',
+    incubationOverview?.prediction_quality_label ?? '',
   ).trim().toLowerCase();
   const executionQualityLabel = String(
-    incubationOverviewRecord.execution_quality_label ?? '',
+    incubationOverview?.execution_quality_label ?? '',
   ).trim().toLowerCase();
   const confidenceContractStatus = String(
-    incubationOverviewRecord.confidence_contract_status ?? '',
+    incubationOverview?.confidence_contract_status ?? '',
   ).trim().toLowerCase();
   const qualityDiagnosis = String(
-    incubationOverviewRecord.quality_diagnosis ?? '',
+    incubationOverview?.quality_diagnosis ?? '',
   ).trim();
   const executionConversionEfficiency = Number(
-    executionQuality.execution_conversion_efficiency
-      ?? executionAudit.execution_conversion_efficiency
-      ?? executionDiagnostics.execution_conversion_efficiency
-      ?? executionQuality.nav_conversion_proxy
+    executionQuality?.execution_conversion_efficiency
+      ?? executionAudit?.execution_conversion_efficiency
+      ?? executionDiagnostics?.execution_conversion_efficiency
+      ?? executionQuality?.nav_conversion_proxy
       ?? Number.NaN,
   );
-  const coverageRatio = Number(signalQuality.coverage_ratio ?? Number.NaN);
-  const primarySkillLcb = Number(signalQuality.primary_skill_lcb ?? Number.NaN);
-  const hardGatePassed = Boolean(hardGateResult.passed);
-  const semanticClaimCount = Object.keys(asRecord(claimToTradePlanMap.claim_to_trade_step_ids)).length;
-  const semanticTradeStepCount = Object.keys(asRecord(tradePlanToDslMap.trade_step_to_dsl_sections)).length;
-  const executionLineageRows = asRecordArray(executionLineage.recent_runtime_actions).slice(0, 4);
+  const coverageRatio = Number(signalQuality?.coverage_ratio ?? Number.NaN);
+  const primarySkillLcb = Number(signalQuality?.primary_skill_lcb ?? Number.NaN);
+  const hardGatePassed = Boolean(hardGateResult?.passed);
+  const semanticClaimCount = Object.keys(
+    semanticLineage?.claim_to_trade_plan_map?.claim_to_trade_step_ids ?? {},
+  ).length;
+  const semanticTradeStepCount = Object.keys(
+    semanticLineage?.trade_plan_to_dsl_map?.trade_step_to_dsl_sections ?? {},
+  ).length;
+  const executionLineageRows = (executionLineage?.recent_runtime_actions ?? []).slice(0, 4);
   const executionLineageTradeStepCount = Number(
-    executionLineage.trade_step_count
-      ?? executionLineage.mapped_trade_step_count
+    executionLineage?.trade_step_count
+      ?? executionLineage?.mapped_trade_step_count
       ?? semanticTradeStepCount
       ?? Number.NaN,
   );
-  const executionLineageRuntimeCount = Number(executionLineage.runtime_action_count ?? Number.NaN);
-  const executionLineageUnmappedCount = Number(executionLineage.unmapped_runtime_action_count ?? Number.NaN);
-  const playbookDerivationLabels = Array.isArray(runtimePlaybookProvenance.derivation_labels)
-    ? runtimePlaybookProvenance.derivation_labels.map((item) => String(item)).filter(Boolean)
-    : [];
+  const executionLineageRuntimeCount = Number(executionLineage?.runtime_action_count ?? Number.NaN);
+  const executionLineageUnmappedCount = Number(executionLineage?.unmapped_runtime_action_count ?? Number.NaN);
+  const playbookDerivationLabels = (runtimePlaybookProvenance?.derivation_labels ?? [])
+    .map((item) => String(item))
+    .filter(Boolean);
   const showHighConfidencePanel = highConfidenceQualityUiEnabled && [
     predictionQualityLabel,
     executionQualityLabel,
@@ -339,7 +331,48 @@ export function StrategyDetailOverviewTab({
         </SectionCard>
       </div>
 
-      <SectionCard className="p-4 sm:p-5">
+      {compactLayout ? (
+        <details className="rounded-[24px] border border-white/45 bg-white/24 px-4 py-3">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开可信字段与闭环质量</summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本期</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">{sampleWindow}</div>
+              <div className="mt-1 text-xs text-text-secondary">合同字段优先，缺失时回退到 NAV 区间</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">换手 / 容量</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {turnoverRate == null ? '-' : fmtPct(turnoverRate)} / {capacityValue == null ? '-' : fmtNum(capacityValue, 2)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">{capacityLabel}</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">统计修正</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                DSR {deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                PBO {pboValue == null ? '-' : fmtNum(pboValue, 4)} ｜ {formatMultipleTestingMode(multipleTestingMode)}
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">闭环状态</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {hardGatePassed ? 'Hard Gate 通过' : 'Hard Gate 未通过'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                semantic {semanticClaimCount} / step {semanticTradeStepCount}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 rounded-[20px] border border-white/45 bg-white/20 px-3 py-3 text-xs leading-6 text-text-secondary">
+            更详细的 lineage、各期表现和因子暴露已下沉到桌面宽屏视图；在紧凑断点下优先保留合同口径、统计修正和闭环状态。
+          </div>
+        </details>
+      ) : null}
+
+      <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-4 sm:p-5`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="mt-0">可信信息</h3>
@@ -373,7 +406,7 @@ export function StrategyDetailOverviewTab({
       </SectionCard>
 
       {showHighConfidencePanel ? (
-        <SectionCard className="p-4 sm:p-5">
+        <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-4 sm:p-5`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 className="mt-0">高置信质量</h3>
@@ -431,8 +464,10 @@ export function StrategyDetailOverviewTab({
         </SectionCard>
       ) : null}
 
-      {(Object.keys(hardGateResult).length > 0 || Object.keys(semanticLineage).length > 0 || Object.keys(executionLineage).length > 0) ? (
-        <SectionCard className="p-4 sm:p-5">
+      {((hardGateResult && Object.keys(hardGateResult).length > 0)
+        || (semanticLineage && Object.keys(semanticLineage).length > 0)
+        || (executionLineage && Object.keys(executionLineage).length > 0)) ? (
+        <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-4 sm:p-5`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 className="mt-0">闭环语义</h3>
@@ -441,13 +476,13 @@ export function StrategyDetailOverviewTab({
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {Object.keys(hardGateResult).length > 0 ? (
+              {hardGateResult && Object.keys(hardGateResult).length > 0 ? (
                 <Badge variant={hardGatePassed ? 'success' : 'warning'}>
                   Hard Gate: {hardGatePassed ? '通过' : '未通过'}
                 </Badge>
               ) : null}
-              <Badge variant={executionDiagnostics.diagnostic_only ? 'info' : 'neutral'}>
-                {executionDiagnostics.diagnostic_only ? 'Diagnostic Only' : 'Runtime Contract'}
+              <Badge variant={executionDiagnostics?.diagnostic_only ? 'info' : 'neutral'}>
+                {executionDiagnostics?.diagnostic_only ? 'Diagnostic Only' : 'Runtime Contract'}
               </Badge>
             </div>
           </div>
@@ -455,10 +490,14 @@ export function StrategyDetailOverviewTab({
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">硬门结果</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {String(hardGateResult.pipeline_stage ?? incubationOverviewRecord.pipeline_stage ?? '-')}
+                {String(hardGateResult?.pipeline_stage ?? incubationOverview?.pipeline_stage ?? '-')}
               </div>
               <div className="mt-1 text-xs text-text-secondary">
-                {String(hardGateResult.execution_audit_gate_status ?? incubationOverviewRecord.execution_audit_gate_status ?? '-')}
+                {String(
+                  hardGateResult?.execution_audit_gate_status
+                  ?? incubationOverview?.execution_audit_gate_status
+                  ?? '-',
+                )}
               </div>
             </div>
             <div className="metric-tile rounded-[24px] p-4">
@@ -474,9 +513,9 @@ export function StrategyDetailOverviewTab({
                 {playbookDerivationLabels.length ? playbookDerivationLabels[0] : '-'}
               </div>
               <div className="mt-1 text-xs text-text-secondary">
-                {runtimePlaybookProvenance.derived_from_defaults == null
+                {runtimePlaybookProvenance?.derived_from_defaults == null
                   ? 'provenance unavailable'
-                  : runtimePlaybookProvenance.derived_from_defaults
+                  : runtimePlaybookProvenance?.derived_from_defaults
                     ? 'derived from defaults'
                     : 'provided by compile output'}
               </div>
@@ -498,7 +537,7 @@ export function StrategyDetailOverviewTab({
               semanticTradeStepCount ? `trade step → DSL 映射 ${semanticTradeStepCount} 条` : '',
               playbookDerivationLabels.length ? `runtime playbook: ${playbookDerivationLabels.join(' / ')}` : '',
               Number.isFinite(executionLineageRuntimeCount) ? `runtime actions ${executionLineageRuntimeCount}` : '',
-              String(executionDiagnostics.remediation_action ?? '').trim(),
+              String(executionDiagnostics?.remediation_action ?? '').trim(),
             ].filter(Boolean).join('；') || '当前未返回额外 lineage 细节。'}
           </div>
           {executionLineageRows.length ? (
@@ -536,7 +575,7 @@ export function StrategyDetailOverviewTab({
             const returns = sorted.map((item) => Number(item.total_return ?? 0));
             const sharpes = sorted.map((item) => Number(item.sharpe_ratio ?? 0));
             return (
-              <SectionCard className="p-3">
+              <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-3`}>
                 <h3 className="mt-0">各期表现</h3>
                 <LineChart
                   categories={periods}
@@ -554,7 +593,7 @@ export function StrategyDetailOverviewTab({
         : null}
 
       {factorBars.length > 0 ? (
-        <SectionCard className="p-3">
+        <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-3`}>
           <h3 className="mt-0">因子暴露度</h3>
           <BarChart
             items={factorBars.map((item) => ({ label: item.name, value: item.value, color: '#6366f1' }))}
@@ -563,7 +602,49 @@ export function StrategyDetailOverviewTab({
         </SectionCard>
       ) : null}
 
-      <SectionCard className="p-4 sm:p-5">
+      {compactLayout ? (
+        <details className="rounded-[24px] border border-white/45 bg-white/24 px-4 py-3">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+            展开用户评价与互动
+          </summary>
+          <div className="mt-4 space-y-3">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前评分</div>
+              <div className="mt-3 text-base font-semibold text-text-primary">
+                {strategyAvgRating != null ? `${'★'.repeat(Math.round(strategyAvgRating))} ${strategyAvgRating.toFixed(1)}` : '暂无公开评分'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">{reviews.length} 条公开评价</div>
+            </div>
+            <div className="panel-soft rounded-[24px] p-3 sm:p-4">
+              <div className="mb-3 text-xs leading-6 text-text-secondary">紧凑断点下把评价表单收进折叠区，避免首屏被互动区拉长。</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={rating}
+                  onChange={(event) => setRating(Number(event.target.value))}
+                  className="w-auto min-w-[104px] text-sm"
+                >
+                  {[5, 4, 3, 2, 1].map((value) => (
+                    <option key={value} value={value}>
+                      {value} 星
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
+                  placeholder="写一条评价..."
+                  className="min-w-[220px] flex-1 text-sm"
+                />
+                <button onClick={onReview} disabled={reviewPending || !userId} className={heroPrimaryButtonCls}>
+                  {reviewPending ? '提交中...' : !userId ? '登录后可评价' : '提交'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </details>
+      ) : null}
+
+      <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-4 sm:p-5`}>
         <h3 className="mt-0">
           用户评价
           {strategyAvgRating != null ? (

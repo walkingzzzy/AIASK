@@ -131,6 +131,7 @@ export default function NotificationsPage() {
   const allVisibleSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id));
   const currentTypeLabel = TYPE_LABELS[activeType] || activeType;
   const visibleUnreadCount = items.filter((item) => !item.read).length;
+  const canMarkAllRead = unreadCount > 0;
   const latestNotification = rawItems[0]?.createdAt
     ? new Date(rawItems[0].createdAt).toLocaleString('zh-CN')
     : '暂无记录';
@@ -211,16 +212,16 @@ export default function NotificationsPage() {
               这次重构把通知页从后台消息列表改造成连续工作流。你可以先用分类筛选做降噪，再批量处理，再跳回告警、策略、交易或研究页面继续动作，而不是把消息停留在“已看到”这一步。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              {unreadCount > 0 ? (
-                <button
-                  type="button"
-                  onClick={handleMarkAllRead}
-                  disabled={markAllReadApi.isPending}
-                  className={HERO_PRIMARY_BUTTON_CLS}
-                >
-                  {markAllReadApi.isPending ? '处理中...' : `全部标记已读 (${unreadCount})`}
-                </button>
-              ) : null}
+              <button
+                type="button"
+                onClick={handleMarkAllRead}
+                disabled={!canMarkAllRead || markAllReadApi.isPending}
+                data-testid="page-primary-action"
+                data-action-testid="notifications-mark-all-read-action"
+                className={HERO_PRIMARY_BUTTON_CLS}
+              >
+                {markAllReadApi.isPending ? '处理中...' : '全部标记已读'}
+              </button>
               <button
                 type="button"
                 onClick={() => listQ.refetch()}
@@ -232,9 +233,20 @@ export default function NotificationsPage() {
               <Link href="/alerts" className={LINK_CHIP_CLS}>
                 去告警中心
               </Link>
-              <Link href="/strategy-market" className={LINK_CHIP_CLS}>
-                去策略超市
-              </Link>
+            </div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前筛选 {currentTypeLabel}，未读 {visibleUnreadCount} 条，已选 {selectedCount} 条
+              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                {canMarkAllRead
+                  ? '主动作会把所有未读消息统一收口到已读队列。'
+                  : '当前没有未读消息，主动作保持禁用但位置固定。'}
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">最近消息时间：{latestNotification}</p>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
@@ -348,29 +360,32 @@ export default function NotificationsPage() {
                 上半区负责决定消息从哪里来，下半区负责决定现在怎么处理它们。模板卡片帮助你补齐来源，批量按钮帮助你快速清理视野。
               </p>
             </div>
-            {items.length > 0 ? (
-              <div className="flex flex-wrap gap-2 text-xs">
-                <button type="button" onClick={toggleSelectAllVisible} className={CHIP_BUTTON_CLS}>
-                  {allVisibleSelected ? '取消全选当前筛选' : '选中当前筛选'}
-                </button>
-                <button
-                  type="button"
-                  disabled={selectedCount === 0 || markReadApi.isPending}
-                  onClick={handleBatchMarkRead}
-                  className={CHIP_BUTTON_CLS}
-                >
-                  批量已读 ({selectedCount})
-                </button>
-                <button
-                  type="button"
-                  disabled={selectedCount === 0 || deleteApi.isPending}
-                  onClick={handleBatchDelete}
-                  className={CHIP_BUTTON_CLS}
-                >
-                  批量删除 ({selectedCount})
-                </button>
-              </div>
-            ) : null}
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button
+                type="button"
+                onClick={toggleSelectAllVisible}
+                disabled={selectableIds.length === 0}
+                className={CHIP_BUTTON_CLS}
+              >
+                {allVisibleSelected ? '取消全选当前筛选' : '选中当前筛选'}
+              </button>
+              <button
+                type="button"
+                disabled={selectedCount === 0 || markReadApi.isPending}
+                onClick={handleBatchMarkRead}
+                className={CHIP_BUTTON_CLS}
+              >
+                批量已读 ({selectedCount})
+              </button>
+              <button
+                type="button"
+                disabled={selectedCount === 0 || deleteApi.isPending}
+                onClick={handleBatchDelete}
+                className={CHIP_BUTTON_CLS}
+              >
+                批量删除 ({selectedCount})
+              </button>
+            </div>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">

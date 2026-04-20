@@ -260,11 +260,18 @@ export const useChatStore = create<ChatState>()(
 
       initSync: async () => {
         if (get().syncReady) return;
-        const resp = await authedFetch('/chat/conversations');
-        const json = await resp.json().catch(() => ({ data: { conversations: [] } }));
-        const remote = Array.isArray(json?.data?.conversations)
-          ? (json.data.conversations as ChatConversation[])
-          : [];
+        let remote: ChatConversation[] = [];
+        try {
+          const resp = await authedFetch('/chat/conversations', undefined, { redirectOnUnauthorized: false });
+          if (resp.ok) {
+            const json = await resp.json().catch(() => ({ data: { conversations: [] } }));
+            remote = Array.isArray(json?.data?.conversations)
+              ? (json.data.conversations as ChatConversation[])
+              : [];
+          }
+        } catch {
+          remote = [];
+        }
         const local = get().conversations.length > 0
           ? get().conversations
           : [fallbackConversation(get())];
@@ -296,25 +303,29 @@ export const useChatStore = create<ChatState>()(
       pushToServer: async () => {
         const fallback = fallbackConversation(get());
         const conversations = get().conversations.length > 0 ? get().conversations : [fallback];
-        await authedFetch('/chat/conversations/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            conversations: conversations.map((conversation) => ({
-              id: conversation.id,
-              title: conversation.title,
-              updatedAt: conversation.updatedAt,
-              workspaceId: conversation.workspaceId,
-              messages: conversation.messages.map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-                toolCalls: message.toolCalls,
-                actions: message.actions,
+        try {
+          await authedFetch('/chat/conversations/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversations: conversations.map((conversation) => ({
+                id: conversation.id,
+                title: conversation.title,
+                updatedAt: conversation.updatedAt,
+                workspaceId: conversation.workspaceId,
+                messages: conversation.messages.map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  content: message.content,
+                  toolCalls: message.toolCalls,
+                  actions: message.actions,
+                })),
               })),
-            })),
-          }),
-        });
+            }),
+          }, { redirectOnUnauthorized: false });
+        } catch {
+          // 壳层同步失败时保留本地会话，不打断页面主流程。
+        }
       },
 
       addUserMessage: (content) => {

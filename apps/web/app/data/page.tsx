@@ -19,191 +19,19 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/status-state'
 import { extractArray, extractObject, fmtAmount, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 
-const TABS = [
-  { key: 'option', label: '期权链' },
-  { key: 'calendar', label: '交易日历' },
-  { key: 'ipo', label: 'IPO' },
-  { key: 'cb', label: '可转债' },
-  { key: 'capital', label: '股本' },
-  { key: 'resource', label: '资源对象' },
-] as const;
-
-const RESOURCE_PRESETS = [
-  {
-    key: 'toolCatalog',
-    label: '工具目录',
-    requiresId: false,
-    inputLabel: '对象标识',
-    placeholder: '工具目录不需要额外 ID',
-    example: '',
-    description: '查看 AI 工具目录、必填参数、输出摘要和副作用级别。',
-  },
-  {
-    key: 'workflowGuide',
-    label: '工作流指南',
-    requiresId: true,
-    inputLabel: '指南名称',
-    placeholder: 'stock-analysis-guide',
-    example: 'stock-analysis-guide',
-    description: '查看 stock analysis、factor governance 等标准工作流模板。',
-  },
-  {
-    key: 'runSnapshot',
-    label: 'Run 快照',
-    requiresId: true,
-    inputLabel: 'Run ID',
-    placeholder: 'run_demo_001',
-    example: 'run_demo_001',
-    description: '回看一次运行的 linege、artifact 和关键摘要。',
-  },
-  {
-    key: 'datasetQuality',
-    label: 'Dataset 质量',
-    requiresId: true,
-    inputLabel: 'Dataset ID',
-    placeholder: 'dataset_demo',
-    example: 'dataset_demo',
-    description: '查看数据集质量状态、校验标记和修复建议。',
-  },
-  {
-    key: 'datasetProfile',
-    label: 'Dataset 档案',
-    requiresId: true,
-    inputLabel: 'Dataset ID',
-    placeholder: 'dataset_demo',
-    example: 'dataset_demo',
-    description: '查看 dataset profile、lineage 和最新验证快照。',
-  },
-  {
-    key: 'factorProfile',
-    label: 'Factor 档案',
-    requiresId: true,
-    inputLabel: 'Factor ID',
-    placeholder: 'factor_demo',
-    example: 'factor_demo',
-    description: '查看因子候选、验证结果、注册状态与衰减信息。',
-  },
-  {
-    key: 'modelProfile',
-    label: 'Model 档案',
-    requiresId: true,
-    inputLabel: 'Model ID',
-    placeholder: 'model_demo',
-    example: 'model_demo',
-    description: '查看模型 profile、校准信息和 champion/challenger 关系。',
-  },
-  {
-    key: 'strategyGovernance',
-    label: '策略治理',
-    requiresId: true,
-    inputLabel: 'Strategy ID',
-    placeholder: 'strat_demo',
-    example: 'strat_demo',
-    description: '查看策略审查状态、门禁结果与上线风险摘要。',
-  },
-  {
-    key: 'experimentSummary',
-    label: '实验摘要',
-    requiresId: true,
-    inputLabel: 'Experiment ID',
-    placeholder: 'exp_demo',
-    example: 'exp_demo',
-    description: '查看实验对象、关键指标和 artifact 关联关系。',
-  },
-  {
-    key: 'governanceReport',
-    label: '治理总览',
-    requiresId: false,
-    inputLabel: '对象标识',
-    placeholder: '治理总览不需要额外 ID',
-    example: '',
-    description: '查看系统级治理、风险与告警概览。',
-  },
-] as const;
-
-const HERO_PRIMARY_BUTTON_CLS =
-  'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-const HERO_SECONDARY_BUTTON_CLS =
-  'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
-const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
-const FIELD_CLS =
-  'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
-
-type Tab = (typeof TABS)[number]['key'];
-type ResourceKey = (typeof RESOURCE_PRESETS)[number]['key'];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function stringifyValue(value: unknown) {
-  if (value == null || value === '') return '-';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function buildResourcePath(kind: ResourceKey, identifier: string) {
-  switch (kind) {
-    case 'toolCatalog':
-      return '/data/tool-catalog';
-    case 'workflowGuide':
-      return `/data/workflow-guide?name=${encodeURIComponent(identifier)}`;
-    case 'runSnapshot':
-      return `/data/run-snapshot?runId=${encodeURIComponent(identifier)}`;
-    case 'datasetQuality':
-      return `/data/dataset-quality?datasetId=${encodeURIComponent(identifier)}`;
-    case 'datasetProfile':
-      return `/data/dataset-profile?datasetId=${encodeURIComponent(identifier)}`;
-    case 'factorProfile':
-      return `/data/factor-profile?factorId=${encodeURIComponent(identifier)}`;
-    case 'modelProfile':
-      return `/data/model-profile?modelId=${encodeURIComponent(identifier)}`;
-    case 'strategyGovernance':
-      return `/data/strategy-governance?strategyId=${encodeURIComponent(identifier)}`;
-    case 'experimentSummary':
-      return `/data/experiment-summary?experimentId=${encodeURIComponent(identifier)}`;
-    case 'governanceReport':
-      return '/data/governance-report';
-    default:
-      return '/data/tool-catalog';
-  }
-}
-
-function buildResourceSummaryRows(obj: Record<string, unknown>) {
-  return Object.entries(obj)
-    .filter(([, value]) => value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-    .slice(0, 12)
-    .map(([field, value]) => ({ field, value: stringifyValue(value) }));
-}
-
-function readOptionNumber(row: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = row[key];
-    if (value == null || value === '') continue;
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function normalizeOptionRow(row: Record<string, unknown>) {
-  const type = String(row.type ?? row.option_type ?? row.side ?? '').toLowerCase();
-  return {
-    ...row,
-    strike: readOptionNumber(row, ['strike', 'strikePrice', 'exercise_price']),
-    lastPrice: readOptionNumber(row, ['lastPrice', 'last', 'price', 'close']),
-    volume: readOptionNumber(row, ['volume', 'trade_volume']),
-    openInterest: readOptionNumber(row, ['openInterest', 'open_interest', 'oi']),
-    impliedVol: readOptionNumber(row, ['impliedVol', 'impliedVolatility', 'implied_volatility', 'iv']),
-    type,
-  };
-}
+import {
+  CHIP_BUTTON_CLS,
+  FIELD_CLS,
+  HERO_PRIMARY_BUTTON_CLS,
+  HERO_SECONDARY_BUTTON_CLS,
+  NOTE_CARD_CLS,
+  RESOURCE_PRESETS,
+  SIDE_PANEL_CLS,
+  TABS,
+  type ResourceKey,
+  type Tab,
+} from './data-page/config';
+import { buildResourcePath, buildResourceSummaryRows, isRecord, normalizeOptionRow } from './data-page/helpers';
 
 export default function DataPage() {
   const [tab, setTab] = useState<Tab>('option');
@@ -269,7 +97,10 @@ export default function DataPage() {
   const capObj = tab === 'capital' ? (extractObject(data) as Record<string, unknown>) || null : null;
   const resourceEnvelope = tab === 'resource' && isRecord(data) ? data : null;
   const resourceResult = resourceEnvelope?.result ?? null;
-  const resourceObject = tab === 'resource' ? ((extractObject(resourceResult) as Record<string, unknown>) || {}) : {};
+  const resourceObject = useMemo(
+    () => (tab === 'resource' ? ((extractObject(resourceResult) as Record<string, unknown>) || {}) : {}),
+    [resourceResult, tab],
+  );
   const resourceTableRows = useMemo(
     () =>
       tab === 'resource'

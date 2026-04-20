@@ -31,6 +31,10 @@ export type UseApiQueryOptions<TData> = {
   parse?: (raw: unknown) => TData;
   /** 401 时是否跳转到登录页；公共承载页可关闭为静默失败 */
   redirectOnUnauthorized?: boolean;
+  /** 提供非致命回退数据，避免壳层接口失败时破坏页面主体 */
+  fallbackData?: TData | null;
+  /** 当接口属于非致命依赖时，失败不向页面冒泡 error */
+  nonFatal?: boolean;
 };
 
 /**
@@ -48,6 +52,8 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     placeholderData,
     parse,
     redirectOnUnauthorized = true,
+    fallbackData,
+    nonFatal = false,
   } = options;
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
   const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
@@ -107,8 +113,13 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   });
 
   const disabledByOffline = enabled && path != null && bffAvailability.unavailable;
-  const derivedError = disabledByOffline ? '数据服务暂不可用' : (query.error?.message ?? null);
-  const derivedPending = (enabled && path != null && bffAvailability.checking) || query.isPending;
+  const derivedError = nonFatal
+    ? null
+    : disabledByOffline
+      ? '数据服务暂不可用'
+      : (query.error?.message ?? null);
+  const hasFallbackData = fallbackData !== undefined;
+  const derivedPending = ((enabled && path != null && bffAvailability.checking && !hasFallbackData) || query.isPending);
   const refetch = useCallback(async () => {
     if (enabled && path != null && !bffAvailability.reachable) {
       const reachable = await ensureBffAvailability({ force: true });
@@ -118,7 +129,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   }, [bffAvailability.reachable, enabled, path, query]);
 
   return {
-    data: query.data ?? null,
+    data: query.data ?? fallbackData ?? null,
     isPending: derivedPending,
     isFetching: query.isFetching,
     error: derivedError,

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountPerformanceDashboard from '@/app/performance/components/account-performance-dashboard';
 import PerformanceContextPanels from '@/app/performance/components/performance-context-panels';
@@ -13,9 +13,12 @@ import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
   PaperTradingAccountsResponse,
@@ -32,6 +35,7 @@ import type {
 } from '@aiask/shared-types';
 
 type PerformanceMode = 'account' | 'portfolio';
+type PerformanceMobilePrimaryTab = 'filters' | 'dashboard';
 
 type PortfolioOption = {
   id: string;
@@ -73,7 +77,7 @@ function normalizePortfolioOptions(raw: unknown): PortfolioOption[] {
 
 export default function PerformancePage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
@@ -94,8 +98,10 @@ export default function PerformancePage() {
     const raw = Number(searchParams.get('days') ?? 30);
     return Number.isFinite(raw) && raw > 0 ? raw : 30;
   });
+  const [mobilePrimaryTab, setMobilePrimaryTab] = useState<PerformanceMobilePrimaryTab>('filters');
   const lastWorkspaceIdRef = useRef<string | null>(null);
   const contextInitializedRef = useRef(false);
+  const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   const accountQs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : '';
   const selectedPortfolioId = portfolioId && /^\d+$/.test(portfolioId) ? Number(portfolioId) : null;
@@ -761,9 +767,20 @@ export default function PerformancePage() {
   const accountErrorMessage = summaryQ.error || positionsQ.error || navQ.error || performanceQ.error || null;
   const portfolioErrorMessage = portfolioDetailQ.error || attributionQ.error || benchmarkQ.error || null;
   const linkedStockCode = String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? '').trim();
+  const mobilePrimaryTabs = useMemo(
+    () => [
+      { key: 'filters', label: '条件' },
+      { key: 'dashboard', label: isAccountMode ? '账户面板' : '归因面板' },
+    ],
+    [isAccountMode],
+  );
 
   return (
     <PageContainer>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <TabBar tabs={MODE_TABS} active={mode} onChange={setMode} />
+      </div>
+
       <PerformanceHero
         isAccountMode={isAccountMode}
         activeModeLabel={activeModeLabel}
@@ -793,98 +810,110 @@ export default function PerformancePage() {
           applyPerformanceContext(snapshot);
         }}
         supportsPagePanels
+        mobileSummaryMode="hidden"
       />
-
-      <TabBar tabs={MODE_TABS} active={mode} onChange={setMode} />
 
       <WorkspaceSplitLayout
         pageKey="performance"
+        primaryLabel="绩效主区"
+        secondaryLabel="绩效摘要"
+        defaultMobileTab="primary"
         primary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
-            <PerformanceContextPanels
-              isAccountMode={isAccountMode}
-              accountId={accountId}
-              accounts={accounts}
-              onAccountChange={setAccountId}
-              portfolios={portfolios}
-              portfolioId={portfolioId}
-              onPortfolioChange={setPortfolioId}
-              benchmark={benchmark}
-              benchmarkOptions={[...BENCHMARK_OPTIONS]}
-              onBenchmarkChange={setBenchmark}
-              windowPresets={windowPresets}
-              days={days}
-              onDaysChange={setDays}
-              portfolioNarrative={portfolioNarrative}
-              activeModeLabel={activeModeLabel}
-              portfolioLookbackDays={portfolioLookbackDays}
-              selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
-              topContributorCode={String(topContributor?.code ?? '')}
-              weakContributorCode={String(weakContributor?.code ?? '')}
-              linkedStockCode={linkedStockCode}
-              onOpenRisk={openRiskWorkspace}
-              onOpenStock={linkedStockCode ? () => openStockTarget(linkedStockCode) : null}
-              onOpenResearch={linkedStockCode ? () => openResearchTarget(linkedStockCode) : null}
-            />
-
-            {!isAccountMode && portfoliosQ.isFetching && portfolios.length === 0 ? (
-              <LoadingState text="加载组合列表中..." />
-            ) : null}
-            {!isAccountMode && portfoliosQ.error ? <ErrorState text={portfoliosQ.error} /> : null}
-
-            {!isAccountMode && portfolios.length === 0 && !portfoliosQ.isFetching ? (
-              <SectionCard className="mt-4 p-4">
-                <EmptyState
-                  text="当前还没有可归因的组合。"
-                  hint="先在组合页创建一个组合并添加持仓，归因和基准对比才有意义。"
-                  action={
-                    <Link href="/portfolio" className="action-chip text-sm no-underline text-inherit">
-                      去创建组合
-                    </Link>
-                  }
-                />
-              </SectionCard>
+            {collapseToTabs ? (
+              <TabBar tabs={mobilePrimaryTabs} active={mobilePrimaryTab} onChange={setMobilePrimaryTab} />
             ) : null}
 
-            {isAccountMode ? (
-              <AccountPerformanceDashboard
-                errorMessage={accountErrorMessage}
-                totalValue={totalValue}
-                totalReturnPct={totalReturnPct}
-                accountMetrics={accountMetrics as PaperTradingPerformanceMetrics}
-                days={days}
-                navData={navData as PaperTradingNavPoint[]}
-                navCategories={navCategories}
-                navValues={navValues}
-                performanceData={performanceData as PaperTradingPerformancePoint[]}
-                perfCategories={perfCategories}
-                perfReturns={perfReturns}
-                topPositions={topPositions as PaperTradingPosition[]}
-                onOpenStockTarget={openStockTarget}
-                onOpenResearchTarget={openResearchTarget}
-              />
-            ) : (
-              <PortfolioAttributionDashboard
-                errorMessage={portfolioErrorMessage}
-                isLoading={portfolioDetailQ.isFetching || attributionQ.isFetching || benchmarkQ.isFetching}
-                attribution={attribution}
-                benchmarkComparison={benchmarkComparison}
-                portfolioMessage={portfolioMessage}
-                portfolioName={portfolioName}
-                portfolioHoldingsCount={portfolioHoldings.length || attributionByStock.length}
-                attributionByStock={attributionByStock}
-                portfolioTotalReturnPct={portfolioTotalReturnPct}
-                portfolioTotalAssets={portfolioTotalAssets}
-                waterfallData={waterfallData}
-                sectorBarItems={sectorBarItems}
-                outperformance={outperformance}
-                selectedPortfolioId={selectedPortfolioId}
-                portfolioLookbackDays={portfolioLookbackDays}
+            {!collapseToTabs || mobilePrimaryTab === 'filters' ? (
+              <PerformanceContextPanels
+                isAccountMode={isAccountMode}
+                accountId={accountId}
+                accounts={accounts}
+                onAccountChange={setAccountId}
+                portfolios={portfolios}
+                portfolioId={portfolioId}
+                onPortfolioChange={setPortfolioId}
                 benchmark={benchmark}
-                onOpenStockTarget={openStockTarget}
-                onOpenResearchTarget={openResearchTarget}
+                benchmarkOptions={[...BENCHMARK_OPTIONS]}
+                onBenchmarkChange={setBenchmark}
+                windowPresets={windowPresets}
+                days={days}
+                onDaysChange={setDays}
+                portfolioNarrative={portfolioNarrative}
+                activeModeLabel={activeModeLabel}
+                portfolioLookbackDays={portfolioLookbackDays}
+                selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
+                topContributorCode={String(topContributor?.code ?? '')}
+                weakContributorCode={String(weakContributor?.code ?? '')}
+                linkedStockCode={linkedStockCode}
+                onOpenRisk={openRiskWorkspace}
+                onOpenStock={linkedStockCode ? () => openStockTarget(linkedStockCode) : null}
+                onOpenResearch={linkedStockCode ? () => openResearchTarget(linkedStockCode) : null}
               />
-            )}
+            ) : null}
+
+            {!collapseToTabs || mobilePrimaryTab === 'dashboard' ? (
+              <>
+                {!isAccountMode && portfoliosQ.isFetching && portfolios.length === 0 ? (
+                  <LoadingState text="加载组合列表中..." />
+                ) : null}
+                {!isAccountMode && portfoliosQ.error ? <ErrorState text={portfoliosQ.error} /> : null}
+
+                {!isAccountMode && portfolios.length === 0 && !portfoliosQ.isFetching ? (
+                  <SectionCard className="mt-4 p-4">
+                    <EmptyState
+                      text="当前还没有可归因的组合。"
+                      hint="先在组合页创建一个组合并添加持仓，归因和基准对比才有意义。"
+                      action={
+                        <Link href="/portfolio" className="action-chip text-sm no-underline text-inherit">
+                          去创建组合
+                        </Link>
+                      }
+                    />
+                  </SectionCard>
+                ) : null}
+
+                {isAccountMode ? (
+                  <AccountPerformanceDashboard
+                    errorMessage={accountErrorMessage}
+                    totalValue={totalValue}
+                    totalReturnPct={totalReturnPct}
+                    accountMetrics={accountMetrics as PaperTradingPerformanceMetrics}
+                    days={days}
+                    navData={navData as PaperTradingNavPoint[]}
+                    navCategories={navCategories}
+                    navValues={navValues}
+                    performanceData={performanceData as PaperTradingPerformancePoint[]}
+                    perfCategories={perfCategories}
+                    perfReturns={perfReturns}
+                    topPositions={topPositions as PaperTradingPosition[]}
+                    onOpenStockTarget={openStockTarget}
+                    onOpenResearchTarget={openResearchTarget}
+                  />
+                ) : (
+                  <PortfolioAttributionDashboard
+                    errorMessage={portfolioErrorMessage}
+                    isLoading={portfolioDetailQ.isFetching || attributionQ.isFetching || benchmarkQ.isFetching}
+                    attribution={attribution}
+                    benchmarkComparison={benchmarkComparison}
+                    portfolioMessage={portfolioMessage}
+                    portfolioName={portfolioName}
+                    portfolioHoldingsCount={portfolioHoldings.length || attributionByStock.length}
+                    attributionByStock={attributionByStock}
+                    portfolioTotalReturnPct={portfolioTotalReturnPct}
+                    portfolioTotalAssets={portfolioTotalAssets}
+                    waterfallData={waterfallData}
+                    sectorBarItems={sectorBarItems}
+                    outperformance={outperformance}
+                    selectedPortfolioId={selectedPortfolioId}
+                    portfolioLookbackDays={portfolioLookbackDays}
+                    benchmark={benchmark}
+                    onOpenStockTarget={openStockTarget}
+                    onOpenResearchTarget={openResearchTarget}
+                  />
+                )}
+              </>
+            ) : null}
           </div>
         }
         secondary={

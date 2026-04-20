@@ -1,14 +1,18 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { ExecutionArtifactResponse } from '@aiask/shared-types';
+import { buildExecutionArtifactDetailHref, isSurfacePlaceholderId } from '@/lib/surface-contracts';
 
 function warningBadgeVariant(count: number) {
   if (count > 0) return 'warning' as const;
@@ -18,20 +22,36 @@ function warningBadgeVariant(count: number) {
 export default function ExecutionArtifactDetailPage() {
   const params = useParams<{ artifactId: string }>();
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
 
   const artifactId = String(params?.artifactId ?? '').trim();
+  const emptyDetailContract = isSurfacePlaceholderId(artifactId);
   const accountId = searchParams.get('account_id') ?? workbenchContext.accountId ?? '';
   const queryPath = useMemo(() => {
-    if (!artifactId) return null;
+    if (!artifactId || emptyDetailContract) return null;
     const query = new URLSearchParams();
     if (accountId) query.set('accountId', accountId);
     return `/execution/artifact/${encodeURIComponent(artifactId)}${query.toString() ? `?${query.toString()}` : ''}`;
-  }, [accountId, artifactId]);
-  const artifactQ = useApiQuery<ExecutionArtifactResponse>(queryPath);
+  }, [accountId, artifactId, emptyDetailContract]);
+  const artifactQ = useApiQuery<ExecutionArtifactResponse>(queryPath, {
+    nonFatal: emptyDetailContract,
+    fallbackData: emptyDetailContract
+      ? {
+          artifactId,
+          count: 0,
+          latestTaskId: null,
+          latestTask: null,
+          taskIds: [],
+          detail: null,
+          sourceTools: {},
+          argsMatched: { artifactId, accountId: accountId || undefined },
+          result: { tasks: null, detail: null },
+        }
+      : null,
+  });
 
   const latestTask = artifactQ.data?.latestTask ?? null;
   const detail = artifactQ.data?.detail ?? null;
@@ -57,9 +77,9 @@ export default function ExecutionArtifactDetailPage() {
     if (stockCode) query.set('code', stockCode);
     if (accountId) query.set('account_id', accountId);
     if (executionId) query.set('execution_id', executionId);
-    query.set('artifact_id', artifactId);
+    if (!emptyDetailContract) query.set('artifact_id', artifactId);
     return `/execution?${query.toString()}`;
-  }, [accountId, artifactId, executionId, stockCode]);
+  }, [accountId, artifactId, emptyDetailContract, executionId, stockCode]);
 
   useEffect(() => {
     if (!artifactId) return;
@@ -120,13 +140,16 @@ export default function ExecutionArtifactDetailPage() {
   usePageContext({
     pageKey: 'execution',
     title: 'Artifact 详情',
-    summary: `当前 artifact 为 ${artifactId}，关联任务 ${artifactQ.data?.count ?? 0} 条，最新任务 ${executionId || '未找到'}。`,
+    summary: emptyDetailContract
+      ? '当前环境还没有可进入的 Artifact 详情数据，页面按空态契约渲染。'
+      : `当前 artifact 为 ${artifactId}，关联任务 ${artifactQ.data?.count ?? 0} 条，最新任务 ${executionId || '未找到'}。`,
     stockCode: stockCode || undefined,
     tags: [
+      emptyDetailContract ? '空态契约' : null,
       accountId ? `账户 ${accountId}` : '未指定账户',
       `${artifactQ.data?.count ?? 0} 条任务`,
       `${warnings.length} 条告警`,
-    ],
+    ].filter((item): item is string => Boolean(item)),
     suggestions: [
       executionId ? `回执行中心查看 ${executionId}` : '回执行中心继续查询任务',
       '打开绩效中心复盘执行结果',
@@ -134,6 +157,7 @@ export default function ExecutionArtifactDetailPage() {
     ],
     raw: {
       artifactId,
+      emptyDetailContract,
       accountId: accountId || null,
       executionId: executionId || null,
       stockCode: stockCode || null,
@@ -142,7 +166,20 @@ export default function ExecutionArtifactDetailPage() {
     },
   });
 
-  usePageActions([
+  usePageActions(emptyDetailContract ? [
+    {
+      id: 'artifact.open-execution',
+      label: '回执行中心',
+      description: '回执行中心继续查看执行上下文',
+      keywords: ['执行中心', 'artifact'],
+      scope: 'page',
+      pageKey: 'execution',
+      run: () => {
+        openExecution();
+        return { message: '已打开执行中心' };
+      },
+    },
+  ] : [
     {
       id: 'artifact.refresh',
       label: '刷新 artifact 详情',
@@ -192,6 +229,37 @@ export default function ExecutionArtifactDetailPage() {
       },
     },
   ]);
+
+  if (emptyDetailContract) {
+    return (
+      <PageContainer>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="m-0 text-lg font-semibold">Artifact 详情</h1>
+            <p className="mb-0 mt-1 text-xs text-text-secondary">独立查看 artifact 关联的任务、执行摘要和后续复盘入口。</p>
+          </div>
+          <Badge variant="neutral">{artifactId}</Badge>
+        </div>
+        <SectionCard className="p-4">
+          <EmptyState
+            variant="full"
+            text="当前环境还没有可用的 Artifact 详情数据"
+            hint="当前路由走的是详情空态契约。可以先回执行中心提交一笔带 artifact_id 的执行，或保留这条空态作为回归用例。"
+            action={
+              <>
+                <Link href={executionHref} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+                  回执行中心
+                </Link>
+                <Link href={buildExecutionArtifactDetailHref('', accountId)} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+                  重新打开空态
+                </Link>
+              </>
+            }
+          />
+        </SectionCard>
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>

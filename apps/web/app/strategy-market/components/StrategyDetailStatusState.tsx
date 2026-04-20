@@ -14,6 +14,39 @@ export function StrategyDetailLoadingState() {
   );
 }
 
+export function StrategyDetailEmptyState({
+  strategyId,
+}: {
+  strategyId: string | null | undefined;
+}) {
+  return (
+    <PageContainer narrow>
+      <SectionCard className="p-5 sm:p-6">
+        <div className="mb-4">
+          <Link href="/strategy-market" className="text-sm text-text-secondary no-underline hover:text-primary">
+            &larr; 返回策略超市
+          </Link>
+        </div>
+        <EmptyState
+          variant="full"
+          text="当前环境还没有可用的策略详情数据"
+          hint={`当前路由使用的是详情空态契约（ID: ${strategyId ?? '-'}）。可以先回到策略超市查看空态提示，或先运行工厂生成可进入的策略详情。`}
+          action={
+            <>
+              <Link href="/strategy-market" className={chipLinkCls}>
+                返回策略列表
+              </Link>
+              <button type="button" onClick={() => window.location.reload()} className={chipButtonCls}>
+                重新加载
+              </button>
+            </>
+          }
+        />
+      </SectionCard>
+    </PageContainer>
+  );
+}
+
 type StrategyDetailErrorStateProps = {
   strategyId: string | null | undefined;
   detailError: string | null;

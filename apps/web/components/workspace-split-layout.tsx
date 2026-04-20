@@ -1,13 +1,29 @@
 'use client';
 
 import { type PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { TabBar } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { resolveWorkspaceLayout, resolveWorkspacePagePanel, selectActiveWorkspace, useWorkbenchStore, type WorkspacePageKey } from '@/store/workbench-store';
+
+type WorkspaceResponsivePanel = {
+  key: string;
+  label: string;
+  content: ReactNode;
+};
 
 type WorkspaceSplitLayoutProps = {
   pageKey: WorkspacePageKey;
   primary: ReactNode;
   secondary: ReactNode;
   className?: string;
+  collapseSecondaryBelow?: number;
+  defaultMobileTab?: string;
+  primaryLabel?: string;
+  secondaryLabel?: string;
+  secondaryPanels?: WorkspaceResponsivePanel[];
+  mobileSummary?: ReactNode;
+  maxDefaultSections?: number;
 };
 
 function clampSize(value: number) {
@@ -19,10 +35,18 @@ export default function WorkspaceSplitLayout({
   primary,
   secondary,
   className = '',
+  collapseSecondaryBelow = RESPONSIVE_BREAKPOINTS.splitCollapse,
+  defaultMobileTab = 'primary',
+  primaryLabel = '主画布',
+  secondaryLabel = '摘要',
+  secondaryPanels,
+  mobileSummary,
+  maxDefaultSections = 0,
 }: WorkspaceSplitLayoutProps) {
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const updatePagePanel = useWorkbenchStore((state) => state.updatePagePanel);
+  const collapseSecondary = useMobile(collapseSecondaryBelow);
 
   const activeWorkspace = useMemo(
     () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
@@ -30,7 +54,7 @@ export default function WorkspaceSplitLayout({
   );
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
   const pagePanel = useMemo(
-    () => resolveWorkspacePagePanel(layout.pagePanels?.[pageKey]),
+    () => resolveWorkspacePagePanel(layout.pagePanels?.[pageKey], pageKey),
     [layout.pagePanels, pageKey],
   );
 
@@ -39,11 +63,29 @@ export default function WorkspaceSplitLayout({
   const latestSizeRef = useRef(pagePanel.secondarySize ?? 34);
   const [dragSecondarySize, setDragSecondarySize] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const stackedPanels = useMemo<WorkspaceResponsivePanel[]>(
+    () => [
+      { key: 'primary', label: primaryLabel, content: primary },
+      ...(secondaryPanels?.length ? secondaryPanels : [{ key: 'secondary', label: secondaryLabel, content: secondary }]),
+    ],
+    [primary, primaryLabel, secondary, secondaryLabel, secondaryPanels],
+  );
+  const [mobileTab, setMobileTab] = useState(defaultMobileTab);
 
   useEffect(() => () => {
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
   }, []);
+
+  useEffect(() => {
+    if (!stackedPanels.some((panel) => panel.key === mobileTab)) {
+      setMobileTab(stackedPanels[0]?.key ?? 'primary');
+    }
+  }, [mobileTab, stackedPanels]);
+
+  useEffect(() => {
+    setMobileTab(defaultMobileTab);
+  }, [defaultMobileTab, pageKey]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (pagePanel.mode !== 'split') return;
@@ -88,6 +130,32 @@ export default function WorkspaceSplitLayout({
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
   };
+
+  if (collapseSecondary) {
+    const visiblePanels = Math.max(0, Math.min(maxDefaultSections, stackedPanels.length));
+    const inlinePanels = stackedPanels.slice(0, visiblePanels);
+    const tabPanels = stackedPanels.slice(visiblePanels);
+    const activeTab = tabPanels.find((panel) => panel.key === mobileTab) ?? tabPanels[0] ?? null;
+
+    return (
+      <div className={`flex flex-col gap-4 ${className}`}>
+        {mobileSummary}
+        {inlinePanels.map((panel) => (
+          <div key={panel.key}>{panel.content}</div>
+        ))}
+        {tabPanels.length > 0 ? (
+          <div className="space-y-3">
+            <TabBar
+              tabs={tabPanels.map((panel) => ({ key: panel.key, label: panel.label }))}
+              active={activeTab?.key ?? tabPanels[0].key}
+              onChange={(key) => setMobileTab(key)}
+            />
+            <div>{activeTab?.content}</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   if (pagePanel.mode !== 'split') {
     return (

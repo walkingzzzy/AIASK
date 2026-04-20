@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
 import { EmptyState } from '@/components/status-state';
 import { exportCSV } from '@/lib/export';
+import { useMobile } from '@/hooks/use-mobile';
 
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
@@ -28,6 +29,7 @@ const FIELD_CLS =
 
 export default function WatchlistPage() {
   const hydrated = useHydrated();
+  const compactBoard = useMobile(640);
   const groups = useWatchlistStore((s) => s.groups);
   const syncFromServer = useWatchlistStore((s) => s.syncFromServer);
   const createGroup = useWatchlistStore((s) => s.createGroup);
@@ -39,6 +41,7 @@ export default function WatchlistPage() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [newGroupName, setNewGroupName] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
+  const [showAllActiveItems, setShowAllActiveItems] = useState(false);
   const [pendingDialog, setPendingDialog] = useState<
     | { type: 'remove'; code: string; groupId?: string; groupName: string }
     | { type: 'delete-group'; groupId: string; groupName: string }
@@ -81,6 +84,10 @@ export default function WatchlistPage() {
   const activeGroupName = activeGroup?.name ?? '';
   const activeGroupIdValue = activeGroup?.id ?? '';
   const activeGroupCount = activeGroup?.items.length ?? 0;
+  const activeGroupItems = activeGroup?.items ?? [];
+  const visibleActiveGroupItems =
+    compactBoard && !showAllActiveItems ? activeGroupItems.slice(0, 3) : activeGroupItems;
+  const hiddenActiveGroupCount = Math.max(0, activeGroupItems.length - visibleActiveGroupItems.length);
   const activeGroupExportRows = (activeGroup?.items ?? []).map((item) => ({
     代码: item.code,
     名称: item.name,
@@ -133,6 +140,10 @@ export default function WatchlistPage() {
     '网格视图更适合快速扫价格和涨跌幅，列表视图更适合做有序复盘和逐行比对。',
     '搜索只负责把股票加进工作流，真正的下一步通常是去行情、个股详情、研究或交易页面。',
   ];
+
+  useEffect(() => {
+    setShowAllActiveItems(false);
+  }, [compactBoard, activeGroup?.id, viewMode]);
 
   const handleCreateGroup = async () => {
     const groupName = newGroupName.trim();
@@ -274,7 +285,7 @@ export default function WatchlistPage() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">活跃分组</div>
                 <div className="mt-3 text-xl font-semibold text-text-primary">{activeGroupName || '未选择'}</div>
@@ -350,101 +361,19 @@ export default function WatchlistPage() {
         </div>
       </section>
 
-      <SectionCard className="mt-0 p-4 sm:p-5">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="eyebrow">Search Deck</div>
-              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">搜索并添加股票到当前工作流</h2>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                搜索区不再只是一个孤立输入框。你可以先搜到标的，再马上确认它属于哪个分组、是否已存在，以及下一步是继续观察还是直接跳回行情页。
-              </p>
-            </div>
-            <Badge variant="info">{activeGroupName || '未选择分组'}</Badge>
-          </div>
-
-          <div className="flex gap-2 items-center flex-wrap">
-            <label htmlFor="watchlist-search" className="sr-only">
-              搜索股票代码或名称
-            </label>
-            <input
-              id="watchlist-search"
-              type="text"
-              value={searchKeyword}
-              onChange={(e) => setSearchKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="输入股票代码或名称，如 600519 或 茅台"
-              className={`${FIELD_CLS} min-w-[220px] flex-1`}
-            />
-            <button onClick={handleSearch} disabled={searchQ.isFetching} className={HERO_PRIMARY_BUTTON_CLS}>
-              {searchQ.isFetching ? '搜索中...' : '搜索'}
-            </button>
-            {searchPath && (
-              <button
-                onClick={() => {
-                  setSearchPath(null);
-                  setSearchKeyword('');
-                }}
-                className={HERO_SECONDARY_BUTTON_CLS}
-              >
-                清空
-              </button>
-            )}
-          </div>
-
-          {searchRows.length > 0 && (
-            <div className="mt-1 max-h-56 overflow-auto rounded-[24px] border border-glass-border bg-white/30">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-white/75 backdrop-blur-xl">
-                  <tr className="border-b border-glass-border text-text-secondary text-xs">
-                    <th className="text-left py-2 px-3">代码</th>
-                    <th className="text-left py-2 px-3">名称</th>
-                    <th className="text-left py-2 px-3">行业</th>
-                    <th className="text-center py-2 px-3">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {searchRows.map((row, i) => {
-                    const code = String(row.code ?? '');
-                    const name = String(row.name ?? '');
-                    const alreadyAdded = activeGroup?.items.some((item) => item.code === code);
-                    return (
-                      <tr key={i} className="border-b border-glass-border/50 hover:bg-white/10">
-                        <td className="py-2 px-3 font-mono text-xs">{code}</td>
-                        <td className="py-2 px-3">{name}</td>
-                        <td className="py-2 px-3 text-text-secondary text-xs">{String(row.industry ?? '-')}</td>
-                        <td className="py-2 px-3 text-center">
-                          {alreadyAdded ? (
-                            <span className="text-xs text-yellow-600">已在当前分组</span>
-                          ) : (
-                            <button onClick={() => handleAddStock(code, name)} className={CHIP_BUTTON_CLS}>
-                              + 添加
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {searchPath && !searchQ.isFetching && searchRows.length === 0 && (
-            <p className="text-xs text-text-muted mt-1">未找到相关股票</p>
-          )}
-        </div>
-      </SectionCard>
-
       <div className={PANEL_CLS}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Group Tabs</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">按分组组织你的观察池</h2>
+            <div className="eyebrow">Active Pool</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">按分组切换当前观察池</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              分组标签现在承担“主导航”角色。先切到一个明确分组，再决定用网格扫盘还是列表复盘。
+              默认先切换分组，再进入下方观察面板。搜索、建组和全局统计都收进下方管理区，避免把自选页变成长控制台。
             </p>
           </div>
-          <Badge variant="neutral">{viewModeLabel}</Badge>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="neutral">{viewModeLabel}</Badge>
+            <Badge variant="info">{activeGroupCount} 只股票</Badge>
+          </div>
         </div>
         <div className="mt-4 flex gap-2 flex-wrap">
           {visibleGroups.map((group) => (
@@ -461,64 +390,162 @@ export default function WatchlistPage() {
             </button>
           ))}
         </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+            className={HERO_SECONDARY_BUTTON_CLS}
+          >
+            {viewMode === 'grid' ? '切到列表视图' : '切到网格视图'}
+          </button>
+          <button type="button" onClick={() => setShowNewGroup(true)} className={HERO_PRIMARY_BUTTON_CLS}>
+            新建分组
+          </button>
+        </div>
       </div>
 
-      {showNewGroup && (
-        <div className={PANEL_CLS}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <input
-              type="text"
-              value={newGroupName}
-              onChange={(e) => setNewGroupName(e.target.value)}
-              placeholder="分组名称"
-              className={`${FIELD_CLS} flex-1`}
-              onKeyDown={(e) => e.key === 'Enter' && handleCreateGroup()}
-            />
-            <div className="flex flex-wrap gap-2">
-              <button onClick={handleCreateGroup} className={HERO_PRIMARY_BUTTON_CLS}>
-                创建分组
-              </button>
-              <button onClick={() => setShowNewGroup(false)} className={HERO_SECONDARY_BUTTON_CLS}>
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <SectionCard className="mt-0 p-4 sm:p-5">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <details className={`${PANEL_CLS} overflow-hidden`}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-[24px] text-left">
           <div>
-            <div className="eyebrow">Overview</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">全局统计与分组概览</h2>
-          </div>
-          <Badge variant={allCodes.length > 0 ? 'success' : 'warning'}>
-            {allCodes.length > 0 ? '已有观察池' : '等待建立观察池'}
-          </Badge>
-        </div>
-        <KpiGrid cols={4}>
-          <KpiCard title="自选总数" value={String(allCodes.length)} />
-          <KpiCard title="分组数" value={String(visibleGroups.length)} />
-          <KpiCard title="上涨" value={String(risingCount)} />
-          <KpiCard title="下跌" value={String(fallingCount)} />
-        </KpiGrid>
-      </SectionCard>
-
-      <div className={PANEL_CLS}>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <div className="eyebrow">Group View</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">{activeGroupName || '当前分组'}</h2>
+            <div className="eyebrow">Management Zone</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">展开分组管理、搜索与全局统计</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              当前分组共 {activeGroupCount} 只股票。你可以先用网格扫一遍涨跌和现价，再切到列表做更细的排序和复盘。
+              这些是次级管理动作，不默认占据主阅读路径；需要补充股票、建组或看全局统计时再展开。
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="neutral">{viewModeLabel}</Badge>
-            <Badge variant="info">{activeGroupCount} 只股票</Badge>
-          </div>
+          <Badge variant={allCodes.length > 0 ? 'success' : 'warning'}>
+            {allCodes.length > 0 ? `${allCodes.length} 只自选` : '等待建立观察池'}
+          </Badge>
+        </summary>
+
+        <div className="mt-4 space-y-4">
+          {showNewGroup ? (
+            <div className="rounded-[24px] border border-white/50 bg-white/28 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <input
+                  type="text"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  placeholder="分组名称"
+                  className={`${FIELD_CLS} flex-1`}
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreateGroup()}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={handleCreateGroup} className={HERO_PRIMARY_BUTTON_CLS}>
+                    创建分组
+                  </button>
+                  <button onClick={() => setShowNewGroup(false)} className={HERO_SECONDARY_BUTTON_CLS}>
+                    取消
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <SectionCard className="mt-0 p-4 sm:p-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="eyebrow">Search Deck</div>
+                  <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">搜索并添加股票</h2>
+                  <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                    搜索结果会直接告诉你当前分组是否已经包含该标的，补池后再回到主观察面板继续看盘。
+                  </p>
+                </div>
+                <Badge variant="info">{activeGroupName || '未选择分组'}</Badge>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <label htmlFor="watchlist-search" className="sr-only">
+                  搜索股票代码或名称
+                </label>
+                <input
+                  id="watchlist-search"
+                  type="text"
+                  value={searchKeyword}
+                  onChange={(e) => setSearchKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  placeholder="输入股票代码或名称，如 600519 或 茅台"
+                  className={`${FIELD_CLS} min-w-[220px] flex-1`}
+                />
+                <button onClick={handleSearch} disabled={searchQ.isFetching} className={HERO_PRIMARY_BUTTON_CLS}>
+                  {searchQ.isFetching ? '搜索中...' : '搜索'}
+                </button>
+                {searchPath ? (
+                  <button
+                    onClick={() => {
+                      setSearchPath(null);
+                      setSearchKeyword('');
+                    }}
+                    className={HERO_SECONDARY_BUTTON_CLS}
+                  >
+                    清空
+                  </button>
+                ) : null}
+              </div>
+
+              {searchRows.length > 0 ? (
+                <div className="mt-1 max-h-56 overflow-auto rounded-[24px] border border-glass-border bg-white/30">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-white/75 backdrop-blur-xl">
+                      <tr className="border-b border-glass-border text-text-secondary text-xs">
+                        <th className="text-left py-2 px-3">代码</th>
+                        <th className="text-left py-2 px-3">名称</th>
+                        <th className="text-left py-2 px-3">行业</th>
+                        <th className="text-center py-2 px-3">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchRows.map((row, i) => {
+                        const code = String(row.code ?? '');
+                        const name = String(row.name ?? '');
+                        const alreadyAdded = activeGroup?.items.some((item) => item.code === code);
+                        return (
+                          <tr key={i} className="border-b border-glass-border/50 hover:bg-white/10">
+                            <td className="py-2 px-3 font-mono text-xs">{code}</td>
+                            <td className="py-2 px-3">{name}</td>
+                            <td className="py-2 px-3 text-text-secondary text-xs">{String(row.industry ?? '-')}</td>
+                            <td className="py-2 px-3 text-center">
+                              {alreadyAdded ? (
+                                <span className="text-xs text-yellow-600">已在当前分组</span>
+                              ) : (
+                                <button onClick={() => handleAddStock(code, name)} className={CHIP_BUTTON_CLS}>
+                                  + 添加
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              {searchPath && !searchQ.isFetching && searchRows.length === 0 ? (
+                <p className="mt-1 text-xs text-text-muted">未找到相关股票</p>
+              ) : null}
+            </div>
+          </SectionCard>
+
+          <SectionCard className="mt-0 p-4 sm:p-5">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="eyebrow">Overview</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">全局统计与分组概览</h2>
+              </div>
+              <Badge variant={allCodes.length > 0 ? 'success' : 'warning'}>
+                {allCodes.length > 0 ? '已有观察池' : '等待建立观察池'}
+              </Badge>
+            </div>
+            <KpiGrid cols={4}>
+              <KpiCard title="自选总数" value={String(allCodes.length)} />
+              <KpiCard title="分组数" value={String(visibleGroups.length)} />
+              <KpiCard title="上涨" value={String(risingCount)} />
+              <KpiCard title="下跌" value={String(fallingCount)} />
+            </KpiGrid>
+          </SectionCard>
         </div>
-      </div>
+      </details>
 
       <section className="panel-soft rounded-[32px] p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -558,10 +585,10 @@ export default function WatchlistPage() {
           <div className="mt-5 rounded-[24px] border border-white/45 bg-white/30 p-4 text-sm text-text-secondary">
             正在加载自选数据...
           </div>
-        ) : activeGroup && activeGroup.items.length > 0 ? (
+        ) : activeGroup && activeGroupItems.length > 0 ? (
           viewMode === 'grid' ? (
             <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {activeGroup.items.map((item) => {
+              {visibleActiveGroupItems.map((item) => {
                 const q = getQuote(item.code);
                 const price = Number(q.price ?? q.current_price ?? q.close ?? 0);
                 const changePct = Number(q.changePercent ?? q.change_pct ?? q.pct_chg ?? 0);
@@ -673,7 +700,7 @@ export default function WatchlistPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {activeGroup.items.map((item) => {
+                    {visibleActiveGroupItems.map((item) => {
                       const q = getQuote(item.code);
                       const price = Number(q.price ?? q.current_price ?? q.close ?? 0);
                       const changePct = Number(q.changePercent ?? q.change_pct ?? q.pct_chg ?? 0);
@@ -755,65 +782,22 @@ export default function WatchlistPage() {
             />
           </div>
         )}
-      </section>
 
-      {visibleGroups.length > 1 && (
-        <section className="panel-soft rounded-[32px] p-4 sm:p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="eyebrow">Group Manager</div>
-              <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">分组管理面板</h3>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                分组卡片也改成了可呼吸的玻璃容器，方便你快速查看数量、切换主分组，或者清理不再需要的观察池。
-              </p>
+        {hiddenActiveGroupCount > 0 ? (
+          <div className="mt-4 rounded-[24px] border border-white/45 bg-white/22 px-4 py-3 text-sm text-text-secondary">
+            默认先展示前 {visibleActiveGroupItems.length} 只股票，剩余 {hiddenActiveGroupCount} 只已折叠，避免移动端一次展开整个观察池。
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAllActiveItems((current) => !current)}
+                className={HERO_SECONDARY_BUTTON_CLS}
+              >
+                {showAllActiveItems ? '收起剩余股票' : '展开全部股票'}
+              </button>
             </div>
-            <Badge variant="neutral">{visibleGroups.length} 个分组</Badge>
           </div>
-
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {visibleGroups.map((g) => {
-              const isActive = activeGroup?.id === g.id;
-              return (
-                <div
-                  key={g.id}
-                  className={`rounded-[24px] border p-4 shadow-[0_18px_42px_-32px_rgba(15,23,42,0.4)] ${
-                    isActive
-                      ? 'border-primary/28 bg-[linear-gradient(160deg,rgba(47,140,255,0.16),rgba(255,255,255,0.26))]'
-                      : 'border-white/50 bg-white/28'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: g.color }} />
-                        <span className="text-sm font-semibold text-text-primary">{g.name}</span>
-                      </div>
-                      <p className="mb-0 mt-2 text-xs text-text-secondary">
-                        共 {g.items.length} 只股票
-                        {isActive ? '，当前正在查看' : '，可切换为主观察池'}
-                      </p>
-                    </div>
-                    {isActive ? <Badge variant="info">当前分组</Badge> : null}
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {!isActive ? (
-                      <button type="button" onClick={() => setActiveGroupId(g.id)} className={CHIP_BUTTON_CLS}>
-                        切换到该分组
-                      </button>
-                    ) : null}
-                    {visibleGroups.length > 1 ? (
-                      <button type="button" onClick={() => handleDeleteGroup(g.id, g.name)} className={CHIP_BUTTON_CLS}>
-                        删除分组
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
+        ) : null}
+      </section>
 
       <ConfirmDialog
         open={pendingDialog != null}

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { isPublicPathname } from '@/lib/public-routes';
 
 const MOBILE_NAV_ITEMS = [
@@ -17,7 +17,7 @@ const MOBILE_NAV_ITEMS = [
  * Bottom navigation bar visible only on mobile screens (sm and below).
  */
 export function MobileBottomNav() {
-    const pathname = usePathname();
+    const pathname = useStablePathname();
     if (isPublicPathname(pathname)) {
         return null;
     }

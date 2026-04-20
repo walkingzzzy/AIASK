@@ -115,6 +115,9 @@ export function TemplateWorkflowPreviewCard({
   hasWorkflowErrors,
   onApplyWorkflow,
 }: TemplateWorkflowPreviewCardProps) {
+  const visibleSteps = selectedWorkflowPreview.steps.slice(0, 1);
+  const hiddenSteps = selectedWorkflowPreview.steps.slice(1);
+
   return (
     <SectionCard className="p-4">
       <div className="flex items-center justify-between gap-3">
@@ -144,7 +147,7 @@ export function TemplateWorkflowPreviewCard({
       </div>
 
       <div className="mt-4 space-y-3">
-        {selectedWorkflowPreview.steps.map((step, index) => (
+        {visibleSteps.map((step, index) => (
           <div key={step.id} className="rounded-xl border border-glass-border bg-surface/60 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -187,6 +190,42 @@ export function TemplateWorkflowPreviewCard({
             </div>
           </div>
         ))}
+        {hiddenSteps.length > 0 ? (
+          <details className="rounded-xl border border-glass-border bg-surface/60 p-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+              展开剩余 {hiddenSteps.length} 个步骤
+            </summary>
+            <div className="mt-3 space-y-3">
+              {hiddenSteps.map((step, index) => (
+                <div key={step.id} className="rounded-xl border border-glass-border bg-surface px-3 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-medium text-text-primary">
+                        步骤 {index + 2} · {step.label}
+                      </div>
+                      <div className="mt-1 text-sm text-text-secondary">{step.description}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge
+                        variant={step.status === 'ready' ? 'success' : step.status === 'blocked' ? 'warning' : 'neutral'}
+                      >
+                        {step.status === 'ready' ? '可执行' : step.status === 'blocked' ? '阻塞' : '跳过'}
+                      </Badge>
+                      <Badge variant="neutral">{step.kind === 'blueprint' ? '工作区模板' : '任务模板'}</Badge>
+                    </div>
+                  </div>
+                  {step.reason ? <div className="mt-2 text-xs text-warning">{step.reason}</div> : null}
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
+                    <span>目标：{step.targetLabel}</span>
+                    {step.dependsOn.length > 0 ? <span>依赖：{step.dependsOn.join(' / ')}</span> : null}
+                    {step.requiredAll.length > 0 ? <span>必填：{step.requiredAll.join(' / ')}</span> : null}
+                    {step.requiredAny.length > 0 ? <span>任一：{step.requiredAny.join(' / ')}</span> : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
     </SectionCard>
   );

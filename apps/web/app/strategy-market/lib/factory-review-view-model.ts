@@ -21,7 +21,9 @@ import type {
   RuntimeAlert,
   RuntimeControl,
   RuntimeRiskSnapshot,
+  StrategyEvidenceAlignmentAudit,
   StrategyEventsResponse,
+  StrategyReviewReportSummary,
   TaskRun,
   VectorIndexSnapshot,
   VectorProfile,
@@ -62,16 +64,6 @@ function formatIssueSummary(values: Array<string | null | undefined>, length = 4
   const issues = values.map((item) => String(item ?? '').trim()).filter(Boolean);
   if (!issues.length) return '-';
   return shortText(issues.join(' / '), length);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function asRecordArray(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
 }
 
 function highConfidenceText(...values: unknown[]) {
@@ -162,60 +154,50 @@ export function buildFactoryReviewViewModel({
   aiExperiments,
   taskRuns,
 }: BuildFactoryReviewViewModelArgs) {
-  const review = report && typeof report === 'object' ? report : null;
-  const incubationRecord = asRecord(incubation);
-  const reportSummary = asRecord((review as Record<string, unknown> | null)?.summary);
-  const evidenceAlignmentAudit = asRecord((review as Record<string, unknown> | null)?.evidence_alignment_audit);
-  const signalQualitySnapshot = asRecord(
-    incubationRecord.signal_quality_snapshot ?? reportSummary.signal_quality_snapshot,
-  );
-  const executionQualitySnapshot = asRecord(
-    incubationRecord.execution_quality_snapshot ?? reportSummary.execution_quality_snapshot,
-  );
-  const predictionTraceLedger = asRecord(
-    incubationRecord.prediction_trace_ledger ?? reportSummary.prediction_trace_ledger,
-  );
-  const signalQuality = asRecord(
-    incubationRecord.signal_quality ?? reportSummary.signal_quality ?? signalQualitySnapshot,
-  );
-  const executionQuality = asRecord(
-    incubationRecord.execution_quality ?? reportSummary.execution_quality ?? executionQualitySnapshot,
-  );
-  const executionAudit = asRecord(executionQuality.audit);
-  const executionDiagnostics = asRecord(incubationRecord.execution_diagnostics);
-  const semanticLineage = asRecord(incubationRecord.semantic_lineage);
-  const executionLineage = asRecord(incubationRecord.execution_lineage);
-  const runtimePlaybookProvenance = asRecord(
-    incubationRecord.runtime_playbook_provenance ?? semanticLineage.runtime_playbook_provenance,
-  );
-  const hardGateResult = asRecord(
-    latestIncubationPipelineSnapshot?.hard_gate_result ?? incubationRecord.hard_gate_result,
-  );
-  const semanticClaimCount = Object.keys(asRecord(asRecord(semanticLineage.claim_to_trade_plan_map).claim_to_trade_step_ids)).length;
-  const semanticTradeStepCount = Object.keys(asRecord(asRecord(semanticLineage.trade_plan_to_dsl_map).trade_step_to_dsl_sections)).length;
+  const review = report ?? null;
+  const reportSummary: StrategyReviewReportSummary | undefined = review?.summary;
+  const evidenceAlignmentAudit: StrategyEvidenceAlignmentAudit | undefined = review?.evidence_alignment_audit;
+  const signalQualitySnapshot = incubation?.signal_quality_snapshot ?? reportSummary?.signal_quality_snapshot;
+  const executionQualitySnapshot = incubation?.execution_quality_snapshot ?? reportSummary?.execution_quality_snapshot;
+  const predictionTraceLedger = incubation?.prediction_trace_ledger ?? reportSummary?.prediction_trace_ledger;
+  const signalQuality = incubation?.signal_quality ?? reportSummary?.signal_quality ?? signalQualitySnapshot;
+  const executionQuality = incubation?.execution_quality ?? reportSummary?.execution_quality;
+  const executionAudit = executionQuality?.audit;
+  const executionDiagnostics = incubation?.execution_diagnostics;
+  const semanticLineage = incubation?.semantic_lineage;
+  const executionLineage = incubation?.execution_lineage;
+  const runtimePlaybookProvenance = incubation?.runtime_playbook_provenance ?? semanticLineage?.runtime_playbook_provenance;
+  const hardGateResult = latestIncubationPipelineSnapshot?.hard_gate_result ?? incubation?.hard_gate_result;
+  const predictionTraceGapCodes = predictionTraceLedger?.evidence_gap_codes ?? [];
+  const semanticClaimCount = Object.keys(
+    semanticLineage?.claim_to_trade_plan_map?.claim_to_trade_step_ids ?? {},
+  ).length;
+  const semanticTradeStepCount = Object.keys(
+    semanticLineage?.trade_plan_to_dsl_map?.trade_step_to_dsl_sections ?? {},
+  ).length;
   const executionLineageSummaryRows = [
     {
       item: 'Claim-level Lineage',
-      value: `${executionLineage.claim_count ?? semanticClaimCount ?? 0} claims`,
+      value: `${executionLineage?.claim_count ?? semanticClaimCount ?? 0} claims`,
     },
     {
       item: 'Step-level Lineage',
-      value: `${executionLineage.trade_step_count ?? executionLineage.mapped_trade_step_count ?? semanticTradeStepCount ?? 0} steps`,
+      value: `${executionLineage?.trade_step_count ?? executionLineage?.mapped_trade_step_count ?? semanticTradeStepCount ?? 0} steps`,
     },
     {
       item: 'Runtime Actions',
-      value: `${executionLineage.runtime_action_count ?? 0} / unmapped ${executionLineage.unmapped_runtime_action_count ?? 0}`,
+      value: `${executionLineage?.runtime_action_count ?? 0} / unmapped ${executionLineage?.unmapped_runtime_action_count ?? 0}`,
     },
     {
       item: 'Lineage 状态',
-      value: formatObjectSummary(asRecord(executionLineage.lineage_status_counts), 56),
+      value: formatObjectSummary(executionLineage?.lineage_status_counts, 56),
     },
     {
       item: 'Reason 分布',
-      value: formatObjectSummary(asRecord(executionLineage.runtime_action_reason_counts), 56),
+      value: formatObjectSummary(executionLineage?.runtime_action_reason_counts, 56),
     },
   ].filter((row) => row.value !== '-' && row.value !== '0 claims' && row.value !== '0 steps');
-  const executionLineageRows = asRecordArray(executionLineage.recent_runtime_actions).map((item) => ({
+  const executionLineageRows = (executionLineage?.recent_runtime_actions ?? []).map((item) => ({
     signal_date: String(item.signal_date ?? '-'),
     code: String(item.code ?? '-'),
     runtime_action_reason: String(item.runtime_action_reason ?? '-'),
@@ -228,29 +210,29 @@ export function buildFactoryReviewViewModel({
   const summaryState = {
     highConfidencePanel: {
       predictionQualityLabel: highConfidenceText(
-        incubationRecord.prediction_quality_label,
-        reportSummary.prediction_quality_label,
-        signalQualitySnapshot.status,
+        incubation?.prediction_quality_label,
+        reportSummary?.prediction_quality_label,
+        signalQualitySnapshot?.status,
       ),
       executionQualityLabel: highConfidenceText(
-        incubationRecord.execution_quality_label,
-        reportSummary.execution_quality_label,
-        executionQuality.execution_quality_label,
-        executionQualitySnapshot.status,
+        incubation?.execution_quality_label,
+        reportSummary?.execution_quality_label,
+        executionQuality?.execution_quality_label,
+        executionQualitySnapshot?.status,
       ),
       confidenceContractStatus: highConfidenceText(
-        incubationRecord.confidence_contract_status,
-        reportSummary.confidence_contract_status,
+        incubation?.confidence_contract_status,
+        reportSummary?.confidence_contract_status,
       ),
       qualityDiagnosis: String(
-        incubationRecord.quality_diagnosis ?? reportSummary.quality_diagnosis ?? '',
+        incubation?.quality_diagnosis ?? reportSummary?.quality_diagnosis ?? '',
       ).trim(),
-      primarySkillLcb: finiteOrNull(signalQuality.primary_skill_lcb),
-      coverageRatio: finiteOrNull(signalQuality.coverage_ratio),
+      primarySkillLcb: finiteOrNull(signalQuality?.primary_skill_lcb),
+      coverageRatio: finiteOrNull(signalQuality?.coverage_ratio),
       executionConversionEfficiency: finiteOrNull(
-        executionQuality.execution_conversion_efficiency
-          ?? executionAudit.execution_conversion_efficiency
-          ?? executionQuality.nav_conversion_proxy,
+        executionQuality?.execution_conversion_efficiency
+          ?? executionAudit?.execution_conversion_efficiency
+          ?? executionQuality?.nav_conversion_proxy,
       ),
     },
     blockers: incubation?.blockers ?? [],
@@ -311,17 +293,17 @@ export function buildFactoryReviewViewModel({
       { item: '流水线状态', value: latestIncubationPipelineSnapshot?.pipeline_status ?? '-' },
       { item: '硬门状态', value: latestIncubationPipelineSnapshot?.gate_status ?? '-' },
       { item: '硬门原因', value: shortText((latestIncubationPipelineSnapshot?.gate_reasons ?? []).join(' / ') || '-', 48) },
-      { item: '硬门结果', value: hardGateResult.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
-      { item: 'Signal Snapshot', value: String(signalQualitySnapshot.status ?? '-') },
-      { item: 'Execution Snapshot', value: String(executionQualitySnapshot.status ?? '-') },
+      { item: '硬门结果', value: hardGateResult?.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
+      { item: 'Signal Snapshot', value: String(signalQualitySnapshot?.status ?? '-') },
+      { item: 'Execution Snapshot', value: String(executionQualitySnapshot?.status ?? '-') },
       {
         item: 'Trace Ledger',
         value: formatIssueSummary(
           [
-            String(predictionTraceLedger.prediction_trace_id ?? ''),
-            predictionTraceLedger.contract_version ? 'v2' : '',
-            Array.isArray(predictionTraceLedger.evidence_gap_codes)
-              ? `gaps:${predictionTraceLedger.evidence_gap_codes.length}`
+            String(predictionTraceLedger?.prediction_trace_id ?? ''),
+            predictionTraceLedger?.contract_version ? 'v2' : '',
+            predictionTraceGapCodes.length
+              ? `gaps:${predictionTraceGapCodes.length}`
               : '',
           ],
           48,
@@ -329,20 +311,15 @@ export function buildFactoryReviewViewModel({
       },
       {
         item: 'Trace 缺口',
-        value: formatIssueSummary(
-          Array.isArray(predictionTraceLedger.evidence_gap_codes)
-            ? predictionTraceLedger.evidence_gap_codes.map((item) => String(item))
-            : [],
-          64,
-        ),
+        value: formatIssueSummary(predictionTraceGapCodes.map((item) => String(item)), 64),
       },
       {
         item: '硬门语义',
         value: formatIssueSummary(
           [
-            String(hardGateResult.pipeline_stage ?? ''),
-            String(hardGateResult.signal_stage_without_execution_gate ?? ''),
-            String(hardGateResult.execution_audit_gate_status ?? ''),
+            String(hardGateResult?.pipeline_stage ?? ''),
+            String(hardGateResult?.signal_stage_without_execution_gate ?? ''),
+            String(hardGateResult?.execution_audit_gate_status ?? ''),
           ],
           48,
         ),
@@ -350,15 +327,15 @@ export function buildFactoryReviewViewModel({
       { item: '最新决策', value: latestIncubationPipelineSnapshot?.latest_decision ?? latestMetric?.decision ?? '-' },
       { item: '优先级分', value: fmtNum(latestIncubationPipelineSnapshot?.priority_score ?? latestIncubationPipelineSnapshot?.readiness_score, 4) },
       { item: '兼容准备度', value: fmtNum(latestIncubationPipelineSnapshot?.readiness_score, 4) },
-      { item: '执行诊断模式', value: executionDiagnostics.diagnostic_only ? 'diagnostic_only' : 'hard_gate' },
+      { item: '执行诊断模式', value: executionDiagnostics?.diagnostic_only ? 'diagnostic_only' : 'hard_gate' },
       {
         item: '语义链路',
         value: formatIssueSummary(
           [
             `claims:${semanticClaimCount || 0}`,
             `steps:${semanticTradeStepCount || 0}`,
-            `playbook:${Array.isArray(runtimePlaybookProvenance.derivation_labels) ? runtimePlaybookProvenance.derivation_labels.join(',') : ''}`,
-            `runtime:${executionLineage.runtime_action_count ?? 0}`,
+            `playbook:${(runtimePlaybookProvenance?.derivation_labels ?? []).join(',')}`,
+            `runtime:${executionLineage?.runtime_action_count ?? 0}`,
           ],
           64,
         ),
@@ -638,27 +615,25 @@ export function buildFactoryReviewViewModel({
     {
       item: '证据门禁',
       value: formatIssueSummary([
-        String(reportSummary.evidence_gate_status ?? evidenceAlignmentAudit.market_fact_gate_status ?? ''),
-        reportSummary.hard_fact_count == null ? '' : `hard:${reportSummary.hard_fact_count}`,
-        reportSummary.degraded_fact_count == null ? '' : `degraded:${reportSummary.degraded_fact_count}`,
+        String(reportSummary?.evidence_gate_status ?? evidenceAlignmentAudit?.market_fact_gate_status ?? ''),
+        reportSummary?.hard_fact_count == null ? '' : `hard:${reportSummary.hard_fact_count}`,
+        reportSummary?.degraded_fact_count == null ? '' : `degraded:${reportSummary.degraded_fact_count}`,
       ], 64),
     },
     {
       item: '证据债务',
       value: formatIssueSummary(
-        Array.isArray(reportSummary.evidence_debt_reasons)
-          ? reportSummary.evidence_debt_reasons as string[]
-          : Array.isArray(evidenceAlignmentAudit.evidence_debt_reasons)
-          ? evidenceAlignmentAudit.evidence_debt_reasons as string[]
-          : [],
+        reportSummary?.evidence_debt_reasons
+          ?? evidenceAlignmentAudit?.evidence_debt_reasons
+          ?? [],
         64,
       ),
     },
     {
       item: '池子画像',
       value: formatIssueSummary([
-        String(reportSummary.pool_profile ?? review?.pool_profile ?? ''),
-        String(reportSummary.volatility_bucket ?? review?.volatility_bucket ?? ''),
+        String(reportSummary?.pool_profile ?? review?.pool_profile ?? ''),
+        String(reportSummary?.volatility_bucket ?? review?.volatility_bucket ?? ''),
         String(review?.liquidity_bucket ?? ''),
       ], 64),
     },
@@ -698,7 +673,7 @@ export function buildFactoryReviewViewModel({
     { item: '质量诊断', value: summaryState.highConfidencePanel.qualityDiagnosis || '-' },
     { item: '预测质量', value: summaryState.highConfidencePanel.predictionQualityLabel || '-' },
     { item: '执行质量', value: summaryState.highConfidencePanel.executionQualityLabel || '-' },
-    { item: '风控来源', value: formatIssueSummary([String(reportSummary.risk_regime_fit ?? ''), String(reportSummary.stop_rule_source ?? '')], 64) },
+    { item: '风控来源', value: formatIssueSummary([String(reportSummary?.risk_regime_fit ?? ''), String(reportSummary?.stop_rule_source ?? '')], 64) },
     { item: '任务签名', value: shortText(review?.task_signature, 64) },
     { item: '去重匹配类型', value: review?.dedup_report?.match_type ?? '唯一候选' },
     { item: '参数相似度', value: fmtNum(review?.dedup_report?.param_similarity, 4) },

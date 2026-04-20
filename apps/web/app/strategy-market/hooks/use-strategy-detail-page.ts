@@ -6,7 +6,6 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
 import type {
   CapabilityResponse,
-  StrategyCore,
   StrategyDetailResponse,
   SignalStatsResponse,
   SignalsResponse,
@@ -15,6 +14,7 @@ import type {
   IncubationOverviewResponse,
   IncubationMetric,
   IncubationPipelineSnapshot,
+  ExecutionAuditAcceptanceResponse,
   PaperAccountResponse,
   PaperOrder,
   PaperNav,
@@ -34,6 +34,11 @@ import type {
   EventFilters,
   FactoryReviewSection,
 } from '../types';
+import {
+  parseIncubationOverviewResponse,
+  parseReviewReportResponse,
+  parseStrategyDetailResponse,
+} from '../lib/contracts';
 
 export type StrategyDetailTab = 'overview' | 'tracking' | 'factory';
 type BadgeVariant = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
@@ -41,45 +46,11 @@ const FACTORY_SECTION_STALE_TIME = 60_000;
 type StrategySubscriptionRow = { strategy_id?: string; id?: string };
 type StrategySubscriptionsResponse = { subscriptions?: StrategySubscriptionRow[]; items?: StrategySubscriptionRow[]; count?: number };
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
-}
-
-function readWorkflowStepData(payload: unknown, stepName: string): Record<string, unknown> {
-  const root = asRecord(payload);
-  const steps = Array.isArray(root.steps) ? root.steps : [];
-  const matched = steps.find((item) => asRecord(item).step === stepName);
-  const output = asRecord(asRecord(matched).output);
-  return asRecord(output.data);
-}
-
-function normalizeReviewWorkflow(payload: unknown): ReviewReportResponse {
-  const root = asRecord(payload);
-  const report = readWorkflowStepData(root, 'strategy_manager.review_report');
-  if (Object.keys(report).length > 0) {
-    return report as ReviewReportResponse;
-  }
-
-  if (!Array.isArray(root.steps)) {
-    return root as ReviewReportResponse;
-  }
-
-  const resource = readWorkflowStepData(root, 'resource.strategy_review');
-  const summary = asRecord(resource.summary);
-  return {
-    passed: Boolean(resource.found ?? true),
-    summary: {
-      status_after_review: typeof summary.current_status === 'string' ? summary.current_status : undefined,
-      review_source: 'strategy_review_workflow',
-    },
-  };
-}
-
 export function useStrategyDetailPage(id: string | null, userId: string | null) {
-  const detailQ = useApiQuery<StrategyDetailResponse | StrategyCore>(id ? `/strategy-market/${id}` : null);
+  const detailQ = useApiQuery<StrategyDetailResponse>(
+    id ? `/strategy-market/${id}` : null,
+    { parse: parseStrategyDetailResponse },
+  );
   const capabilitiesQ = useApiQuery<CapabilityResponse>(
     id ? '/strategy-market/capabilities' : null,
     { enabled: Boolean(id), staleTime: FACTORY_SECTION_STALE_TIME },
@@ -93,6 +64,10 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const rebuildProjectionApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '事件投影已重建' });
   const runIncubationPipelineApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '孵化流水线已执行' });
   const runIncubationSyncApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '模拟盘孵化同步已执行' });
+  const runExecutionAuditAcceptanceApi = useApiMutation({
+    invalidates: [apiKeys.strategy()],
+    successToast: '执行审计验收已重跑',
+  });
   const runRiskScanApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风控扫描已执行' });
   const riskRecoveryApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已发起恢复尝试' });
   const runRuntimeAlertDispatchApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行告警已重新分发' });
@@ -158,11 +133,11 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signals?limit=50` : null,
   );
   const reviewReportQ = useApiQuery<ReviewReportResponse>(
-    id ? `/strategy-market/${id}/review-workflow` : null,
+    id ? `/strategy-market/${id}/review-report` : null,
     {
       enabled: factorySummaryMode,
       staleTime: FACTORY_SECTION_STALE_TIME,
-      parse: normalizeReviewWorkflow,
+      parse: parseReviewReportResponse,
     },
   );
   const eventsQ = useApiQuery<StrategyEventsResponse>(eventsPath, {
@@ -175,6 +150,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     {
       enabled: factorySummaryMode || factoryIncubationMode,
       staleTime: FACTORY_SECTION_STALE_TIME,
+      parse: parseIncubationOverviewResponse,
     },
   );
   const incubationMetricsQ = useApiQuery<ListResponse<IncubationMetric>>(
@@ -196,6 +172,13 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const incubationPipelineQ = useApiQuery<ListResponse<IncubationPipelineSnapshot>>(
     id ? `/strategy-market/${id}/incubation-pipeline?limit=10` : null,
     { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+  );
+  const executionAuditAcceptanceQ = useApiQuery<ExecutionAuditAcceptanceResponse>(
+    id ? `/strategy-market/${id}/execution-audit` : null,
+    {
+      enabled: factorySummaryMode || factoryIncubationMode,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+    },
   );
   const riskEventsQ = useApiQuery<ListResponse<RiskEvent>>(
     id ? `/strategy-market/${id}/risk-events?limit=20` : null,
@@ -253,20 +236,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
 
-  const detail = useMemo(() => {
-    const raw = detailQ.data;
-    if (raw && typeof raw === 'object' && 'strategy' in raw) {
-      return raw as StrategyDetailResponse;
-    }
-    if (raw && typeof raw === 'object' && 'id' in raw) {
-      return {
-        strategy: raw as StrategyCore,
-        metrics: (raw as StrategyCore).metrics,
-        reviews: (raw as StrategyCore).reviews,
-      } as StrategyDetailResponse;
-    }
-    return null;
-  }, [detailQ.data]);
+  const detail = detailQ.data;
 
   const strategy = detail?.strategy ?? null;
   const metrics = useMemo(
@@ -279,7 +249,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     () => detail?.nav_series ?? [],
     [detail?.nav_series],
   );
-  const latestQualityReport = detailViewModel?.quality?.latest_report ?? detail?.latest_quality_report ?? null;
+  const latestQualityReport = reviewReportQ.data ?? detailViewModel?.quality?.latest_report ?? detail?.latest_quality_report ?? null;
   const incubationOverview = incubationQ.data ?? detail?.incubation_overview ?? detailViewModel?.incubation?.overview ?? null;
   const incubationAccount = detailViewModel?.incubation?.account ?? detail?.incubation_account ?? null;
   const latestIncubationMetric = detailViewModel?.incubation?.latest_metric ?? detail?.latest_incubation_metric ?? null;
@@ -385,6 +355,15 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     await runIncubationSyncApi.triggerAsync(`/strategy-market/${id}/incubation-sync/run`, { method: 'POST' }, {});
   }
 
+  async function handleRunExecutionAuditAcceptance() {
+    if (!id) return;
+    await runExecutionAuditAcceptanceApi.triggerAsync(
+      `/strategy-market/${id}/execution-audit/run`,
+      { method: 'POST' },
+      { backfill: true },
+    );
+  }
+
   async function handleRunRiskScan() {
     if (!id) return;
     await runRiskScanApi.triggerAsync(
@@ -422,11 +401,13 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       reviewReportQ.isPending ||
       eventsQ.isPending ||
       incubationQ.isPending ||
+      executionAuditAcceptanceQ.isPending ||
       runtimeControlQ.isPending ||
       domainProjectionQ.isPending ||
       projectionSnapshotQ.isPending,
     incubation:
       incubationQ.isPending ||
+      executionAuditAcceptanceQ.isPending ||
       incubationMetricsQ.isPending ||
       paperAccountQ.isPending ||
       paperOrdersQ.isPending ||
@@ -473,7 +454,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       openRiskEvents,
       vectorProfiles,
       highConfidenceQualityUiEnabled,
-      promotionReady: Boolean(incubationQ.data?.promotion_ready),
+      promotionReady: Boolean(incubationOverview?.promotion_ready),
       rating,
       setRating,
       comment,
@@ -492,9 +473,9 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     },
     factoryPanelProps: {
       highConfidenceQualityUiEnabled,
-      report: reviewReportQ.data ?? latestQualityReport,
+      report: latestQualityReport,
       events: eventsQ.data,
-      incubation: incubationQ.data,
+      incubation: incubationOverview,
       currentAccount: incubationAccount,
       latestMetric: latestIncubationMetric,
       latestPromotionReview,
@@ -502,6 +483,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       runtimeControl,
       domainProjection,
       latestIncubationPipelineSnapshot,
+      executionAuditAcceptance: executionAuditAcceptanceQ.data,
       incubationPipelineSnapshots,
       paperAccount,
       paperPositions,
@@ -539,6 +521,8 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       runIncubationPipelinePending: runIncubationPipelineApi.isPending,
       onRunIncubationSync: handleRunIncubationSync,
       runIncubationSyncPending: runIncubationSyncApi.isPending,
+      onRunExecutionAuditAcceptance: handleRunExecutionAuditAcceptance,
+      runExecutionAuditAcceptancePending: runExecutionAuditAcceptanceApi.isPending,
       onRunRiskScan: handleRunRiskScan,
       runRiskScanPending: runRiskScanApi.isPending,
       onRunRuntimeAlertDispatch: handleRunRuntimeAlertDispatch,

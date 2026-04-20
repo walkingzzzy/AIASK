@@ -16,6 +16,8 @@ import {
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
@@ -25,6 +27,7 @@ import { cacheText, type CacheMeta } from '@/lib/api';
 import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 type OverviewData = {
   code?: string;
@@ -36,6 +39,7 @@ type OverviewData = {
 type HistoryPoint = { date: string; pe: number | null; pb: number | null; ps: number | null; close: number | null };
 type HistoryData = { code?: string; days?: number; points?: HistoryPoint[]; sourceTool?: string; meta?: CacheMeta };
 type ExtraTab = 'info' | 'snapshot' | 'f10' | 'history';
+type CompactOverviewTab = 'valuation' | 'snapshot' | 'history';
 
 const FIELD_LABELS: Record<string, string> = {
   eps: '每股收益',
@@ -105,9 +109,14 @@ function flattenObj(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 export default function FundamentalPage() {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
   const [days, setDays] = useState(90);
   const [extraTab, setExtraTab] = useState<ExtraTab>('info');
+  const [compactOverviewTab, setCompactOverviewTab] = useState<CompactOverviewTab>('valuation');
+  const [showDetailedData, setShowDetailedData] = useState(false);
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedDays, setSubmittedDays] = useState<number>(90);
 
@@ -241,7 +250,7 @@ export default function FundamentalPage() {
 
   return (
     <PageContainer narrow>
-      <section className="page-hero mb-4 p-5 sm:p-6">
+      <section className="page-hero mb-4 p-4 sm:p-5">
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -252,53 +261,103 @@ export default function FundamentalPage() {
               <Badge variant="neutral">{days} 天窗口</Badge>
               <Badge variant="neutral">{activeExtraLabel}</Badge>
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              基本面分析工作台
+            <h1 className="mb-0 mt-3 text-[1.7rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
+              {compactLayout ? '基本面分析' : '基本面分析工作台'}
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这一页先回答三件事：当前看的标的是谁、估值区间在最近窗口里怎么变化、财务与补充资料是否支持当前判断。
-              先用摘要卡快速判断，再进入历史走势和详细资料下钻。
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
-                切到 90 天窗口
-              </button>
-              <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
-                查看财务快照
-              </button>
-              <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
-                查看财务历史
-              </button>
-            </div>
+            {compactLayout ? null : (
+              <p className="mb-0 mt-2 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
+                这一页先回答三件事：当前看的标的是谁、估值区间在最近窗口里怎么变化、财务与补充资料是否支持当前判断。先用摘要卡快速判断，再进入历史走势和详细资料下钻。
+              </p>
+            )}
+            {!compactLayout ? (
+              <div className="mt-5 flex flex-wrap gap-2">
+                <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
+                  切到 90 天窗口
+                </button>
+                <>
+                  <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    查看财务快照
+                  </button>
+                  <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    查看财务历史
+                  </button>
+                </>
+              </div>
+            ) : null}
+            {compactLayout ? (
+              <details className="mt-3 rounded-[20px] border border-white/45 bg-white/24 px-4 py-2.5">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开快捷跳转与缺口提示</summary>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
+                    切到 90 天窗口
+                  </button>
+                  <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    查看财务快照
+                  </button>
+                  <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
+                    查看财务历史
+                  </button>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className={NOTE_CARD_CLS}>
+                    关键缺口：<span className="font-medium text-text-primary">{missing.length || 0}</span>
+                    <div className="mt-1">{missing.length ? missing.join('、') : '核心字段齐全'}</div>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    当前资料：<span className="font-medium text-text-primary">{activeExtraLabel}</span>
+                    <div className="mt-1">需要时再切到 F10 或财务历史继续下钻。</div>
+                  </div>
+                </div>
+              </details>
+            ) : null}
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{focusCode || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">{focusName || '等待名称解析'}</div>
+            {compactLayout ? (
+              <div className="mt-3 rounded-[20px] border border-white/45 bg-white/28 px-4 py-3 text-sm text-text-secondary">
+                <span className="font-medium text-text-primary">{focusCode || '-'}</span>
+                <span className="mx-2 text-text-muted">/</span>
+                <span>{focusName || '等待名称解析'}</span>
+                <span className="mx-2 text-text-muted">/</span>
+                <span>{updatedAt || '待更新'}</span>
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近更新</div>
-                <div className="mt-3 text-lg font-semibold text-text-primary">{updatedAt || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  抓取时间 {freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
+            ) : (
+              <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
+                  <div className="mt-3 text-2xl font-semibold text-text-primary">{focusCode || '-'}</div>
+                  <div className="mt-1 text-xs text-text-secondary">{focusName || '等待名称解析'}</div>
                 </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">关键缺口</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{missing.length}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {missing.length ? missing.join('、') : '核心字段齐全'}
+                <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近更新</div>
+                  <div className="mt-3 text-lg font-semibold text-text-primary">{updatedAt || '-'}</div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    抓取时间 {freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
+                  </div>
                 </div>
+                <>
+                  <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">关键缺口</div>
+                    <div className="mt-3 text-2xl font-semibold text-text-primary">{missing.length}</div>
+                    <div className="mt-1 text-xs text-text-secondary">
+                      {missing.length ? missing.join('、') : '核心字段齐全'}
+                    </div>
+                  </div>
+                  <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">资料标签</div>
+                    <div className="mt-3 text-2xl font-semibold text-text-primary">{activeExtraLabel}</div>
+                    <div className="mt-1 text-xs text-text-secondary">适合从快照切到 F10 或财务历史继续下钻</div>
+                  </div>
+                </>
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">资料标签</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeExtraLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">适合从快照切到 F10 或财务历史继续下钻</div>
-              </div>
-            </div>
+            )}
           </div>
 
+          {compactLayout ? (
+            <div className="rounded-[20px] border border-white/45 bg-white/22 px-4 py-3 text-sm text-text-secondary">
+              PE / PB：<span className="font-medium text-text-primary">{fmtNum(valuation?.pe, 2)} / {fmtNum(valuation?.pb, 2)}</span>
+              <span className="mx-2 text-text-muted">/</span>
+              ROE：<span className="font-medium text-text-primary">{fmtNum(financials?.roe, 2)}%</span>
+            </div>
+          ) : (
           <div className="grid gap-3">
             <div className={SIDE_PANEL_CLS}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前聚焦</div>
@@ -338,30 +397,42 @@ export default function FundamentalPage() {
               </div>
             </div>
           </div>
+          )}
         </div>
       </section>
 
       {error ? <ErrorState text={error} /> : null}
 
-      <KpiGrid cols={4} className="mb-4">
-        <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
-        <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
-        <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
-        <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
-      </KpiGrid>
+      {!compactLayout ? (
+        <KpiGrid cols={4} className="mb-4">
+          <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
+          <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
+          <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
+          <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
+        </KpiGrid>
+      ) : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="eyebrow">Analysis Setup</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询工作台</h2>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              先确认股票代码，再用 90 天或 180 天窗口观察估值区间与核心财务指标是否同步改善。
-            </p>
+            {!compactLayout ? (
+              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                先确认股票代码，再用 90 天或 180 天窗口观察估值区间与核心财务指标是否同步改善。
+              </p>
+            ) : null}
           </div>
-          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            Overview：{cacheText(ovCache)} ｜ History：{cacheText(hsCache)}
-          </div>
+          {compactLayout ? (
+            <details className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+              <summary className="cursor-pointer list-none font-medium text-text-primary">展开缓存状态</summary>
+              <div className="mt-2">Overview：{cacheText(ovCache)} ｜ History：{cacheText(hsCache)}</div>
+            </details>
+          ) : (
+            <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+              Overview：{cacheText(ovCache)} ｜ History：{cacheText(hsCache)}
+            </div>
+          )}
         </div>
 
         <form onSubmit={onSubmit} className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,260px)_180px_auto] xl:items-end">
@@ -397,215 +468,342 @@ export default function FundamentalPage() {
           </div>
         </form>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {[30, 90, 180, 365].map((windowDays) => (
-            <button
-              key={windowDays}
-              type="button"
-              onClick={() => setDays(windowDays)}
-              className={`${CHIP_BUTTON_CLS} ${days === windowDays ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-            >
-              {windowDays === 30 ? '近1月' : windowDays === 90 ? '近3月' : windowDays === 180 ? '近6月' : '近1年'}
-            </button>
-          ))}
-        </div>
+        {compactLayout ? null : (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {[30, 90, 180, 365].map((windowDays) => (
+              <button
+                key={windowDays}
+                type="button"
+                onClick={() => setDays(windowDays)}
+                className={`${CHIP_BUTTON_CLS} ${days === windowDays ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
+              >
+                {windowDays === 30 ? '近1月' : windowDays === 90 ? '近3月' : windowDays === 180 ? '近6月' : '近1年'}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <div className="panel-soft rounded-[28px] p-4 sm:p-5">
-          <div className="text-sm font-medium text-text-primary">估值快照</div>
-          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-            适合先确认当前估值水平，再和历史走势对照估值修复节奏。
-          </p>
-          {showOverviewSkeleton ? (
-            <KpiGrid cols={2} className="mt-4">
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-            </KpiGrid>
-          ) : (
-            <KpiGrid cols={2} className="mt-4">
-              <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
-              <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
-              <KpiCard title="PS" value={fmtNum(valuation?.ps, 2)} />
-              <KpiCard title="总市值" value={fmtAmount(valuation?.marketCap)} />
-            </KpiGrid>
-          )}
-        </div>
-        <div className="panel-soft rounded-[28px] p-4 sm:p-5">
-          <div className="text-sm font-medium text-text-primary">财务快照</div>
-          <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-            把盈利能力、规模和杠杆放在同一屏里看，能更快判断基本面是否支持当前估值。
-          </p>
-          {showOverviewSkeleton ? (
-            <KpiGrid cols={2} className="mt-4">
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-              <SkeletonCard />
-            </KpiGrid>
-          ) : (
-            <KpiGrid cols={2} className="mt-4">
-              <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
-              <KpiCard title="净利润" value={fmtAmount(financials?.netProfit)} />
-              <KpiCard title="营收" value={fmtAmount(financials?.revenue)} />
-              <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
-            </KpiGrid>
-          )}
-        </div>
-      </section>
-
-      <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="eyebrow">History View</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">历史估值走势（{days}天）</h2>
-          </div>
-          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            最新点位：{latest?.date ?? '暂无'} ｜ 首个点位：{first?.date ?? '暂无'}
-          </div>
-        </div>
-        <div className="mb-2 mt-3 text-sm text-text-secondary">
-          PE变化：{fmtNum(first?.pe)} → {fmtNum(latest?.pe)}（Δ {peDelta}）｜ PB变化：{fmtNum(first?.pb)} →{' '}
-          {fmtNum(latest?.pb)}（Δ {pbDelta}）
-        </div>
-        <div className="min-h-[300px]">
-          {showHistorySkeleton ? (
-            <div className="space-y-3">
-              <Skeleton width="48%" height={16} />
-              <Skeleton height={280} />
+      {compactLayout ? (
+        <section className="mt-4 panel-soft rounded-[28px] p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="eyebrow">Core Summary</div>
+              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">估值、财务与历史走势</h2>
             </div>
-          ) : points.length > 1 ? (
-            <LineChart
-              categories={points.map((p) => p.date.slice(5))}
-              series={[
-                { name: 'PE', data: points.map((p) => p.pe ?? 0) },
-                { name: 'PB', data: points.map((p) => p.pb ?? 0) },
+            <Badge variant="neutral">
+              {compactOverviewTab === 'valuation'
+                ? '估值'
+                : compactOverviewTab === 'snapshot'
+                  ? '财务快照'
+                  : '历史走势'}
+            </Badge>
+          </div>
+          <div className="mt-4">
+            <TabBar<CompactOverviewTab>
+              tabs={[
+                { key: 'valuation', label: '估值' },
+                { key: 'snapshot', label: '财务快照' },
+                { key: 'history', label: '历史走势' },
               ]}
-              height={280}
+              active={compactOverviewTab}
+              onChange={setCompactOverviewTab}
             />
-          ) : (
-            <EmptyState
-              text={`近 ${days} 天没有可绘制的历史估值数据`}
-              hint="可以切换到 180 天或 365 天窗口，或改查成交更活跃的股票后重新比较。"
-            />
-          )}
+          </div>
+          {compactOverviewTab === 'valuation' ? (
+            <div className="mt-4">
+              <div className="text-sm font-medium text-text-primary">估值快照</div>
+              {showOverviewSkeleton ? (
+                <KpiGrid cols={2} className="mt-4">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </KpiGrid>
+              ) : (
+                <KpiGrid cols={2} className="mt-4">
+                  <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
+                  <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
+                  <KpiCard title="PS" value={fmtNum(valuation?.ps, 2)} />
+                  <KpiCard title="总市值" value={fmtAmount(valuation?.marketCap)} />
+                </KpiGrid>
+              )}
+            </div>
+          ) : null}
+          {compactOverviewTab === 'snapshot' ? (
+            <div className="mt-4">
+              <div className="text-sm font-medium text-text-primary">财务快照</div>
+              {showOverviewSkeleton ? (
+                <KpiGrid cols={2} className="mt-4">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </KpiGrid>
+              ) : (
+                <KpiGrid cols={2} className="mt-4">
+                  <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
+                  <KpiCard title="净利润" value={fmtAmount(financials?.netProfit)} />
+                  <KpiCard title="营收" value={fmtAmount(financials?.revenue)} />
+                  <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
+                </KpiGrid>
+              )}
+            </div>
+          ) : null}
+          {compactOverviewTab === 'history' ? (
+            <div className="mt-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="text-sm text-text-secondary">
+                  PE变化：{fmtNum(first?.pe)} → {fmtNum(latest?.pe)}（Δ {peDelta}）｜ PB变化：{fmtNum(first?.pb)} →{' '}
+                  {fmtNum(latest?.pb)}（Δ {pbDelta}）
+                </div>
+                <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+                  最新点位：{latest?.date ?? '暂无'} ｜ 首个点位：{first?.date ?? '暂无'}
+                </div>
+              </div>
+              <div className="mt-3 min-h-[280px]">
+                {showHistorySkeleton ? (
+                  <div className="space-y-3">
+                    <Skeleton width="48%" height={16} />
+                    <Skeleton height={260} />
+                  </div>
+                ) : points.length > 1 ? (
+                  <LineChart
+                    categories={points.map((p) => p.date.slice(5))}
+                    series={[
+                      { name: 'PE', data: points.map((p) => p.pe ?? 0) },
+                      { name: 'PB', data: points.map((p) => p.pb ?? 0) },
+                    ]}
+                    height={260}
+                  />
+                ) : (
+                  <EmptyState
+                    text={`近 ${days} 天没有可绘制的历史估值数据`}
+                    hint="可以切换到 180 天或 365 天窗口，或改查成交更活跃的股票后重新比较。"
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : (
+        <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+            <div className="text-sm font-medium text-text-primary">估值快照</div>
+            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+              适合先确认当前估值水平，再和历史走势对照估值修复节奏。
+            </p>
+            {showOverviewSkeleton ? (
+              <KpiGrid cols={2} className="mt-4">
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+              </KpiGrid>
+            ) : (
+              <KpiGrid cols={2} className="mt-4">
+                <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
+                <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
+                <KpiCard title="PS" value={fmtNum(valuation?.ps, 2)} />
+                <KpiCard title="总市值" value={fmtAmount(valuation?.marketCap)} />
+              </KpiGrid>
+            )}
+          </div>
+          <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+            <div className="text-sm font-medium text-text-primary">财务快照</div>
+            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+              把盈利能力、规模和杠杆放在同一屏里看，能更快判断基本面是否支持当前估值。
+            </p>
+            {showOverviewSkeleton ? (
+              <KpiGrid cols={2} className="mt-4">
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+                <SkeletonCard />
+              </KpiGrid>
+            ) : (
+              <KpiGrid cols={2} className="mt-4">
+                <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
+                <KpiCard title="净利润" value={fmtAmount(financials?.netProfit)} />
+                <KpiCard title="营收" value={fmtAmount(financials?.revenue)} />
+                <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
+              </KpiGrid>
+            )}
+          </div>
+        </section>
+      )}
+
+      {!compactLayout ? (
+        <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="eyebrow">History View</div>
+              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">历史估值走势（{days}天）</h2>
+            </div>
+            <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+              最新点位：{latest?.date ?? '暂无'} ｜ 首个点位：{first?.date ?? '暂无'}
+            </div>
+          </div>
+          <div className="mb-2 mt-3 text-sm text-text-secondary">
+            PE变化：{fmtNum(first?.pe)} → {fmtNum(latest?.pe)}（Δ {peDelta}）｜ PB变化：{fmtNum(first?.pb)} →{' '}
+            {fmtNum(latest?.pb)}（Δ {pbDelta}）
+          </div>
+          <div className="min-h-[300px]">
+            {showHistorySkeleton ? (
+              <div className="space-y-3">
+                <Skeleton width="48%" height={16} />
+                <Skeleton height={280} />
+              </div>
+            ) : points.length > 1 ? (
+              <LineChart
+                categories={points.map((p) => p.date.slice(5))}
+                series={[
+                  { name: 'PE', data: points.map((p) => p.pe ?? 0) },
+                  { name: 'PB', data: points.map((p) => p.pb ?? 0) },
+                ]}
+                height={280}
+              />
+            ) : (
+              <EmptyState
+                text={`近 ${days} 天没有可绘制的历史估值数据`}
+                hint="可以切换到 180 天或 365 天窗口，或改查成交更活跃的股票后重新比较。"
+              />
+            )}
+          </div>
         </div>
-      </div>
+      ) : null}
       {missing.length ? (
         <div className="panel-soft mt-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">
           提示：{missing.join('、')}暂无数据，已显示为“-”。
         </div>
       ) : null}
-      <section className="mt-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2>详细资料</h2>
-            <p className="mt-1 text-sm text-text-secondary">
-              切换标签会自动抓取对应资料。适合先看“基本信息/财务快照”，再进入 F10 与财务历史做深挖。
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={extraQ.isFetching || historyMut.isPending}
-            onClick={() => fetchExtra(extraTab)}
-            className={HERO_SECONDARY_BUTTON_CLS}
-          >
-            {extraQ.isFetching || historyMut.isPending ? '加载中...' : '刷新当前资料'}
+      {compactLayout && !showDetailedData ? (
+        <div className="mt-5 rounded-[24px] border border-white/45 bg-white/24 px-4 py-4 text-sm text-text-secondary shadow-[0_20px_44px_-30px_rgba(15,23,42,0.18)]">
+          <div className="font-medium text-text-primary">详细资料已下沉</div>
+          <div className="mt-2">F10、财务快照和财务历史不再默认占用首屏，需要时再展开。</div>
+          <button type="button" onClick={() => setShowDetailedData(true)} className={`${HERO_SECONDARY_BUTTON_CLS} mt-3`}>
+            展开详细资料
           </button>
         </div>
-        <div className="mt-3">
-          <TabBar<ExtraTab> tabs={extraTabs} active={extraTab} onChange={setExtraTab} />
-        </div>
-        <SectionCard tabAttached className="min-h-[340px]">
-          <div className="mt-3 min-h-[260px]">
-            {activeExtraError ? (
-              <ErrorState
-                text={activeExtraError}
-                hint="当前上游资料源暂时不可用，可以稍后重试，或先查看基本信息 / 财务快照 / 财务历史。"
-              />
-            ) : activeExtraLoading && activeExtraRaw == null ? (
-              <div className="space-y-3">
-                <Skeleton width="35%" height={16} />
-                <Skeleton height={180} />
-              </div>
-            ) : (
-              (() => {
-                const raw = activeExtraRaw;
-                if (raw == null) {
-                  return (
-                    <EmptyState
-                      text={`还没有加载${activeExtraLabel}`}
-                      hint="切换标签后会自动查询；如果结果为空，可以点击上方“刷新”再次尝试。"
-                    />
-                  );
-                }
-                const rows = extractArray(raw).filter((r) => r && typeof r === 'object');
-                if (rows.length)
-                  return (
-                    <DataTable
-                      rows={rows}
-                      maxHeight={400}
-                      onExport={() => exportCSV(rows, `fundamental-${extraTab}`)}
-                    />
-                  );
-                // Structured key-value display for single-object responses
-                const obj = extractObject(raw);
-                const pickDisplayRoot = () => {
-                  if (extraTab === 'snapshot') {
-                    const snapshot = obj.snapshot;
-                    if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
-                      const snapshotObj = extractObject(snapshot as Record<string, unknown>);
-                      if (
-                        snapshotObj.data &&
-                        typeof snapshotObj.data === 'object' &&
-                        !Array.isArray(snapshotObj.data)
-                      ) {
-                        return extractObject(snapshotObj.data as Record<string, unknown>);
+      ) : (
+      <details className="mt-5 overflow-hidden rounded-[28px] border border-white/45 bg-white/28 p-4 shadow-[0_20px_44px_-30px_rgba(15,23,42,0.18)]">
+        <summary className="flex cursor-pointer list-none items-start justify-between gap-3 rounded-[20px] text-left">
+          <div>
+            <h2 className="mb-0 text-xl font-semibold text-text-primary">展开详细资料</h2>
+            <p className="mb-0 mt-2 text-sm text-text-secondary">
+              F10、财务快照和财务历史属于深挖层，默认收起，先完成上面的摘要和历史判断再继续下钻。
+            </p>
+          </div>
+          <Badge variant="neutral">{activeExtraLabel}</Badge>
+        </summary>
+        <div className="mt-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="mb-0 text-lg font-semibold text-text-primary">详细资料标签</h3>
+              <p className="mt-1 text-sm text-text-secondary">
+                切换标签会自动抓取对应资料。适合先看“基本信息/财务快照”，再进入 F10 与财务历史做深挖。
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={extraQ.isFetching || historyMut.isPending}
+              onClick={() => fetchExtra(extraTab)}
+              className={HERO_SECONDARY_BUTTON_CLS}
+            >
+              {extraQ.isFetching || historyMut.isPending ? '加载中...' : '刷新当前资料'}
+            </button>
+          </div>
+          <div className="mt-3">
+            <TabBar<ExtraTab> tabs={extraTabs} active={extraTab} onChange={setExtraTab} />
+          </div>
+          <SectionCard tabAttached className="min-h-[340px]">
+            <div className="mt-3 min-h-[260px]">
+              {activeExtraError ? (
+                <ErrorState
+                  text={activeExtraError}
+                  hint="当前上游资料源暂时不可用，可以稍后重试，或先查看基本信息 / 财务快照 / 财务历史。"
+                />
+              ) : activeExtraLoading && activeExtraRaw == null ? (
+                <div className="space-y-3">
+                  <Skeleton width="35%" height={16} />
+                  <Skeleton height={180} />
+                </div>
+              ) : (
+                (() => {
+                  const raw = activeExtraRaw;
+                  if (raw == null) {
+                    return (
+                      <EmptyState
+                        text={`还没有加载${activeExtraLabel}`}
+                        hint="切换标签后会自动查询；如果结果为空，可以点击上方“刷新”再次尝试。"
+                      />
+                    );
+                  }
+                  const rows = extractArray(raw).filter((r) => r && typeof r === 'object');
+                  if (rows.length)
+                    return (
+                      <DataTable
+                        rows={rows}
+                        maxHeight={400}
+                        onExport={() => exportCSV(rows, `fundamental-${extraTab}`)}
+                      />
+                    );
+                  // Structured key-value display for single-object responses
+                  const obj = extractObject(raw);
+                  const pickDisplayRoot = () => {
+                    if (extraTab === 'snapshot') {
+                      const snapshot = obj.snapshot;
+                      if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+                        const snapshotObj = extractObject(snapshot as Record<string, unknown>);
+                        if (
+                          snapshotObj.data &&
+                          typeof snapshotObj.data === 'object' &&
+                          !Array.isArray(snapshotObj.data)
+                        ) {
+                          return extractObject(snapshotObj.data as Record<string, unknown>);
+                        }
+                        return snapshotObj;
                       }
-                      return snapshotObj;
                     }
-                  }
 
-                  if (extraTab === 'f10') {
-                    const f10 = obj.f10;
-                    if (f10 && typeof f10 === 'object' && !Array.isArray(f10)) {
-                      return extractObject(f10 as Record<string, unknown>);
+                    if (extraTab === 'f10') {
+                      const f10 = obj.f10;
+                      if (f10 && typeof f10 === 'object' && !Array.isArray(f10)) {
+                        return extractObject(f10 as Record<string, unknown>);
+                      }
                     }
-                  }
 
-                  if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
-                    return extractObject(obj.data as Record<string, unknown>);
-                  }
+                    if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
+                      return extractObject(obj.data as Record<string, unknown>);
+                    }
 
-                  return obj;
-                };
-                const displayRoot = pickDisplayRoot();
-                const flat = flattenObj(displayRoot);
-                const statusFlag = flat.success ?? obj.success;
-                const errorField = flat.error ?? obj.error;
-                const errorMessage =
-                  typeof errorField === 'string'
-                    ? errorField
-                    : errorField &&
-                        typeof errorField === 'object' &&
-                        typeof (errorField as { message?: unknown }).message === 'string'
-                      ? String((errorField as { message: string }).message)
+                    return obj;
+                  };
+                  const displayRoot = pickDisplayRoot();
+                  const flat = flattenObj(displayRoot);
+                  const statusFlag = flat.success ?? obj.success;
+                  const errorField = flat.error ?? obj.error;
+                  const errorMessage =
+                    typeof errorField === 'string'
+                      ? errorField
+                      : errorField &&
+                          typeof errorField === 'object' &&
+                          typeof (errorField as { message?: unknown }).message === 'string'
+                        ? String((errorField as { message: string }).message)
+                        : '';
+                  if (statusFlag === false || statusFlag === 'false' || errorMessage) {
+                    return (
+                      <ErrorState
+                        text={errorMessage || `${activeExtraLabel}加载失败`}
+                        hint="当前上游资料源暂时不可用，可以稍后重试，或先查看基本信息 / 财务快照 / 财务历史。"
+                      />
+                    );
+                  }
+                  const f10FallbackHint =
+                    extraTab === 'f10' && typeof displayRoot.fallbackHint === 'string'
+                      ? String(displayRoot.fallbackHint)
                       : '';
-                if (statusFlag === false || statusFlag === 'false' || errorMessage) {
-                  return (
-                    <ErrorState
-                      text={errorMessage || `${activeExtraLabel}加载失败`}
-                      hint="当前上游资料源暂时不可用，可以稍后重试，或先查看基本信息 / 财务快照 / 财务历史。"
-                    />
-                  );
-                }
-                const f10FallbackHint =
-                  extraTab === 'f10' && typeof displayRoot.fallbackHint === 'string'
-                    ? String(displayRoot.fallbackHint)
-                    : '';
-                const hiddenKeys = new Set([
+                  const hiddenKeys = new Set([
                   'infoType',
                   'cached',
                   'source',
@@ -714,38 +912,40 @@ export default function FundamentalPage() {
                   }
                   return String(v);
                 };
-                return entries.length ? (
-                  <>
-                    {f10FallbackHint ? (
-                      <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                        <div className="font-medium">当前展示的是降级资料</div>
-                        <div className="mt-1 text-amber-800">
-                          完整 F10
-                          数据源暂时不可用，页面已自动降级为最小可用公司资料，方便你继续核对基础信息与规模数据。
+                  return entries.length ? (
+                    <>
+                      {f10FallbackHint ? (
+                        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                          <div className="font-medium">当前展示的是降级资料</div>
+                          <div className="mt-1 text-amber-800">
+                            完整 F10
+                            数据源暂时不可用，页面已自动降级为最小可用公司资料，方便你继续核对基础信息与规模数据。
+                          </div>
+                          <div className="mt-1 text-amber-700">{f10FallbackHint}</div>
                         </div>
-                        <div className="mt-1 text-amber-700">{f10FallbackHint}</div>
+                      ) : null}
+                      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-3">
+                        {entries.map(([k, v]) => (
+                          <div key={k}>
+                            <span className="text-text-muted">{FIELD_LABELS[k] ?? k}：</span>
+                            {renderValue(k, v)}
+                          </div>
+                        ))}
                       </div>
-                    ) : null}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-sm mt-2">
-                      {entries.map(([k, v]) => (
-                        <div key={k}>
-                          <span className="text-text-muted">{FIELD_LABELS[k] ?? k}：</span>
-                          {renderValue(k, v)}
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <EmptyState
-                    text={`${activeExtraLabel}暂无可展示字段`}
-                    hint="这通常表示上游数据源只返回了原始结构或当前标的资料较少，可以切换到其他标签继续核对。"
-                  />
-                );
-              })()
-            )}
-          </div>
-        </SectionCard>
-      </section>
+                    </>
+                  ) : (
+                    <EmptyState
+                      text={`${activeExtraLabel}暂无可展示字段`}
+                      hint="这通常表示上游数据源只返回了原始结构或当前标的资料较少，可以切换到其他标签继续核对。"
+                    />
+                  );
+                })()
+              )}
+            </div>
+          </SectionCard>
+        </div>
+      </details>
+      )}
     </PageContainer>
   );
 }

@@ -4,14 +4,18 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { AskAiButton } from '@/components/ask-ai-button';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
-import { ErrorState, LoadingState, MetaLine } from '@/components/status-state';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
@@ -27,6 +31,13 @@ type RiskSummary = {
   degradeReasons?: string[];
   meta?: { fetchedAt?: string; cache?: { hit?: boolean; backend?: string; ttlSeconds?: number } };
 };
+const RESULT_TABS = [
+  { key: 'overview', label: '总览' },
+  { key: 'var', label: 'VaR' },
+  { key: 'stress', label: '压力' },
+  { key: 'exposure', label: '暴露' },
+] as const;
+type RiskResultTab = (typeof RESULT_TABS)[number]['key'];
 
 const LOOKBACK_PRESETS = [90, 252, 504] as const;
 const HERO_PRIMARY_BUTTON_CLS =
@@ -59,15 +70,18 @@ function brief(v: unknown): string {
 }
 
 export default function RiskPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useStablePathname();
   const [portfolioId, setPortfolioId] = useState(() => searchParams.get('portfolioId') ?? '');
   const [lookbackDays, setLookbackDays] = useState(() => searchParams.get('lookbackDays') ?? '252');
   const [formError, setFormError] = useState<string | null>(null);
+  const [lastPrimaryRefreshAt, setLastPrimaryRefreshAt] = useState<string | null>(null);
+  const [resultTab, setResultTab] = useState<RiskResultTab>('overview');
   const applyingWorkspaceDefaultsRef = useRef(false);
   const task = searchParams.get('task');
   const from = searchParams.get('from');
@@ -220,6 +234,22 @@ export default function RiskPage() {
   const showInitialEmptyState = !summary && !loading && !error;
   const availableModuleCount = moduleCards.filter((item) => item.data != null).length;
   const displayPortfolio = portfolioId || (topCards.portfolioId !== '-' ? topCards.portfolioId : '未选择');
+  const latestRiskRefreshAt =
+    [summaryQ.dataUpdatedAt, varQ.dataUpdatedAt]
+      .filter((value): value is number => typeof value === 'number' && value > 0)
+      .sort((left, right) => right - left)[0] ?? null;
+  const latestRiskRefreshText = latestRiskRefreshAt
+    ? new Date(latestRiskRefreshAt).toLocaleString('zh-CN')
+    : '尚未获取';
+
+  const handlePrimaryRiskAction = useCallback(async () => {
+    if (submittedQs) {
+      await Promise.allSettled([summaryQ.refetch(), varQ.refetch()]);
+    } else {
+      setLookbackDays('252');
+    }
+    setLastPrimaryRefreshAt(new Date().toLocaleString('zh-CN'));
+  }, [submittedQs, summaryQ, varQ]);
 
   usePageContext({
     pageKey: 'risk',
@@ -340,7 +370,7 @@ export default function RiskPage() {
         </div>
       ) : null}
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Risk Workspace</Badge>
@@ -356,19 +386,16 @@ export default function RiskPage() {
               风险分析工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这一页负责把组合风险阅读变成连续的工作流。先锁定组合和回看窗口，再判断 VaR、压力测试与风险暴露是否一致，
-              最后只在需要时下钻到原始响应排查降级与异常来源。
+              先锁定组合和回看窗口，再在一个活动视图里看总览、VaR、压力和暴露，不再把图表和排障信息同时摊开。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => {
-                  if (submittedQs) {
-                    void Promise.allSettled([summaryQ.refetch(), varQ.refetch()]);
-                    return;
-                  }
-                  setLookbackDays('252');
+                  void handlePrimaryRiskAction();
                 }}
+                data-testid="page-primary-action"
+                data-action-testid="risk-refresh-action"
                 className={HERO_PRIMARY_BUTTON_CLS}
               >
                 {submittedQs ? '刷新当前风险' : '准备 252 天窗口'}
@@ -376,62 +403,32 @@ export default function RiskPage() {
               <Link href="/portfolio" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
                 去组合页
               </Link>
-              <Link href="/paper-trading" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
-                去模拟交易
-              </Link>
             </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前组合</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{displayPortfolio}</div>
-                <div className="mt-1 text-xs text-text-secondary">风险页会优先读取工作区沉淀的组合上下文</div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前组合 {displayPortfolio} ｜ 观察窗口 {lookbackDays} 天 ｜ 当前视图 {RESULT_TABS.find((item) => item.key === resultTab)?.label}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">观察窗口</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{lookbackDays}</div>
-                <div className="mt-1 text-xs text-text-secondary">推荐以 252 天作为默认比较基线</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">模块覆盖</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {availableModuleCount} / {moduleCards.length}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">VaR、压力测试、暴露分析的当前可用度</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">缓存状态</div>
-                <div className="mt-3 text-lg font-semibold text-text-primary">
-                  {summary?.meta?.cache?.hit ? '命中' : '待刷新'}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">{topCards.cache}</div>
-              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                模块覆盖 {availableModuleCount}/{moduleCards.length} ｜ 降级 {summary?.degraded ? '是' : '否'} ｜ 缓存 {summary?.meta?.cache?.hit ? '命中' : '待刷新'}
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">
+                最近抓取：{latestRiskRefreshText}
+                {lastPrimaryRefreshAt ? ` ｜ 手动动作：${lastPrimaryRefreshAt}` : ''}
+              </p>
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-                当前风险上下文
-              </div>
-              <div className="mt-3 text-base font-semibold text-text-primary">
-                {displayPortfolio !== '未选择' ? `组合 ${displayPortfolio}` : '等待组合上下文'}
-              </div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  观察窗口：<span className="font-medium text-text-primary">{lookbackDays} 天</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  模块完成度：
-                  <span className="font-medium text-text-primary">
-                    {' '}
-                    {availableModuleCount} / {moduleCards.length}
-                  </span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  降级状态：<span className="font-medium text-text-primary">{summary?.degraded ? '是' : '否'}</span>
-                </div>
-              </div>
+          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              建议顺序与下一步
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className={NOTE_CARD_CLS}>1. 先确认组合与窗口，再看 VaR 是否已经形成可比基线。</div>
+              <div className={NOTE_CARD_CLS}>2. 如果压力测试与暴露结论冲突，优先检查模块状态与降级原因。</div>
+              <div className={NOTE_CARD_CLS}>3. 只有在结果异常或缺失时，再去排障面板看原始响应。</div>
               <div className="mt-4">
                 <AskAiButton
                   summary={`组合 ${displayPortfolio}，回看 ${lookbackDays} 天，模块完成 ${availableModuleCount}/${moduleCards.length}`}
@@ -439,16 +436,7 @@ export default function RiskPage() {
                 />
               </div>
             </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先确认组合与窗口，再看 VaR 是否已经形成可比基线。</div>
-                <div className={NOTE_CARD_CLS}>2. 如果压力测试与暴露结论冲突，优先检查降级原因和模块状态。</div>
-                <div className={NOTE_CARD_CLS}>3. 只有在结果异常或缺失时，再展开技术详情查看原始响应。</div>
-              </div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
@@ -461,8 +449,7 @@ export default function RiskPage() {
             <div className="eyebrow">Configuration Workspace</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">参数工作台</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              优先选择一个组合，再决定用 90 / 252 / 504 天哪个观察窗口来判断风险暴露与回撤特征。
-              工作区里已经沉淀的组合上下文会自动回填到这里。
+              这里只保留组合和窗口选择，模板与辅助动作下沉到“更多选项”。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -510,33 +497,29 @@ export default function RiskPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {LOOKBACK_PRESETS.map((days) => (
-              <button
-                key={days}
-                type="button"
-                onClick={() => setLookbackDays(String(days))}
-                className={`${CHIP_BUTTON_CLS} ${lookbackDays === String(days) ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-              >
-                {days} 天模板
-              </button>
-            ))}
-          </div>
+          <details className="rounded-[22px] border border-glass-border bg-white/35 px-4 py-3">
+            <summary className="cursor-pointer text-sm font-medium text-text-primary">更多选项</summary>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {LOOKBACK_PRESETS.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setLookbackDays(String(days))}
+                  className={`${CHIP_BUTTON_CLS} ${lookbackDays === String(days) ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
+                >
+                  {days} 天模板
+                </button>
+              ))}
+            </div>
+          </details>
         </form>
       </div>
 
-      <KpiGrid cols={4} className="mb-4 mt-4">
-        <KpiCard title="组合ID" value={topCards.portfolioId} />
-        <KpiCard title="回看天数" value={topCards.lookbackDays} />
-        <KpiCard title="降级状态" value={topCards.degraded} />
-        <KpiCard title="缓存" value={topCards.cache} />
-      </KpiGrid>
-
-      {showInitialEmptyState ? (
-        <div className="panel-soft mb-4 rounded-[28px] p-5">
+      {showInitialEmptyState && !compactLayout ? (
+        <div className="panel-soft mt-4 rounded-[28px] p-5">
           <h3 className="mt-0">还没有可分析的风险上下文</h3>
           <p className="mb-3 text-sm text-text-secondary">
-            如果还没有组合或模拟持仓，这里不会直接给出有意义的 VaR、压力测试和暴露结果。建议先准备可分析的资产上下文。
+            如果还没有组合或模拟持仓，这里不会直接给出有意义的 VaR、压力测试和暴露结果。
           </p>
           <div className="flex gap-2 flex-wrap">
             <Link href="/portfolio" className={`${HERO_PRIMARY_BUTTON_CLS} no-underline text-inherit`}>
@@ -548,136 +531,124 @@ export default function RiskPage() {
           </div>
         </div>
       ) : null}
-      {allEmpty ? (
-        <div className="panel-soft mb-4 rounded-[28px] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,248,236,0.82),rgba(255,244,225,0.65))] p-4">
-          <h3 className="mt-0 text-base">暂无可用风险结果</h3>
-          <p className="m-0 text-sm text-text-secondary">
-            当前组合或账户还没有足够数据来生成 VaR、压力测试和暴露分析。先补充持仓，再重新运行风险分析会更有意义。
-          </p>
-        </div>
-      ) : null}
-      {partialDegraded ? (
-        <div className="panel-soft mb-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">
-          检测到部分降级，建议先核对成功模块，再结合降级原因判断是否需要回到上游数据源排查。
-        </div>
-      ) : null}
-      {summary?.degraded && summary.degradeReasons?.length ? (
-        <MetaLine>降级原因：{summary.degradeReasons.join(' | ')}</MetaLine>
-      ) : null}
 
-      <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+      <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Reading Flow</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">模块概览</h2>
+            <div className="eyebrow">Result Workspace</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">风险结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              先从模块状态判断结果是否完整，再决定重点看哪一部分图表。这里的摘要会把每个模块最关键的可读信息压缩成一眼能扫完的状态卡。
+              默认只展开一个结果视图，原始响应与排障说明移到次区。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            可用模块：<span className="font-medium text-text-primary">{availableModuleCount}</span> /{' '}
-            {moduleCards.length}
+            可用模块：<span className="font-medium text-text-primary">{availableModuleCount}</span> / {moduleCards.length}
           </div>
         </div>
-
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {moduleCards.map((m) => (
-            <div key={m.key} className="metric-tile rounded-[24px] p-4 sm:p-5">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="font-medium">{m.title}</span>
-                <Badge variant={m.status === '成功' ? 'success' : m.status === '降级' ? 'warning' : 'neutral'}>
-                  {m.status}
-                </Badge>
+        <div className="mt-4">
+          <TabBar tabs={RESULT_TABS} active={resultTab} onChange={(key) => setResultTab(key as RiskResultTab)} />
+        </div>
+        <SectionCard tabAttached>
+          {resultTab === 'overview' ? (
+            <>
+              {allEmpty ? (
+                <div className="rounded-[24px] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,248,236,0.82),rgba(255,244,225,0.65))] p-4">
+                  <h3 className="mt-0 text-base">暂无可用风险结果</h3>
+                  <p className="m-0 text-sm text-text-secondary">
+                    当前组合或账户还没有足够数据来生成 VaR、压力测试和暴露分析。先补充持仓，再重新运行风险分析会更有意义。
+                  </p>
+                </div>
+              ) : null}
+              {partialDegraded ? (
+                <div className="mb-4 rounded-[24px] border border-warning/20 bg-warning/5 px-4 py-3 text-sm text-text-secondary">
+                  检测到部分降级，建议先核对成功模块，再结合降级原因判断是否需要回到上游数据源排查。
+                </div>
+              ) : null}
+              {summary?.degraded && summary.degradeReasons?.length ? (
+                <MetaLine>降级原因：{summary.degradeReasons.join(' | ')}</MetaLine>
+              ) : null}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <KpiCard title="组合ID" value={topCards.portfolioId} />
+                <KpiCard title="回看天数" value={topCards.lookbackDays} />
+                <KpiCard title="降级状态" value={topCards.degraded} />
+                <KpiCard title="缓存" value={topCards.cache} />
               </div>
-              <div className="text-sm leading-7 text-text-secondary">{m.brief}</div>
-              {m.reason && <div className="mt-2 text-xs text-warning">原因: {m.reason}</div>}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {varBarItems.length > 0 && (
-        <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
-          <h3 className="mt-0">VaR 分布</h3>
-          <p className="mb-3 mt-2 text-sm text-text-secondary">
-            用金额、百分比和波动率一起看，避免只盯单一 VaR 指标造成误判。
-          </p>
-          <BarChart items={varBarItems} height={240} yAxisName="VaR" colorByValue />
-        </div>
-      )}
-
-      {(stressItems.length > 0 || exposureItems.length > 0) && (
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {stressItems.length > 0 && (
-            <div className="panel-soft rounded-[28px] p-4 sm:p-5">
-              <h3 className="mt-0">压力测试场景</h3>
-              <p className="mb-3 mt-2 text-sm text-text-secondary">
-                优先关注冲击最大的几个场景，看它们是否与近期持仓结构一致。
-              </p>
-              <BarChart items={stressItems} height={220} yAxisName="影响(%)" colorByValue />
-            </div>
-          )}
-          {exposureItems.length > 0 && (
-            <div className="panel-soft rounded-[28px] p-4 sm:p-5">
-              <h3 className="mt-0">风险暴露分布</h3>
-              <p className="mb-3 mt-2 text-sm text-text-secondary">
-                如果暴露过度集中，可以结合压力场景一起判断是否需要先做仓位修正。
-              </p>
-              <PieChart data={exposureItems} donut height={220} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {summary || varQ.data != null ? (
-        <SectionCard className="mt-4 p-4 sm:p-5">
-          <h3 className="mt-0">技术详情（排查用）</h3>
-          <p className="text-sm text-text-secondary mt-1 mb-3">
-            下面是接口返回的原始数据，默认收起，只有在需要排查数据源异常或降级原因时再展开查看。
-          </p>
-          {summary ? (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-text-secondary text-sm">查看风险汇总原始数据（summary）</summary>
-              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">
-                {JSON.stringify(summary, null, 2)}
-              </pre>
-            </details>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {moduleCards.map((m) => (
+                  <div key={m.key} className="metric-tile rounded-[24px] p-4">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="font-medium text-text-primary">{m.title}</span>
+                      <Badge variant={m.status === '成功' ? 'success' : m.status === '降级' ? 'warning' : 'neutral'}>
+                        {m.status}
+                      </Badge>
+                    </div>
+                    <div className="text-sm leading-7 text-text-secondary">{m.brief}</div>
+                    {m.reason ? <div className="mt-2 text-xs text-warning">原因：{m.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            </>
           ) : null}
-          {varQ.data != null ? (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-text-secondary text-sm">查看 VaR 原始数据（varOnly）</summary>
-              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">
-                {JSON.stringify(varQ.data, null, 2)}
-              </pre>
-            </details>
+
+          {resultTab === 'var' ? (
+            varBarItems.length > 0 ? (
+              <div className="space-y-4">
+                <div className={NOTE_CARD_CLS}>用金额、百分比和波动率一起看，避免只盯单一 VaR 指标造成误判。</div>
+                <BarChart items={varBarItems} height={240} yAxisName="VaR" colorByValue />
+              </div>
+            ) : (
+              <EmptyState text="运行风险分析后，这里会显示 VaR 分布。" />
+            )
+          ) : null}
+
+          {resultTab === 'stress' ? (
+            stressItems.length > 0 ? (
+              <div className="space-y-4">
+                <div className={NOTE_CARD_CLS}>优先关注冲击最大的几个场景，看它们是否与近期持仓结构一致。</div>
+                <BarChart items={stressItems} height={220} yAxisName="影响(%)" colorByValue />
+              </div>
+            ) : (
+              <EmptyState text="运行风险分析后，这里会显示压力测试场景。" />
+            )
+          ) : null}
+
+          {resultTab === 'exposure' ? (
+            exposureItems.length > 0 ? (
+              <div className="space-y-4">
+                <div className={NOTE_CARD_CLS}>如果暴露过度集中，可以结合压力场景一起判断是否需要先做仓位修正。</div>
+                <PieChart data={exposureItems} donut height={220} />
+              </div>
+            ) : (
+              <EmptyState text="运行风险分析后，这里会显示风险暴露分布。" />
+            )
           ) : null}
         </SectionCard>
-      ) : null}
+      </div>
     </>
   );
 
-  const secondaryContent = (
-    <div className="grid gap-3">
-      <div className={SIDE_PANEL_CLS}>
-        <div className="text-sm font-medium text-text-primary">风险工作区摘要</div>
-        <div className="mt-3 grid gap-3 text-xs text-text-secondary">
-          <div className="metric-tile rounded-[22px] p-3">
-            <div>组合：{displayPortfolio}</div>
-            <div className="mt-1">窗口：{lookbackDays} 天</div>
-            <div className="mt-1">降级：{summary?.degraded ? '是' : '否'}</div>
-            <div className="mt-1">
-              模块：{availableModuleCount} / {moduleCards.length}
-            </div>
-          </div>
-          <div className="metric-tile rounded-[22px] p-3">
-            <div>缓存：{topCards.cache}</div>
-            <div className="mt-1">
-              抓取：{summary?.meta?.fetchedAt ? new Date(summary.meta.fetchedAt).toLocaleString('zh-CN') : '未知'}
-            </div>
+  const summaryPanel = (
+    <div className={SIDE_PANEL_CLS}>
+      <div className="text-sm font-medium text-text-primary">风险工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="metric-tile rounded-[22px] p-3">
+          <div>组合：{displayPortfolio}</div>
+          <div className="mt-1">窗口：{lookbackDays} 天</div>
+          <div className="mt-1">降级：{summary?.degraded ? '是' : '否'}</div>
+          <div className="mt-1">模块：{availableModuleCount} / {moduleCards.length}</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-3">
+          <div>缓存：{topCards.cache}</div>
+          <div className="mt-1">
+            抓取：{summary?.meta?.fetchedAt ? new Date(summary.meta.fetchedAt).toLocaleString('zh-CN') : '未知'}
           </div>
         </div>
       </div>
+    </div>
+  );
 
+  const debugPanel = (
+    <div className="grid gap-3">
       <div className={SIDE_PANEL_CLS}>
         <div className="text-sm font-medium text-text-primary">模块健康度</div>
         <div className="mt-3 space-y-3">
@@ -702,25 +673,60 @@ export default function RiskPage() {
           ))}
         </div>
       </div>
+      {summary || varQ.data != null ? (
+        <SectionCard className="p-4 sm:p-5">
+          <h3 className="mt-0">排障与原始响应</h3>
+          <p className="text-sm text-text-secondary mt-1 mb-3">
+            只有在需要排查数据源异常或降级原因时，再展开这里查看原始返回。
+          </p>
+          {summary ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-text-secondary text-sm">查看风险汇总原始数据（summary）</summary>
+              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">
+                {JSON.stringify(summary, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          {varQ.data != null ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-text-secondary text-sm">查看 VaR 原始数据（varOnly）</summary>
+              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">
+                {JSON.stringify(varQ.data, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+        </SectionCard>
+      ) : null}
+    </div>
+  );
 
-      <div className={SIDE_PANEL_CLS}>
-        <div className="text-sm font-medium text-text-primary">工作区提醒</div>
-        <div className="mt-3 grid gap-3 text-xs text-text-secondary">
-          <div className="metric-tile rounded-[22px] p-3">
-            保存视图后，可以把组合 ID、回看窗口和当前面板布局作为工作区快照复用。
-          </div>
-          <div className="metric-tile rounded-[22px] p-3">
-            如果你刚完成调仓，优先点击刷新数据，避免继续阅读旧窗口下的风险结论。
-          </div>
-        </div>
-      </div>
+  const secondaryContent = summaryPanel;
+  const mobileSummary = (
+    <div className="panel-soft rounded-[20px] px-3 py-2 text-xs text-text-secondary">
+      组合 {displayPortfolio} ｜ {lookbackDays} 天 ｜ 模块 {availableModuleCount}/{moduleCards.length}
     </div>
   );
 
   return (
     <PageContainer>
-      <WorkspaceToolbar pageKey="risk" currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      <WorkspaceSplitLayout pageKey="risk" primary={primaryContent} secondary={secondaryContent} />
+      <WorkspaceToolbar
+        pageKey="risk"
+        currentView={currentView}
+        onApplyView={applyView}
+        supportsPagePanels
+        mobileSummaryMode="hidden"
+      />
+      <WorkspaceSplitLayout
+        pageKey="risk"
+        primary={primaryContent}
+        secondary={secondaryContent}
+        secondaryPanels={[
+          { key: 'summary', label: '摘要', content: summaryPanel },
+          { key: 'debug', label: '排障', content: debugPanel },
+        ]}
+        mobileSummary={mobileSummary}
+        maxDefaultSections={0}
+      />
     </PageContainer>
   );
 }

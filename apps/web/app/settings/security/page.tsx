@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useHydrated } from '@/hooks/use-hydrated';
 import {
   DEFAULT_TRANSACTION_CONFIRMATIONS,
   readTransactionConfirmations,
@@ -22,6 +23,7 @@ const TRANSACTION_CONFIRM_ITEMS: Array<{ key: TransactionConfirmKey; label: stri
 ];
 
 export default function SecurityPage() {
+  const hydrated = useHydrated();
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const statusQ = useApiQuery<Record<string, unknown>>('/auth/2fa/status');
   const setupApi = useApiMutation<TotpSetup>({ successToast: false, errorToast: false });
@@ -49,6 +51,7 @@ export default function SecurityPage() {
   const setupProgress = totpEnabled ? 3 : totpSetup ? 2 : 1;
 
   const loading = setupApi.isPending || verifyApi.isPending || disableApi.isPending;
+  const actionDisabled = !hydrated || loading;
 
   async function handleSetup() {
     setMessage(null);
@@ -118,7 +121,11 @@ export default function SecurityPage() {
       </div>
 
       {message && (
-        <div className={`mb-4 px-4 py-2 rounded-lg text-sm ${message.type === 'success' ? 'bg-success/15 text-success border border-success/30' : 'bg-danger/15 text-danger border border-danger/30'}`}>
+        <div
+          role="alert"
+          data-testid="security-message"
+          className={`mb-4 px-4 py-2 rounded-lg text-sm ${message.type === 'success' ? 'bg-success/15 text-success border border-success/30' : 'bg-danger/15 text-danger border border-danger/30'}`}
+        >
           {message.text}
         </div>
       )}
@@ -158,10 +165,11 @@ export default function SecurityPage() {
         {!totpEnabled && !totpSetup && (
           <button
             onClick={handleSetup}
-            disabled={loading}
+            disabled={actionDisabled}
+            data-testid="security-enable-2fa-action"
             className="mt-4 px-4 py-2 bg-primary text-white rounded-lg cursor-pointer text-sm font-medium disabled:opacity-50"
           >
-            {loading ? '加载中...' : '🔑 启用 2FA'}
+            {!hydrated ? '页面初始化中...' : loading ? '加载中...' : '🔑 启用 2FA'}
           </button>
         )}
 
@@ -169,7 +177,9 @@ export default function SecurityPage() {
           <div className="mt-4 space-y-4">
             <div>
               <p className="text-sm mb-2">1. 使用 Google Authenticator 扫描以下密钥：</p>
-              <code className="block px-3 py-2 bg-surface rounded text-xs break-all">{totpSetup.secret}</code>
+              <code data-testid="security-2fa-secret" className="block px-3 py-2 bg-surface rounded text-xs break-all">
+                {totpSetup.secret}
+              </code>
             </div>
             <div>
               <p className="text-sm mb-2">2. 输入 6 位验证码确认：</p>
@@ -180,11 +190,13 @@ export default function SecurityPage() {
                   onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="000000"
                   maxLength={6}
+                  data-testid="security-2fa-code-input"
                   className="w-32 px-3 py-2 rounded-lg text-center text-lg font-mono tracking-widest"
                 />
                 <button
                   onClick={handleVerify}
-                  disabled={loading || verifyCode.length !== 6}
+                  disabled={actionDisabled || verifyCode.length !== 6}
+                  data-testid="security-2fa-verify-action"
                   className="px-4 py-2 bg-primary text-white rounded-lg cursor-pointer text-sm disabled:opacity-50"
                 >
                   验证
@@ -207,7 +219,8 @@ export default function SecurityPage() {
         {totpEnabled && (
           <button
             onClick={handleDisable}
-            disabled={loading}
+            disabled={actionDisabled}
+            data-testid="security-disable-2fa-action"
             className="mt-4 px-4 py-2 bg-danger/20 text-danger rounded-lg cursor-pointer text-xs border border-danger/30 disabled:opacity-50"
           >
             关闭 2FA

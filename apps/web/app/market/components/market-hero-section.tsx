@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { Badge } from '@/components/ui';
 import { AskAiButton } from '@/components/ask-ai-button';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { formatStableDateTime } from '@/app/market/lib/market-view';
 import {
@@ -42,6 +44,10 @@ export default function MarketHeroSection({
   heroNotes,
   quickJumpLinks,
 }: MarketHeroSectionProps) {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactHero = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const visibleQuickLinks = compactLayout ? quickJumpLinks.slice(0, 2) : quickJumpLinks;
+
   return (
     <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
       <section className="page-hero p-6 sm:p-7 xl:p-8">
@@ -52,8 +58,7 @@ export default function MarketHeroSection({
               <div className="space-y-3">
                 <h1>{activeDisplayName}</h1>
                 <p className="page-lead mb-0">
-                  先锁定观察标的，再围绕 {activePeriodLabel} 主图、实时摘要与盘口深度推进判断。这个工作台已经按
-                  「查询、读图、决策」重排了阅读路径，减少来回跳视线的成本。
+                  先锁定观察标的，再围绕 {activePeriodLabel} 主图、实时摘要与盘口深度推进判断。
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -62,11 +67,13 @@ export default function MarketHeroSection({
                   prompt={activeDisplayCode ? `请解读 ${activeDisplayCode} 的当前走势与盘口` : '请分析当前行情看板'}
                   label="解读当前行情"
                 />
-                <AskAiButton
-                  stockCode={activeDisplayCode}
-                  prompt={activeDisplayCode ? `请给 ${activeDisplayCode} 一个下一步交易建议` : '请给出行情操作建议'}
-                  label="交易建议"
-                />
+                {!compactLayout ? (
+                  <AskAiButton
+                    stockCode={activeDisplayCode}
+                    prompt={activeDisplayCode ? `请给 ${activeDisplayCode} 一个下一步交易建议` : '请给出行情操作建议'}
+                    label="交易建议"
+                  />
+                ) : null}
                 <Link
                   href={
                     activeDisplayCode
@@ -99,7 +106,7 @@ export default function MarketHeroSection({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={`grid gap-3 ${compactHero ? 'grid-cols-2' : 'grid-cols-2 xl:grid-cols-4'}`}>
             <div className="metric-tile px-4 py-4">
               <div className="metric-label">当前标的</div>
               <div className="mt-2 text-lg font-semibold text-text-primary">{activeDisplayCode || '未选择'}</div>
@@ -116,14 +123,29 @@ export default function MarketHeroSection({
                 {fmtPct(activeQuote?.changePercent as number | null)}
               </div>
             </div>
-            <div className="metric-tile px-4 py-4">
-              <div className="metric-label">数据刷新</div>
-              <div className="mt-2 text-sm font-medium text-text-primary">{freshnessLabel}</div>
-              <div className="mt-1 text-xs text-text-secondary">抓取 {formatStableDateTime(freshness)}</div>
-            </div>
+            {!compactHero ? (
+              <div className="metric-tile px-4 py-4">
+                <div className="metric-label">数据刷新</div>
+                <div className="mt-2 text-sm font-medium text-text-primary">{freshnessLabel}</div>
+                <div className="mt-1 text-xs text-text-secondary">抓取 {formatStableDateTime(freshness)}</div>
+              </div>
+            ) : null}
           </div>
 
-          {from || task ? (
+          {compactHero ? (
+            <details className={`${marketNoteCardCls} px-4 py-3`}>
+              <summary className="cursor-pointer list-none text-xs font-medium text-text-primary">展开来源与刷新信息</summary>
+              <div className="mt-3 space-y-2 text-xs text-text-secondary">
+                <div>
+                  数据刷新：<span className="font-medium text-text-primary">{freshnessLabel}</span>
+                </div>
+                <div>抓取 {formatStableDateTime(freshness)}</div>
+                <div>
+                  来源：{from ?? '-'} ｜ 任务：{task ?? '-'}
+                </div>
+              </div>
+            </details>
+          ) : from || task ? (
             <div className={`${marketNoteCardCls} px-4 py-3`}>
               来源：{from ?? '-'} ｜ 任务：{task ?? '-'}
             </div>
@@ -131,15 +153,16 @@ export default function MarketHeroSection({
         </div>
       </section>
 
+      {!compactLayout ? (
       <div className="grid gap-4">
-        <section className="page-hero p-5 sm:p-6">
-          <div className="flex items-start justify-between gap-3">
+        <details className="page-hero p-5 sm:p-6" open={!compactLayout}>
+          <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
             <div>
               <div className="eyebrow">盘中提示</div>
               <h2 className="mt-2">观察节奏</h2>
             </div>
             <Badge variant="info">{activePeriodLabel}</Badge>
-          </div>
+          </summary>
           <div className="mt-4 grid gap-3">
             {heroNotes.map((note) => (
               <div key={note} className={`${marketNoteCardCls} px-4 py-3 leading-6`}>
@@ -147,7 +170,7 @@ export default function MarketHeroSection({
               </div>
             ))}
           </div>
-        </section>
+        </details>
 
         <section className={`${marketPanelCls} rounded-[32px]`}>
           <div className="flex items-start justify-between gap-3">
@@ -158,15 +181,19 @@ export default function MarketHeroSection({
             <Badge variant="neutral">联动页面</Badge>
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-            {quickJumpLinks.map((link) => (
+            {visibleQuickLinks.map((link) => (
               <Link key={link.href} href={link.href} className={marketSidebarActionCardCls}>
                 <div className="text-sm font-medium text-text-primary">{link.label}</div>
                 <div className="mt-1 text-xs text-text-secondary">把当前观察上下文带到下一页继续分析。</div>
               </Link>
             ))}
           </div>
+          {compactLayout && quickJumpLinks.length > visibleQuickLinks.length ? (
+            <div className="mt-3 text-xs text-text-secondary">其余跳转入口已收进后续工作区内。</div>
+          ) : null}
         </section>
       </div>
+      ) : null}
     </section>
   );
 }

@@ -1,5 +1,8 @@
 import { Badge, TabBar } from '@/components/ui';
 import { stockPanelCls } from '@/app/stock/components/stock-panel-styles';
+import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import StockAiTab from '@/app/stock/components/stock-ai-tab';
 import StockChartTab from '@/app/stock/components/stock-chart-tab';
 import StockFundamentalTab from '@/app/stock/components/stock-fundamental-tab';
@@ -86,6 +89,18 @@ export default function StockDetailTabs({
   valuationFetching,
   activeCode,
 }: StockDetailTabsProps) {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
+  const primaryTabs = compactLayout
+    ? STOCK_INFO_TABS.filter((tab) => ['chart', 'tech', 'fund', 'valuation'].includes(tab.key))
+    : STOCK_INFO_TABS;
+  const secondaryTabs = compactLayout
+    ? STOCK_INFO_TABS.filter((tab) => ['basic', 'shares', 'peers', 'ai', 'news'].includes(tab.key))
+    : [];
+  const primaryActiveTab = primaryTabs.some((tab) => tab.key === infoTab) ? infoTab : 'chart';
+  const secondaryActiveTab = secondaryTabs.some((tab) => tab.key === infoTab) ? infoTab : secondaryTabs[0]?.key ?? 'basic';
+
   return (
     <>
       <div className={stockPanelCls}>
@@ -93,15 +108,25 @@ export default function StockDetailTabs({
           <div>
             <div className="eyebrow">Detail Tabs</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">分层阅读各个分析维度</h2>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              建议先看主图和技术面，再看资金、估值、AI 诊断和资讯。这样更容易把价格位置、交易结构和基本面叙事串起来。
-            </p>
+            {!compactLayout ? (
+              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                建议先看主图和技术面，再看资金、估值、AI 诊断和资讯。这样更容易把价格位置、交易结构和基本面叙事串起来。
+              </p>
+            ) : null}
           </div>
           <Badge variant="neutral">{activeTabLabel}</Badge>
         </div>
         <div className="mt-4">
-          <TabBar tabs={STOCK_INFO_TABS} active={infoTab} onChange={onInfoTabChange} />
+          <TabBar tabs={primaryTabs} active={primaryActiveTab} onChange={onInfoTabChange} />
         </div>
+        {compactLayout && secondaryTabs.length > 0 ? (
+          <details className="mt-3 rounded-[22px] border border-white/45 bg-white/24 px-4 py-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开更多维度</summary>
+            <div className="mt-3">
+              <TabBar tabs={secondaryTabs} active={secondaryActiveTab} onChange={onInfoTabChange} />
+            </div>
+          </details>
+        ) : null}
       </div>
 
       {infoTab === 'chart' ? (

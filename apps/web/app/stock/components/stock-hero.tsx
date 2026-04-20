@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { AskAiButton } from '@/components/ask-ai-button';
 import { Badge } from '@/components/ui';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   stockLinkChipCls,
   stockNoteCardCls,
@@ -43,6 +45,8 @@ export default function StockHero({
   watchlistCode,
   watchlistName,
 }: StockHeroProps) {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+
   return (
     <section className="page-hero p-5 sm:p-6">
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
@@ -79,7 +83,7 @@ export default function StockHero({
             />
           </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-4">
+          <div className={`mt-5 grid gap-3 ${compactLayout ? 'grid-cols-2' : 'grid-cols-2 xl:grid-cols-4'}`}>
             <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
               <div className="mt-3 text-xl font-semibold text-text-primary">{currentFocusCode}</div>
@@ -90,22 +94,29 @@ export default function StockHero({
               <div className="mt-3 text-xl font-semibold text-text-primary">{activeTabLabel}</div>
               <div className="mt-1 text-xs text-text-secondary">当前正在阅读的分析视角</div>
             </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">刷新状态</div>
-              <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{refreshStatus}</div>
-              <div className="mt-1 text-xs text-text-secondary">{refreshTimeText}</div>
-            </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前振幅</div>
-              <div className="mt-3 text-xl font-semibold text-text-primary">{amplitude}</div>
-              <div className="mt-1 text-xs text-text-secondary">用于判断短线波动强弱</div>
-            </div>
+            {!compactLayout ? (
+              <>
+                <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">刷新状态</div>
+                  <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{refreshStatus}</div>
+                  <div className="mt-1 text-xs text-text-secondary">{refreshTimeText}</div>
+                </div>
+                <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前振幅</div>
+                  <div className="mt-3 text-xl font-semibold text-text-primary">{amplitude}</div>
+                  <div className="mt-1 text-xs text-text-secondary">用于判断短线波动强弱</div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
+        {!compactLayout ? (
         <div className="grid gap-3">
-          <div className={stockPanelCls}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">阅读建议</div>
+          <details className={stockPanelCls} open={!compactLayout}>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              阅读建议
+            </summary>
             <div className="mt-4 space-y-3">
               {heroNotes.map((note) => (
                 <div key={note} className={stockNoteCardCls}>
@@ -113,7 +124,25 @@ export default function StockHero({
                 </div>
               ))}
             </div>
-          </div>
+          </details>
+          {compactLayout ? (
+            <details className={stockPanelCls}>
+              <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                刷新状态与振幅
+              </summary>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className={stockNoteCardCls}>
+                  刷新状态：
+                  <span className="font-medium text-text-primary"> {refreshStatus}</span>
+                  <div className="mt-1">{refreshTimeText}</div>
+                </div>
+                <div className={stockNoteCardCls}>
+                  当前振幅：
+                  <span className="font-medium text-text-primary"> {amplitude}</span>
+                </div>
+              </div>
+            </details>
+          ) : null}
           <div className={stockPanelCls}>
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">快捷动作</div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -143,6 +172,7 @@ export default function StockHero({
             ) : null}
           </div>
         </div>
+        ) : null}
       </div>
     </section>
   );

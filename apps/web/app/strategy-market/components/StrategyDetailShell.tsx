@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import { Badge } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum } from '@/lib/data-utils';
 import { formatMultipleTestingMode } from '@/app/strategy-market/lib/strategy-detail-view';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import type { FactoryReviewSection, StrategyCore } from '../types';
 import {
   chipButtonCls,
@@ -60,6 +62,8 @@ export function StrategyDetailHeroSection({
   onSubscribe,
   onOpenPortfolio,
 }: StrategyDetailHeroSectionProps) {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+
   return (
     <section className="page-hero p-5 sm:p-6">
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
@@ -77,16 +81,15 @@ export function StrategyDetailHeroSection({
           <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
             {strategy.name}
           </h1>
-          <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-            {strategySummary}
-          </p>
+          <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">{strategySummary}</p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <button onClick={onAddToCart} className={heroPrimaryButtonCls}>
+            <button onClick={onAddToCart} data-testid="page-primary-action" className={heroPrimaryButtonCls}>
               加入组合
             </button>
             <button
               onClick={onSubscribe}
               disabled={subscribePending || !userId}
+              data-testid="strategy-subscribe-action"
               aria-label={
                 subscribePending
                   ? '策略头图订阅操作处理中'
@@ -104,8 +107,20 @@ export function StrategyDetailHeroSection({
               去组合页配置
             </button>
           </div>
+          <div
+            data-testid="page-primary-status"
+            className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前处于 {activeTabLabel}，策略状态 {strategy.status ?? '-'}，订阅 {strategy.subscriber_count ?? 0}
+            </div>
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              质量评级 {latestQualityGrade ?? '-'} ｜ 最新孵化决策 {latestIncubationDecision ?? '-'} ｜ 风险事件{' '}
+              {openRiskEventsCount}
+            </p>
+          </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-4">
+          <div className={`mt-5 grid gap-3 ${compactLayout ? 'grid-cols-2' : 'sm:grid-cols-4'}`}>
             <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作流</div>
               <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
@@ -118,24 +133,89 @@ export function StrategyDetailHeroSection({
               <div className="mt-3 text-2xl font-semibold text-text-primary">{sampleStart || '-'}</div>
               <div className="mt-1 text-xs text-text-secondary">{sampleWindow}</div>
             </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险 / 向量</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">
-                {openRiskEventsCount} / {vectorProfilesCount}
-              </div>
-              <div className="mt-1 text-xs text-text-secondary">开放风险事件 / 向量画像</div>
-            </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">订阅与评分</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{strategy.subscriber_count ?? 0}</div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {strategy.avg_rating != null ? `平均评分 ${strategy.avg_rating.toFixed(1)}` : '暂无公开评分'}
-              </div>
-            </div>
+            {!compactLayout ? (
+              <>
+                <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险 / 向量</div>
+                  <div className="mt-3 text-2xl font-semibold text-text-primary">
+                    {openRiskEventsCount} / {vectorProfilesCount}
+                  </div>
+                  <div className="mt-1 text-xs text-text-secondary">开放风险事件 / 向量画像</div>
+                </div>
+                <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">订阅与评分</div>
+                  <div className="mt-3 text-2xl font-semibold text-text-primary">{strategy.subscriber_count ?? 0}</div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    {strategy.avg_rating != null ? `平均评分 ${strategy.avg_rating.toFixed(1)}` : '暂无公开评分'}
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
         <div className="grid gap-3">
+          {compactLayout ? (
+            <details className={sidePanelCls}>
+              <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                展开当前策略与下一步建议
+              </summary>
+              <div className="mt-4 grid gap-3">
+                <div className="text-base font-semibold text-text-primary">{strategy.name}</div>
+                <div className={sideMetricCls}>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">作者与评级</div>
+                  <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
+                    <div>
+                      作者：<span className="font-medium text-text-primary">{strategy.author_id ?? '-'}</span>
+                    </div>
+                    <div>
+                      质量评级：<span className="font-medium text-text-primary">{latestQualityGrade ?? '-'}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className={sideMetricCls}>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前决策</div>
+                  <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
+                    <div>
+                      最新孵化决策：
+                      <span className="font-medium text-text-primary">{latestIncubationDecision ?? '-'}</span>
+                    </div>
+                    <div>
+                      多重检验：
+                      <span className="font-medium text-text-primary">
+                        {formatMultipleTestingMode(multipleTestingMode)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className={sideMetricCls}>
+                  风险 / 向量：<span className="font-medium text-text-primary">{openRiskEventsCount} / {vectorProfilesCount}</span>；
+                  订阅 {strategy.subscriber_count ?? 0}
+                </div>
+                <div className={sideMetricCls}>
+                  {activeTab === 'overview'
+                    ? '先确认质量门、DSR、PBO，再决定是否值得继续跟踪。'
+                    : activeTab === 'tracking'
+                      ? '先看命中率和前向 Sharpe，再决定是否需要回工厂审查。'
+                      : '先排运行告警，再检查实验与向量分区是否存在偏差。'}
+                </div>
+                <div className={sideMetricCls}>
+                  {promotionReady
+                    ? '当前策略已接近上架条件，适合继续联动组合页做配置模拟。'
+                    : '当前策略仍处孵化观察阶段，建议不要直接跳到配置，先补完工厂审查。'}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={onSubscribe} disabled={subscribePending || !userId} className={chipButtonCls}>
+                    {isSubscribed ? '取消订阅' : '立即订阅'}
+                  </button>
+                  <button type="button" onClick={() => window.location.assign('/paper-trading')} className={chipButtonCls}>
+                    查看模拟交易
+                  </button>
+                </div>
+              </div>
+            </details>
+          ) : (
+            <>
           <div className={sidePanelCls}>
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前策略</div>
             <div className="mt-3 text-base font-semibold text-text-primary">{strategy.name}</div>
@@ -168,7 +248,6 @@ export function StrategyDetailHeroSection({
               </div>
             </div>
           </div>
-
           <div className={sidePanelCls}>
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步建议</div>
             <div className="mt-4 space-y-3">
@@ -195,6 +274,7 @@ export function StrategyDetailHeroSection({
                 type="button"
                 onClick={onSubscribe}
                 disabled={subscribePending || !userId}
+                data-testid="strategy-subscribe-secondary-action"
                 aria-label={
                   subscribePending
                     ? '策略建议区订阅操作处理中'
@@ -213,6 +293,8 @@ export function StrategyDetailHeroSection({
               </button>
             </div>
           </div>
+            </>
+          )}
         </div>
       </div>
     </section>

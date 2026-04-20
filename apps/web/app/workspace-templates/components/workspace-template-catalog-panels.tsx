@@ -69,6 +69,9 @@ export function BlueprintPreviewCard({
   hasBlueprintErrors,
   onCreateBlueprint,
 }: BlueprintPreviewCardProps) {
+  const visibleSteps = selectedBlueprintPreview.steps.slice(0, 1);
+  const hiddenSteps = selectedBlueprintPreview.steps.slice(1);
+
   return (
     <SectionCard className="p-4">
       <div className="flex items-center justify-between gap-2">
@@ -88,7 +91,7 @@ export function BlueprintPreviewCard({
         </button>
       </div>
       <div className="mt-3 space-y-2">
-        {selectedBlueprintPreview.steps.map((step, index) => (
+        {visibleSteps.map((step, index) => (
           <div
             key={`${selectedBlueprint.id}-${index + 1}`}
             className="rounded-xl border border-glass-border bg-surface/60 px-3 py-2"
@@ -101,6 +104,28 @@ export function BlueprintPreviewCard({
             {step.href ? <div className="mt-1 break-all text-[11px] text-text-muted">{step.href}</div> : null}
           </div>
         ))}
+        {hiddenSteps.length > 0 ? (
+          <details className="rounded-xl border border-glass-border bg-surface/60 p-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+              展开剩余 {hiddenSteps.length} 个步骤
+            </summary>
+            <div className="mt-3 space-y-2">
+              {hiddenSteps.map((step, index) => (
+                <div
+                  key={`${selectedBlueprint.id}-${index + 3}`}
+                  className="rounded-xl border border-glass-border bg-surface px-3 py-2"
+                >
+                  <div className="text-xs font-medium text-text-primary">
+                    步骤 {index + 2} · {step.pageKey}
+                  </div>
+                  <div className="mt-1 text-sm text-text-primary">{step.title}</div>
+                  {step.kind ? <div className="mt-1 text-[11px] text-text-secondary">任务类型：{step.kind}</div> : null}
+                  {step.href ? <div className="mt-1 break-all text-[11px] text-text-muted">{step.href}</div> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
     </SectionCard>
   );
@@ -160,6 +185,9 @@ export function TaskTemplatePreviewCard({
   hasTemplateErrors,
   onApplyTemplate,
 }: TaskTemplatePreviewCardProps) {
+  const visibleSteps = selectedTemplatePreview.steps.slice(0, 1);
+  const hiddenSteps = selectedTemplatePreview.steps.slice(1);
+
   return (
     <SectionCard className="p-4">
       <div className="flex items-center justify-between gap-2">
@@ -179,7 +207,7 @@ export function TaskTemplatePreviewCard({
         </button>
       </div>
       <div className="mt-3 space-y-2">
-        {selectedTemplatePreview.steps.map((step, index) => (
+        {visibleSteps.map((step, index) => (
           <div
             key={`${selectedTemplate.id}-${index + 1}`}
             className="rounded-xl border border-glass-border bg-surface/60 px-3 py-2"
@@ -192,6 +220,28 @@ export function TaskTemplatePreviewCard({
             {step.href ? <div className="mt-1 break-all text-[11px] text-text-muted">{step.href}</div> : null}
           </div>
         ))}
+        {hiddenSteps.length > 0 ? (
+          <details className="rounded-xl border border-glass-border bg-surface/60 p-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+              展开剩余 {hiddenSteps.length} 个步骤
+            </summary>
+            <div className="mt-3 space-y-2">
+              {hiddenSteps.map((step, index) => (
+                <div
+                  key={`${selectedTemplate.id}-${index + 3}`}
+                  className="rounded-xl border border-glass-border bg-surface px-3 py-2"
+                >
+                  <div className="text-xs font-medium text-text-primary">
+                    步骤 {index + 2} · {step.pageKey}
+                  </div>
+                  <div className="mt-1 text-sm text-text-primary">{step.title}</div>
+                  {step.kind ? <div className="mt-1 text-[11px] text-text-secondary">任务类型：{step.kind}</div> : null}
+                  {step.href ? <div className="mt-1 break-all text-[11px] text-text-muted">{step.href}</div> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
     </SectionCard>
   );

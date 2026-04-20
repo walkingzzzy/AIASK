@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { useSearchParams, useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockContext } from '@/store/stock-context';
 
 const STOCK_CODE_RE = /^\d{6}$/;
@@ -16,9 +18,9 @@ const STOCK_CODE_RE = /^\d{6}$/;
  * @param syncUrl  是否同步到 URL query param（默认 true）
  */
 export function useStockCode(initial = '', syncUrl = true) {
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const router = useRouter();
-  const pathname = usePathname();
+  const pathname = useStablePathname();
   const hydrated = useHydrated();
   const { code: globalCode, setStock } = useStockContext();
   const urlCode = searchParams.get('code') || '';

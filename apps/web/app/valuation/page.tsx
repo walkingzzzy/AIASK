@@ -13,6 +13,7 @@ import {
   Badge,
 } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { BarChart, COLORS } from '@/components/charts';
@@ -21,12 +22,17 @@ import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 const TABS = [
   { key: 'dcf', label: 'DCF估值' },
   { key: 'ddm', label: 'DDM估值' },
   { key: 'relative', label: '相对估值' },
   { key: 'scenario', label: '情景DCF' },
+] as const;
+const VIEW_TABS = [
+  { key: 'params', label: '参数' },
+  { key: 'results', label: '结果' },
 ] as const;
 
 const DCF_PRESETS = [
@@ -56,6 +62,7 @@ const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
 type Tab = (typeof TABS)[number]['key'];
+type ViewTab = (typeof VIEW_TABS)[number]['key'];
 
 function v(obj: Record<string, unknown>, ...keys: string[]): unknown {
   for (const k of keys) {
@@ -65,7 +72,9 @@ function v(obj: Record<string, unknown>, ...keys: string[]): unknown {
 }
 
 export default function ValuationPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('dcf');
+  const [viewTab, setViewTab] = useState<ViewTab>('params');
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
   const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
   const [discountRate, setDiscountRate] = useState('0.1');
@@ -133,6 +142,7 @@ export default function ValuationPage() {
     }
 
     trigger(endpoint, { method: 'POST' }, body);
+    setViewTab('results');
   }
 
   function runRecommendedValuation() {
@@ -153,6 +163,7 @@ export default function ValuationPage() {
           years: Number(preset.years),
         },
       );
+      setViewTab('results');
       return;
     }
 
@@ -169,11 +180,13 @@ export default function ValuationPage() {
           requiredReturn: Number(preset.requiredReturn),
         },
       );
+      setViewTab('results');
       return;
     }
 
     if (tab === 'relative') {
       trigger('/valuation/relative', { method: 'POST' }, { code: nextCode });
+      setViewTab('results');
       return;
     }
 
@@ -189,6 +202,7 @@ export default function ValuationPage() {
         industry: preset.industry,
       },
     );
+    setViewTab('results');
   }
 
   const result = useMemo(() => (data ? unwrapToolPayload(data) : null), [data]);
@@ -236,7 +250,7 @@ export default function ValuationPage() {
   return (
     <PageContainer>
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Valuation Workbench</Badge>
@@ -244,20 +258,16 @@ export default function ValuationPage() {
                 {focusCode ? `当前标的 ${focusCode}` : '等待确认标的'}
               </Badge>
               <Badge variant="neutral">{activeTabLabel}</Badge>
-              <Badge variant={data ? 'success' : isPending ? 'warning' : 'neutral'}>
-                {data ? '已生成估值结果' : isPending ? '模型计算中' : '等待运行'}
-              </Badge>
             </div>
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               估值分析工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              先确定标的，再根据公司特点选择模型。成熟分红公司更适合 DDM，成长型公司更适合 DCF 或情景 DCF；
-              如果只是想快速判断位置，先用相对估值建立行业坐标会更高效。
+              {compactLayout ? '先选模型，再在参数和结果之间切换。' : '先选模型，再决定是继续调参数还是直接看结果。默认不再把说明、预设、配置和结果同时摊开。'}
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={runRecommendedValuation} className={HERO_PRIMARY_BUTTON_CLS}>
-                使用推荐参数
+              <button type="button" onClick={runRecommendedValuation} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
+                运行推荐估值
               </button>
               <button
                 type="button"
@@ -265,100 +275,58 @@ export default function ValuationPage() {
                   setTab('relative');
                   reset();
                   setFormError(null);
+                  setViewTab('params');
                 }}
                 className={HERO_SECONDARY_BUTTON_CLS}
               >
                 快速看同行估值
               </button>
-              {resolvedCode ? (
-                <Link
-                  href={`/fundamental?code=${encodeURIComponent(resolvedCode)}`}
-                  className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}
-                >
-                  联动基本面
-                </Link>
-              ) : null}
             </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{focusCode || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">模型会基于当前代码发起估值计算</div>
+            {compactLayout ? (
+              <div className="mt-4 text-sm text-text-secondary">
+                当前模型 {activeTabLabel} ｜ 标的 {focusCode || '-'} ｜ {viewTab === 'params' ? '参数视图' : '结果视图'}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前模型</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">{tabDescription}</div>
+            ) : (
+              <div
+                data-testid="page-primary-status"
+                className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+              >
+                <div className="font-medium text-text-primary">
+                  当前模型：{activeTabLabel} ｜ 标的：{focusCode || '-'} ｜ 当前视图：{viewTab === 'params' ? '参数' : '结果'}
+                </div>
+                <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">假设摘要：{currentAssumptionSummary}</p>
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前假设</div>
-                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{currentAssumptionSummary}</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">推荐场景</div>
-                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">{recommendedAudience}</div>
-              </div>
-            </div>
+            )}
           </div>
 
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-                当前估值上下文
-              </div>
-              <div className="mt-3 text-base font-semibold text-text-primary">{focusCode || '未选择标的'}</div>
+          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
+            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              模型假设与适用场景
+            </summary>
+            <div className="mt-4 space-y-3">
+              <div className={NOTE_CARD_CLS}>当前模型：{activeTabLabel}</div>
+              <div className={NOTE_CARD_CLS}>适用场景：{recommendedAudience}</div>
+              <div className={NOTE_CARD_CLS}>{tabDescription}</div>
               {resolvedCode ? (
-                <div className="mt-3 flex items-center gap-2">
+                <div className="flex items-center gap-2">
                   <StockLink code={resolvedCode} name={resolvedCode} />
                   <WatchlistButton code={resolvedCode} name="" />
                 </div>
               ) : null}
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  当前模型：<span className="font-medium text-text-primary">{activeTabLabel}</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  假设摘要：<span className="font-medium text-text-primary">{currentAssumptionSummary}</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  结果状态：
-                  <span className="font-medium text-text-primary">
-                    {data ? '已生成' : isPending ? '计算中' : '待执行'}
-                  </span>
-                </div>
-              </div>
             </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">使用建议</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先用推荐模板建立第一版估值，再手动细调关键假设。</div>
-                <div className={NOTE_CARD_CLS}>2. 如果对现金流没把握，先切相对估值建立行业位置感。</div>
-                <div className={NOTE_CARD_CLS}>3. 情景 DCF 更适合在高不确定性阶段比较上下行空间。</div>
-              </div>
-            </div>
-          </div>
+          </details>
         </div>
       </section>
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Model Setup</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">模型配置</h2>
+            <div className="eyebrow">Valuation Workspace</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">模型与结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              统一在这里切换模型、调整参数并发起计算。配置区负责收集假设，结果区负责比较输出，不把两类任务混在一屏里。
+              先切模型，再决定当前是调参数还是读结果。这样横屏平板和移动端都不会在默认状态下堆满长内容。
             </p>
           </div>
-          {resolvedCode ? (
-            <Link
-              href={`/stock?code=${encodeURIComponent(resolvedCode)}`}
-              className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}
-            >
-              返回个股详情
-            </Link>
-          ) : null}
         </div>
 
         <div className="mt-4">
@@ -369,414 +337,307 @@ export default function ValuationPage() {
               setTab(key);
               reset();
               setFormError(null);
+              setViewTab('params');
             }}
           />
         </div>
 
-        <SectionCard tabAttached>
-          <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-            <StockCodeInput
-              id="valuation-stock-code"
-              label="股票代码"
-              value={code}
-              onChange={setCode}
-              error={codeError}
-            />
-            <div className="metric-tile rounded-[24px] p-4 text-sm text-text-secondary">
-              <div className="font-medium text-text-primary">{activeTabLabel}</div>
-              <div className="mt-2 leading-7">{tabDescription}</div>
-            </div>
-          </div>
-
-          {tab === 'dcf' ? (
-            <div className="mt-4 space-y-4">
-              <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,160px))_auto] xl:items-end">
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">折现率</span>
-                  <input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} className={FIELD_CLS} />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">增长率</span>
-                  <input value={growthRate} onChange={(e) => setGrowthRate(e.target.value)} className={FIELD_CLS} />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">预测年数</span>
-                  <input value={years} onChange={(e) => setYears(e.target.value)} className={FIELD_CLS} />
-                </label>
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
-                  计算 DCF
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {DCF_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => applyDcfPreset(preset)}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {tab === 'ddm' ? (
-            <div className="mt-4 space-y-4">
-              <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,160px))_auto] xl:items-end">
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">股息</span>
-                  <input
-                    value={dividend}
-                    onChange={(e) => setDividend(e.target.value)}
-                    className={FIELD_CLS}
-                    placeholder="可选"
-                  />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">增长率</span>
-                  <input value={ddmGrowth} onChange={(e) => setDdmGrowth(e.target.value)} className={FIELD_CLS} />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">要求回报率</span>
-                  <input
-                    value={requiredReturn}
-                    onChange={(e) => setRequiredReturn(e.target.value)}
-                    className={FIELD_CLS}
-                  />
-                </label>
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
-                  计算 DDM
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {DDM_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => applyDdmPreset(preset)}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {tab === 'relative' ? (
-            <div className="mt-4">
-              <p className="mb-3 text-sm text-text-secondary">
-                相对估值适合先看同业横向比较，确认目标股票当前处在行业估值的高位还是低位。
-              </p>
-              <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
-                查询相对估值
-              </button>
-            </div>
-          ) : null}
-
-          {tab === 'scenario' ? (
-            <div className="mt-4 space-y-4">
-              <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,180px))_auto] xl:items-end">
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">基础营收</span>
-                  <input
-                    value={baseRevenue}
-                    onChange={(e) => setBaseRevenue(e.target.value)}
-                    className={FIELD_CLS}
-                    placeholder="必填，如 1300 亿"
-                  />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">行业</span>
-                  <input
-                    value={industry}
-                    onChange={(e) => setIndustry(e.target.value)}
-                    className={FIELD_CLS}
-                    placeholder="可选"
-                  />
-                </label>
-                <label className="grid gap-2 text-xs text-text-secondary">
-                  <span className="font-medium uppercase tracking-[0.12em] text-text-muted">预测年数</span>
-                  <input value={years} onChange={(e) => setYears(e.target.value)} className={FIELD_CLS} />
-                </label>
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
-                  情景分析
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {SCENARIO_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => applyScenarioPreset(preset)}
-                    className={CHIP_BUTTON_CLS}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </SectionCard>
-      </div>
-
-      <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="eyebrow">Result View</div>
-            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">估值结果</h2>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              结果区负责显示计算结论和同行对比，建议先看核心数值，再决定是否继续回到配置区调参。
-            </p>
-          </div>
-          <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            当前模型：<span className="font-medium text-text-primary">{activeTabLabel}</span>
-          </div>
+        <div className="mt-4">
+          <TabBar tabs={VIEW_TABS} active={viewTab} onChange={(key) => setViewTab(key as ViewTab)} />
         </div>
 
-        {isPending ? <LoadingState text="计算中..." /> : null}
-        {formError || error || friendlyErr ? (
-          <ErrorState text={formError || error || friendlyErr!} hint="请检查参数后重试" />
-        ) : null}
+        <SectionCard tabAttached>
+          {viewTab === 'params' ? (
+            <>
+              <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
+                <StockCodeInput
+                  id="valuation-stock-code"
+                  label="股票代码"
+                  value={code}
+                  onChange={setCode}
+                  error={codeError}
+                />
+                <div className="metric-tile rounded-[24px] p-4 text-sm text-text-secondary">
+                  <div className="font-medium text-text-primary">{activeTabLabel}</div>
+                  <div className="mt-2 leading-7">{tabDescription}</div>
+                </div>
+              </div>
 
-        {!isPending && !data && !error && !formError ? (
-          <EmptyState
-            text={
-              tab === 'dcf'
-                ? '先设置现金流假设，再估算企业内在价值'
-                : tab === 'ddm'
-                  ? '先填写分红假设，再估算每股价值'
-                  : tab === 'relative'
-                    ? '先查询同业估值对比，快速判断目标股票高估还是低估'
-                    : '先填写基础营收，再比较不同增长情景下的价值区间'
-            }
-            hint={
-              tab === 'dcf'
-                ? '推荐从折现率 10%、增长率 5%、5 年的稳健参数开始。'
-                : tab === 'ddm'
-                  ? 'DDM 更适合稳定分红公司，推荐先从成熟分红模板开始。'
-                  : tab === 'relative'
-                    ? '相对估值是最快的入门方式，适合第一次进入页面时先做横向判断。'
-                    : '情景 DCF 适合不确定性较高的成长公司，先给一个基础营收就能看乐观/基准/悲观差异。'
-            }
-            action={
-              <>
-                <button type="button" onClick={runRecommendedValuation} className={CHIP_BUTTON_CLS}>
-                  使用推荐参数
-                </button>
-                {resolvedCode ? (
-                  <Link
-                    href={`/stock?code=${encodeURIComponent(resolvedCode)}`}
-                    className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}
-                  >
-                    回个股详情
-                  </Link>
-                ) : null}
-              </>
-            }
-          />
-        ) : null}
-
-        {data != null && !friendlyErr && tab === 'dcf' && result
-          ? (() => {
-              const r = result as Record<string, unknown>;
-              const intrinsic = Number(v(r, 'intrinsic_value', 'intrinsicValue', 'value') ?? 0);
-              const pvSum = Number(v(r, 'pv_sum', 'pvSum') ?? 0);
-              const pvTerminal = Number(v(r, 'pv_terminal', 'pvTerminal') ?? 0);
-              const terminalValue = Number(v(r, 'terminal_value', 'terminalValue') ?? 0);
-              const model = String(v(r, 'model') ?? '');
-              const wacc = r.wacc_breakdown as Record<string, unknown> | undefined;
-              const cfs = (r.cash_flows ?? r.cashFlows ?? r.projected_cash_flows ?? r.projection ?? []) as Record<
-                string,
-                unknown
-              >[];
-
-              return (
+              {tab === 'dcf' ? (
                 <div className="mt-4 space-y-4">
-                  <KpiGrid cols={4}>
-                    <KpiCard title="内在价值(总)" value={fmtAmount(intrinsic)} />
-                    <KpiCard title="现金流现值" value={fmtAmount(pvSum)} />
-                    <KpiCard title="终值现值" value={fmtAmount(pvTerminal)} />
-                    <KpiCard title="终值" value={fmtAmount(terminalValue)} />
-                  </KpiGrid>
-                  {model ? <div className="text-xs text-text-secondary">模型: {model}</div> : null}
-                  {wacc ? (
-                    <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-text-secondary">
-                      <span>WACC: {fmtPct(Number(wacc.wacc ?? 0) * 100)}</span>
-                      <span>权益成本: {fmtPct(Number(wacc.cost_of_equity ?? 0) * 100)}</span>
-                      <span>债务成本(税后): {fmtPct(Number(wacc.cost_of_debt_after_tax ?? 0) * 100)}</span>
-                    </div>
-                  ) : null}
-                  {Array.isArray(cfs) && cfs.length > 0 ? (
-                    <BarChart
-                      items={cfs.map((cf, index) => ({
-                        label: String(cf.year ?? cf.period ?? `Y${index + 1}`),
-                        value: Number(cf.pv_fcf ?? cf.fcf ?? cf.value ?? cf.cash_flow ?? 0),
-                        color: COLORS.primary,
-                      }))}
-                      yAxisName="现金流"
-                    />
-                  ) : null}
-                  {r.assumptions ? (
-                    <div className="metric-tile rounded-[22px] p-3 text-xs text-text-secondary">
-                      假设: {JSON.stringify(r.assumptions)}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })()
-          : null}
-
-        {data != null && !friendlyErr && tab === 'ddm' && result
-          ? (() => {
-              const r = result as Record<string, unknown>;
-              const intrinsic = Number(v(r, 'intrinsic_value', 'intrinsicValue', 'value') ?? 0);
-              const curDiv = Number(v(r, 'current_dividend', 'currentDividend') ?? 0);
-              const nextDiv = Number(v(r, 'next_dividend', 'nextDividend') ?? 0);
-              const model = String(v(r, 'model') ?? '');
-
-              return (
-                <div className="mt-4">
-                  <KpiGrid cols={3}>
-                    <KpiCard title="内在价值" value={fmtNum(intrinsic, 2)} suffix="元/股" />
-                    <KpiCard title="当前股息" value={fmtNum(curDiv, 2)} suffix="元" />
-                    <KpiCard title="预期下期股息" value={fmtNum(nextDiv, 2)} suffix="元" />
-                  </KpiGrid>
-                  {model ? <div className="mt-2 text-xs text-text-secondary">模型: {model}</div> : null}
-                </div>
-              );
-            })()
-          : null}
-
-        {data != null && !friendlyErr && tab === 'relative' ? (
-          <div className="mt-4 space-y-4">
-            {relativeRows.length > 0 ? (
-              <>
-                <DataTable
-                  rows={relativeRows as Record<string, unknown>[]}
-                  columns={[
-                    { key: 'name', label: '名称' },
-                    { key: 'code', label: '代码' },
-                    { key: 'pe', label: 'PE', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
-                    { key: 'pb', label: 'PB', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
-                    { key: 'ps', label: 'PS', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
-                    { key: 'peg', label: 'PEG', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
-                    {
-                      key: 'dividend_yield',
-                      label: '股息率',
-                      align: 'right' as const,
-                      render: (value) => fmtPct(Number(value)),
-                    },
-                  ]}
-                  onExport={() => exportCSV(relativeRows as Record<string, unknown>[], '相对估值')}
-                />
-                <BarChart
-                  items={relativeRows.slice(0, 10).map((row) => {
-                    const item = row as Record<string, unknown>;
-                    return {
-                      label: String(item.name ?? item.code ?? ''),
-                      value: Number(item.pe ?? 0),
-                      color: COLORS.primary,
-                    };
-                  })}
-                  yAxisName="PE"
-                  horizontal
-                />
-                {resolvedCode ? (
-                  <div className="flex flex-wrap gap-2">
-                    <Link
-                      href={`/stock?code=${encodeURIComponent(resolvedCode)}`}
-                      className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}
-                    >
-                      返回个股详情
-                    </Link>
-                    <Link
-                      href={`/fundamental?code=${encodeURIComponent(resolvedCode)}`}
-                      className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}
-                    >
-                      去基本面对比
-                    </Link>
+                  <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,160px))_auto] xl:items-end">
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">折现率</span>
+                      <input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">增长率</span>
+                      <input value={growthRate} onChange={(e) => setGrowthRate(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">预测年数</span>
+                      <input value={years} onChange={(e) => setYears(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                      计算 DCF
+                    </button>
                   </div>
-                ) : null}
-              </>
-            ) : result ? (
-              <DataTable rows={[result as Record<string, unknown>]} />
-            ) : null}
-          </div>
-        ) : null}
+                  <details className="rounded-[22px] border border-glass-border bg-white/35 px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-medium text-text-primary">预设与适用场景</summary>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {DCF_PRESETS.map((preset) => (
+                        <button key={preset.label} type="button" onClick={() => applyDcfPreset(preset)} className={CHIP_BUTTON_CLS}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              ) : null}
 
-        {data != null && !friendlyErr && tab === 'scenario'
-          ? (() => {
-              const scenarios =
-                scenarioRows.length > 0
-                  ? scenarioRows
-                  : (() => {
-                      if (!result) return [];
-                      const r = result as Record<string, unknown>;
-                      return ['optimistic', 'base', 'pessimistic']
-                        .filter((key) => r[key] != null)
-                        .map((key) => ({ scenario: key, ...(r[key] as Record<string, unknown>) }));
-                    })();
-              const badgeVariant = (label: string) =>
-                /optim/i.test(label)
-                  ? ('success' as const)
-                  : /pessim/i.test(label)
-                    ? ('danger' as const)
-                    : ('warning' as const);
-
-              return (
+              {tab === 'ddm' ? (
                 <div className="mt-4 space-y-4">
-                  {scenarios.length > 0 ? (
-                    <>
+                  <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,160px))_auto] xl:items-end">
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">股息</span>
+                      <input value={dividend} onChange={(e) => setDividend(e.target.value)} className={FIELD_CLS} placeholder="可选" />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">增长率</span>
+                      <input value={ddmGrowth} onChange={(e) => setDdmGrowth(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">要求回报率</span>
+                      <input value={requiredReturn} onChange={(e) => setRequiredReturn(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                      计算 DDM
+                    </button>
+                  </div>
+                  <details className="rounded-[22px] border border-glass-border bg-white/35 px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-medium text-text-primary">预设与适用场景</summary>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {DDM_PRESETS.map((preset) => (
+                        <button key={preset.label} type="button" onClick={() => applyDdmPreset(preset)} className={CHIP_BUTTON_CLS}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              ) : null}
+
+              {tab === 'relative' ? (
+                <div className="mt-4 space-y-4">
+                  <p className="mb-0 text-sm text-text-secondary">
+                    相对估值适合先看同业横向比较，确认目标股票当前处在行业估值的高位还是低位。
+                  </p>
+                  <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                    查询相对估值
+                  </button>
+                </div>
+              ) : null}
+
+              {tab === 'scenario' ? (
+                <div className="mt-4 space-y-4">
+                  <div className="grid gap-4 xl:grid-cols-[repeat(3,minmax(0,180px))_auto] xl:items-end">
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">基础营收</span>
+                      <input value={baseRevenue} onChange={(e) => setBaseRevenue(e.target.value)} className={FIELD_CLS} placeholder="必填，如 1300 亿" />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">行业</span>
+                      <input value={industry} onChange={(e) => setIndustry(e.target.value)} className={FIELD_CLS} placeholder="可选" />
+                    </label>
+                    <label className="grid gap-2 text-xs text-text-secondary">
+                      <span className="font-medium uppercase tracking-[0.12em] text-text-muted">预测年数</span>
+                      <input value={years} onChange={(e) => setYears(e.target.value)} className={FIELD_CLS} />
+                    </label>
+                    <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                      情景分析
+                    </button>
+                  </div>
+                  <details className="rounded-[22px] border border-glass-border bg-white/35 px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-medium text-text-primary">预设与适用场景</summary>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {SCENARIO_PRESETS.map((preset) => (
+                        <button key={preset.label} type="button" onClick={() => applyScenarioPreset(preset)} className={CHIP_BUTTON_CLS}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+
+          {viewTab === 'results' ? (
+            <>
+              {isPending ? <LoadingState text="计算中..." /> : null}
+              {formError || error || friendlyErr ? <ErrorState text={formError || error || friendlyErr!} hint="请检查参数后重试" /> : null}
+
+              {!isPending && !data && !error && !formError ? (
+                <EmptyState
+                  text={
+                    tab === 'dcf'
+                      ? '先设置现金流假设，再估算企业内在价值'
+                      : tab === 'ddm'
+                        ? '先填写分红假设，再估算每股价值'
+                        : tab === 'relative'
+                          ? '先查询同业估值对比，快速判断目标股票高估还是低估'
+                          : '先填写基础营收，再比较不同增长情景下的价值区间'
+                  }
+                  hint={`当前模型：${activeTabLabel}。${recommendedAudience}`}
+                />
+              ) : null}
+
+              {data != null && !friendlyErr && tab === 'dcf' && result
+                ? (() => {
+                    const r = result as Record<string, unknown>;
+                    const intrinsic = Number(v(r, 'intrinsic_value', 'intrinsicValue', 'value') ?? 0);
+                    const pvSum = Number(v(r, 'pv_sum', 'pvSum') ?? 0);
+                    const pvTerminal = Number(v(r, 'pv_terminal', 'pvTerminal') ?? 0);
+                    const terminalValue = Number(v(r, 'terminal_value', 'terminalValue') ?? 0);
+                    const model = String(v(r, 'model') ?? '');
+                    const wacc = r.wacc_breakdown as Record<string, unknown> | undefined;
+                    const cfs = (r.cash_flows ?? r.cashFlows ?? r.projected_cash_flows ?? r.projection ?? []) as Record<string, unknown>[];
+
+                    return (
+                      <div className="space-y-4">
+                        <KpiGrid cols={4}>
+                          <KpiCard title="内在价值(总)" value={fmtAmount(intrinsic)} />
+                          <KpiCard title="现金流现值" value={fmtAmount(pvSum)} />
+                          <KpiCard title="终值现值" value={fmtAmount(pvTerminal)} />
+                          <KpiCard title="终值" value={fmtAmount(terminalValue)} />
+                        </KpiGrid>
+                        {model ? <div className="text-xs text-text-secondary">模型: {model}</div> : null}
+                        {wacc ? (
+                          <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-text-secondary">
+                            <span>WACC: {fmtPct(Number(wacc.wacc ?? 0) * 100)}</span>
+                            <span>权益成本: {fmtPct(Number(wacc.cost_of_equity ?? 0) * 100)}</span>
+                            <span>债务成本(税后): {fmtPct(Number(wacc.cost_of_debt_after_tax ?? 0) * 100)}</span>
+                          </div>
+                        ) : null}
+                        {Array.isArray(cfs) && cfs.length > 0 ? (
+                          <BarChart
+                            items={cfs.map((cf, index) => ({
+                              label: String(cf.year ?? cf.period ?? `Y${index + 1}`),
+                              value: Number(cf.pv_fcf ?? cf.fcf ?? cf.value ?? cf.cash_flow ?? 0),
+                              color: COLORS.primary,
+                            }))}
+                            yAxisName="现金流"
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })()
+                : null}
+
+              {data != null && !friendlyErr && tab === 'ddm' && result
+                ? (() => {
+                    const r = result as Record<string, unknown>;
+                    const intrinsic = Number(v(r, 'intrinsic_value', 'intrinsicValue', 'value') ?? 0);
+                    const curDiv = Number(v(r, 'current_dividend', 'currentDividend') ?? 0);
+                    const nextDiv = Number(v(r, 'next_dividend', 'nextDividend') ?? 0);
+                    return (
                       <KpiGrid cols={3}>
-                        {(scenarios as Record<string, unknown>[]).map((scenario, index) => {
-                          const label = String(
-                            scenario.scenario ?? scenario.name ?? scenario.label ?? `情景${index + 1}`,
-                          );
-                          const value = Number(
-                            scenario.intrinsic_value ?? scenario.intrinsicValue ?? scenario.value ?? 0,
-                          );
-                          const upside = Number(scenario.upside ?? scenario.upside_pct ?? 0);
-                          return (
-                            <KpiCard
-                              key={label}
-                              title={
-                                (
-                                  <>
-                                    <Badge variant={badgeVariant(label)}>{label}</Badge>
-                                  </>
-                                ) as unknown as string
-                              }
-                              value={fmtNum(value, 2)}
-                              suffix="元"
-                              change={upside || null}
-                            />
-                          );
-                        })}
+                        <KpiCard title="内在价值" value={fmtNum(intrinsic, 2)} suffix="元/股" />
+                        <KpiCard title="当前股息" value={fmtNum(curDiv, 2)} suffix="元" />
+                        <KpiCard title="预期下期股息" value={fmtNum(nextDiv, 2)} suffix="元" />
                       </KpiGrid>
+                    );
+                  })()
+                : null}
+
+              {data != null && !friendlyErr && tab === 'relative' ? (
+                <div className="space-y-4">
+                  {relativeRows.length > 0 ? (
+                    <>
+                      <DataTable
+                        rows={relativeRows as Record<string, unknown>[]}
+                        columns={[
+                          { key: 'name', label: '名称' },
+                          { key: 'code', label: '代码' },
+                          { key: 'pe', label: 'PE', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
+                          { key: 'pb', label: 'PB', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
+                          { key: 'ps', label: 'PS', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
+                          { key: 'peg', label: 'PEG', align: 'right' as const, render: (value) => fmtNum(Number(value), 2) },
+                          {
+                            key: 'dividend_yield',
+                            label: '股息率',
+                            align: 'right' as const,
+                            render: (value) => fmtPct(Number(value)),
+                          },
+                        ]}
+                        onExport={() => exportCSV(relativeRows as Record<string, unknown>[], '相对估值')}
+                      />
                       <BarChart
-                        items={(scenarios as Record<string, unknown>[]).map((scenario, index) => ({
-                          label: String(scenario.scenario ?? scenario.name ?? `情景${index + 1}`),
-                          value: Number(scenario.intrinsic_value ?? scenario.intrinsicValue ?? scenario.value ?? 0),
-                          color: [COLORS.success, COLORS.warning, COLORS.danger][index] ?? COLORS.primary,
-                        }))}
-                        yAxisName="内在价值"
+                        items={relativeRows.slice(0, 10).map((row) => {
+                          const item = row as Record<string, unknown>;
+                          return {
+                            label: String(item.name ?? item.code ?? ''),
+                            value: Number(item.pe ?? 0),
+                            color: COLORS.primary,
+                          };
+                        })}
+                        yAxisName="PE"
+                        horizontal
                       />
                     </>
                   ) : result ? (
                     <DataTable rows={[result as Record<string, unknown>]} />
                   ) : null}
                 </div>
-              );
-            })()
-          : null}
+              ) : null}
+
+              {data != null && !friendlyErr && tab === 'scenario'
+                ? (() => {
+                    const scenarios =
+                      scenarioRows.length > 0
+                        ? scenarioRows
+                        : (() => {
+                            if (!result) return [];
+                            const r = result as Record<string, unknown>;
+                            return ['optimistic', 'base', 'pessimistic']
+                              .filter((key) => r[key] != null)
+                              .map((key) => ({ scenario: key, ...(r[key] as Record<string, unknown>) }));
+                          })();
+
+                    return scenarios.length > 0 ? (
+                      <div className="space-y-4">
+                        <KpiGrid cols={3}>
+                          {(scenarios as Record<string, unknown>[]).map((scenario, index) => {
+                            const label = String(scenario.scenario ?? scenario.name ?? scenario.label ?? `情景${index + 1}`);
+                            const value = Number(scenario.intrinsic_value ?? scenario.intrinsicValue ?? scenario.value ?? 0);
+                            const upside = Number(scenario.upside ?? scenario.upside_pct ?? 0);
+                            return <KpiCard key={label} title={label} value={fmtNum(value, 2)} suffix="元" change={upside || null} />;
+                          })}
+                        </KpiGrid>
+                        <BarChart
+                          items={(scenarios as Record<string, unknown>[]).map((scenario, index) => ({
+                            label: String(scenario.scenario ?? scenario.name ?? `情景${index + 1}`),
+                            value: Number(scenario.intrinsic_value ?? scenario.intrinsicValue ?? scenario.value ?? 0),
+                            color: [COLORS.success, COLORS.warning, COLORS.danger][index] ?? COLORS.primary,
+                          }))}
+                          yAxisName="内在价值"
+                        />
+                      </div>
+                    ) : result ? (
+                      <DataTable rows={[result as Record<string, unknown>]} />
+                    ) : null;
+                  })()
+                : null}
+            </>
+          ) : null}
+        </SectionCard>
       </div>
 
-      <div className="metric-tile mt-4 rounded-[24px] p-4 text-xs text-text-secondary">
-        免责声明：估值模型结果仅供参考，不构成投资建议。模型假设可能与实际情况存在偏差。
-      </div>
+      {!compactLayout ? (
+        <div className="metric-tile mt-4 rounded-[24px] p-4 text-xs text-text-secondary">
+          免责声明：估值模型结果仅供参考，不构成投资建议。模型假设可能与实际情况存在偏差。
+        </div>
+      ) : null}
     </PageContainer>
   );
 }

@@ -18,9 +18,14 @@ export type StreamChatOptions = {
 };
 
 export async function getLlmConfig(): Promise<LlmConfig | null> {
-  const r = await authedFetch('/chat/config', { cache: 'no-store' });
-  const d = await r.json();
-  return d?.data ?? null;
+  try {
+    const r = await authedFetch('/chat/config', { cache: 'no-store' }, { redirectOnUnauthorized: false });
+    if (!r.ok) return null;
+    const d = await r.json().catch(() => null);
+    return d?.data ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
@@ -33,19 +38,32 @@ export async function saveLlmConfig(config: LlmConfig): Promise<void> {
 }
 
 export async function getModelPresets(): Promise<ModelPreset[]> {
-  const r = await authedFetch('/chat/models', { cache: 'no-store' });
-  const d = await r.json();
-  return d?.data ?? [];
+  try {
+    const r = await authedFetch('/chat/models', { cache: 'no-store' }, { redirectOnUnauthorized: false });
+    if (!r.ok) return [];
+    const d = await r.json().catch(() => null);
+    return d?.data ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export async function probeModels(baseUrl: string, apiKey: string): Promise<{ success: boolean; models: string[]; error?: string }> {
-  const r = await authedFetch('/chat/probe-models', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() }),
-  });
-  const d = await r.json();
-  return { success: d?.success ?? false, models: d?.models ?? [], error: d?.error };
+  try {
+    const r = await authedFetch('/chat/probe-models', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() }),
+    }, { redirectOnUnauthorized: false });
+    const d = await r.json().catch(() => null);
+    return { success: d?.success ?? r.ok, models: d?.models ?? [], error: d?.error };
+  } catch (error) {
+    return {
+      success: false,
+      models: [],
+      error: error instanceof Error ? error.message : '模型探测失败',
+    };
+  }
 }
 
 export async function streamChat(

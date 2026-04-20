@@ -1,12 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import CopilotDock from '@/components/copilot-dock';
 import { NotificationBell } from '@/components/notification-bell';
 import { Onboarding } from '@/components/onboarding';
+import { useMobile } from '@/hooks/use-mobile';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useBffAvailability } from '@/lib/bff-availability';
 import { useTheme } from '@/hooks/use-theme';
 import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
@@ -92,7 +95,7 @@ const UTILITY_LINKS: NavItem[] = [
 const FALLBACK_PAGE_LABELS: Record<string, string> = {
   '/skills': '技能中心',
   '/events': '事件中心',
-  '/execution': '执行工作台',
+  '/execution': '执行中心',
   '/performance': '绩效分析',
   '/screener': '条件选股',
 };
@@ -335,12 +338,14 @@ function CompactNav({
 }
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
+  const rawPathname = useStablePathname();
+  const pathname = rawPathname ?? '/';
+  const useOverlayDock = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const router = useRouter();
   const { user, setUser, logout } = useAuthStore();
   const storeCode = useStockContext((state) => state.code);
   const hydrated = useHydrated();
-  const isAuthPage = isPublicPathname(pathname);
+  const isAuthPage = rawPathname ? isPublicPathname(rawPathname) : false;
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
@@ -360,7 +365,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
   const currentStockCode = hydrated ? storeCode || activeWorkspace.context.stockCode || '' : '';
   const isAiCenterPage = pathname === '/assistant' || pathname.startsWith('/assistant/');
-  const desktopDockVisible = hydrated && !isAiCenterPage && (layout.dockVisible || dockOpen);
+  const dockRequested = hydrated && !isAiCenterPage && (layout.dockVisible || dockOpen);
+  const showPersistentDock = dockRequested && !useOverlayDock;
+  const showOverlayDock = dockOpen && !isAiCenterPage && useOverlayDock;
 
   useEffect(() => {
     if (isAuthPage || user) return;
@@ -449,7 +456,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       },
       {
         id: 'global.open-copilot',
-        label: desktopDockVisible ? '聚焦 Copilot' : '打开 Copilot',
+        label: showPersistentDock || showOverlayDock ? '聚焦 Copilot' : '打开 Copilot',
         description: '打开右侧 Copilot 面板',
         keywords: ['copilot', 'ai', '助手'],
         scope: 'global',
@@ -460,7 +467,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         },
       },
     ],
-    [createWorkspace, desktopDockVisible, layout.navCollapsed, router, setDockOpen, updateLayout],
+    [createWorkspace, layout.navCollapsed, router, setDockOpen, showOverlayDock, showPersistentDock, updateLayout],
   );
 
   useEffect(() => {
@@ -488,9 +495,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const shellTheme = resolveShellTheme(pathname);
 
   const desktopNav = (
-    <aside className="app-shell-sidebar hidden shrink-0 md:flex md:flex-col" style={{ width: navRailWidth }}>
+    <aside className="app-shell-sidebar hidden shrink-0 xl:flex xl:flex-col" style={{ width: navRailWidth }}>
       <div className="border-b border-sidebar-border px-4 py-4">
-        <div className="eyebrow mb-2">AIASK Workspace</div>
+        <div className="eyebrow mb-2">AIASK 导航</div>
         <div className="flex items-center justify-between gap-2">
           <Link href="/" className="no-underline text-lg font-semibold text-text-primary">
             AIASK
@@ -507,7 +514,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
         {!navCollapsed ? (
           <p className="mb-0 mt-3 text-xs leading-5 text-text-secondary">
-            用工作流而不是功能目录完成看盘、研究、策略和交易任务。
+            统一查看市场、研究、策略和交易模块。
           </p>
         ) : null}
       </div>
@@ -569,7 +576,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   );
 
   const mobileDrawer = drawerOpen ? (
-    <div className="fixed inset-0 z-50 flex md:hidden">
+    <div className="fixed inset-0 z-50 flex xl:hidden">
       <div className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
       <nav className="relative z-10 flex w-[85vw] max-w-[320px] flex-col rounded-r-lg border border-sidebar-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(244,249,255,0.58))] shadow-[0_32px_72px_-32px_rgba(15,23,42,0.42)] backdrop-blur-2xl">
         {/* 头部 */}
@@ -675,13 +682,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
     </div>
   ) : null;
 
-  const mobileDock = dockOpen && !isAiCenterPage ? (
-    <div className="fixed inset-0 z-50 flex justify-end xl:hidden">
+  const mobileDock = showOverlayDock ? (
+    <div className="fixed inset-0 z-50 flex justify-end 2xl:hidden">
       <div className="absolute inset-0 bg-black/40" onClick={() => setDockOpen(false)} />
       <div className="relative z-10 h-full w-[90vw] max-w-[420px] rounded-l-lg border border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.76),rgba(244,249,255,0.58))] shadow-[0_32px_72px_-32px_rgba(15,23,42,0.42)] backdrop-blur-2xl">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
-            <div className="text-sm font-medium text-text-primary">AI 工作台</div>
+            <div className="text-sm font-medium text-text-primary">AI 助手</div>
             <div className="text-xs text-text-secondary">按需展开，不常驻占据主画布</div>
           </div>
           <button
@@ -717,14 +724,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => setDrawerOpen(true)}
-                className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm md:hidden"
+                className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm xl:hidden"
                 aria-label="打开导航"
               >
                 ☰
               </button>
               <div className="min-w-0">
                 <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
-                  当前工作区
+                  当前页面
                 </div>
                 <div className="truncate text-base font-semibold text-text-primary">{activePageLabel}</div>
                 <div className="truncate text-[11px] text-text-secondary" suppressHydrationWarning>
@@ -738,7 +745,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <button
                   type="button"
                   onClick={() => {
-                    if (desktopDockVisible) {
+                    if (showPersistentDock || showOverlayDock) {
                       updateLayout({ dockVisible: false });
                       setDockOpen(false);
                       return;
@@ -748,7 +755,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   }}
                   className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
                 >
-                  {desktopDockVisible ? '收起 AI' : '打开 AI'}
+                  {showPersistentDock || showOverlayDock ? '收起 AI' : '打开 AI'}
                 </button>
               ) : null}
               <WsIndicator />
@@ -789,8 +796,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <main className="app-shell-content mobile-safe-bottom min-w-0 flex-1 overflow-auto">
               <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>{children}</div>
             </main>
-            {desktopDockVisible ? (
-              <aside className="app-shell-dock hidden shrink-0 xl:flex" style={{ width: desktopDockWidth }}>
+            {showPersistentDock ? (
+              <aside className="app-shell-dock hidden shrink-0 2xl:flex" style={{ width: desktopDockWidth }}>
                 <CopilotDock />
               </aside>
             ) : null}

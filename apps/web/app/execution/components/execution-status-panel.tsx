@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { FormEventHandler } from 'react';
 import { Badge, SectionCard } from '@/components/ui';
 import { fmtNum } from '@/lib/data-utils';
@@ -28,6 +29,7 @@ type ExecutionStatusPanelProps = {
   taskDetailError: string | null;
   artifactError: string | null;
   onOpenArtifactDetail: (artifactId: string) => void;
+  artifactDetailHref: string;
 };
 
 export default function ExecutionStatusPanel({
@@ -49,6 +51,7 @@ export default function ExecutionStatusPanel({
   taskDetailError,
   artifactError,
   onOpenArtifactDetail,
+  artifactDetailHref,
 }: ExecutionStatusPanelProps) {
   const workbenchWarnings = executionWorkbench?.warnings ?? [];
   const workbenchOrders = executionWorkbench?.orderContext?.recentOrders ?? [];
@@ -195,7 +198,7 @@ export default function ExecutionStatusPanel({
             artifact {artifactData.artifactId}，最新任务 {artifactData.latestTaskId || '-'}。
           </div>
           {artifactData.count > 0 && artifactDetailId ? (
-            <div className="mt-3">
+            <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => onOpenArtifactDetail(artifactDetailId)}
@@ -204,8 +207,17 @@ export default function ExecutionStatusPanel({
               >
                 打开 artifact 详情页
               </button>
+              <Link href={artifactDetailHref} className={`${executionChipButtonCls} no-underline text-inherit`}>
+                打开独立详情链接
+              </Link>
             </div>
-          ) : null}
+          ) : (
+            <div className="mt-3">
+              <Link href={artifactDetailHref} className={`${executionChipButtonCls} no-underline text-inherit`}>
+                查看 artifact 空态
+              </Link>
+            </div>
+          )}
           {artifactData.latestTask ? (
             <div className="mt-3 grid gap-2 text-xs text-text-secondary sm:grid-cols-2">
               <div>标的：{artifactData.latestTask.code || '-'}</div>

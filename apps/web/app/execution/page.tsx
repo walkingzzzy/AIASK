@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import ExecutionHero from '@/app/execution/components/execution-hero';
@@ -12,13 +12,17 @@ import ExecutionReviewPanel from '@/app/execution/components/execution-review-pa
 import ExecutionStatusPanel from '@/app/execution/components/execution-status-panel';
 import ExecutionTasksPanel from '@/app/execution/components/execution-tasks-panel';
 import { useExecutionLiveGateway } from '@/app/execution/hooks/use-execution-live-gateway';
-import { PageContainer, KpiCard, KpiGrid } from '@/components/ui';
+import { PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray, fmtNum } from '@/lib/data-utils';
+import { buildExecutionArtifactDetailHref } from '@/lib/surface-contracts';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   asRecord,
   briefSummary,
@@ -38,9 +42,16 @@ import type {
   PaperTradingRouteExecutionInput,
 } from '@aiask/shared-types';
 
+type ExecutionMobilePrimaryTab = 'order' | 'gateway';
+
+const EXECUTION_MOBILE_PRIMARY_TABS = [
+  { key: 'order', label: '下单' },
+  { key: 'gateway', label: '实时网关' },
+] as const;
+
 export default function ExecutionPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
@@ -62,7 +73,9 @@ export default function ExecutionPage() {
   const [artifactIdInput, setArtifactIdInput] = useState(initialArtifactId);
   const [submittedArtifactId, setSubmittedArtifactId] = useState(initialArtifactId);
   const [formError, setFormError] = useState<string | null>(null);
+  const [mobilePrimaryTab, setMobilePrimaryTab] = useState<ExecutionMobilePrimaryTab>('order');
   const lastWorkspaceIdRef = useRef<string | null>(null);
+  const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   const accountsQ = useApiQuery<PaperTradingAccountsResponse | unknown[]>('/paper-trading/accounts');
   const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>(
@@ -519,27 +532,28 @@ export default function ExecutionPage() {
   }
 
   function openArtifactDetail(nextArtifactId = currentArtifactId) {
-    if (!nextArtifactId) {
-      throw new Error('当前没有可打开的 artifact');
-    }
-    const params = new URLSearchParams();
-    if (accountId) params.set('account_id', accountId);
-    const href = `/execution/artifacts/${encodeURIComponent(nextArtifactId)}${params.toString() ? `?${params.toString()}` : ''}`;
+    const resolvedArtifactId = String(nextArtifactId ?? '').trim();
+    const href = buildExecutionArtifactDetailHref(resolvedArtifactId, accountId);
     updateWorkbenchContext({
       stockCode: activeExecutionCode || null,
       accountId: accountId || null,
       executionId: currentExecutionId || null,
-      artifactId: nextArtifactId,
+      artifactId: resolvedArtifactId || null,
     });
     addWorkbenchTask({
       pageKey: 'execution',
-      title: `查看 artifact ${nextArtifactId}`,
+      title: resolvedArtifactId ? `查看 artifact ${resolvedArtifactId}` : '查看 artifact 空态契约',
       href,
       kind: 'artifact-review',
-      payload: { accountId, executionId: currentExecutionId, artifactId: nextArtifactId },
+      payload: { accountId, executionId: currentExecutionId, artifactId: resolvedArtifactId || null },
     });
     router.push(href);
   }
+
+  const artifactDetailHref = useMemo(
+    () => buildExecutionArtifactDetailHref(currentArtifactId || artifactIdInput, accountId),
+    [accountId, artifactIdInput, currentArtifactId],
+  );
 
   const currentView = useMemo(
     () => ({
@@ -742,9 +756,109 @@ export default function ExecutionPage() {
 
   usePageActions(pageActions);
 
+  const gatewayPanel = (
+    <ExecutionLiveGatewayPanel
+      {...liveGatewayPanelProps}
+      onOpenArtifactDetail={openArtifactDetail}
+      onUseArtifactForQuery={useArtifactForQuery}
+    />
+  );
+
+  const orderPanel = (
+    <ExecutionOrderForm
+      code={code}
+      codeError={codeError}
+      onCodeChange={setCode}
+      direction={direction}
+      onDirectionChange={setDirection}
+      quantity={quantity}
+      onQuantityChange={setQuantity}
+      urgency={urgency}
+      onUrgencyChange={setUrgency}
+      orderType={orderType}
+      onOrderTypeChange={setOrderType}
+      price={price}
+      onPriceChange={setPrice}
+      stopPrice={stopPrice}
+      onStopPriceChange={setStopPrice}
+      accountId={accountId}
+      onAccountIdChange={setAccountId}
+      accounts={accounts}
+      artifactIdInput={artifactIdInput}
+      onArtifactIdChange={setArtifactIdInput}
+      estimatedAmount={estimatedAmount}
+      formError={formError}
+      routeExecutionError={routeExecutionApi.error}
+      routeExecutionPending={routeExecutionApi.isPending}
+      onSubmit={handleRouteExecution}
+      onLoadExample={loadExample}
+    />
+  );
+
+  const statusPanel = (
+    <ExecutionStatusPanel
+      currentExecutionId={currentExecutionId}
+      executionIdInput={executionIdInput}
+      onExecutionIdChange={setExecutionIdInput}
+      artifactIdInput={artifactIdInput}
+      onArtifactIdChange={setArtifactIdInput}
+      onStatusSubmit={handleStatusQuery}
+      onArtifactSubmit={handleArtifactQuery}
+      executionWorkbench={executionWorkbench}
+      latestExecution={latestExecution}
+      workbenchMessage={workbenchMessage}
+      statusPayload={statusPayload}
+      pendingOrderCount={pendingOrders.length}
+      artifactData={artifactQ.data}
+      currentArtifactId={currentArtifactId}
+      executionWorkbenchError={executionWorkbenchQ.error}
+      taskDetailError={taskDetailQ.error}
+      artifactError={artifactQ.error}
+      onOpenArtifactDetail={openArtifactDetail}
+      artifactDetailHref={artifactDetailHref}
+    />
+  );
+
+  const tasksPanel = (
+    <ExecutionTasksPanel
+      executionTasks={executionTasks}
+      onRefresh={() => void tasksQ.refetch()}
+      onSelectTask={selectExecutionTask}
+    />
+  );
+
+  const reviewPanel = (
+    <ExecutionReviewPanel
+      executionInsight={executionInsight}
+      activeExecutionCode={activeExecutionCode}
+      executionGuidance={executionGuidance}
+      onOpenPerformanceReview={openPerformanceReview}
+      onOpenRiskReview={openRiskReview}
+      onOpenStockDetail={openStockDetail}
+    />
+  );
+
+  const pendingOrdersPanel = (
+    <ExecutionPendingOrdersPanel pendingOrders={pendingOrders} onRefresh={() => void pendingQ.refetch()} />
+  );
+
   return (
     <PageContainer>
+      <div className="panel-soft mb-4 rounded-[28px] p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Primary Focus</div>
+            <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">执行主区切换</h2>
+            <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
+              默认只展开一个主任务面板。先下单或先看网关状态，再结合右侧状态、挂单和复盘摘要继续处理。
+            </p>
+          </div>
+          <TabBar tabs={EXECUTION_MOBILE_PRIMARY_TABS} active={mobilePrimaryTab} onChange={setMobilePrimaryTab} />
+        </div>
+      </div>
+
       <ExecutionHero
+        compactMobile={collapseToTabs}
         urgency={urgency}
         liveGatewayReady={liveGatewayReady}
         activeExecutionCode={activeExecutionCode}
@@ -777,6 +891,7 @@ export default function ExecutionPage() {
           applyExecutionPayload(snapshot);
         }}
         supportsPagePanels
+        mobileSummaryMode="hidden"
       />
 
       <KpiGrid cols={5} className="mb-4">
@@ -789,86 +904,26 @@ export default function ExecutionPage() {
 
       <WorkspaceSplitLayout
         pageKey="execution"
+        primaryLabel="执行主区"
+        secondaryLabel="执行状态"
+        defaultMobileTab="primary"
+        secondaryPanels={[
+          { key: 'status', label: '状态', content: statusPanel },
+          { key: 'tasks', label: '任务', content: tasksPanel },
+          { key: 'review', label: '复盘', content: reviewPanel },
+          { key: 'pending', label: '挂单', content: pendingOrdersPanel },
+        ]}
         primary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
-            <ExecutionLiveGatewayPanel
-              {...liveGatewayPanelProps}
-              onOpenArtifactDetail={openArtifactDetail}
-              onUseArtifactForQuery={useArtifactForQuery}
-            />
-
-            <ExecutionOrderForm
-              code={code}
-              codeError={codeError}
-              onCodeChange={setCode}
-              direction={direction}
-              onDirectionChange={setDirection}
-              quantity={quantity}
-              onQuantityChange={setQuantity}
-              urgency={urgency}
-              onUrgencyChange={setUrgency}
-              orderType={orderType}
-              onOrderTypeChange={setOrderType}
-              price={price}
-              onPriceChange={setPrice}
-              stopPrice={stopPrice}
-              onStopPriceChange={setStopPrice}
-              accountId={accountId}
-              onAccountIdChange={setAccountId}
-              accounts={accounts}
-              artifactIdInput={artifactIdInput}
-              onArtifactIdChange={setArtifactIdInput}
-              estimatedAmount={estimatedAmount}
-              formError={formError}
-              routeExecutionError={routeExecutionApi.error}
-              routeExecutionPending={routeExecutionApi.isPending}
-              onSubmit={handleRouteExecution}
-              onLoadExample={loadExample}
-            />
+            {mobilePrimaryTab === 'gateway' ? gatewayPanel : orderPanel}
           </div>
         }
         secondary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pl-1">
-            <ExecutionStatusPanel
-              currentExecutionId={currentExecutionId}
-              executionIdInput={executionIdInput}
-              onExecutionIdChange={setExecutionIdInput}
-              artifactIdInput={artifactIdInput}
-              onArtifactIdChange={setArtifactIdInput}
-              onStatusSubmit={handleStatusQuery}
-              onArtifactSubmit={handleArtifactQuery}
-              executionWorkbench={executionWorkbench}
-              latestExecution={latestExecution}
-              workbenchMessage={workbenchMessage}
-              statusPayload={statusPayload}
-              pendingOrderCount={pendingOrders.length}
-              artifactData={artifactQ.data}
-              currentArtifactId={currentArtifactId}
-              executionWorkbenchError={executionWorkbenchQ.error}
-              taskDetailError={taskDetailQ.error}
-              artifactError={artifactQ.error}
-              onOpenArtifactDetail={openArtifactDetail}
-            />
-
-            <ExecutionTasksPanel
-              executionTasks={executionTasks}
-              onRefresh={() => void tasksQ.refetch()}
-              onSelectTask={selectExecutionTask}
-            />
-
-            <ExecutionReviewPanel
-              executionInsight={executionInsight}
-              activeExecutionCode={activeExecutionCode}
-              executionGuidance={executionGuidance}
-              onOpenPerformanceReview={openPerformanceReview}
-              onOpenRiskReview={openRiskReview}
-              onOpenStockDetail={openStockDetail}
-            />
-
-            <ExecutionPendingOrdersPanel
-              pendingOrders={pendingOrders}
-              onRefresh={() => void pendingQ.refetch()}
-            />
+            {statusPanel}
+            {tasksPanel}
+            {reviewPanel}
+            {pendingOrdersPanel}
           </div>
         }
       />

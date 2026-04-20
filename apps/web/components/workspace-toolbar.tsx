@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Badge, SectionCard } from '@/components/ui';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   WORKSPACE_BLUEPRINTS,
   resolveWorkspacePagePanel,
@@ -23,6 +25,7 @@ type WorkspaceToolbarProps = {
   currentView: Record<string, unknown>;
   onApplyView: (snapshot: Record<string, unknown>) => void;
   supportsPagePanels?: boolean;
+  mobileSummaryMode?: 'full' | 'hidden';
 };
 
 function nextTaskStatus(status: WorkspaceTask['status']): WorkspaceTask['status'] {
@@ -74,6 +77,7 @@ const PAGE_KEY_LABELS: Record<string, string> = {
   execution: '执行工作台',
   performance: '绩效中心',
   portfolio: '组合管理',
+  strategy: '策略工作台',
   research: '研究工作台',
   search: '智能搜索',
   skills: '技能中心',
@@ -93,6 +97,7 @@ export default function WorkspaceToolbar({
   currentView,
   onApplyView,
   supportsPagePanels = false,
+  mobileSummaryMode = 'full',
 }: WorkspaceToolbarProps) {
   const router = useRouter();
   const hydrated = useWorkbenchStore((state) => state.hydrated);
@@ -132,7 +137,7 @@ export default function WorkspaceToolbar({
   const chips = useMemo(() => contextChips(activeWorkspace.context), [activeWorkspace.context]);
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
   const pagePanel = useMemo(
-    () => resolveWorkspacePagePanel(layout.pagePanels?.[pageKey]),
+    () => resolveWorkspacePagePanel(layout.pagePanels?.[pageKey], pageKey),
     [layout.pagePanels, pageKey],
   );
 
@@ -140,8 +145,14 @@ export default function WorkspaceToolbar({
   const [viewName, setViewName] = useState('');
   const [taskTitle, setTaskTitle] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const isCompactViewport = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const hideOnMobile = mobileSummaryMode === 'hidden' && isCompactViewport;
 
   if (!hydrated) {
+    return null;
+  }
+
+  if (hideOnMobile) {
     return null;
   }
 

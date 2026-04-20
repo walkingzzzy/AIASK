@@ -49,6 +49,7 @@ type SavedResearchView = {
 };
 
 const RESEARCH_VIEW_STORAGE_KEY = 'aiask.research.saved-view.v1';
+const DEFAULT_RESEARCH_CODE = '600519';
 
 const NEWS_TABS = [
   { key: 'stock-news', label: '个股新闻' },
@@ -95,28 +96,21 @@ export default function ResearchPage() {
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const lastWorkspaceIdRef = useRef<string | null>(null);
-  const savedView = useMemo(() => readSavedResearchView(), []);
-  const savedCode = typeof savedView?.code === 'string' && savedView.code.trim() ? savedView.code.trim() : '600519';
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode(savedCode);
-  const [range, setRange] = useState<Range>(() => (isValidRange(savedView?.range) ? savedView.range : '30'));
-  const [startDate, setStartDate] = useState(() =>
-    typeof savedView?.startDate === 'string' ? savedView.startDate : '',
-  );
-  const [endDate, setEndDate] = useState(() => (typeof savedView?.endDate === 'string' ? savedView.endDate : ''));
-  const [keyword, setKeyword] = useState(() => (typeof savedView?.keyword === 'string' ? savedView.keyword : ''));
+  const restoredSavedViewRef = useRef(false);
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode(DEFAULT_RESEARCH_CODE);
+  const [range, setRange] = useState<Range>('30');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [keyword, setKeyword] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const autoListPath = resolvedCode
     ? `/research/list?code=${encodeURIComponent(resolvedCode)}&days=30&limit=20&keyword=`
     : null;
-  const [listPath, setListPath] = useState<string | null>(() =>
-    typeof savedView?.listPath === 'string' || savedView?.listPath === null ? (savedView.listPath ?? null) : null,
-  );
+  const [listPath, setListPath] = useState<string | null>(null);
   const effectiveListPath = listPath ?? autoListPath;
 
   const listQ = useApiQuery<ResearchData>(effectiveListPath);
-  const [newsTab, setNewsTab] = useState<NewsTab>(() =>
-    isValidNewsTab(savedView?.newsTab) ? savedView.newsTab : 'stock-news',
-  );
+  const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
   const [newsPath, setNewsPath] = useState<string | null>(null);
   const newsQ = useApiQuery<unknown>(newsPath);
 
@@ -135,15 +129,45 @@ export default function ResearchPage() {
   }, [code, endDate, keyword, listPath, mounted, newsTab, range, startDate]);
 
   useEffect(() => {
+    if (!mounted || restoredSavedViewRef.current) return;
+    restoredSavedViewRef.current = true;
+    const savedView = readSavedResearchView();
+    if (!savedView) return;
+
+    if (typeof savedView.code === 'string' && savedView.code.trim()) {
+      setCode(savedView.code.trim());
+    }
+    if (isValidRange(savedView.range)) {
+      setRange(savedView.range);
+    }
+    if (typeof savedView.startDate === 'string') {
+      setStartDate(savedView.startDate);
+    }
+    if (typeof savedView.endDate === 'string') {
+      setEndDate(savedView.endDate);
+    }
+    if (typeof savedView.keyword === 'string') {
+      setKeyword(savedView.keyword);
+    }
+    if (isValidNewsTab(savedView.newsTab)) {
+      setNewsTab(savedView.newsTab);
+    }
+    if (typeof savedView.listPath === 'string') {
+      setListPath(savedView.listPath);
+    } else if (savedView.listPath === null) {
+      setListPath(null);
+    }
+  }, [mounted, setCode]);
+
+  useEffect(() => {
     if (!workbenchHydrated) return;
     const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
-    const nextCode = workbenchContext.stockCode || workbenchContext.eventCode || savedCode;
+    const nextCode = workbenchContext.stockCode || workbenchContext.eventCode || DEFAULT_RESEARCH_CODE;
     setCode(nextCode);
   }, [
     activeWorkspaceId,
-    savedCode,
     setCode,
     workbenchContext.eventCode,
     workbenchContext.stockCode,
@@ -350,7 +374,7 @@ export default function ResearchPage() {
   const primaryContent = (
     <>
       <section className="page-hero p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Research Workspace</Badge>
@@ -951,7 +975,14 @@ export default function ResearchPage() {
   return (
     <PageContainer>
       <WorkspaceToolbar pageKey="research" currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      <WorkspaceSplitLayout pageKey="research" primary={primaryContent} secondary={secondaryContent} />
+      <WorkspaceSplitLayout
+        pageKey="research"
+        primary={primaryContent}
+        secondary={secondaryContent}
+        primaryLabel="研究主区"
+        secondaryLabel="研究摘要"
+        defaultMobileTab="secondary"
+      />
     </PageContainer>
   );
 }

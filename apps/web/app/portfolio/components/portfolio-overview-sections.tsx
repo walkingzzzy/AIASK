@@ -20,6 +20,8 @@ type PortfolioHeroSectionProps = {
   stressScenarioCount: number;
   hasOptimization: boolean;
   hasRiskMetrics: boolean;
+  latestPortfolioRefreshText: string;
+  lastPrimaryRefreshAt: string | null;
   onRefreshList: () => void;
   onOptimize: () => void;
   onAnalyzeRisk: () => void;
@@ -38,6 +40,8 @@ export function PortfolioHeroSection({
   stressScenarioCount,
   hasOptimization,
   hasRiskMetrics,
+  latestPortfolioRefreshText,
+  lastPrimaryRefreshAt,
   onRefreshList,
   onOptimize,
   onAnalyzeRisk,
@@ -45,7 +49,7 @@ export function PortfolioHeroSection({
 }: PortfolioHeroSectionProps) {
   return (
     <section className="page-hero p-5 sm:p-6">
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+      <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="info">Portfolio Workspace</Badge>
@@ -66,7 +70,13 @@ export function PortfolioHeroSection({
             组合页不再让创建、加仓、优化和风险分析同时争夺注意力，而是把它们收束成一套连续的工作流。先锁定目标组合，再顺着持仓维护、配置优化和风险复盘依次推进。
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <button type="button" onClick={onRefreshList} className={heroPrimaryButtonCls}>
+            <button
+              type="button"
+              onClick={onRefreshList}
+              data-testid="page-primary-action"
+              data-action-testid="portfolio-refresh-action"
+              className={heroPrimaryButtonCls}
+            >
               刷新组合列表
             </button>
             <button type="button" onClick={onOptimize} className={heroSecondaryButtonCls}>
@@ -78,6 +88,22 @@ export function PortfolioHeroSection({
             <button type="button" onClick={onRunStress} className={heroSecondaryButtonCls}>
               压力测试
             </button>
+          </div>
+          <div
+            data-testid="page-primary-status"
+            className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前组合 {portfolioDisplayName}，持仓 {holdingCount} 条，策略 {strategyCount} 条
+            </div>
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              优化结果 {hasOptimization ? '已生成' : '未生成'} ｜ 风险分析 {hasRiskMetrics ? '已生成' : '未生成'} ｜
+              压力场景 {stressScenarioCount} 条
+            </p>
+            <p className="mt-2 mb-0 text-xs text-text-secondary">
+              最近数据：{latestPortfolioRefreshText}
+              {lastPrimaryRefreshAt ? ` ｜ 手动刷新：${lastPrimaryRefreshAt}` : ''}
+            </p>
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-4">
@@ -338,12 +364,7 @@ export function PortfolioOperationWorkspaceSection({
             </label>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onCreate}
-              disabled={createPending}
-              className={heroPrimaryButtonCls}
-            >
+            <button type="button" onClick={onCreate} disabled={createPending} className={heroPrimaryButtonCls}>
               {createPending ? '创建中...' : '创建组合'}
             </button>
           </div>

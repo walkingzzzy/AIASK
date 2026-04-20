@@ -1,11 +1,13 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, useToast } from '@/components/ui';
+import { Badge, PageContainer, SectionCard, TabBar, useToast } from '@/components/ui';
+import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   WORKSPACE_BLUEPRINTS,
   WORKSPACE_TASK_TEMPLATES,
@@ -48,6 +50,9 @@ import {
 } from './components/workspace-template-support';
 
 export default function WorkspaceTemplatesPage() {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
   const { toast } = useToast();
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
@@ -72,6 +77,13 @@ export default function WorkspaceTemplatesPage() {
   const [blueprintOverrides, setBlueprintOverrides] = useState<WorkspaceContextOverrides>({});
   const [templateOverrides, setTemplateOverrides] = useState<WorkspaceContextOverrides>({});
   const [workflowOverrides, setWorkflowOverrides] = useState<WorkspaceContextOverrides>({});
+  const [lastPrimaryWorkflowAt, setLastPrimaryWorkflowAt] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<'workflow' | 'blueprint' | 'task'>('workflow');
+  const [workflowCompactView, setWorkflowCompactView] = useState<'preview' | 'parameters' | 'catalog' | 'history'>(
+    'preview',
+  );
+  const [blueprintCompactView, setBlueprintCompactView] = useState<'preview' | 'parameters' | 'catalog'>('preview');
+  const [taskCompactView, setTaskCompactView] = useState<'preview' | 'parameters' | 'catalog'>('preview');
 
   const selectedBlueprint = WORKSPACE_BLUEPRINTS[selectedBlueprintId] ?? BLUEPRINT_OPTIONS[0];
   const selectedTemplate = WORKSPACE_TASK_TEMPLATES[selectedTemplateId] ?? TEMPLATE_OPTIONS[0];
@@ -210,6 +222,7 @@ export default function WorkspaceTemplatesPage() {
         summary.length > 0 ? `${workflow.label} 已执行：${summary.join('，')}` : `${workflow.label} 当前没有可执行步骤`,
         summary.length > 0 ? 'success' : 'warning',
       );
+      setLastPrimaryWorkflowAt(new Date().toLocaleString('zh-CN'));
     },
     [applyTemplateWorkflow, hasWorkflowErrors, selectedWorkflowOverrides, toast],
   );
@@ -324,74 +337,399 @@ export default function WorkspaceTemplatesPage() {
 
   return (
     <PageContainer>
-      <div className="mb-3">
-        <h1 className="m-0 text-lg font-semibold">模板中心</h1>
-        <p className="mb-0 mt-1 text-xs text-text-secondary">
-          这里把工作区模板和任务模板从工具条里抽离出来，升级成可预览、可参数化、可直接执行的编排中心。
-        </p>
-      </div>
+      {!compactLayout ? (
+        <div className="mb-3">
+          <h1 className="m-0 text-lg font-semibold">模板中心</h1>
+          <p className="mb-0 mt-1 text-xs text-text-secondary">
+            这里把工作区模板和任务模板从工具条里抽离出来，升级成可预览、可参数化、可直接执行的编排中心。
+          </p>
+        </div>
+      ) : null}
 
-      <WorkspaceToolbar
-        pageKey="workspace-templates"
-        currentView={currentView}
-        onApplyView={applyView}
-        supportsPagePanels
-      />
+      <SectionCard className={compactLayout ? 'p-3.5' : 'p-4'}>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(320px,1.05fr)]">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="info">{templateRuns.length} 条运行记录</Badge>
+              <Badge variant={hasWorkflowErrors ? 'warning' : 'success'}>
+                {hasWorkflowErrors ? '工作流参数待修正' : '工作流可执行'}
+              </Badge>
+              <Badge variant="neutral">当前工作区 {activeWorkspace.name}</Badge>
+            </div>
+            {!compactLayout ? (
+              <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
+                模板中心现在优先收口到“先预览当前工作流，再决定是否执行”。工作流仍然是主入口，蓝图创建和任务注入作为分区动作保留在下半屏。
+              </p>
+            ) : null}
+            {compactLayout ? (
+              <div className="mt-4">
+                <TabBar
+                  tabs={[
+                    { key: 'workflow', label: '工作流执行' },
+                    { key: 'blueprint', label: '蓝图创建' },
+                    { key: 'task', label: '任务模板' },
+                  ]}
+                  active={activeSection}
+                  onChange={setActiveSection}
+                />
+              </div>
+            ) : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {activeSection === 'workflow' ? (
+                <button
+                  type="button"
+                  onClick={() => handleApplyWorkflow(selectedWorkflow.id)}
+                  disabled={hasWorkflowErrors || selectedWorkflowPreview.executableStepCount === 0}
+                  data-testid="page-primary-action"
+                  data-action-testid="workspace-templates-run-action"
+                  className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  执行 {selectedWorkflow.label}
+                </button>
+              ) : null}
+              {activeSection === 'blueprint' ? (
+                <button
+                  type="button"
+                  onClick={() => handleCreateBlueprint(selectedBlueprint.id)}
+                  disabled={hasBlueprintErrors}
+                  className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  创建 {selectedBlueprint.label}
+                </button>
+              ) : null}
+              {activeSection === 'task' ? (
+                <button
+                  type="button"
+                  onClick={() => handleApplyTemplate(selectedTemplate.id)}
+                  disabled={hasTemplateErrors}
+                  className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  注入 {selectedTemplate.label}
+                </button>
+              ) : null}
+              {!compactLayout ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateBlueprint(selectedBlueprint.id)}
+                    disabled={hasBlueprintErrors}
+                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    创建 {selectedBlueprint.label}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyTemplate(selectedTemplate.id)}
+                    disabled={hasTemplateErrors}
+                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    注入 {selectedTemplate.label}
+                  </button>
+                </>
+              ) : null}
+            </div>
+            {compactLayout ? (
+              <details className="mt-3 rounded-[22px] border border-white/50 bg-white/24 px-4 py-3 text-sm text-text-secondary">
+                <summary className="cursor-pointer list-none font-medium text-text-primary">展开次要操作</summary>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyWorkflow(selectedWorkflow.id)}
+                    disabled={hasWorkflowErrors || selectedWorkflowPreview.executableStepCount === 0}
+                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    执行 {selectedWorkflow.label}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateBlueprint(selectedBlueprint.id)}
+                    disabled={hasBlueprintErrors}
+                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    创建 {selectedBlueprint.label}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyTemplate(selectedTemplate.id)}
+                    disabled={hasTemplateErrors}
+                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    注入 {selectedTemplate.label}
+                  </button>
+                </div>
+              </details>
+            ) : null}
+            {compactLayout ? (
+              <div data-testid="page-primary-status" className="mt-3 text-xs text-text-secondary">
+                当前聚焦
+                <span className="font-medium text-text-primary">
+                  {' '}
+                  {activeSection === 'workflow'
+                    ? selectedWorkflow.label
+                    : activeSection === 'blueprint'
+                      ? selectedBlueprint.label
+                      : selectedTemplate.label}
+                </span>
+                ，可执行 {selectedWorkflowPreview.executableStepCount} 步。
+              </div>
+            ) : (
+              <div
+                data-testid="page-primary-status"
+                className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+              >
+                <>
+                  <div className="font-medium text-text-primary">
+                    当前工作流 {selectedWorkflow.label} ｜ 蓝图 {selectedBlueprint.label} ｜ 任务模板{' '}
+                    {selectedTemplate.label}
+                  </div>
+                  <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                    可执行步骤 {selectedWorkflowPreview.executableStepCount} 个 ｜ 阻塞{' '}
+                    {selectedWorkflowPreview.blockedStepCount} 个 ｜ 跳过 {selectedWorkflowPreview.skippedStepCount} 个
+                  </p>
+                  <p className="mt-2 mb-0 text-xs text-text-secondary">
+                    最近运行：{latestTemplateRun ? latestTemplateRun.summary : '当前还没有模板执行记录'}
+                    {lastPrimaryWorkflowAt ? ` ｜ 主动作时间：${lastPrimaryWorkflowAt}` : ''}
+                  </p>
+                </>
+              </div>
+            )}
+          </div>
+          {!compactLayout ? (
+            <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+              <div className="font-medium text-text-primary">收口原则</div>
+              <ol className="mb-0 mt-2 space-y-1 pl-4">
+                <li>主动作只保留当前选中工作流的执行入口。</li>
+                <li>蓝图创建和任务注入继续保留，但下沉为次动作。</li>
+                <li>所有结果先看最近运行摘要，再决定是否下钻到具体步骤。</li>
+              </ol>
+            </div>
+          ) : null}
+        </div>
+      </SectionCard>
 
-      <WorkspaceTemplateContextCard baseContextChips={baseContextChips} />
-
+      {!compactLayout ? (
+        <WorkspaceToolbar
+          pageKey="workspace-templates"
+          currentView={currentView}
+          onApplyView={applyView}
+          supportsPagePanels
+        />
+      ) : null}
       <div className="mt-4 space-y-4">
-        <TemplateWorkflowCatalogCard
-          selectedWorkflowId={selectedWorkflowId}
-          onSelect={setSelectedWorkflowId}
-        />
+        {!compactLayout ? (
+          <SectionCard className="p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="eyebrow">Main Sections</div>
+              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">按主任务切换模板中心</h2>
+              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+                默认只展开一个主区域，先完成当前编排动作，再决定是否进入蓝图创建或任务注入，避免把整页堆成多层管理台。
+              </p>
+            </div>
+            <TabBar
+              tabs={[
+                { key: 'workflow', label: '工作流执行' },
+                { key: 'blueprint', label: '蓝图创建' },
+                { key: 'task', label: '任务模板' },
+              ]}
+              active={activeSection}
+              onChange={setActiveSection}
+            />
+          </div>
+          </SectionCard>
+        ) : null}
 
-        <TemplateFieldEditor
-          title={`${selectedWorkflow.label} 参数`}
-          description="这些参数会作为整条工作流的共享上下文，按每一步的默认值策略继续向后传递。"
-          fields={selectedWorkflow.fields}
-          overrides={selectedWorkflowOverrides}
-          effectiveContext={selectedWorkflowPreview.context}
-          errors={workflowErrors}
-          onReset={() => setWorkflowOverrides({})}
-          onChange={(key, value) => setWorkflowOverrides((current) => updateOverrideValue(current, key, value))}
-        />
+        {activeSection === 'workflow' && compactLayout ? (
+          <SectionCard className="p-4">
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="eyebrow">Workflow View</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前工作流只展开一个子视图</h2>
+                <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">默认先看预览，其他信息按需再切。</p>
+              </div>
+              <TabBar
+                tabs={[
+                  { key: 'preview', label: '预览' },
+                  { key: 'parameters', label: '参数' },
+                  { key: 'catalog', label: '目录' },
+                  { key: 'history', label: '记录/上下文' },
+                ]}
+                active={workflowCompactView}
+                onChange={(key) => setWorkflowCompactView(key as typeof workflowCompactView)}
+              />
+              {workflowCompactView === 'preview' ? (
+                <TemplateWorkflowPreviewCard
+                  selectedWorkflow={selectedWorkflow}
+                  selectedWorkflowPreview={selectedWorkflowPreview}
+                  hasWorkflowErrors={hasWorkflowErrors}
+                  onApplyWorkflow={handleApplyWorkflow}
+                />
+              ) : null}
+              {workflowCompactView === 'parameters' ? (
+                <TemplateFieldEditor
+                  title={`${selectedWorkflow.label} 参数`}
+                  description="这些参数会作为整条工作流的共享上下文，按每一步的默认值策略继续向后传递。"
+                  fields={selectedWorkflow.fields}
+                  overrides={selectedWorkflowOverrides}
+                  effectiveContext={selectedWorkflowPreview.context}
+                  errors={workflowErrors}
+                  onReset={() => setWorkflowOverrides({})}
+                  onChange={(key, value) => setWorkflowOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              ) : null}
+              {workflowCompactView === 'catalog' ? (
+                <TemplateWorkflowCatalogCard selectedWorkflowId={selectedWorkflowId} onSelect={setSelectedWorkflowId} />
+              ) : null}
+              {workflowCompactView === 'history' ? (
+                <div className="space-y-4">
+                  <WorkspaceTemplateContextCard baseContextChips={baseContextChips} />
+                  <TemplateRunsCard
+                    templateRuns={templateRuns}
+                    latestTemplateRun={latestTemplateRun}
+                    onClear={clearTemplateRuns}
+                    onSwitchWorkspace={switchWorkspace}
+                    onRollbackRun={handleRollbackRun}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </SectionCard>
+        ) : null}
 
-        <TemplateWorkflowPreviewCard
-          selectedWorkflow={selectedWorkflow}
-          selectedWorkflowPreview={selectedWorkflowPreview}
-          hasWorkflowErrors={hasWorkflowErrors}
-          onApplyWorkflow={handleApplyWorkflow}
-        />
+        {activeSection === 'workflow' && !compactLayout ? (
+          <div className="space-y-4">
+            <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开工作区上下文</summary>
+              <div className="mt-4">
+                <WorkspaceTemplateContextCard baseContextChips={baseContextChips} />
+              </div>
+            </details>
 
-        <TemplateRunsCard
-          templateRuns={templateRuns}
-          latestTemplateRun={latestTemplateRun}
-          onClear={clearTemplateRuns}
-          onSwitchWorkspace={switchWorkspace}
-          onRollbackRun={handleRollbackRun}
-        />
-      </div>
+            {compactLayout ? (
+              <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开工作流目录</summary>
+                <div className="mt-4">
+                  <TemplateWorkflowCatalogCard selectedWorkflowId={selectedWorkflowId} onSelect={setSelectedWorkflowId} />
+                </div>
+              </details>
+            ) : (
+              <TemplateWorkflowCatalogCard selectedWorkflowId={selectedWorkflowId} onSelect={setSelectedWorkflowId} />
+            )}
 
-      <WorkspaceSplitLayout
-        pageKey="workspace-templates"
-        primary={
-          <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
-            <BlueprintCatalogCard
-              selectedBlueprintId={selectedBlueprintId}
-              onSelect={setSelectedBlueprintId}
+            <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+                展开工作流参数编辑
+              </summary>
+              <div className="mt-4">
+                <TemplateFieldEditor
+                  title={`${selectedWorkflow.label} 参数`}
+                  description="这些参数会作为整条工作流的共享上下文，按每一步的默认值策略继续向后传递。"
+                  fields={selectedWorkflow.fields}
+                  overrides={selectedWorkflowOverrides}
+                  effectiveContext={selectedWorkflowPreview.context}
+                  errors={workflowErrors}
+                  onReset={() => setWorkflowOverrides({})}
+                  onChange={(key, value) => setWorkflowOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              </div>
+            </details>
+
+            <TemplateWorkflowPreviewCard
+              selectedWorkflow={selectedWorkflow}
+              selectedWorkflowPreview={selectedWorkflowPreview}
+              hasWorkflowErrors={hasWorkflowErrors}
+              onApplyWorkflow={handleApplyWorkflow}
             />
 
-            <TemplateFieldEditor
-              title={`${selectedBlueprint.label} 参数`}
-              description="这些参数只作用于这次工作区创建，默认优先继承当前工作区上下文。"
-              fields={selectedBlueprint.fields}
-              overrides={selectedBlueprintOverrides}
-              effectiveContext={selectedBlueprintPreview.context}
-              errors={blueprintErrors}
-              onReset={() => setBlueprintOverrides({})}
-              onChange={(key, value) => setBlueprintOverrides((current) => updateOverrideValue(current, key, value))}
-            />
+            <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开运行记录</summary>
+              <div className="mt-4">
+                <TemplateRunsCard
+                  templateRuns={templateRuns}
+                  latestTemplateRun={latestTemplateRun}
+                  onClear={clearTemplateRuns}
+                  onSwitchWorkspace={switchWorkspace}
+                  onRollbackRun={handleRollbackRun}
+                />
+              </div>
+            </details>
+          </div>
+        ) : null}
+
+        {activeSection === 'blueprint' && compactLayout ? (
+          <SectionCard className="p-4">
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="eyebrow">Blueprint View</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">蓝图页默认只展开一个子视图</h2>
+                <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">默认先看蓝图预览，再决定是否切到参数或目录。</p>
+              </div>
+              <TabBar
+                tabs={[
+                  { key: 'preview', label: '预览' },
+                  { key: 'parameters', label: '参数' },
+                  { key: 'catalog', label: '目录' },
+                ]}
+                active={blueprintCompactView}
+                onChange={(key) => setBlueprintCompactView(key as typeof blueprintCompactView)}
+              />
+              {blueprintCompactView === 'preview' ? (
+                <BlueprintPreviewCard
+                  selectedBlueprint={selectedBlueprint}
+                  selectedBlueprintPreview={selectedBlueprintPreview}
+                  hasBlueprintErrors={hasBlueprintErrors}
+                  onCreateBlueprint={handleCreateBlueprint}
+                />
+              ) : null}
+              {blueprintCompactView === 'parameters' ? (
+                <TemplateFieldEditor
+                  title={`${selectedBlueprint.label} 参数`}
+                  description="这些参数只作用于这次工作区创建，默认优先继承当前工作区上下文。"
+                  fields={selectedBlueprint.fields}
+                  overrides={selectedBlueprintOverrides}
+                  effectiveContext={selectedBlueprintPreview.context}
+                  errors={blueprintErrors}
+                  onReset={() => setBlueprintOverrides({})}
+                  onChange={(key, value) => setBlueprintOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              ) : null}
+              {blueprintCompactView === 'catalog' ? (
+                <BlueprintCatalogCard selectedBlueprintId={selectedBlueprintId} onSelect={setSelectedBlueprintId} />
+              ) : null}
+            </div>
+          </SectionCard>
+        ) : null}
+
+        {activeSection === 'blueprint' && !compactLayout ? (
+          <div className="space-y-4">
+            {compactLayout ? (
+              <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开蓝图目录</summary>
+                <div className="mt-4">
+                  <BlueprintCatalogCard selectedBlueprintId={selectedBlueprintId} onSelect={setSelectedBlueprintId} />
+                </div>
+              </details>
+            ) : (
+              <BlueprintCatalogCard selectedBlueprintId={selectedBlueprintId} onSelect={setSelectedBlueprintId} />
+            )}
+
+            <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+                展开蓝图参数编辑
+              </summary>
+              <div className="mt-4">
+                <TemplateFieldEditor
+                  title={`${selectedBlueprint.label} 参数`}
+                  description="这些参数只作用于这次工作区创建，默认优先继承当前工作区上下文。"
+                  fields={selectedBlueprint.fields}
+                  overrides={selectedBlueprintOverrides}
+                  effectiveContext={selectedBlueprintPreview.context}
+                  errors={blueprintErrors}
+                  onReset={() => setBlueprintOverrides({})}
+                  onChange={(key, value) => setBlueprintOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              </div>
+            </details>
 
             <BlueprintPreviewCard
               selectedBlueprint={selectedBlueprint}
@@ -400,24 +738,83 @@ export default function WorkspaceTemplatesPage() {
               onCreateBlueprint={handleCreateBlueprint}
             />
           </div>
-        }
-        secondary={
-          <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pl-1">
-            <TaskTemplateCatalogCard
-              selectedTemplateId={selectedTemplateId}
-              onSelect={setSelectedTemplateId}
-            />
+        ) : null}
 
-            <TemplateFieldEditor
-              title={`${selectedTemplate.label} 参数`}
-              description="这些参数只作用于这次任务注入，适合在当前工作区里快速派生新的执行链路。"
-              fields={selectedTemplate.fields}
-              overrides={selectedTemplateOverrides}
-              effectiveContext={selectedTemplatePreview.context}
-              errors={templateErrors}
-              onReset={() => setTemplateOverrides({})}
-              onChange={(key, value) => setTemplateOverrides((current) => updateOverrideValue(current, key, value))}
-            />
+        {activeSection === 'task' && compactLayout ? (
+          <SectionCard className="p-4">
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="eyebrow">Task View</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">任务模板页默认只展开一个子视图</h2>
+                <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">先确认会注入什么，再在需要时调整参数或回看目录。</p>
+              </div>
+              <TabBar
+                tabs={[
+                  { key: 'preview', label: '预览' },
+                  { key: 'parameters', label: '参数' },
+                  { key: 'catalog', label: '目录' },
+                ]}
+                active={taskCompactView}
+                onChange={(key) => setTaskCompactView(key as typeof taskCompactView)}
+              />
+              {taskCompactView === 'preview' ? (
+                <TaskTemplatePreviewCard
+                  activeWorkspaceName={activeWorkspace.name}
+                  selectedTemplate={selectedTemplate}
+                  selectedTemplatePreview={selectedTemplatePreview}
+                  hasTemplateErrors={hasTemplateErrors}
+                  onApplyTemplate={handleApplyTemplate}
+                />
+              ) : null}
+              {taskCompactView === 'parameters' ? (
+                <TemplateFieldEditor
+                  title={`${selectedTemplate.label} 参数`}
+                  description="这些参数只作用于这次任务注入，适合在当前工作区里快速派生新的执行链路。"
+                  fields={selectedTemplate.fields}
+                  overrides={selectedTemplateOverrides}
+                  effectiveContext={selectedTemplatePreview.context}
+                  errors={templateErrors}
+                  onReset={() => setTemplateOverrides({})}
+                  onChange={(key, value) => setTemplateOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              ) : null}
+              {taskCompactView === 'catalog' ? (
+                <TaskTemplateCatalogCard selectedTemplateId={selectedTemplateId} onSelect={setSelectedTemplateId} />
+              ) : null}
+            </div>
+          </SectionCard>
+        ) : null}
+
+        {activeSection === 'task' && !compactLayout ? (
+          <div className="space-y-4">
+            {compactLayout ? (
+              <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开任务模板目录</summary>
+                <div className="mt-4">
+                  <TaskTemplateCatalogCard selectedTemplateId={selectedTemplateId} onSelect={setSelectedTemplateId} />
+                </div>
+              </details>
+            ) : (
+              <TaskTemplateCatalogCard selectedTemplateId={selectedTemplateId} onSelect={setSelectedTemplateId} />
+            )}
+
+            <details className="overflow-hidden rounded-[24px] border border-white/45 bg-white/24 p-4">
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+                展开任务模板参数编辑
+              </summary>
+              <div className="mt-4">
+                <TemplateFieldEditor
+                  title={`${selectedTemplate.label} 参数`}
+                  description="这些参数只作用于这次任务注入，适合在当前工作区里快速派生新的执行链路。"
+                  fields={selectedTemplate.fields}
+                  overrides={selectedTemplateOverrides}
+                  effectiveContext={selectedTemplatePreview.context}
+                  errors={templateErrors}
+                  onReset={() => setTemplateOverrides({})}
+                  onChange={(key, value) => setTemplateOverrides((current) => updateOverrideValue(current, key, value))}
+                />
+              </div>
+            </details>
 
             <TaskTemplatePreviewCard
               activeWorkspaceName={activeWorkspace.name}
@@ -427,8 +824,8 @@ export default function WorkspaceTemplatesPage() {
               onApplyTemplate={handleApplyTemplate}
             />
           </div>
-        }
-      />
+        ) : null}
+      </div>
     </PageContainer>
   );
 }

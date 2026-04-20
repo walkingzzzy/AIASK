@@ -4,12 +4,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
-import { PageContainer, KpiCard, KpiGrid } from '@/components/ui';
+import { PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useMobile } from '@/hooks/use-mobile';
 import { extractObject, extractArray, fmtAmount } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { tradingInterval } from '@/lib/trading-hours';
 import { useAuthStore } from '@/store/auth-store';
 import { useDashboardPrefs } from '@/hooks/use-dashboard-prefs';
@@ -21,7 +23,7 @@ import { useWatchlistStore } from '@/store/watchlist-store';
 import { useStockContext } from '@/store/stock-context';
 
 import { MarketOverview } from '@/components/home/MarketOverview';
-import { PersonalDashboard, WatchlistRecent } from '@/components/home/PersonalDashboard';
+import { PersonalSecondaryCards, WatchlistRecent } from '@/components/home/PersonalDashboard';
 import { FundFlowSection } from '@/components/home/FundFlowSection';
 import { DashboardCards } from '@/components/home/DashboardCards';
 import type { DashboardCard } from '@/components/home/DashboardCards';
@@ -31,7 +33,6 @@ import type {
   DashboardMarketAnomaly,
   DashboardMarketNewsItem,
   DashboardMarketNewsResponse,
-  DashboardQuickAction,
   DashboardQuoteSnapshot,
   PaperTradingPosition,
   PaperTradingPositionsResponse,
@@ -48,6 +49,8 @@ const HERO_SECONDARY_BUTTON_CLS =
 const LINK_CHIP_CLS = 'action-chip text-sm no-underline text-inherit';
 const PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
+type HomeDetailsTab = 'market' | 'personal' | 'operations';
+type HomeSummaryTab = 'market' | 'account' | 'operations';
 
 function toFiniteNumber(value: unknown): number | null {
   if (value == null || value === '') return null;
@@ -99,10 +102,14 @@ function normalizeAlertsPayload(raw: unknown): { items?: AlertItem[] } {
 export default function HomePage() {
   const router = useRouter();
   const mounted = useHydrated();
+  const compactHome = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactHero = useMobile(RESPONSIVE_BREAKPOINTS.tablet);
   const [dateStr, setDateStr] = useState('');
   const [pageVisible, setPageVisible] = useState(() =>
     typeof document === 'undefined' ? true : document.visibilityState === 'visible',
   );
+  const [detailTab, setDetailTab] = useState<HomeDetailsTab>('market');
+  const [summaryTab, setSummaryTab] = useState<HomeSummaryTab>('market');
   const [showDashboardSettings, setShowDashboardSettings] = useState(false);
   const liveRefetch = pageVisible ? poll : false;
   const lazyRefetch = pageVisible ? slowPoll : false;
@@ -244,7 +251,7 @@ export default function HomePage() {
     };
   }, []);
   useEffect(() => {
-    document.title = '市场概览 | AIASK';
+    document.title = '首页 | AIASK';
     return () => {
       document.title = 'AIASK 智能股票分析';
     };
@@ -352,46 +359,8 @@ export default function HomePage() {
   ]);
 
   /* ── Quick actions & anomalies ────────────────────────────────── */
-  const quickActions = useMemo<DashboardQuickAction[]>(() => {
-    const dc = mounted ? primaryStockCode || '600519' : '600519';
-    return [
-      {
-        href: '/market?task=watchlist-scan&from=home',
-        icon: '📈',
-        title: '盘中看盘',
-        description: '直达行情看板并聚焦任务流',
-      },
-      {
-        href: `/stock?code=${encodeURIComponent(dc)}&task=stock-review&from=home`,
-        icon: '🔍',
-        title: '个股复盘',
-        description: `优先打开 ${dc}`,
-      },
-      { href: '/risk?lookbackDays=252&from=home', icon: '🛡️', title: '风险巡检', description: '查看 VaR 与降级状态' },
-      {
-        href: '/strategy-market?task=ranking&from=home',
-        icon: '🧪',
-        title: '策略筛选',
-        description: '进入策略超市排名页',
-      },
-      {
-        href: `/backtest?code=${encodeURIComponent(dc)}&from=home`,
-        icon: '📊',
-        title: '快速回测',
-        description: '带代码进入回测分析',
-      },
-    ];
-  }, [mounted, primaryStockCode]);
   const latestNorthValue = Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0);
   const latestNorthLabel = latestNorth ? fmtAmount(latestNorthValue) : '暂无数据';
-  const priorityActions = quickActions.slice(0, 4);
-  const heroNotes = [
-    `优先先看 ${fgLabel}、指数和北向流向，再决定是去行情、风险还是策略页继续深入。`,
-    activeAlertCount > 0
-      ? `当前有 ${activeAlertCount} 条活跃告警，首页不建议停留过久，最好尽快回到对应工作流处理。`
-      : '当前没有活跃告警，适合把时间留给市场轮动、板块热力和自选复盘。',
-    `最近更新 ${lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : '暂无刷新记录'}，如果你要做即时判断，建议先手动刷新一次首页数据。`,
-  ];
 
   const marketAnomalies = useMemo<DashboardMarketAnomaly[]>(() => {
     const luCount = Number(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? 0);
@@ -432,9 +401,103 @@ export default function HomePage() {
     }
     return out.slice(0, 4);
   }, [luStats, sectors, sectorFlows, latestNorth]);
+  const heroCapabilities = [
+    {
+      icon: '📈',
+      title: '实时行情与监控',
+      meta: '行情看板 · 指数板块 · 资金流 · 自选联动',
+    },
+    {
+      icon: '🧠',
+      title: '研究分析能力',
+      meta: '研报公告 · 基本面 · 技术面 · AI 解读',
+    },
+    {
+      icon: '🧪',
+      title: '策略筛选与验证',
+      meta: '策略超市 · 回测分析 · 因子分析 · 订阅跟踪',
+    },
+    {
+      icon: '🛡️',
+      title: '交易执行与风控',
+      meta: '模拟交易 · 组合管理 · 告警中心 · 风险巡检',
+    },
+  ];
+  const heroHighlights = [
+    '适合盘前准备、盘中跟踪、策略验证和盘后复盘。',
+    '把市场、研究、策略和交易放进同一个工作区。',
+    '支持从单只股票跟踪延伸到组合与策略订阅。',
+  ];
+  const heroRuntimeCards = [
+    {
+      label: '市场情绪',
+      value: fgLabel,
+      hint: '来自首页情绪模块',
+      tone: 'text-text-primary',
+    },
+    {
+      label: '活跃告警',
+      value: activeAlertCount > 0 ? `${activeAlertCount} 条` : '无',
+      hint: '当前告警中心状态',
+      tone: activeAlertCount > 0 ? 'text-danger' : 'text-text-primary',
+    },
+    {
+      label: '最近刷新',
+      value: lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : '暂无',
+      hint: '首页数据更新时间',
+      tone: 'text-text-primary',
+    },
+    {
+      label: '北向资金',
+      value: latestNorthLabel,
+      hint: '增量资金参考',
+      tone: latestNorthValue >= 0 ? 'text-danger' : 'text-success',
+    },
+  ];
+  const heroEntryLinks = [
+    {
+      href: '/market?from=home',
+      icon: '📈',
+      title: '行情看板',
+      description: '查看指数、板块、自选和市场异动',
+    },
+    {
+      href: '/research?from=home',
+      icon: '🧠',
+      title: '研究中心',
+      description: '进入研报公告、基本面和技术面分析',
+    },
+    {
+      href: '/strategy-market?from=home',
+      icon: '🧪',
+      title: '策略超市',
+      description: '筛选策略并继续进入详情或回测',
+    },
+    {
+      href: '/risk?lookbackDays=252&from=home',
+      icon: '🛡️',
+      title: '风险中心',
+      description: '查看风险摘要、告警和巡检结果',
+    },
+  ];
+  const visibleHeroCapabilities = compactHero ? heroCapabilities.slice(0, 2) : heroCapabilities;
+  const hiddenHeroCapabilities = compactHero ? heroCapabilities.slice(2) : [];
+  const visibleHeroEntryLinks = compactHome ? heroEntryLinks.slice(0, 2) : heroEntryLinks;
+  const hiddenHeroEntryLinks = compactHome ? heroEntryLinks.slice(2) : [];
+  const visibleHeroRuntimeCards = compactHome ? heroRuntimeCards.slice(0, 2) : heroRuntimeCards;
+  const hiddenHeroRuntimeCards = compactHome ? heroRuntimeCards.slice(2) : [];
 
   const anomalyDegraded = Boolean(limitUpQ.error || sectorQ.error || sectorFlowQ.error || northQ.error);
   const nickname = String(profileQ.data?.nickname ?? user?.nickname ?? user?.username ?? '投资者');
+  const topSectorName = String(sectors[0]?.name ?? '暂无热点');
+  const topSectorChange = Number(sectors[0]?.avgChange ?? sectors[0]?.avg_change ?? sectors[0]?.change_pct ?? 0);
+  const riskStatusLabel = riskEmpty ? '等待持仓' : riskDegraded ? '降级中' : riskQ.error ? '异常' : '正常';
+  const moduleErrorCount = Object.values(moduleStatuses).filter((status) => status === 'error').length;
+  const detailTabs = [
+    { key: 'market', label: '市场深看' },
+    { key: 'personal', label: '个人跟踪' },
+    { key: 'operations', label: '运行与风险' },
+  ] as const;
 
   /* ── Dashboard cards (risk / strategy / alerts) ───────────────── */
   const dashboardCards: DashboardCard[] = useMemo(
@@ -567,7 +630,7 @@ export default function HomePage() {
 
   usePageContext({
     pageKey: 'home',
-    title: '首页总览',
+    title: '首页',
     summary: `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlertCount} 条，自选股 ${watchlistCount} 只。`,
     stockCode: primaryStockCode,
     tags: [
@@ -643,211 +706,554 @@ export default function HomePage() {
 
   usePageActions(pageActions);
 
+  const summaryTabs = [
+    { key: 'market', label: '市场摘要' },
+    { key: 'account', label: '账户摘要' },
+    { key: 'operations', label: '运行摘要' },
+  ] as const;
+
+  const marketSummarySection = (
+    <section className={PANEL_CLS}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="eyebrow">市场摘要</div>
+          <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">今天市场在发生什么</h3>
+        </div>
+        <Link href="/market" className={LINK_CHIP_CLS}>
+          去行情页
+        </Link>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">情绪温度</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">{fgLabel}</div>
+          <div className="mt-1 text-xs text-text-secondary">恐贪 {fgValue.toFixed(0)}</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">北向资金</div>
+          <div className={`mt-3 text-lg font-semibold ${latestNorthValue >= 0 ? 'text-danger' : 'text-success'}`}>
+            {latestNorthLabel}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">最近增量资金方向</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">板块热点</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">{topSectorName}</div>
+          <div className={`mt-1 text-xs ${topSectorChange >= 0 ? 'text-danger' : 'text-success'}`}>
+            {topSectorChange >= 0 ? '+' : ''}
+            {topSectorChange.toFixed(2)}%
+          </div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">涨停家数</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">
+            {String(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? '-')}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">情绪扩散速度参考</div>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        {validIndices.slice(0, 4).map((item) => {
+          const changePercent = Number(item.changePercent ?? item.change_pct ?? 0);
+          return (
+            <Link
+              key={`${item.code}-${item.name}`}
+              href={`/market?tab=index&indexCode=${encodeURIComponent(String(item.code || ''))}`}
+              className="rounded-[18px] border border-white/45 bg-white/24 px-3 py-3 text-sm no-underline text-inherit"
+            >
+              <div className="truncate font-medium text-text-primary">{String(item.name ?? item.code ?? '指数')}</div>
+              <div className={`mt-1 text-xs ${changePercent >= 0 ? 'text-danger' : 'text-success'}`}>
+                {changePercent >= 0 ? '+' : ''}
+                {changePercent.toFixed(2)}%
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+
+  const accountSummarySection = (
+    <section className={PANEL_CLS}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="eyebrow">账户摘要</div>
+          <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">你的资产与跟踪重点</h3>
+        </div>
+        <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+          去模拟交易
+        </Link>
+      </div>
+      <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
+        欢迎回来，{nickname}。这一块只保留账户状态、自选数量和当前需要优先处理的提醒。
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">总资产</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">
+            {fmtAmount(paperSummary.total_value ?? paperAccount.total_value)}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">当前资金规模</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">总收益率</div>
+          <div
+            className={`mt-3 text-lg font-semibold ${Number(paperSummary.total_return_pct ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}
+          >
+            {Number(paperSummary.total_return_pct ?? 0).toFixed(2)}%
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">账户表现快照</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">持仓 / 自选</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">
+            {paperPositions.length} / {watchlistCount}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">同时看仓位和候选标的</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">活跃告警</div>
+          <div className={`mt-3 text-lg font-semibold ${activeAlerts.length > 0 ? 'text-danger' : 'text-text-primary'}`}>
+            {activeAlerts.length}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">
+            {activeAlerts[0]?.code ? `优先关注 ${String(activeAlerts[0].code)}` : '当前没有活跃告警'}
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link href="/watchlist" className={LINK_CHIP_CLS}>
+          管理自选股
+        </Link>
+        <Link href={primaryStockCode ? `/stock?code=${encodeURIComponent(primaryStockCode)}` : '/stock'} className={LINK_CHIP_CLS}>
+          打开重点个股
+        </Link>
+        <Link href="/alerts?status=active" className={LINK_CHIP_CLS}>
+          查看告警
+        </Link>
+      </div>
+    </section>
+  );
+
+  const operationsSummarySection = (
+    <section className={PANEL_CLS}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="eyebrow">运行摘要</div>
+          <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">风险、策略与系统是否稳定</h3>
+        </div>
+        <Link href="/risk?lookbackDays=252&from=home" className={LINK_CHIP_CLS}>
+          去风险中心
+        </Link>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">风险状态</div>
+          <div className={`mt-3 text-lg font-semibold ${riskStatusLabel === '正常' ? 'text-text-primary' : 'text-danger'}`}>
+            {riskStatusLabel}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">
+            {riskEmpty ? '还没有可巡检持仓' : riskSource.mode ? `来源 ${String(riskSource.mode)}` : '查看 VaR 与压测'}
+          </div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">策略订阅</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">{user ? strategySubs.length : '-'}</div>
+          <div className="mt-1 text-xs text-text-secondary">
+            {user ? (strategySubs.length > 0 ? '已建立策略跟踪' : '还没有订阅策略') : '登录后显示'}
+          </div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">首页模块</div>
+          <div className={`mt-3 text-lg font-semibold ${moduleErrorCount > 0 ? 'text-danger' : 'text-text-primary'}`}>
+            {moduleErrorCount > 0 ? `${moduleErrorCount} 个异常` : '运行正常'}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">模块加载与接口状态摘要</div>
+        </div>
+        <div className="metric-tile rounded-[22px] p-4">
+          <div className="metric-label">市场异动</div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">{marketAnomalies[0]?.title ?? '暂无重点'}</div>
+          <div className="mt-1 text-xs text-text-secondary">{marketAnomalies[0]?.value ?? '等待交易时段或刷新'}</div>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        <div className={NOTE_CARD_CLS}>
+          {strategySubs[0]?.name
+            ? `最近订阅策略：${String(strategySubs[0].name ?? strategySubs[0].strategy_name ?? '-')}`
+            : '策略、风险和系统状态的完整内容已收进下方标签页。'}
+        </div>
+        <div className={NOTE_CARD_CLS}>
+          {healthQ.error ? '健康接口当前存在异常，可在下方运行与风险页继续排查。' : '健康状态、模块配置和系统细节不再默认占据首页首屏。'}
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link href="/strategy-market?from=home" className={LINK_CHIP_CLS}>
+          去策略超市
+        </Link>
+        <Link href="/alerts?status=active&from=home" className={LINK_CHIP_CLS}>
+          去告警中心
+        </Link>
+        <Link href="/backtest?from=home" className={LINK_CHIP_CLS}>
+          去回测分析
+        </Link>
+      </div>
+    </section>
+  );
+
   /* ── Render ────────────────────────────────────────────────────── */
   return (
     <PageContainer className="app-theme-market space-y-4">
-      <section className="page-hero p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+      <section className="page-hero p-4 sm:p-5">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,23vw,360px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-primary/15 bg-white/60 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-                Home Workspace
+                AIASK
               </span>
               <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1 text-xs text-text-primary">
-                {fgLabel}
+                A 股投研平台
               </span>
               <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1 text-xs text-text-primary">
-                {activeAlertCount > 0 ? `${activeAlertCount} 条活跃告警` : '当前无活跃告警'}
+                市场 · 研究 · 策略 · 交易
               </span>
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              首页总览工作台
+            <h1 className="mb-0 mt-4 text-[1.9rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.2rem]">
+              一个覆盖市场、研究、策略与交易的智能股票分析平台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              首页现在不再只是卡片堆叠入口，而是统一的起始工作台。先看情绪、指数、资金和异常，再决定下一步进入行情、自选、风险还是策略路径，让首页真正承担“分发动作”的职责。
+              AIASK 面向 A 股场景提供市场观察、研究分析、策略验证、模拟交易和风险管理的一体化能力。首页默认只保留平台介绍和少量核心摘要，详细的市场、自选、策略和系统模块都收进下方标签页与折叠区。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
+              <Link href="/market?task=watchlist-scan&from=home" className={HERO_PRIMARY_BUTTON_CLS}>
+                进入行情看板
+              </Link>
+              <Link href="/research?from=home" className={HERO_SECONDARY_BUTTON_CLS}>
+                查看研究中心
+              </Link>
+              <Link href="/strategy-market?from=home" className={HERO_SECONDARY_BUTTON_CLS}>
+                浏览策略超市
+              </Link>
               <AskAiButton
                 stockCode={primaryStockCode}
-                prompt="请总结今日市场状态、主要指数和需要关注的信号"
-                label="AI 市场晨会"
+                prompt="请概括 AIASK 首页当前展示的市场、研究、策略和风险重点"
+                label="AI 解读首页"
               />
-              <Link href="/market?task=watchlist-scan&from=home" className={HERO_PRIMARY_BUTTON_CLS}>
-                去行情看板
-              </Link>
-              <Link href="/watchlist" className={HERO_SECONDARY_BUTTON_CLS}>
-                打开自选股
-              </Link>
-              <Link href="/risk?lookbackDays=252&from=home" className={HERO_SECONDARY_BUTTON_CLS}>
-                风险巡检
-              </Link>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前时间</div>
-                <div className="mt-3 text-base font-semibold text-text-primary">{displayDateStr || '等待同步'}</div>
-                <div className="mt-1 text-xs text-text-secondary">用于判断行情节奏与刷新时点</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">市场异动</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{marketAnomalies.length}</div>
-                <div className="mt-1 text-xs text-text-secondary">今日值得优先查看的异常线索</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">北向资金</div>
-                <div className={`mt-3 text-xl font-semibold ${latestNorthValue >= 0 ? 'text-danger' : 'text-success'}`}>
-                  {latestNorthLabel}
+            <div className="mt-5">
+              <div className="eyebrow">核心能力</div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {visibleHeroCapabilities.map((item, index) => (
+                <div
+                  key={item.title}
+                  className={`rounded-[22px] border border-white/45 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] ${
+                    index === 0
+                      ? 'bg-white/38'
+                      : index === 1
+                        ? 'bg-white/32'
+                        : index === 2
+                          ? 'bg-white/28'
+                          : 'bg-white/24'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] border border-white/55 bg-white/45 text-base shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+                      {item.icon}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                      <div className="mt-1 text-xs leading-6 text-text-secondary">{item.meta}</div>
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-1 text-xs text-text-secondary">帮助判断增量资金强弱</div>
+              ))}
               </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">自选池</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{watchlistCount}</div>
-                <div className="mt-1 text-xs text-text-secondary">和首页行情联动的重点标的数量</div>
-              </div>
+              {hiddenHeroCapabilities.length > 0 ? (
+                <details className="mt-3 rounded-[20px] border border-white/45 bg-white/24 px-4 py-3">
+                  <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开剩余能力</summary>
+                  <div className="mt-3 grid gap-3">
+                    {hiddenHeroCapabilities.map((item) => (
+                      <div key={item.title} className="rounded-[18px] border border-white/45 bg-white/24 px-3 py-3">
+                        <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                        <div className="mt-1 text-xs leading-6 text-text-secondary">{item.meta}</div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">今日优先动作</div>
-              <div className="mt-4 grid gap-2">
-                {priorityActions.map((action) => (
+          {compactHome ? (
+            <details className={PANEL_CLS}>
+              <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开平台概览与入口</summary>
+              <div className="mt-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">平台概览</div>
+                <p className="mt-3 text-sm leading-7 text-text-secondary">
+                  AIASK 提供统一的投研平台体验，而不是分散的单页工具。你可以在这里连续完成观察、研究、验证和跟踪。
+                </p>
+                <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">常用入口</div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {visibleHeroEntryLinks.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit"
+                    >
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm">
+                        {item.icon}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                        <div className="text-[11px] text-text-secondary">{item.description}</div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+                <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前运行概况</div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {visibleHeroRuntimeCards.map((item) => (
+                    <div key={item.label} className="rounded-[18px] border border-white/45 bg-white/28 px-3 py-2.5">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{item.label}</div>
+                      <div className={`mt-1.5 text-sm font-medium ${item.tone}`}>{item.value}</div>
+                      <div className="mt-1 text-[11px] text-text-secondary">{item.hint}</div>
+                    </div>
+                  ))}
+                </div>
+                <details className="mt-3 rounded-[18px] border border-white/45 bg-white/24 px-3 py-3">
+                  <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开更多平台说明</summary>
+                  <div className="mt-3 space-y-3">
+                    {heroHighlights.map((note) => (
+                      <div key={note} className="rounded-[18px] border border-white/45 bg-white/24 px-3 py-2 text-xs text-text-secondary">
+                        {note}
+                      </div>
+                    ))}
+                    {hiddenHeroEntryLinks.length > 0 ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {hiddenHeroEntryLinks.map((item) => (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm">
+                              {item.icon}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                              <div className="text-[11px] text-text-secondary">{item.description}</div>
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : null}
+                    {hiddenHeroRuntimeCards.length > 0 ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {hiddenHeroRuntimeCards.map((item) => (
+                          <div key={item.label} className="rounded-[18px] border border-white/45 bg-white/28 px-3 py-2.5">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{item.label}</div>
+                            <div className={`mt-1.5 text-sm font-medium ${item.tone}`}>{item.value}</div>
+                            <div className="mt-1 text-[11px] text-text-secondary">{item.hint}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </details>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+                    去模拟交易
+                  </Link>
+                  <Link href="/portfolio" className={LINK_CHIP_CLS}>
+                    去组合管理
+                  </Link>
+                  <Link href="/watchlist" className={LINK_CHIP_CLS}>
+                    去自选股
+                  </Link>
+                </div>
+                <div className="mt-3 text-xs text-text-secondary">当前时间 {displayDateStr || '等待同步'}</div>
+              </div>
+            </details>
+          ) : (
+          <div className={PANEL_CLS}>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">平台概览</div>
+            <p className="mt-3 text-sm leading-7 text-text-secondary">
+              AIASK 提供统一的投研平台体验，而不是分散的单页工具。你可以在这里连续完成观察、研究、验证和跟踪。
+            </p>
+            <div className="mt-4 space-y-2">
+              {heroHighlights.map((note) => (
+                <div key={note} className="rounded-[18px] border border-white/45 bg-white/24 px-3 py-2 text-xs text-text-secondary">
+                  {note}
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">常用入口</div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+                {heroEntryLinks.map((item) => (
                   <Link
-                    key={action.href}
-                    href={action.href}
-                    className="metric-tile flex items-center gap-3 rounded-[22px] px-3 py-3 no-underline text-inherit transition hover:-translate-y-0.5"
+                    key={item.href}
+                    href={item.href}
+                    className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit transition hover:-translate-y-0.5"
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] border border-white/55 bg-white/42 text-base shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
-                      {action.icon}
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+                      {item.icon}
                     </span>
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-text-primary">{action.title}</div>
-                      <div className="text-xs text-text-secondary">{action.description}</div>
+                      <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                      <div className="text-[11px] text-text-secondary">{item.description}</div>
                     </div>
                   </Link>
                 ))}
-              </div>
             </div>
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">操作提示</div>
-              <div className="mt-4 space-y-3">
-                {heroNotes.map((note) => (
-                  <div key={note} className={NOTE_CARD_CLS}>
-                    {note}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href="/research" className={LINK_CHIP_CLS}>
-                  去研究页
-                </Link>
-                <Link href="/strategy-market" className={LINK_CHIP_CLS}>
-                  去策略超市
-                </Link>
-                <Link href="/paper-trading" className={LINK_CHIP_CLS}>
-                  去模拟交易
-                </Link>
-              </div>
+            <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前运行概况</div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {heroRuntimeCards.map((item) => (
+                <div key={item.label} className="rounded-[18px] border border-white/45 bg-white/28 px-3 py-2.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{item.label}</div>
+                  <div className={`mt-1.5 text-sm font-medium ${item.tone}`}>{item.value}</div>
+                  <div className="mt-1 text-[11px] text-text-secondary">{item.hint}</div>
+                </div>
+              ))}
             </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+                去模拟交易
+              </Link>
+              <Link href="/portfolio" className={LINK_CHIP_CLS}>
+                去组合管理
+              </Link>
+              <Link href="/watchlist" className={LINK_CHIP_CLS}>
+                去自选股
+              </Link>
+            </div>
+            <div className="mt-3 text-xs text-text-secondary">当前时间 {displayDateStr || '等待同步'}</div>
           </div>
+          )}
         </div>
       </section>
 
-      <div className="space-y-4">
+      <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <div className="eyebrow">Market Workspace</div>
+            <div className="eyebrow">核心摘要</div>
             <h2 className="mb-0 mt-2 text-[1.75rem] font-semibold tracking-[-0.03em] text-text-primary">
-              指数、板块与资金脉冲
+              首页默认只展示 3 块关键信息
             </h2>
             <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-              市场总览区继续承接首页的主阅读链路。先看情绪与交易状态，再看主要指数和板块热力，让“今天市场在哪里变化”在同一段视觉路径里被回答。
+              先回答今天的市场状态、你的账户情况，以及当前需要注意的风险与运行状态。完整行情、自选、资讯和系统细节放到下面再展开。
             </p>
           </div>
-          <Link href="/market" className={LINK_CHIP_CLS}>
-            打开完整行情工作台
-          </Link>
+          <span className="text-xs text-text-secondary">其余模块已收纳到折叠区</span>
         </div>
-        <MarketOverview
-          mounted={mounted}
-          dateStr={displayDateStr}
-          lastUpdated={lastUpdated}
-          fgValue={fgValue}
-          luStats={luStats}
-          latestNorth={latestNorth}
-          fmtAmount={fmtAmount}
-          dashboardVisibility={dashboardVisibility}
-          idxQ={idxQ}
-          validIndices={validIndices}
-          INDEX_CODES={INDEX_CODES}
-          sectorQ={sectorQ}
-          sectors={sectors}
-        />
-      </div>
+        <div className="grid gap-4 xl:grid-cols-3">
+          {compactHome ? (
+            <div className="space-y-3 xl:col-span-3">
+              <TabBar tabs={summaryTabs} active={summaryTab} onChange={setSummaryTab} />
+              {summaryTab === 'market' ? marketSummarySection : null}
+              {summaryTab === 'account' ? accountSummarySection : null}
+              {summaryTab === 'operations' ? operationsSummarySection : null}
+            </div>
+          ) : (
+            <>
+              {marketSummarySection}
+              {accountSummarySection}
+              {operationsSummarySection}
+            </>
+          )}
+        </div>
+      </section>
 
-      {/* ── 第二屏：持仓/自选 + 风险/策略/告警 ── */}
-      <PersonalDashboard
-        nickname={nickname}
-        paperSummary={paperSummary}
-        paperAccount={paperAccount}
-        paperPositions={paperPositions}
-        activeAlerts={activeAlerts}
-        watchlistItems={hydratedWatchlistItems}
-        recentStocks={hydratedRecentStocks}
-        quoteMap={quoteMap}
-        batchQIsFetching={batchQ.isFetching}
-        mounted={mounted}
-        marketNews={marketNews}
-        quickActions={quickActions}
-      />
-      <DashboardCards
-        mounted={mounted}
-        dashboardVisibility={dashboardVisibility}
-        dashboardCards={dashboardCards}
-        marketAnomalies={marketAnomalies}
-        anomalyDegraded={anomalyDegraded}
-      />
-
-      {/* ── 第三屏（折叠区）：资金流、自选近期、系统状态 ── */}
+      {/* ── 完整模块：标签页 + 折叠区 ── */}
       <details className="group">
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded-[16px] border border-border bg-surface px-4 py-3 text-sm font-medium text-text-secondary hover:bg-surface-alt">
           <span className="transition-transform group-open:rotate-90">▶</span>
-          <span>更多数据 · 资金流向、自选动态、系统状态</span>
+          <span>展开完整首页模块</span>
         </summary>
         <div className="mt-3 space-y-4">
-          <FundFlowSection
-            dashboardVisibility={dashboardVisibility}
-            fmtAmount={fmtAmount}
-            fearGreedQ={fearGreedQ}
-            fgValue={fgValue}
-            fgLabel={fgLabel}
-            sectorFlowQ={sectorFlowQ}
-            sectorFlows={sectorFlows}
-            limitUpQ={limitUpQ}
-            luStats={luStats}
-            northQ={northQ}
-            latestNorth={latestNorth}
-            northFlows={northFlows}
-          />
-          <WatchlistRecent
-            mounted={mounted}
-            watchlistItems={hydratedWatchlistItems}
-            recentStocks={hydratedRecentStocks}
-            quoteMap={quoteMap}
-            batchQIsFetching={batchQ.isFetching}
-          />
-          <SystemStatus
-            moduleStatuses={moduleStatuses}
-            showDashboardSettings={showDashboardSettings}
-            setShowDashboardSettings={setShowDashboardSettings}
-            dashboardVisibility={dashboardVisibility}
-            toggleDashboardModule={toggleDashboardModule}
-            healthQ={healthQ}
-            health={health}
-            mcp={mcp}
-          />
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <div className="eyebrow">完整模块</div>
+              <h2 className="mb-0 mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-text-primary">把长内容放到这里再展开</h2>
+              <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
+                首页默认不再平铺完整仪表盘。需要时再切到对应标签查看详细市场、自选、风险和系统模块。
+              </p>
+            </div>
+            <TabBar<HomeDetailsTab> tabs={detailTabs} active={detailTab} onChange={setDetailTab} />
+          </div>
+
+          {detailTab === 'market' ? (
+            <div className="space-y-4">
+              <MarketOverview
+                mounted={mounted}
+                dateStr={displayDateStr}
+                lastUpdated={lastUpdated}
+                fgValue={fgValue}
+                luStats={luStats}
+                latestNorth={latestNorth}
+                fmtAmount={fmtAmount}
+                dashboardVisibility={dashboardVisibility}
+                idxQ={idxQ}
+                validIndices={validIndices}
+                INDEX_CODES={INDEX_CODES}
+                sectorQ={sectorQ}
+                sectors={sectors}
+              />
+              <FundFlowSection
+                dashboardVisibility={dashboardVisibility}
+                fmtAmount={fmtAmount}
+                fearGreedQ={fearGreedQ}
+                fgValue={fgValue}
+                fgLabel={fgLabel}
+                sectorFlowQ={sectorFlowQ}
+                sectorFlows={sectorFlows}
+                limitUpQ={limitUpQ}
+                luStats={luStats}
+                northQ={northQ}
+                latestNorth={latestNorth}
+                northFlows={northFlows}
+              />
+            </div>
+          ) : null}
+
+          {detailTab === 'personal' ? (
+            <div className="space-y-4">
+              <PersonalSecondaryCards
+                watchlistItems={hydratedWatchlistItems}
+                paperPositions={paperPositions}
+                marketNews={marketNews}
+                quoteMap={quoteMap}
+              />
+              <WatchlistRecent
+                mounted={mounted}
+                watchlistItems={hydratedWatchlistItems}
+                recentStocks={hydratedRecentStocks}
+                quoteMap={quoteMap}
+                batchQIsFetching={batchQ.isFetching}
+              />
+            </div>
+          ) : null}
+
+          {detailTab === 'operations' ? (
+            <div className="space-y-4">
+              <DashboardCards
+                mounted={mounted}
+                dashboardVisibility={dashboardVisibility}
+                dashboardCards={dashboardCards}
+                marketAnomalies={marketAnomalies}
+                anomalyDegraded={anomalyDegraded}
+              />
+              <SystemStatus
+                moduleStatuses={moduleStatuses}
+                showDashboardSettings={showDashboardSettings}
+                setShowDashboardSettings={setShowDashboardSettings}
+                dashboardVisibility={dashboardVisibility}
+                toggleDashboardModule={toggleDashboardModule}
+                healthQ={healthQ}
+                health={health}
+                mcp={mcp}
+              />
+            </div>
+          ) : null}
         </div>
       </details>
     </PageContainer>

@@ -10,7 +10,7 @@ import MarketMinuteTab from '@/app/market/components/market-minute-tab';
 import MarketQueryShell from '@/app/market/components/market-query-shell';
 import MarketSearchTab from '@/app/market/components/market-search-tab';
 import MarketTradeTab from '@/app/market/components/market-trade-tab';
-import { PageContainer } from '@/components/ui';
+import { Badge, PageContainer } from '@/components/ui';
 import {
   DEFAULT_MARKET_CODE,
   MARKET_VIEW_STORAGE_KEY,
@@ -27,11 +27,13 @@ import {
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { useSearchParams } from 'next/navigation';
 import { cacheText } from '@/lib/api';
-import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/data-utils';
+import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useToast } from '@/components/ui/toast';
 import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook } from '@aiask/shared-types';
 
@@ -39,7 +41,7 @@ type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta };
 type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta };
 type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta };
 export default function MarketPage() {
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const requestedTab = searchParams.get('tab');
   const requestedIndexCode = (searchParams.get('indexCode') || '').trim();
   const requestedBlock = (searchParams.get('block') || '').trim();
@@ -74,6 +76,8 @@ function MarketPageInner({
   from: string | null;
 }) {
   const hydrated = useHydrated();
+  const compactHeroDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactHero = hydrated ? compactHeroDetected : true;
   const hasExplicitContext = Boolean(
     task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001',
   );
@@ -526,21 +530,43 @@ function MarketPageInner({
 
   return (
     <PageContainer className="space-y-5">
-      <MarketHeroSection
-        activeTaskLabel={activeTaskLabel}
-        activeDisplayName={activeDisplayName}
-        activeDisplayCode={activeDisplayCode}
-        activePeriodLabel={activePeriodLabel}
-        workspaceSummary={workspaceSummary}
-        activeQuote={activeQuote}
-        activeChangeTone={activeChangeTone}
-        freshnessLabel={freshnessLabel}
-        freshness={freshness}
-        from={from}
-        task={task}
-        heroNotes={heroNotes}
-        quickJumpLinks={quickJumpLinks}
-      />
+      {compactHero ? (
+        <section className="page-hero p-3.5 sm:p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="info">行情工作台</Badge>
+            <Badge variant="neutral">{activeTaskLabel}</Badge>
+            <Badge variant={activeQuote ? 'success' : 'warning'}>
+              {activeQuote ? activeDisplayCode || '已锁定标的' : '等待确认标的'}
+            </Badge>
+          </div>
+          <h1 className="mb-0 mt-3 text-[1.55rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[1.8rem]">
+            {activeDisplayName}
+          </h1>
+          <div className="mt-3 rounded-[20px] border border-white/50 bg-white/24 px-4 py-2.5 text-sm text-text-secondary">
+            <span className="font-medium text-text-primary">{activeDisplayCode || '未选择标的'}</span>
+            <span className="mx-2 text-text-muted">/</span>
+            <span>{activePeriodLabel}</span>
+            <span className="mx-2 text-text-muted">/</span>
+            <span className={activeChangeTone}>{fmtNum(activeQuote?.price as number | null, 2)}</span>
+          </div>
+        </section>
+      ) : (
+        <MarketHeroSection
+          activeTaskLabel={activeTaskLabel}
+          activeDisplayName={activeDisplayName}
+          activeDisplayCode={activeDisplayCode}
+          activePeriodLabel={activePeriodLabel}
+          workspaceSummary={workspaceSummary}
+          activeQuote={activeQuote}
+          activeChangeTone={activeChangeTone}
+          freshnessLabel={freshnessLabel}
+          freshness={freshness}
+          from={from}
+          task={task}
+          heroNotes={heroNotes}
+          quickJumpLinks={quickJumpLinks}
+        />
+      )}
 
       <MarketQueryShell
         code={code}
@@ -579,6 +605,7 @@ function MarketPageInner({
         onUseStarterCode={useStarterCode}
         onApplyPreset={applyPreset}
         obView={obView}
+        compactSummaryOnly={compactHero && activeTab !== 'main'}
       />
 
       {activeTab === 'limitup' ? (

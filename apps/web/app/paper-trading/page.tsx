@@ -8,16 +8,18 @@ import PaperTradingOrderWorkspace from '@/app/paper-trading/components/paper-tra
 import PaperTradingSummarySidebar from '@/app/paper-trading/components/paper-trading-summary-sidebar';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer } from '@/components/ui';
+import { PageContainer, TabBar } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { apiKeys } from '@/lib/query-keys';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useTradeSubscription } from '@/lib/ws';
 import { isTradingHours } from '@/lib/trading-hours';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
@@ -53,6 +55,14 @@ type PendingCancelRequest = {
   orderId: number;
   idempotencyKey: string;
 };
+
+type PaperTradingMobilePrimaryTab = 'order' | 'analytics' | 'activity';
+
+const PAPER_TRADING_MOBILE_PRIMARY_TABS = [
+  { key: 'order', label: '下单' },
+  { key: 'analytics', label: '账户分析' },
+  { key: 'activity', label: '持仓与记录' },
+] as const;
 
 type CompliancePayload = {
   success?: boolean;
@@ -94,6 +104,8 @@ export default function PaperTradingPage() {
   const [cancelingOrderIds, setCancelingOrderIds] = useState<number[]>([]);
   const [tradeNotice, setTradeNotice] = useState<string | null>(null);
   const [perfDays, setPerfDays] = useState(30);
+  const [mobilePrimaryTab, setMobilePrimaryTab] = useState<PaperTradingMobilePrimaryTab>('order');
+  const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   // T-005: WS real-time trade order updates
   const handleTradeUpdate = useCallback((data: Partial<PaperTradingPendingOrder> & { stock_code?: string }) => {
@@ -636,6 +648,7 @@ export default function PaperTradingPage() {
   const primaryContent = (
     <>
       <PaperTradingHero
+        compactMobile={collapseToTabs}
         showAccountBootstrap={showAccountBootstrap}
         matchOk={matchOk}
         navOk={navOk}
@@ -664,82 +677,94 @@ export default function PaperTradingPage() {
         refreshPricesPending={refreshPricesApi.isPending}
       />
 
-      <PaperTradingOrderWorkspace
-        showAccountBootstrap={showAccountBootstrap}
-        handleOrder={handleOrder}
-        code={code}
-        setCode={setCode}
-        codeError={codeError}
-        direction={direction}
-        setDirection={setDirection}
-        quantity={quantity}
-        setQuantity={setQuantity}
-        orderType={orderType}
-        setOrderType={setOrderType}
-        price={price}
-        setPrice={setPrice}
-        stopPrice={stopPrice}
-        setStopPrice={setStopPrice}
-        useComplianceCheck={useComplianceCheck}
-        setUseComplianceCheck={setUseComplianceCheck}
-        urgentExecution={urgentExecution}
-        setUrgentExecution={setUrgentExecution}
-        placePending={placeApi.isPending}
-        routeExecutionPending={routeExecutionApi.isPending}
-        compliancePending={complianceApi.isPending}
-        directionLabel={directionLabel}
-        orderTypeLabel={orderTypeLabel}
-        trimmedCode={trimmedCode}
-        quantityValue={quantityValue}
-        accountId={accountId}
-        previewUnitPrice={previewUnitPrice}
-        estimatedAmount={estimatedAmount}
-        riskHints={riskHints}
-        formError={formError}
-        formStatus={formStatus}
-        lastActionResult={lastActionResult}
-        onLoadExampleOrder={loadExampleOrder}
-      />
+      {collapseToTabs ? (
+        <div className="mb-4">
+          <TabBar tabs={PAPER_TRADING_MOBILE_PRIMARY_TABS} active={mobilePrimaryTab} onChange={setMobilePrimaryTab} />
+        </div>
+      ) : null}
 
-      <PaperTradingAnalytics
-        showAccountBootstrap={showAccountBootstrap}
-        matchOk={matchOk}
-        navOk={navOk}
-        matchStatusLabel={matchStatusLabel}
-        navStatusLabel={navStatusLabel}
-        onRefreshPrices={() => void handleRefreshPrices()}
-        refreshPricesPending={refreshPricesApi.isPending}
-        accounts={accounts}
-        accountId={accountId}
-        onAccountChange={setAccountId}
-        statusNotes={statusNotes}
-        totalValue={totalValue}
-        cash={cash}
-        marketValue={marketValue}
-        returnPct={Number(returnPct)}
-        todayPnl={todayPnl}
-        perfDays={perfDays}
-        onPerfDaysChange={setPerfDays}
-        performanceData={performanceData}
-        performanceMetrics={performanceMetrics}
-        perfCategories={perfCategories}
-        perfReturns={perfReturns}
-      />
+      {!collapseToTabs || mobilePrimaryTab === 'order' ? (
+        <PaperTradingOrderWorkspace
+          showAccountBootstrap={showAccountBootstrap}
+          handleOrder={handleOrder}
+          code={code}
+          setCode={setCode}
+          codeError={codeError}
+          direction={direction}
+          setDirection={setDirection}
+          quantity={quantity}
+          setQuantity={setQuantity}
+          orderType={orderType}
+          setOrderType={setOrderType}
+          price={price}
+          setPrice={setPrice}
+          stopPrice={stopPrice}
+          setStopPrice={setStopPrice}
+          useComplianceCheck={useComplianceCheck}
+          setUseComplianceCheck={setUseComplianceCheck}
+          urgentExecution={urgentExecution}
+          setUrgentExecution={setUrgentExecution}
+          placePending={placeApi.isPending}
+          routeExecutionPending={routeExecutionApi.isPending}
+          compliancePending={complianceApi.isPending}
+          directionLabel={directionLabel}
+          orderTypeLabel={orderTypeLabel}
+          trimmedCode={trimmedCode}
+          quantityValue={quantityValue}
+          accountId={accountId}
+          previewUnitPrice={previewUnitPrice}
+          estimatedAmount={estimatedAmount}
+          riskHints={riskHints}
+          formError={formError}
+          formStatus={formStatus}
+          lastActionResult={lastActionResult}
+          onLoadExampleOrder={loadExampleOrder}
+        />
+      ) : null}
 
-      <PaperTradingActivity
-        showAccountBootstrap={showAccountBootstrap}
-        positions={positions}
-        onQuickSell={quickSell}
-        pending={pending}
-        cancelingOrderIds={cancelingOrderIds}
-        onCancel={(orderId) => {
-          void handleCancel(orderId);
-        }}
-        trades={trades as PaperTradingTrade[]}
-        navData={navData}
-        navCategories={navCategories}
-        navValues={navValues}
-      />
+      {!collapseToTabs || mobilePrimaryTab === 'analytics' ? (
+        <PaperTradingAnalytics
+          showAccountBootstrap={showAccountBootstrap}
+          matchOk={matchOk}
+          navOk={navOk}
+          matchStatusLabel={matchStatusLabel}
+          navStatusLabel={navStatusLabel}
+          onRefreshPrices={() => void handleRefreshPrices()}
+          refreshPricesPending={refreshPricesApi.isPending}
+          accounts={accounts}
+          accountId={accountId}
+          onAccountChange={setAccountId}
+          statusNotes={statusNotes}
+          totalValue={totalValue}
+          cash={cash}
+          marketValue={marketValue}
+          returnPct={Number(returnPct)}
+          todayPnl={todayPnl}
+          perfDays={perfDays}
+          onPerfDaysChange={setPerfDays}
+          performanceData={performanceData}
+          performanceMetrics={performanceMetrics}
+          perfCategories={perfCategories}
+          perfReturns={perfReturns}
+        />
+      ) : null}
+
+      {!collapseToTabs || mobilePrimaryTab === 'activity' ? (
+        <PaperTradingActivity
+          showAccountBootstrap={showAccountBootstrap}
+          positions={positions}
+          onQuickSell={quickSell}
+          pending={pending}
+          cancelingOrderIds={cancelingOrderIds}
+          onCancel={(orderId) => {
+            void handleCancel(orderId);
+          }}
+          trades={trades as PaperTradingTrade[]}
+          navData={navData}
+          navCategories={navCategories}
+          navValues={navValues}
+        />
+      ) : null}
 
       <ConfirmDialog
         open={!!pendingOrderRequest}
@@ -833,8 +858,21 @@ export default function PaperTradingPage() {
 
   return (
     <PageContainer>
-      <WorkspaceToolbar pageKey="paper-trading" currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      <WorkspaceSplitLayout pageKey="paper-trading" primary={primaryContent} secondary={secondaryContent} />
+      <WorkspaceToolbar
+        pageKey="paper-trading"
+        currentView={currentView}
+        onApplyView={applyView}
+        supportsPagePanels
+        mobileSummaryMode="hidden"
+      />
+      <WorkspaceSplitLayout
+        pageKey="paper-trading"
+        primary={primaryContent}
+        secondary={secondaryContent}
+        primaryLabel="交易主区"
+        secondaryLabel="交易摘要"
+        defaultMobileTab="primary"
+      />
     </PageContainer>
   );
 }

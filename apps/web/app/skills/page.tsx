@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import { Badge, DataTable, PageContainer, SectionCard } from '@/components/ui';
@@ -10,6 +10,7 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { SkillDescriptor, SkillExecutionMode, SkillStatus, WorkspaceSharedContext } from '@aiask/shared-types';
 
@@ -57,19 +58,22 @@ function normalizeSkill(item: unknown): SkillDescriptor | null {
     id,
     name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : undefined,
     category: typeof record.category === 'string' && record.category.trim() ? record.category.trim() : undefined,
-    description: typeof record.description === 'string' && record.description.trim() ? record.description.trim() : undefined,
+    description:
+      typeof record.description === 'string' && record.description.trim() ? record.description.trim() : undefined,
     path: typeof record.path === 'string' && record.path.trim() ? record.path.trim() : undefined,
     status,
     executable: status === 'executable' && executable,
     deprecated: status === 'deprecated',
     handler_available: typeof record.handler_available === 'boolean' ? record.handler_available : undefined,
     execution_mode: normalizeExecutionMode(record.execution_mode, status, executable),
-    input_schema: record.input_schema && typeof record.input_schema === 'object' && !Array.isArray(record.input_schema)
-      ? record.input_schema as Record<string, unknown>
-      : undefined,
-    output_schema: record.output_schema && typeof record.output_schema === 'object' && !Array.isArray(record.output_schema)
-      ? record.output_schema as Record<string, unknown>
-      : undefined,
+    input_schema:
+      record.input_schema && typeof record.input_schema === 'object' && !Array.isArray(record.input_schema)
+        ? (record.input_schema as Record<string, unknown>)
+        : undefined,
+    output_schema:
+      record.output_schema && typeof record.output_schema === 'object' && !Array.isArray(record.output_schema)
+        ? (record.output_schema as Record<string, unknown>)
+        : undefined,
     supported_tasks: Array.isArray(record.supported_tasks)
       ? record.supported_tasks.map((entry) => String(entry)).filter(Boolean)
       : undefined,
@@ -106,7 +110,8 @@ function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>
   if (context.artifactId) payload.artifact_id = context.artifactId;
   if (context.benchmark) payload.benchmark = context.benchmark;
   if (typeof context.days === 'number' && context.days > 0) payload.days = context.days;
-  if (typeof context.lookbackDays === 'number' && context.lookbackDays > 0) payload.lookback_days = context.lookbackDays;
+  if (typeof context.lookbackDays === 'number' && context.lookbackDays > 0)
+    payload.lookback_days = context.lookbackDays;
   return payload;
 }
 
@@ -124,9 +129,7 @@ function inferWorkspacePatch(payload: Record<string, unknown>): WorkspaceContext
   const eventCode = payload.event_code;
   if (typeof eventCode === 'string' && eventCode.trim()) patch.eventCode = eventCode.trim();
 
-  const accountId = [payload.accountId, payload.account_id].find(
-    (value) => typeof value === 'string' && value.trim(),
-  );
+  const accountId = [payload.accountId, payload.account_id].find((value) => typeof value === 'string' && value.trim());
   if (typeof accountId === 'string' && accountId.trim()) patch.accountId = accountId.trim();
 
   const portfolioId = [payload.portfolioId, payload.portfolio_id].find(
@@ -171,7 +174,7 @@ function shortSkillName(skill: SkillDescriptor) {
 
 export default function SkillsPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const requestedSkillId = searchParams.get('skill') ?? '';
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
@@ -190,27 +193,30 @@ export default function SkillsPage() {
   const [selectedSkillId, setSelectedSkillId] = useState(requestedSkillId);
   const [payloadText, setPayloadText] = useState('{}');
   const [payloadError, setPayloadError] = useState<string | null>(null);
+  const [lastSkillsRefreshAt, setLastSkillsRefreshAt] = useState<string | null>(null);
 
   const skills = useMemo(() => skillsQ.data ?? [], [skillsQ.data]);
   const categories = useMemo(
     () => [...new Set(skills.map((skill) => skill.category).filter((entry): entry is string => Boolean(entry)))].sort(),
     [skills],
   );
-  const filteredSkills = useMemo(() => (
-    skills.filter((skill) => {
-      if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false;
-      if (statusFilter !== 'all' && skill.status !== statusFilter) return false;
-      if (!keyword.trim()) return true;
-      const lower = keyword.trim().toLowerCase();
-      return [
-        skill.id,
-        skill.name ?? '',
-        skill.description ?? '',
-        skill.category ?? '',
-        ...(skill.supported_tasks ?? []),
-      ].some((entry) => entry.toLowerCase().includes(lower));
-    })
-  ), [categoryFilter, keyword, skills, statusFilter]);
+  const filteredSkills = useMemo(
+    () =>
+      skills.filter((skill) => {
+        if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false;
+        if (statusFilter !== 'all' && skill.status !== statusFilter) return false;
+        if (!keyword.trim()) return true;
+        const lower = keyword.trim().toLowerCase();
+        return [
+          skill.id,
+          skill.name ?? '',
+          skill.description ?? '',
+          skill.category ?? '',
+          ...(skill.supported_tasks ?? []),
+        ].some((entry) => entry.toLowerCase().includes(lower));
+      }),
+    [categoryFilter, keyword, skills, statusFilter],
+  );
 
   const requestedSkillExists = useMemo(
     () => Boolean(requestedSkillId) && skills.some((skill) => skill.id === requestedSkillId),
@@ -218,16 +224,20 @@ export default function SkillsPage() {
   );
   const preferredSkillId = requestedSkillExists ? requestedSkillId : selectedSkillId;
   const selectedSkill = useMemo(
-    () => filteredSkills.find((skill) => skill.id === preferredSkillId)
-      ?? skills.find((skill) => skill.id === preferredSkillId)
-      ?? filteredSkills[0]
-      ?? skills[0]
-      ?? null,
+    () =>
+      filteredSkills.find((skill) => skill.id === preferredSkillId) ??
+      skills.find((skill) => skill.id === preferredSkillId) ??
+      filteredSkills[0] ??
+      skills[0] ??
+      null,
     [filteredSkills, preferredSkillId, skills],
   );
   const activeSkillId = selectedSkill?.id ?? preferredSkillId;
   const workspacePayload = useMemo(() => buildWorkspacePayload(workbenchContext), [workbenchContext]);
   const executionResult = triggerSkillApi.data;
+  const latestSkillsRefreshText = skillsQ.dataUpdatedAt
+    ? new Date(skillsQ.dataUpdatedAt).toLocaleString('zh-CN')
+    : '等待首个技能快照';
 
   useEffect(() => {
     const params = new URLSearchParams(searchParams.toString());
@@ -244,10 +254,20 @@ export default function SkillsPage() {
     setPayloadText(stringifyPayload(workspacePayload));
   }, [workspacePayload]);
 
+  const refreshSkills = useCallback(async () => {
+    await skillsQ.refetch();
+    setLastSkillsRefreshAt(new Date().toLocaleString('zh-CN'));
+  }, [skillsQ]);
+
   const applySkillsView = useCallback((snapshot: Record<string, unknown>) => {
     if (typeof snapshot.keyword === 'string') setKeyword(snapshot.keyword);
     if (typeof snapshot.categoryFilter === 'string') setCategoryFilter(snapshot.categoryFilter);
-    if (snapshot.statusFilter === 'all' || snapshot.statusFilter === 'registered' || snapshot.statusFilter === 'executable' || snapshot.statusFilter === 'deprecated') {
+    if (
+      snapshot.statusFilter === 'all' ||
+      snapshot.statusFilter === 'registered' ||
+      snapshot.statusFilter === 'executable' ||
+      snapshot.statusFilter === 'deprecated'
+    ) {
       setStatusFilter(snapshot.statusFilter);
     }
     if (typeof snapshot.selectedSkillId === 'string') setSelectedSkillId(snapshot.selectedSkillId);
@@ -255,13 +275,16 @@ export default function SkillsPage() {
     setPayloadError(null);
   }, []);
 
-  const currentView = useMemo<Record<string, unknown>>(() => ({
-    keyword,
-    categoryFilter,
-    statusFilter,
-    selectedSkillId: activeSkillId,
-    payloadText,
-  }), [activeSkillId, categoryFilter, keyword, payloadText, statusFilter]);
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      keyword,
+      categoryFilter,
+      statusFilter,
+      selectedSkillId: activeSkillId,
+      payloadText,
+    }),
+    [activeSkillId, categoryFilter, keyword, payloadText, statusFilter],
+  );
 
   const runSelectedSkill = useCallback(async () => {
     if (!selectedSkill) {
@@ -330,53 +353,56 @@ export default function SkillsPage() {
     },
   });
 
-  const pageActions = useMemo(() => ([
-    {
-      id: 'skills.refresh',
-      label: '刷新技能列表',
-      description: '重新从 MCP 技能注册表拉取可用技能',
-      keywords: ['刷新', '技能列表'],
-      scope: 'page' as const,
-      pageKey: 'skills',
-      run: async () => {
-        await skillsQ.refetch();
-        return { message: '已刷新技能列表' };
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'skills.refresh',
+        label: '刷新技能列表',
+        description: '重新从 MCP 技能注册表拉取可用技能',
+        keywords: ['刷新', '技能列表'],
+        scope: 'page' as const,
+        pageKey: 'skills',
+        run: async () => {
+          await refreshSkills();
+          return { message: '已刷新技能列表' };
+        },
       },
-    },
-    {
-      id: 'skills.fill-workspace-payload',
-      label: '填充工作区上下文',
-      description: '把当前工作区里的股票、账户、组合、执行等上下文注入技能参数',
-      keywords: ['工作区上下文', 'payload'],
-      scope: 'page' as const,
-      pageKey: 'skills',
-      run: () => {
-        fillWorkspacePayload();
-        return { message: '已填充工作区上下文' };
+      {
+        id: 'skills.fill-workspace-payload',
+        label: '填充工作区上下文',
+        description: '把当前工作区里的股票、账户、组合、执行等上下文注入技能参数',
+        keywords: ['工作区上下文', 'payload'],
+        scope: 'page' as const,
+        pageKey: 'skills',
+        run: () => {
+          fillWorkspacePayload();
+          return { message: '已填充工作区上下文' };
+        },
       },
-    },
-    {
-      id: 'skills.toggle-executable',
-      label: statusFilter === 'executable' ? '显示全部技能' : '只看可执行技能',
-      description: '在所有技能和可执行技能之间切换',
-      keywords: ['可执行', '筛选'],
-      scope: 'page' as const,
-      pageKey: 'skills',
-      run: () => {
-        setStatusFilter((prev) => prev === 'executable' ? 'all' : 'executable');
-        return { message: statusFilter === 'executable' ? '已切回全部技能' : '已切到可执行技能' };
+      {
+        id: 'skills.toggle-executable',
+        label: statusFilter === 'executable' ? '显示全部技能' : '只看可执行技能',
+        description: '在所有技能和可执行技能之间切换',
+        keywords: ['可执行', '筛选'],
+        scope: 'page' as const,
+        pageKey: 'skills',
+        run: () => {
+          setStatusFilter((prev) => (prev === 'executable' ? 'all' : 'executable'));
+          return { message: statusFilter === 'executable' ? '已切回全部技能' : '已切到可执行技能' };
+        },
       },
-    },
-    {
-      id: 'skills.trigger-selected',
-      label: selectedSkill ? `执行 ${shortSkillName(selectedSkill)}` : '执行当前技能',
-      description: '按当前 JSON payload 触发选中的技能',
-      keywords: ['执行技能', '触发'],
-      scope: 'page' as const,
-      pageKey: 'skills',
-      run: async () => runSelectedSkill(),
-    },
-  ]), [fillWorkspacePayload, runSelectedSkill, selectedSkill, skillsQ, statusFilter]);
+      {
+        id: 'skills.trigger-selected',
+        label: selectedSkill ? `执行 ${shortSkillName(selectedSkill)}` : '执行当前技能',
+        description: '按当前 JSON payload 触发选中的技能',
+        keywords: ['执行技能', '触发'],
+        scope: 'page' as const,
+        pageKey: 'skills',
+        run: async () => runSelectedSkill(),
+      },
+    ],
+    [fillWorkspacePayload, refreshSkills, runSelectedSkill, selectedSkill, statusFilter],
+  );
 
   usePageActions(pageActions);
 
@@ -403,6 +429,44 @@ export default function SkillsPage() {
             <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
               技能中心不是新的对话入口，而是把后端已有的能力目录、可执行状态和触发结果显式化，便于用户理解“系统现在到底能做什么”。
             </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshSkills();
+                }}
+                data-testid="page-primary-action"
+                data-action-testid="skills-refresh-action"
+                className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                刷新技能列表
+              </button>
+              <button
+                type="button"
+                onClick={fillWorkspacePayload}
+                className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+              >
+                填充工作区上下文
+              </button>
+            </div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前技能 {selectedSkill ? shortSkillName(selectedSkill) : '未选择'} ｜ 筛选后 {filteredSkills.length} /{' '}
+                {skills.length}
+              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                {selectedSkill
+                  ? `状态 ${selectedSkill.status} ｜ 执行模式 ${selectedSkill.execution_mode ?? 'no_handler'} ｜ ${selectedSkill.executable ? '可触发' : '不可触发'}`
+                  : '请先在右侧列表选择一个技能。'}
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">
+                最近快照：{latestSkillsRefreshText}
+                {lastSkillsRefreshAt ? ` ｜ 手动刷新：${lastSkillsRefreshAt}` : ''}
+              </p>
+            </div>
           </div>
           <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
             <div className="font-medium text-text-primary">推荐使用方式</div>
@@ -417,7 +481,7 @@ export default function SkillsPage() {
 
       <WorkspaceSplitLayout
         pageKey="skills"
-        primary={(
+        primary={
           <SectionCard className="h-full p-4">
             {!selectedSkill ? (
               <EmptyState
@@ -433,7 +497,9 @@ export default function SkillsPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Badge variant={statusBadgeVariant(selectedSkill.status)}>{selectedSkill.status}</Badge>
-                    <Badge variant={modeBadgeVariant(selectedSkill.execution_mode)}>{selectedSkill.execution_mode ?? 'no_handler'}</Badge>
+                    <Badge variant={modeBadgeVariant(selectedSkill.execution_mode)}>
+                      {selectedSkill.execution_mode ?? 'no_handler'}
+                    </Badge>
                     <Badge variant={selectedSkill.executable ? 'success' : 'warning'}>
                       {selectedSkill.executable ? '可触发' : '不可触发'}
                     </Badge>
@@ -453,7 +519,9 @@ export default function SkillsPage() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       {(selectedSkill.supported_tasks ?? []).length > 0 ? (
                         selectedSkill.supported_tasks?.map((task) => (
-                          <Badge key={task} variant="neutral">{task}</Badge>
+                          <Badge key={task} variant="neutral">
+                            {task}
+                          </Badge>
                         ))
                       ) : (
                         <span>当前未声明 supported_tasks。</span>
@@ -542,9 +610,7 @@ export default function SkillsPage() {
                     />
                   ) : null}
 
-                  {triggerSkillApi.error ? (
-                    <ErrorState text={triggerSkillApi.error} />
-                  ) : null}
+                  {triggerSkillApi.error ? <ErrorState text={triggerSkillApi.error} /> : null}
 
                   {executionResult ? (
                     <>
@@ -552,15 +618,27 @@ export default function SkillsPage() {
                         {executionResult.message ?? `已执行 ${shortSkillName(selectedSkill)}`}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
-                        {executionResult.meta?.backend_requested ? <Badge variant="neutral">请求后端 {executionResult.meta.backend_requested}</Badge> : null}
-                        {executionResult.meta?.backend_used ? <Badge variant="neutral">实际后端 {executionResult.meta.backend_used}</Badge> : null}
-                        {typeof executionResult.meta?.latency_ms === 'number' ? <Badge variant="neutral">耗时 {executionResult.meta.latency_ms}ms</Badge> : null}
+                        {executionResult.meta?.backend_requested ? (
+                          <Badge variant="neutral">请求后端 {executionResult.meta.backend_requested}</Badge>
+                        ) : null}
+                        {executionResult.meta?.backend_used ? (
+                          <Badge variant="neutral">实际后端 {executionResult.meta.backend_used}</Badge>
+                        ) : null}
+                        {typeof executionResult.meta?.latency_ms === 'number' ? (
+                          <Badge variant="neutral">耗时 {executionResult.meta.latency_ms}ms</Badge>
+                        ) : null}
                         {executionResult.meta?.fallback_used ? <Badge variant="warning">使用回退</Badge> : null}
                       </div>
                       <details className="mt-3 rounded-xl border border-glass-border bg-surface/60 p-3">
-                        <summary className="cursor-pointer text-sm font-medium text-text-primary">查看执行结果 JSON</summary>
+                        <summary className="cursor-pointer text-sm font-medium text-text-primary">
+                          查看执行结果 JSON
+                        </summary>
                         <pre className="mb-0 mt-3 max-h-80 overflow-auto whitespace-pre-wrap text-[11px] text-text-secondary">
-                          {JSON.stringify(executionResult.execution ?? executionResult.result ?? executionResult, null, 2)}
+                          {JSON.stringify(
+                            executionResult.execution ?? executionResult.result ?? executionResult,
+                            null,
+                            2,
+                          )}
                         </pre>
                       </details>
                     </>
@@ -569,93 +647,103 @@ export default function SkillsPage() {
               </>
             )}
           </SectionCard>
-        )}
-        secondary={(
+        }
+        secondary={
           <SectionCard className="h-full p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索技能 ID、名称、描述"
-              className="min-w-[220px] flex-1 rounded border border-glass-border px-3 py-1.5 text-sm"
-            />
-            <select
-              value={categoryFilter}
-              onChange={(event) => setCategoryFilter(event.target.value)}
-              className="rounded border border-glass-border px-3 py-1.5 text-sm"
-            >
-              <option value="all">全部分类</option>
-              {categories.map((category) => (
-                <option key={category} value={category}>{category}</option>
-              ))}
-            </select>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as SkillStatusFilter)}
-              className="rounded border border-glass-border px-3 py-1.5 text-sm"
-            >
-              <option value="all">全部状态</option>
-              <option value="executable">可执行</option>
-              <option value="registered">仅注册</option>
-              <option value="deprecated">已废弃</option>
-            </select>
-          </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="搜索技能 ID、名称、描述"
+                className="min-w-[220px] flex-1 rounded border border-glass-border px-3 py-1.5 text-sm"
+              />
+              <select
+                value={categoryFilter}
+                onChange={(event) => setCategoryFilter(event.target.value)}
+                className="rounded border border-glass-border px-3 py-1.5 text-sm"
+              >
+                <option value="all">全部分类</option>
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as SkillStatusFilter)}
+                className="rounded border border-glass-border px-3 py-1.5 text-sm"
+              >
+                <option value="all">全部状态</option>
+                <option value="executable">可执行</option>
+                <option value="registered">仅注册</option>
+                <option value="deprecated">已废弃</option>
+              </select>
+            </div>
 
-          {skillsQ.isFetching && skills.length === 0 ? <LoadingState text="加载技能注册表中..." /> : null}
-          {skillsQ.error ? <ErrorState text={skillsQ.error} onRetry={() => void skillsQ.refetch()} /> : null}
-          {!skillsQ.isFetching && !skillsQ.error && filteredSkills.length === 0 ? (
-            <EmptyState
-              text="当前筛选条件下没有匹配的技能。"
-              hint="可以先切回全部状态，再用工作区任务模板确认哪些能力最值得前端化。"
-            />
-          ) : null}
+            {skillsQ.isFetching && skills.length === 0 ? <LoadingState text="加载技能注册表中..." /> : null}
+            {skillsQ.error ? <ErrorState text={skillsQ.error} onRetry={() => void skillsQ.refetch()} /> : null}
+            {!skillsQ.isFetching && !skillsQ.error && filteredSkills.length === 0 ? (
+              <EmptyState
+                text="当前筛选条件下没有匹配的技能。"
+                hint="可以先切回全部状态，再用工作区任务模板确认哪些能力最值得前端化。"
+              />
+            ) : null}
 
-          {filteredSkills.length > 0 ? (
-            <DataTable
-              rows={filteredSkills.map((skill) => ({
-                id: skill.id,
-                name: shortSkillName(skill),
-                category: skill.category ?? '未分类',
-                status: skill.status,
-                executionMode: skill.execution_mode ?? 'no_handler',
-                executable: skill.executable ? '是' : '否',
-                description: skill.description ?? '',
-              }))}
-              rowKey="id"
-              maxHeight={620}
-              onRowClick={(row) => setSelectedSkillId(String(row.id ?? ''))}
-              columns={[
-                {
-                  key: 'name',
-                  label: '技能',
-                  render: (value, row) => (
-                    <div>
-                      <div className="font-medium text-text-primary">
-                        {String(value)}
-                        {String(row.id ?? '') === selectedSkill?.id ? <span className="ml-2 text-[11px] text-primary">当前</span> : null}
+            {filteredSkills.length > 0 ? (
+              <DataTable
+                rows={filteredSkills.map((skill) => ({
+                  id: skill.id,
+                  name: shortSkillName(skill),
+                  category: skill.category ?? '未分类',
+                  status: skill.status,
+                  executionMode: skill.execution_mode ?? 'no_handler',
+                  executable: skill.executable ? '是' : '否',
+                  description: skill.description ?? '',
+                }))}
+                rowKey="id"
+                maxHeight={620}
+                onRowClick={(row) => setSelectedSkillId(String(row.id ?? ''))}
+                columns={[
+                  {
+                    key: 'name',
+                    label: '技能',
+                    render: (value, row) => (
+                      <div>
+                        <div className="font-medium text-text-primary">
+                          {String(value)}
+                          {String(row.id ?? '') === selectedSkill?.id ? (
+                            <span className="ml-2 text-[11px] text-primary">当前</span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 break-all font-mono text-[11px] text-text-muted">
+                          {String(row.id ?? '')}
+                        </div>
                       </div>
-                      <div className="mt-1 break-all font-mono text-[11px] text-text-muted">{String(row.id ?? '')}</div>
-                    </div>
-                  ),
-                },
-                { key: 'category', label: '分类', width: 120 },
-                {
-                  key: 'status',
-                  label: '状态',
-                  width: 92,
-                  render: (value) => <Badge variant={statusBadgeVariant(String(value) as SkillStatus)}>{String(value)}</Badge>,
-                },
-                {
-                  key: 'executionMode',
-                  label: '执行',
-                  width: 110,
-                  render: (value) => <Badge variant={modeBadgeVariant(String(value) as SkillExecutionMode)}>{String(value)}</Badge>,
-                },
-              ]}
-            />
-          ) : null}
-        </SectionCard>
-        )}
+                    ),
+                  },
+                  { key: 'category', label: '分类', width: 120 },
+                  {
+                    key: 'status',
+                    label: '状态',
+                    width: 92,
+                    render: (value) => (
+                      <Badge variant={statusBadgeVariant(String(value) as SkillStatus)}>{String(value)}</Badge>
+                    ),
+                  },
+                  {
+                    key: 'executionMode',
+                    label: '执行',
+                    width: 110,
+                    render: (value) => (
+                      <Badge variant={modeBadgeVariant(String(value) as SkillExecutionMode)}>{String(value)}</Badge>
+                    ),
+                  },
+                ]}
+              />
+            ) : null}
+          </SectionCard>
+        }
       />
     </PageContainer>
   );

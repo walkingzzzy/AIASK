@@ -1,5 +1,8 @@
 import type { FormEvent } from 'react';
 import { Badge } from '@/components/ui';
+import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
   stockFieldCls,
   stockPanelCls,
@@ -37,6 +40,10 @@ export default function StockQueryShell({
   sentimentScore,
   onTabChange,
 }: StockQueryShellProps) {
+  const hydrated = useHydrated();
+  const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactLayout = hydrated ? compactLayoutDetected : true;
+
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.06fr)_320px]">
       <div className={stockPanelCls}>
@@ -45,9 +52,11 @@ export default function StockQueryShell({
             <div>
               <div className="eyebrow">Query Deck</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">代码、周期与刷新入口</h2>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                先固定标的与周期，再让下方所有图表、指标与资讯沿同一上下文刷新，避免每个模块各自加载、阅读顺序被打散。
-              </p>
+              {!compactLayout ? (
+                <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                  先固定标的与周期，再让下方所有图表、指标与资讯沿同一上下文刷新，避免每个模块各自加载、阅读顺序被打散。
+                </p>
+              ) : null}
             </div>
             <Badge variant="info">{getStockPeriodLabel(period)}</Badge>
           </div>
@@ -96,10 +105,10 @@ export default function StockQueryShell({
         </form>
       </div>
 
-      <div className="grid gap-4">
-        <div className={stockPanelCls}>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前状态</div>
-          <div className="mt-4 grid gap-3">
+      {compactLayout ? (
+        <details className={stockPanelCls}>
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开状态与下一步</summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="metric-tile rounded-[24px] p-4">
               <div className="metric-label">报价刷新</div>
               <div className="mt-3 text-sm font-semibold text-text-primary">{refreshStatus}</div>
@@ -111,9 +120,33 @@ export default function StockQueryShell({
               <div className="mt-1 text-xs text-text-secondary">结合价格和量能一起理解更稳妥</div>
             </div>
           </div>
-        </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button type="button" onClick={() => onTabChange('chart')} className={stockSecondaryButtonCls}>
+              看主图
+            </button>
+            <button type="button" onClick={() => onTabChange('fund')} className={stockSecondaryButtonCls}>
+              看资金流
+            </button>
+            <button type="button" onClick={() => onTabChange('valuation')} className={stockSecondaryButtonCls}>
+              看估值
+            </button>
+          </div>
+        </details>
+      ) : (
         <div className={stockPanelCls}>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步建议</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">状态与下一步</div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="metric-label">报价刷新</div>
+              <div className="mt-3 text-sm font-semibold text-text-primary">{refreshStatus}</div>
+              <div className="mt-1 text-xs text-text-secondary">{refreshTimeText}</div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="metric-label">短线情绪</div>
+              <div className="mt-3 text-2xl font-semibold text-text-primary">{fmtNum(sentimentScore, 0)}</div>
+              <div className="mt-1 text-xs text-text-secondary">结合价格和量能一起理解更稳妥</div>
+            </div>
+          </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" onClick={() => onTabChange('chart')} className={stockSecondaryButtonCls}>
               看主图
@@ -126,7 +159,7 @@ export default function StockQueryShell({
             </button>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

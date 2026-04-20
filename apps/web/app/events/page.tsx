@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
@@ -9,6 +9,7 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
@@ -34,7 +35,7 @@ function eventBadgeVariant(value?: string | null) {
 
 export default function EventsPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useStableSearchParams();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
@@ -98,6 +99,13 @@ export default function EventsPage() {
   const activeTypeLabel = EVENT_TYPES.find((item) => item.key === type)?.label ?? type;
   const nextImportantItem = importantItems[0] ?? null;
   const latestTimelineItem = timelineItems[0] ?? null;
+  const latestEventRefreshAt =
+    [importantQ.dataUpdatedAt, timelineQ.dataUpdatedAt, subscriptionsQ.dataUpdatedAt]
+      .filter((value): value is number => typeof value === 'number' && value > 0)
+      .sort((left, right) => right - left)[0] ?? null;
+  const latestEventRefreshText = latestEventRefreshAt
+    ? new Date(latestEventRefreshAt).toLocaleString('zh-CN')
+    : '等待首个事件快照';
   const currentView = useMemo(
     () => ({
       code: activeCode,
@@ -107,56 +115,68 @@ export default function EventsPage() {
     [activeCode, days, type],
   );
 
-  const openStock = useCallback((codeValue: string) => {
-    updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
-    addWorkbenchTask({
-      pageKey: 'events',
-      title: `查看 ${codeValue} 个股详情`,
-      href: `/stock?code=${encodeURIComponent(codeValue)}`,
-      kind: 'stock-review',
-      payload: { code: codeValue },
-    });
-    router.push(`/stock?code=${encodeURIComponent(codeValue)}`);
-  }, [addWorkbenchTask, router, updateWorkbenchContext]);
+  const openStock = useCallback(
+    (codeValue: string) => {
+      updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
+      addWorkbenchTask({
+        pageKey: 'events',
+        title: `查看 ${codeValue} 个股详情`,
+        href: `/stock?code=${encodeURIComponent(codeValue)}`,
+        kind: 'stock-review',
+        payload: { code: codeValue },
+      });
+      router.push(`/stock?code=${encodeURIComponent(codeValue)}`);
+    },
+    [addWorkbenchTask, router, updateWorkbenchContext],
+  );
 
-  const openResearch = useCallback((codeValue: string) => {
-    updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
-    addWorkbenchTask({
-      pageKey: 'events',
-      title: `查看 ${codeValue} 研究事件`,
-      href: `/research?code=${encodeURIComponent(codeValue)}`,
-      kind: 'research-review',
-      payload: { code: codeValue },
-    });
-    router.push(`/research?code=${encodeURIComponent(codeValue)}`);
-  }, [addWorkbenchTask, router, updateWorkbenchContext]);
+  const openResearch = useCallback(
+    (codeValue: string) => {
+      updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
+      addWorkbenchTask({
+        pageKey: 'events',
+        title: `查看 ${codeValue} 研究事件`,
+        href: `/research?code=${encodeURIComponent(codeValue)}`,
+        kind: 'research-review',
+        payload: { code: codeValue },
+      });
+      router.push(`/research?code=${encodeURIComponent(codeValue)}`);
+    },
+    [addWorkbenchTask, router, updateWorkbenchContext],
+  );
 
-  const openExecution = useCallback((codeValue: string) => {
-    updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
-    addWorkbenchTask({
-      pageKey: 'events',
-      title: `查看 ${codeValue} 的执行链路`,
-      href: `/execution?code=${encodeURIComponent(codeValue)}`,
-      kind: 'execution-review',
-      payload: { code: codeValue },
-    });
-    router.push(`/execution?code=${encodeURIComponent(codeValue)}`);
-  }, [addWorkbenchTask, router, updateWorkbenchContext]);
+  const openExecution = useCallback(
+    (codeValue: string) => {
+      updateWorkbenchContext({ stockCode: codeValue, eventCode: codeValue });
+      addWorkbenchTask({
+        pageKey: 'events',
+        title: `查看 ${codeValue} 的执行链路`,
+        href: `/execution?code=${encodeURIComponent(codeValue)}`,
+        kind: 'execution-review',
+        payload: { code: codeValue },
+      });
+      router.push(`/execution?code=${encodeURIComponent(codeValue)}`);
+    },
+    [addWorkbenchTask, router, updateWorkbenchContext],
+  );
 
   const subscribeCurrentCode = useCallback(async () => {
     if (!validate()) return;
     await subscriptionApi.triggerAsync('/event/subscribe', { method: 'POST' }, { code: activeCode });
   }, [activeCode, subscriptionApi, validate]);
 
-  const unsubscribeCurrentCode = useCallback(async (codeValue?: string) => {
-    const targetCode = String(codeValue ?? activeCode).trim();
-    if (!targetCode) {
-      if (!validate()) return;
-    }
-    const code = targetCode || activeCode;
-    if (!code) return;
-    await subscriptionApi.triggerAsync('/event/unsubscribe', { method: 'POST' }, { code });
-  }, [activeCode, subscriptionApi, validate]);
+  const unsubscribeCurrentCode = useCallback(
+    async (codeValue?: string) => {
+      const targetCode = String(codeValue ?? activeCode).trim();
+      if (!targetCode) {
+        if (!validate()) return;
+      }
+      const code = targetCode || activeCode;
+      if (!code) return;
+      await subscriptionApi.triggerAsync('/event/unsubscribe', { method: 'POST' }, { code });
+    },
+    [activeCode, subscriptionApi, validate],
+  );
 
   usePageContext({
     pageKey: 'events',
@@ -315,28 +335,35 @@ export default function EventsPage() {
                 type="button"
                 onClick={() => (isSubscribed ? unsubscribeCurrentCode() : subscribeCurrentCode())}
                 disabled={subscriptionApi.isPending}
+                data-testid="page-primary-action"
+                data-action-testid="events-subscription-action"
                 className={`rounded-full px-4 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${isSubscribed ? 'border border-glass-border bg-white/45 text-text-primary' : 'bg-primary text-white'}`}
               >
-                {subscriptionApi.isPending ? '处理中...' : isSubscribed ? '取消当前订阅' : '订阅当前事件'}
+                {subscriptionApi.isPending ? '处理中...' : isSubscribed ? '取消订阅当前股票事件' : '订阅当前股票事件'}
               </button>
               {activeCode ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => openResearch(activeCode)}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
-                  >
-                    打开研究事件台
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openExecution(activeCode)}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
-                  >
-                    联动执行中心
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={() => openResearch(activeCode)}
+                  className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+                >
+                  打开研究事件台
+                </button>
               ) : null}
+            </div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前焦点 {activeCode || '未选择'}，订阅状态 {isSubscribed ? '已订阅' : '未订阅'}，重点事件{' '}
+                {importantItems.length} 条
+              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                个股时间线 {timelineItems.length} 条 ｜ 最新事件{' '}
+                {latestTimelineItem?.title || nextImportantItem?.title || '当前窗口暂无高优先级事件'}
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">最近更新时间：{latestEventRefreshText}</p>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -371,19 +398,50 @@ export default function EventsPage() {
                 {nextImportantItem?.title || '当前窗口内暂无高优先级事件'}
               </div>
               <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
-                <div>重点事件日期：<span className="font-medium text-text-primary">{nextImportantItem?.eventDate || '-'}</span></div>
-                <div>来源范围：<span className="font-medium text-text-primary">{nextImportantItem?.scope || nextImportantItem?.source || '-'}</span></div>
-                <div>个股时间线：<span className="font-medium text-text-primary">{timelineItems.length} 条</span></div>
+                <div>
+                  重点事件日期：
+                  <span className="font-medium text-text-primary">{nextImportantItem?.eventDate || '-'}</span>
+                </div>
+                <div>
+                  来源范围：
+                  <span className="font-medium text-text-primary">
+                    {nextImportantItem?.scope || nextImportantItem?.source || '-'}
+                  </span>
+                </div>
+                <div>
+                  个股时间线：<span className="font-medium text-text-primary">{timelineItems.length} 条</span>
+                </div>
               </div>
             </div>
 
             <div className="rounded-[28px] border border-dashed border-white/40 bg-white/20 p-4 backdrop-blur-xl">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步建议</div>
               <ul className="mb-0 mt-3 space-y-2 pl-4 text-xs leading-6 text-text-secondary">
-                <li>{latestTimelineItem?.title ? `先处理最新个股事件：“${latestTimelineItem.title}”。` : '先输入或确认当前聚焦股票，生成个股事件时间线。'}</li>
-                <li>{activeCode ? `当前标的 ${activeCode} 已可直接联动到研究与执行页。` : '建议从订阅列表中挑一只股票，避免在全市场日历中漫游。'}</li>
-                <li>{days <= 7 ? '短窗口适合看近端催化；如需排程，切到 14 或 30 天更稳。' : '当前窗口偏长，重点事件较多时可回切 7 天提高辨识度。'}</li>
+                <li>
+                  {latestTimelineItem?.title
+                    ? `先处理最新个股事件：“${latestTimelineItem.title}”。`
+                    : '先输入或确认当前聚焦股票，生成个股事件时间线。'}
+                </li>
+                <li>
+                  {activeCode
+                    ? `当前标的 ${activeCode} 已可直接联动到研究与执行页。`
+                    : '建议从订阅列表中挑一只股票，避免在全市场日历中漫游。'}
+                </li>
+                <li>
+                  {days <= 7
+                    ? '短窗口适合看近端催化；如需排程，切到 14 或 30 天更稳。'
+                    : '当前窗口偏长，重点事件较多时可回切 7 天提高辨识度。'}
+                </li>
               </ul>
+              {activeCode ? (
+                <button
+                  type="button"
+                  onClick={() => openExecution(activeCode)}
+                  className="mt-3 rounded-full border border-glass-border bg-white/35 px-4 py-2 text-xs text-text-primary shadow-sm"
+                >
+                  再联动执行中心
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

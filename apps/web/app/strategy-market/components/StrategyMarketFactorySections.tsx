@@ -1,8 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { Badge, DataTable, SectionCard } from '@/components/ui';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { buildStrategyDetailPlaceholderHref } from '@/lib/surface-contracts';
 import { primaryRoundButtonCls, secondaryRoundButtonCls, secondaryRoundLinkCls, summaryChipCls } from './strategy-market-panel-styles';
 
 type FactoryOverviewItem = {
@@ -333,6 +335,9 @@ export function StrategyMarketEmptyStateSection({
           <button type="button" onClick={onShowFactoryDetails} className={secondaryRoundButtonCls}>
             查看工厂运行态
           </button>
+          <Link href={buildStrategyDetailPlaceholderHref()} className={secondaryRoundLinkCls}>
+            查看详情空态
+          </Link>
           <a href="/paper-trading" className={secondaryRoundLinkCls}>
             了解孵化后的落地路径
           </a>

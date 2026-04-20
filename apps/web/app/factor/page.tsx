@@ -1,13 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge, TabBar } from '@/components/ui';
 import { BarChart, LineChart } from '@/components/charts';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 
 const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
@@ -15,9 +17,28 @@ const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-const CHIP_LINK_CLS = 'action-chip text-xs no-underline text-inherit';
+const CHIP_LINK_CLS = 'action-chip cursor-pointer border-0 bg-transparent text-xs no-underline text-inherit';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
 const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
+type FactorStageTab = 'foundation' | 'validation' | 'mining';
+type FactorFoundationTab = 'library' | 'calculate' | 'ic';
+type FactorValidationTab = 'backtest' | 'oos' | 'robustness';
+
+const FACTOR_STAGE_TABS = [
+  { key: 'foundation', label: '基础研究' },
+  { key: 'validation', label: '收益验证' },
+  { key: 'mining', label: 'AI 挖掘' },
+] as const;
+const FACTOR_FOUNDATION_TABS = [
+  { key: 'library', label: '因子库' },
+  { key: 'calculate', label: '因子计算' },
+  { key: 'ic', label: 'IC 分析' },
+] as const;
+const FACTOR_VALIDATION_TABS = [
+  { key: 'backtest', label: '因子回测' },
+  { key: 'oos', label: '样本外验证' },
+  { key: 'robustness', label: '稳健性检验' },
+] as const;
 
 function ResearchField({
   id,
@@ -111,6 +132,10 @@ function FactorRequestFields({
 
 export default function FactorPage() {
   const [formError, setFormError] = useState<string | null>(null);
+  const [stageTab, setStageTab] = useState<FactorStageTab>('foundation');
+  const [foundationTab, setFoundationTab] = useState<FactorFoundationTab>('library');
+  const [validationTab, setValidationTab] = useState<FactorValidationTab>('backtest');
+  const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   const [libPath, setLibPath] = useState<string | null>(null);
   const libQ = useApiQuery<unknown>(libPath);
@@ -177,6 +202,31 @@ export default function FactorPage() {
     return true;
   }
 
+  function runRecommendedResearchSample() {
+    setFormError(null);
+    setStageTab('foundation');
+    setFoundationTab('calculate');
+    const recommendedFactorName = 'momentum';
+    const recommendedCodes = DEFAULT_FACTOR_CODES;
+    const stockCodes = splitCodes(recommendedCodes);
+    setCalcName(recommendedFactorName);
+    setCalcCodes(recommendedCodes);
+    setIcName(recommendedFactorName);
+    setIcCodes(recommendedCodes);
+    setBtName(recommendedFactorName);
+    setBtCodes(recommendedCodes);
+    if (libPath) libQ.refetch();
+    else setLibPath('/factor/library');
+    calcMut.trigger(
+      '/factor/calculate',
+      { method: 'POST' },
+      {
+        factor_name: recommendedFactorName,
+        stock_codes: stockCodes,
+      },
+    );
+  }
+
   const libFactors = extractArray(libQ.data, 'factors', 'values', 'results') as Array<Record<string, unknown>>;
   const libraryRows = (libFactors.length ? libFactors : extractArray(libQ.data)) as Array<Record<string, unknown>>;
   const calcRows = extractArray(calcMut.data, 'factors', 'values', 'results') as Array<Record<string, unknown>>;
@@ -203,10 +253,62 @@ export default function FactorPage() {
   const currentSharpe = !btError && btMut.data ? Number(btObj?.sharpe ?? btObj?.sharpe_ratio ?? 0) : null;
   const currentBacktestReturn = !btError && btMut.data ? Number(btObj?.totalReturn ?? btObj?.total_return ?? 0) : null;
 
+  const sectionTabMap: Record<
+    string,
+    { stage: FactorStageTab; foundation?: FactorFoundationTab; validation?: FactorValidationTab }
+  > = {
+    'factor-library': { stage: 'foundation', foundation: 'library' },
+    'factor-calculate': { stage: 'foundation', foundation: 'calculate' },
+    'factor-ic': { stage: 'foundation', foundation: 'ic' },
+    'factor-backtest': { stage: 'validation', validation: 'backtest' },
+    'factor-oos': { stage: 'validation', validation: 'oos' },
+    'factor-robustness': { stage: 'validation', validation: 'robustness' },
+    'factor-mining': { stage: 'mining' },
+  };
+
+  function scrollToSection(id: string) {
+    if (typeof document === 'undefined') return;
+    const target = sectionTabMap[id];
+    if (target) {
+      setStageTab(target.stage);
+      if (target.foundation) setFoundationTab(target.foundation);
+      if (target.validation) setValidationTab(target.validation);
+      window.setTimeout(() => {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 40);
+      return;
+    }
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   return (
     <PageContainer className="app-theme-strategy">
+      <SectionCard className="mb-4 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Workspace Layers</div>
+            <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">因子研究切换</h3>
+            <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
+              基础研究、收益验证和 AI 挖掘分层显示。默认只保留当前步骤，避免因子库、IC、回测和稳健性同时平铺成长页。
+            </p>
+          </div>
+          <Badge variant={stageTab === 'mining' ? 'info' : 'neutral'}>
+            {stageTab === 'foundation' ? '基础研究' : stageTab === 'validation' ? '收益验证' : 'AI 挖掘'}
+          </Badge>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <TabBar tabs={FACTOR_STAGE_TABS} active={stageTab} onChange={setStageTab} />
+          {stageTab === 'foundation' ? (
+            <TabBar tabs={FACTOR_FOUNDATION_TABS} active={foundationTab} onChange={setFoundationTab} />
+          ) : null}
+          {stageTab === 'validation' ? (
+            <TabBar tabs={FACTOR_VALIDATION_TABS} active={validationTab} onChange={setValidationTab} />
+          ) : null}
+        </div>
+      </SectionCard>
+
       <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Factor Workspace</Badge>
@@ -232,28 +334,28 @@ export default function FactorPage() {
             <div className="mt-5 flex flex-wrap gap-2">
               <button
                 type="button"
-                disabled={libLoading}
-                onClick={() => {
-                  setFormError(null);
-                  if (libPath) libQ.refetch();
-                  else setLibPath('/factor/library');
-                }}
+                disabled={calcLoading}
+                onClick={runRecommendedResearchSample}
+                data-testid="page-primary-action"
                 className={HERO_PRIMARY_BUTTON_CLS}
               >
-                {libLoading ? '加载中...' : '加载因子库'}
+                {calcLoading ? '运行中...' : '运行推荐研究样例'}
               </button>
-              <a href="#factor-calculate" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
-                开始因子计算
-              </a>
-              <a href="#factor-ic" className={CHIP_LINK_CLS}>
-                查看 IC 分析
-              </a>
-              <a href="#factor-backtest" className={CHIP_LINK_CLS}>
-                查看回测
-              </a>
-              <a href="#factor-mining" className={CHIP_LINK_CLS}>
-                进入 AI 挖掘
-              </a>
+            </div>
+            <div
+              data-testid="page-primary-status"
+              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            >
+              <div className="font-medium text-text-primary">
+                当前因子 {calcName.trim() || '-'} ｜ 样本 {splitCodes(calcCodes).length} 只
+              </div>
+              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+                因子库 {libraryRows.length > 0 ? `已加载 ${libraryRows.length} 项` : '待加载'} ｜
+                推荐流程会先刷新因子库，再运行首轮样本计算。
+              </p>
+              <p className="mt-2 mb-0 text-xs text-text-secondary">
+                研究状态：{calcMut.data ? '已完成推荐样例计算' : anyLoading ? '处理中' : '等待启动'}
+              </p>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
@@ -288,57 +390,73 @@ export default function FactorPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先看因子库与样本池，确认这次研究的名称、覆盖面和研究意图。</div>
-                <div className={NOTE_CARD_CLS}>2. 再做因子计算、IC 和回测，建立“方向是否成立”的第一层证据。</div>
-                <div className={NOTE_CARD_CLS}>3. 最后做样本外与稳健性检验，只有稳定后才值得进入 AI 挖掘与治理。</div>
+          {!collapseToTabs ? (
+            <div className="grid gap-3">
+              <div className={SIDE_PANEL_CLS}>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
+                <div className="mt-4 space-y-3">
+                  <div className={NOTE_CARD_CLS}>1. 先看因子库与样本池，确认这次研究的名称、覆盖面和研究意图。</div>
+                  <div className={NOTE_CARD_CLS}>2. 再做因子计算、IC 和回测，建立“方向是否成立”的第一层证据。</div>
+                  <div className={NOTE_CARD_CLS}>3. 最后做样本外与稳健性检验，只有稳定后才值得进入 AI 挖掘与治理。</div>
+                </div>
+              </div>
+
+              <div className={SIDE_PANEL_CLS}>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前研究状态</div>
+                <div className="mt-3 text-base font-semibold text-text-primary">
+                  {calcMut.data ? '基础研究链路已启动' : '等待第一次样本计算'}
+                </div>
+                <div className="mt-4 space-y-3">
+                  <div className={NOTE_CARD_CLS}>
+                    因子库：
+                    <span className="font-medium text-text-primary">
+                      {libraryRows.length > 0 ? `已加载 ${libraryRows.length} 项` : '尚未加载'}
+                    </span>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    样本外：
+                    <span className="font-medium text-text-primary">
+                      {oosMut.data ? (oosPassed ? '通过' : '未通过') : '待验证'}
+                    </span>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    AI 挖掘：
+                    <span className="font-medium text-text-primary">基础验证清晰后再进入候选生成与记忆治理</span>
+                  </div>
+                </div>
               </div>
             </div>
-
+          ) : (
             <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前研究状态</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">研究提示</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {calcMut.data ? '基础研究链路已启动' : '等待第一次样本计算'}
               </div>
               <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  因子库：
-                  <span className="font-medium text-text-primary">
-                    {libraryRows.length > 0 ? `已加载 ${libraryRows.length} 项` : '尚未加载'}
-                  </span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  样本外：
-                  <span className="font-medium text-text-primary">
-                    {oosMut.data ? (oosPassed ? '通过' : '未通过') : '待验证'}
-                  </span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  AI 挖掘：
-                  <span className="font-medium text-text-primary">基础验证清晰后再进入候选生成与记忆治理</span>
-                </div>
+                <div className={NOTE_CARD_CLS}>先看因子库和样本池，再进入 IC 与回测。</div>
+                <div className={NOTE_CARD_CLS}>样本外与稳健性通过后，再进入 AI 候选治理。</div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </section>
 
       {anyLoading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} hint="请先确认因子名称与股票池输入" /> : null}
 
-      <KpiGrid cols={6} className="mb-4">
-        <KpiCard title="因子库" value={libraryRows.length > 0 ? String(libraryRows.length) : null} />
-        <KpiCard title="计算样本" value={String(splitCodes(calcCodes).length)} />
-        <KpiCard title="IC" value={currentIc != null ? fmtNum(currentIc, 4) : null} />
-        <KpiCard title="总收益" value={currentBacktestReturn != null ? fmtPct(currentBacktestReturn) : null} />
-        <KpiCard title="样本外" value={oosMut.data ? (oosPassed ? '通过' : '未通过') : null} />
-        <KpiCard title="稳健性" value={robMut.data ? (robustPassed ? '通过' : '未通过') : null} />
-      </KpiGrid>
+      {!collapseToTabs ? (
+        <KpiGrid cols={6} className="mb-4">
+          <KpiCard title="因子库" value={libraryRows.length > 0 ? String(libraryRows.length) : null} />
+          <KpiCard title="计算样本" value={String(splitCodes(calcCodes).length)} />
+          <KpiCard title="IC" value={currentIc != null ? fmtNum(currentIc, 4) : null} />
+          <KpiCard title="总收益" value={currentBacktestReturn != null ? fmtPct(currentBacktestReturn) : null} />
+          <KpiCard title="样本外" value={oosMut.data ? (oosPassed ? '通过' : '未通过') : null} />
+          <KpiCard title="稳健性" value={robMut.data ? (robustPassed ? '通过' : '未通过') : null} />
+        </KpiGrid>
+      ) : null}
 
       <div id="factor-library" className="scroll-mt-24">
+        {stageTab === 'foundation' && foundationTab === 'library' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -353,6 +471,8 @@ export default function FactorPage() {
               disabled={libLoading}
               onClick={() => {
                 setFormError(null);
+                setStageTab('foundation');
+                setFoundationTab('library');
                 if (libPath) libQ.refetch();
                 else setLibPath('/factor/library');
               }}
@@ -404,9 +524,11 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-calculate" className="scroll-mt-24">
+        {stageTab === 'foundation' && foundationTab === 'calculate' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -416,9 +538,9 @@ export default function FactorPage() {
                 先看单期因子值分布是否符合直觉，再决定是否进入 IC 与回测。这里更像“信号体检”，不是最后结论。
               </p>
             </div>
-            <a href="#factor-ic" className={CHIP_LINK_CLS}>
+            <button type="button" onClick={() => scrollToSection('factor-ic')} className={CHIP_LINK_CLS}>
               继续做 IC 分析
-            </a>
+            </button>
           </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -437,6 +559,8 @@ export default function FactorPage() {
               loading={calcLoading}
               onSubmit={() => {
                 setFormError(null);
+                setStageTab('foundation');
+                setFoundationTab('calculate');
                 if (!validateCodes(calcCodes)) return;
                 calcMut.trigger(
                   '/factor/calculate',
@@ -484,9 +608,11 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-ic" className="scroll-mt-24">
+        {stageTab === 'foundation' && foundationTab === 'ic' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -496,9 +622,9 @@ export default function FactorPage() {
                 IC 用来回答一个更关键的问题: 因子值和未来收益是否同向，以及这种关系是否足够稳定。
               </p>
             </div>
-            <a href="#factor-backtest" className={CHIP_LINK_CLS}>
+            <button type="button" onClick={() => scrollToSection('factor-backtest')} className={CHIP_LINK_CLS}>
               继续看因子回测
-            </a>
+            </button>
           </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -517,6 +643,8 @@ export default function FactorPage() {
               loading={icLoading}
               onSubmit={() => {
                 setFormError(null);
+                setStageTab('foundation');
+                setFoundationTab('ic');
                 if (!validateCodes(icCodes)) return;
                 icMut.trigger(
                   '/factor/ic',
@@ -570,9 +698,11 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-backtest" className="scroll-mt-24">
+        {stageTab === 'validation' && validationTab === 'backtest' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -582,9 +712,9 @@ export default function FactorPage() {
                 回测用来验证因子排序是否能形成稳定的分组收益与净值抬升，它是 IC 之后的第二层证据。
               </p>
             </div>
-            <a href="#factor-oos" className={CHIP_LINK_CLS}>
+            <button type="button" onClick={() => scrollToSection('factor-oos')} className={CHIP_LINK_CLS}>
               继续做样本外验证
-            </a>
+            </button>
           </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -603,6 +733,8 @@ export default function FactorPage() {
               loading={btLoading}
               onSubmit={() => {
                 setFormError(null);
+                setStageTab('validation');
+                setValidationTab('backtest');
                 if (!validateCodes(btCodes)) return;
                 btMut.trigger(
                   '/factor/backtest',
@@ -668,9 +800,11 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-oos" className="scroll-mt-24">
+        {stageTab === 'validation' && validationTab === 'oos' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -680,9 +814,9 @@ export default function FactorPage() {
                 样本外验证用来回答“这个因子能否离开样本内仍然有效”，它决定了研究结果是否有迁移价值。
               </p>
             </div>
-            <a href="#factor-robustness" className={CHIP_LINK_CLS}>
+            <button type="button" onClick={() => scrollToSection('factor-robustness')} className={CHIP_LINK_CLS}>
               继续做稳健性检验
-            </a>
+            </button>
           </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -701,6 +835,8 @@ export default function FactorPage() {
               loading={oosLoading}
               onSubmit={() => {
                 setFormError(null);
+                setStageTab('validation');
+                setValidationTab('oos');
                 if (!validateCodes(oosCodes)) return;
                 oosMut.trigger(
                   '/factor/validate-oos',
@@ -784,9 +920,11 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-robustness" className="scroll-mt-24">
+        {stageTab === 'validation' && validationTab === 'robustness' ? (
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -796,9 +934,9 @@ export default function FactorPage() {
                 稳健性检验适合放在最后一步，用来判断结果是不是由少量样本、单一市场状态或偶然区间驱动。
               </p>
             </div>
-            <a href="#factor-mining" className={CHIP_LINK_CLS}>
+            <button type="button" onClick={() => scrollToSection('factor-mining')} className={CHIP_LINK_CLS}>
               进入 AI 挖掘工作台
-            </a>
+            </button>
           </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -817,6 +955,8 @@ export default function FactorPage() {
               loading={robLoading}
               onSubmit={() => {
                 setFormError(null);
+                setStageTab('validation');
+                setValidationTab('robustness');
                 if (!validateCodes(robCodes)) return;
                 robMut.trigger(
                   '/factor/robustness-check',
@@ -885,13 +1025,18 @@ export default function FactorPage() {
             </div>
           </div>
         </SectionCard>
+        ) : null}
       </div>
 
       <div id="factor-mining" className="scroll-mt-24">
-        <div className="panel-soft mb-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">
-          基础研究链路确认后，再进入 AI 因子挖掘工作台，把候选生成、验证、研究记忆和候选池治理串成闭环。
-        </div>
-        <FactorMiningWorkbench />
+        {stageTab === 'mining' ? (
+          <>
+            <div className="panel-soft mb-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">
+              基础研究链路确认后，再进入 AI 因子挖掘工作台，把候选生成、验证、研究记忆和候选池治理串成闭环。
+            </div>
+            <FactorMiningWorkbench />
+          </>
+        ) : null}
       </div>
     </PageContainer>
   );
