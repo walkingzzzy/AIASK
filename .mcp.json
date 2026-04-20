@@ -24,8 +24,9 @@
       }
     },
     "playwright": {
-      "command": "npx",
-      "args": ["@anthropic-ai/mcp-playwright"]
+      "command": "node",
+      "args": ["/Users/mac/Desktop/股票/scripts/playwright-mcp-wrapper.mjs"],
+      "cwd": "/Users/mac/Desktop/股票"
     }
   }
 }

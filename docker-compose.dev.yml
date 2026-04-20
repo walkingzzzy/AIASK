@@ -4,31 +4,33 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: akshare-timescaledb
-    shm_size: "2gb"
-    mem_limit: "2g"
-    cpus: 2.0
+    shm_size: ${POSTGRES_CONTAINER_SHM_SIZE:-2gb}
+    mem_limit: ${POSTGRES_CONTAINER_MEM_LIMIT:-4g}
+    cpus: ${POSTGRES_CONTAINER_CPUS:-2.0}
     command:
       - postgres
       - -c
-      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
       - -c
-      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1024MB}
       - -c
-      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
       - -c
-      - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-128MB}
+      - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-64MB}
       - -c
-      - work_mem=${POSTGRES_WORK_MEM:-8MB}
+      - work_mem=${POSTGRES_WORK_MEM:-4MB}
       - -c
-      - max_connections=${POSTGRES_MAX_CONNECTIONS:-50}
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-30}
       - -c
       - max_parallel_maintenance_workers=${POSTGRES_MAX_PARALLEL_MAINTENANCE_WORKERS:-1}
       - -c
-      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-4}
+      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-2}
       - -c
-      - max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
+      - max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-1}
       - -c
       - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+      - -c
+      - timescaledb.max_background_workers=${POSTGRES_TIMESCALE_MAX_BACKGROUND_WORKERS:-4}
       - -c
       - huge_pages=${POSTGRES_HUGE_PAGES:-off}
     ports:
@@ -78,6 +80,83 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  otel-collector:
+    profiles: ["monitoring"]
+    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:latest}
+    container_name: aiask-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+      - "${OTEL_HEALTH_PORT:-13133}:13133"
+    volumes:
+      - ./monitoring/otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
+    restart: unless-stopped
+
+  postgres-exporter:
+    profiles: ["monitoring"]
+    image: ${POSTGRES_EXPORTER_IMAGE:-quay.io/prometheuscommunity/postgres-exporter:latest}
+    container_name: aiask-postgres-exporter
+    ports:
+      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescaledb:5432/${POSTGRES_DB:-stockdb}?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yml
+    volumes:
+      - ./monitoring/postgres-exporter-queries.yml:/etc/postgres-exporter/queries.yml:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  blackbox-exporter:
+    profiles: ["monitoring"]
+    image: ${BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:latest}
+    container_name: aiask-blackbox-exporter
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    ports:
+      - "${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    restart: unless-stopped
+
+  alertmanager:
+    profiles: ["monitoring"]
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:latest}
+    container_name: aiask-alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    restart: unless-stopped
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    container_name: aiask-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - alertmanager
+      - postgres-exporter
+      - blackbox-exporter
+    restart: unless-stopped
+
 volumes:
   timescaledb-data:
     driver: local
@@ -88,3 +167,9 @@ volumes:
   pgadmin-data:
     driver: local
     name: akshare-pgadmin-data
+  prometheus-data:
+    driver: local
+    name: aiask-prometheus-data
+  alertmanager-data:
+    driver: local
+    name: aiask-alertmanager-data

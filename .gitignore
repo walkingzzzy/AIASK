@@ -27,6 +27,8 @@ __pycache__/
 .coverage
 .benchmarks/
 .mcp_cache/
+.mcp_full_test_manifest.json
+.mcp_full_test_results.json
 
 # MCP local config (contains real credentials)
 .mcp.local.json
@@ -34,6 +36,7 @@ __pycache__/
 # Claude worktrees
 .claude/worktrees/
 .playwright-mcp/
+.playwright-mcp-runtime/
 .playwright/
 
 # Baidu Cloud upload temp files
@@ -57,6 +60,10 @@ output/
 
 # Project cleanup outputs
 reports/
+artifacts/audit-results/playwright/
+artifacts/audit-results/
+artifacts/responsive-audit/
+frontend-audit-report/
 packages/akshare-mcp/htmlcov/
 packages/akshare-mcp/logs/*.log
 packages/akshare-mcp/sync_init_*.log

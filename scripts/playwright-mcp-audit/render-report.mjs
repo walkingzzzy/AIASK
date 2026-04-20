@@ -45,6 +45,14 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function truncateText(value, limit = 220) {
+  const normalized = normalizeText(value);
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
 function relativeFrom(baseDir, absolutePath) {
   return path.relative(baseDir, absolutePath).split(path.sep).join('/');
 }
@@ -194,13 +202,13 @@ function buildIssueList(surface, result, tests) {
     issues.push(`控件“${control.label}”只达到了部分预期：${control.note || '需要人工进一步确认'}`);
   }
   for (const error of (result?.issues?.apiErrors || []).slice(0, 3)) {
-    issues.push(`接口异常：${error}`);
+    issues.push(`接口异常：${truncateText(error)}`);
   }
   for (const error of (result?.issues?.consoleErrors || []).slice(0, 3)) {
-    issues.push(`前端异常：${error}`);
+    issues.push(`前端异常：${truncateText(error)}`);
   }
   for (const test of tests.filter((item) => item.status !== 'passed').slice(0, 3)) {
-    issues.push(`自动化测试未通过：${test.title}${test.error ? ` (${normalizeText(test.error).slice(0, 120)})` : ''}`);
+    issues.push(`自动化测试未通过：${test.title}${test.error ? ` (${truncateText(test.error, 140)})` : ''}`);
   }
 
   if (!issues.length && result?.status === 'blocked') {
@@ -256,7 +264,7 @@ async function renderSurfaceReport(baseDir, surface, result, tests) {
     ? screenshots.map((filePath) => `- [${path.basename(filePath)}](./${relativeFrom(surfaceDir, filePath)})`)
     : ['- 无截图产物'];
   const testLines = tests.length
-    ? tests.slice(0, 8).map((test) => `- ${test.title} [${test.status}]${test.error ? `：${normalizeText(test.error).slice(0, 120)}` : ''}`)
+    ? tests.slice(0, 8).map((test) => `- ${test.title} [${test.status}]${test.error ? `：${truncateText(test.error, 140)}` : ''}`)
     : ['- 本页没有匹配到现成 Playwright 自动化用例'];
   const issueLines = buildIssueList(surface, result, tests);
   const recommendationLines = buildRecommendations(surface, result);
@@ -301,9 +309,9 @@ async function renderSurfaceReport(baseDir, surface, result, tests) {
     '',
     '## 运行时异常',
     '',
-    ...((result?.issues?.apiErrors || []).slice(0, 5).map((line) => `- API: ${line}`)),
-    ...((result?.issues?.consoleErrors || []).slice(0, 5).map((line) => `- Console: ${line}`)),
-    ...((result?.issues?.requestFailures || []).slice(0, 5).map((line) => `- Request: ${line}`)),
+    ...((result?.issues?.apiErrors || []).slice(0, 5).map((line) => `- API: ${truncateText(line)}`)),
+    ...((result?.issues?.consoleErrors || []).slice(0, 5).map((line) => `- Console: ${truncateText(line)}`)),
+    ...((result?.issues?.requestFailures || []).slice(0, 5).map((line) => `- Request: ${truncateText(line)}`)),
     ...((result?.issues?.apiErrors || []).length || (result?.issues?.consoleErrors || []).length || (result?.issues?.requestFailures || []).length ? [] : ['- 未记录到明显运行时异常']),
     '',
     '## 问题列表',

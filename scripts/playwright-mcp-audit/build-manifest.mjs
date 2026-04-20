@@ -35,7 +35,12 @@ async function main() {
     label: surface.label,
     group: surface.group,
     route: surface.route,
+    path: surface.path || surface.route,
     auth: surface.auth,
+    requiresAuth: Boolean(surface.requiresAuth ?? surface.auth !== 'public'),
+    family: surface.family || surface.group,
+    budgetClass: surface.budgetClass || 'overview',
+    dynamicResolver: surface.dynamicResolver || null,
     mutationRisk: surface.mutationRisk,
     emptyStatePolicy: surface.emptyStatePolicy,
     scenarioSet: surface.scenarioSet,
@@ -51,6 +56,14 @@ async function main() {
     }, {}),
     byGroup: surfaces.reduce((acc, surface) => {
       acc[surface.group] = (acc[surface.group] || 0) + 1;
+      return acc;
+    }, {}),
+    byFamily: surfaces.reduce((acc, surface) => {
+      acc[surface.family] = (acc[surface.family] || 0) + 1;
+      return acc;
+    }, {}),
+    byBudgetClass: surfaces.reduce((acc, surface) => {
+      acc[surface.budgetClass] = (acc[surface.budgetClass] || 0) + 1;
       return acc;
     }, {}),
     surfaces,

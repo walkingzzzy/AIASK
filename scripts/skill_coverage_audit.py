@@ -6,9 +6,11 @@ import ast
 import json
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 SERVER_TOOL_TUPLE_PATTERN = re.compile(r"_(?:core|heavy)_tool_names\s*=\s*\((?P<body>.*?)\)", re.S)
@@ -32,6 +34,7 @@ class SkillCoverage:
     file: str
     referenced_tools: list[str]
     refs_unknown: list[str]
+    metadata: dict[str, Any]
 
     def to_dict(self) -> dict:
         return {
@@ -39,11 +42,23 @@ class SkillCoverage:
             "file": self.file,
             "referenced_tools": self.referenced_tools,
             "refs_unknown": self.refs_unknown,
+            "metadata": self.metadata,
         }
 
 
 def _load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _bootstrap_pythonpath(repo_root: Path) -> None:
+    candidates = [
+        repo_root / "packages" / "akshare-mcp" / "src",
+        repo_root / "packages" / "strategy-factory" / "src",
+    ]
+    for candidate in candidates:
+        text = str(candidate.resolve())
+        if candidate.is_dir() and text not in sys.path:
+            sys.path.insert(0, text)
 
 
 def _looks_like_tool_name(name: str) -> bool:
@@ -87,7 +102,7 @@ def _discover_server_modules(server_text: str) -> list[str]:
     return sorted(module_names)
 
 
-def discover_runtime_tools(server_file: Path, tools_dir: Path) -> tuple[list[str], list[Path]]:
+def _discover_runtime_tools_static(server_file: Path, tools_dir: Path) -> tuple[list[str], list[Path]]:
     server_text = _load_text(server_file)
     module_names = _discover_server_modules(server_text)
     if not module_names:
@@ -117,7 +132,43 @@ def discover_runtime_tools(server_file: Path, tools_dir: Path) -> tuple[list[str
     return sorted(tool_names), unique_files
 
 
-def parse_skill_markdown(skill_name: str, skill_file: Path, all_tools: set[str]) -> SkillCoverage:
+def discover_runtime_tools(repo_root: Path, server_file: Path, tools_dir: Path) -> tuple[list[str], list[Path], dict[str, Any]]:
+    static_tools, tool_source_files = _discover_runtime_tools_static(server_file, tools_dir)
+    source = {
+        "mode": "static_parse",
+        "runtime_imported": False,
+        "static_tool_count": len(static_tools),
+        "runtime_tool_count": len(static_tools),
+    }
+
+    try:
+        _bootstrap_pythonpath(repo_root)
+        import akshare_mcp.server as server  # type: ignore
+        from akshare_mcp.tools.tool_catalog import TOOL_CONTRACTS  # type: ignore
+
+        runtime_tools = sorted(
+            {
+                str(getattr(item, "name", "") or "").strip()
+                for item in list(server.mcp._tool_manager.list_tools())
+                if str(getattr(item, "name", "") or "").strip()
+            }
+        )
+        source = {
+            "mode": "runtime_import",
+            "runtime_imported": True,
+            "static_tool_count": len(static_tools),
+            "runtime_tool_count": len(runtime_tools),
+            "tool_catalog_count": len(TOOL_CONTRACTS),
+            "runtime_resource_count": len(server.mcp._resource_manager.list_resources()),
+            "runtime_prompt_count": len(server.mcp._prompt_manager.list_prompts()),
+        }
+        return runtime_tools, tool_source_files, source
+    except Exception as exc:
+        source["runtime_import_error"] = f"{type(exc).__name__}: {exc}"
+        return static_tools, tool_source_files, source
+
+
+def parse_skill_markdown(skill_name: str, skill_file: Path, all_tools: set[str], metadata: dict[str, Any]) -> SkillCoverage:
     text = _load_text(skill_file)
     referenced: set[str] = set()
     unknown: set[str] = set()
@@ -140,10 +191,14 @@ def parse_skill_markdown(skill_name: str, skill_file: Path, all_tools: set[str])
         file=str(skill_file.as_posix()),
         referenced_tools=sorted(referenced),
         refs_unknown=sorted(unknown),
+        metadata=metadata,
     )
 
 
-def collect_skill_coverages(skills_dir: Path, all_tools: set[str]) -> list[SkillCoverage]:
+def collect_skill_coverages(skills_dir: Path, all_tools: set[str], repo_root: Path) -> list[SkillCoverage]:
+    _bootstrap_pythonpath(repo_root)
+    from akshare_mcp.tools.skills_registry import _parse_skill_md  # type: ignore
+
     coverage_items: list[SkillCoverage] = []
     for skill_dir in sorted(skills_dir.iterdir()):
         if not skill_dir.is_dir():
@@ -153,7 +208,7 @@ def collect_skill_coverages(skills_dir: Path, all_tools: set[str]) -> list[Skill
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
             continue
-        coverage_items.append(parse_skill_markdown(skill_dir.name, skill_file, all_tools))
+        coverage_items.append(parse_skill_markdown(skill_dir.name, skill_file, all_tools, _parse_skill_md(skill_file)))
     return coverage_items
 
 
@@ -233,6 +288,237 @@ def detect_module_name_collisions(package_root: Path) -> list[dict]:
     return collisions
 
 
+def discover_runtime_skill_contracts(repo_root: Path, skill_ids: list[str]) -> list[str]:
+    _bootstrap_pythonpath(repo_root)
+    from akshare_mcp.tools.skills_registry import _SKILL_CONTRACTS  # type: ignore
+
+    return sorted(skill_id for skill_id in skill_ids if skill_id in _SKILL_CONTRACTS)
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _frontmatter_missing_fields(metadata: dict[str, Any]) -> list[str]:
+    required = [
+        "capability_tier",
+        "runtime_status",
+        "product_surfaces",
+        "artifacts",
+        "backing_tools",
+        "backing_managers",
+        "regulatory_scope",
+        "last_runtime_verified_at",
+        "role_tags",
+    ]
+    missing: list[str] = []
+    for field in required:
+        value = metadata.get(field)
+        if value is None:
+            missing.append(field)
+            continue
+        if isinstance(value, str) and not value.strip():
+            missing.append(field)
+        if isinstance(value, list) and field != "artifacts" and not value:
+            missing.append(field)
+    return missing
+
+
+def _has_real_surface(product_surfaces: list[Any], artifacts: list[Any]) -> bool:
+    surfaces = {str(item or "").strip() for item in list(product_surfaces or []) if str(item or "").strip()}
+    if surfaces & {"bff", "web", "artifact", "resource", "storage"}:
+        return True
+    return bool(list(artifacts or []))
+
+
+def build_skill_capability_audit(
+    repo_root: Path,
+    *,
+    skill_coverages: list[SkillCoverage],
+    runtime_contract_skill_ids: list[str],
+    runtime_executor_skill_ids: list[str],
+    runtime_tools: list[str],
+    tool_coverage_source: dict[str, Any],
+) -> dict[str, Any]:
+    actual_local_skills = sorted(item.skill for item in skill_coverages)
+    actual_skill_set = set(actual_local_skills)
+    runtime_contract_set = set(runtime_contract_skill_ids)
+    runtime_executor_set = set(runtime_executor_skill_ids)
+    runtime_tool_set = set(runtime_tools)
+
+    missing_from_meta: dict[str, Any] = {
+        "frontmatter_fields": {},
+        "contracts_without_codex_skill": sorted(runtime_contract_set - actual_skill_set),
+        "executors_without_codex_skill": sorted(runtime_executor_set - actual_skill_set),
+        "codex_skills_without_contract": sorted(actual_skill_set - runtime_contract_set),
+        "codex_skills_without_executor": sorted(actual_skill_set - runtime_executor_set),
+    }
+    meta_conflicts: list[dict[str, Any]] = []
+    capability_tier_breakdown: Counter[str] = Counter()
+    role_tag_breakdown: Counter[str] = Counter()
+    live_validation_failures: list[dict[str, Any]] = []
+
+    allowed_tiers = {"live_orchestrated", "hybrid", "template_only"}
+    allowed_roles = {"buy_side_pm", "research", "trader", "hot_money", "quant", "risk", "compliance"}
+
+    for item in skill_coverages:
+        metadata = dict(item.metadata or {})
+        missing_fields = _frontmatter_missing_fields(metadata)
+        if missing_fields:
+            missing_from_meta["frontmatter_fields"][item.skill] = missing_fields
+            meta_conflicts.append(
+                {"type": "missing_frontmatter_fields", "skill": item.skill, "missing_fields": missing_fields}
+            )
+
+        tier = str(metadata.get("capability_tier") or "").strip() or "unspecified"
+        capability_tier_breakdown[tier] += 1
+        if tier not in allowed_tiers:
+            meta_conflicts.append({"type": "invalid_capability_tier", "skill": item.skill, "value": tier})
+
+        runtime_status = str(metadata.get("runtime_status") or "").strip()
+        expected_runtime_status = "executable" if item.skill in runtime_executor_set else "registered"
+        if runtime_status and runtime_status != expected_runtime_status:
+            meta_conflicts.append(
+                {
+                    "type": "runtime_status_mismatch",
+                    "skill": item.skill,
+                    "expected": expected_runtime_status,
+                    "actual": runtime_status,
+                }
+            )
+
+        role_tags = [str(role or "").strip() for role in list(metadata.get("role_tags") or []) if str(role or "").strip()]
+        invalid_roles = sorted(set(role_tags) - allowed_roles)
+        if invalid_roles:
+            meta_conflicts.append(
+                {
+                    "type": "invalid_role_tags",
+                    "skill": item.skill,
+                    "invalid_roles": invalid_roles,
+                }
+            )
+        for role in role_tags:
+            role_tag_breakdown[role] += 1
+
+        backing_tools = [
+            str(name or "").strip()
+            for name in list(metadata.get("backing_tools") or [])
+            if str(name or "").strip()
+        ]
+        unknown_backing_tools = sorted(name for name in backing_tools if name not in runtime_tool_set)
+        if unknown_backing_tools:
+            meta_conflicts.append(
+                {
+                    "type": "unknown_backing_tools",
+                    "skill": item.skill,
+                    "unknown_backing_tools": unknown_backing_tools,
+                }
+            )
+
+        if tier == "live_orchestrated":
+            backing_managers = [
+                str(name or "").strip()
+                for name in list(metadata.get("backing_managers") or [])
+                if str(name or "").strip()
+            ]
+            product_surfaces = list(metadata.get("product_surfaces") or [])
+            artifacts = list(metadata.get("artifacts") or [])
+            if not (backing_tools or backing_managers):
+                live_validation_failures.append(
+                    {
+                        "skill": item.skill,
+                        "reason": "live_orchestrated_skill_requires_backing_tools_or_managers",
+                    }
+                )
+            if not _has_real_surface(product_surfaces, artifacts):
+                live_validation_failures.append(
+                    {
+                        "skill": item.skill,
+                        "reason": "live_orchestrated_skill_requires_product_surface_or_artifact",
+                    }
+                )
+
+    baseline_path = repo_root / ".codex" / "skills" / "_meta" / "coverage_baseline.json"
+    baseline_payload = _load_json(baseline_path)
+    runtime_audit_path = repo_root / "skill_tool_coverage_runtime.json"
+    runtime_audit_payload = _load_json(runtime_audit_path)
+
+    stale_baseline_files: list[dict[str, Any]] = []
+    if baseline_payload:
+        observed = dict(baseline_payload.get("observed_baseline") or {})
+        expected_skill_count = len(actual_local_skills)
+        expected_tool_count = len(runtime_tools)
+        if int(observed.get("skills_count") or 0) != expected_skill_count or int(observed.get("tool_count") or 0) != expected_tool_count:
+            stale_baseline_files.append(
+                {
+                    "file": str(baseline_path.as_posix()),
+                    "type": "coverage_baseline",
+                    "expected": {"skills_count": expected_skill_count, "tool_count": expected_tool_count},
+                    "actual": {
+                        "skills_count": int(observed.get("skills_count") or 0),
+                        "tool_count": int(observed.get("tool_count") or 0),
+                    },
+                }
+            )
+
+    if runtime_audit_payload:
+        if (
+            int(runtime_audit_payload.get("skills_count") or 0) != len(actual_local_skills)
+            or int(runtime_audit_payload.get("runtime_tool_count") or runtime_audit_payload.get("tool_count") or 0)
+            != len(runtime_tools)
+        ):
+            stale_baseline_files.append(
+                {
+                    "file": str(runtime_audit_path.as_posix()),
+                    "type": "runtime_audit",
+                    "expected": {"skills_count": len(actual_local_skills), "runtime_tool_count": len(runtime_tools)},
+                    "actual": {
+                        "skills_count": int(runtime_audit_payload.get("skills_count") or 0),
+                        "runtime_tool_count": int(
+                            runtime_audit_payload.get("runtime_tool_count") or runtime_audit_payload.get("tool_count") or 0
+                        ),
+                    },
+                }
+            )
+
+    meta_conflicts.extend(
+        {
+            "type": "stale_meta_file",
+            **item,
+        }
+        for item in stale_baseline_files
+    )
+    meta_conflicts.extend(
+        {
+            "type": "live_validation_failure",
+            **item,
+        }
+        for item in live_validation_failures
+    )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "repo_root": str(repo_root.as_posix()),
+        "actual_local_skills": actual_local_skills,
+        "runtime_contract_skills": runtime_contract_skill_ids,
+        "runtime_executor_skills": runtime_executor_skill_ids,
+        "missing_from_meta": missing_from_meta,
+        "stale_baseline_files": stale_baseline_files,
+        "stale_meta_detected": bool(stale_baseline_files),
+        "meta_conflicts": meta_conflicts,
+        "capability_tier_breakdown": dict(sorted(capability_tier_breakdown.items())),
+        "role_tag_breakdown": dict(sorted(role_tag_breakdown.items())),
+        "live_validation_failures": live_validation_failures,
+        "tool_coverage_source": tool_coverage_source,
+    }
+
+
 def compute_report(
     repo_root: Path,
     all_tools: list[str],
@@ -240,6 +526,8 @@ def compute_report(
     skill_coverages: list[SkillCoverage],
     module_name_collisions: list[dict],
     skill_executor_audit: dict,
+    tool_coverage_source: dict[str, Any],
+    capability_audit: dict[str, Any],
 ) -> dict:
     all_tools_set = set(all_tools)
     union_covered = sorted(
@@ -278,12 +566,14 @@ def compute_report(
         "repo_root": str(repo_root.as_posix()),
         "tool_source_files": [str(path.as_posix()) for path in tool_source_files],
         "tool_count": tool_count,
+        "runtime_tool_count": int(tool_coverage_source.get("runtime_tool_count") or tool_count),
         "skills_count": len(skill_coverages),
         "coverage": {
             "covered_count": covered_count,
             "coverage_pct": round((covered_count * 100.0 / tool_count), 2) if tool_count else 0.0,
             "missing_count": len(missing_tools),
         },
+        "tool_coverage_source": tool_coverage_source,
         "executors": {
             "registered_skill_count": len(registry_skill_ids),
             "executable_skill_count": len(executable_skill_ids),
@@ -297,6 +587,13 @@ def compute_report(
             "executor_count": int(skill_executor_audit.get("executor_count") or len(executable_skill_ids)),
             "skill_tool_file": skill_executor_audit.get("skill_tool_file"),
         },
+        "repo_local_skill_count": len(registry_skill_ids),
+        "runtime_contract_count": len(capability_audit.get("runtime_contract_skills") or []),
+        "runtime_executor_count": len(capability_audit.get("runtime_executor_skills") or []),
+        "stale_meta_detected": bool(capability_audit.get("stale_meta_detected")),
+        "meta_conflicts": list(capability_audit.get("meta_conflicts") or []),
+        "capability_tier_breakdown": dict(capability_audit.get("capability_tier_breakdown") or {}),
+        "role_tag_breakdown": dict(capability_audit.get("role_tag_breakdown") or {}),
         "manager": {
             "total_count": manager_total,
             "covered_count": len(covered_manager),
@@ -313,6 +610,7 @@ def compute_report(
         "unknown_tool_refs": unknown_refs,
         "module_name_collisions": module_name_collisions,
         "module_name_collisions_count": len(module_name_collisions),
+        "skill_capability_audit": capability_audit,
     }
 
 
@@ -345,15 +643,37 @@ def evaluate_thresholds(report: dict, baseline: dict) -> tuple[bool, list[str]]:
             f"module name collisions {collision_count} > max_module_name_collisions {max_module_collisions}"
         )
 
+    max_meta_conflicts = thresholds.get("max_meta_conflicts")
+    meta_conflicts = len(list(report.get("meta_conflicts") or []))
+    if max_meta_conflicts is not None and meta_conflicts > int(max_meta_conflicts):
+        violations.append(f"meta conflicts {meta_conflicts} > max_meta_conflicts {max_meta_conflicts}")
+
+    require_repo_local_alignment = thresholds.get("require_repo_local_alignment")
+    if require_repo_local_alignment:
+        repo_local_skill_count = int(report.get("repo_local_skill_count") or 0)
+        runtime_contract_count = int(report.get("runtime_contract_count") or 0)
+        runtime_executor_count = int(report.get("runtime_executor_count") or 0)
+        if repo_local_skill_count != runtime_contract_count or repo_local_skill_count != runtime_executor_count:
+            violations.append(
+                "repo-local skills / runtime contracts / runtime executors are not aligned: "
+                f"{repo_local_skill_count}/{runtime_contract_count}/{runtime_executor_count}"
+            )
+
     return len(violations) == 0, violations
 
 
-def write_outputs(report: dict, output_json: Path, output_gap: Path) -> None:
+def write_outputs(report: dict, output_json: Path, output_gap: Path, capability_output: Path) -> None:
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     output_gap.parent.mkdir(parents=True, exist_ok=True)
     output_gap.write_text("\n".join(report["missing_tools"]) + "\n", encoding="utf-8")
+
+    capability_output.parent.mkdir(parents=True, exist_ok=True)
+    capability_output.write_text(
+        json.dumps(report.get("skill_capability_audit") or {}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -391,6 +711,11 @@ def parse_args() -> argparse.Namespace:
         help="Output missing tools list path",
     )
     parser.add_argument(
+        "--output-capability-json",
+        default=".codex/skills/_meta/skill_capability_audit.json",
+        help="Output skill capability audit JSON path",
+    )
+    parser.add_argument(
         "--baseline",
         default=".codex/skills/_meta/coverage_baseline.json",
         help="Threshold baseline JSON path",
@@ -413,6 +738,7 @@ def main() -> int:
     package_root = (repo_root / args.package_root).resolve()
     output_json = (repo_root / args.output_json).resolve()
     output_gap = (repo_root / args.output_gap).resolve()
+    capability_output = (repo_root / args.output_capability_json).resolve()
     baseline_file = (repo_root / args.baseline).resolve()
 
     if not server_file.exists():
@@ -425,12 +751,31 @@ def main() -> int:
         print(f"[ERROR] skills dir not found: {skills_dir}", file=sys.stderr)
         return 2
 
-    all_tools, tool_source_files = discover_runtime_tools(server_file, tools_dir)
-    skill_coverages = collect_skill_coverages(skills_dir, set(all_tools))
+    all_tools, tool_source_files, tool_coverage_source = discover_runtime_tools(repo_root, server_file, tools_dir)
+    skill_coverages = collect_skill_coverages(skills_dir, set(all_tools), repo_root)
     module_name_collisions = detect_module_name_collisions(package_root)
     skill_executor_audit = discover_skill_executors((tools_dir / "skills.py").resolve())
+    runtime_contract_skill_ids = discover_runtime_skill_contracts(
+        repo_root,
+        [item.skill for item in skill_coverages],
+    )
+    capability_audit = build_skill_capability_audit(
+        repo_root,
+        skill_coverages=skill_coverages,
+        runtime_contract_skill_ids=runtime_contract_skill_ids,
+        runtime_executor_skill_ids=sorted(skill_executor_audit.get("executable_skill_ids") or []),
+        runtime_tools=all_tools,
+        tool_coverage_source=tool_coverage_source,
+    )
     report = compute_report(
-        repo_root, all_tools, tool_source_files, skill_coverages, module_name_collisions, skill_executor_audit
+        repo_root,
+        all_tools,
+        tool_source_files,
+        skill_coverages,
+        module_name_collisions,
+        skill_executor_audit,
+        tool_coverage_source,
+        capability_audit,
     )
 
     threshold_result = {"enabled": False, "baseline": str(baseline_file.as_posix())}
@@ -452,7 +797,7 @@ def main() -> int:
                 exit_code = 4
 
     report["threshold_check"] = threshold_result
-    write_outputs(report, output_json, output_gap)
+    write_outputs(report, output_json, output_gap, capability_output)
 
     print(
         "[OK] tools={tool_count} skills={skills_count} covered={covered} "
