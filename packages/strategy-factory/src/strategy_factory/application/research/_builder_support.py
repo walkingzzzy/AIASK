@@ -229,7 +229,7 @@ class FactorResearchBuilderSupportMixin:
     @staticmethod
     def _family_risk_level(family: str) -> str:
         normalized = str(family or "").strip().lower()
-        if normalized in {"momentum", "growth_factor", "volatility_breakout", "gap_fill"}:
+        if normalized in {"momentum", "growth_factor", "volatility_breakout", "event_structure_breakout", "gap_fill"}:
             return "high"
         if normalized in {"quality_factor", "value_factor"}:
             return "low"
@@ -241,7 +241,7 @@ class FactorResearchBuilderSupportMixin:
         validation_focus = "candidate_target_only"
         if normalized == "macro_timing":
             profile = "macro_regime_validation"
-        elif normalized in {"north_capital_track", "margin_divergence"}:
+        elif normalized in {"north_capital_track", "margin_divergence", "event_structure_breakout"}:
             profile = "event_trade_validation"
             validation_focus = "event_target_only"
         elif normalized == "quality_factor":

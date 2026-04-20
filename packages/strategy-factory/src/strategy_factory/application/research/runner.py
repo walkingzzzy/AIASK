@@ -16,6 +16,7 @@ from typing import Any
 from .candidate_origin import count_candidate_origins
 from ..candidate_contract import apply_resolved_candidate_envelope
 from .contracts import build_research_plane_artifact
+from ..services.task_orchestrator import TaskOrchestrator
 from ...domain.constants import (
     FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
     is_factory_factor_auto_refresh_enabled,
@@ -176,10 +177,10 @@ class ResearchPlaneRunner:
         experiments: list[dict[str, Any]] = []
         autonomy_error: str | None = None
         try:
-            autonomy_batch = await self._scheduler._run_autonomy_batches(db, snapshot)
-            autonomy_stage = dict(autonomy_batch.get("stage") or {})
-            autonomy_candidates = list(autonomy_batch.get("candidates") or [])
-            experiments = list(autonomy_batch.get("experiments") or [])
+            autonomy_batch = await TaskOrchestrator(self._scheduler).run(db, snapshot)
+            autonomy_stage = autonomy_batch.to_stage_dict()
+            autonomy_candidates = list(autonomy_batch.generated_candidates or [])
+            experiments = list(autonomy_batch.experiments or [])
             self._annotate_autonomy_candidates(autonomy_candidates, autonomy_stage)
         except Exception as exc:
             logger.warning("StrategyFactory: autonomy cycle failed: %s", exc)

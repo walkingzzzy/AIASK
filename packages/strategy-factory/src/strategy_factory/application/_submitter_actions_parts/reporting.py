@@ -1,0 +1,583 @@
+
+        @classmethod
+        def _runtime_playbook_from_contract(cls, candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            playbook = dict(candidate_contract_value(payload, "runtime_playbook", {}) or {})
+            if playbook:
+                return playbook
+            holding_horizon = dict(candidate_contract_value(payload, "holding_horizon", {}) or {})
+            trade_plan = dict(candidate_contract_value(payload, "trade_plan", {}) or {})
+            risk_rules = dict(candidate_contract_value(payload, "risk_rules", {}) or {})
+            execution_assumptions = dict(candidate_contract_value(payload, "execution_assumptions", {}) or {})
+            portfolio_spec = dict(candidate_contract_value(payload, "portfolio_spec", {}) or {})
+            if not holding_horizon and not trade_plan and not risk_rules and not execution_assumptions:
+                return {}
+
+            strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+            stop_loss_pct = abs(float(risk_rules.get("stop_loss_pct") or risk_rules.get("stop_loss") or 0.08) or 0.08)
+            take_profit_pct = abs(
+                float(risk_rules.get("take_profit_pct") or risk_rules.get("take_profit") or max(stop_loss_pct * 2.0, 0.12))
+                or max(stop_loss_pct * 2.0, 0.12)
+            )
+            time_stop_days = max(1, int(risk_rules.get("max_holding_days") or holding_horizon.get("max_days") or 20))
+            cooldown_days = max(
+                1,
+                int(
+                    risk_rules.get("cooldown_days")
+                    or risk_rules.get("cooldown_window_days")
+                    or trade_plan.get("cooldown_window_days")
+                    or holding_horizon.get("cooldown_window_days")
+                    or 5
+                ),
+            )
+            max_position_pct = min(
+                0.35,
+                max(
+                    0.02,
+                    float(
+                        portfolio_spec.get("max_position_pct")
+                        or risk_rules.get("max_position_pct")
+                        or 0.18
+                    )
+                    or 0.18,
+                ),
+            )
+            family = "default"
+            if strategy_type in {"momentum", "ma_cross", "volatility_breakout", "event_structure_breakout"}:
+                family = "trend"
+            elif strategy_type in {"quality_factor", "value_factor"}:
+                family = "slow_factor"
+                time_stop_days = max(time_stop_days, 42)
+            failure_exit_rule = (
+                "opposite_signal_or_breakout_failure"
+                if family == "trend"
+                else "quality_drift_or_rank_decay"
+                if family == "slow_factor"
+                else "signal_or_time_stop"
+            )
+            playbook = {
+                "entry_policy": {
+                    "order_style": "marketable_limit",
+                    "signal_validity_days": max(1, min(5, max(1, time_stop_days // 5))),
+                    "max_slippage_bps": float(
+                        execution_assumptions.get("max_slippage_bps")
+                        or execution_assumptions.get("slippage_bps")
+                        or 5.0
+                    ),
+                    "tradability_guard": bool(
+                        execution_assumptions.get("tradability_filter")
+                        if execution_assumptions.get("tradability_filter") is not None
+                        else True
+                    ),
+                },
+                "exit_policy": {
+                    "initial_stop_loss_pct": round(max(0.02, stop_loss_pct), 4),
+                    "take_profit_pct": round(max(take_profit_pct, stop_loss_pct), 4),
+                    "trailing_stop_pct": round(max(0.03, min(stop_loss_pct * (0.8 if family == "trend" else 1.0), 0.12)), 4),
+                    "trailing_activation_profit_pct": round(max(stop_loss_pct, 0.05), 4),
+                    "time_stop_days": int(time_stop_days),
+                    "failure_exit_rule": failure_exit_rule,
+                },
+                "adverse_move_policy": {
+                    "loss_bands": [
+                        {
+                            "threshold_pct": round(max(0.01, stop_loss_pct * 0.5), 4),
+                            "action": "hold",
+                            "label": "soft_drawdown_watch",
+                        },
+                        {
+                            "threshold_pct": round(max(0.02, stop_loss_pct), 4),
+                            "action": "reduce" if family == "slow_factor" else "exit",
+                            "label": "primary_stop_band",
+                        },
+                        {
+                            "threshold_pct": round(max(0.03, stop_loss_pct * 1.2), 4),
+                            "action": "freeze_reentry",
+                            "label": "hard_stop_band",
+                        },
+                    ],
+                    "average_down": "forbid",
+                    "freeze_after_stop": True,
+                    "reduce_on_drawdown": family == "slow_factor",
+                },
+                "reentry_policy": {
+                    "cooldown_days": int(cooldown_days),
+                    "reclaim_condition": (
+                        "reclaim_fast_ma_and_break_recent_high"
+                        if family == "trend"
+                        else "recover_rank_and_trend_alignment"
+                        if family == "slow_factor"
+                        else "signal_reconfirm_after_cooldown"
+                    ),
+                    "max_retries_per_20d": 1 if family == "slow_factor" else 2,
+                },
+                "position_policy": {
+                    "budget_mode": "fixed_fraction",
+                    "base_budget_pct": 0.05 if family == "slow_factor" else 0.04,
+                    "max_position_pct": round(max_position_pct, 4),
+                    "max_concurrent_positions": 2 if family in {"trend", "slow_factor"} else 1,
+                    "scale_in": {"enabled": False, "mode": "forbid"},
+                    "scale_out": {
+                        "enabled": family == "slow_factor",
+                        "mode": "reduce_then_exit" if family == "slow_factor" else "take_profit_or_trailing",
+                    },
+                },
+                "incubation_policy": {
+                    "warmup_target_signals": 20,
+                    "warmup_soft_timeout_days": 5,
+                    "warmup_hard_timeout_days": 20,
+                    "warmup_max_days": 30,
+                },
+            }
+            return playbook
+
+        @classmethod
+        def _ensure_runtime_playbook(cls, candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            params = dict(payload.get("params") or {})
+            strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+            holding_horizon = dict(candidate_contract_value(payload, "holding_horizon", {}) or {})
+            if not holding_horizon:
+                holding_horizon = cls._default_runtime_holding_horizon(strategy_type)
+            trade_plan = dict(candidate_contract_value(payload, "trade_plan", {}) or {})
+            if not trade_plan:
+                trade_plan = cls._default_runtime_trade_plan(strategy_type)
+            risk_rules = dict(candidate_contract_value(payload, "risk_rules", {}) or {})
+            if not risk_rules:
+                risk_rules = cls._default_runtime_risk_rules(strategy_type, holding_horizon)
+            execution_assumptions = dict(candidate_contract_value(payload, "execution_assumptions", {}) or {})
+            if not execution_assumptions:
+                execution_assumptions = cls._default_runtime_execution_assumptions()
+            payload["holding_horizon"] = holding_horizon
+            payload["trade_plan"] = trade_plan
+            payload["risk_rules"] = risk_rules
+            payload["execution_assumptions"] = execution_assumptions
+            params.update(
+                {
+                    "holding_horizon": dict(holding_horizon),
+                    "trade_plan": dict(trade_plan),
+                    "risk_rules": dict(risk_rules),
+                    "execution_assumptions": dict(execution_assumptions),
+                }
+            )
+            playbook = cls._runtime_playbook_from_contract(payload)
+            if not playbook:
+                payload["params"] = params
+                return payload
+            params["runtime_playbook"] = dict(playbook)
+            payload["params"] = params
+            payload["runtime_playbook"] = dict(playbook)
+            return payload
+
+        @classmethod
+        def _runtime_bootstrap_context(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            candidate: Optional[dict[str, Any]],
+        ) -> dict[str, Any]:
+            normalized_gate = dict(gate or {})
+            payload = cls._ensure_runtime_playbook(candidate)
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            strategy_type_registered = cls._strategy_type_registered(payload)
+            missing_runtime_fields = [
+                field_name
+                for field_name in _RUNTIME_BOOTSTRAP_REQUIRED_FIELDS
+                if candidate_contract_value(payload, field_name) in _EMPTY_CONTRACT_VALUES
+            ]
+            runtime_playbook_present = bool(candidate_contract_value(payload, "runtime_playbook", {}))
+            execution_semantic_mode = str(
+                candidate_contract_value(payload, "execution_semantic_mode") or ""
+            ).strip().lower() or None
+            execution_semantic_gap = bool(candidate_contract_value(payload, "execution_semantic_gap"))
+            execution_semantic_gap_reasons = [
+                str(item or "").strip()
+                for item in list(candidate_contract_value(payload, "execution_semantic_gap_reasons", []) or [])
+                if str(item or "").strip()
+            ]
+            dsl_required = bool(candidate_contract_value(payload, "dsl_required"))
+            dsl_compiled = bool(candidate_contract_value(payload, "dsl_compiled"))
+            semantic_runtime_match = bool(
+                candidate_contract_value(payload, "semantic_runtime_match", True)
+            )
+            runtime_family_data_source = str(
+                candidate_contract_value(payload, "runtime_family_data_source") or ""
+            ).strip().lower() or None
+            proxy_runtime_used = bool(candidate_contract_value(payload, "proxy_runtime_used"))
+            diagnostic_only = bool(candidate_contract_value(payload, "diagnostic_only"))
+            execution_readiness_tier = str(
+                candidate_contract_value(payload, "execution_readiness_tier") or ""
+            ).strip().lower() or None
+            semantic_contract_missing_fields = [
+                str(item or "").strip()
+                for item in list(candidate_contract_value(payload, "semantic_contract_missing_fields", []) or [])
+                if str(item or "").strip()
+            ]
+            semantic_hard_fail = bool(
+                list(
+                    dict(payload.get("evidence_alignment_audit") or {}).get("hard_fail_reasons") or []
+                )
+            )
+            quality_passed = bool(normalized_gate.get("passed"))
+            runtime_bootstrap_eligible = (
+                quality_passed
+                and validation_grade != "D"
+                and strategy_type_registered
+                and not missing_runtime_fields
+                and not semantic_hard_fail
+            )
+            if runtime_bootstrap_eligible:
+                runtime_bootstrap_reason = (
+                    "execution_semantic_gap_observe_only"
+                    if execution_semantic_gap
+                    else "proxy_runtime_observe_only"
+                    if proxy_runtime_used
+                    else "diagnostic_only_observe"
+                    if diagnostic_only
+                    else "quality_passed_non_d_candidate_with_complete_runtime_contract"
+                )
+            elif not quality_passed:
+                runtime_bootstrap_reason = "quality_gate_failed"
+            elif validation_grade == "D":
+                runtime_bootstrap_reason = "validation_grade_d_not_allowed_for_runtime"
+            elif not strategy_type_registered:
+                runtime_bootstrap_reason = "strategy_type_not_registered"
+            elif missing_runtime_fields:
+                runtime_bootstrap_reason = f"missing_runtime_contract:{','.join(missing_runtime_fields)}"
+            elif semantic_hard_fail:
+                runtime_bootstrap_reason = "semantic_hard_fail"
+            else:
+                runtime_bootstrap_reason = "runtime_bootstrap_blocked"
+            budget_tier = None
+            if runtime_bootstrap_eligible:
+                budget_tier = (
+                    "micro"
+                    if execution_semantic_gap or proxy_runtime_used or diagnostic_only
+                    else "standard" if validation_grade in {"A", "B"} else "micro"
+                )
+            return {
+                "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
+                "runtime_bootstrap_reason": runtime_bootstrap_reason,
+                "runtime_bootstrap_budget_tier": budget_tier,
+                "runtime_playbook_present": runtime_playbook_present,
+                "runtime_contract_missing_fields": missing_runtime_fields,
+                "strategy_type_registered": strategy_type_registered,
+                "execution_semantic_mode": execution_semantic_mode,
+                "execution_semantic_gap": execution_semantic_gap,
+                "execution_semantic_gap_reasons": execution_semantic_gap_reasons,
+                "dsl_required": dsl_required,
+                "dsl_compiled": dsl_compiled,
+                "semantic_runtime_match": semantic_runtime_match,
+                "runtime_family_data_source": runtime_family_data_source,
+                "proxy_runtime_used": proxy_runtime_used,
+                "diagnostic_only": diagnostic_only,
+                "execution_readiness_tier": execution_readiness_tier,
+                "semantic_contract_missing_fields": semantic_contract_missing_fields,
+            }
+
+        @classmethod
+        def _apply_runtime_bootstrap_contract(
+            cls,
+            candidate: Optional[dict[str, Any]],
+            *,
+            submission_lane: str,
+            runtime_bootstrap_eligible: bool,
+            runtime_bootstrap_budget_tier: Optional[str],
+        ) -> dict[str, Any]:
+            payload = cls._ensure_runtime_playbook(candidate)
+            if (
+                str(submission_lane or "").strip().lower() != "observe_incubation"
+                or not runtime_bootstrap_eligible
+                or runtime_bootstrap_budget_tier not in {"standard", "micro"}
+            ):
+                return payload
+            playbook = dict(payload.get("runtime_playbook") or {})
+            entry_policy = dict(playbook.get("entry_policy") or {})
+            position_policy = dict(playbook.get("position_policy") or {})
+            entry_policy["order_style"] = "marketable_limit"
+            if runtime_bootstrap_budget_tier == "standard":
+                position_policy["base_budget_pct"] = 0.06
+                position_policy["max_concurrent_positions"] = 2
+            else:
+                position_policy["base_budget_pct"] = 0.03
+                position_policy["max_concurrent_positions"] = 1
+            playbook["entry_policy"] = entry_policy
+            playbook["position_policy"] = position_policy
+            params = dict(payload.get("params") or {})
+            params["runtime_playbook"] = dict(playbook)
+            payload["params"] = params
+            payload["runtime_playbook"] = dict(playbook)
+            return payload
+
+        @classmethod
+        def _should_bootstrap_observe_candidate(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            incubation_budget_track: str,
+        ) -> bool:
+            normalized_gate = dict(gate or {})
+            track = str(incubation_budget_track or "").strip().lower()
+            if track not in {"", "deferred_budget_queue", "deferred_submission"}:
+                return False
+            if not bool(normalized_gate.get("passed")):
+                return False
+            if bool(normalized_gate.get("live_candidate_ready")):
+                return False
+            if bool(normalized_gate.get("research_only_due_to_trade_audit_gap")):
+                return False
+            if not bool(normalized_gate.get("research_candidate_ready")):
+                return False
+            if not bool(normalized_gate.get("strict_incubation_ready")):
+                return False
+            if str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() != "strict":
+                return False
+            if bool(normalized_gate.get("provisional_pass")):
+                return False
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            return validation_grade in {"A", "B"}
+
+        @classmethod
+        def _allow_observe_trade_audit_bootstrap(
+            cls,
+            gate: Optional[dict[str, Any]],
+            *,
+            incubation_budget_track: str,
+        ) -> bool:
+            normalized_gate = dict(gate or {})
+            if str(incubation_budget_track or "").strip().lower() != "observe_incubation":
+                return False
+            if not bool(normalized_gate.get("passed")):
+                return False
+            if not bool(normalized_gate.get("research_candidate_ready")):
+                return False
+            if bool(normalized_gate.get("live_candidate_ready")):
+                return False
+            validation_grade = cls._normalized_validation_grade(normalized_gate)
+            return validation_grade != "D"
+
+        @classmethod
+        def _resolve_submission_action_plan(
+            cls,
+            gate: dict,
+            *,
+            candidate: Optional[dict[str, Any]] = None,
+            refresh_existing: bool,
+            existing_status: str,
+            incubation_budget_track: str,
+        ) -> dict[str, Any]:
+            normalized_gate = dict(gate or {})
+            runtime_bootstrap = cls._runtime_bootstrap_context(
+                normalized_gate,
+                candidate=candidate,
+            )
+            gate_a_decision = str(normalized_gate.get("gate_a_decision") or "").strip().lower()
+            readiness_fields = (
+                "research_candidate_ready",
+                "incubation_candidate_ready",
+                "live_candidate_ready",
+                "research_only_due_to_trade_audit_gap",
+            )
+            if bool(normalized_gate.get("passed")) and not any(field in normalized_gate for field in readiness_fields):
+                normalized_gate["research_candidate_ready"] = True
+                normalized_gate["incubation_candidate_ready"] = True
+            admission_block_reasons = list(normalized_gate.get("admission_block_reasons") or normalized_gate.get("reasons") or [])
+            strict_formal_ready = bool(normalized_gate.get("strict_incubation_ready")) or (
+                str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
+            )
+            formal_track_requested = str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+            formal_track_blockers: list[str] = []
+            if formal_track_requested:
+                if not bool(runtime_bootstrap.get("runtime_bootstrap_eligible")):
+                    formal_track_blockers.append(
+                        str(runtime_bootstrap.get("runtime_bootstrap_reason") or "runtime_bootstrap_not_eligible")
+                    )
+                if bool(runtime_bootstrap.get("execution_semantic_gap")):
+                    formal_track_blockers.extend(
+                        list(runtime_bootstrap.get("execution_semantic_gap_reasons") or [])
+                        or ["execution_semantic_gap"]
+                    )
+                if not bool(runtime_bootstrap.get("semantic_runtime_match")):
+                    formal_track_blockers.append("semantic_runtime_mismatch")
+                if bool(runtime_bootstrap.get("proxy_runtime_used")):
+                    formal_track_blockers.append("proxy_runtime_not_allowed_for_formal_incubation")
+                if bool(runtime_bootstrap.get("diagnostic_only")):
+                    formal_track_blockers.append("diagnostic_only_runtime")
+                readiness_tier = (
+                    str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() or "unknown"
+                )
+                if readiness_tier != "formal_runtime_ready":
+                    formal_track_blockers.append(f"execution_readiness_tier:{readiness_tier}")
+                if not strict_formal_ready:
+                    formal_track_blockers.append("strict_incubation_pass_required_for_formal_track")
+            formal_track_blockers = list(
+                dict.fromkeys([item for item in formal_track_blockers if str(item).strip()])
+            )
+            formal_track_eligible = bool(formal_track_requested and not formal_track_blockers)
+            if refresh_existing:
+                action_type = "refresh_existing"
+                submission_lane = "refresh_existing"
+                final_status = str(existing_status or "draft")
+                trigger = "existing_strategy_refresh"
+                gaps = []
+                fallback_conditions = ["manual_review_if_contract_changes"]
+                next_step = "existing_status_preserved"
+                completed = True
+            elif gate_a_decision == "revise" and not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "draft"
+                trigger = "gate_a_revision_required"
+                gaps = admission_block_reasons
+                fallback_conditions = ["supply_required_research_protocol_fields_and_replay_submission"]
+                next_step = "research"
+                completed = True
+            elif gate_a_decision == "reject" and not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "rejected"
+                final_status = "rejected"
+                trigger = "gate_a_reject"
+                gaps = admission_block_reasons
+                fallback_conditions = ["restore_required_research_protocol_fields_before_submission_replay"]
+                next_step = "research"
+                completed = True
+            elif not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "rejected"
+                final_status = "rejected"
+                trigger = "quality_gate_failed"
+                gaps = admission_block_reasons
+                fallback_conditions = ["re_enter_after_quality_gaps_closed"]
+                next_step = "incubation"
+                completed = True
+            elif bool(normalized_gate.get("live_candidate_ready")) and not bool(runtime_bootstrap.get("execution_semantic_gap")):
+                formal_runtime_ready = (
+                    bool(runtime_bootstrap.get("semantic_runtime_match"))
+                    and not bool(runtime_bootstrap.get("proxy_runtime_used"))
+                    and not bool(runtime_bootstrap.get("diagnostic_only"))
+                    and str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() == "formal_runtime_ready"
+                )
+                if not formal_runtime_ready:
+                    action_type = "paper"
+                    submission_lane = "observe_incubation"
+                    final_status = "submitted"
+                    trigger = str(
+                        runtime_bootstrap.get("runtime_bootstrap_reason")
+                        or "formal_lane_requires_semantic_runtime_match"
+                    )
+                    gaps = list(
+                        dict.fromkeys(
+                            [
+                                *admission_block_reasons,
+                                trigger,
+                            ]
+                        )
+                    )
+                    fallback_conditions = [
+                        "promote_after_runtime_data_source_and_semantic_contract_are_repaired",
+                    ]
+                    next_step = "runtime_review"
+                    completed = False
+                else:
+                    action_type = "runtime_review"
+                    submission_lane = "live_ready_review"
+                    final_status = "submitted"
+                    trigger = "live_candidate_ready"
+                    gaps = []
+                    fallback_conditions = [
+                        "downgrade_to_paper_if_runtime_review_fails",
+                        "return_to_research_if_runtime_alerts_fire",
+                    ]
+                    next_step = "pool_admission"
+                    completed = False
+            elif formal_track_eligible:
+                action_type = "incubation"
+                submission_lane = "formal_incubation"
+                final_status = "incubating"
+                trigger = "strict_incubation_ready_and_budget_formal"
+                gaps = admission_block_reasons
+                fallback_conditions = [
+                    "downgrade_to_observe_if_signal_quality_or_execution_evidence_weakens",
+                    "return_to_research_if_runtime_risk_accumulates",
+                ]
+                next_step = "paper"
+                completed = False
+            elif runtime_bootstrap.get("runtime_bootstrap_eligible"):
+                action_type = "paper"
+                submission_lane = "observe_incubation"
+                final_status = "submitted"
+                trigger = "runtime_bootstrap_observe"
+                gaps = admission_block_reasons
+                fallback_conditions = [
+                    "promote_to_formal_after_signal_quality_and_execution_conversion_improve",
+                    "return_to_research_if_runtime_bootstrap_evidence_turns_negative",
+                ]
+                next_step = "runtime_review"
+                completed = False
+            elif formal_track_requested:
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
+                trigger = "formal_incubation_requires_bootstrap_or_strict_gate"
+                gaps = list(
+                    dict.fromkeys(
+                        [
+                            *list(admission_block_reasons),
+                            *formal_track_blockers,
+                        ]
+                    )
+                )
+                fallback_conditions = [
+                    "promote_after_runtime_contract_is_repaired_or_quality_improves",
+                    "observe_track_allowed_after_runtime_bootstrap_eligibility_is_restored",
+                ]
+                next_step = "research"
+                completed = True
+            elif str(incubation_budget_track or "").strip().lower() == "observe_incubation":
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
+                trigger = str(runtime_bootstrap.get("runtime_bootstrap_reason") or "observe_track_runtime_contract_incomplete")
+                gaps = list(dict.fromkeys([*admission_block_reasons, trigger]))
+                fallback_conditions = ["repair_runtime_contract_and_replay_submission"]
+                next_step = "research"
+                completed = True
+            else:
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted"
+                trigger = str(runtime_bootstrap.get("runtime_bootstrap_reason") or "budget_deferred_research_only")
+                gaps = list(dict.fromkeys([*admission_block_reasons, trigger]))
+                fallback_conditions = ["promote_to_observe_after_runtime_bootstrap_eligibility_is_restored"]
+                next_step = "incubation"
+                completed = True
+
+            plan = {
+                "type": action_type,
+                "trigger_reason": trigger,
+                "gaps": list(gaps),
+                "fallback_conditions": list(fallback_conditions),
+                "next_step": next_step,
+                "submission_lane": submission_lane,
+                "final_status": final_status,
+                "completed": bool(completed),
+                "formal_track_requested": formal_track_requested,
+                "formal_track_eligible": formal_track_eligible,
+                "formal_track_blockers": list(formal_track_blockers),
+                **runtime_bootstrap,
+            }
+            return {
+                "submission_action": plan,
+                "submission_action_type": action_type,
+                "submission_action_trigger": trigger,
+                "submission_action_gaps": list(gaps),
+                "submission_action_fallback_conditions": list(fallback_conditions),
+                "submission_action_next_step": next_step,
+                "submission_action_completed": bool(completed),
+                "submission_lane": submission_lane,
+                "final_status": final_status,
+                "formal_track_requested": formal_track_requested,
+                "formal_track_eligible": formal_track_eligible,
+                "formal_track_blockers": list(formal_track_blockers),
+                **runtime_bootstrap,
+            }

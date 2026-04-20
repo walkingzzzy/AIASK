@@ -7,22 +7,13 @@ import logging
 from datetime import date
 from typing import List
 
-from .legacy_bridge import call_compat_async
 from .utils import _update_strategy_status as _local_update_strategy_status
 from ..domain.constants import ELIMINATION_CONCURRENCY
 
 logger = logging.getLogger(__name__)
 
-_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
-
 async def _update_strategy_status(*args, **kwargs):
-    return await call_compat_async(
-        _LEGACY_UTILS_MODULE,
-        "_update_strategy_status",
-        _local_update_strategy_status,
-        *args,
-        **kwargs,
-    )
+    return await _local_update_strategy_status(*args, **kwargs)
 
 
 class EliminationChecker:

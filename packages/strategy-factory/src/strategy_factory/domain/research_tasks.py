@@ -140,6 +140,7 @@ class ResearchBatchResult:
     generated_candidates: list[dict[str, Any]] = field(default_factory=list)
     experiments: list[dict[str, Any]] = field(default_factory=list)
     persistence_failures: list[dict[str, Any]] = field(default_factory=list)
+    stage_payload: dict[str, Any] = field(default_factory=dict)
 
     @property
     def completed_count(self) -> int:
@@ -190,7 +191,7 @@ class ResearchBatchResult:
             st = r.external_llm_status or "unknown"
             status_counts[st] = status_counts.get(st, 0) + 1
 
-        return {
+        base = {
             "task_count": task_count,
             "task_source_counts": task_source_counts,
             "event_task_count": event_task_count,
@@ -214,6 +215,9 @@ class ResearchBatchResult:
             "persistence_failure_count": len(self.persistence_failures),
             "task_results": [r.to_dict() for r in self.task_results],
         }
+        payload = dict(self.stage_payload or {})
+        payload.update(base)
+        return payload
 
 
 __all__ = [

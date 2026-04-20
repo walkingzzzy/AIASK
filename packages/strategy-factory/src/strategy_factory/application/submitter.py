@@ -10,7 +10,6 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
-from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .quality_gates import build_completed_gate_3_report
 from .quality_reporting import build_quality_report, normalize_quality_gate_result
 from .submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
@@ -36,42 +35,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LEGACY_SUBMITTER_MODULE = "akshare_mcp.services.strategy_factory.submitter"
-_LEGACY_SUBMISSION_GATE_MODULE = "akshare_mcp.services.strategy_factory.submission_gate"
-_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
-
 def _compat_setting(name: str, default):
-    return get_compat_value(_LEGACY_SUBMITTER_MODULE, name, default)
+    return default
 
 
 def _auto_name(*args, **kwargs):
-    return get_compat_symbol(_LEGACY_UTILS_MODULE, "_auto_name", _local_auto_name)(*args, **kwargs)
+    return _local_auto_name(*args, **kwargs)
 
 
 def _extract_event_context(*args, **kwargs):
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "_extract_event_context",
-        _local_extract_event_context,
-    )(*args, **kwargs)
+    return _local_extract_event_context(*args, **kwargs)
 
 
 def get_strategy_factory_package():
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "get_strategy_factory_package",
-        _local_get_strategy_factory_package,
-    )()
+    return _local_get_strategy_factory_package()
 
 
 async def _update_strategy_status(*args, **kwargs):
-    return await call_compat_async(
-        _LEGACY_UTILS_MODULE,
-        "_update_strategy_status",
-        _local_update_strategy_status,
-        *args,
-        **kwargs,
-    )
+    return await _local_update_strategy_status(*args, **kwargs)
 
 
 class _CompatValidationGateway:
@@ -92,13 +73,14 @@ class _CompatRiskGateway:
 from ._submitter_helpers import _StrategySubmitterHelpersMixin
 from ._submitter_policy import _StrategySubmitterPolicyMixin
 from ._submitter_actions import _StrategySubmitterActionsMixin
+from .services.submission_coordinator import SubmissionCoordinator
 
 
 class StrategySubmitter(_StrategySubmitterHelpersMixin, _StrategySubmitterPolicyMixin, _StrategySubmitterActionsMixin):
         """创建策略记录并提交质检。"""
 
         _GENERIC_AI_NAME_PATTERNS = (
-            re.compile(r"^(?:dsl_rule|ma_cross|momentum|rsi|value_factor|quality_factor|growth_factor|multi_factor|macro_timing|volatility_breakout|gap_fill|mean_reversion_short|sector_rotation|north_capital_track|margin_divergence)策略$", re.I),
+            re.compile(r"^(?:dsl_rule|ma_cross|momentum|rsi|value_factor|quality_factor|growth_factor|multi_factor|macro_timing|volatility_breakout|event_structure_breakout|gap_fill|mean_reversion_short|sector_rotation|north_capital_track|margin_divergence)策略$", re.I),
             re.compile(r"^(?:strategy|test|demo|sample)[ _-]*\d*$", re.I),
         )
 
@@ -112,3 +94,5 @@ class StrategySubmitter(_StrategySubmitterHelpersMixin, _StrategySubmitterPolicy
             self._validation_gateway = validation_gateway
             self._risk_gateway = risk_gateway
             self._incubation_gateway = incubation_gateway
+            self._submission_coordinator = SubmissionCoordinator(self)
+            self._update_strategy_status = _update_strategy_status

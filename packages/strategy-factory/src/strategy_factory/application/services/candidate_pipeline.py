@@ -43,6 +43,8 @@ class CandidatePipeline:
         candidates: list[dict[str, Any]],
         snapshot: dict[str, Any],
         db: Any,
+        *,
+        read_only: bool = False,
     ) -> "PipelineRunResult":
         """Run the full candidate pipeline and return a structured result."""
         pkg = self._pkg
@@ -53,6 +55,7 @@ class CandidatePipeline:
 
         supports_unified_submission = bool(
             candidates
+            and not read_only
             and hasattr(pkg, "run_gated_submission_pipeline")
             and hasattr(pkg, "run_gated_filter")
             and inspect.iscoroutinefunction(getattr(db, "get_klines", None))
@@ -100,7 +103,12 @@ class CandidatePipeline:
                     candidates, passed, backtest_report
                 )
             unique = await deduplicator.deduplicate(passed, db)
-            submit_result = await submitter.submit(unique, snapshot, db)
+            submit_result = await submitter.submit(
+                unique,
+                snapshot,
+                db,
+                read_only=read_only,
+            )
             quality_gate_report = pkg.finalize_gate_report(quality_gate_report, submit_result)
         else:
             passed = await backtest_filter.filter(candidates, db)
@@ -112,7 +120,12 @@ class CandidatePipeline:
                 candidates, passed, backtest_report
             )
             unique = await deduplicator.deduplicate(passed, db)
-            submit_result = await submitter.submit(unique, snapshot, db)
+            submit_result = await submitter.submit(
+                unique,
+                snapshot,
+                db,
+                read_only=read_only,
+            )
             quality_gate_report = pkg.finalize_gate_report(quality_gate_report, submit_result)
 
         report = self._build_report(
@@ -141,6 +154,7 @@ class CandidatePipeline:
             dedup_report=dedup_report,
             report=report,
             governance_plane=governance_plane,
+            read_only=read_only,
         )
 
     @staticmethod
@@ -239,6 +253,7 @@ class PipelineRunResult:
         dedup_report: dict[str, Any],
         report: CandidatePipelineReport,
         governance_plane: dict[str, Any],
+        read_only: bool,
     ) -> None:
         self.passed = passed
         self.unique = unique
@@ -249,6 +264,7 @@ class PipelineRunResult:
         self.dedup_report = dedup_report
         self.report = report
         self.governance_plane = governance_plane
+        self.read_only = bool(read_only)
         self.gate_artifact = dict(governance_plane.get("gate_artifact") or {})
         self.dedup_artifact = dict(governance_plane.get("dedup_artifact") or {})
         self.submission_artifact = dict(governance_plane.get("submission_artifact") or {})

@@ -54,6 +54,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             "gap_fill",
             "mean_reversion_short",
             "volatility_breakout",
+            "event_structure_breakout",
             "sector_rotation",
             "north_capital_track",
             "margin_divergence",
@@ -61,6 +62,7 @@ class _MarketOpportunityScannerSnapshotMixin:
     )
     _HIGH_VOL_GROWTH_TYPES = (
         "volatility_breakout",
+        "event_structure_breakout",
         "gap_fill",
         "mean_reversion_short",
         "quality_factor",
@@ -170,7 +172,7 @@ class _MarketOpportunityScannerSnapshotMixin:
             preferred = ["sector_rotation", "margin_divergence", "ma_cross"]
             profile = "conservative_rotation"
         elif any(token in normalized for token in cls._CONSERVATIVE_BREAKOUT_TOKENS):
-            preferred = ["volatility_breakout", "ma_cross", "sector_rotation"]
+            preferred = ["event_structure_breakout", "volatility_breakout", "ma_cross", "sector_rotation"]
             profile = "conservative_breakout"
         else:
             return {
@@ -303,10 +305,10 @@ class _MarketOpportunityScannerSnapshotMixin:
             preferred = list(cls._CYCLE_RESOURCE_TYPES)
             allowed = list(cls._CYCLE_RESOURCE_TYPES)
             if breakout_allowed:
-                preferred.append("volatility_breakout")
-                allowed.append("volatility_breakout")
+                preferred.extend(["event_structure_breakout", "volatility_breakout"])
+                allowed.extend(["event_structure_breakout", "volatility_breakout"])
         family_mix_constraints = {
-            "trend_cluster_types": ["momentum", "ma_cross", "volatility_breakout", "sector_rotation"],
+            "trend_cluster_types": ["momentum", "ma_cross", "volatility_breakout", "event_structure_breakout", "sector_rotation"],
             "trend_cluster_max_per_task": 2,
             "require_coverage": ["quality_defensive", "mean_reversion", "flow_rotation"],
             "breakout_requires_volume_expansion": profile == "cycle_resource",

@@ -420,6 +420,12 @@ def evaluate_research_validation_contract_admission(
     )
     if benchmark_oos_mdd is None:
         benchmark_oos_mdd = _safe_float(baseline_reference.get("benchmark_oos_max_drawdown"))
+    benchmark_gate_required = bool(
+        business_gate
+        or _safe_float(baseline_reference.get("benchmark_oos_cagr")) is not None
+        or _safe_float(baseline_reference.get("benchmark_return")) is not None
+        or _safe_float(baseline_reference.get("benchmark_oos_max_drawdown")) is not None
+    )
     benchmark_comparison_reasons: list[str] = []
     benchmark_passed = None
     if (
@@ -443,7 +449,7 @@ def evaluate_research_validation_contract_admission(
                     "business_gate_benchmark_max_drawdown_failed",
                 ]
             )
-    elif business_gate or baseline_reference:
+    elif benchmark_gate_required:
         benchmark_comparison_reasons.append("business_gate_missing_benchmark_comparison_inputs")
         if "business_gate_missing_benchmark_comparison_inputs" not in warnings:
             warnings.append("business_gate_missing_benchmark_comparison_inputs")
@@ -456,12 +462,25 @@ def evaluate_research_validation_contract_admission(
         family_holding_bucket.get("holding_bucket")
         or admission_thresholds.get("holding_bucket")
     ) or None
+    enforce_family_alignment = family_holding_bucket.get("enforce_family_alignment")
+    if enforce_family_alignment is None:
+        enforce_family_alignment = bool(contract_family)
+    enforce_holding_bucket_alignment = family_holding_bucket.get("enforce_holding_bucket_alignment")
+    if enforce_holding_bucket_alignment is None:
+        enforce_holding_bucket_alignment = bool(contract_holding_bucket)
     observed_family = _string(observed_payload.get("family")) or contract_family
     observed_holding_bucket = _string(observed_payload.get("holding_bucket")) or contract_holding_bucket
     family_alignment_reasons: list[str] = []
-    if contract_family and observed_family and contract_family.lower() != observed_family.lower():
+    if (
+        enforce_family_alignment
+        and contract_family
+        and observed_family
+        and contract_family.lower() != observed_family.lower()
+    ):
         family_alignment_reasons.append("research_protocol_family_mismatch")
     if (
+        enforce_holding_bucket_alignment
+        and
         contract_holding_bucket
         and observed_holding_bucket
         and contract_holding_bucket.lower() != observed_holding_bucket.lower()

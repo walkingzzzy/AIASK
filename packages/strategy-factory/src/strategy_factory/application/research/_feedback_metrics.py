@@ -320,17 +320,50 @@ async def list_feedback_source_strategies(
 ) -> List[dict[str, Any]]:
     if not hasattr(db, "list_strategies"):
         return []
+    active_submitted_tracks = {
+        "formal_incubation",
+        "observe_incubation",
+        "live_ready_review",
+    }
     statuses = ("incubating", "listed", "submitted")
     per_status_limit = max(10, int(math.ceil(limit / max(len(statuses), 1))))
     seen: set[str] = set()
     items: List[dict[str, Any]] = []
     for status in statuses:
-        rows = await _call_optional_async(db, "list_strategies", status, per_status_limit, default=[])
+        try:
+            rows = await _call_optional_async(
+                db,
+                "list_strategies",
+                status,
+                None,
+                per_status_limit,
+                0,
+                default=[],
+            )
+        except TypeError:
+            rows = await _call_optional_async(
+                db,
+                "list_strategies",
+                status,
+                per_status_limit,
+                default=[],
+            )
         for row in list(rows or []):
             payload = dict(row or {})
             strategy_id = str(payload.get("id") or "").strip()
             if not strategy_id or strategy_id in seen:
                 continue
+            normalized_status = normalize_text(payload.get("status") or status)
+            if normalized_status == "submitted":
+                params = dict(payload.get("params") or {})
+                incubation_budget = dict(params.get("incubation_budget") or {})
+                track = normalize_text(
+                    incubation_budget.get("track")
+                    or payload.get("incubation_budget_track")
+                    or payload.get("submission_lane")
+                )
+                if track not in active_submitted_tracks:
+                    continue
             seen.add(strategy_id)
             items.append(payload)
             if len(items) >= limit:

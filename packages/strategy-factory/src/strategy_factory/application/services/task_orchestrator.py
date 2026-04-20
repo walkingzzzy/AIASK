@@ -87,6 +87,7 @@ class TaskOrchestrator:
             generated_candidates=candidates,
             experiments=experiments,
             persistence_failures=persistence_failures,
+            stage_payload=stage,
         )
 
     def build_task_briefs(self, batch: ResearchBatchResult) -> list[dict[str, Any]]:

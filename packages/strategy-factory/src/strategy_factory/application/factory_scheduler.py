@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from .legacy_bridge import get_compat_symbol
 from ..domain.constants import (
     AUTONOMY_CANDIDATES_PER_TASK,
     AUTONOMY_STARTUP_DELAY_SEC,
@@ -41,6 +40,7 @@ from ..domain.constants import (
     resolve_event_runtime_mode,
 )
 from .cycle_runner import FactoryCycleRunner, FactoryRunContext
+from .factory_execution import FACTORY_ENGINE_VERSION, resolve_factory_execution_mode
 from .run_models import (
     FactoryRunStatus,
     StageStatus,
@@ -49,6 +49,10 @@ from .run_models import (
     summarize_stage_results,
 )
 from .services.readiness_service import ReadinessService
+from .runtime import (
+    _call_optional_async as _runtime_call_optional_async,
+    get_strategy_factory_package as _runtime_get_strategy_factory_package,
+)
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
 from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
@@ -110,43 +114,15 @@ _AUTONOMY_LIFECYCLE_RUNTIME = _load_autonomy_lifecycle_runtime()
 AUTONOMY_PHASE_ORDER = _AUTONOMY_LIFECYCLE_RUNTIME.AUTONOMY_PHASE_ORDER
 summarize_autonomy_lifecycle = _AUTONOMY_LIFECYCLE_RUNTIME.summarize_autonomy_lifecycle
 
-_LEGACY_FACTORY_SCHEDULER_MODULE = "akshare_mcp.services.strategy_factory.factory_scheduler"
-_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
-
 def _extract_event_context(*args, **kwargs):
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "_extract_event_context",
-        _local_extract_event_context,
-    )(*args, **kwargs)
+    return _local_extract_event_context(*args, **kwargs)
 
 
 def get_strategy_factory_package():
-    from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
-
-    target = get_compat_symbol(
-        _LEGACY_FACTORY_SCHEDULER_MODULE,
-        "get_strategy_factory_package",
-        _runtime_get_strategy_factory_package,
-        exclude=get_strategy_factory_package,
-    )
-    return target()
+    return _runtime_get_strategy_factory_package()
 
 
 async def _call_optional_async(target: Any, method_name: str, *args, default=None, **kwargs):
-    compat = get_compat_symbol(
-        _LEGACY_FACTORY_SCHEDULER_MODULE,
-        "_call_optional_async",
-        None,
-        exclude=_call_optional_async,
-    )
-    if callable(compat):
-        result = compat(target, method_name, *args, default=default, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
-    from .runtime import _call_optional_async as _runtime_call_optional_async
-
     return await _runtime_call_optional_async(target, method_name, *args, default=default, **kwargs)
 
 from ._factory_scheduler_analysis import _StrategyFactorySchedulerAnalysisMixin
@@ -196,6 +172,11 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._run_once_task: Optional[asyncio.Task] = None
             self._run_once_task_lock: Optional[asyncio.Lock] = None
             self._run_once_task_lock_loop: Optional[asyncio.AbstractEventLoop] = None
+            self.execution_mode = resolve_factory_execution_mode()
+            self.engine_version = FACTORY_ENGINE_VERSION
+            self._dispatch_tasks: Dict[str, asyncio.Task] = {}
+            self._active_dispatch_id: Optional[str] = None
+            self._latest_dispatch_id: Optional[str] = None
             # P2-D 孵化反馈：按 family 跟踪 Gate 通过率（指数平滑，α=0.3）
             self._family_gate_feedback: Dict[str, Dict[str, float]] = {}
             self._db_provider = db_provider

@@ -12,6 +12,7 @@ _HOLDING_BUCKET_BY_TYPE = {
     "ma_cross": "medium",
     "rsi": "short",
     "volatility_breakout": "short",
+    "event_structure_breakout": "short",
     "gap_fill": "short",
     "mean_reversion_short": "short",
     "value_factor": "long",
@@ -30,6 +31,7 @@ _ALPHA_SOURCE_BY_TYPE = {
     "ma_cross": "technical",
     "rsi": "technical",
     "volatility_breakout": "technical",
+    "event_structure_breakout": "technical",
     "gap_fill": "technical",
     "mean_reversion_short": "technical",
     "value_factor": "fundamental",
@@ -48,6 +50,7 @@ _RISK_LEVEL_BY_TYPE = {
     "ma_cross": "medium",
     "rsi": "medium",
     "volatility_breakout": "high",
+    "event_structure_breakout": "high",
     "gap_fill": "medium",
     "mean_reversion_short": "medium",
     "value_factor": "medium",
@@ -64,6 +67,7 @@ _RISK_LEVEL_BY_TYPE = {
 _POOL_PROFILE_BY_TYPE = {
     "momentum": "high_vol_growth",
     "volatility_breakout": "high_vol_growth",
+    "event_structure_breakout": "high_vol_growth",
     "growth_factor": "high_vol_growth",
     "gap_fill": "high_vol_growth",
     "mean_reversion_short": "high_vol_growth",
@@ -141,7 +145,7 @@ def _infer_regime_fit(strategy_type: str, task: dict[str, Any], snapshot: Option
         fg = 50.0
     if strategy_type in {"rsi", "value_factor", "gap_fill", "mean_reversion_short"} or fg <= 40:
         return "mean_reversion"
-    if strategy_type in {"momentum", "growth_factor", "volatility_breakout", "north_capital_track"} or fg >= 60:
+    if strategy_type in {"momentum", "growth_factor", "volatility_breakout", "event_structure_breakout", "north_capital_track"} or fg >= 60:
         return "trend_expansion"
     if strategy_type in {"sector_rotation", "margin_divergence"}:
         return "rotation_balanced"
@@ -162,7 +166,7 @@ def _infer_direction_bias(strategy_type: str, task: dict[str, Any], candidate: d
         return "defensive_long"
     if strategy_type in {"rsi", "value_factor", "quality_factor", "gap_fill", "mean_reversion_short"}:
         return "mean_reversion_long"
-    if strategy_type in {"momentum", "growth_factor", "ma_cross", "volatility_breakout", "north_capital_track"}:
+    if strategy_type in {"momentum", "growth_factor", "ma_cross", "volatility_breakout", "event_structure_breakout", "north_capital_track"}:
         return "trend_follow_long"
     return "long_only"
 

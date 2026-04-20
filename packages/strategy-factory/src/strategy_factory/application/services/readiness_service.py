@@ -39,6 +39,7 @@ def build_readiness_authority(
     blocking_reason_codes: list[str] | None = None,
     critical_blocking_reason_codes: list[str] | None = None,
     warning_reason_codes: list[str] | None = None,
+    effective_blocking_reason_codes: list[str] | None = None,
     skip_reason: str | None = None,
     blocking_stage: str = "readiness",
 ) -> dict[str, Any]:
@@ -46,6 +47,17 @@ def build_readiness_authority(
     blocking_codes = _dedupe_reason_codes(blocking_reason_codes)
     critical_codes = _dedupe_reason_codes(critical_blocking_reason_codes)
     warning_codes = _dedupe_reason_codes(warning_reason_codes)
+    effective_codes = _dedupe_reason_codes(
+        effective_blocking_reason_codes
+        if effective_blocking_reason_codes is not None
+        else (blocking_codes if blocking_codes else warning_codes)
+    )
+    blocking_reason_codes_source = "none"
+    if blocked:
+        if blocking_codes:
+            blocking_reason_codes_source = "blockers"
+        elif effective_codes:
+            blocking_reason_codes_source = "warnings"
     return {
         "authority_contract_version": READINESS_AUTHORITY_CONTRACT_VERSION,
         "decision": "proceed" if not blocked else "blocked",
@@ -54,6 +66,9 @@ def build_readiness_authority(
         "gate_mode": "hard" if hard_gate_enabled else "soft",
         "blocking_stage": blocking_stage if blocked else None,
         "blocking_reason_codes": blocking_codes if blocked else [],
+        "effective_blocking_reason_codes": effective_codes if blocked else [],
+        "raw_blocking_reason_codes": blocking_codes if blocked else [],
+        "blocking_reason_codes_source": blocking_reason_codes_source,
         "critical_blocking_reason_codes": critical_codes if blocked else [],
         "warning_reason_codes": warning_codes,
         "skip_reason": (str(skip_reason or "").strip() or None) if blocked else None,
@@ -371,6 +386,8 @@ class ReadinessService:
             or int(feedback_generator_mode_control_mode_counts.get("suppress") or 0) > 0
         )
 
+        event_runtime_mode = resolve_event_runtime_mode()
+
         warnings: list[str] = []
         blockers: list[str] = []
         critical_blockers: list[str] = []
@@ -390,7 +407,11 @@ class ReadinessService:
         if event_status != "success":
             warnings.append(f"event_driven_{event_status}")
             score -= 0.08 if event_status == "partial" else 0.14
-        if event_status == "success" and int(event_state.get("tasks_ready_count") or 0) <= 0:
+        if (
+            event_status == "success"
+            and event_runtime_mode not in {"readonly", "disabled"}
+            and int(event_state.get("tasks_ready_count") or 0) <= 0
+        ):
             warnings.append("event_driven_no_ready_tasks")
             score -= 0.03
 
@@ -417,7 +438,7 @@ class ReadinessService:
                 blockers.append("governed_candidate_pool_required")
                 critical_blockers.append("governed_candidate_pool_required")
                 score -= 0.22
-        if governed_blocked_candidate_count > 0:
+        if governed_blocked_ratio >= 0.25:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
             warnings.append("governed_candidate_pool_blocked_ratio_high")
@@ -512,7 +533,7 @@ class ReadinessService:
             if governed_freshness_days is None:
                 warnings.append("governed_candidate_pool_freshness_unknown")
                 score -= 0.05
-            elif self._safe_float(governed_freshness_days, default=0.0) > 2:
+            elif self._safe_float(governed_freshness_days, default=0.0) > 3:
                 warnings.append("governed_candidate_pool_stale")
                 score -= 0.08
         refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
@@ -527,19 +548,25 @@ class ReadinessService:
         can_proceed = not critical_blockers and (
             not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
         )
+        effective_blocking_reason_codes = (
+            blockers
+            if blockers
+            else (warnings if (not can_proceed and score < FACTORY_READINESS_MIN_SCORE) else [])
+        )
         authority = build_readiness_authority(
             can_proceed=can_proceed,
             hard_gate_enabled=hard_block,
             blocking_reason_codes=blockers,
             critical_blocking_reason_codes=critical_blockers,
             warning_reason_codes=warnings,
+            effective_blocking_reason_codes=effective_blocking_reason_codes,
             skip_reason="readiness_blocked",
         )
 
         return {
             "readiness_contract_version": READINESS_CONTRACT_VERSION,
             "runtime_enabled": is_factory_runtime_enabled(),
-            "event_runtime_mode": resolve_event_runtime_mode(),
+            "event_runtime_mode": event_runtime_mode,
             "auto_refresh_enabled": bool(
                 is_factory_factor_auto_refresh_enabled()
                 and bool(factor_refresh.get("auto_refresh_enabled"))
@@ -625,6 +652,13 @@ class ReadinessService:
             "gate_mode": authority.get("gate_mode"),
             "blocking_stage": authority.get("blocking_stage"),
             "blocking_reason_codes": list(authority.get("blocking_reason_codes") or []),
+            "effective_blocking_reason_codes": list(
+                authority.get("effective_blocking_reason_codes") or []
+            ),
+            "raw_blocking_reason_codes": list(
+                authority.get("raw_blocking_reason_codes") or []
+            ),
+            "blocking_reason_codes_source": authority.get("blocking_reason_codes_source"),
             "critical_blocking_reason_codes": list(
                 authority.get("critical_blocking_reason_codes") or []
             ),

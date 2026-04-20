@@ -11,6 +11,7 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "FactoryCycleOutcome": (".cycle_runner", "FactoryCycleOutcome"),
     "FactoryCycleRunner": (".cycle_runner", "FactoryCycleRunner"),
     "FactoryRunContext": (".cycle_runner", "FactoryRunContext"),
+    "FactoryV2Engine": (".v2_engine", "FactoryV2Engine"),
     "HypothesisLoweringCompiler": (".hypothesis_lowering_compiler", "HypothesisLoweringCompiler"),
     "DataCollector": (".collect", "DataCollector"),
     "Deduplicator": (".deduplicator", "Deduplicator"),

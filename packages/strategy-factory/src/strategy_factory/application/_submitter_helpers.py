@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
 from .candidate_contract import apply_resolved_candidate_envelope
-from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .quality_gates import build_completed_gate_3_report
 from .quality_reporting import build_quality_report, normalize_quality_gate_result
 from .submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
@@ -39,42 +38,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LEGACY_SUBMITTER_MODULE = "akshare_mcp.services.strategy_factory.submitter"
-_LEGACY_SUBMISSION_GATE_MODULE = "akshare_mcp.services.strategy_factory.submission_gate"
-_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
-
 def _compat_setting(name: str, default):
-    return get_compat_value(_LEGACY_SUBMITTER_MODULE, name, default)
+    return default
 
 
 def _auto_name(*args, **kwargs):
-    return get_compat_symbol(_LEGACY_UTILS_MODULE, "_auto_name", _local_auto_name)(*args, **kwargs)
+    return _local_auto_name(*args, **kwargs)
 
 
 def _extract_event_context(*args, **kwargs):
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "_extract_event_context",
-        _local_extract_event_context,
-    )(*args, **kwargs)
+    return _local_extract_event_context(*args, **kwargs)
 
 
 def get_strategy_factory_package():
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "get_strategy_factory_package",
-        _local_get_strategy_factory_package,
-    )()
+    return _local_get_strategy_factory_package()
 
 
 async def _update_strategy_status(*args, **kwargs):
-    return await call_compat_async(
-        _LEGACY_UTILS_MODULE,
-        "_update_strategy_status",
-        _local_update_strategy_status,
-        *args,
-        **kwargs,
-    )
+    return await _local_update_strategy_status(*args, **kwargs)
 
 
 class _CompatValidationGateway:

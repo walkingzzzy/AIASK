@@ -164,31 +164,37 @@ def _resolve_export(name: str) -> Any:
     return getattr(module, attr_name)
 
 
-def _get_runtime_symbol(name: str) -> Any:
+def _get_local_scheduler_target() -> Any:
     try:
         package = _runtime_get_strategy_factory_package()
     except Exception:
-        return None
-    try:
-        return getattr(package, name, None)
-    except Exception:
-        return None
+        package = None
+    target = getattr(package, "get_strategy_factory_scheduler", None) if package is not None else None
+    if callable(target):
+        return target
+    return _resolve_export("StrategyFactoryScheduler")
+
+
+def _build_scheduler(target: Any, kwargs: dict[str, Any]):
+    filtered_kwargs = _filter_supported_kwargs(target, kwargs)
+    return target(**filtered_kwargs) if filtered_kwargs else target()
+
+
+def _reject_removed_legacy_scheduler_kwargs(kwargs: dict[str, Any]) -> None:
+    if "prefer_legacy" in kwargs:
+        raise TypeError(
+            "prefer_legacy has been removed and legacy scheduler access is no longer available"
+        )
 
 
 def get_strategy_factory_scheduler(**kwargs):
-    local_scheduler_cls = _resolve_export("StrategyFactoryScheduler")
-    target = _get_runtime_symbol("get_strategy_factory_scheduler")
-    if callable(target):
-        filtered_kwargs = _filter_supported_kwargs(target, kwargs)
-        return target(**filtered_kwargs) if filtered_kwargs else target()
-    filtered_kwargs = _filter_supported_kwargs(local_scheduler_cls, kwargs)
-    return local_scheduler_cls(**filtered_kwargs)
+    _reject_removed_legacy_scheduler_kwargs(kwargs)
+    return _build_scheduler(_get_local_scheduler_target(), kwargs)
 
 
 async def run_submission_quality_gate(*args, **kwargs):
     local_target = import_module("..application.submission_gate", __package__).run_submission_quality_gate
-    target = _get_runtime_symbol("run_submission_quality_gate") or local_target
-    return await target(*args, **kwargs)
+    return await local_target(*args, **kwargs)
 
 
 async def call_optional_async(*args, **kwargs):
@@ -198,20 +204,17 @@ async def call_optional_async(*args, **kwargs):
 
 def build_strategy_panels(*args, **kwargs):
     local_target = import_module("..application.panels", __package__)._build_strategy_panels
-    target = _get_runtime_symbol("_build_strategy_panels") or local_target
-    return target(*args, **kwargs)
+    return local_target(*args, **kwargs)
 
 
 def extract_event_context(*args, **kwargs):
     local_target = import_module("..application.utils", __package__)._extract_event_context
-    target = _get_runtime_symbol("_extract_event_context") or local_target
-    return target(*args, **kwargs)
+    return local_target(*args, **kwargs)
 
 
 def auto_name(*args, **kwargs):
     local_target = import_module("..domain.naming", __package__)._auto_name
-    target = _get_runtime_symbol("_auto_name") or local_target
-    return target(*args, **kwargs)
+    return local_target(*args, **kwargs)
 
 
 def get_factory_constants() -> dict[str, Any]:

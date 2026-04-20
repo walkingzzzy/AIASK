@@ -13,6 +13,8 @@ def _auto_name(stype: str, params: dict) -> str:
         return f"RSI反转·{params.get('rsi_period', 14)}日({params.get('oversold', 30)}/{params.get('overbought', 70)})"
     if stype == "volatility_breakout":
         return f"波动突破·{params.get('lookback', 20)}日{params.get('threshold', 0.025):.0%}"
+    if stype == "event_structure_breakout":
+        return f"事件结构突破·{params.get('breakout_window', params.get('lookback', 16))}日{params.get('breakout_buffer_pct', params.get('threshold', 0.006)):.1%}"
     if stype == "gap_fill":
         return f"缺口回补·{params.get('rsi_period', 5)}日回归"
     if stype == "mean_reversion_short":

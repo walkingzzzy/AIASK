@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+from ..api.contracts import normalize_execution_assumptions
 from ..domain.targets import _build_target_alignment_contract, _normalize_research_task_contract
 from .candidate_contract import (
     build_portfolio_candidate_contract,
@@ -223,10 +224,17 @@ def validate_precompile_candidate_contract(
         "portfolio_spec",
         required_keys=_REQUIRED_CONTRACT_FIELDS["portfolio_spec"],
     )
-    execution_assumptions, execution_reject_reasons = _require_explicit_contract_dict(
+    raw_execution_assumptions, execution_reject_reasons = _require_explicit_contract_dict(
         payload,
         "execution_assumptions",
         required_keys=_REQUIRED_CONTRACT_FIELDS["execution_assumptions"],
+    )
+    execution_assumptions = normalize_execution_assumptions(
+        raw_execution_assumptions,
+        portfolio_spec=portfolio_spec or contract_snapshot.get("portfolio_spec"),
+        capacity_assumption=candidate_contract_value(payload, "capacity_assumption", {}),
+        holding_horizon=contract_snapshot.get("holding_horizon"),
+        cost_sensitivity_grid=candidate_contract_value(payload, "cost_sensitivity_grid", {}),
     )
     validation_profile, validation_reject_reasons = _require_explicit_contract_dict(
         payload,

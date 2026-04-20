@@ -7,6 +7,221 @@ from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 
 JSONDict = dict[str, Any]
+JSONLike = Any
+_EMPTY_VALUES = (None, "", [], {})
+
+
+def _as_dict(value: Any) -> JSONDict:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return bool(value)
+
+
+def normalize_strategy_preferences(*values: Any, limit: int = 6) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            candidates = list(value)
+        elif value in _EMPTY_VALUES:
+            candidates = []
+        else:
+            candidates = [value]
+        for item in candidates:
+            token = _string(item).lower()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            ordered.append(token)
+            if len(ordered) >= max(1, int(limit or 6)):
+                return ordered
+    return ordered
+
+
+def _derive_expected_turnover_band(
+    *,
+    holding_horizon: Mapping[str, Any] | None = None,
+    fallback: Optional[str] = None,
+) -> str:
+    candidate = _string(fallback).lower()
+    if candidate:
+        return candidate
+    max_days = max(1, _safe_int(_as_dict(holding_horizon).get("max_days"), 10))
+    if max_days >= 24:
+        return "low"
+    if max_days >= 12:
+        return "medium"
+    return "high"
+
+
+def _derive_turnover_cost_class(
+    *,
+    expected_turnover_band: str,
+    capacity_bucket: str,
+    slippage_bps: float,
+    market_impact_bps: float,
+) -> Optional[str]:
+    if expected_turnover_band == "very_high" or slippage_bps >= 10.0 or market_impact_bps >= 4.0:
+        return "high_touch"
+    if expected_turnover_band == "high" or slippage_bps >= 5.0 or capacity_bucket == "small":
+        return "medium_touch"
+    if expected_turnover_band in {"medium", "low"} or capacity_bucket:
+        return "low_touch"
+    return None
+
+
+def normalize_execution_assumptions(
+    payload: Optional[Mapping[str, Any]],
+    *,
+    portfolio_spec: Optional[Mapping[str, Any]] = None,
+    capacity_assumption: Optional[Mapping[str, Any]] = None,
+    holding_horizon: Optional[Mapping[str, Any]] = None,
+    cost_sensitivity_grid: Optional[Mapping[str, Any]] = None,
+) -> JSONDict:
+    execution = _as_dict(payload)
+    portfolio = _as_dict(portfolio_spec)
+    capacity = _as_dict(capacity_assumption)
+    horizon = _as_dict(holding_horizon)
+    cost_base_case = _as_dict(_as_dict(cost_sensitivity_grid).get("base_case"))
+
+    expected_turnover_band = _derive_expected_turnover_band(
+        holding_horizon=horizon,
+        fallback=(
+            execution.get("expected_turnover_band")
+            or portfolio.get("expected_turnover_band")
+            or horizon.get("expected_turnover_band")
+        ),
+    )
+    capacity_bucket = _string(
+        execution.get("capacity_bucket")
+        or portfolio.get("capacity_bucket")
+        or capacity.get("capacity_bucket")
+        or capacity.get("bucket")
+        or ("mid" if max(1, _safe_int(horizon.get("max_days"), 10)) >= 10 else "small")
+    ).lower()
+    slippage_bps = _safe_float(
+        execution.get("slippage_bps"),
+        _safe_float(
+            execution.get("slippage"),
+            _safe_float(cost_base_case.get("slippage_bps"), 5.0) / 10000.0,
+        ) * 10000.0,
+    )
+    market_impact_bps = _safe_float(
+        execution.get("market_impact_bps"),
+        _safe_float(cost_base_case.get("market_impact_bps"), 0.0),
+    )
+
+    return {
+        "commission_rate": _safe_float(
+            execution.get("commission_rate"),
+            _safe_float(cost_base_case.get("commission_rate"), 0.00025),
+        ),
+        "slippage_bps": slippage_bps,
+        "slippage_model": _string(
+            execution.get("slippage_model")
+            or cost_base_case.get("slippage_model")
+            or "fixed"
+        ) or "fixed",
+        "market_impact_bps": market_impact_bps,
+        "tradability_filter": _safe_bool(
+            execution.get("tradability_filter"),
+            cost_base_case.get("tradability_filter")
+            if cost_base_case.get("tradability_filter") is not None
+            else True,
+        ),
+        "capacity_participation_rate": _safe_float(
+            execution.get("capacity_participation_rate"),
+            _safe_float(capacity.get("capacity_participation_rate"), 0.0),
+        ),
+        "adv_ratio_limit": _safe_float(
+            execution.get("adv_ratio_limit"),
+            _safe_float(capacity.get("adv_ratio_limit"), 0.0),
+        ),
+        "capacity_bucket": capacity_bucket or None,
+        "margin_rate": (
+            _safe_float(execution.get("margin_rate"))
+            if execution.get("margin_rate") is not None
+            else None
+        ),
+        "contract_multiplier": (
+            _safe_int(execution.get("contract_multiplier"))
+            if execution.get("contract_multiplier") is not None
+            else None
+        ),
+        "liquidity_bucket": _string(execution.get("liquidity_bucket")) or None,
+        "max_contracts_per_rebalance": (
+            _safe_int(execution.get("max_contracts_per_rebalance"))
+            if execution.get("max_contracts_per_rebalance") is not None
+            else None
+        ),
+        "expected_turnover_band": expected_turnover_band or None,
+        "turnover_cost_class": (
+            _string(execution.get("turnover_cost_class")).lower()
+            or _derive_turnover_cost_class(
+                expected_turnover_band=expected_turnover_band,
+                capacity_bucket=capacity_bucket,
+                slippage_bps=slippage_bps,
+                market_impact_bps=market_impact_bps,
+            )
+        ),
+        "position_sizing_rationale": _string(
+            execution.get("position_sizing_rationale")
+            or portfolio.get("position_sizing_rationale")
+        ) or None,
+    }
+
+
+def resolve_refresh_existing_contract(
+    *,
+    candidate: Optional[Mapping[str, Any]] = None,
+    dedup_result: Optional[Mapping[str, Any]] = None,
+    existing_strategy: Optional[Mapping[str, Any]] = None,
+) -> JSONDict:
+    payload = _as_dict(candidate)
+    dedup = _as_dict(dedup_result if dedup_result is not None else payload.get("dedup_result"))
+    existing = _as_dict(existing_strategy)
+    refresh_mode = _string(dedup.get("refresh_mode")).lower()
+    matched_strategy_id = _string(dedup.get("matched_strategy_id") or existing.get("id")) or None
+    refresh_existing = bool(dedup.get("refresh_existing"))
+    if refresh_mode == "spawn_revision_from_existing":
+        refresh_existing = False
+    if refresh_existing and not matched_strategy_id:
+        refresh_existing = False
+    return {
+        "refresh_existing": refresh_existing,
+        "refresh_mode": refresh_mode or None,
+        "matched_strategy_id": matched_strategy_id,
+        "existing_strategy_loaded": bool(existing),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +515,16 @@ class StrategyFactoryRepository(Protocol):
     async def get_strategy_factory_run(self, run_id: str) -> Optional[Mapping[str, Any]]: ...
 
     async def get_latest_strategy_factory_run(self) -> Optional[Mapping[str, Any]]: ...
+
+    async def save_strategy_factory_run_artifact(self, payload: Mapping[str, Any]) -> Any: ...
+
+    async def list_strategy_factory_run_artifacts(self, run_id: str) -> list[Mapping[str, Any]]: ...
+
+    async def create_strategy_factory_dispatch(self, payload: Mapping[str, Any]) -> Any: ...
+
+    async def update_strategy_factory_dispatch(self, dispatch_id: str, **kwargs: Any) -> Any: ...
+
+    async def get_strategy_factory_dispatch(self, dispatch_id: str) -> Optional[Mapping[str, Any]]: ...
 
 
 @runtime_checkable

@@ -113,6 +113,28 @@ class FactoryPersistenceHelper:
     async def save_daily_snapshot(self, snapshot_date: Any, snapshot: dict[str, Any]) -> Any:
         return await self._call_required("save_daily_snapshot", snapshot_date, snapshot)
 
+    async def save_strategy_factory_run_artifact(self, payload: dict[str, Any]) -> Any:
+        return await self._call_optional("save_strategy_factory_run_artifact", payload, default=None)
+
+    async def list_strategy_factory_run_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        result = await self._call_optional("list_strategy_factory_run_artifacts", run_id, default=[])
+        return list(result or [])
+
+    async def create_strategy_factory_dispatch(self, payload: dict[str, Any]) -> Any:
+        return await self._call_optional("create_strategy_factory_dispatch", payload, default=None)
+
+    async def update_strategy_factory_dispatch(self, dispatch_id: str, **kwargs: Any) -> Any:
+        return await self._call_optional(
+            "update_strategy_factory_dispatch",
+            dispatch_id,
+            default=None,
+            **kwargs,
+        )
+
+    async def get_strategy_factory_dispatch(self, dispatch_id: str) -> Optional[dict[str, Any]]:
+        result = await self._call_optional("get_strategy_factory_dispatch", dispatch_id, default=None)
+        return result if isinstance(result, dict) else None
+
     # ------------------------------------------------------------------
     # Task-run tracking (semi-hard; failure is recorded but run continues)
     # ------------------------------------------------------------------

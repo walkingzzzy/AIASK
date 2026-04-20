@@ -74,8 +74,17 @@ def build_success_run_summary(
         "factory_readiness_decision": readiness_summary.get("decision"),
         "factory_readiness_hard_gate": readiness_summary.get("hard_gate"),
         "factory_readiness_blocking_stage": readiness_summary.get("blocking_stage"),
+        "factory_readiness_effective_blocking_reason_codes": list(
+            readiness_summary.get("effective_blocking_reason_codes") or []
+        ),
         "factory_readiness_blocking_reason_codes": list(
+            readiness_summary.get("effective_blocking_reason_codes") or []
+        ),
+        "factory_readiness_raw_blocking_reason_codes": list(
             readiness_summary.get("blocking_reason_codes") or []
+        ),
+        "factory_readiness_blocking_reason_codes_source": readiness_summary.get(
+            "blocking_reason_codes_source"
         ),
         "factory_readiness_critical_blocking_reason_codes": list(
             readiness_summary.get("critical_blocking_reason_codes") or []

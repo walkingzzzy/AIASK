@@ -10,7 +10,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
-from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
+from ..api.contracts import normalize_strategy_preferences, resolve_refresh_existing_contract
 from .quality_gates import build_completed_gate_3_report
 from .quality_reporting import build_quality_report, normalize_quality_gate_result
 from .submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
@@ -36,42 +36,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LEGACY_SUBMITTER_MODULE = "akshare_mcp.services.strategy_factory.submitter"
-_LEGACY_SUBMISSION_GATE_MODULE = "akshare_mcp.services.strategy_factory.submission_gate"
-_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
-
 def _compat_setting(name: str, default):
-    return get_compat_value(_LEGACY_SUBMITTER_MODULE, name, default)
+    return default
 
 
 def _auto_name(*args, **kwargs):
-    return get_compat_symbol(_LEGACY_UTILS_MODULE, "_auto_name", _local_auto_name)(*args, **kwargs)
+    return _local_auto_name(*args, **kwargs)
 
 
 def _extract_event_context(*args, **kwargs):
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "_extract_event_context",
-        _local_extract_event_context,
-    )(*args, **kwargs)
+    return _local_extract_event_context(*args, **kwargs)
 
 
 def get_strategy_factory_package():
-    return get_compat_symbol(
-        _LEGACY_UTILS_MODULE,
-        "get_strategy_factory_package",
-        _local_get_strategy_factory_package,
-    )()
+    return _local_get_strategy_factory_package()
 
 
 async def _update_strategy_status(*args, **kwargs):
-    return await call_compat_async(
-        _LEGACY_UTILS_MODULE,
-        "_update_strategy_status",
-        _local_update_strategy_status,
-        *args,
-        **kwargs,
-    )
+    return await _local_update_strategy_status(*args, **kwargs)
 
 
 class _CompatValidationGateway:
@@ -107,6 +89,11 @@ class _StrategySubmitterPolicyMixin:
             preference_override_applied = False
             metrics = dict(backtest_metrics or {})
             normalized_gate = normalize_quality_gate_result(gate)
+            refresh_contract = resolve_refresh_existing_contract(
+                candidate=candidate,
+                dedup_result=candidate.get("dedup_result"),
+            )
+            refresh_existing = bool(refresh_existing or refresh_contract.get("refresh_existing"))
 
             min_trades = int(_compat_setting("FACTORY_SUBMISSION_MIN_BACKTEST_TRADES", FACTORY_SUBMISSION_MIN_BACKTEST_TRADES) or FACTORY_SUBMISSION_MIN_BACKTEST_TRADES)
             trade_count = int(metrics.get("trade_count") or metrics.get("trades_count") or 0)
@@ -120,11 +107,10 @@ class _StrategySubmitterPolicyMixin:
                 reasons.append("Factory policy: candidate name is too generic for AI strategy submission")
 
             research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
-            strategy_preferences = [
-                str(item).strip().lower()
-                for item in list(research_task.get("preferred_strategy_types") or research_task.get("strategy_preferences") or [])
-                if str(item).strip()
-            ]
+            strategy_preferences = normalize_strategy_preferences(
+                research_task.get("preferred_strategy_types"),
+                research_task.get("strategy_preferences"),
+            )
             allowed_strategy_types = {
                 str(item).strip().lower()
                 for item in list(research_task.get("allowed_strategy_types") or [])
@@ -222,10 +208,12 @@ class _StrategySubmitterPolicyMixin:
                 "provisional_blocks": provisional_blocks,
                 "task_preference": {
                     "preferred_strategy_types": strategy_preferences,
+                    "strategy_preferences": list(strategy_preferences),
                     "preference_strength": preference_strength,
                     "preference_reason": preference_reason,
                     "override_applied": preference_override_applied,
                 },
+                "refresh_existing_contract": refresh_contract,
             }
 
         @classmethod
@@ -250,9 +238,14 @@ class _StrategySubmitterPolicyMixin:
             policy_warnings = list(policy_outcome.get("warnings") or [])
             provisional_blocks = list(policy_outcome.get("provisional_blocks") or [])
             task_preference = dict(policy_outcome.get("task_preference") or {})
+            refresh_existing_contract = dict(policy_outcome.get("refresh_existing_contract") or {})
             if not policy_reasons and not policy_warnings and not provisional_blocks:
-                if task_preference:
-                    return normalize_quality_gate_result({**normalized_gate, "task_preference": task_preference})
+                if task_preference or refresh_existing_contract:
+                    return normalize_quality_gate_result({
+                        **normalized_gate,
+                        "task_preference": task_preference,
+                        "refresh_existing_contract": refresh_existing_contract,
+                    })
                 return normalized_gate
 
             merged_reasons = list(normalized_gate.get("reasons") or [])
@@ -279,6 +272,7 @@ class _StrategySubmitterPolicyMixin:
                     "reasons": merged_reasons,
                     "warnings": warnings,
                     "task_preference": task_preference,
+                    "refresh_existing_contract": refresh_existing_contract,
                 }
             )
 
@@ -315,6 +309,7 @@ class _StrategySubmitterPolicyMixin:
                 submission_audit={
                     "task_signature": _build_task_signature(candidate.get("research_task") or {}),
                     "refresh_mode": (candidate.get("dedup_result") or {}).get("refresh_mode"),
+                    "refresh_existing_contract": dict((quality_gate or {}).get("refresh_existing_contract") or {}),
                     "submission_lane": submission_lane,
                     "direct_trade_candidate": bool((quality_gate or {}).get("live_candidate_ready")),
                     "committee_review": dict(candidate.get("committee_review") or {}),

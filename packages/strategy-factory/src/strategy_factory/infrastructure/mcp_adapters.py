@@ -149,6 +149,21 @@ class MCPStrategyFactoryRepositoryAdapter:
     async def get_latest_strategy_factory_run(self):
         return await self._call("get_latest_strategy_factory_run")
 
+    async def save_strategy_factory_run_artifact(self, payload: Mapping[str, Any]):
+        return await self._call("save_strategy_factory_run_artifact", payload)
+
+    async def list_strategy_factory_run_artifacts(self, run_id: str):
+        return await self._call("list_strategy_factory_run_artifacts", run_id)
+
+    async def create_strategy_factory_dispatch(self, payload: Mapping[str, Any]):
+        return await self._call("create_strategy_factory_dispatch", payload)
+
+    async def update_strategy_factory_dispatch(self, dispatch_id: str, **kwargs: Any):
+        return await self._call("update_strategy_factory_dispatch", dispatch_id, **kwargs)
+
+    async def get_strategy_factory_dispatch(self, dispatch_id: str):
+        return await self._call("get_strategy_factory_dispatch", dispatch_id)
+
     async def get_strategy_incubation_account(self, strategy_id: str):
         return await self._call("get_strategy_incubation_account", strategy_id)
 

@@ -11,7 +11,8 @@
 ## 当前定位
 
 - 这里承载策略工厂的当前主实现，不再只是迁移中的占位包。
-- `akshare_mcp.services.strategy_factory` 仍保留兼容层，但新增业务逻辑应优先落在本包。
+- `strategy_factory` 源码主树已经移除 legacy runtime / facade 分支。
+- `akshare_mcp.services.strategy_factory` 只保留旧导入路径兼容层；新增业务逻辑应直接落在本包。
 - MCP 侧的主要消费入口仍是 `packages/akshare-mcp/src/akshare_mcp/tools/managers/strategy_manager.py`。
 
 ## 当前目录结构
@@ -25,7 +26,7 @@
 - `infrastructure/`
   MCP 适配器与持久化边界。
 - `compat/`
-  迁移兼容层。
+  保留命名空间占位，不再承载 runtime/facade 兼容桥。
 
 ## 推荐使用方式
 
@@ -72,12 +73,12 @@ from strategy_factory import (
 
 ## 与兼容层的关系
 
-- 旧路径 `akshare_mcp.services.strategy_factory.*` 仍服务于历史 import、patch surface 和部分测试。
-- 新增逻辑不要优先堆到兼容层；应先在本包实现，再按需要向兼容层桥接。
+- 旧路径 `akshare_mcp.services.strategy_factory.*` 仍只服务于历史 import 和少量兼容测试。
+- 本包 source 树已经移除 legacy runtime/scheduler accessor 与内部 compat bridge。
+- 新增逻辑不要再堆到兼容层；应直接在本包实现。
 - 如果要判断“哪些代码已经迁入主包”，以本包 `application/`、`domain/`、`api/` 的实际实现为准。
 
 ## 测试与排障
 
-- 本包测试位于 `packages/strategy-factory/tests/`
 - 吞吐和专项脚本可参考 `scripts/strategy-factory-throughput-benchmark.py`
 - 运行时入口与现行文档导读在根目录 `策略工厂/` 和 `docs/README.md`

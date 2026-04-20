@@ -1,0 +1,204 @@
+
+
+def build_candidate_evidence_records(
+    candidate: Optional[Mapping[str, Any]],
+    *,
+    strategy_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    payload = dict(candidate or {})
+    evidence_chain = _as_dict(_candidate_value(payload, "evidence_chain"))
+    if not evidence_chain:
+        return []
+    research_task = _as_dict(_candidate_value(payload, "research_task"))
+    target_symbols = [
+        _string(symbol)
+        for symbol in _as_list(_candidate_value(payload, "target_symbols"))
+        if _string(symbol)
+    ]
+    task_key = (
+        _string(research_task.get("task_signature"))
+        or _string(research_task.get("task_key"))
+        or _string(_candidate_value(payload, "task_signature"))
+        or _string(strategy_id)
+    )
+    if not task_key:
+        return []
+
+    records: list[dict[str, Any]] = []
+    candidate_id = (
+        _string(payload.get("candidate_id") or payload.get("id"))
+        or _string(strategy_id)
+        or task_key
+    )
+    candidate_artifact_id = _string(
+        _first_non_empty(
+            payload.get("candidate_artifact_id"),
+            payload.get("source_candidate_artifact_id"),
+            payload.get("hypothesis_artifact_id"),
+        )
+    ) or None
+    experiment_id = _string(payload.get("experiment_id")) or None
+    for evidence in _normalize_evidences(evidence_chain):
+        evidence_symbols = list(evidence.get("target_symbols") or [])
+        source_type = _string(evidence.get("source_type")) or "candidate_evidence"
+        headline_label_id = _string(evidence.get("headline_label_id")) or None
+        doc_uid = _string(evidence.get("doc_uid")) or None
+        records.append(
+            {
+                "id": f"{candidate_id}:{evidence.get('evidence_id')}",
+                "candidate_id": candidate_id,
+                "strategy_id": strategy_id,
+                "candidate_artifact_id": candidate_artifact_id,
+                "experiment_id": experiment_id,
+                "evidence_id": evidence.get("evidence_id"),
+                "source_type": source_type,
+                "event_type": _string(evidence.get("event_type") or research_task.get("event_type")) or None,
+                "target_symbols": evidence_symbols or target_symbols,
+                "direction": evidence.get("direction"),
+                "horizon_days": evidence.get("horizon_days"),
+                "raw_confidence": evidence.get("raw_confidence"),
+                "calibrated_confidence": evidence.get("calibrated_confidence"),
+                "freshness_ts": evidence.get("freshness_ts"),
+                "proxy_only": bool(evidence.get("proxy_only")),
+                "support_metric": evidence.get("support_metric"),
+                "doc_uid": doc_uid,
+                "headline_label_id": headline_label_id,
+                "source_task_key": task_key,
+                "task_key": task_key,
+                "event_id": research_task.get("event_id"),
+                "theme_code": _string(research_task.get("theme_code")),
+                "symbol": (evidence_symbols or target_symbols or [None])[0],
+                "evidence_type": source_type,
+                "weight": _safe_float(evidence.get("raw_confidence"), 0.0),
+                "evidence_payload": {
+                    **evidence,
+                    "strategy_id": strategy_id,
+                    "candidate_id": candidate_id or None,
+                    "candidate_artifact_id": candidate_artifact_id,
+                    "experiment_id": experiment_id,
+                    "headline_label_id": headline_label_id,
+                    "doc_uid": doc_uid,
+                },
+            }
+        )
+    return records
+
+
+def build_signal_evidence_records(
+    strategy: Optional[Mapping[str, Any]],
+    *,
+    signal_id: Optional[str],
+    position_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    signal_date: Any = None,
+    code: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    payload = dict(strategy or {})
+    params = _as_dict(payload.get("params"))
+    evidence_chain = _as_dict(payload.get("evidence_chain") or params.get("evidence_chain"))
+    prediction_contract = _as_dict(payload.get("prediction_contract") or params.get("prediction_contract"))
+    claim_to_trade_plan_map = _as_dict(
+        payload.get("claim_to_trade_plan_map") or params.get("claim_to_trade_plan_map")
+    )
+    claim_to_trade_step_ids = _as_dict(claim_to_trade_plan_map.get("claim_to_trade_step_ids"))
+    if not evidence_chain:
+        return []
+    strategy_id = _string(payload.get("id")) or None
+    normalized_signal_id = _string(signal_id) or None
+    if not strategy_id or not normalized_signal_id:
+        return []
+    signal_ts = _coerce_signal_ts(_first_non_empty(payload.get("signal_ts"), params.get("signal_ts"), signal_date))
+    target_symbols = [
+        _string(symbol)
+        for symbol in _as_list(payload.get("target_symbols") or params.get("target_symbols"))
+        if _string(symbol)
+    ]
+    claims = _normalize_claims(prediction_contract)
+    claim_refs_by_evidence: dict[str, list[str]] = {}
+    for claim in claims:
+        claim_id = _string(claim.get("claim_id"))
+        if not claim_id:
+            continue
+        for evidence_id in _as_list(claim.get("evidence_ids")):
+            token = _string(evidence_id)
+            if not token:
+                continue
+            claim_refs_by_evidence.setdefault(token, []).append(claim_id)
+    candidate_artifact_id = _string(
+        _first_non_empty(
+            payload.get("candidate_artifact_id"),
+            payload.get("source_candidate_artifact_id"),
+            params.get("source_candidate_artifact_id"),
+            payload.get("hypothesis_artifact_id"),
+            params.get("hypothesis_artifact_id"),
+        )
+    ) or None
+    experiment_id = _string(_first_non_empty(payload.get("experiment_id"), params.get("experiment_id"))) or None
+    records: list[dict[str, Any]] = []
+    for evidence in _normalize_evidences(evidence_chain):
+        evidence_symbols = list(evidence.get("target_symbols") or [])
+        applied_claim_ids = _dedup_strings(
+            [
+                *claim_refs_by_evidence.get(_string(evidence.get("evidence_id")), []),
+                *_as_list(evidence.get("claim_ids")),
+            ]
+        ) or [None]
+        for applied_claim_id in applied_claim_ids:
+            applied_trade_step_ids = _dedup_strings(
+                _as_list(claim_to_trade_step_ids.get(_string(applied_claim_id)))
+            ) or [None]
+            for applied_trade_step_id in applied_trade_step_ids:
+                record_id_suffix = _string(applied_claim_id) or "unclaimed"
+                step_id_suffix = _string(applied_trade_step_id) or "unmapped_step"
+                resolved_code = _string(code) or _string((evidence_symbols or target_symbols or [None])[0]) or None
+                records.append(
+                    {
+                        "id": f"{normalized_signal_id}:{evidence.get('evidence_id')}:{record_id_suffix}:{step_id_suffix}",
+                        "strategy_id": strategy_id,
+                        "signal_id": normalized_signal_id,
+                        "position_id": _string(position_id) or None,
+                        "account_id": _string(account_id) or None,
+                        "signal_date": signal_date,
+                        "signal_ts": signal_ts,
+                        "code": resolved_code,
+                        "symbol": resolved_code,
+                        "candidate_artifact_id": candidate_artifact_id,
+                        "experiment_id": experiment_id,
+                        "applied_claim_id": _string(applied_claim_id) or None,
+                        "applied_trade_step_id": _string(applied_trade_step_id) or None,
+                        "evidence_id": evidence.get("evidence_id"),
+                        "claim_ids": [applied_claim_id] if _string(applied_claim_id) else [],
+                        "evidence_type": _normalized_source_type(evidence.get("source_type")) or "signal_evidence",
+                        "source_type": _normalized_source_type(evidence.get("source_type")) or "signal_evidence",
+                        "direction": evidence.get("direction"),
+                        "horizon_days": evidence.get("horizon_days"),
+                        "raw_confidence": evidence.get("raw_confidence"),
+                        "calibrated_confidence": evidence.get("calibrated_confidence"),
+                        "proxy_only": bool(evidence.get("proxy_only")),
+                        "doc_uid": _string(evidence.get("doc_uid")) or None,
+                        "headline_label_id": _string(evidence.get("headline_label_id")) or None,
+                        "weight": _safe_float(evidence.get("raw_confidence"), 0.0),
+                        "evidence_payload": {
+                            **evidence,
+                            "strategy_id": strategy_id,
+                            "signal_id": normalized_signal_id,
+                            "candidate_artifact_id": candidate_artifact_id,
+                            "experiment_id": experiment_id,
+                            "applied_claim_id": _string(applied_claim_id) or None,
+                            "applied_trade_step_id": _string(applied_trade_step_id) or None,
+                            "signal_ts": signal_ts,
+                            "code": resolved_code,
+                        },
+                    }
+                )
+    return records
+
+
+__all__ = [
+    "audit_candidate_semantic_contract",
+    "build_candidate_evidence_records",
+    "build_signal_evidence_records",
+    "inspect_strategy_dsl_support",
+    "normalize_semantic_contract_fields",
+    "synthesize_confidence_contract",
+]
