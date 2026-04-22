@@ -1,4 +1,5 @@
 import { getBffBaseUrl } from './bff-base';
+import { markBffAvailable, markBffUnavailable } from './bff-availability';
 
 /** 仅允许站内相对路径，避免把登录后的跳转交给外部地址。 */
 export function normalizeAppRedirectPath(returnPath?: string | null, fallback = '/market') {
@@ -57,8 +58,10 @@ export async function refreshAuth(): Promise<boolean> {
         credentials: 'include',
         cache: 'no-store',
       });
+      markBffAvailable();
       return resp.ok;
     } catch {
+      markBffUnavailable();
       return false;
     } finally {
       refreshPromise = null;
@@ -77,6 +80,7 @@ export async function probeAuthSession<T = unknown>(): Promise<T | null> {
 
   try {
     let resp = await request();
+    markBffAvailable();
     if (resp.status === 401) {
       const refreshed = await refreshAuth();
       if (!refreshed) {
@@ -84,6 +88,7 @@ export async function probeAuthSession<T = unknown>(): Promise<T | null> {
         return null;
       }
       resp = await request();
+      markBffAvailable();
     }
     if (!resp.ok) {
       if (resp.status === 401) clearLoggedIn();
@@ -91,6 +96,7 @@ export async function probeAuthSession<T = unknown>(): Promise<T | null> {
     }
     return await resp.json() as T;
   } catch {
+    markBffUnavailable();
     return null;
   }
 }

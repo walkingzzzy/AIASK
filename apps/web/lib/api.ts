@@ -1,4 +1,4 @@
-import { refreshAuth, clearLoggedIn, redirectToLogin } from './auth';
+import { refreshAuth, clearLoggedIn, hasLoggedInHint, redirectToLogin } from './auth';
 import { markBffAvailable, markBffUnavailable } from './bff-availability';
 import { getBffBaseUrl } from './bff-base';
 import type { CacheMeta, Envelope } from '@aiask/shared-types';
@@ -137,18 +137,20 @@ async function authedFetchCore(path: string, init?: RequestInit, opts?: AuthFetc
   }
 
   if (resp.status === 401) {
-    const refreshed = await refreshAuth();
-    if (refreshed) {
-      try {
-        const retryResp = await fetch(`${bffBase}${path}`, requestInit);
-        markBffAvailable();
-        return retryResp;
-      } catch (error) {
-        if (isAbortLikeError(error)) {
-          throw buildAbortError();
+    if (opts?.redirectOnUnauthorized !== false || hasLoggedInHint()) {
+      const refreshed = await refreshAuth();
+      if (refreshed) {
+        try {
+          const retryResp = await fetch(`${bffBase}${path}`, requestInit);
+          markBffAvailable();
+          return retryResp;
+        } catch (error) {
+          if (isAbortLikeError(error)) {
+            throw buildAbortError();
+          }
+          markBffUnavailable();
+          throw new Error('数据服务暂不可用');
         }
-        markBffUnavailable();
-        throw new Error('数据服务暂不可用');
       }
     }
     if (opts?.redirectOnUnauthorized === false) {

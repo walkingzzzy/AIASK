@@ -114,3 +114,60 @@ export function EmptyState({
 export function MetaLine({ children }: { children: ReactNode }) {
   return <div className="mt-2 text-text-secondary text-sm">{children}</div>;
 }
+
+export function PageStatusCard({
+  status,
+  title,
+  reason,
+  freshness,
+  primaryAction,
+  secondaryAction,
+  example,
+  className = '',
+}: {
+  status: 'ready' | 'loading' | 'empty' | 'degraded' | 'unavailable';
+  title: string;
+  reason: string;
+  freshness?: string | null;
+  primaryAction?: ReactNode;
+  secondaryAction?: ReactNode;
+  example?: string;
+  className?: string;
+}) {
+  const tone =
+    status === 'unavailable'
+      ? 'border-danger/20 bg-[linear-gradient(180deg,rgba(217,45,32,0.12),rgba(255,255,255,0.52))]'
+      : status === 'degraded'
+        ? 'border-warning/20 bg-[linear-gradient(180deg,rgba(245,158,11,0.14),rgba(255,255,255,0.52))]'
+        : 'border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.68),rgba(244,249,255,0.48))]';
+  const label =
+    status === 'unavailable'
+      ? '服务不可用'
+      : status === 'degraded'
+        ? '降级运行'
+        : status === 'empty'
+          ? '等待输入'
+          : status === 'loading'
+            ? '加载中'
+            : '已就绪';
+
+  return (
+    <div className={`rounded-[24px] border p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-xl ${tone} ${className}`}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{label}</div>
+          <div className="mt-2 text-base font-semibold text-text-primary">{title}</div>
+          <div className="mt-2 text-sm leading-7 text-text-secondary">{reason}</div>
+          {example ? <div className="mt-2 text-xs text-text-muted">示例：{example}</div> : null}
+          {freshness ? <div className="mt-2 text-xs text-text-secondary">数据新鲜度：{freshness}</div> : null}
+        </div>
+        {(primaryAction || secondaryAction) ? (
+          <div className="flex flex-wrap gap-2">
+            {primaryAction}
+            {secondaryAction}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

@@ -316,16 +316,8 @@
                 "page_size": universe_page_size,
             }
 
-        hot_sectors = {
-            str(item).strip()
-            for item in list(snapshot.get("hot_sectors") or [])
-            if str(item).strip()
-        }
-        cold_sectors = {
-            str(item).strip()
-            for item in list(snapshot.get("cold_sectors") or [])
-            if str(item).strip()
-        }
+        hot_sectors = set(self._normalize_sector_labels(snapshot.get("hot_sectors") or [], limit=12))
+        cold_sectors = set(self._normalize_sector_labels(snapshot.get("cold_sectors") or [], limit=12))
         active_factors = self._normalize_factor_names(snapshot)
         stock_family_allocation = self._normalize_stock_family_allocation(snapshot)
         candidate_rows = [row for row in rows if str(row.get("code") or "").strip()]
@@ -347,30 +339,31 @@
 
         family_preference_order = self._base_family_order(snapshot)
         family_preference_source = self._family_preference_source(snapshot)
-        ranked_rows = sorted(
+        scoring_context = self._build_priority_scoring_context(
             filtered_rows,
-            key=lambda row: self._row_priority_score(
+            snapshot=snapshot,
+            hot_sectors=hot_sectors,
+            cold_sectors=cold_sectors,
+            active_factors=active_factors,
+            stock_family_allocation=stock_family_allocation,
+        )
+        ranked_entries: list[dict[str, Any]] = []
+        for row in filtered_rows:
+            code = str(row.get("code") or "").strip()
+            if not code:
+                continue
+            allocation_item = dict(stock_family_allocation.get(code) or {})
+            component_scores = self._row_priority_components(
                 row,
                 snapshot=snapshot,
                 hot_sectors=hot_sectors,
                 cold_sectors=cold_sectors,
                 active_factors=active_factors,
-                allocation_item=stock_family_allocation.get(str(row.get("code") or "").strip()),
-            ),
-            reverse=True,
-        )
-
-        effective_generation_limit = self._effective_generation_limit()
-        effective_task_budget = self._effective_task_budget()
-        row_plans: list[dict[str, Any]] = []
-        max_family_depth = 0
-        allocation_applied_count = 0
-        for stock_rank, row in enumerate(ranked_rows, 1):
-            code = str(row.get("code") or "").strip()
-            if not code:
-                continue
-            allocation_item = dict(stock_family_allocation.get(code) or {})
-            row_score = self._row_priority_score(
+                allocation_item=allocation_item,
+                scoring_context=scoring_context,
+            )
+            row_score = round(sum(self._safe_float(value) for value in component_scores.values()), 4)
+            family_plans = self._family_plans_for_row(
                 row,
                 snapshot=snapshot,
                 hot_sectors=hot_sectors,
@@ -378,15 +371,66 @@
                 active_factors=active_factors,
                 allocation_item=allocation_item,
             )
+            family_candidates = [
+                str(plan.get("family") or "").strip().lower()
+                for plan in list(family_plans or [])
+                if str(plan.get("family") or "").strip()
+            ]
+            ranked_entries.append(
+                {
+                    "row": row,
+                    "code": code,
+                    "allocation_item": allocation_item,
+                    "component_scores": component_scores,
+                    "row_score": row_score,
+                    "family_plans": family_plans,
+                    "family_candidates": family_candidates,
+                }
+            )
+        ranked_entries.sort(
+            key=lambda entry: (
+                -self._safe_float(entry.get("row_score")),
+                -self._safe_float(dict(entry.get("component_scores") or {}).get("valuation_score")),
+                -self._safe_float(dict(entry.get("component_scores") or {}).get("factor_alignment_score")),
+                -self._safe_float(dict(entry.get("component_scores") or {}).get("allocation_score")),
+                -self._safe_float(dict(entry.get("component_scores") or {}).get("size_score")),
+                str(entry.get("code") or ""),
+            )
+        )
+
+        effective_generation_limit = self._effective_generation_limit()
+        effective_task_budget = self._effective_task_budget()
+        row_plans: list[dict[str, Any]] = []
+        full_market_score_rows: list[dict[str, Any]] = []
+        max_family_depth = 0
+        allocation_applied_count = 0
+        for stock_rank, entry in enumerate(ranked_entries, 1):
+            row = dict(entry.get("row") or {})
+            code = str(entry.get("code") or "").strip()
+            allocation_item = dict(entry.get("allocation_item") or {})
+            component_scores = dict(entry.get("component_scores") or {})
+            row_score = round(self._safe_float(entry.get("row_score")), 4)
+            family_plans = [dict(plan or {}) for plan in list(entry.get("family_plans") or [])]
+            family_candidates = [
+                str(item or "").strip().lower()
+                for item in list(entry.get("family_candidates") or [])
+                if str(item or "").strip()
+            ]
+            full_market_score_rows.append(
+                {
+                    "code": code,
+                    "name": str(row.get("name") or code).strip() or code,
+                    "industry": str(row.get("industry") or row.get("sector") or "").strip() or None,
+                    "market_cap": self._safe_float(row.get("market_cap")),
+                    "composite_score": row_score,
+                    "component_scores": component_scores,
+                    "family_candidates": family_candidates,
+                    "eligible": True,
+                    "rank": stock_rank,
+                }
+            )
             row_tasks: list[dict[str, Any]] = []
-            for family_plan in self._family_plans_for_row(
-                row,
-                snapshot=snapshot,
-                hot_sectors=hot_sectors,
-                cold_sectors=cold_sectors,
-                active_factors=active_factors,
-                allocation_item=allocation_item,
-            ):
+            for family_plan in family_plans:
                 family = str(family_plan.get("family") or "").strip().lower()
                 if not family:
                     continue
@@ -555,6 +599,19 @@
             if eligible_stock_count
             else 0.0
         )
+        full_market_topn = build_full_market_topn_payload(
+            as_of_date=str(snapshot.get("date") or snapshot.get("snapshot_date") or "").strip() or None,
+            universe_count=len(rows),
+            eligible_count=eligible_stock_count,
+            score_rows=full_market_score_rows,
+            score_contract_version=str(scoring_context.get("score_contract_version") or ""),
+            active_factors=list(scoring_context.get("active_factors") or []),
+            hot_sectors=sorted(set(scoring_context.get("hot_sectors") or set())),
+            cold_sectors=sorted(set(scoring_context.get("cold_sectors") or set())),
+            stock_family_allocation_source_mode=scoring_context.get("allocation_source_mode"),
+            stock_family_allocation_avg_priority=scoring_context.get("allocation_avg_priority"),
+            selection_method="deterministic_bulk_priority_v2",
+        )
 
         report = {
             "summary": {
@@ -614,8 +671,26 @@
                 "min_history_bars": min_history_bars,
                 "history_prefilter_applied": history_prefilter_applied,
                 "insufficient_history_filtered_count": insufficient_history_filtered_count,
+                "full_market_topn_contract_version": full_market_topn.get("contract_version"),
+                "full_market_topn_available": bool(full_market_topn.get("available")),
+                "full_market_topn_universe_count": int(full_market_topn.get("universe_count") or 0),
+                "full_market_topn_eligible_count": int(full_market_topn.get("eligible_count") or 0),
+                "full_market_topn_score_row_count": int(full_market_topn.get("score_row_count") or 0),
+                "full_market_topn_n": int(full_market_topn.get("topn_n") or 0),
+                "full_market_topn_average_score": full_market_topn.get("average_topn_score"),
+                "full_market_topn_constituents_preview": [
+                    {
+                        "code": item.get("code"),
+                        "name": item.get("name"),
+                        "industry": item.get("industry"),
+                        "composite_score": item.get("composite_score"),
+                    }
+                    for item in list(full_market_topn.get("constituents") or [])[:5]
+                ],
             },
             "tasks": tasks,
+            "full_market_topn": full_market_topn,
+            "full_market_score_rows": full_market_score_rows,
         }
         task_artifact = build_task_artifact(
             {

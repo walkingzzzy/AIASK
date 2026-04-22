@@ -125,6 +125,7 @@ class MatchingEngine:
         self.scan_count += 1
         self.last_scan = datetime.now()
         last_processed_order_id = None
+        touched_accounts: set[str] = set()
 
         async with db.acquire() as conn:
             pending = await conn.fetch(
@@ -133,6 +134,9 @@ class MatchingEngine:
 
         for order in pending:
             try:
+                account_id = str(order.get('account_id') or '').strip()
+                if account_id:
+                    touched_accounts.add(account_id)
                 await self._try_match_order(db, dict(order))
                 last_processed_order_id = order.get('id')
             except Exception as e:
@@ -143,6 +147,13 @@ class MatchingEngine:
 
         # 风控自动处置
         await self._run_risk_executor(db)
+        if touched_accounts:
+            try:
+                from ..tools.managers._paper_trading_manager_support import _reconcile_account_state
+                for account_id in sorted(touched_accounts):
+                    await _reconcile_account_state(db, account_id, refresh_prices=False, force=False)
+            except Exception as e:
+                logger.warning("[MatchingEngine] reconcile after scan failed: %s", e, exc_info=True)
         await self._update_scan_state(db, last_processed_order_id=last_processed_order_id)
 
     async def _try_match_order(self, db, order: dict):

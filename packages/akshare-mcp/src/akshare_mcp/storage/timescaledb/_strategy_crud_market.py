@@ -21,9 +21,11 @@ class _StrategyCrudMarketMixin:
                        (snapshot_date, fear_greed_index, fg_components, factor_ic, factor_ic_trend, factor_research,
                         north_fund_3d_net, margin_5d_change_pct, hot_sectors, cold_sectors,
                         listed_count, category_counts, summary, completeness, sources,
+                        parameter_distribution_samples, parameter_distribution_summary,
                         failure_reasons, missing_fields, degraded)
                        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9::jsonb, $10::jsonb,
-                               $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18)
+                               $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb,
+                               $18::jsonb, $19::jsonb, $20)
                        ON CONFLICT (snapshot_date) DO UPDATE SET
                         fear_greed_index = EXCLUDED.fear_greed_index,
                         fg_components = EXCLUDED.fg_components,
@@ -39,6 +41,8 @@ class _StrategyCrudMarketMixin:
                         summary = EXCLUDED.summary,
                         completeness = EXCLUDED.completeness,
                         sources = EXCLUDED.sources,
+                        parameter_distribution_samples = EXCLUDED.parameter_distribution_samples,
+                        parameter_distribution_summary = EXCLUDED.parameter_distribution_summary,
                         failure_reasons = EXCLUDED.failure_reasons,
                         missing_fields = EXCLUDED.missing_fields,
                         degraded = EXCLUDED.degraded
@@ -58,6 +62,8 @@ class _StrategyCrudMarketMixin:
                     json.dumps(data.get("summary") or {}, ensure_ascii=False, default=str),
                     json.dumps(data.get("completeness") or {}, ensure_ascii=False, default=str),
                     json.dumps(data.get("sources") or {}, ensure_ascii=False, default=str),
+                    json.dumps(data.get("parameter_distribution_samples") or [], ensure_ascii=False, default=str),
+                    json.dumps(data.get("parameter_distribution_summary") or {}, ensure_ascii=False, default=str),
                     json.dumps(data.get("failure_reasons") or [], ensure_ascii=False, default=str),
                     json.dumps(data.get("missing_fields") or [], ensure_ascii=False, default=str),
                     bool(data.get("degraded")),
@@ -65,9 +71,25 @@ class _StrategyCrudMarketMixin:
 
         def _decode_daily_snapshot(self, row: dict) -> dict:
             result = dict(row)
-            for key in ("fg_components", "factor_ic", "factor_ic_trend", "factor_research", "category_counts", "summary", "completeness", "sources"):
+            for key in (
+                "fg_components",
+                "factor_ic",
+                "factor_ic_trend",
+                "factor_research",
+                "category_counts",
+                "summary",
+                "completeness",
+                "sources",
+                "parameter_distribution_summary",
+            ):
                 result[key] = self._decode_json_field(result.get(key), {})
-            for key in ("hot_sectors", "cold_sectors", "failure_reasons", "missing_fields"):
+            for key in (
+                "hot_sectors",
+                "cold_sectors",
+                "parameter_distribution_samples",
+                "failure_reasons",
+                "missing_fields",
+            ):
                 result[key] = self._decode_json_field(result.get(key), [])
             fg_level = result.get("fg_level")
             if not fg_level:

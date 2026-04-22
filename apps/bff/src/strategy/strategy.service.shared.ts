@@ -68,6 +68,10 @@ export function buildFactoryRunsCacheKey(limit?: number) {
   return `strategy:factory:runs:${Math.max(1, Math.min(200, Number(limit) || 20))}`;
 }
 
+export function buildFactoryStatusCacheKey() {
+  return 'strategy:factory:status';
+}
+
 export function buildFactoryRunDetailCacheKey(runId: string) {
   return `strategy:factory:run:${runId}`;
 }

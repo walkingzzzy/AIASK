@@ -1,13 +1,14 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import PaperTradingActivity from '@/app/paper-trading/components/paper-trading-activity';
 import PaperTradingAnalytics from '@/app/paper-trading/components/paper-trading-analytics';
 import PaperTradingHero from '@/app/paper-trading/components/paper-trading-hero';
 import PaperTradingOrderWorkspace from '@/app/paper-trading/components/paper-trading-order-workspace';
 import PaperTradingSummarySidebar from '@/app/paper-trading/components/paper-trading-summary-sidebar';
-import ResultWorkbench from '@/components/result-workbench';
-import { LoadingState, UnavailableState } from '@/components/status-state';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { LoadingState, PageStatusCard } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, TabBar } from '@/components/ui';
@@ -44,6 +45,7 @@ import type {
   PaperTradingPlaceOrderInput,
   PaperTradingPosition,
   PaperTradingPositionsResponse,
+  PaperTradingReconcileResponse,
   PaperTradingRouteExecutionInput,
   PaperTradingStatusProbe,
   PaperTradingSummary,
@@ -187,6 +189,10 @@ export default function PaperTradingPage() {
     invalidates: [[...apiKeys.paper()]],
     successToast: false,
   });
+  const reconcileApi = useApiMutation<Record<string, unknown>>({
+    invalidates: [[...apiKeys.paper()]],
+    successToast: false,
+  });
   const autoRefreshPricesApi = useApiMutation<Record<string, unknown>>({
     invalidates: [[...apiKeys.paper()]],
     successToast: false,
@@ -196,6 +202,21 @@ export default function PaperTradingPage() {
   // 2 write mutations — invalidate all paper queries on success
   const placeApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
   const cancelApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
+
+  const refreshPaperData = useCallback(async () => {
+    await Promise.allSettled([
+      profileQ.refetch(),
+      accountsQ.refetch(),
+      matchStatusQ.refetch(),
+      navStatusQ.refetch(),
+      summaryQ.refetch(),
+      positionsQ.refetch(),
+      ordersQ.refetch(),
+      pendingQ.refetch(),
+      navQ.refetch(),
+      performanceQ.refetch(),
+    ]);
+  }, [accountsQ, matchStatusQ, navQ, navStatusQ, ordersQ, pendingQ, performanceQ, positionsQ, profileQ, summaryQ]);
 
   const accounts = useMemo(
     () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as PaperTradingAccount[],
@@ -247,6 +268,10 @@ export default function PaperTradingPage() {
   const positions = positionsQ.data?.positions ?? [];
   const trades = ordersQ.data?.orders ?? [];
   const pending = pendingQ.data?.orders ?? [];
+  const reconciliation = useMemo(
+    () => (summaryQ.data?.reconciliation ?? positionsQ.data?.reconciliation ?? null) as PaperTradingReconcileResponse | null,
+    [positionsQ.data?.reconciliation, summaryQ.data?.reconciliation],
+  );
   const navData = useMemo(() => (navQ.data?.nav ?? []) as PaperTradingNavPoint[], [navQ.data?.nav]);
   const performanceData = useMemo(
     () => (performanceQ.data?.dailyReturns ?? []) as PaperTradingPerformancePoint[],
@@ -260,8 +285,12 @@ export default function PaperTradingPage() {
     const notes: string[] = [];
     if (!matchOk) notes.push(`撮合状态未确认：${readStatusProbeNote(matchStatus, '请检查撮合服务或稍后重试')}`);
     if (!navOk) notes.push(`净值状态未确认：${readStatusProbeNote(navStatus, '请刷新价格或检查净值服务')}`);
+    if (reconciliation?.reconciled) {
+      const reason = reconciliation.reasons?.length ? reconciliation.reasons.join('，') : '检测到账本漂移并已自动校准';
+      notes.push(`账本已校准：${reason}`);
+    }
     return notes;
-  }, [matchOk, matchStatus, navOk, navStatus]);
+  }, [matchOk, matchStatus, navOk, navStatus, reconciliation?.reasons, reconciliation?.reconciled]);
   const quantityValue = Number.parseInt(quantity, 10);
   const limitPriceValue = price.trim() ? Number(price) : null;
   const stopPriceValue = stopPrice.trim() ? Number(stopPrice) : null;
@@ -358,7 +387,7 @@ export default function PaperTradingPage() {
     pendingQ.error ||
     navQ.error ||
     performanceQ.error;
-  const error = pageError || refreshPricesApi.error;
+  const error = pageError || refreshPricesApi.error || reconcileApi.error;
   const accountIdRef = useRef(accountId);
   const autoRefreshBusyRef = useRef(false);
   const manualRefreshPendingRef = useRef(refreshPricesApi.isPending);
@@ -394,6 +423,25 @@ export default function PaperTradingPage() {
       setFormError(err instanceof Error ? err.message : String(err));
     }
   }, [accountId, refreshPricesApi, toast]);
+
+  const handleReconcileLedger = useCallback(async () => {
+    setFormError(null);
+    setFormStatus('正在校准账本与持仓快照...');
+    setLastActionResult(null);
+    try {
+      await reconcileApi.triggerAsync(
+        '/paper-trading/reconcile',
+        { method: 'POST' },
+        accountId ? { account_id: accountId, refresh_prices: true } : { refresh_prices: true },
+      );
+      toast('账本已完成校准', 'success');
+      setFormStatus(null);
+      setLastActionResult('账本已完成校准');
+    } catch (err) {
+      setFormStatus(null);
+      setFormError(err instanceof Error ? err.message : String(err));
+    }
+  }, [accountId, reconcileApi, toast]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -656,15 +704,7 @@ export default function PaperTradingPage() {
         scope: 'page' as const,
         pageKey: 'paper-trading',
         run: async () => {
-          await Promise.allSettled([
-            accountsQ.refetch(),
-            summaryQ.refetch(),
-            positionsQ.refetch(),
-            ordersQ.refetch(),
-            pendingQ.refetch(),
-            navQ.refetch(),
-            performanceQ.refetch(),
-          ]);
+          await refreshPaperData();
           return { message: '已刷新模拟盘数据' };
         },
       },
@@ -681,6 +721,18 @@ export default function PaperTradingPage() {
         },
       },
       {
+        id: 'paper.reconcile',
+        label: '校准账本',
+        description: '基于成交账本重建持仓和账户快照',
+        keywords: ['校准', '对账', '账本'],
+        scope: 'page' as const,
+        pageKey: 'paper-trading',
+        run: async () => {
+          await handleReconcileLedger();
+          return { message: '已触发账本校准' };
+        },
+      },
+      {
         id: 'paper.toggle-compliance',
         label: useComplianceCheck ? '关闭合规检查' : '开启合规检查',
         description: '切换下单前的合规风控检查',
@@ -693,21 +745,26 @@ export default function PaperTradingPage() {
         },
       },
     ],
-    [accountsQ, handleRefreshPrices, navQ, ordersQ, pendingQ, performanceQ, positionsQ, summaryQ, useComplianceCheck],
+    [handleReconcileLedger, handleRefreshPrices, refreshPaperData, useComplianceCheck],
   );
 
   usePageActions(pageActions);
   const paperSummary = `账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。${linkedStrategyName ? ` 当前策略 ${linkedStrategyName}。` : ''}`;
   const paperResult = buildLocalResultContract({
     summary: paperSummary,
+    status: showAccountBootstrap ? 'empty' : (!matchOk || !navOk ? 'degraded' : 'ready'),
     availableViews: positions.length > 1 || pending.length > 1 || trades.length > 1 ? ['compare'] : [],
     pageActions,
-    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.toggle-compliance'],
+    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.reconcile', 'paper.toggle-compliance'],
     recommendedLinks: [
       { id: 'paper-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
       { id: 'paper-open-performance-link', label: '绩效中心', href: '/performance' },
       { id: 'paper-open-risk-link', label: '风险中心', href: '/risk' },
       { id: 'paper-open-strategy-market-link', label: '策略超市', href: linkedStrategyId ? `/strategy-market/${encodeURIComponent(linkedStrategyId)}` : '/strategy-market' },
+    ],
+    recommendedNextActions: [
+      showAccountBootstrap ? '先完成第一笔真实模拟委托，再回来看账户分析和活动记录。' : '先确认账户健康和挂单状态，再决定是否继续下单。',
+      !matchOk || !navOk ? '撮合或净值未完全正常时，优先刷新价格或校准账本。' : '账户健康正常时，再进入绩效或风险闭环。',
     ],
     evidence: [
       { label: '账户', value: accountId || 'default' },
@@ -717,6 +774,19 @@ export default function PaperTradingPage() {
       { label: '总资产', value: fmtNum(totalValue, 2) },
     ],
     riskNotes: [...statusNotes, ...riskHints.slice(0, 3), ...(error ? [error] : [])],
+    emptyState: showAccountBootstrap ? {
+      title: '账户还没有形成交易轨迹',
+      description: '先输入真实标的和委托参数，再提交首笔模拟交易。',
+      example: 'code=600519，direction=buy，quantity=100',
+    } : null,
+    degradedState: !matchOk || !navOk ? {
+      title: '交易链路当前未完全就绪',
+      description: '先刷新价格或校准账本，再继续解释持仓和绩效。',
+      reason: [
+        matchOk ? null : readStatusProbeNote(matchStatus, '撮合服务尚未就绪'),
+        navOk ? null : readStatusProbeNote(navStatus, '净值服务尚未就绪'),
+      ].filter((item): item is string => Boolean(item)).join('；'),
+    } : null,
     freshness: summaryQ.dataUpdatedAt ? { updatedAt: new Date(summaryQ.dataUpdatedAt).toISOString(), label: '模拟盘快照' } : null,
     platformMeta: {
       sourceTool: 'paper-trading',
@@ -737,6 +807,8 @@ export default function PaperTradingPage() {
     pageKey: 'paper-trading',
     title: personalStrategyMode && linkedStrategyName ? `模拟交易 · ${linkedStrategyName}` : '模拟交易',
     summary: paperSummary,
+    primaryGoal: '先确认账户健康和订单输入，再把交易动作落到真实模拟链路里。',
+    requiredInputs: ['accountId', 'stockCode', 'direction', 'quantity'],
     stockCode: trimmedCode || undefined,
     objectType: 'portfolio',
     objectId: accountId || 'default',
@@ -754,11 +826,14 @@ export default function PaperTradingPage() {
       '总结账户表现、持仓和待处理订单',
       '把当前模拟盘整理成下一步操作清单',
     ],
+    recommendedNextActions: paperResult.recommendedNextActions,
     recommendedActions: paperResult.recommendedActions ?? [],
     recommendedLinks: paperResult.recommendedLinks ?? [],
     evidenceSummary: evidenceToSummary(paperResult.evidence),
     riskNotes: paperResult.riskNotes ?? [],
     freshness: paperResult.freshness ?? null,
+    dataFreshness: paperResult.freshness?.updatedAt ?? null,
+    degradedReason: paperResult.riskNotes ?? [],
     raw: {
       accountId: accountId || 'default',
       stockCode: trimmedCode || null,
@@ -860,10 +935,45 @@ export default function PaperTradingPage() {
           personalStrategyMode={personalStrategyMode}
           onRefreshPrices={() => void handleRefreshPrices()}
           refreshPricesPending={refreshPricesApi.isPending}
+          onReconcileLedger={() => void handleReconcileLedger()}
+          reconcilePending={reconcileApi.isPending}
         />
       </div>
 
-      <ResultWorkbench pageKey="paper-trading" title="模拟盘结果工作台" result={paperResult} />
+      <ProgressiveWorkbenchSection
+        pageKey="paper-trading"
+        title="模拟盘结果工作台"
+        result={paperResult}
+        summaryMode="strip"
+      />
+
+      {showAccountBootstrap || !matchOk || !navOk ? (
+        <PageStatusCard
+          status={showAccountBootstrap ? 'empty' : 'degraded'}
+          title={showAccountBootstrap ? '先完成第一笔模拟交易' : '交易链路当前未完全就绪'}
+          reason={
+            showAccountBootstrap
+              ? '当前还没有持仓、挂单、成交和净值轨迹，请先提交首笔真实模拟委托。'
+              : [
+                  matchOk ? null : readStatusProbeNote(matchStatus, '撮合服务尚未就绪'),
+                  navOk ? null : readStatusProbeNote(navStatus, '净值服务尚未就绪'),
+                ].filter((item): item is string => Boolean(item)).join('；')
+          }
+          freshness={summaryQ.dataUpdatedAt ? new Date(summaryQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
+          primaryAction={(
+            <button type="button" onClick={() => void handleRefreshPrices()} className="action-chip cursor-pointer text-sm text-text-primary">
+              刷新价格
+            </button>
+          )}
+          secondaryAction={(
+            <button type="button" onClick={() => void handleReconcileLedger()} className="action-chip cursor-pointer text-sm text-text-primary">
+              校准账本
+            </button>
+          )}
+          example="code=600519，direction=buy，quantity=100"
+          className="mb-4"
+        />
+      ) : null}
 
       {collapseToTabs ? (
         <div className="mb-4">
@@ -920,6 +1030,8 @@ export default function PaperTradingPage() {
           navStatusLabel={navStatusLabel}
           onRefreshPrices={() => void handleRefreshPrices()}
           refreshPricesPending={refreshPricesApi.isPending}
+          onReconcileLedger={() => void handleReconcileLedger()}
+          reconcilePending={reconcileApi.isPending}
           accounts={accounts}
           accountId={accountId}
           onAccountChange={setAccountId}
@@ -1050,7 +1162,21 @@ export default function PaperTradingPage() {
   if (pageLoading && !pageError && !summaryQ.data) {
     return (
       <PageContainer>
-        <LoadingState text="正在加载模拟交易账户、持仓与绩效数据..." />
+        <div className="space-y-3">
+          <PageStatusCard
+            status="loading"
+            title="正在准备模拟交易工作区"
+            reason="账户、挂单、持仓、净值和绩效正在同步。若停留过久，可以主动刷新；如果只是先看机会，也可以先回行情页继续观察。"
+            primaryAction={(
+              <button type="button" onClick={() => void refreshPaperData()} className="action-chip cursor-pointer text-sm text-text-primary">
+                刷新模拟盘
+              </button>
+            )}
+            secondaryAction={<Link href="/market" className="action-chip text-sm no-underline text-inherit">先去行情页</Link>}
+            example="code=600519，direction=buy，quantity=100"
+          />
+          <LoadingState text="正在加载模拟交易账户、持仓与绩效数据..." />
+        </div>
       </PageContainer>
     );
   }
@@ -1058,23 +1184,18 @@ export default function PaperTradingPage() {
   if (pageError) {
     return (
       <PageContainer>
-        <UnavailableState
-          text="模拟交易主链路暂不可用"
-          hint={pageError}
-          onRetry={() => {
-            void Promise.allSettled([
-              profileQ.refetch(),
-              accountsQ.refetch(),
-              matchStatusQ.refetch(),
-              navStatusQ.refetch(),
-              summaryQ.refetch(),
-              positionsQ.refetch(),
-              ordersQ.refetch(),
-              pendingQ.refetch(),
-              navQ.refetch(),
-              performanceQ.refetch(),
-            ]);
-          }}
+        <PageStatusCard
+          status="unavailable"
+          title="模拟交易主链路暂不可用"
+          reason={pageError}
+          freshness={summaryQ.dataUpdatedAt ? new Date(summaryQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
+          primaryAction={(
+            <button type="button" onClick={() => void refreshPaperData()} className="action-chip cursor-pointer text-sm text-text-primary">
+              重试加载
+            </button>
+          )}
+          secondaryAction={<Link href="/market" className="action-chip text-sm no-underline text-inherit">先去行情页</Link>}
+          example="account_id=default，strategy_id=123"
         />
       </PageContainer>
     );

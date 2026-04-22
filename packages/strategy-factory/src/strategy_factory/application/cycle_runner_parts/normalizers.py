@@ -462,6 +462,8 @@
 
             collector = factory_pkg.DataCollector()
             snapshot = await collector.collect(db)
+            snapshot["factory_run_id"] = results["run_id"]
+            snapshot["trace_id"] = trace_id
             # P2-D：将调度器累积的 family 历史表现注入 snapshot
             _family_feedback = dict(getattr(scheduler, "_family_gate_feedback", {}) or {})
             if _family_feedback:
@@ -801,6 +803,16 @@
 
             autonomy_stage = dict(generation.autonomy_stage or {"generated_count": 0})
             autonomy_experiments = list(generation.experiments or [])
+            full_market_topn = dict(generation.full_market_topn or {})
+            full_market_score_rows = [
+                dict(item or {})
+                for item in list(generation.full_market_score_rows or [])
+                if isinstance(item, dict)
+            ]
+            if full_market_topn:
+                results["full_market_topn"] = full_market_topn
+            if full_market_score_rows:
+                results["_full_market_score_rows"] = full_market_score_rows
             autonomy_stage_status = StageStatus.COMPLETED
             if generation.autonomy_error:
                 autonomy_stage_status = StageStatus.FAILED
@@ -957,6 +969,10 @@
                 vector_summary=vector_summary,
                 elapsed=elapsed,
             )
+            results["research_window"] = build_research_window_status(results["summary"])
+            results["summary"]["research_window"] = dict(results.get("research_window") or {})
+            if full_market_topn:
+                results["summary"]["full_market_topn"] = full_market_topn
             results["summary"]["spawn_policy_version"] = (
                 dict(spawn_report.get("summary") or {}).get("policy_version")
             )

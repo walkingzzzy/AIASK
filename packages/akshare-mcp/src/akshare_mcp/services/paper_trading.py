@@ -607,9 +607,9 @@ class TradeLogger:
 
 
 class PaperTradingRepository:
-    """模拟交易持久化仓库 — 双写模式 + 进程重启恢复。
+    """模拟交易持久化仓库 — DB-first cache + 进程重启恢复。
 
-    内存操作完成后异步写入 DB；启动时从 DB 加载 active 账户状态。
+    DB 是唯一事实源；内存只做热缓存与恢复。
     """
 
     def __init__(self):
@@ -618,6 +618,55 @@ class PaperTradingRepository:
         self._pending_orders: Dict[str, List[Order]] = {}     # account_id -> [Order]
         self._loaded = False
 
+    async def refresh_account_from_db(self, account_id: str):
+        """按账户刷新内存缓存，DB 始终优先。"""
+        from ..storage import get_db
+        db = get_db()
+
+        async with db.acquire() as conn:
+            account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+            if not account:
+                self._accounts.pop(account_id, None)
+                self._positions.pop(account_id, None)
+                self._pending_orders.pop(account_id, None)
+                return None
+
+            self._accounts[account_id] = dict(account)
+            positions = await conn.fetch(
+                "SELECT * FROM paper_positions WHERE account_id=$1",
+                account_id,
+            )
+            self._positions[account_id] = {}
+            for row in positions:
+                pos = Position(row['stock_code'])
+                pos.quantity = float(row.get('quantity') or 0)
+                pos.avg_cost = float(row.get('cost_price') or 0)
+                self._positions[account_id][row['stock_code']] = pos
+
+            orders = await conn.fetch(
+                "SELECT * FROM paper_orders WHERE account_id=$1 AND status IN ('pending','submitted')",
+                account_id,
+            )
+            self._pending_orders[account_id] = []
+            for row in orders:
+                order = Order(
+                    symbol=row.get('code') or row.get('stock_code', ''),
+                    side=OrderSide.BUY if row.get('direction') == 'buy' else OrderSide.SELL,
+                    order_type=OrderType(row.get('order_type', 'limit')),
+                    quantity=float(row.get('shares') or 0),
+                    price=float(row.get('price') or 0) if row.get('price') else None,
+                    stop_price=float(row.get('stop_price') or 0) if row.get('stop_price') else None,
+                )
+                order.order_id = str(row['id'])
+                order.status = OrderStatus(row.get('status', 'pending'))
+                self._pending_orders[account_id].append(order)
+
+        return {
+            'account_id': account_id,
+            'positions': len(self._positions.get(account_id, {})),
+            'pending_orders': len(self._pending_orders.get(account_id, [])),
+        }
+
     async def restore_from_db(self):
         """进程启动时从 DB 恢复所有 active 账户的持仓和 pending 订单到内存"""
         from ..storage import get_db
@@ -625,39 +674,10 @@ class PaperTradingRepository:
 
         async with db.acquire() as conn:
             accounts = await conn.fetch("SELECT * FROM paper_accounts")
-            for acct in accounts:
-                aid = acct['id']
-                self._accounts[aid] = dict(acct)
+            account_ids = [str(acct['id']) for acct in accounts]
 
-                # 恢复持仓
-                positions = await conn.fetch(
-                    "SELECT * FROM paper_positions WHERE account_id=$1", aid
-                )
-                self._positions[aid] = {}
-                for p in positions:
-                    pos = Position(p['stock_code'])
-                    pos.quantity = float(p.get('quantity') or 0)
-                    pos.avg_cost = float(p.get('cost_price') or 0)
-                    self._positions[aid][p['stock_code']] = pos
-
-                # 恢复 pending 订单
-                orders = await conn.fetch(
-                    "SELECT * FROM paper_orders WHERE account_id=$1 AND status IN ('pending','submitted')",
-                    aid,
-                )
-                self._pending_orders[aid] = []
-                for o in orders:
-                    order = Order(
-                        symbol=o.get('code') or o.get('stock_code', ''),
-                        side=OrderSide.BUY if o.get('direction') == 'buy' else OrderSide.SELL,
-                        order_type=OrderType(o.get('order_type', 'limit')),
-                        quantity=float(o.get('shares') or 0),
-                        price=float(o.get('price') or 0) if o.get('price') else None,
-                        stop_price=float(o.get('stop_price') or 0) if o.get('stop_price') else None,
-                    )
-                    order.order_id = str(o['id'])
-                    order.status = OrderStatus(o.get('status', 'pending'))
-                    self._pending_orders[aid].append(order)
+        for account_id in account_ids:
+            await self.refresh_account_from_db(account_id)
 
         self._loaded = True
         return {
@@ -676,7 +696,7 @@ class PaperTradingRepository:
         return self._pending_orders.get(account_id, [])
 
     async def save_position_to_db(self, account_id: str, position: Position):
-        """将内存持仓异步写入 DB"""
+        """持仓落库后再从 DB 回刷缓存，避免内存领先于持久化状态。"""
         from ..storage import get_db
         db = get_db()
         async with db.acquire() as conn:
@@ -693,9 +713,10 @@ class PaperTradingRepository:
                     "DELETE FROM paper_positions WHERE account_id=$1 AND stock_code=$2",
                     account_id, position.symbol,
                 )
+        await self.refresh_account_from_db(account_id)
 
     async def save_order_to_db(self, account_id: str, order: Order):
-        """将订单状态异步写入 DB"""
+        """订单状态落库后回刷缓存。"""
         from ..storage import get_db
         db = get_db()
         async with db.acquire() as conn:
@@ -703,6 +724,19 @@ class PaperTradingRepository:
                 """UPDATE paper_orders SET status=$1, updated_at=NOW() WHERE id=$2""",
                 order.status.value, order.order_id,
             )
+        await self.refresh_account_from_db(account_id)
+
+    async def reconcile_from_db(self, account_id: Optional[str] = None):
+        """显式从 DB 重新物化缓存，供账本校准后使用。"""
+        if account_id:
+            result = await self.refresh_account_from_db(account_id)
+            self._loaded = True
+            return {
+                'accounts': 1 if result else 0,
+                'positions': len(self._positions.get(account_id, {})),
+                'pending_orders': len(self._pending_orders.get(account_id, [])),
+            }
+        return await self.restore_from_db()
 
     @property
     def is_loaded(self) -> bool:
@@ -726,4 +760,3 @@ def get_paper_trading_repository() -> PaperTradingRepository:
     if _repository is None:
         _repository = PaperTradingRepository()
     return _repository
-

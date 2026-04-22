@@ -21,10 +21,18 @@ function deriveWsUrl(bffBaseUrl: string) {
 export const dynamic = 'force-dynamic';
 
 export function GET() {
-  const bffBaseUrl = process.env.BFF_BASE_URL?.trim() || process.env.NEXT_PUBLIC_BFF_BASE_URL?.trim() || FALLBACK_BFF_BASE_URL;
-  const wsUrl = process.env.WS_URL?.trim() || process.env.NEXT_PUBLIC_WS_URL?.trim() || deriveWsUrl(bffBaseUrl);
+  const directBffBaseUrl =
+    process.env.BFF_BASE_URL?.trim() || process.env.NEXT_PUBLIC_BFF_BASE_URL?.trim() || FALLBACK_BFF_BASE_URL;
+  const wsUrl = process.env.WS_URL?.trim() || process.env.NEXT_PUBLIC_WS_URL?.trim() || deriveWsUrl(directBffBaseUrl);
+  const bffOrigin = (() => {
+    try {
+      return new URL(directBffBaseUrl).origin;
+    } catch {
+      return 'http://localhost:3001';
+    }
+  })();
 
-  return new Response(jsonScript({ bffBaseUrl, wsUrl }), {
+  return new Response(jsonScript({ bffBaseUrl: '/api/bff', bffOrigin, wsUrl }), {
     headers: {
       'content-type': 'application/javascript; charset=utf-8',
       'cache-control': 'no-store, must-revalidate',

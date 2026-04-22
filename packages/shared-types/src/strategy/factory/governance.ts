@@ -1,4 +1,4 @@
-import type { FactoryRunSummary } from './runs';
+import type { FactoryRunSummary, ResearchWindowStatus, TopNSnapshot } from './runs';
 import type {
     FactoryFeedbackSummary,
     FactoryValidationFamilyQualityPanelItem,
@@ -488,6 +488,8 @@ export type FactoryRunDetailResponse = {
     elapsed_seconds?: number;
     error?: string | null;
     summary?: FactoryRunSummary;
+    research_window?: ResearchWindowStatus;
+    full_market_topn?: TopNSnapshot | null;
     snapshot_summary?: Record<string, string | number | null | undefined>;
     quality_gate?: Record<string, unknown>;
     research_summary?: Record<string, unknown>;

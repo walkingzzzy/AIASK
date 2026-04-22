@@ -14,8 +14,11 @@ export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLa
     navWidth: 208,
     dockVisible: false,
     dockWidth: 380,
+    dockPreference: 'auto',
     density: 'comfortable',
     pageWidth: 'wide',
+    pageLayoutMode: 'workspace',
+    minMainWidth: 1080,
   },
   trading: {
     preset: 'trading',
@@ -23,8 +26,11 @@ export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLa
     navWidth: 220,
     dockVisible: false,
     dockWidth: 430,
+    dockPreference: 'auto',
     density: 'compact',
     pageWidth: 'wide',
+    pageLayoutMode: 'workspace',
+    minMainWidth: 1160,
   },
   focus: {
     preset: 'focus',
@@ -32,8 +38,11 @@ export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLa
     navWidth: 208,
     dockVisible: false,
     dockWidth: 360,
+    dockPreference: 'hidden',
     density: 'comfortable',
     pageWidth: 'focused',
+    pageLayoutMode: 'utility',
+    minMainWidth: 960,
   },
   custom: {
     preset: 'custom',
@@ -41,8 +50,11 @@ export const WORKSPACE_LAYOUT_PRESETS: Record<WorkspaceLayoutPreset, WorkspaceLa
     navWidth: 208,
     dockVisible: false,
     dockWidth: 380,
+    dockPreference: 'auto',
     density: 'comfortable',
     pageWidth: 'wide',
+    pageLayoutMode: 'workspace',
+    minMainWidth: 1080,
   },
 };
 
@@ -114,8 +126,21 @@ export function resolveWorkspaceLayout(layout?: Partial<WorkspaceLayout> | null)
     navWidth: clamp(layout?.navWidth, 188, 280, base.navWidth ?? 208),
     dockVisible: typeof layout?.dockVisible === 'boolean' ? layout.dockVisible : base.dockVisible,
     dockWidth: clamp(layout?.dockWidth, 320, 480, base.dockWidth ?? 380),
+    dockPreference:
+      layout?.dockPreference === 'hidden'
+        ? 'hidden'
+        : layout?.dockPreference === 'persistent'
+          ? 'persistent'
+          : base.dockPreference,
     density: layout?.density === 'compact' ? 'compact' : base.density,
     pageWidth: layout?.pageWidth === 'focused' ? 'focused' : base.pageWidth,
+    pageLayoutMode:
+      layout?.pageLayoutMode === 'overview'
+        ? 'overview'
+        : layout?.pageLayoutMode === 'utility'
+          ? 'utility'
+          : base.pageLayoutMode,
+    minMainWidth: clamp(layout?.minMainWidth, 920, 1440, base.minMainWidth ?? 1080),
     pagePanels: resolveWorkspacePagePanels(layout?.pagePanels),
   };
 }

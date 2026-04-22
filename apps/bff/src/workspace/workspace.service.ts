@@ -107,8 +107,11 @@ export class WorkspaceService {
       navWidth: this.clampInteger(record.navWidth, WorkspaceService.NAV_WIDTH_MIN, WorkspaceService.NAV_WIDTH_MAX, base.navWidth ?? 208),
       dockVisible: this.toBoolean(record.dockVisible) ?? base.dockVisible,
       dockWidth: this.clampInteger(record.dockWidth, WorkspaceService.DOCK_WIDTH_MIN, WorkspaceService.DOCK_WIDTH_MAX, base.dockWidth ?? 380),
+      dockPreference: this.toDockPreference(record.dockPreference) ?? base.dockPreference,
       density: this.toDensity(record.density) ?? base.density,
       pageWidth: this.toPageWidth(record.pageWidth) ?? base.pageWidth,
+      pageLayoutMode: this.toPageLayoutMode(record.pageLayoutMode) ?? base.pageLayoutMode,
+      minMainWidth: this.clampInteger(record.minMainWidth, 920, 1440, base.minMainWidth ?? 1080),
       pagePanels: this.normalizePagePanels(record.pagePanels),
     };
   }
@@ -263,10 +266,13 @@ export class WorkspaceService {
         preset: 'trading',
         navCollapsed: false,
         navWidth: 220,
-        dockVisible: true,
+        dockVisible: false,
         dockWidth: 430,
+        dockPreference: 'auto',
         density: 'compact',
         pageWidth: 'wide',
+        pageLayoutMode: 'workspace',
+        minMainWidth: 1160,
       };
     }
 
@@ -277,8 +283,11 @@ export class WorkspaceService {
         navWidth: 208,
         dockVisible: false,
         dockWidth: 360,
+        dockPreference: 'hidden',
         density: 'comfortable',
         pageWidth: 'focused',
+        pageLayoutMode: 'utility',
+        minMainWidth: 960,
       };
     }
 
@@ -287,10 +296,13 @@ export class WorkspaceService {
         preset: 'custom',
         navCollapsed: false,
         navWidth: 208,
-        dockVisible: true,
+        dockVisible: false,
         dockWidth: 380,
+        dockPreference: 'auto',
         density: 'comfortable',
         pageWidth: 'wide',
+        pageLayoutMode: 'workspace',
+        minMainWidth: 1080,
       };
     }
 
@@ -298,10 +310,13 @@ export class WorkspaceService {
       preset: 'research',
       navCollapsed: false,
       navWidth: 208,
-      dockVisible: true,
+      dockVisible: false,
       dockWidth: 380,
+      dockPreference: 'auto',
       density: 'comfortable',
       pageWidth: 'wide',
+      pageLayoutMode: 'workspace',
+      minMainWidth: 1080,
     };
   }
 
@@ -332,6 +347,20 @@ export class WorkspaceService {
   private toPageWidth(value: unknown): WorkspaceLayout['pageWidth'] | null {
     const pageWidth = this.toNonEmptyString(value);
     return pageWidth === 'focused' || pageWidth === 'wide' ? pageWidth : null;
+  }
+
+  private toDockPreference(value: unknown): WorkspaceLayout['dockPreference'] | null {
+    const dockPreference = this.toNonEmptyString(value);
+    return dockPreference === 'hidden' || dockPreference === 'persistent' || dockPreference === 'auto'
+      ? dockPreference
+      : null;
+  }
+
+  private toPageLayoutMode(value: unknown): WorkspaceLayout['pageLayoutMode'] | null {
+    const pageLayoutMode = this.toNonEmptyString(value);
+    return pageLayoutMode === 'overview' || pageLayoutMode === 'utility' || pageLayoutMode === 'workspace'
+      ? pageLayoutMode
+      : null;
   }
 
   private toPagePanelMode(value: unknown): NonNullable<WorkspaceLayout['pagePanels']>[string]['mode'] | null {

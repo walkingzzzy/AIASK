@@ -65,6 +65,7 @@ from .factory_execution import (
     resolve_factory_engine_version,
     resolve_factory_execution_mode,
 )
+from .factory_market_views import build_portfolio_candidate_from_topn
 from .runtime import (
     _call_optional_async as _runtime_call_optional_async,
     get_strategy_factory_package as _runtime_get_strategy_factory_package,

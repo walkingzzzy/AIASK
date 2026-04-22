@@ -14,6 +14,7 @@ const bffSocketOrigin = bffOrigin.startsWith('https://')
   : bffOrigin.replace(/^http:/, 'ws:');
 
 const isDev = process.env.NODE_ENV === 'development';
+const sentryEnabled = process.env.NODE_ENV === 'production' && Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN);
 
 const csp = [
   "default-src 'self'",
@@ -46,9 +47,11 @@ const nextConfig = {
   },
 };
 
-export default withSentryConfig(nextConfig, {
-  silent: true,
-  org: process.env.SENTRY_ORG || '',
-  project: process.env.SENTRY_PROJECT || '',
-  disableSourceMapUpload: !process.env.SENTRY_AUTH_TOKEN,
-});
+export default sentryEnabled
+  ? withSentryConfig(nextConfig, {
+      silent: true,
+      org: process.env.SENTRY_ORG || '',
+      project: process.env.SENTRY_PROJECT || '',
+      disableSourceMapUpload: !process.env.SENTRY_AUTH_TOKEN,
+    })
+  : nextConfig;

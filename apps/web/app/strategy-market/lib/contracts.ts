@@ -73,6 +73,8 @@ export function parseFactoryStatusResponse(raw: unknown): FactoryStatusResponse 
   assertRecordIfPresent(status.feature_flags, '策略工厂状态.feature_flags');
   assertRecordIfPresent(status.quality_baseline, '策略工厂状态.quality_baseline');
   assertRecordIfPresent(status.signal_quality_registry, '策略工厂状态.signal_quality_registry');
+  assertRecordIfPresent(status.research_window, '策略工厂状态.research_window');
+  assertRecordIfPresent(status.full_market_topn, '策略工厂状态.full_market_topn');
   return status as FactoryStatusResponse;
 }
 
@@ -91,5 +93,7 @@ export function parseFactoryRunDetailResponse(raw: unknown): FactoryRunDetailRes
   assertRecordIfPresent(detail.stages, '策略工厂运行详情.stages');
   assertRecordIfPresent(detail.pipeline, '策略工厂运行详情.pipeline');
   assertRecordIfPresent(detail.feedback_summary, '策略工厂运行详情.feedback_summary');
+  assertRecordIfPresent(detail.research_window, '策略工厂运行详情.research_window');
+  assertRecordIfPresent(detail.full_market_topn, '策略工厂运行详情.full_market_topn');
   return detail as FactoryRunDetailResponse;
 }

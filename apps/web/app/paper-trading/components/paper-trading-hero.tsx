@@ -1,5 +1,5 @@
 import { AskAiButton } from '@/components/ask-ai-button';
-import { Badge, SectionCard } from '@/components/ui';
+import { Badge } from '@/components/ui';
 import {
   paperTradingChipButtonCls,
   paperTradingNoteCardCls,
@@ -39,6 +39,8 @@ type PaperTradingHeroProps = {
   personalStrategyMode?: boolean;
   onRefreshPrices: () => void;
   refreshPricesPending: boolean;
+  onReconcileLedger: () => void;
+  reconcilePending: boolean;
 };
 
 export default function PaperTradingHero({
@@ -72,6 +74,8 @@ export default function PaperTradingHero({
   personalStrategyMode = false,
   onRefreshPrices,
   refreshPricesPending,
+  onReconcileLedger,
+  reconcilePending,
 }: PaperTradingHeroProps) {
   return (
     <>
@@ -107,6 +111,9 @@ export default function PaperTradingHero({
             <div className="mt-5 flex flex-wrap gap-2">
               <button type="button" onClick={onRefreshPrices} disabled={refreshPricesPending} className={paperTradingPrimaryButtonCls}>
                 {refreshPricesPending ? '刷新中...' : '刷新价格'}
+              </button>
+              <button type="button" onClick={onReconcileLedger} disabled={reconcilePending} className={paperTradingChipButtonCls}>
+                {reconcilePending ? '校准中...' : '校准账本'}
               </button>
             </div>
 
@@ -221,33 +228,6 @@ export default function PaperTradingHero({
 
       {tradeNotice ? (
         <div className="panel-soft mb-4 rounded-[24px] px-4 py-3 text-sm text-primary">{tradeNotice}</div>
-      ) : null}
-
-      {showAccountBootstrap && !compactMobile ? (
-        <SectionCard className="mb-4 p-4 sm:p-5">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.85fr)]">
-            <div>
-              <div className="eyebrow">Bootstrap Flow</div>
-              <h2 className="mt-2 mb-0 text-xl font-semibold text-text-primary">账户尚未开始交易</h2>
-              <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
-                当前还没有持仓、挂单、成交和净值轨迹。请先输入真实标的和委托参数，再提交首笔模拟交易；只有成交后的真实账户变化才会驱动后续报表。
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button type="button" onClick={onRefreshPrices} className={paperTradingChipButtonCls}>
-                  先刷新价格
-                </button>
-              </div>
-            </div>
-            <div className="panel-soft rounded-[24px] p-4">
-              <div className="text-sm font-medium text-text-primary">推荐流程</div>
-              <div className="mt-3 space-y-3">
-                <div className={paperTradingNoteCardCls}>1. 先输入真实股票代码、方向、数量和订单类型。</div>
-                <div className={paperTradingNoteCardCls}>2. 如需价格参考，可先手动刷新一次行情再提交。</div>
-                <div className={paperTradingNoteCardCls}>3. 成交后再回来看持仓、净值和绩效变化。</div>
-              </div>
-            </div>
-          </div>
-        </SectionCard>
       ) : null}
     </>
   );

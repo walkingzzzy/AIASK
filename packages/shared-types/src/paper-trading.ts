@@ -25,6 +25,7 @@ export type PaperTradingSummary = {
     pending_orders_count?: number;
     total_value?: number;
     total_return_pct?: number;
+    reconciliation?: PaperTradingReconcileResponse | null;
 };
 
 export type PaperTradingAccountsResponse = {
@@ -45,6 +46,7 @@ export type PaperTradingPosition = {
 
 export type PaperTradingPositionsResponse = {
     positions?: PaperTradingPosition[];
+    reconciliation?: PaperTradingReconcileResponse | null;
 };
 
 export type PaperTradingTrade = {
@@ -172,4 +174,19 @@ export type PaperTradingStatusProbe = {
     status?: string;
     running?: boolean;
     ok?: boolean;
+};
+
+export type PaperTradingReconcileResponse = {
+    account_id?: string;
+    drift_detected?: boolean;
+    reconciled?: boolean;
+    refresh_prices?: boolean;
+    reasons?: string[];
+    positions_before_count?: number;
+    positions_after_count?: number;
+    cash_before?: number;
+    cash_after?: number;
+    total_value_before?: number;
+    total_value_after?: number;
+    positions?: PaperTradingPosition[];
 };

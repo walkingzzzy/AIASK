@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from ._cycle_success_summary import build_success_run_summary
+from .factory_market_views import build_research_window_status
 from .factory_execution import (
     FACTORY_ENGINE_VERSION,
     build_artifact_refs,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from typing import Any, Dict, List
 
@@ -20,7 +21,14 @@ from ..domain.constants import (
 )
 from ._opportunity_utils import _MarketOpportunityScannerUtilityMixin
 from ._stock_universe_loader import load_stock_universe_rows
+from .factory_market_views import build_full_market_topn_payload
 from .research_plane_contract import build_task_artifact
+from .sector_taxonomy import (
+    normalize_sector_labels,
+    sector_profiles_for_label,
+    sector_family_biases,
+    sector_match_strength,
+)
 
 from strategy_factory._fragment_loader import exec_block as _exec_block
 

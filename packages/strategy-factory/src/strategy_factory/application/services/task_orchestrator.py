@@ -53,6 +53,12 @@ class TaskOrchestrator:
         stage = dict(raw.get("stage") or {})
         candidates = list(raw.get("candidates") or [])
         experiments = list(raw.get("experiments") or [])
+        full_market_topn = dict(raw.get("full_market_topn") or {})
+        full_market_score_rows = [
+            dict(item or {})
+            for item in list(raw.get("full_market_score_rows") or [])
+            if isinstance(item, dict)
+        ]
         persistence_failures = list(stage.get("persistence_failures") or [])
 
         task_results_raw = list(stage.get("task_results") or [])
@@ -88,6 +94,8 @@ class TaskOrchestrator:
             experiments=experiments,
             persistence_failures=persistence_failures,
             stage_payload=stage,
+            full_market_topn=full_market_topn,
+            full_market_score_rows=full_market_score_rows,
         )
 
     def build_task_briefs(self, batch: ResearchBatchResult) -> list[dict[str, Any]]:

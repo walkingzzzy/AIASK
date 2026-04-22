@@ -124,6 +124,23 @@ function normalizeResult(result, outputDir) {
   };
 }
 
+async function createStorageState(browser, args, credentials) {
+  const context = await browser.newContext({
+    viewport: { width: BREAKPOINTS[0].width, height: BREAKPOINTS[0].height },
+    locale: 'zh-CN',
+    timezoneId: 'Asia/Shanghai',
+  });
+  const page = await context.newPage();
+
+  try {
+    await login(page, args.baseUrl, credentials);
+    await waitForSettledUi(page, 700);
+    return await context.storageState();
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 async function runSurface(page, args, surface, breakpoint, outputDir) {
   const dynamic = await resolveDynamicPath(page, args.baseUrl, surface);
   if (!dynamic.path) {
@@ -219,68 +236,72 @@ async function main() {
     : manifest.surfaces;
   const browser = await chromium.launch({ headless: true });
   const results = [];
+  const storageStateCache = new Map();
+  const groups = [
+    { auth: 'public', surfaces: selected.filter((surface) => surface.auth === 'public'), credentials: null },
+    {
+      auth: 'user',
+      surfaces: selected.filter((surface) => surface.auth === 'user'),
+      credentials: { username: args.userUsername, password: args.userPassword },
+    },
+    {
+      auth: 'admin',
+      surfaces: selected.filter((surface) => surface.auth === 'admin'),
+      credentials: { username: args.adminUsername, password: args.adminPassword },
+    },
+  ];
 
   try {
     for (const breakpoint of BREAKPOINTS) {
-      const groups = [
-        { auth: 'public', surfaces: selected.filter((surface) => surface.auth === 'public'), credentials: null },
-        {
-          auth: 'user',
-          surfaces: selected.filter((surface) => surface.auth === 'user'),
-          credentials: { username: args.userUsername, password: args.userPassword },
-        },
-        {
-          auth: 'admin',
-          surfaces: selected.filter((surface) => surface.auth === 'admin'),
-          credentials: { username: args.adminUsername, password: args.adminPassword },
-        },
-      ];
-
       for (const group of groups) {
         if (!group.surfaces.length) continue;
+        let storageState = undefined;
+        if (group.credentials) {
+          try {
+            storageState = storageStateCache.get(group.auth);
+            if (!storageState) {
+              storageState = await createStorageState(browser, args, group.credentials);
+              storageStateCache.set(group.auth, storageState);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.stack || error.message : String(error);
+            for (const surface of group.surfaces) {
+              results.push({
+                surfaceId: surface.surfaceId,
+                label: surface.label,
+                family: surface.family,
+                group: surface.group,
+                breakpoint: breakpoint.name,
+                width: breakpoint.width,
+                height: breakpoint.height,
+                path: surface.path,
+                finalPath: null,
+                budgetClass: surface.budgetClass,
+                limit: BUDGET_LIMITS[surface.budgetClass] || 3,
+                status: 'error',
+                error: `login failed: ${message}`,
+                screenshotPath: null,
+                issues: {
+                  apiErrors: [],
+                  httpErrors: [],
+                  consoleErrors: [],
+                  pageErrors: [],
+                  requestFailures: [],
+                },
+              });
+            }
+            continue;
+          }
+        }
         const context = await browser.newContext({
           viewport: { width: breakpoint.width, height: breakpoint.height },
           locale: 'zh-CN',
           timezoneId: 'Asia/Shanghai',
+          storageState,
         });
         const page = await context.newPage();
 
         try {
-          if (group.credentials) {
-            try {
-              await login(page, args.baseUrl, group.credentials);
-              await waitForSettledUi(page, 700);
-            } catch (error) {
-              const message = error instanceof Error ? error.stack || error.message : String(error);
-              for (const surface of group.surfaces) {
-                results.push({
-                  surfaceId: surface.surfaceId,
-                  label: surface.label,
-                  family: surface.family,
-                  group: surface.group,
-                  breakpoint: breakpoint.name,
-                  width: breakpoint.width,
-                  height: breakpoint.height,
-                  path: surface.path,
-                  finalPath: null,
-                  budgetClass: surface.budgetClass,
-                  limit: BUDGET_LIMITS[surface.budgetClass] || 3,
-                  status: 'error',
-                  error: `login failed: ${message}`,
-                  screenshotPath: null,
-                  issues: {
-                    apiErrors: [],
-                    httpErrors: [],
-                    consoleErrors: [],
-                    pageErrors: [],
-                    requestFailures: [],
-                  },
-                });
-              }
-              continue;
-            }
-          }
-
           for (const surface of group.surfaces) {
             const result = await runSurface(page, args, surface, breakpoint, args.outputDir);
             results.push(result);

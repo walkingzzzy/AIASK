@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
+import { Public } from '../rbac/public.decorator';
 import {
   VectorProfilesQueryDto,
   VectorIndexesQueryDto,
@@ -22,6 +23,7 @@ export class StrategyVectorController {
   constructor(private readonly svc: StrategyMarketService) {}
 
   @Get(':id/vector-profiles')
+  @Public()
   async vectorProfiles(@Param('id') id: string, @Query() q: VectorProfilesQueryDto, @Req() req: Req_) {
     const data = await this.svc.vectorProfiles(id, {
       profile_type: q.profile_type,
@@ -32,12 +34,14 @@ export class StrategyVectorController {
   }
 
   @Get('vector-indexes')
+  @Public()
   async vectorIndexes(@Query() q: VectorIndexesQueryDto, @Req() req: Req_) {
     const data = await this.svc.vectorIndexes({ index_name: q.index_name, status: q.status, limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('vector-indexes/snapshots')
+  @Public()
   async vectorIndexSnapshots(@Query() q: VectorIndexSnapshotsQueryDto, @Req() req: Req_) {
     const data = await this.svc.vectorIndexSnapshots({
       index_name: q.index_name,
@@ -49,6 +53,7 @@ export class StrategyVectorController {
   }
 
   @Get(':id/vector-ann-search')
+  @Public()
   async vectorAnnSearch(@Param('id') id: string, @Query() q: VectorAnnSearchQueryDto, @Req() req: Req_) {
     const data = await this.svc.vectorAnnSearch(id, {
       index_name: q.index_name,
@@ -85,6 +90,7 @@ export class StrategyVectorController {
   }
 
   @Get('vector-health')
+  @Public()
   async vectorHealth(@Query() q: VectorHealthQueryDto, @Req() req: Req_) {
     const data = await this.svc.vectorHealth({
       index_name: q.index_name,
@@ -110,6 +116,7 @@ export class StrategyVectorController {
   }
 
   @Get(':id/domain-events')
+  @Public()
   async domainEvents(@Param('id') id: string, @Query() q: DomainEventsQueryDto, @Req() req: Req_) {
     const data = await this.svc.domainEvents(id, {
       aggregate_type: q.aggregate_type,
@@ -122,12 +129,14 @@ export class StrategyVectorController {
   }
 
   @Get(':id/domain-projection')
+  @Public()
   async domainProjection(@Param('id') id: string, @Query() q: DomainProjectionQueryDto, @Req() req: Req_) {
     const data = await this.svc.domainProjection(id, { limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/domain-projection/snapshot')
+  @Public()
   async domainProjectionSnapshot(@Param('id') id: string, @Query() q: DomainProjectionQueryDto, @Req() req: Req_) {
     const data = await this.svc.domainProjectionSnapshot(id, { limit: q.limit });
     return { success: true, data, traceId: tid(req) };

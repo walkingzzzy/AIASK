@@ -37,6 +37,8 @@ class ResearchGenerationResult:
     local_spawn_report: dict[str, Any] = field(default_factory=dict)
     autonomy_stage: dict[str, Any] = field(default_factory=dict)
     experiments: list[dict[str, Any]] = field(default_factory=list)
+    full_market_topn: dict[str, Any] = field(default_factory=dict)
+    full_market_score_rows: list[dict[str, Any]] = field(default_factory=list)
     autonomy_error: str | None = None
     candidate_origin_counts: dict[str, int] = field(default_factory=dict)
 
@@ -181,11 +183,17 @@ class ResearchPlaneRunner:
             autonomy_stage = autonomy_batch.to_stage_dict()
             autonomy_candidates = list(autonomy_batch.generated_candidates or [])
             experiments = list(autonomy_batch.experiments or [])
+            full_market_topn = dict(autonomy_batch.full_market_topn or {})
+            full_market_score_rows = list(autonomy_batch.full_market_score_rows or [])
+            if full_market_topn:
+                autonomy_stage["full_market_topn"] = full_market_topn
             self._annotate_autonomy_candidates(autonomy_candidates, autonomy_stage)
         except Exception as exc:
             logger.warning("StrategyFactory: autonomy cycle failed: %s", exc)
             autonomy_error = str(exc)
             autonomy_stage = {"error": autonomy_error, "generated_count": 0}
+            full_market_topn = {}
+            full_market_score_rows = []
 
         profiled_local_candidates = [
             apply_resolved_candidate_envelope(
@@ -210,6 +218,8 @@ class ResearchPlaneRunner:
             local_spawn_report=dict(local_spawn_report or {}),
             autonomy_stage=autonomy_stage,
             experiments=experiments,
+            full_market_topn=full_market_topn,
+            full_market_score_rows=full_market_score_rows,
             autonomy_error=autonomy_error,
             candidate_origin_counts=count_candidate_origins(generated_candidates),
         )

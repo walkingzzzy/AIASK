@@ -15,6 +15,7 @@ import {
   type BackgroundFactoryRunState,
   type StrategyManagerCallOptions,
   buildFactoryRunDetailCacheKey,
+  buildFactoryStatusCacheKey,
   buildFactoryRunsCacheKey,
   buildRankingCacheKey,
   detachTimer,
@@ -26,6 +27,8 @@ import { loadFactoryObservability } from './strategy.service.factory-observabili
 @Injectable()
 export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly RANKING_TTL = 1500; // 25 min
+  private static readonly FACTORY_STATUS_TTL = 15;
+  private static readonly FACTORY_STATUS_WARMUP_DELAY_MS = 5_000;
   private static readonly FACTORY_RUNS_TTL = 60;
   private static readonly FACTORY_RUN_DETAIL_TTL = 60;
   private static readonly AUTO_REFRESH_CHECK_MS = 5 * 60 * 1000; // 5 min
@@ -43,8 +46,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
   private readonly logger = new Logger(StrategyMarketService.name);
   private autoRefreshTimer?: ReturnType<typeof setInterval>;
+  private factoryStatusWarmupTimer?: ReturnType<typeof setTimeout>;
   private lastAutoRefreshDate?: string;
   private latestFactoryDispatchId: string | null = null;
+  private inFlightFactoryStatus: Promise<Record<string, unknown>> | null = null;
 
   constructor(
     private readonly mcp: McpGatewayService,
@@ -54,15 +59,20 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     if (!StrategyMarketService.AUTO_REFRESH_ENABLED) {
       this.logger.log('策略排名自动刷新已禁用');
-      return;
+    } else {
+      this.startAutoRefreshTimer();
     }
-    this.startAutoRefreshTimer();
+    this.scheduleFactoryStatusWarmup();
   }
 
   onModuleDestroy() {
     if (this.autoRefreshTimer) {
       clearInterval(this.autoRefreshTimer);
       this.autoRefreshTimer = undefined;
+    }
+    if (this.factoryStatusWarmupTimer) {
+      clearTimeout(this.factoryStatusWarmupTimer);
+      this.factoryStatusWarmupTimer = undefined;
     }
   }
 
@@ -75,6 +85,18 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(
       `策略排名自动刷新已启动（每 ${StrategyMarketService.AUTO_REFRESH_CHECK_MS / 60000} 分钟检查，收盘后 ${StrategyMarketService.AUTO_REFRESH_HOUR}:${String(StrategyMarketService.AUTO_REFRESH_MINUTE).padStart(2, '0')} 触发）`,
     );
+  }
+
+  private scheduleFactoryStatusWarmup() {
+    if (this.factoryStatusWarmupTimer) {
+      clearTimeout(this.factoryStatusWarmupTimer);
+    }
+    this.factoryStatusWarmupTimer = detachTimer(setTimeout(() => {
+      this.factoryStatusWarmupTimer = undefined;
+      void this.fetchFactoryStatusWithCache().catch((error) => {
+        this.logger.debug(`预热 factory/status 缓存失败: ${String(error)}`);
+      });
+    }, StrategyMarketService.FACTORY_STATUS_WARMUP_DELAY_MS));
   }
 
   private isAfterMarketClose(now: Date) {
@@ -189,6 +211,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async clearFactoryRunCaches() {
+    await this.cache.del(buildFactoryStatusCacheKey());
     await this.cache.clear('strategy:factory:runs:');
     await this.cache.clear('strategy:factory:run:');
   }
@@ -247,6 +270,85 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         stage_status_counts: stageStatusCounts,
       },
     } as T;
+  }
+
+  private normalizeFactoryStatusResponse(payload: unknown): Record<string, unknown> {
+    const status = this.asRecord(payload);
+    const normalized: Record<string, unknown> = {};
+
+    const passthroughKeys = [
+      'running',
+      'run_time',
+      'last_run',
+      'last_summary',
+      'last_validation_grade_distribution',
+      'last_raw_validation_grade_distribution',
+      'last_effective_validation_grade_distribution',
+      'last_raw_validation_total_score_mean',
+      'last_raw_validation_total_score_p50',
+      'last_raw_validation_total_score_p90',
+      'last_raw_validation_a_rate',
+      'last_raw_validation_b_rate',
+      'last_raw_validation_c_rate',
+      'last_raw_validation_d_rate',
+      'last_strict_incubation_ready_count',
+      'last_strict_incubation_ready_rate',
+      'last_live_candidate_ready_count',
+      'last_live_candidate_ready_rate',
+      'last_raw_b_or_above_count',
+      'last_raw_b_or_above_rate',
+      'last_strict_ready_given_raw_b_count',
+      'last_strict_ready_given_raw_b_rate',
+      'last_live_ready_given_raw_b_count',
+      'last_live_ready_given_raw_b_rate',
+      'recent_run_diagnostics',
+      'last_validation_family_quality_panel',
+      'quality_baseline',
+      'high_confidence_enabled',
+      'evidence_contract_enabled',
+      'confidence_diagnostics_enabled',
+      'execution_audit_enabled',
+      'quality_ui_v2_enabled',
+      'research_protocol_v2_enabled',
+      'gate_model_v2_enabled',
+      'trace_ledger_v2_enabled',
+      'feedback_v2_enabled',
+      'trace_ledger_v2_implemented',
+      'governance_gate_report_v2_implemented',
+      'execution_audit_entity_chain_available',
+      'spec_completeness_mode',
+      'signal_quality_registry',
+      'research_window',
+      'full_market_topn',
+      'feature_flags',
+      'schedule_mode',
+      'execution_mode',
+      'engine_version',
+      'runtime_enabled',
+      'event_runtime_mode',
+      'readiness_hard_block_enabled',
+      'readiness_min_score',
+      'readiness_min_completion_ratio',
+      'factor_auto_refresh_enabled',
+      'factor_refresh_timeout_sec',
+    ] as const;
+
+    for (const key of passthroughKeys) {
+      if (key in status) {
+        normalized[key] = status[key];
+      }
+    }
+
+    const rawLastResult = this.asRecord(status.last_result);
+    const compactLastResult: Record<string, unknown> = {};
+    const lastResultStatus = String(rawLastResult.status ?? status.last_status ?? '').trim();
+    if (lastResultStatus) compactLastResult.status = lastResultStatus;
+    if (rawLastResult.error != null) compactLastResult.error = String(rawLastResult.error);
+    if (Object.keys(compactLastResult).length > 0) {
+      normalized.last_result = compactLastResult;
+    }
+
+    return normalized;
   }
 
   private normalizeFactoryRunsResponse<T>(payload: T): T {
@@ -322,6 +424,33 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const data = this.normalizeFactoryRunsResponse(await this.call('factory_runs', { limit }));
     await this.cache.set(cacheKey, data, ttl);
     return data;
+  }
+
+  private async fetchFactoryStatusWithCache(forceRefresh = false) {
+    const cacheKey = buildFactoryStatusCacheKey();
+    const ttl = this.cache.resolveTtl('strategy.factory_status', StrategyMarketService.FACTORY_STATUS_TTL);
+
+    if (!forceRefresh) {
+      const cached = await this.cache.getWithMeta<Record<string, unknown>>(cacheKey);
+      if (cached.value) return cached.value;
+      if (this.inFlightFactoryStatus) return this.inFlightFactoryStatus;
+    } else {
+      await this.cache.del(cacheKey);
+    }
+
+    const request = (async () => {
+      const data = this.normalizeFactoryStatusResponse(await this.call('factory_status'));
+      await this.cache.set(cacheKey, data, ttl);
+      return data;
+    })();
+    this.inFlightFactoryStatus = request;
+    try {
+      return await request;
+    } finally {
+      if (this.inFlightFactoryStatus === request) {
+        this.inFlightFactoryStatus = null;
+      }
+    }
   }
 
   private async fetchFactoryRunDetailWithCache(runId: string, forceRefresh = false) {
@@ -755,7 +884,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
   async factoryStatus() {
     const backgroundRun = await this.loadBackgroundFactoryRunState();
-    return this.mergeFactoryStatusWithBackgroundRun(await this.call('factory_status'), backgroundRun);
+    return this.mergeFactoryStatusWithBackgroundRun(await this.fetchFactoryStatusWithCache(), backgroundRun);
   }
 
   async factoryRunOnce() {
@@ -776,6 +905,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     if (backgroundRun) {
       this.latestFactoryDispatchId = backgroundRun.request_id;
     }
+    await this.cache.del(buildFactoryStatusCacheKey());
 
     return {
       accepted: Boolean(dispatchPayload.accepted ?? true),
@@ -798,12 +928,26 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.fetchFactoryRunDetailWithCache(runId);
   }
 
+  async factoryTopnLatest(limit?: number) {
+    return this.call('factory_topn_latest', {
+      limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
+    });
+  }
+
+  async factoryRunTopn(runId: string, limit?: number) {
+    return this.call('factory_run_topn', {
+      run_id: runId,
+      limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
+    });
+  }
+
   async factoryDispatchStatus(dispatchId: string) {
     const payload = await this.call('factory_dispatch_status', { dispatch_id: dispatchId });
     const backgroundRun = this.normalizeBackgroundFactoryRunState(payload);
     if (backgroundRun) {
       this.latestFactoryDispatchId = backgroundRun.request_id;
     }
+    await this.cache.del(buildFactoryStatusCacheKey());
     return {
       ...(this.asRecord(payload) as object),
       local_background_run: backgroundRun,

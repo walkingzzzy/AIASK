@@ -37,4 +37,10 @@ Sentry.init({
     return event;
   },
 });
+
+if (typeof window !== 'undefined') {
+  window.__AIASK_CAPTURE_EXCEPTION__ = (error: unknown) => {
+    Sentry.captureException(error);
+  };
+}
 // Note: Core Web Vitals are automatically captured by Sentry's browserTracingIntegration().

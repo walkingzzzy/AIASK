@@ -142,6 +142,28 @@
                 bulk_window_state,
                 bulk_cursor,
             )
+            full_market_score_rows = [
+                dict(item or {})
+                for item in list(bulk_report.pop("full_market_score_rows", []) or [])
+                if isinstance(item, dict)
+            ]
+            full_market_topn = dict(bulk_report.get("full_market_topn") or {})
+            run_id_hint = str(
+                snapshot.get("factory_run_id") or snapshot.get("run_id") or ""
+            ).strip()
+            trace_id_hint = str(snapshot.get("trace_id") or "").strip()
+            if full_market_topn and run_id_hint:
+                full_market_topn["snapshot_id"] = (
+                    str(full_market_topn.get("snapshot_id") or "").strip()
+                    or f"fmt_{run_id_hint}"
+                )
+                full_market_topn["portfolio_candidate_id"] = (
+                    str(full_market_topn.get("portfolio_candidate_id") or "").strip()
+                    or f"factory_topn_{run_id_hint}"
+                )
+                full_market_topn["run_id"] = run_id_hint
+                full_market_topn["trace_id"] = trace_id_hint or None
+                full_market_topn["correlation_id"] = run_id_hint
             bulk_summary = dict(bulk_report.get("summary") or {})
             bulk_tasks = self._apply_scheduler_planning_controls(
                 list(bulk_report.get("tasks") or []),
@@ -434,7 +456,15 @@
                 build_candidate_artifact=build_candidate_artifact,
                 build_research_evidence_artifact=build_research_evidence_artifact,
             )
-            return {"stage": stage, "candidates": generated_candidates, "experiments": all_experiments}
+            if full_market_topn:
+                stage["full_market_topn"] = full_market_topn
+            return {
+                "stage": stage,
+                "candidates": generated_candidates,
+                "experiments": all_experiments,
+                "full_market_topn": full_market_topn,
+                "full_market_score_rows": full_market_score_rows,
+            }
 
         async def run_once(self, db=None, *, execution_mode=None, dispatch_id: Optional[str] = None) -> dict:
             """执行一次完整的策略工厂流程。"""

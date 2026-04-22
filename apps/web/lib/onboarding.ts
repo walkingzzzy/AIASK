@@ -14,6 +14,7 @@ export type OnboardingStepId =
 
 export type OnboardingStepStatus = 'todo' | 'visited' | 'done' | 'skipped';
 export type OnboardingOverlayMode = 'expanded' | 'minimized' | 'hidden';
+export type OnboardingEntrySurface = 'overview' | 'workspace' | 'utility';
 
 export type OnboardingStepState = {
   status: OnboardingStepStatus;
@@ -26,6 +27,10 @@ export type OnboardingSnapshot = {
   version: number;
   overlayMode: OnboardingOverlayMode;
   currentStepId: OnboardingStepId;
+  entrySurface: OnboardingEntrySurface;
+  routeScope: string;
+  dismissedUntil?: string;
+  lastCompletedStep?: OnboardingStepId;
   updatedAt: string;
   completedAt?: string;
   steps: Record<OnboardingStepId, OnboardingStepState>;
@@ -207,6 +212,8 @@ export function createDefaultOnboardingSnapshot(): OnboardingSnapshot {
     version: ONBOARDING_VERSION,
     overlayMode: 'expanded',
     currentStepId: ONBOARDING_STEPS[0].id,
+    entrySurface: 'overview',
+    routeScope: '/',
     updatedAt: new Date(0).toISOString(),
     steps,
   };
@@ -222,6 +229,10 @@ function isStepStatus(value: unknown): value is OnboardingStepStatus {
 
 function isOverlayMode(value: unknown): value is OnboardingOverlayMode {
   return value === 'expanded' || value === 'minimized' || value === 'hidden';
+}
+
+function isEntrySurface(value: unknown): value is OnboardingEntrySurface {
+  return value === 'overview' || value === 'workspace' || value === 'utility';
 }
 
 function readTimestamp(value: unknown) {
@@ -257,6 +268,12 @@ export function parseOnboardingSnapshot(value: unknown): OnboardingSnapshot | nu
     currentStepId: ONBOARDING_STEPS.some((step) => step.id === record.currentStepId)
       ? (record.currentStepId as OnboardingStepId)
       : base.currentStepId,
+    entrySurface: isEntrySurface(record.entrySurface) ? record.entrySurface : base.entrySurface,
+    routeScope: typeof record.routeScope === 'string' && record.routeScope.trim() ? record.routeScope.trim() : base.routeScope,
+    dismissedUntil: readTimestamp(record.dismissedUntil),
+    lastCompletedStep: ONBOARDING_STEPS.some((step) => step.id === record.lastCompletedStep)
+      ? (record.lastCompletedStep as OnboardingStepId)
+      : undefined,
     updatedAt: readTimestamp(record.updatedAt) ?? base.updatedAt,
     completedAt: readTimestamp(record.completedAt),
     steps,
@@ -299,6 +316,10 @@ export function mergeOnboardingSnapshots(
     version: ONBOARDING_VERSION,
     overlayMode: left.overlayMode ?? right.overlayMode ?? base.overlayMode,
     currentStepId: resolveCurrentStepId(steps, left.currentStepId ?? right.currentStepId ?? base.currentStepId),
+    entrySurface: left.entrySurface ?? right.entrySurface ?? base.entrySurface,
+    routeScope: left.routeScope || right.routeScope || base.routeScope,
+    dismissedUntil: pickLaterTimestamp(left.dismissedUntil, right.dismissedUntil),
+    lastCompletedStep: left.lastCompletedStep ?? right.lastCompletedStep,
     updatedAt: pickLaterTimestamp(left.updatedAt, right.updatedAt) ?? new Date().toISOString(),
     completedAt,
     steps,
@@ -378,6 +399,38 @@ export function applyCompletionState(snapshot: OnboardingSnapshot): OnboardingSn
 export function dispatchOnboardingSignal(signal: OnboardingSignal) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent<OnboardingSignal>(ONBOARDING_SIGNAL_EVENT, { detail: signal }));
+}
+
+export function resolveOnboardingRouteScope(pathname: string) {
+  const segment = pathname.split('/').filter(Boolean)[0];
+  return segment ? `/${segment}` : '/';
+}
+
+export function resolveOnboardingEntrySurface(pathname: string): OnboardingEntrySurface {
+  if (
+    pathname === '/'
+    || pathname.startsWith('/market')
+    || pathname.startsWith('/risk')
+    || pathname.startsWith('/performance')
+  ) {
+    return 'overview';
+  }
+
+  if (
+    pathname.startsWith('/assistant')
+    || pathname.startsWith('/strategy-market')
+    || pathname.startsWith('/paper-trading')
+    || pathname.startsWith('/research')
+  ) {
+    return 'workspace';
+  }
+
+  return 'utility';
+}
+
+export function prefersExpandedOnboarding(pathname: string, compactLayout: boolean) {
+  if (compactLayout) return false;
+  return pathname === '/' || pathname.startsWith('/market');
 }
 
 declare global {

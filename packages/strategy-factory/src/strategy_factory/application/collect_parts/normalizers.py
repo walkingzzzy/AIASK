@@ -176,12 +176,39 @@
             return dict(report or {}) if report else None
         return None
 
+    @staticmethod
+    async def _gather_bounded_calls(
+        call_factories: List[Any],
+        *,
+        concurrency: int = 6,
+    ) -> List[Any]:
+        factories = list(call_factories or [])
+        if not factories:
+            return []
+        limit = max(1, min(int(concurrency or 1), len(factories)))
+        semaphore = asyncio.Semaphore(limit)
+        results: List[Any] = [None] * len(factories)
+
+        async def _runner(index: int, factory) -> None:
+            async with semaphore:
+                try:
+                    value = factory()
+                    if hasattr(value, "__await__"):
+                        value = await value
+                    results[index] = value
+                except Exception as exc:
+                    results[index] = exc
+
+        await asyncio.gather(*(_runner(index, factory) for index, factory in enumerate(factories)))
+        return results
+
     async def _collect_parameter_distribution_snapshot(
         self,
         db,
         *,
         limit_per_status: int = 120,
         max_samples: int = 96,
+        query_concurrency: int = 6,
     ) -> dict:
         list_strategies = getattr(db, "list_strategies", None)
         get_signal_stats = getattr(db, "get_signal_stats", None)
@@ -189,6 +216,7 @@
             return {
                 "items": [],
                 "summary": {
+                    "sample_count": 0,
                     "eligible_sample_count": 0,
                     "factory_strategy_count": 0,
                     "strategy_type_counts": {},
@@ -214,6 +242,7 @@
             return {
                 "items": [],
                 "summary": {
+                    "sample_count": 0,
                     "eligible_sample_count": 0,
                     "factory_strategy_count": 0,
                     "strategy_type_counts": {},
@@ -221,13 +250,20 @@
                 },
             }
 
-        quality_reports, signal_stats_rows = await asyncio.gather(
-            asyncio.gather(
-                *(self._load_latest_quality_report(db, str(strategy.get("id") or "")) for strategy in strategies)
-            ),
-            asyncio.gather(
-                *(get_signal_stats(str(strategy.get("id") or "")) for strategy in strategies)
-            ),
+        strategy_ids = [str(strategy.get("id") or "").strip() for strategy in strategies]
+        quality_reports = await self._gather_bounded_calls(
+            [
+                (lambda strategy_id=strategy_id: self._load_latest_quality_report(db, strategy_id))
+                for strategy_id in strategy_ids
+            ],
+            concurrency=query_concurrency,
+        )
+        signal_stats_rows = await self._gather_bounded_calls(
+            [
+                (lambda strategy_id=strategy_id: get_signal_stats(strategy_id))
+                for strategy_id in strategy_ids
+            ],
+            concurrency=query_concurrency,
         )
 
         items: list[dict[str, Any]] = []
@@ -235,7 +271,15 @@
         validation_grade_distribution: dict[str, int] = {}
         promotion_ready_count = 0
         quality_passed_count = 0
+        quality_query_error_count = 0
+        signal_query_error_count = 0
         for strategy, quality_report, signal_stats in zip(strategies, quality_reports, signal_stats_rows):
+            if isinstance(quality_report, Exception):
+                quality_query_error_count += 1
+                quality_report = {}
+            if isinstance(signal_stats, Exception):
+                signal_query_error_count += 1
+                signal_stats = {}
             params = dict(strategy.get("params") or {})
             strategy_type = str(strategy.get("strategy_type") or "").strip()
             if not strategy_type or not params:
@@ -297,15 +341,20 @@
                 str(item.get("strategy_id") or ""),
             )
         )
+        selected_items = items[:max_samples]
         return {
-            "items": items[:max_samples],
+            "items": selected_items,
             "summary": {
-                "eligible_sample_count": len(items[:max_samples]),
+                "sample_count": len(selected_items),
+                "eligible_sample_count": len(selected_items),
                 "factory_strategy_count": len(strategies),
                 "strategy_type_counts": strategy_type_counts,
                 "validation_grade_distribution": validation_grade_distribution,
                 "promotion_ready_count": promotion_ready_count,
                 "quality_passed_count": quality_passed_count,
+                "quality_query_error_count": quality_query_error_count,
+                "signal_query_error_count": signal_query_error_count,
+                "query_concurrency": max(1, int(query_concurrency or 1)),
                 "source": "strategy_population_quality_reports",
             },
         }

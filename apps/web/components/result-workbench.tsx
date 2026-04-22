@@ -81,6 +81,15 @@ function uniqueLinks(links: ResultLink[]) {
   });
 }
 
+function uniqueStrings(items: string[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item || seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
 function buildStrategyHref(pageKey: string, suggestion: ResultStrategySuggestion) {
   if (suggestion.href) return suggestion.href;
   const params = new URLSearchParams();
@@ -154,12 +163,22 @@ export default function ResultWorkbench({
   });
 
   const mergedActions = useMemo(
-    () => uniqueActions([...(result?.recommendedActions ?? []), ...extraActions]),
-    [extraActions, result?.recommendedActions],
+    () =>
+      uniqueActions([
+        ...(result?.primaryAction ? [result.primaryAction] : []),
+        ...(result?.secondaryActions ?? []),
+        ...(result?.recommendedActions ?? []),
+        ...extraActions,
+      ]),
+    [extraActions, result?.primaryAction, result?.recommendedActions, result?.secondaryActions],
   );
   const mergedLinks = useMemo(
     () => uniqueLinks([...(result?.recommendedLinks ?? []), ...extraLinks]),
     [extraLinks, result?.recommendedLinks],
+  );
+  const nextSteps = useMemo(
+    () => uniqueStrings(result?.recommendedNextActions ?? []),
+    [result?.recommendedNextActions],
   );
   const resolvedSkills = useMemo(
     () => resolveSkillSuggestions(skillSuggestions, skillsQ.data ?? []),
@@ -223,6 +242,9 @@ export default function ResultWorkbench({
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">{activeResult.summary}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {activeResult.status === 'degraded' || activeResult.status === 'unavailable' ? (
+              <Badge variant="warning">{activeResult.status === 'unavailable' ? '服务不可用' : '降级结果'}</Badge>
+            ) : null}
             {activeResult.platformMeta?.sourceTool ? <Badge variant="info">{activeResult.platformMeta.sourceTool}</Badge> : null}
             {activeResult.platformMeta?.degraded ? <Badge variant="warning">降级结果</Badge> : null}
             {activeResult.freshness?.updatedAt ? (
@@ -281,6 +303,21 @@ export default function ResultWorkbench({
                   </div>
                 </div>
               ) : null}
+
+              {activeResult.emptyState || activeResult.degradedState ? (
+                <div className="rounded-[22px] border border-white/60 bg-white/24 p-4">
+                  <div className="text-sm font-semibold text-text-primary">
+                    {(activeResult.status === 'degraded' || activeResult.platformMeta?.degraded)
+                      ? (activeResult.degradedState?.title ?? '当前页面已进入降级态')
+                      : (activeResult.emptyState?.title ?? '当前页面仍在等待输入')}
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-text-secondary">
+                    {(activeResult.status === 'degraded' || activeResult.platformMeta?.degraded)
+                      ? (activeResult.degradedState?.description ?? '请先处理页面级降级原因，再继续解读下方结果。')
+                      : (activeResult.emptyState?.description ?? '请先补齐关键输入，再继续执行。')}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="space-y-3">
@@ -324,6 +361,18 @@ export default function ResultWorkbench({
           <div className="grid gap-4 xl:grid-cols-2">
             <div className="space-y-3">
               <div className="text-sm font-semibold text-text-primary">可执行动作</div>
+              {nextSteps.length ? (
+                <div className="rounded-[22px] border border-white/60 bg-white/24 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {nextSteps.map((step) => (
+                      <div key={step} className="text-sm leading-6 text-text-secondary">
+                        {step}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {mergedActions.length ? (
                 mergedActions.map((action) => (
                   <button

@@ -42,6 +42,8 @@ export const STRATEGY_MANAGER_ACTIONS = [
   'factory_dispatch_status',
   'factory_runs',
   'factory_run_detail',
+  'factory_topn_latest',
+  'factory_run_topn',
   'execution_audit_verification',
   'execution_audit_acceptance',
   'incubation_accounts',

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { LoadingState, UnavailableState } from '@/components/status-state';
 import { AskAiButton } from '@/components/ask-ai-button';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -738,9 +738,15 @@ export default function HomePage() {
     () =>
       buildLocalResultContract({
         summary: homeSummary,
+        status: personalChainUnavailable || operationsChainUnavailable ? 'degraded' : 'ready',
         pageActions,
         preferredActionIds: ['home.refresh', 'home.open-risk', 'home.open-watchlist'],
         recommendedLinks: homeLinks,
+        recommendedNextActions: [
+          activeAlertCount > 0 ? '先处理活跃告警，再解释盘中异常。' : '先从市场摘要判断今天是否需要切入看盘链路。',
+          watchlistCount > 0 ? '从首页直接打开重点自选股，避免在首页停留过久。' : '补齐第一组自选股，后续首页摘要才有持续价值。',
+          '需要结构化结论时再展开首页工作台，不让首屏被次级说明占满。',
+        ],
         evidence: homeEvidence,
         riskNotes: homeRiskNotes,
         workbenchTask: defaultWorkbenchTask('home', '首页盘中巡检', '/?from=workbench', 'home-summary', {
@@ -756,6 +762,8 @@ export default function HomePage() {
     pageKey: 'home',
     title: '首页',
     summary: homeSummary,
+    primaryGoal: '在一个首屏里判断今天市场、账户和运行状态的下一步去向。',
+    requiredInputs: [],
     stockCode: primaryStockCode,
     objectType: primaryStockCode ? 'stock' : 'workspace',
     objectId: primaryStockCode || 'home',
@@ -771,11 +779,17 @@ export default function HomePage() {
       '把今天的风险、策略和告警整理成行动清单',
       '结合我的自选股给出盘中巡检建议',
     ],
+    recommendedNextActions: homeResult.recommendedNextActions,
     recommendedActions: homeResult.recommendedActions,
     recommendedLinks: homeResult.recommendedLinks,
     evidenceSummary: evidenceToSummary(homeResult.evidence),
     riskNotes: homeResult.riskNotes ?? [],
     freshness: homeResult.freshness ?? null,
+    dataFreshness: homeResult.freshness?.updatedAt ?? null,
+    degradedReason: [
+      personalChainUnavailable ? (paperSumQ.error ?? paperPosQ.error ?? alertsQ.error ?? '账户摘要链路暂不可用') : null,
+      operationsChainUnavailable ? (riskQ.error ?? strategySubsQ.error ?? alertsQ.error ?? '运行摘要链路暂不可用') : null,
+    ].filter((item): item is string => Boolean(item)),
     raw: {
       indices: validIndices.length,
       marketAnomalies: marketAnomalies.length,
@@ -1259,7 +1273,9 @@ export default function HomePage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="home" title="首页研究工作台" result={homeResult} />
+      {!compactHome ? (
+        <ProgressiveWorkbenchSection pageKey="home" title="首页研究工作台" result={homeResult} summaryMode="strip" />
+      ) : null}
 
       <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -1382,28 +1398,30 @@ export default function HomePage() {
           {detailTab === 'operations' ? (
             operationsChainLoading ? (
               <LoadingState text="正在加载风险、策略与系统模块..." />
-            ) : operationsChainUnavailable ? (
-              <UnavailableState
-                text="运行类首页模块暂不可用"
-                hint={
-                  riskQ.error
-                  ?? strategySubsQ.error
-                  ?? alertsQ.error
-                  ?? '请稍后重试，或直接进入风险页与策略页。'
-                }
-                onRetry={() => {
-                  void Promise.allSettled([riskQ.refetch(), strategySubsQ.refetch(), alertsQ.refetch()]);
-                }}
-              />
             ) : (
               <div className="space-y-4">
-                <DashboardCards
-                  mounted={mounted}
-                  dashboardVisibility={dashboardVisibility}
-                  dashboardCards={dashboardCards}
-                  marketAnomalies={marketAnomalies}
-                  anomalyDegraded={anomalyDegraded}
-                />
+                {operationsChainUnavailable ? (
+                  <UnavailableState
+                    text="运行类首页模块部分不可用"
+                    hint={
+                      riskQ.error
+                      ?? strategySubsQ.error
+                      ?? alertsQ.error
+                      ?? '请稍后重试，或直接进入风险页与策略页。'
+                    }
+                    onRetry={() => {
+                      void Promise.allSettled([riskQ.refetch(), strategySubsQ.refetch(), alertsQ.refetch()]);
+                    }}
+                  />
+                ) : (
+                  <DashboardCards
+                    mounted={mounted}
+                    dashboardVisibility={dashboardVisibility}
+                    dashboardCards={dashboardCards}
+                    marketAnomalies={marketAnomalies}
+                    anomalyDegraded={anomalyDegraded}
+                  />
+                )}
                 <SystemStatus
                   moduleStatuses={moduleStatuses}
                   showDashboardSettings={showDashboardSettings}

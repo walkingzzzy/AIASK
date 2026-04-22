@@ -19,6 +19,7 @@ from ._paper_trading_manager_support import (
     _fill_order,
     _get_quote_snapshot,
     _get_price,
+    _reconcile_account_state,
     _get_sellable_quantity,
     _normalize_kwargs,
     _normalize_risk_pct,
@@ -38,6 +39,19 @@ DEFAULT_RISK_RULES = {
     "max_drawdown_pct": 20.0,   # 最大回撤阈值 %
     "stop_loss_pct": 10.0,      # 个股止损线 %
 }
+
+
+def _as_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def _sync_paper_trading_support_overrides() -> None:
@@ -100,6 +114,7 @@ def register_paper_trading_manager(mcp):
                 'summary': '账户摘要',
                 'list_accounts': '列出所有账户',
                 'accounts': '列出所有账户',
+                'reconcile': '校准账户账本与持仓快照',
                 'nav_history': '查看NAV历史',
                 'set_risk_rules': '设置风控规则',
                 'matching_status': '撮合引擎状态',
@@ -322,7 +337,7 @@ def register_paper_trading_manager(mcp):
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
-                await _ensure_positions_consistency(db, account_id)
+                reconcile = await _reconcile_account_state(db, account_id, refresh_prices=False, force=False)
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT * FROM paper_positions WHERE account_id=$1", account_id
@@ -334,7 +349,12 @@ def register_paper_trading_manager(mcp):
                         quantity = int(item.get('quantity') or 0)
                         item['sellable'] = max(0, min(quantity, sellable))
                         positions.append(item)
-                return ok({'account_id': account_id, 'positions': positions, 'count': len(positions)})
+                return ok({
+                    'account_id': account_id,
+                    'positions': positions,
+                    'count': len(positions),
+                    'reconciliation': reconcile,
+                })
 
             # --- orders (trades) ---
             elif action == 'orders':
@@ -386,6 +406,7 @@ def register_paper_trading_manager(mcp):
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
+                reconcile = await _reconcile_account_state(db, account_id, refresh_prices=False, force=False)
                 async with db.acquire() as conn:
                     account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
                     if not account:
@@ -396,8 +417,6 @@ def register_paper_trading_manager(mcp):
                     pending = await conn.fetchval(
                         "SELECT COUNT(*) FROM paper_orders WHERE account_id=$1 AND status='pending'", account_id
                     )
-                if not positions:
-                    positions = await _ensure_positions_consistency(db, account_id)
                 acct = dict(account)
                 initial = float(acct.get('initial_capital') or 0)
                 total = float(acct.get('total_value') or 0)
@@ -408,6 +427,7 @@ def register_paper_trading_manager(mcp):
                     'pending_orders_count': int(pending or 0),
                     'total_value': total,
                     'total_return_pct': round((total - initial) / initial * 100, 2) if initial > 0 else 0,
+                    'reconciliation': reconcile,
                 })
 
             # --- list_accounts ---
@@ -417,6 +437,21 @@ def register_paper_trading_manager(mcp):
                         "SELECT * FROM paper_accounts WHERE user_id=$1 ORDER BY created_at", user_id
                     )
                 return ok({'accounts': [dict(r) for r in rows], 'count': len(rows)})
+
+            # --- reconcile ---
+            elif action == 'reconcile':
+                account_id = kwargs.get('account_id')
+                if not account_id:
+                    account_id = await _ensure_account(user_id, db)
+                refresh_prices = _as_bool(kwargs.get('refresh_prices'), True)
+                force = _as_bool(kwargs.get('force'), False)
+                result = await _reconcile_account_state(
+                    db,
+                    account_id,
+                    refresh_prices=refresh_prices,
+                    force=force,
+                )
+                return ok(result)
 
             # --- update_prices ---
             elif action == 'update_prices':
@@ -436,11 +471,13 @@ def register_paper_trading_manager(mcp):
                         item['sellable'] = max(0, min(quantity, sellable))
                         enriched_positions.append(item)
                     account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+                reconcile = await _reconcile_account_state(db, account_id, refresh_prices=False, force=False)
                 return ok({
                     'account_id': account_id,
                     'positions': enriched_positions,
                     'count': len(enriched_positions),
                     'account': dict(account) if account else None,
+                    'reconciliation': reconcile,
                 })
 
             # --- nav_history ---

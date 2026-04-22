@@ -10,7 +10,7 @@ import MarketMinuteTab from '@/app/market/components/market-minute-tab';
 import MarketQueryShell from '@/app/market/components/market-query-shell';
 import MarketSearchTab from '@/app/market/components/market-search-tab';
 import MarketTradeTab from '@/app/market/components/market-trade-tab';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { useOnboarding } from '@/components/onboarding';
 import { Badge, PageContainer } from '@/components/ui';
 import {
@@ -622,9 +622,14 @@ function MarketPageInner({
     () => {
       const localFallback = buildLocalResultContract({
         summary: workspaceSummary,
+        status: pageOffline || quoteErrorMessage || tabErrorMessage ? 'degraded' : 'ready',
         pageActions,
         preferredActionIds: ['market.refresh', 'market.switch-main', 'market.switch-blocks', 'market.open-stock'],
         recommendedLinks: quickJumpLinks.map((item, index) => ({ id: `market-link-${index}`, label: item.label, href: item.href })),
+        recommendedNextActions: [
+          activeDisplayCode ? '先看当前标的主图和盘口，再决定要不要切换到板块或指数。' : '先锁定一个主标的或指数，再解释行情结果。',
+          tabErrorMessage ? '当前分页存在错误，优先重试当前视图，不要继续堆叠切换。' : '如果主图信息不足，再切换分时、板块或搜索视图。',
+        ],
         evidence: marketEvidence,
         riskNotes: marketRiskNotes,
         freshness: freshness ? { updatedAt: freshness, label: freshnessLabel || '行情刷新时间' } : null,
@@ -647,6 +652,8 @@ function MarketPageInner({
     pageKey: 'market',
     title: '行情工作台',
     summary: workspaceSummary,
+    primaryGoal: '用一个首屏确认当前标的、当前视图和下一步看盘动作。',
+    requiredInputs: activeDisplayCode ? ['stockCode'] : ['stockCode 或指数/板块视图'],
     stockCode: activeDisplayCode || undefined,
     objectType: activeDisplayCode ? 'stock' : 'workspace',
     objectId: activeDisplayCode || activeTab,
@@ -657,11 +664,14 @@ function MarketPageInner({
       '判断现在更适合切板块、指数还是继续看个股',
       '把当前行情页整理成下一步研究路线',
     ],
+    recommendedNextActions: marketResult.recommendedNextActions,
     recommendedActions: marketResult.recommendedActions,
     recommendedLinks: marketResult.recommendedLinks,
     evidenceSummary: evidenceToSummary(marketResult.evidence),
     riskNotes: marketResult.riskNotes ?? [],
     freshness: marketResult.freshness ?? null,
+    dataFreshness: marketResult.freshness?.updatedAt ?? null,
+    degradedReason: [pageOffline ? '当前数据服务不可达' : null, quoteErrorMessage, tabErrorMessage].filter((item): item is string => Boolean(item)),
     raw: {
       tab: activeTab,
       code: activeDisplayCode || null,
@@ -717,7 +727,9 @@ function MarketPageInner({
         />
       )}
 
-      <ResultWorkbench pageKey="market" title="行情结果工作台" result={marketResult} />
+      {!compactHeroDetected ? (
+        <ProgressiveWorkbenchSection pageKey="market" title="行情结果工作台" result={marketResult} summaryMode="strip" />
+      ) : null}
 
 
       <MarketQueryShell

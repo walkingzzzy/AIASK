@@ -191,10 +191,10 @@ async function main() {
       'strategy market observability rendered',
     );
 
-    const ranking = await page.evaluate(async (bffUrl) => {
-      const response = await fetch(`${bffUrl}/strategy-market/ranking?limit=3`, { credentials: 'include' });
+    const ranking = await page.evaluate(async () => {
+      const response = await fetch('/api/bff/strategy-market/ranking?limit=3', { credentials: 'include' });
       return { ok: response.ok, status: response.status, body: await response.json() };
-    }, args.bffUrl);
+    });
     const strategies = ranking.body?.data?.strategies ?? [];
     recordAssertion(results, ranking.ok, 'strategy market ranking endpoint reachable', `status=${ranking.status}`);
     recordAssertion(results, strategies.length > 0, 'strategy market ranking returned strategies');
@@ -207,10 +207,10 @@ async function main() {
       screenshot: path.relative(args.outputDir, await saveScreenshot(page, screenshotDir, 'strategy-market')),
     };
 
-    const detail = await page.evaluate(async ({ bffUrl, strategyId }) => {
-      const response = await fetch(`${bffUrl}/strategy-market/${strategyId}`, { credentials: 'include' });
+    const detail = await page.evaluate(async ({ strategyId }) => {
+      const response = await fetch(`/api/bff/strategy-market/${strategyId}`, { credentials: 'include' });
       return { ok: response.ok, status: response.status, body: await response.json() };
-    }, { bffUrl: args.bffUrl, strategyId: firstStrategyId });
+    }, { strategyId: firstStrategyId });
     const detailData = detail.body?.data ?? {};
     const strategy = detailData.strategy ?? {};
     recordAssertion(results, detail.ok, 'strategy detail endpoint reachable', `status=${detail.status}`);

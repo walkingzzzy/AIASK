@@ -137,6 +137,115 @@
                         f"and local fallback timed out after {fallback_timeout_sec:g}s"
                     ) from retry_exc
 
+        async def _persist_full_market_topn(
+            self,
+            db,
+            results: dict[str, Any],
+            *,
+            persistence_failures: list[dict[str, Any]],
+        ) -> None:
+            topn_payload = dict(results.get("full_market_topn") or {})
+            score_rows = [
+                dict(item or {})
+                for item in list(results.get("_full_market_score_rows") or [])
+                if isinstance(item, dict)
+            ]
+            run_id = str(results.get("run_id") or "").strip()
+            trace_id = str(results.get("trace_id") or "").strip() or None
+            if not topn_payload or not run_id:
+                return
+
+            try:
+                portfolio_candidate = build_portfolio_candidate_from_topn(
+                    topn_payload,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "StrategyFactory: failed to build full-market Top N portfolio candidate for run %s: %s",
+                    run_id,
+                    exc,
+                )
+                self._record_persistence_failure(
+                    persistence_failures,
+                    "build_portfolio_candidate_from_topn",
+                    exc,
+                    stage="full_market_topn",
+                )
+                portfolio_candidate = None
+
+            enriched_snapshot = {
+                **topn_payload,
+                "run_id": run_id,
+                "trace_id": trace_id,
+                "correlation_id": str(topn_payload.get("correlation_id") or run_id).strip() or run_id,
+                "source_action": "factory_run_once",
+            }
+            if portfolio_candidate is not None:
+                enriched_snapshot["portfolio_candidate_id"] = portfolio_candidate.get("id")
+
+            if portfolio_candidate is not None and hasattr(db, "save_strategy"):
+                try:
+                    await db.save_strategy(portfolio_candidate)
+                except Exception as exc:
+                    logger.warning(
+                        "StrategyFactory: failed to persist Top N portfolio candidate for run %s: %s",
+                        run_id,
+                        exc,
+                    )
+                    self._record_persistence_failure(
+                        persistence_failures,
+                        "save_strategy:topn_portfolio_candidate",
+                        exc,
+                        stage="full_market_topn",
+                    )
+
+            if hasattr(db, "save_strategy_factory_topn_snapshot"):
+                try:
+                    saved_snapshot = await db.save_strategy_factory_topn_snapshot(enriched_snapshot)
+                    if isinstance(saved_snapshot, dict):
+                        enriched_snapshot = {**enriched_snapshot, **saved_snapshot}
+                except Exception as exc:
+                    logger.warning(
+                        "StrategyFactory: failed to persist Top N snapshot for run %s: %s",
+                        run_id,
+                        exc,
+                    )
+                    self._record_persistence_failure(
+                        persistence_failures,
+                        "save_strategy_factory_topn_snapshot",
+                        exc,
+                        stage="full_market_topn",
+                    )
+
+            if score_rows and hasattr(db, "replace_strategy_factory_full_market_scores"):
+                try:
+                    await db.replace_strategy_factory_full_market_scores(
+                        run_id=run_id,
+                        snapshot_id=str(enriched_snapshot.get("snapshot_id") or "").strip() or f"fmt_{run_id}",
+                        as_of_date=enriched_snapshot.get("as_of_date"),
+                        trace_id=trace_id,
+                        correlation_id=enriched_snapshot.get("correlation_id"),
+                        rows=score_rows,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "StrategyFactory: failed to persist full-market scores for run %s: %s",
+                        run_id,
+                        exc,
+                    )
+                    self._record_persistence_failure(
+                        persistence_failures,
+                        "replace_strategy_factory_full_market_scores",
+                        exc,
+                        stage="full_market_topn",
+                    )
+
+            results["full_market_topn"] = enriched_snapshot
+            if isinstance(results.get("summary"), dict):
+                results["summary"]["full_market_topn"] = enriched_snapshot
+
         async def _persist_run_result(
             self,
             db,
@@ -145,6 +254,11 @@
             persistence_failures: list[dict[str, Any]],
         ) -> None:
             await self._persist_run_artifacts(
+                db,
+                results,
+                persistence_failures=persistence_failures,
+            )
+            await self._persist_full_market_topn(
                 db,
                 results,
                 persistence_failures=persistence_failures,

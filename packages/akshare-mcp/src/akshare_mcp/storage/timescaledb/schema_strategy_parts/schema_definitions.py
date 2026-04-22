@@ -244,6 +244,8 @@
             summary JSONB DEFAULT '{}'::jsonb,
             completeness JSONB DEFAULT '{}'::jsonb,
             sources JSONB DEFAULT '{}'::jsonb,
+            parameter_distribution_samples JSONB DEFAULT '[]'::jsonb,
+            parameter_distribution_summary JSONB DEFAULT '{}'::jsonb,
             failure_reasons JSONB DEFAULT '[]'::jsonb,
             missing_fields JSONB DEFAULT '[]'::jsonb,
             degraded BOOLEAN DEFAULT FALSE,
@@ -265,6 +267,14 @@
     await conn.execute("""
         ALTER TABLE daily_snapshot_history
         ADD COLUMN IF NOT EXISTS sources JSONB DEFAULT '{}'::jsonb;
+    """)
+    await conn.execute("""
+        ALTER TABLE daily_snapshot_history
+        ADD COLUMN IF NOT EXISTS parameter_distribution_samples JSONB DEFAULT '[]'::jsonb;
+    """)
+    await conn.execute("""
+        ALTER TABLE daily_snapshot_history
+        ADD COLUMN IF NOT EXISTS parameter_distribution_summary JSONB DEFAULT '{}'::jsonb;
     """)
     await conn.execute("""
         ALTER TABLE daily_snapshot_history
@@ -342,5 +352,46 @@
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW(),
             PRIMARY KEY(strategy_id, snapshot_type)
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_factory_topn_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            as_of_date DATE,
+            trace_id TEXT,
+            correlation_id TEXT,
+            source_action TEXT,
+            universe_count INTEGER DEFAULT 0,
+            eligible_count INTEGER DEFAULT 0,
+            topn_n INTEGER DEFAULT 20,
+            selection_rules JSONB DEFAULT '{}'::jsonb,
+            constituents JSONB DEFAULT '[]'::jsonb,
+            portfolio_candidate_id TEXT,
+            metadata JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_factory_full_market_scores (
+            id SERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            as_of_date DATE,
+            trace_id TEXT,
+            correlation_id TEXT,
+            code TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            composite_score DOUBLE PRECISION DEFAULT 0,
+            industry TEXT,
+            market_cap DOUBLE PRECISION,
+            component_scores JSONB DEFAULT '{}'::jsonb,
+            family_candidates JSONB DEFAULT '[]'::jsonb,
+            eligible BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(run_id, code)
         );
     """)

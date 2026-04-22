@@ -7,6 +7,95 @@ import type {
   FactoryValidationFamilyQualityPanelItem,
 } from './core';
 
+export type ResearchWindowStatus = {
+    available?: boolean;
+    loaded_stock_count?: number;
+    eligible_stock_count?: number;
+    planned_bulk_task_count?: number;
+    selected_bulk_task_count?: number;
+    effective_task_budget?: number;
+    requested_task_offset?: number;
+    effective_task_offset?: number;
+    next_task_offset?: number;
+    batch_count?: number;
+    selected_batch_count?: number;
+    shard_count?: number;
+    selected_shard_ids?: number[];
+    stock_coverage_ratio?: number;
+};
+
+export type FullMarketScoreRow = {
+    code?: string;
+    name?: string;
+    industry?: string | null;
+    market_cap?: number | null;
+    composite_score?: number;
+    component_scores?: Record<string, number>;
+    family_candidates?: string[];
+    eligible?: boolean;
+    rank?: number;
+    selection_rank?: number;
+    as_of_date?: string | null;
+};
+
+export type TopNConstituent = {
+    rank?: number;
+    selection_rank?: number;
+    code?: string;
+    name?: string;
+    industry?: string | null;
+    market_cap?: number | null;
+    composite_score?: number;
+    family_candidates?: string[];
+    component_scores?: Record<string, number>;
+};
+
+export type TopNSnapshot = {
+    contract_version?: string;
+    available?: boolean;
+    snapshot_id?: string;
+    run_id?: string;
+    trace_id?: string | null;
+    correlation_id?: string | null;
+    source_action?: string | null;
+    as_of_date?: string | null;
+    selection_method?: string;
+    universe_count?: number;
+    eligible_count?: number;
+    score_row_count?: number;
+    topn_n?: number;
+    score_contract_version?: string;
+    score_quality?: string;
+    score_distribution?: Record<string, number>;
+    tie_cluster_summary?: Record<string, number>;
+    component_activation_summary?: Record<string, number>;
+    capped_component_counts?: Record<string, number>;
+    active_factors?: string[];
+    hot_sectors?: string[];
+    cold_sectors?: string[];
+    stock_family_allocation_source_mode?: string | null;
+    stock_family_allocation_avg_priority?: number;
+    valuation_signal_coverage_top100?: number;
+    dominant_component?: string | null;
+    degraded_reasons?: string[];
+    selection_rules?: Record<string, unknown>;
+    constituents?: TopNConstituent[];
+    industry_distribution?: Record<string, number>;
+    average_topn_score?: number;
+    portfolio_candidate_id?: string | null;
+    metadata?: Record<string, unknown>;
+    top_scores?: FullMarketScoreRow[];
+    requested_limit?: number;
+};
+
+export type FactoryTopNResponse = {
+    available?: boolean;
+    snapshot?: TopNSnapshot | null;
+    top_scores?: FullMarketScoreRow[];
+    score_row_count?: number;
+    requested_limit?: number;
+};
+
 export type FactoryRunSummary = {
     trace_id?: string;
     prediction_trace_id?: string;
@@ -123,6 +212,8 @@ export type FactoryRunSummary = {
     execution_quality_distribution?: Record<string, number>;
     evidence_alignment_distribution?: Record<string, number>;
     confidence_contract_ready_rate?: number;
+    research_window?: ResearchWindowStatus;
+    full_market_topn?: TopNSnapshot;
 };
 
 export type FactoryStatusResponse = {
@@ -167,6 +258,8 @@ export type FactoryStatusResponse = {
     execution_audit_entity_chain_available?: boolean;
     spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     signal_quality_registry?: FactorySignalQualityRegistry;
+    research_window?: ResearchWindowStatus;
+    full_market_topn?: TopNSnapshot;
     feature_flags?: {
         high_confidence_enabled?: boolean;
         evidence_contract_enabled?: boolean;

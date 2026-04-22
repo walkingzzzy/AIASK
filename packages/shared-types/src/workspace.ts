@@ -1,6 +1,8 @@
 export type WorkspaceLayoutDensity = 'comfortable' | 'compact' | 'dense';
 
 export type WorkspaceLayoutPreset = 'research' | 'trading' | 'focus' | 'custom';
+export type WorkspaceDockPreference = 'auto' | 'hidden' | 'persistent';
+export type WorkspacePageLayoutMode = 'overview' | 'workspace' | 'utility';
 
 export type WorkspacePagePanelMode = 'single' | 'split';
 
@@ -45,8 +47,11 @@ export type WorkspaceLayout = {
     navWidth: number;
     dockVisible: boolean;
     dockWidth: number;
+    dockPreference: WorkspaceDockPreference;
     density: WorkspaceLayoutDensity;
     pageWidth: 'wide' | 'focused';
+    pageLayoutMode: WorkspacePageLayoutMode;
+    minMainWidth: number;
     pagePanels?: Record<WorkspacePageKey, WorkspacePagePanelLayout>;
 };
 

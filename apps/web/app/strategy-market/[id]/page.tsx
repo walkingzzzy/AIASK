@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
-import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, TabBar } from '@/components/ui';
 import { useMobile } from '@/hooks/use-mobile';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -14,7 +13,6 @@ import { apiKeys } from '@/lib/query-keys';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import {
   DETAIL_TABS,
-  FACTORY_SECTIONS,
   firstFiniteNumber,
 } from '@/app/strategy-market/lib/strategy-detail-view';
 import {
@@ -35,8 +33,7 @@ import {
   StrategyDetailEmptyState,
   StrategyDetailLoadingState,
 } from '../components/StrategyDetailStatusState';
-import { useStrategyDetailPage, type StrategyDetailTab } from '../hooks/use-strategy-detail-page';
-import type { FactoryReviewSection } from '../types';
+import { useStrategyDetailPage } from '../hooks/use-strategy-detail-page';
 import { isSurfacePlaceholderId } from '@/lib/surface-contracts';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
@@ -126,17 +123,6 @@ export default function StrategyDetailPage() {
     strategy?.description ||
     '先确认策略合同、质量门状态和当前孵化决策，再决定是加入组合、继续收藏，还是转到工厂审查继续追踪。';
   const portfolioHref = '/portfolio?from=strategy-detail';
-
-  const currentView = useMemo(
-    () => ({
-      strategyId: strategy?.id ?? strategyId ?? null,
-      activeTab,
-      factorySection: factoryPanelProps.activeSection,
-      favorited: isSubscribed,
-      ownerState: ownerState?.kind ?? null,
-    }),
-    [activeTab, factoryPanelProps.activeSection, isSubscribed, ownerState?.kind, strategy?.id, strategyId],
-  );
 
   useEffect(() => {
     if (!strategy) return;
@@ -417,6 +403,129 @@ export default function StrategyDetailPage() {
   );
 
   usePageActions(pageActions);
+  const resultPageActions = useMemo(
+    () =>
+      emptyDetailContract
+        ? [
+            {
+              id: 'strategy-detail.empty.open-market',
+              label: '返回策略超市',
+              description: '回到策略列表继续筛选和比较',
+              keywords: ['策略超市', '返回列表'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.empty.reload',
+              label: '重新加载策略详情',
+              description: '重新尝试加载当前空态详情页',
+              keywords: ['刷新', '重试'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+          ]
+        : [
+            {
+              id: 'strategy-detail.open-market',
+              label: '返回策略超市',
+              description: '回到策略列表继续筛选和比较',
+              keywords: ['策略超市', '返回列表'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.switch.overview',
+              label: '切到策略概览',
+              description: '查看样本期、质量门、净值轨迹和用户评价',
+              keywords: ['概览', '质量门'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.switch.tracking',
+              label: '切到实盘跟踪',
+              description: '查看信号统计、前向验证与历史信号',
+              keywords: ['实盘跟踪', '信号'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.switch.factory',
+              label: '切到工厂审查',
+              description: '查看工厂摘要、孵化闭环、运行风控和实验事件',
+              keywords: ['工厂审查', '风控'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.subscribe',
+              label: isSubscribed ? '取消收藏策略' : '收藏策略',
+              description: '切换当前策略的收藏状态',
+              keywords: ['收藏', '策略'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.add-to-portfolio',
+              label: '加入组合购物车',
+              description: '将当前策略加入组合购物车并打开购物车',
+              keywords: ['加入组合', '购物车'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            {
+              id: 'strategy-detail.open-paper',
+              label: paperSessionState?.has_session ? '打开我的模拟盘测试' : '创建模拟盘测试',
+              description: '为当前策略打开或创建个人模拟盘测试账户',
+              keywords: ['模拟盘', 'paper'],
+              scope: 'page' as const,
+              pageKey,
+              run: async () => null,
+            },
+            ...(userId && !ownerState?.editable
+              ? [{
+                  id: 'strategy-detail.fork-personal',
+                  label: '复制为我的策略',
+                  description: '把当前市场策略复制成个人草稿',
+                  keywords: ['复制', '我的策略'],
+                  scope: 'page' as const,
+                  pageKey,
+                  run: async () => null,
+                }]
+              : []),
+            ...(ownerState?.editable
+              ? [
+                  {
+                    id: 'strategy-detail.save-personal',
+                    label: '保存我的策略',
+                    description: '保存当前个人策略草稿的名称、描述、参数与因子权重',
+                    keywords: ['保存', '个人策略', '草稿'],
+                    scope: 'page' as const,
+                    pageKey,
+                    run: async () => null,
+                  },
+                  {
+                    id: 'strategy-detail.ai-optimize',
+                    label: 'AI 优化我的策略',
+                    description: '用现有 AI 实验链路优化当前个人策略',
+                    keywords: ['AI', '优化'],
+                    scope: 'page' as const,
+                    pageKey,
+                    run: async () => null,
+                  },
+                ]
+              : []),
+          ],
+    [emptyDetailContract, isSubscribed, ownerState?.editable, pageKey, paperSessionState?.has_session, userId],
+  );
 
   const strategyDetailSummary = emptyDetailContract
       ? '当前环境还没有可进入的策略详情数据，页面按空态契约渲染。'
@@ -432,7 +541,7 @@ export default function StrategyDetailPage() {
       buildLocalResultContract({
         summary: strategyDetailSummary,
         availableViews: activeTab === 'factory' ? ['visual'] : [],
-        pageActions,
+        pageActions: resultPageActions,
         preferredActionIds: emptyDetailContract
           ? ['strategy-detail.empty.open-market', 'strategy-detail.empty.reload']
           : ['strategy-detail.switch.overview', 'strategy-detail.switch.factory', 'strategy-detail.open-paper'],
@@ -493,7 +602,6 @@ export default function StrategyDetailPage() {
       activeTab,
       activeTabLabel,
       detailError,
-      detailLoading,
       emptyDetailContract,
       factoryPanelProps.activeSection,
       displayStatus.label,
@@ -502,8 +610,8 @@ export default function StrategyDetailPage() {
       latestQualityReport?.summary?.validation_grade,
       marketStatus.label,
       openRiskEvents.length,
-      pageActions,
       portfolioHref,
+      resultPageActions,
       showIncubationStage,
       strategy,
       strategyDetailSummary,
@@ -606,19 +714,6 @@ export default function StrategyDetailPage() {
     runCorrection?.reality_check_pvalue_proxy,
     qualityGate?.reality_check_pvalue_proxy,
   );
-
-  function applyView(snapshot: Record<string, unknown>) {
-    if (typeof snapshot.activeTab === 'string' && DETAIL_TABS.some((item) => item.key === snapshot.activeTab)) {
-      setActiveTab(snapshot.activeTab as StrategyDetailTab);
-    }
-    if (
-      typeof snapshot.factorySection === 'string' &&
-      FACTORY_SECTIONS.includes(snapshot.factorySection as FactoryReviewSection)
-    ) {
-      factoryPanelProps.onSectionChange(snapshot.factorySection as FactoryReviewSection);
-      setActiveTab('factory');
-    }
-  }
 
   const primaryContent = (
     <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
@@ -801,11 +896,14 @@ export default function StrategyDetailPage() {
         onOpenPaperSession={() => void handleOpenPaperSession()}
       />
 
-      <ResultWorkbench
-        pageKey="strategy-detail"
-        title="策略详情结果工作台"
-        result={strategyDetailResult}
-      />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection
+          pageKey="strategy-detail"
+          title="策略详情结果工作台"
+          result={strategyDetailResult}
+          summaryMode="strip"
+        />
+      ) : null}
 
       {!ownerState?.editable && userId ? (
         <section className="panel-soft rounded-[22px] px-4 py-3">
@@ -835,9 +933,6 @@ export default function StrategyDetailPage() {
         </section>
       ) : null}
 
-      {!compactLayout ? (
-        <WorkspaceToolbar pageKey={pageKey} currentView={currentView} onApplyView={applyView} supportsPagePanels />
-      ) : null}
       <TabBar tabs={DETAIL_TABS} active={activeTab} onChange={setActiveTab} />
       <WorkspaceSplitLayout pageKey={pageKey} primary={primaryContent} secondary={secondaryContent} />
       {showCart ? <CartDrawer onClose={() => setShowCart(false)} /> : null}

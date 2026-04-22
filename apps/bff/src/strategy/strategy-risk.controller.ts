@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
+import { Public } from '../rbac/public.decorator';
 import {
   RiskEventsQueryDto,
   RiskSnapshotsQueryDto,
@@ -20,6 +21,7 @@ export class StrategyRiskController {
   constructor(private readonly svc: StrategyMarketService) {}
 
   @Get(':id/risk-events')
+  @Public()
   async riskEvents(@Param('id') id: string, @Query() q: RiskEventsQueryDto, @Req() req: Req_) {
     const data = await this.svc.riskEvents(id, {
       account_id: q.account_id,
@@ -31,6 +33,7 @@ export class StrategyRiskController {
   }
 
   @Get(':id/risk-snapshots')
+  @Public()
   async riskSnapshots(@Param('id') id: string, @Query() q: RiskSnapshotsQueryDto, @Req() req: Req_) {
     const data = await this.svc.riskSnapshots(id, {
       posture_level: q.posture_level,
@@ -60,6 +63,7 @@ export class StrategyRiskController {
   }
 
   @Get(':id/runtime-alerts')
+  @Public()
   async runtimeAlerts(@Param('id') id: string, @Query() q: RuntimeAlertsQueryDto, @Req() req: Req_) {
     const data = await this.svc.runtimeAlerts(id, {
       status: q.status,
@@ -86,6 +90,7 @@ export class StrategyRiskController {
   }
 
   @Get(':id/runtime-control')
+  @Public()
   async runtimeControl(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.runtimeControl(id);
     return { success: true, data, traceId: tid(req) };
@@ -104,6 +109,7 @@ export class StrategyRiskController {
   }
 
   @Get('runtime-cycle/status')
+  @Public()
   async runtimeCycleStatus(@Req() req: Req_) {
     const data = await this.svc.runtimeCycleStatus();
     return { success: true, data, traceId: tid(req) };

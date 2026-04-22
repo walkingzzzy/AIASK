@@ -18,11 +18,13 @@ import type {
   RuntimeAlert,
   RuntimeControl,
   RuntimeRiskSnapshot,
+  ResearchWindowStatus,
   StrategyFavoriteState,
   StrategyOwnerState,
   StrategyPaperSessionState,
   StrategyPresentationDto,
   StrategyEventsResponse,
+  TopNSnapshot,
   TaskRun,
   VectorIndexSnapshot,
   VectorProfile,
@@ -64,15 +66,19 @@ export type {
   FactoryGenerationLaneQualityItem,
   FactoryQualityBaseline,
   FactoryQualitySummarySnapshot,
+  FactoryTopNResponse,
+  FullMarketScoreRow,
   FactorySignalQualityRegistry,
   FactorySignalQualityRegistryDriftCheck,
   FactoryValidationFamilyQualityPanelItem,
+  ResearchWindowStatus,
   StrategyEvidenceAlignmentAudit,
   StrategyPredictionTraceGateDecisions,
   StrategyReviewReportSummary,
   StrategyMetric,
   StrategyReview,
   StrategyCore,
+  TopNSnapshot,
   SignalStatsResponse,
   Signal,
   SignalsResponse,
@@ -184,6 +190,8 @@ export type StrategyClosureReviewResponse = {
     task_runs?: TaskRun[];
   } | null;
   factory?: {
+    research_window?: ResearchWindowStatus | null;
+    full_market_topn?: TopNSnapshot | null;
     latest_run?: FactoryRunItem | null;
     runs?: FactoryRunItem[];
   } | null;

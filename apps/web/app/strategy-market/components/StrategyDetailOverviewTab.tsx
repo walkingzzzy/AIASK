@@ -21,7 +21,6 @@ import type {
   StrategyOwnerState,
   StrategyPaperSessionState,
   StrategyReview,
-  VectorProfile,
 } from '../types';
 import { heroPrimaryButtonCls } from './strategy-detail-panel-styles';
 

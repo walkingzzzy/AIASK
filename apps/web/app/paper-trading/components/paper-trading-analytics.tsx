@@ -20,6 +20,8 @@ type PaperTradingAnalyticsProps = {
   navStatusLabel: string;
   onRefreshPrices: () => void;
   refreshPricesPending: boolean;
+  onReconcileLedger: () => void;
+  reconcilePending: boolean;
   accounts: PaperTradingAccount[];
   accountId: string;
   onAccountChange: (value: string) => void;
@@ -45,6 +47,8 @@ export default function PaperTradingAnalytics({
   navStatusLabel,
   onRefreshPrices,
   refreshPricesPending,
+  onReconcileLedger,
+  reconcilePending,
   accounts,
   accountId,
   onAccountChange,
@@ -81,6 +85,14 @@ export default function PaperTradingAnalytics({
                 className={paperTradingChipButtonCls}
               >
                 {refreshPricesPending ? '刷新中...' : '刷新价格'}
+              </button>
+              <button
+                type="button"
+                onClick={onReconcileLedger}
+                disabled={reconcilePending}
+                className={paperTradingChipButtonCls}
+              >
+                {reconcilePending ? '校准中...' : '校准账本'}
               </button>
               {accounts.length > 1 ? (
                 <label className="flex min-w-[156px] flex-col gap-2 text-xs text-text-secondary">

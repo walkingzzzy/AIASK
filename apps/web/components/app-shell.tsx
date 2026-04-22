@@ -10,7 +10,6 @@ import { useMobile } from '@/hooks/use-mobile';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
-import { useBffAvailability } from '@/lib/bff-availability';
 import { describeActionableElement, ensureBehaviorSessionId, flushBehaviorEvents, resolveBehaviorPageKey, trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { useTheme } from '@/hooks/use-theme';
 import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
@@ -348,6 +347,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const hydrated = useHydrated();
   const isAuthPage = rawPathname ? isPublicPathname(rawPathname) : false;
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState<number>(0);
 
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workspaces = useWorkbenchStore((state) => state.workspaces);
@@ -363,27 +363,38 @@ export default function AppShell({ children }: { children: ReactNode }) {
     () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
     [activeWorkspaceId, workspaces],
   );
-  const bffAvailability = useBffAvailability({ probeOnMount: !isAuthPage });
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
   const currentStockCode = hydrated ? storeCode || activeWorkspace.context.stockCode || '' : '';
   const isStrategyMarketPage = pathname === '/strategy-market' || pathname.startsWith('/strategy-market/');
   const shellWorkspaceName = isStrategyMarketPage ? '策略工作区' : activeWorkspace.name;
   const shellHeaderStockCode = isStrategyMarketPage ? '' : currentStockCode;
   const isAiCenterPage = pathname === '/assistant' || pathname.startsWith('/assistant/');
-  const dockRequested = hydrated && !isAiCenterPage && (layout.dockVisible || dockOpen);
-  const showPersistentDock = dockRequested && !useOverlayDock;
-  const showOverlayDock = dockOpen && !isAiCenterPage && useOverlayDock;
+  const dockRequested = hydrated && !isAiCenterPage && layout.dockPreference !== 'hidden' && (layout.dockVisible || dockOpen);
+  const projectedMainWidth = viewportWidth - layout.navWidth - layout.dockWidth;
+  const canKeepPersistentDock = !useOverlayDock && projectedMainWidth >= layout.minMainWidth;
+  const showPersistentDock =
+    dockRequested
+    && (layout.dockPreference === 'persistent' || layout.dockPreference === 'auto')
+    && canKeepPersistentDock;
+  const showOverlayDock = dockOpen && !isAiCenterPage && !showPersistentDock;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncViewport = () => setViewportWidth(window.innerWidth);
+    syncViewport();
+    window.addEventListener('resize', syncViewport);
+    return () => window.removeEventListener('resize', syncViewport);
+  }, []);
 
   useEffect(() => {
     if (isAuthPage || user) return;
     if (!hasLoggedInHint()) return;
-    if (!bffAvailability.reachable) return;
     probeAuthSession<{ authenticated?: boolean; user?: User }>()
       .then((data) => {
         if (data?.authenticated && data.user) setUser(data.user);
       })
       .catch(() => {});
-  }, [bffAvailability.reachable, isAuthPage, setUser, user]);
+  }, [isAuthPage, setUser, user]);
 
   useEffect(() => {
     if (dockOpen && !layout.dockVisible) {
@@ -838,7 +849,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <span className="app-shell-orb app-shell-orb-2" />
           <span className="app-shell-orb app-shell-orb-3" />
         </div>
-        <Onboarding />
         {mobileDrawer}
         {mobileDock}
         <div className="app-shell-frame">
@@ -919,7 +929,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
             <div className="app-shell-main">
               <main className="app-shell-content mobile-safe-bottom min-w-0 flex-1 overflow-auto">
-                <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>{children}</div>
+                <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>
+                  <Onboarding className="mb-3" />
+                  {children}
+                </div>
               </main>
               {showPersistentDock ? (
                 <aside className="app-shell-dock hidden shrink-0 2xl:flex" style={{ width: desktopDockWidth }}>

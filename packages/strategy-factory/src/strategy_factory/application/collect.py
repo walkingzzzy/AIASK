@@ -12,6 +12,7 @@ import numpy as np
 
 from ..domain.constants import FACTORY_RESEARCH_FACTORS, resolve_event_runtime_mode
 from .runtime import get_strategy_factory_package
+from .sector_taxonomy import normalize_sector_labels
 
 logger = logging.getLogger(__name__)
 

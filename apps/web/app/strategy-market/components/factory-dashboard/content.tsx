@@ -22,6 +22,8 @@ import type {
   FactoryRunItem,
   FactoryRunSummary,
   FactoryStatusResponse,
+  ResearchWindowStatus,
+  TopNSnapshot,
   FactoryValidationFamilyQualityPanelItem,
   RunStatusFilter,
   TrendMetricKey,
@@ -312,6 +314,220 @@ function FactoryQualityBaselinePanel({
   );
 }
 
+function FactoryResearchWindowPanel({
+  title,
+  researchWindow,
+  description,
+}: {
+  title: string;
+  researchWindow: ResearchWindowStatus | null | undefined;
+  description?: string;
+}) {
+  const payload = researchWindow ?? {};
+  const available = Boolean(
+    payload.available
+    || payload.loaded_stock_count
+    || payload.eligible_stock_count
+    || payload.planned_bulk_task_count
+    || payload.selected_bulk_task_count,
+  );
+
+  if (!available) return null;
+
+  const selectedShardIds = Array.isArray(payload.selected_shard_ids)
+    ? payload.selected_shard_ids.filter((value) => typeof value === 'number' && Number.isFinite(value))
+    : [];
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <Badge variant="neutral">
+          研究预算 {payload.selected_bulk_task_count ?? 0} / {payload.effective_task_budget ?? payload.planned_bulk_task_count ?? 0}
+        </Badge>
+      </div>
+      {description ? <div className="text-xs text-text-secondary">{description}</div> : null}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <FactoryMetric title="已扫描股票" value={payload.loaded_stock_count ?? 0} />
+        <FactoryMetric title="可用股票" value={payload.eligible_stock_count ?? 0} />
+        <FactoryMetric title="已规划任务" value={payload.planned_bulk_task_count ?? 0} />
+        <FactoryMetric title="本轮执行" value={payload.selected_bulk_task_count ?? 0} />
+        <FactoryMetric title="当前 offset" value={payload.effective_task_offset ?? 0} />
+        <FactoryMetric title="下一轮 offset" value={payload.next_task_offset ?? 0} />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-text-secondary">
+        <div>请求 offset：{payload.requested_task_offset ?? 0}</div>
+        <div>预算上限：{payload.effective_task_budget ?? 0}</div>
+        <div>批次数：{payload.selected_batch_count ?? 0} / {payload.batch_count ?? 0}</div>
+        <div>覆盖率：{formatRatioPercent(payload.stock_coverage_ratio)}</div>
+      </div>
+      <div className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary">
+        本轮先扫描全市场，再规划批量研究任务；由于滚动研究工厂有固定预算窗口，所以本轮仅执行当前窗口内
+        {' '}
+        <span className="font-medium text-text-primary">{payload.selected_bulk_task_count ?? 0}</span>
+        {' '}
+        个任务，而不是一次性执行全部
+        {' '}
+        <span className="font-medium text-text-primary">{payload.planned_bulk_task_count ?? 0}</span>
+        {' '}
+        个已规划任务。
+      </div>
+      {selectedShardIds.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <span className="text-xs text-text-secondary">本轮 shard：</span>
+          {selectedShardIds.map((shardId) => (
+            <Badge key={shardId} variant="neutral">
+              #{shardId}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FactoryFullMarketTopnPanel({
+  title,
+  topn,
+  description,
+}: {
+  title: string;
+  topn: TopNSnapshot | null | undefined;
+  description?: string;
+}) {
+  const payload = topn ?? {};
+  const constituents = Array.isArray(payload.constituents) ? payload.constituents : [];
+  const available = Boolean(payload.available || constituents.length > 0);
+
+  if (!available) return null;
+
+  const selectionRules = isObjectRecord(payload.selection_rules) ? payload.selection_rules : {};
+  const industryDistribution = isObjectRecord(payload.industry_distribution) ? payload.industry_distribution : {};
+  const tieSummary = isObjectRecord(payload.tie_cluster_summary) ? payload.tie_cluster_summary : {};
+  const componentActivation = isObjectRecord(payload.component_activation_summary) ? payload.component_activation_summary : {};
+  const cappedCounts = isObjectRecord(payload.capped_component_counts) ? payload.capped_component_counts : {};
+  const degradedReasons = Array.isArray(payload.degraded_reasons) ? payload.degraded_reasons : [];
+  const componentLabels: Record<string, string> = {
+    size_score: '市值分量',
+    valuation_score: '估值分量',
+    sector_regime_score: '行业状态分量',
+    factor_alignment_score: '因子一致性分量',
+    allocation_score: '配置分量',
+  };
+  const dominantComponent = (() => {
+    const explicit = typeof payload.dominant_component === 'string' ? payload.dominant_component : '';
+    if (explicit) return explicit;
+    const totals: Record<string, number> = {};
+    constituents.forEach((item) => {
+      const componentScores = isObjectRecord(item.component_scores) ? item.component_scores : {};
+      Object.entries(componentScores).forEach(([key, value]) => {
+        const numeric = Number(value ?? 0);
+        if (!Number.isFinite(numeric)) return;
+        totals[key] = (totals[key] ?? 0) + Math.abs(numeric);
+      });
+    });
+    const [key] =
+      Object.entries(totals).sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return a[0].localeCompare(b[0]);
+      })[0] ?? [];
+    return key ?? '';
+  })();
+  const dominantLabel = componentLabels[dominantComponent] ?? dominantComponent ?? '';
+  const scoreQuality = typeof payload.score_quality === 'string' ? payload.score_quality : '';
+  const plainLanguageSummary =
+    scoreQuality === 'degraded'
+      ? '当前 Top N 主要由 size / allocation 驱动，横截面信号不足，不应解读为成熟 alpha 排名。'
+      : dominantLabel
+        ? `当前 Top N 已有一定分化，主导分量是${dominantLabel}。`
+        : '当前 Top N 已经形成可解释的横截面排序。';
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <Badge variant="info">独立于 20 个 bulk 研究预算</Badge>
+      </div>
+      {description ? <div className="text-xs text-text-secondary">{description}</div> : null}
+      <div className="rounded border border-border bg-surface px-3 py-2 text-xs text-text-secondary space-y-1">
+        <div>{plainLanguageSummary}</div>
+        <div>
+          评分质量：{scoreQuality || 'unknown'} · 评分契约：{payload.score_contract_version ?? payload.contract_version ?? '-'}
+          {dominantLabel ? ` · 主导分量：${dominantLabel}` : ''}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <FactoryMetric title="Universe" value={payload.universe_count ?? 0} />
+        <FactoryMetric title="Eligible" value={payload.eligible_count ?? 0} />
+        <FactoryMetric title="评分行数" value={payload.score_row_count ?? 0} />
+        <FactoryMetric title="Top N" value={payload.topn_n ?? constituents.length} />
+        <FactoryMetric title="平均分" value={formatFactoryMetricValue(payload.average_topn_score, 4)} />
+        <FactoryMetric title="组合候选" value={payload.portfolio_candidate_id ?? '-'} />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-text-secondary">
+        <div>评分日期：{toDisplayText(payload.as_of_date) ?? '-'}</div>
+        <div>排序规则：{toDisplayText(selectionRules.order_by) ?? 'composite_score_desc'}</div>
+        <div>行业上限：{toDisplayText(selectionRules.max_per_industry) ?? '-'}</div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-text-secondary">
+        <div>Top10 不同分数：{toDisplayText(tieSummary.top10_distinct_score_count) ?? '-'}</div>
+        <div>最大同分簇：{toDisplayText(tieSummary.largest_tie_size) ?? '-'}</div>
+        <div>估值信号覆盖(Top100)：{formatRatioPercent(payload.valuation_signal_coverage_top100)}</div>
+      </div>
+      {Object.keys(componentActivation).length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(componentActivation).map(([key, value]) => (
+            <Badge key={key} variant="neutral">
+              {(componentLabels[key] ?? key)} 非零覆盖 {formatRatioPercent(value)}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      {Object.keys(cappedCounts).length > 0 ? (
+        <div className="text-xs text-text-secondary">
+          size 封顶命中：{toDisplayText(cappedCounts.size_score_hit_cap_count ?? cappedCounts.market_cap_score_hit_cap_count) ?? '0'}
+        </div>
+      ) : null}
+      {degradedReasons.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {degradedReasons.map((reason) => (
+            <Badge key={reason} variant="warning">
+              {reason}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      {Object.keys(industryDistribution).length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(industryDistribution).map(([industry, count]) => (
+            <Badge key={industry} variant="neutral">
+              {industry}: {String(count)}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
+        {constituents.slice(0, 10).map((item) => (
+          <div
+            key={`${item.code ?? 'code'}-${item.rank ?? 0}`}
+            className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-1"
+          >
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="font-medium text-text-primary">
+                #{item.selection_rank ?? item.rank ?? '-'} {toDisplayText(item.name) ?? item.code ?? '-'}
+              </div>
+              <Badge variant="neutral">{item.code ?? '-'}</Badge>
+            </div>
+            <div>行业：{toDisplayText(item.industry) ?? '未分类'}</div>
+            <div>综合分：{formatFactoryMetricValue(item.composite_score, 4)}</div>
+            <div>候选 family：{Array.isArray(item.family_candidates) && item.family_candidates.length > 0 ? item.family_candidates.join(' / ') : '-'}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FactoryRunDetailPanel({
   detail,
   loading,
@@ -334,6 +550,8 @@ function FactoryRunDetailPanel({
   const snapshotRows = Object.entries(detail.snapshot_summary ?? {});
   const stageRows = Object.entries(detail.stages ?? {});
   const summary = detail.summary ?? {};
+  const researchWindow = detail.research_window ?? summary.research_window ?? null;
+  const fullMarketTopn = detail.full_market_topn ?? summary.full_market_topn ?? null;
 
   return (
     <div className="mt-3 rounded border border-border bg-surface px-3 py-3 space-y-3">
@@ -356,6 +574,16 @@ function FactoryRunDetailPanel({
         </div>
       </div>
 
+      <FactoryResearchWindowPanel
+        title="研究窗口"
+        researchWindow={researchWindow}
+        description="这里回答的是“为什么这轮只执行了 20 个任务”。它描述的是滚动研究窗口，而不是全市场统一排名。"
+      />
+      <FactoryFullMarketTopnPanel
+        title="全市场 Top N"
+        topn={fullMarketTopn}
+        description="这条链会对全部 eligible 股票做一次确定性评分，再生成独立的 Top N 组合候选。"
+      />
       <FactoryTaskStructurePanel summary={summary} />
       <FactoryQualityAuditPanel summary={summary} />
       <FactoryQualityLensPanel
@@ -473,6 +701,8 @@ export function FactoryDashboard({
   expandedRunLoading,
   expandedRunError,
 }: FactoryDashboardProps) {
+  const researchWindow = factoryStatus?.research_window ?? factorySummary.research_window ?? null;
+  const fullMarketTopn = factoryStatus?.full_market_topn ?? factorySummary.full_market_topn ?? null;
   return (
     <SectionCard className="mt-4 p-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -505,6 +735,16 @@ export function FactoryDashboard({
         <FactoryMetric title="耗时(秒)" value={factorySummary.elapsed_seconds ?? '-'} />
       </div>
       <FactoryTaskStructurePanel summary={factorySummary} />
+      <FactoryResearchWindowPanel
+        title="研究窗口"
+        researchWindow={researchWindow}
+        description="这部分说明全市场扫描后为什么本轮只执行窗口内的少量 bulk 研究任务。"
+      />
+      <FactoryFullMarketTopnPanel
+        title="全市场 Top N"
+        topn={fullMarketTopn}
+        description="这是一条独立于 bulk 单股研究链的全市场统一评分结果，直接回答“今天全市场最优的是谁”。"
+      />
       <FactoryQualityAuditPanel summary={factorySummary} />
       <FactoryQualityLensPanel
         title="最近一轮 Raw 质量口径"

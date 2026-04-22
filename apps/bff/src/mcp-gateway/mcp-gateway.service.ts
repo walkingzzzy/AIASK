@@ -805,13 +805,15 @@ export class McpGatewayService implements OnModuleDestroy {
       return configured.trim();
     }
 
-    const fromRepoRoot = resolve(process.cwd(), 'packages', 'akshare-mcp');
-    if (existsSync(fromRepoRoot)) return fromRepoRoot;
+    const candidates = [
+      resolve(__dirname, '..', '..', '..', '..', 'packages', 'akshare-mcp'),
+      resolve(__dirname, '..', '..', '..', 'packages', 'akshare-mcp'),
+      resolve(process.cwd(), 'packages', 'akshare-mcp'),
+      resolve(process.cwd(), '..', '..', 'packages', 'akshare-mcp'),
+    ];
 
-    const fromAppDir = resolve(process.cwd(), '..', '..', 'packages', 'akshare-mcp');
-    if (existsSync(fromAppDir)) return fromAppDir;
-
-    return fromRepoRoot;
+    const hit = candidates.find((candidate) => existsSync(candidate));
+    return hit ?? candidates[0];
   }
 
   private resolveMcpCommand(cwd: string): string {

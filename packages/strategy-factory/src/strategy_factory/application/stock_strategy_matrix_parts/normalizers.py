@@ -400,6 +400,287 @@
             return ["rsi", "value_factor", "quality_factor", "ma_cross"]
         return ["ma_cross", "quality_factor", "multi_factor", "value_factor"]
 
+    @staticmethod
+    def _industry_key(value: Any) -> str:
+        token = str(value or "").strip()
+        return token or "__unknown__"
+
+    @classmethod
+    def _normalize_sector_labels(
+        cls,
+        values: Any,
+        *,
+        limit: int | None = None,
+    ) -> list[str]:
+        return normalize_sector_labels(values, limit=limit)
+
+    @classmethod
+    def _sector_match_strength(
+        cls,
+        industry: Any,
+        sector_labels: Any,
+    ) -> float:
+        return sector_match_strength(industry, sector_labels)
+
+    @classmethod
+    def _sector_family_biases(
+        cls,
+        industry: Any,
+        *,
+        mode: str = "intrinsic",
+    ) -> list[str]:
+        return sector_family_biases(industry, mode=mode)
+
+    @classmethod
+    def _build_sector_label_coverage(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        sector_labels: set[str],
+    ) -> dict[str, dict[str, float]]:
+        normalized_labels = [
+            str(item or "").strip()
+            for item in list(sector_labels or set())
+            if str(item or "").strip()
+        ]
+        if not normalized_labels:
+            return {}
+        universe_size = max(1, len(list(rows or [])))
+        coverage: dict[str, dict[str, float]] = {}
+        for label in normalized_labels:
+            matched_count = 0
+            matched_profile_keys: set[str] = set()
+            for row in list(rows or []):
+                industry = str(dict(row or {}).get("industry") or dict(row or {}).get("sector") or "").strip()
+                if cls._sector_match_strength(industry, [label]) <= 0.0:
+                    continue
+                matched_count += 1
+                for profile in sector_profiles_for_label(industry):
+                    profile_key = str(profile.get("key") or "").strip()
+                    if profile_key:
+                        matched_profile_keys.add(profile_key)
+            coverage_ratio = matched_count / float(universe_size)
+            profile_breadth = max(1, len(matched_profile_keys))
+            breadth_penalty = 1.0 / math.sqrt(float(profile_breadth))
+            coverage_penalty = max(0.45, 1.0 - min(coverage_ratio, 0.35) * 1.4)
+            coverage[label] = {
+                "matched_count": float(matched_count),
+                "coverage_ratio": round(coverage_ratio, 4),
+                "matched_profile_count": float(profile_breadth),
+                "breadth_penalty": round(breadth_penalty, 4),
+                "coverage_penalty": round(coverage_penalty, 4),
+                "effective_penalty": round(min(1.0, breadth_penalty * coverage_penalty), 4),
+            }
+        return coverage
+
+    @classmethod
+    def _sector_regime_component_score(
+        cls,
+        industry: Any,
+        *,
+        sector_labels: set[str],
+        label_coverage: dict[str, dict[str, float]] | None,
+        base_points: float,
+    ) -> float:
+        normalized_labels = [
+            str(item or "").strip()
+            for item in list(sector_labels or set())
+            if str(item or "").strip()
+        ]
+        best_score = 0.0
+        for label in normalized_labels:
+            match_strength = cls._sector_match_strength(industry, [label])
+            if match_strength <= 0.0:
+                continue
+            penalty_payload = dict((label_coverage or {}).get(label) or {})
+            breadth_penalty = cls._safe_float(penalty_payload.get("breadth_penalty") or 1.0)
+            coverage_penalty = cls._safe_float(penalty_payload.get("coverage_penalty") or 1.0)
+            effective_penalty = max(0.35, min(1.0, breadth_penalty * coverage_penalty))
+            best_score = max(best_score, base_points * match_strength * effective_penalty)
+        return round(best_score, 4)
+
+    @staticmethod
+    def _percentile_from_sorted(
+        sorted_values: list[float],
+        value: float,
+        *,
+        higher_is_better: bool,
+    ) -> float:
+        values = [float(item) for item in list(sorted_values or [])]
+        if not values:
+            return 0.5
+        if len(values) == 1:
+            return 1.0
+        target = float(value)
+        left = max(0, min(bisect_left(values, target), len(values) - 1))
+        right = max(0, min(bisect_right(values, target) - 1, len(values) - 1))
+        average_position = (left + right) / 2.0
+        if higher_is_better:
+            return max(0.0, min(average_position / (len(values) - 1), 1.0))
+        return max(0.0, min(1.0 - (average_position / (len(values) - 1)), 1.0))
+
+    @staticmethod
+    def _factor_signal_enabled(active_factors: list[str], token: str) -> bool:
+        normalized_token = str(token or "").strip().lower()
+        if not normalized_token:
+            return False
+        for factor_name in list(active_factors or []):
+            normalized_factor = str(factor_name or "").strip().lower()
+            if not normalized_factor:
+                continue
+            if normalized_factor == normalized_token:
+                return True
+            if normalized_token in normalized_factor:
+                return True
+        return False
+
+    @classmethod
+    def _build_priority_scoring_context(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        snapshot: dict[str, Any],
+        hot_sectors: set[str],
+        cold_sectors: set[str],
+        active_factors: list[str],
+        stock_family_allocation: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        allocation = {
+            str(code or "").strip(): dict(item or {})
+            for code, item in dict(stock_family_allocation or {}).items()
+            if str(code or "").strip()
+        }
+        normalized_hot_sectors = set(cls._normalize_sector_labels(hot_sectors, limit=20))
+        normalized_cold_sectors = set(cls._normalize_sector_labels(cold_sectors, limit=20))
+        normalized_active_factors = [
+            str(item or "").strip().lower()
+            for item in list(active_factors or [])
+            if str(item or "").strip()
+        ]
+        preferred_families: list[str] = []
+        for factor_name in normalized_active_factors:
+            for family in preferred_strategy_types_for_factor(factor_name, default=[]):
+                normalized_family = str(family or "").strip().lower()
+                if normalized_family and normalized_family not in preferred_families:
+                    preferred_families.append(normalized_family)
+
+        size_logs: list[float] = []
+        valuation_pe_global: list[float] = []
+        valuation_pb_global: list[float] = []
+        valuation_pe_by_industry: dict[str, list[float]] = {}
+        valuation_pb_by_industry: dict[str, list[float]] = {}
+        allocation_priorities: list[float] = []
+        allocation_source_modes: list[str] = []
+        for row in list(rows or []):
+            payload = dict(row or {})
+            market_cap = cls._safe_float(payload.get("market_cap"))
+            if market_cap > 0:
+                size_logs.append(math.log(max(market_cap, 1.0)))
+            industry_key = cls._industry_key(payload.get("industry") or payload.get("sector"))
+            pe_ratio = cls._safe_float(payload.get("pe_ratio"))
+            pb_ratio = cls._safe_float(payload.get("pb_ratio"))
+            if pe_ratio > 0:
+                valuation_pe_global.append(pe_ratio)
+                valuation_pe_by_industry.setdefault(industry_key, []).append(pe_ratio)
+            if pb_ratio > 0:
+                valuation_pb_global.append(pb_ratio)
+                valuation_pb_by_industry.setdefault(industry_key, []).append(pb_ratio)
+            code = str(payload.get("code") or "").strip()
+            allocation_item = dict(allocation.get(code) or {})
+            allocation_priority = max(0.0, min(cls._safe_float(allocation_item.get("priority")), 1.0))
+            if allocation_priority > 0.0:
+                allocation_priorities.append(allocation_priority)
+            source_mode = str(allocation_item.get("source_mode") or "").strip()
+            if source_mode:
+                allocation_source_modes.append(source_mode)
+
+        for bucket in valuation_pe_by_industry.values():
+            bucket.sort()
+        for bucket in valuation_pb_by_industry.values():
+            bucket.sort()
+        size_logs.sort()
+        valuation_pe_global.sort()
+        valuation_pb_global.sort()
+        allocation_priorities.sort()
+
+        source_mode = None
+        if allocation_source_modes:
+            distinct_source_modes = list(dict.fromkeys(allocation_source_modes))
+            source_mode = distinct_source_modes[0] if len(distinct_source_modes) == 1 else "mixed"
+
+        hot_sector_coverage = cls._build_sector_label_coverage(
+            rows,
+            sector_labels=normalized_hot_sectors,
+        )
+        cold_sector_coverage = cls._build_sector_label_coverage(
+            rows,
+            sector_labels=normalized_cold_sectors,
+        )
+
+        return {
+            "score_contract_version": "strategy_factory.full_market_topn.v2",
+            "preferred_families": preferred_families,
+            "normalized_active_factors": normalized_active_factors,
+            "hot_sectors": normalized_hot_sectors,
+            "cold_sectors": normalized_cold_sectors,
+            "hot_sector_coverage": hot_sector_coverage,
+            "cold_sector_coverage": cold_sector_coverage,
+            "size_logs": size_logs,
+            "valuation_pe_global": valuation_pe_global,
+            "valuation_pb_global": valuation_pb_global,
+            "valuation_pe_by_industry": valuation_pe_by_industry,
+            "valuation_pb_by_industry": valuation_pb_by_industry,
+            "allocation_priorities": allocation_priorities,
+            "allocation_source_mode": source_mode,
+            "allocation_avg_priority": round(
+                sum(allocation_priorities) / len(allocation_priorities),
+                4,
+            ) if allocation_priorities else 0.0,
+            "active_factors": list(active_factors or []),
+            "snapshot_date": str(snapshot.get("date") or snapshot.get("snapshot_date") or "").strip() or None,
+        }
+
+    @classmethod
+    def _intrinsic_families_for_row(
+        cls,
+        row: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        hot_sectors: set[str],
+        cold_sectors: set[str],
+        active_factors: list[str],
+    ) -> list[str]:
+        families: list[str] = []
+        industry = str(row.get("industry") or row.get("sector") or "").strip()
+        pe_ratio = cls._safe_float(row.get("pe_ratio"))
+        pb_ratio = cls._safe_float(row.get("pb_ratio"))
+
+        def add(*items: str) -> None:
+            for item in items:
+                lowered = str(item or "").strip().lower()
+                if lowered and lowered not in families:
+                    families.append(lowered)
+
+        hot_match = cls._sector_match_strength(industry, hot_sectors)
+        cold_match = cls._sector_match_strength(industry, cold_sectors)
+        add(*cls._sector_family_biases(industry, mode="intrinsic"))
+        if hot_match > 0.0:
+            add(*cls._sector_family_biases(industry, mode="hot") or ["momentum", "growth_factor"])
+        if cold_match > 0.0:
+            add(*cls._sector_family_biases(industry, mode="cold") or ["rsi", "value_factor", "quality_factor"])
+        value_candidate = 0 < pe_ratio <= 18 or 0 < pb_ratio <= 1.8
+        reversal_enabled = cls._factor_signal_enabled(active_factors, "reversal")
+        if value_candidate:
+            add("value_factor")
+            if reversal_enabled:
+                add("mean_reversion_short")
+            add("quality_factor")
+        add(*cls._base_family_order(snapshot))
+        for factor_name in active_factors:
+            add(*preferred_strategy_types_for_factor(factor_name, default=[]))
+
+        return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+
     @classmethod
     def _row_priority_score(
         cls,
@@ -410,32 +691,173 @@
         cold_sectors: set[str],
         active_factors: list[str],
         allocation_item: dict[str, Any] | None = None,
+        scoring_context: dict[str, Any] | None = None,
     ) -> float:
+        components = cls._row_priority_components(
+            row,
+            snapshot=snapshot,
+            hot_sectors=hot_sectors,
+            cold_sectors=cold_sectors,
+            active_factors=active_factors,
+            allocation_item=allocation_item,
+            scoring_context=scoring_context,
+        )
+        return round(sum(cls._safe_float(value) for value in components.values()), 4)
+
+    @classmethod
+    def _row_priority_components(
+        cls,
+        row: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        hot_sectors: set[str],
+        cold_sectors: set[str],
+        active_factors: list[str],
+        allocation_item: dict[str, Any] | None = None,
+        scoring_context: dict[str, Any] | None = None,
+    ) -> dict[str, float]:
         market_cap = cls._safe_float(row.get("market_cap"))
         industry = str(row.get("industry") or row.get("sector") or "").strip()
-        score = 30.0
+        resolved_context = dict(scoring_context or {})
+        normalized_active_factors = [
+            str(item or "").strip().lower()
+            for item in list(
+                resolved_context.get("normalized_active_factors")
+                or active_factors
+                or []
+            )
+            if str(item or "").strip()
+        ]
+        preferred_families = [
+            str(item or "").strip().lower()
+            for item in list(resolved_context.get("preferred_families") or [])
+            if str(item or "").strip()
+        ]
+        components: dict[str, float] = {
+            "size_score": 0.0,
+            "valuation_score": 0.0,
+            "sector_regime_score": 0.0,
+            "factor_alignment_score": 0.0,
+            "allocation_score": 0.0,
+        }
+        size_logs = list(resolved_context.get("size_logs") or [])
         if market_cap > 0:
-            score += min(math.log10(market_cap / 1e8 + 1.0) * 8.0, 20.0)
-        if industry and industry in hot_sectors:
-            score += 10.0
-        if industry and industry in cold_sectors:
-            score -= 4.0
+            if size_logs:
+                size_pct = cls._percentile_from_sorted(
+                    size_logs,
+                    math.log(max(market_cap, 1.0)),
+                    higher_is_better=True,
+                )
+            else:
+                normalized_log = math.log10(market_cap / 1e8 + 1.0)
+                size_pct = max(0.0, min(normalized_log / 2.5, 1.0))
+            components["size_score"] = round(size_pct * 12.0, 4)
+
+        hot_sector_set = set(resolved_context.get("hot_sectors") or hot_sectors or set())
+        cold_sector_set = set(resolved_context.get("cold_sectors") or cold_sectors or set())
+        hot_sector_coverage = dict(resolved_context.get("hot_sector_coverage") or {})
+        cold_sector_coverage = dict(resolved_context.get("cold_sector_coverage") or {})
+        hot_score = cls._sector_regime_component_score(
+            industry,
+            sector_labels=hot_sector_set,
+            label_coverage=hot_sector_coverage,
+            base_points=6.0,
+        )
+        cold_score = cls._sector_regime_component_score(
+            industry,
+            sector_labels=cold_sector_set,
+            label_coverage=cold_sector_coverage,
+            base_points=4.0,
+        )
+        if hot_score > 0.0:
+            components["sector_regime_score"] += hot_score
+        if cold_score > 0.0:
+            components["sector_regime_score"] -= cold_score
+
         pe_ratio = cls._safe_float(row.get("pe_ratio"))
         pb_ratio = cls._safe_float(row.get("pb_ratio"))
-        if "value" in active_factors or "reversal" in active_factors:
-            if 0 < pe_ratio <= 18:
-                score += 6.0
-            if 0 < pb_ratio <= 1.8:
-                score += 4.0
-        if "growth" in active_factors and industry in hot_sectors:
-            score += 4.0
-        if "quality" in active_factors and market_cap >= 30_000_000_000:
-            score += 3.0
-        if allocation_item:
-            allocation_priority = max(0.0, min(cls._safe_float(allocation_item.get("priority")), 1.0))
-            if allocation_priority > 0.0:
-                score = score * 0.55 + allocation_priority * 45.0
-        return round(score, 4)
+        if cls._factor_signal_enabled(normalized_active_factors, "value") or cls._factor_signal_enabled(
+            normalized_active_factors,
+            "reversal",
+        ):
+            industry_key = cls._industry_key(industry)
+            pe_values = list(
+                dict(resolved_context).get("valuation_pe_by_industry", {}).get(industry_key)
+                or []
+            )
+            pb_values = list(
+                dict(resolved_context).get("valuation_pb_by_industry", {}).get(industry_key)
+                or []
+            )
+            if len(pe_values) < 20:
+                pe_values = list(resolved_context.get("valuation_pe_global") or [])
+            if len(pb_values) < 20:
+                pb_values = list(resolved_context.get("valuation_pb_global") or [])
+            valuation_percentiles: list[float] = []
+            if pe_ratio > 0:
+                valuation_percentiles.append(
+                    cls._percentile_from_sorted(
+                        pe_values,
+                        pe_ratio,
+                        higher_is_better=False,
+                    )
+                )
+            if pb_ratio > 0:
+                valuation_percentiles.append(
+                    cls._percentile_from_sorted(
+                        pb_values,
+                        pb_ratio,
+                        higher_is_better=False,
+                    )
+                )
+            if valuation_percentiles:
+                components["valuation_score"] = round(
+                    (sum(valuation_percentiles) / len(valuation_percentiles)) * 10.0,
+                    4,
+                )
+
+        if not preferred_families:
+            for factor_name in normalized_active_factors:
+                for family in preferred_strategy_types_for_factor(factor_name, default=[]):
+                    normalized_family = str(family or "").strip().lower()
+                    if normalized_family and normalized_family not in preferred_families:
+                        preferred_families.append(normalized_family)
+        projected_families = cls._families_for_row(
+            row,
+            snapshot=snapshot,
+            hot_sectors=hot_sector_set,
+            cold_sectors=cold_sector_set,
+            active_factors=normalized_active_factors,
+            allocation_item=None,
+        )
+        if preferred_families and projected_families:
+            preferred_rank = {
+                family: index + 1
+                for index, family in enumerate(preferred_families)
+                if family
+            }
+            projected_weight_total = sum(1.0 / (index + 1) for index in range(len(projected_families)))
+            weighted_overlap = 0.0
+            for projected_index, family in enumerate(projected_families, 1):
+                preferred_index = preferred_rank.get(family)
+                if not preferred_index:
+                    continue
+                weighted_overlap += (1.0 / projected_index) * (1.0 / preferred_index)
+            overlap_ratio = weighted_overlap / max(projected_weight_total, 1e-9)
+            components["factor_alignment_score"] = round(max(0.0, min(overlap_ratio, 1.0)) * 8.0, 4)
+
+        allocation_priority = max(0.0, min(cls._safe_float((allocation_item or {}).get("priority")), 1.0))
+        allocation_priorities = list(resolved_context.get("allocation_priorities") or [])
+        if allocation_priority > 0.0 and allocation_priorities:
+            allocation_pct = cls._percentile_from_sorted(
+                allocation_priorities,
+                allocation_priority,
+                higher_is_better=True,
+            )
+        else:
+            allocation_pct = 0.5
+        components["allocation_score"] = round((allocation_pct - 0.5) * 8.0, 4)
+        return {key: round(cls._safe_float(value), 4) for key, value in components.items()}
 
     @classmethod
     def _families_for_row(
@@ -449,15 +871,20 @@
         allocation_item: dict[str, Any] | None = None,
     ) -> list[str]:
         families: list[str] = []
-        industry = str(row.get("industry") or row.get("sector") or "").strip()
-        pe_ratio = cls._safe_float(row.get("pe_ratio"))
-        pb_ratio = cls._safe_float(row.get("pb_ratio"))
 
         def add(*items: str) -> None:
             for item in items:
                 lowered = str(item or "").strip().lower()
                 if lowered and lowered not in families:
                     families.append(lowered)
+
+        intrinsic_families = cls._intrinsic_families_for_row(
+            row,
+            snapshot=snapshot,
+            hot_sectors=hot_sectors,
+            cold_sectors=cold_sectors,
+            active_factors=active_factors,
+        )
 
         if allocation_item:
             allocation_families = [
@@ -472,17 +899,29 @@
                     if str(item or "").strip()
                 ]
             if allocation_families:
-                add(*allocation_families)
+                source_mode = str(allocation_item.get("source_mode") or "").strip().lower()
+                if source_mode.startswith("stock_universe_projection") and intrinsic_families:
+                    sector_anchor = next(
+                        (
+                            family
+                            for family in cls._sector_family_biases(
+                                row.get("industry") or row.get("sector"),
+                                mode="intrinsic",
+                            )
+                            if str(family or "").strip()
+                        ),
+                        intrinsic_families[0],
+                    )
+                    # Keep one industry-driven anchor so projection-covered leaders do not all collapse
+                    # into the same allocation trio.
+                    add(sector_anchor)
+                    add(*allocation_families)
+                    add(*intrinsic_families[1:])
+                else:
+                    add(*allocation_families)
+                    add(*intrinsic_families)
                 return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
-        if industry and industry in hot_sectors:
-            add("momentum", "growth_factor")
-        if industry and industry in cold_sectors:
-            add("rsi", "value_factor", "quality_factor")
-        if 0 < pe_ratio <= 18 or 0 < pb_ratio <= 1.8:
-            add("value_factor", "quality_factor")
-        add(*cls._base_family_order(snapshot))
-        for factor_name in active_factors:
-            add(*preferred_strategy_types_for_factor(factor_name, default=[]))
+        add(*intrinsic_families)
 
         return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
 

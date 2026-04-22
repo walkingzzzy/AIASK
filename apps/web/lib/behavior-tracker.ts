@@ -1,6 +1,7 @@
 'use client';
 
 import { authedFetch } from '@/lib/api';
+import { hasLoggedInHint } from '@/lib/auth';
 
 export type BehaviorEventDraft = {
   pageKey: string;
@@ -82,6 +83,7 @@ export function describeActionableElement(target: EventTarget | null) {
 
 export function trackBehaviorEvent(event: BehaviorEventDraft) {
   if (typeof window === 'undefined') return;
+  if (!hasLoggedInHint()) return;
   queue.push({
     ...event,
     source: event.source || 'web',
@@ -103,6 +105,10 @@ export function trackBehaviorEvent(event: BehaviorEventDraft) {
 
 export async function flushBehaviorEvents() {
   if (typeof window === 'undefined') return;
+  if (!hasLoggedInHint()) {
+    queue = [];
+    return;
+  }
   if (inFlightFlush) return inFlightFlush;
   if (!queue.length) return;
 

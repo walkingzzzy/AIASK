@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useOnboarding } from '@/components/onboarding';
-import ResultWorkbench from '@/components/result-workbench';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { ErrorState, LoadingState, PageStatusCard } from '@/components/status-state';
 import { Badge, PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -15,6 +16,7 @@ import { extractArray } from '@/lib/data-utils';
 import { apiKeys } from '@/lib/query-keys';
 import { ensureRecordOrArray } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
 import { useAuthStore } from '@/store/auth-store';
 import { useCartStore } from '@/store/cart-store';
@@ -63,7 +65,7 @@ import {
   parseFactoryStatusResponse,
 } from './lib/contracts';
 
-const RANKING_PAGE_LIMIT = 200;
+const RANKING_PAGE_LIMIT = 40;
 type StrategyWorkspace = 'market' | 'favorites' | 'mine' | 'factory';
 
 function shouldOpenFactoryFromTask(task: string | null) {
@@ -107,6 +109,7 @@ function summarizeAiGenerateResult(raw: unknown) {
 export default function StrategyMarketPage() {
   const { completeStep } = useOnboarding();
   const router = useRouter();
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const searchParams = useStableSearchParams();
   const user = useAuthStore((state) => state.user);
   const userId = user?.id ?? user?.username ?? null;
@@ -124,7 +127,7 @@ export default function StrategyMarketPage() {
     normalizeIncubationStageFilter(searchParams.get('incubation_stage') ?? searchParams.get('stage')),
   );
   const [showFactoryDetails, setShowFactoryDetails] = useState(
-    workspace === 'factory' || shouldOpenFactoryFromTask(task),
+    shouldOpenFactoryFromTask(task),
   );
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runStatusFilter, setRunStatusFilter] = useState<RunStatusFilter>('all');
@@ -133,46 +136,78 @@ export default function StrategyMarketPage() {
   const [showFeatured, setShowFeatured] = useState(false);
   const [sortBy, setSortBy] = useState<StrategySortKey>('totalReturn');
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+  const isMarketWorkspace = workspace === 'market';
+  const isFavoritesWorkspace = workspace === 'favorites';
+  const isMineWorkspace = workspace === 'mine';
+  const isFactoryWorkspace = workspace === 'factory';
+  const shouldLoadFactoryDetails = isFactoryWorkspace && showFactoryDetails;
 
   const rankQ = useApiQuery<RankingResponse>(
-    `/strategy-market/ranking?limit=${RANKING_PAGE_LIMIT}&status=all` +
-      (category === 'all' ? '' : `&strategy_type=${category}`),
+    isMarketWorkspace
+      ? `/strategy-market/ranking?limit=${RANKING_PAGE_LIMIT}&status=all` +
+        (category === 'all' ? '' : `&strategy_type=${category}`)
+      : null,
     {
+      enabled: isMarketWorkspace,
       critical: true,
       parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
     },
   );
   const factoryStatusQ = useApiQuery<FactoryStatusResponse>(
-    '/strategy-market/factory/status',
-    { parse: parseFactoryStatusResponse, critical: true },
+    isFactoryWorkspace ? '/strategy-market/factory/status' : null,
+    {
+      enabled: isFactoryWorkspace,
+      parse: parseFactoryStatusResponse,
+      critical: true,
+    },
   );
   const capabilitiesQ = useApiQuery<CapabilityResponse>('/strategy-market/capabilities', { critical: true });
   const favoritesQ = useApiQuery<RankingResponse>(
-    userId ? '/strategy-market/my-favorites' : null,
+    isFavoritesWorkspace && userId ? '/strategy-market/my-favorites' : null,
     {
-      enabled: Boolean(userId),
+      enabled: isFavoritesWorkspace && Boolean(userId),
       parse: (raw) => ensureRecordOrArray(raw, '我的收藏') as RankingResponse,
     },
   );
   const myStrategiesQ = useApiQuery<RankingResponse>(
-    userId ? '/strategy-market/my-strategies?limit=50' : null,
+    isMineWorkspace && userId ? '/strategy-market/my-strategies?limit=50' : null,
     {
-      enabled: Boolean(userId),
+      enabled: isMineWorkspace && Boolean(userId),
       parse: (raw) => ensureRecordOrArray(raw, '我的策略') as RankingResponse,
     },
   );
-  const dailySnapshotQ = useApiQuery<DailySnapshotResponse>('/strategy-market/daily-snapshot', { critical: true });
+  const dailySnapshotQ = useApiQuery<DailySnapshotResponse>(
+    shouldLoadFactoryDetails ? '/strategy-market/daily-snapshot' : null,
+    {
+      enabled: shouldLoadFactoryDetails,
+      nonFatal: true,
+    },
+  );
   const factoryRunsQ = useApiQuery<FactoryRunsResponse>(
-    '/strategy-market/factory/runs?limit=5',
-    { parse: parseFactoryRunsResponse, critical: true },
+    isFactoryWorkspace ? '/strategy-market/factory/runs?limit=5' : null,
+    {
+      enabled: isFactoryWorkspace,
+      parse: parseFactoryRunsResponse,
+      critical: true,
+    },
   );
   const factoryObservabilityQ = useApiQuery<unknown>(
-    '/strategy-market/factory/observability',
-    { staleTime: 15_000, critical: true },
+    shouldLoadFactoryDetails ? '/strategy-market/factory/observability' : null,
+    {
+      enabled: shouldLoadFactoryDetails,
+      staleTime: 15_000,
+      nonFatal: true,
+    },
   );
   const factoryRunDetailQ = useApiQuery<FactoryRunDetailResponse>(
-    expandedRunId ? `/strategy-market/factory/runs/${encodeURIComponent(expandedRunId)}` : null,
-    { parse: parseFactoryRunDetailResponse, critical: true },
+    isFactoryWorkspace && expandedRunId
+      ? `/strategy-market/factory/runs/${encodeURIComponent(expandedRunId)}`
+      : null,
+    {
+      enabled: isFactoryWorkspace && Boolean(expandedRunId),
+      parse: parseFactoryRunDetailResponse,
+      critical: true,
+    },
   );
 
   const runFactoryApi = useApiMutation({
@@ -297,15 +332,21 @@ export default function StrategyMarketPage() {
   const comparableRuns = useMemo(() => filteredRuns.slice(0, 5), [filteredRuns]);
   const trendRuns = useMemo(() => [...comparableRuns].reverse(), [comparableRuns]);
 
+  const factoryWorkspaceReady = Boolean(factoryStatusQ.data || factoryRuns.length > 0);
+  const factoryPrimaryErrors = [factoryStatusQ.error, factoryRunsQ.error].filter(
+    (value): value is string => Boolean(value),
+  );
+  const factoryWorkspaceError = factoryPrimaryErrors.length > 1 ? factoryPrimaryErrors[0] : null;
+  const factoryWorkspaceDegradedReason = factoryPrimaryErrors.length === 1 ? factoryPrimaryErrors[0] : null;
   const workspaceLoading = workspace === 'factory'
-    ? factoryStatusQ.isPending || factoryRunsQ.isPending
+    ? (!factoryWorkspaceReady && (factoryStatusQ.isPending || factoryRunsQ.isPending))
     : workspace === 'favorites'
       ? favoritesQ.isPending
       : workspace === 'mine'
         ? myStrategiesQ.isPending
         : rankQ.isPending;
   const workspaceError = workspace === 'factory'
-    ? (factoryStatusQ.error ?? factoryRunsQ.error)
+    ? factoryWorkspaceError
     : workspace === 'favorites'
       ? favoritesQ.error
       : workspace === 'mine'
@@ -424,7 +465,7 @@ export default function StrategyMarketPage() {
     : workspace === 'mine'
       ? `这里集中管理你的个人策略草稿与个人版本，优先做编辑、AI 优化和模拟盘测试。当前孵化阶段筛选为“${incubationStageLabel}”。`
       : workspace === 'factory'
-        ? '工厂运行、快照、可观测性与最近 run 集中在这里，不再和市场榜单混排。'
+        ? `工厂运行、快照、可观测性与最近 run 集中在这里；当前最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，工厂明细${showFactoryDetails ? '已展开' : '默认收起'}。`
         : `市场目录按生命周期分层展示，当前处于“${marketStatusLabel}”分层，孵化阶段筛选为“${incubationStageLabel}”。${marketStatusHelpText}`;
   const workspaceCountLabel = workspace === 'favorites'
     ? '已收藏策略'
@@ -433,6 +474,59 @@ export default function StrategyMarketPage() {
       : workspace === 'factory'
         ? '最近工厂运行'
         : `${marketStatusLabel}策略`;
+  const heroSummaryMetrics = useMemo(
+    () => (
+      workspace === 'factory'
+        ? [
+            { key: 'factory-runs', label: '最近工厂运行', value: String(factoryRuns.length) },
+            {
+              key: 'factory-dispatch',
+              label: '调度状态',
+              value: factoryStatusQ.data?.running ? '运行中' : '待命',
+              tone: factoryStatusQ.data?.running ? 'success' as const : 'default' as const,
+            },
+            {
+              key: 'factory-failed-runs',
+              label: '最近失败运行',
+              value: String(failedRuns.length),
+              tone: failedRuns.length > 0 ? 'danger' as const : 'success' as const,
+            },
+            { key: 'factory-latest-snapshot', label: '最新快照', value: latestSnapshot?.snapshot_date ?? '暂无' },
+          ]
+        : undefined
+    ),
+    [factoryRuns.length, factoryStatusQ.data?.running, failedRuns.length, latestSnapshot?.snapshot_date, workspace],
+  );
+  const heroObservabilityMetrics = useMemo(
+    () => [
+      {
+        key: 'observability-factory-status',
+        label: '工厂状态',
+        value: factoryStatusQ.data?.running ? '运行中' : '待命',
+        tone: factoryStatusQ.data?.running ? 'success' as const : 'default' as const,
+      },
+      {
+        key: 'observability-active-factor-count',
+        label: '活跃因子',
+        value: String(factoryObservabilityOverview.active_factor_count ?? 0),
+      },
+      {
+        key: 'observability-scheduler-quality-status',
+        label: '调度质量',
+        value: String(factoryObservabilityOverview.scheduler_quality_status ?? '-'),
+        tone: factoryObservabilityOverview.scheduler_stale ? 'danger' as const : 'success' as const,
+      },
+    ],
+    [
+      factoryObservabilityOverview.active_factor_count,
+      factoryObservabilityOverview.scheduler_quality_status,
+      factoryObservabilityOverview.scheduler_stale,
+      factoryStatusQ.data?.running,
+    ],
+  );
+  const heroAiRecommendationPrompt = workspace === 'factory'
+    ? `当前工厂运行态最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，调度 ${factoryStatusQ.data?.running ? '运行中' : '待命'}，请建议下一步该优先检查哪些工厂动作、治理项或运行链路。`
+    : `当前${workspaceLabel}共 ${strategies.length} 个策略，请推荐几个值得重点关注的，并说明理由`;
 
   const expandedRun = useMemo(() => {
     if (!expandedRunId) return null;
@@ -671,15 +765,25 @@ export default function StrategyMarketPage() {
   usePageActions(pageActions);
   const strategyMarketSummary = workspace === 'market'
     ? `${workspaceLabel} 当前分层 ${marketStatusLabel}，孵化阶段 ${incubationStageLabel}，共 ${strategies.length} 条，目录总量 ${marketCatalogStrategies.length} 条，分类 ${activeCategoryLabel}，搜索词 ${search.trim() || '无'}，${showFeatured ? '仅看精选' : '展示全部'}。`
-    : `${workspaceLabel} 当前孵化阶段 ${incubationStageLabel}，可见 ${strategies.length} 条，分类 ${activeCategoryLabel}，搜索词 ${search.trim() || '无'}，${showFeatured ? '仅看精选' : '展示全部'}。`;
-  const strategyMarketEvidence = [
-    { label: '工作区', value: workspaceLabel },
-    { label: '策略数', value: String(strategies.length) },
-    ...(workspace === 'market' ? [{ label: '目录总量', value: String(marketCatalogStrategies.length) }] : []),
-    { label: '孵化阶段', value: incubationStageLabel },
-    { label: '分类', value: activeCategoryLabel },
-    { label: '搜索词', value: search.trim() || '无' },
-  ];
+    : workspace === 'factory'
+      ? `${workspaceLabel} 最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，调度 ${factoryStatusQ.data?.running ? '运行中' : '待命'}，${showFactoryDetails ? '已展开工厂明细' : '明细默认收起'}。`
+      : `${workspaceLabel} 当前孵化阶段 ${incubationStageLabel}，可见 ${strategies.length} 条，分类 ${activeCategoryLabel}，搜索词 ${search.trim() || '无'}，${showFeatured ? '仅看精选' : '展示全部'}。`;
+  const strategyMarketEvidence = workspace === 'factory'
+    ? [
+        { label: '工作区', value: workspaceLabel },
+        { label: '最近运行', value: String(factoryRuns.length) },
+        { label: '失败运行', value: String(failedRuns.length) },
+        { label: '调度状态', value: factoryStatusQ.data?.running ? '运行中' : '待命' },
+        { label: '明细面板', value: showFactoryDetails ? '已展开' : '已收起' },
+      ]
+    : [
+        { label: '工作区', value: workspaceLabel },
+        { label: '策略数', value: String(strategies.length) },
+        ...(workspace === 'market' ? [{ label: '目录总量', value: String(marketCatalogStrategies.length) }] : []),
+        { label: '孵化阶段', value: incubationStageLabel },
+        { label: '分类', value: activeCategoryLabel },
+        { label: '搜索词', value: search.trim() || '无' },
+      ];
   const strategyMarketLinks = [
     { id: 'strategy-market-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
     { id: 'strategy-market-open-skills-link', label: '技能中心', href: '/skills?from=strategy-market' },
@@ -688,17 +792,47 @@ export default function StrategyMarketPage() {
   ];
   const strategyMarketRiskNotes = [
     ...(workspaceError ? [`当前工作区存在错误：${workspaceError}`] : []),
+    ...(workspace === 'factory' && factoryWorkspaceDegradedReason ? [`工厂主链部分降级：${factoryWorkspaceDegradedReason}`] : []),
     ...(snapshotDegraded ? ['当前工厂快照处于降级态，运行指标需要二次核对。'] : []),
     ...((workspace === 'factory' && failedRuns.length > 0) ? [`最近运行中有 ${failedRuns.length} 个失败 run。`] : []),
   ];
   const strategyMarketResult = buildLocalResultContract({
     summary: strategyMarketSummary,
+    status: workspaceError
+      ? 'unavailable'
+      : snapshotDegraded || (workspace === 'factory' && Boolean(factoryWorkspaceDegradedReason))
+        ? 'degraded'
+        : workspace === 'factory'
+          ? (factoryWorkspaceReady ? 'ready' : 'empty')
+          : strategies.length === 0
+            ? 'empty'
+            : 'ready',
     availableViews: strategies.length > 1 || factoryRuns.length > 1 ? ['compare'] : [],
     pageActions,
     preferredActionIds: ['strategy-market.refresh', 'strategy-market.toggle-factory', 'strategy-market.open-workspace', 'strategy-market.open-cart'],
     recommendedLinks: strategyMarketLinks,
+    recommendedNextActions: [
+      workspace === 'factory'
+        ? (showFactoryDetails ? '先看工厂运行态是否稳定，再决定回到目录还是继续追 run 细节。' : '先看概况与最近 run，再按需展开工厂明细。')
+        : '先在当前工作区收紧分类、状态和孵化阶段，再决定是否展开工厂面板。',
+      workspace === 'factory'
+        ? (factoryRuns.length === 0 ? '如果近期没有 run，优先触发一轮工厂或检查调度状态。' : '只在需要排查治理链路时，再展开工厂联动观测。')
+        : strategies.length === 0
+          ? '当前没有命中策略，优先调整筛选而不是继续翻空状态。'
+          : '只有在筛完一轮仍无结论时，再展开策略工作台看补充动作。',
+    ],
     evidence: strategyMarketEvidence,
     riskNotes: strategyMarketRiskNotes,
+    emptyState: {
+      title: '当前筛选还没有命中策略',
+      description: '先调整分类、搜索词或孵化阶段，不要在空目录里继续停留。',
+      example: 'workspace=market，category=all，status=all',
+    },
+    degradedState: snapshotDegraded || workspaceError ? {
+      title: '策略页当前处于降级或错误态',
+      description: '先恢复目录或工厂链路，再继续解释运行指标。',
+      reason: workspaceError || strategyMarketRiskNotes.join('；'),
+    } : null,
     freshness: dailySnapshotQ.data?.snapshot_date ? { asOf: dailySnapshotQ.data.snapshot_date, label: '策略快照' } : null,
     platformMeta: {
       sourceTool: 'strategy-market',
@@ -719,6 +853,8 @@ export default function StrategyMarketPage() {
     pageKey: 'strategy-market',
     title: '策略超市',
     summary: strategyMarketSummary,
+    primaryGoal: '在最少筛选动作里定位下一批值得继续处理的策略或工厂运行项。',
+    requiredInputs: ['workspace', 'category 或 search'],
     objectType: workspace === 'factory' ? 'strategy' : 'strategy-list',
     objectId: workspace === 'factory' ? 'factory-runtime' : `${workspace}:${category}:${search.trim() || 'all'}`,
     resultType: workspace === 'factory' ? 'strategy-factory-runtime' : 'strategy-catalog',
@@ -736,11 +872,14 @@ export default function StrategyMarketPage() {
       '如果需要页面联动，请选择一个低风险动作直接执行',
       '帮我判断现在应该继续筛策略、看我的收藏，还是去工厂运行态',
     ],
+    recommendedNextActions: strategyMarketResult.recommendedNextActions,
     recommendedActions: strategyMarketResult.recommendedActions ?? [],
     recommendedLinks: strategyMarketResult.recommendedLinks ?? [],
     evidenceSummary: evidenceToSummary(strategyMarketResult.evidence),
     riskNotes: strategyMarketResult.riskNotes ?? [],
     freshness: strategyMarketResult.freshness ?? null,
+    dataFreshness: strategyMarketResult.freshness?.updatedAt ?? strategyMarketResult.freshness?.asOf ?? null,
+    degradedReason: strategyMarketRiskNotes,
     raw: {
       workspace,
       category,
@@ -773,33 +912,64 @@ export default function StrategyMarketPage() {
   return (
     <PageContainer className="space-y-5">
       <SectionCard className="mt-0">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="eyebrow">Workspace Switch</div>
-            <h2 className="mt-2 mb-0">当前工作区：{workspaceLabel}</h2>
-            <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">{workspaceSummary}</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="info">
-              {workspaceCountLabel} {workspace === 'factory' ? factoryRuns.length : strategies.length}
-            </Badge>
-            {workspace === 'market' ? <Badge variant="neutral">目录总量 {marketCatalogStrategies.length}</Badge> : null}
-            {userId ? <Badge variant="neutral">当前用户 {userId}</Badge> : <Badge variant="warning">未登录</Badge>}
-            {canViewOperatorPanels ? <Badge variant="success">可看运营面板</Badge> : <Badge variant="neutral">用户视图</Badge>}
-          </div>
-        </div>
-        <div className="mt-4">
-          <TabBar
-            tabs={[
-              { key: 'market', label: '市场策略' },
-              { key: 'favorites', label: '我的收藏' },
-              { key: 'mine', label: '我的策略' },
-              { key: 'factory', label: '工厂运行态' },
-            ]}
-            active={workspace}
-            onChange={(value) => updateWorkspace(value as StrategyWorkspace)}
-          />
-        </div>
+        {compactLayout ? (
+          <>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="eyebrow">Workspace Switch</div>
+                <h2 className="mb-0 mt-2 text-lg">当前工作区：{workspaceLabel}</h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="info">
+                  {workspaceCountLabel} {workspace === 'factory' ? factoryRuns.length : strategies.length}
+                </Badge>
+                {workspace === 'market' ? <Badge variant="neutral">目录 {marketCatalogStrategies.length}</Badge> : null}
+              </div>
+            </div>
+            <div className="mt-3">
+              <TabBar
+                tabs={[
+                  { key: 'market', label: '市场策略' },
+                  { key: 'favorites', label: '我的收藏' },
+                  { key: 'mine', label: '我的策略' },
+                  { key: 'factory', label: '工厂运行态' },
+                ]}
+                active={workspace}
+                onChange={(value) => updateWorkspace(value as StrategyWorkspace)}
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="eyebrow">Workspace Switch</div>
+                <h2 className="mt-2 mb-0">当前工作区：{workspaceLabel}</h2>
+                <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">{workspaceSummary}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="info">
+                  {workspaceCountLabel} {workspace === 'factory' ? factoryRuns.length : strategies.length}
+                </Badge>
+                {workspace === 'market' ? <Badge variant="neutral">目录总量 {marketCatalogStrategies.length}</Badge> : null}
+                {userId ? <Badge variant="neutral">当前用户 {userId}</Badge> : <Badge variant="warning">未登录</Badge>}
+                {canViewOperatorPanels ? <Badge variant="success">可看运营面板</Badge> : <Badge variant="neutral">用户视图</Badge>}
+              </div>
+            </div>
+            <div className="mt-4">
+              <TabBar
+                tabs={[
+                  { key: 'market', label: '市场策略' },
+                  { key: 'favorites', label: '我的收藏' },
+                  { key: 'mine', label: '我的策略' },
+                  { key: 'factory', label: '工厂运行态' },
+                ]}
+                active={workspace}
+                onChange={(value) => updateWorkspace(value as StrategyWorkspace)}
+              />
+            </div>
+          </>
+        )}
       </SectionCard>
 
       <StrategyMarketHeroSection
@@ -811,6 +981,9 @@ export default function StrategyMarketPage() {
         enabledCapabilityCount={enabledCapabilityCount}
         bestAnnualReturn={bestAnnualReturn}
         bestSharpe={bestSharpe}
+        summaryMetrics={heroSummaryMetrics}
+        observabilitySummary={heroObservabilityMetrics}
+        aiRecommendationPrompt={heroAiRecommendationPrompt}
         runFactoryPending={runFactoryApi.isPending}
         runFactoryError={runFactoryApi.error}
         aiGeneratePending={aiGenerateApi.isPending}
@@ -832,7 +1005,35 @@ export default function StrategyMarketPage() {
         }}
       />
 
-      <ResultWorkbench pageKey="strategy-market" title="策略工作台" result={strategyMarketResult} />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection
+          pageKey="strategy-market"
+          title="策略工作台"
+          result={strategyMarketResult}
+          summaryMode="strip"
+        />
+      ) : null}
+
+      {workspaceError ? (
+        <PageStatusCard
+          status="unavailable"
+          title="当前工作区加载失败"
+          reason={workspaceError}
+          freshness={dailySnapshotQ.data?.snapshot_date ?? null}
+          primaryAction={(
+            <button type="button" onClick={() => updateWorkspace('market')} className="action-chip cursor-pointer text-sm text-text-primary">
+              回到市场策略
+            </button>
+          )}
+          secondaryAction={(
+            <button type="button" onClick={() => { setCategory('all'); setSearch(''); setIncubationStageFilter('all'); }} className="action-chip cursor-pointer text-sm text-text-primary">
+              清空筛选
+            </button>
+          )}
+          example="workspace=market，category=all，status=all"
+          className="mt-4"
+        />
+      ) : null}
 
       {workspace !== 'factory' ? (
         <StrategyMarketCatalogSection
@@ -882,47 +1083,68 @@ export default function StrategyMarketPage() {
             failedRunsCount={failedRuns.length}
           />
 
-          <StrategyMarketObservabilitySection
-            isPending={factoryObservabilityQ.isPending}
-            error={factoryObservabilityQ.error}
-            schedulerStale={Boolean(factoryObservabilityOverview.scheduler_stale)}
-            activeFactorCount={Number(factoryObservabilityOverview.active_factor_count ?? 0)}
-            degraded={Boolean(factoryObservabilityRoot.degraded)}
-            latestFactoryStatus={String(factoryObservabilityOverview.latest_factory_status ?? '-')}
-            governedFactorCount={String(factoryObservabilityOverview.governed_factor_count ?? '-')}
-            passedQualityGate={String(factoryObservabilityOverview.passed_quality_gate ?? '-')}
-            championCount={String(factoryObservabilityOverview.champion_count ?? 0)}
-            challengerCount={String(factoryObservabilityOverview.challenger_count ?? 0)}
-            schedulerQualityStatus={String(factoryObservabilityOverview.scheduler_quality_status ?? '-')}
-            recentGeneratedCandidateCount={String(factoryObservabilityOverview.recent_generated_candidate_count ?? '-')}
-            recentValidatedCandidateCount={String(factoryObservabilityOverview.recent_validated_candidate_count ?? '-')}
-            retrainPlanCount={String(factoryObservabilityOverview.retrain_plan_count ?? '-')}
-            latestFactoryRunId={String(factoryObservabilityOverview.latest_factory_run_id ?? '-')}
-            schedulerFreshnessSec={
-              factoryObservabilityScheduler.freshness_sec == null ? null : Number(factoryObservabilityScheduler.freshness_sec)
-            }
-            blockedFactorCount={Number(factoryObservabilityOverview.blocked_factor_count ?? 0)}
-            factoryRunsCount={extractArray(factoryObservabilityFactory, 'runs').length}
-            recentGovernedActiveCountAfterRun={Number(factoryObservabilityOverview.recent_governed_active_count_after_run ?? 0)}
-            retrainPendingCount={Number(factoryObservabilityOverview.retrain_pending_count ?? 0)}
-            errors={factoryObservabilityErrors}
-            stageRows={factoryObservabilityStageRows}
-            familyRows={factoryObservabilityFamilyRows}
-            recentRunGeneratedCount={Number(factoryObservabilityRecentRun.generated_candidate_count ?? 0)}
-            recentRunValidatedCount={Number(factoryObservabilityRecentRun.validated_candidate_count ?? 0)}
-            recentRunGovernedCount={Number(factoryObservabilityRecentRun.governed_active_count_after_run ?? 0)}
-            regimeRows={factoryObservabilityRegimeRows}
-            retrainQueue={factoryObservabilityRetrainQueue as Array<Record<string, unknown>>}
-            retrainStatusSummary={
-              Object.entries(
-                isRecord(factoryObservabilityRetrainSummary.status_counts)
-                  ? factoryObservabilityRetrainSummary.status_counts
-                  : {},
-              )
-                .map(([status, count]) => `${status}:${count}`)
-                .join(' / ')
-            }
-          />
+          {!showFactoryDetails ? (
+            <SectionCard className="mt-0">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="eyebrow">Factory Details</div>
+                  <h2 className="mt-2">工厂明细默认按需展开</h2>
+                  <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                    联动观测、候选治理、retrain 队列和 run 细节都属于慢接口，默认收起以保证工厂工作区先可用；需要排查时再展开。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFactoryDetails(true)}
+                  className="action-chip cursor-pointer text-sm text-text-primary"
+                >
+                  展开工厂明细
+                </button>
+              </div>
+            </SectionCard>
+          ) : (
+            <StrategyMarketObservabilitySection
+              isPending={factoryObservabilityQ.isPending}
+              error={factoryObservabilityQ.error}
+              schedulerStale={Boolean(factoryObservabilityOverview.scheduler_stale)}
+              activeFactorCount={Number(factoryObservabilityOverview.active_factor_count ?? 0)}
+              degraded={Boolean(factoryObservabilityRoot.degraded)}
+              latestFactoryStatus={String(factoryObservabilityOverview.latest_factory_status ?? '-')}
+              governedFactorCount={String(factoryObservabilityOverview.governed_factor_count ?? '-')}
+              passedQualityGate={String(factoryObservabilityOverview.passed_quality_gate ?? '-')}
+              championCount={String(factoryObservabilityOverview.champion_count ?? 0)}
+              challengerCount={String(factoryObservabilityOverview.challenger_count ?? 0)}
+              schedulerQualityStatus={String(factoryObservabilityOverview.scheduler_quality_status ?? '-')}
+              recentGeneratedCandidateCount={String(factoryObservabilityOverview.recent_generated_candidate_count ?? '-')}
+              recentValidatedCandidateCount={String(factoryObservabilityOverview.recent_validated_candidate_count ?? '-')}
+              retrainPlanCount={String(factoryObservabilityOverview.retrain_plan_count ?? '-')}
+              latestFactoryRunId={String(factoryObservabilityOverview.latest_factory_run_id ?? '-')}
+              schedulerFreshnessSec={
+                factoryObservabilityScheduler.freshness_sec == null ? null : Number(factoryObservabilityScheduler.freshness_sec)
+              }
+              blockedFactorCount={Number(factoryObservabilityOverview.blocked_factor_count ?? 0)}
+              factoryRunsCount={extractArray(factoryObservabilityFactory, 'runs').length}
+              recentGovernedActiveCountAfterRun={Number(factoryObservabilityOverview.recent_governed_active_count_after_run ?? 0)}
+              retrainPendingCount={Number(factoryObservabilityOverview.retrain_pending_count ?? 0)}
+              errors={factoryObservabilityErrors}
+              stageRows={factoryObservabilityStageRows}
+              familyRows={factoryObservabilityFamilyRows}
+              recentRunGeneratedCount={Number(factoryObservabilityRecentRun.generated_candidate_count ?? 0)}
+              recentRunValidatedCount={Number(factoryObservabilityRecentRun.validated_candidate_count ?? 0)}
+              recentRunGovernedCount={Number(factoryObservabilityRecentRun.governed_active_count_after_run ?? 0)}
+              regimeRows={factoryObservabilityRegimeRows}
+              retrainQueue={factoryObservabilityRetrainQueue as Array<Record<string, unknown>>}
+              retrainStatusSummary={
+                Object.entries(
+                  isRecord(factoryObservabilityRetrainSummary.status_counts)
+                    ? factoryObservabilityRetrainSummary.status_counts
+                    : {},
+                )
+                  .map(([status, count]) => `${status}:${count}`)
+                  .join(' / ')
+              }
+            />
+          )}
         </div>
       ) : null}
 

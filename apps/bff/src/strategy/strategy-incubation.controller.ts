@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { StrategyMarketService } from './strategy.service';
+import { Public } from '../rbac/public.decorator';
 import {
   IncubationMetricsQueryDto,
   PaperOrdersQueryDto,
@@ -19,42 +20,49 @@ export class StrategyIncubationController {
   constructor(private readonly svc: StrategyMarketService) {}
 
   @Get(':id/incubation-overview')
+  @Public()
   async incubationOverview(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.incubationOverview(id);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/incubation-accounts')
+  @Public()
   async incubationAccounts(@Param('id') id: string, @Query('status') status: string, @Query('limit') limit: string, @Req() req: Req_) {
     const data = await this.svc.incubationAccounts(id, { status, limit: limit ? Number(limit) : undefined });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/incubation-metrics')
+  @Public()
   async incubationMetrics(@Param('id') id: string, @Query() q: IncubationMetricsQueryDto, @Req() req: Req_) {
     const data = await this.svc.incubationMetrics(id, { limit: q.limit, start_date: q.start_date, end_date: q.end_date });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/paper-account')
+  @Public()
   async paperAccount(@Param('id') id: string, @Query() q: PaperNavQueryDto, @Req() req: Req_) {
     const data = await this.svc.paperAccount(id, { limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/paper-orders')
+  @Public()
   async paperOrders(@Param('id') id: string, @Query() q: PaperOrdersQueryDto, @Req() req: Req_) {
     const data = await this.svc.paperOrders(id, { signal_date: q.signal_date, status: q.status, limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/paper-nav')
+  @Public()
   async paperNav(@Param('id') id: string, @Query() q: PaperNavQueryDto, @Req() req: Req_) {
     const data = await this.svc.paperNav(id, { limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/execution-audit')
+  @Public()
   async executionAuditAcceptance(@Param('id') id: string, @Query() q: ExecutionAuditAcceptanceDto, @Req() req: Req_) {
     const data = await this.svc.executionAuditAcceptance(id, { backfill: q.backfill ?? false });
     return { success: true, data, traceId: tid(req) };
@@ -73,6 +81,7 @@ export class StrategyIncubationController {
   }
 
   @Get(':id/incubation-pipeline')
+  @Public()
   async incubationPipeline(@Param('id') id: string, @Query() q: IncubationPipelineQueryDto, @Req() req: Req_) {
     const data = await this.svc.incubationPipeline(id, { pipeline_stage: q.pipeline_stage, pipeline_status: q.pipeline_status, limit: q.limit });
     return { success: true, data, traceId: tid(req) };
@@ -91,6 +100,7 @@ export class StrategyIncubationController {
   }
 
   @Get(':id/promotion-reviews')
+  @Public()
   async promotionReviews(@Param('id') id: string, @Query() q: PromotionReviewsQueryDto, @Req() req: Req_) {
     const data = await this.svc.promotionReviews(id, { status: q.status, limit: q.limit });
     return { success: true, data, traceId: tid(req) };

@@ -15,40 +15,43 @@ export const BUDGET_LIMITS = {
   table: 3,
 };
 
-const DEFAULT_AUDIT_API_BASE_URL = 'http://127.0.0.1:3001/api';
+const DEFAULT_AUDIT_API_BASE_URL = 'http://127.0.0.1:3000/api/bff';
 
-function normalizeApiBaseUrl(raw) {
+function normalizeExplicitApiBaseUrl(raw) {
   const trimmed = String(raw || '').trim();
   if (!trimmed) return null;
   try {
     const parsed = new URL(trimmed);
-    parsed.pathname = '/api';
-    parsed.search = '';
-    parsed.hash = '';
     return parsed.toString().replace(/\/$/, '');
   } catch {
     return null;
   }
 }
 
-export function getAuditApiBaseUrl(baseUrl) {
-  const explicit = normalizeApiBaseUrl(process.env.PW_AUDIT_API_BASE_URL);
-  if (explicit) {
-    return explicit;
-  }
+function normalizeAuditApiBaseUrl(rawBaseUrl) {
   try {
-    const parsed = new URL(String(baseUrl || DEFAULT_AUDIT_API_BASE_URL));
-    const derivedPort =
-      process.env.PW_AUDIT_API_PORT?.trim() ||
-      (parsed.port && /^\d+$/.test(parsed.port) ? String(Number(parsed.port) + 1) : '3001');
-    parsed.port = derivedPort;
-    parsed.pathname = '/api';
+    const parsed = new URL(String(rawBaseUrl || DEFAULT_AUDIT_API_BASE_URL));
+    const explicitPort = process.env.PW_AUDIT_API_PORT?.trim();
+    if (explicitPort) {
+      parsed.port = explicitPort;
+      parsed.pathname = '/api';
+    } else {
+      parsed.pathname = '/api/bff';
+    }
     parsed.search = '';
     parsed.hash = '';
     return parsed.toString().replace(/\/$/, '');
   } catch {
     return DEFAULT_AUDIT_API_BASE_URL;
   }
+}
+
+export function getAuditApiBaseUrl(baseUrl) {
+  const explicit = normalizeExplicitApiBaseUrl(process.env.PW_AUDIT_API_BASE_URL);
+  if (explicit) {
+    return explicit;
+  }
+  return normalizeAuditApiBaseUrl(baseUrl);
 }
 
 export function resolveAuditApiUrl(baseUrl, targetPath) {
@@ -130,7 +133,7 @@ function isTransientAuthCapacityError(result) {
   if (!result || result.ok) return false;
   if (result.status < 500) return false;
   const message = readAuthErrorMessage(result);
-  return /too many clients already|db_query_failed|temporarily unavailable|请稍后重试/i.test(message);
+  return /too many clients already|db_query_failed|temporarily unavailable|recovery mode|connection terminated unexpectedly|请稍后重试/i.test(message);
 }
 
 export async function login(page, baseUrl, credentials) {

@@ -6,13 +6,20 @@ import { useCartStore } from '@/store/cart-store';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { ConfirmDialog } from '@/components/ui';
+import { hasLoggedInHint } from '@/lib/auth';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 export function CartDrawer({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const { items, removeStrategy, setWeight, clear } = useCartStore();
   const createApi = useApiMutation();
-  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
+  const hasLoginHint = hasLoggedInHint();
+  const profileQ = useApiQuery<Record<string, unknown>>(hasLoginHint ? '/auth/profile' : null, {
+    enabled: hasLoginHint,
+    redirectOnUnauthorized: false,
+    nonFatal: true,
+    fallbackData: {},
+  });
   const [name, setName] = useState('');
   const [pendingCreate, setPendingCreate] = useState<{ name: string; description: string } | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);

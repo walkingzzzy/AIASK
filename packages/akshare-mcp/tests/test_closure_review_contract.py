@@ -65,7 +65,32 @@ class _ClosureReviewDb:
         return [{"id": 11, "strategy_id": strategy_id, "task_name": "strategy_lifecycle_transition"}]
 
     async def list_strategy_factory_runs(self, limit: int = 5):
-        return [{"run_id": "factory-run-1", "completed_at": "2026-04-21T08:00:00+00:00"}]
+        return [
+            {
+                "run_id": "factory-run-1",
+                "completed_at": "2026-04-21T08:00:00+00:00",
+                "summary": {
+                    "bulk_stock_matrix_loaded_stock_count": 5505,
+                    "bulk_stock_matrix_eligible_stock_count": 5167,
+                    "bulk_stock_matrix_planned_task_count": 11704,
+                    "bulk_stock_task_count": 20,
+                },
+            }
+        ]
+
+    async def get_strategy_factory_topn_snapshot(self, run_id: str):
+        assert run_id == "factory-run-1"
+        return {
+            "available": True,
+            "snapshot_id": "fmt_factory-run-1",
+            "run_id": run_id,
+            "topn_n": 20,
+            "metadata": {
+                "score_contract_version": "strategy_factory.full_market_topn.v2",
+                "score_quality": "healthy",
+            },
+            "constituents": [{"code": "600000", "rank": 1}],
+        }
 
     async def list_paper_positions(self, account_id: str):
         return [{"id": "pos-1", "account_id": account_id}]
@@ -124,6 +149,9 @@ def test_closure_review_aggregates_snapshot_driven_factory_contract(monkeypatch)
     assert result["stale"] is False
     assert result["events"]["count"] == 1
     assert result["factory"]["latest_run"]["run_id"] == "factory-run-1"
+    assert result["factory"]["research_window"]["planned_bulk_task_count"] == 11704
+    assert result["factory"]["full_market_topn"]["snapshot_id"] == "fmt_factory-run-1"
+    assert result["factory"]["full_market_topn"]["score_contract_version"] == "strategy_factory.full_market_topn.v2"
     assert result["runtime"]["control"]["id"] == "runtime-1"
     assert result["vectors"]["profiles"][0]["id"] == "vector-1"
     assert acceptance["execution_audit_snapshot_id"] == "eas-closure"

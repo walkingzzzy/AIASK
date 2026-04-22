@@ -64,6 +64,17 @@ export class PaperTradingService {
     return this.call('pending_orders', { user_id: userId, account_id: accountId });
   }
 
+  async reconcile(userId: string, params: {
+    account_id?: string;
+    refresh_prices?: boolean;
+    force?: boolean;
+  } = {}) {
+    const data = await this.call('reconcile', { user_id: userId, ...params });
+    const cacheKey = `paper-trading:summary:${userId}:${params.account_id?.trim() || 'default'}`;
+    await this.cacheService.del(cacheKey);
+    return data;
+  }
+
   async placeOrder(userId: string, params: {
     code: string; direction: string; quantity: number;
     price?: number; order_type?: string; stop_price?: number;

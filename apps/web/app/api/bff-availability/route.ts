@@ -2,7 +2,7 @@ import { getBffOrigin } from '@/lib/bff-base';
 
 export const dynamic = 'force-dynamic';
 
-const PROBE_TIMEOUT_MS = 2500;
+const PROBE_TIMEOUT_MS = 5000;
 
 export async function GET() {
   const controller = new AbortController();

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
+import { Public } from '../rbac/public.decorator';
 import { FactoryRunsQueryDto, AiGenerateDto, AiExperimentsQueryDto, Req_, ReviewWorkflowQueryDto, tid } from './dto';
 
 @Controller('strategy-market')
@@ -8,12 +9,14 @@ export class StrategyFactoryController {
   constructor(private readonly svc: StrategyMarketService) {}
 
   @Get('factory/status')
+  @Public()
   async factoryStatus(@Req() req: Req_) {
     const data = await this.svc.factoryStatus();
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('factory/observability')
+  @Public()
   async factoryObservability(@Req() req: Req_) {
     const data = await this.svc.factoryObservability();
     return { success: true, data, traceId: tid(req) };
@@ -27,24 +30,42 @@ export class StrategyFactoryController {
   }
 
   @Get('factory/runs')
+  @Public()
   async factoryRuns(@Query() q: FactoryRunsQueryDto, @Req() req: Req_) {
     const data = await this.svc.factoryRuns(q.limit);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('factory/runs/:runId')
+  @Public()
   async factoryRunDetail(@Param('runId') runId: string, @Req() req: Req_) {
     const data = await this.svc.factoryRunDetail(runId);
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('factory/topn/latest')
+  @Public()
+  async factoryTopnLatest(@Query('limit') limit: string, @Req() req: Req_) {
+    const data = await this.svc.factoryTopnLatest(limit ? Number(limit) : undefined);
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get('factory/runs/:runId/topn')
+  @Public()
+  async factoryRunTopn(@Param('runId') runId: string, @Query('limit') limit: string, @Req() req: Req_) {
+    const data = await this.svc.factoryRunTopn(runId, limit ? Number(limit) : undefined);
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Get('factory/dispatches/:dispatchId')
+  @Public()
   async factoryDispatchStatus(@Param('dispatchId') dispatchId: string, @Req() req: Req_) {
     const data = await this.svc.factoryDispatchStatus(dispatchId);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/review-report')
+  @Public()
   async reviewReport(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.reviewReport(id);
     return { success: true, data, traceId: tid(req) };
@@ -57,6 +78,7 @@ export class StrategyFactoryController {
   }
 
   @Get(':id/review-workflow')
+  @Public()
   async reviewWorkflow(@Param('id') id: string, @Query() query: ReviewWorkflowQueryDto, @Req() req: Req_) {
     const data = await this.svc.reviewWorkflow(id, query, {
       userId: req.user?.id,
@@ -66,6 +88,7 @@ export class StrategyFactoryController {
   }
 
   @Get(':id/closure-review')
+  @Public()
   async closureReview(
     @Param('id') id: string,
     @Query('as_of') asOf: string,
@@ -93,6 +116,7 @@ export class StrategyFactoryController {
   }
 
   @Get('ai/experiments')
+  @Public()
   async aiExperiments(@Query() q: AiExperimentsQueryDto, @Req() req: Req_) {
     const data = await this.svc.aiExperiments({
       experiment_id: q.experiment_id,

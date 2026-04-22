@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { Badge, PageContainer, SectionCard, KpiCard, KpiGrid, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -13,7 +13,7 @@ import { StockLink } from '@/components/stock-link';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import Link from 'next/link';
 import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
-import { EmptyState, LoadingState, UnavailableState } from '@/components/status-state';
+import { EmptyState, LoadingState, PageStatusCard } from '@/components/status-state';
 import { exportCSV } from '@/lib/export';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useMobile } from '@/hooks/use-mobile';
@@ -252,6 +252,18 @@ export default function WatchlistPage() {
   usePageActions(pageActions);
 
   const watchlistSummary = `当前共有 ${visibleGroups.length} 个分组，活跃分组 ${activeGroup?.name ?? '未选择'}，包含 ${activeGroup?.items.length ?? 0} 只股票。`;
+  const watchlistFreshness =
+    hydrated && batchQ.dataUpdatedAt ? new Date(batchQ.dataUpdatedAt).toLocaleString('zh-CN') : null;
+  const watchlistStatus =
+    hydrated && syncing && !synced
+      ? 'loading'
+      : hydrated && !synced && syncError
+        ? 'unavailable'
+        : batchQ.error && activeGroupItems.length > 0
+          ? 'degraded'
+          : (activeGroup?.items.length ?? 0) === 0
+            ? 'empty'
+            : 'ready';
   const watchlistEvidence = [
     { label: '分组数量', value: String(visibleGroups.length) },
     { label: '当前分组', value: activeGroup?.name ?? '未选择' },
@@ -269,13 +281,39 @@ export default function WatchlistPage() {
   if ((activeGroup?.items.length ?? 0) === 0) {
     watchlistRiskNotes.push('当前分组为空，建议先补入候选标的后再做排序和巡检。');
   }
+  if (hydrated && !synced && syncError) {
+    watchlistRiskNotes.push('自选股分组同步失败，当前只能先切到其他页面继续工作。');
+  }
+  if (batchQ.error && activeGroupItems.length > 0) {
+    watchlistRiskNotes.push('实时行情拉取失败，当前只保留分组和后续跳转，价格判断需要等待行情恢复。');
+  }
   const watchlistResult = buildLocalResultContract({
     summary: watchlistSummary,
+    status: watchlistStatus,
     pageActions,
     preferredActionIds: ['watchlist.refresh', 'watchlist.toggle-view', 'watchlist.export-active'],
     recommendedLinks: watchlistLinks,
+    recommendedNextActions: [
+      activeGroup?.id ? '先锁定一个分组，再决定看网格还是列表。' : '先建一个分组，避免所有股票混在一起。',
+      (activeGroup?.items.length ?? 0) === 0 ? '先从行情页补入 1 到 2 只常看股票，再回来巡检。' : '先看当前分组里的强弱分布，再决定跳去行情、研究还是交易。',
+      batchQ.error && activeGroupItems.length > 0 ? '行情恢复前先整理观察顺序，不要在无实时报价时直接做价格判断。' : '如果需要更深判断，再把当前分组送去 AI 做盘中观察顺序。',
+    ],
     evidence: watchlistEvidence,
     riskNotes: watchlistRiskNotes,
+    emptyState: {
+      title: '当前分组还没有股票',
+      description: '先建立一个明确的观察池，再开始排序、巡检和跳转到研究或交易页。',
+      example: '先建“核心观察”分组，再从行情页加入 1 到 2 只常看股票。',
+    },
+    degradedState: batchQ.error
+      ? {
+          title: '实时行情暂不可用',
+          description: '分组仍然可用，但当前价格和涨跌幅不能作为判断依据。',
+          reason: batchQ.error,
+          example: '先按分组和标的名称整理观察顺序，行情恢复后再回来自选页。',
+        }
+      : null,
+    freshness: watchlistFreshness ? { updatedAt: watchlistFreshness, label: '行情刷新时间' } : null,
     workbenchTask: defaultWorkbenchTask('watchlist', `自选巡检：${activeGroup?.name ?? '当前分组'}`, '/watchlist', 'watchlist-review', {
       groupId: activeGroup?.id ?? null,
       groupName: activeGroup?.name ?? null,
@@ -287,6 +325,8 @@ export default function WatchlistPage() {
     pageKey: 'watchlist',
     title: '自选股',
     summary: watchlistSummary,
+    primaryGoal: '先锁定一个明确分组，再判断当前观察池里最该优先盯的标的。',
+    requiredInputs: ['watchlistGroup'],
     stockCode: activeGroup?.items[0]?.code,
     objectType: activeGroup?.items.length ? 'stock-list' : 'workspace',
     objectId: activeGroup?.id ?? 'watchlist',
@@ -306,6 +346,8 @@ export default function WatchlistPage() {
     evidenceSummary: evidenceToSummary(watchlistResult.evidence),
     riskNotes: watchlistResult.riskNotes ?? [],
     freshness: watchlistResult.freshness ?? null,
+    dataFreshness: watchlistResult.freshness?.updatedAt ?? null,
+    degradedReason: watchlistResult.riskNotes ?? [],
     raw: {
       groupCount: visibleGroups.length,
       activeGroupId: activeGroup?.id ?? null,
@@ -317,7 +359,29 @@ export default function WatchlistPage() {
 
   if (hydrated && syncing && !synced) {
     return (
-      <PageContainer className="app-theme-market">
+      <PageContainer className="app-theme-market space-y-4">
+        <PageStatusCard
+          status="loading"
+          title="正在准备自选股工作区"
+          reason="需要先同步分组和观察池，完成后才能稳定切分组、看实时行情和导出当前清单。"
+          primaryAction={(
+            <button
+              type="button"
+              onClick={() => {
+                void syncFromServer(true).catch(() => {});
+              }}
+              className={HERO_PRIMARY_BUTTON_CLS}
+            >
+              重新同步
+            </button>
+          )}
+          secondaryAction={(
+            <Link href="/market" className={HERO_SECONDARY_BUTTON_CLS}>
+              先去行情看板
+            </Link>
+          )}
+          example="先建立一个核心观察分组，再回来统一巡检。"
+        />
         <LoadingState text="正在同步自选股分组与行情工作台..." />
       </PageContainer>
     );
@@ -326,12 +390,27 @@ export default function WatchlistPage() {
   if (hydrated && !synced && syncError) {
     return (
       <PageContainer className="app-theme-market">
-        <UnavailableState
-          text="自选股主链路暂不可用"
-          hint={syncError}
-          onRetry={() => {
-            void syncFromServer(true).catch(() => {});
-          }}
+        <PageStatusCard
+          status="unavailable"
+          title="自选股主链路暂不可用"
+          reason={syncError}
+          primaryAction={(
+            <button
+              type="button"
+              onClick={() => {
+                void syncFromServer(true).catch(() => {});
+              }}
+              className={HERO_PRIMARY_BUTTON_CLS}
+            >
+              重试同步
+            </button>
+          )}
+          secondaryAction={(
+            <Link href="/market" className={HERO_SECONDARY_BUTTON_CLS}>
+              先去行情看板
+            </Link>
+          )}
+          example="先从行情页挑 1 到 2 只常看股票，待自选页恢复后再建立观察池。"
         />
       </PageContainer>
     );
@@ -398,59 +477,68 @@ export default function WatchlistPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">使用建议</div>
-              <div className="mt-4 space-y-3">
-                {heroNotes.map((note) => (
-                  <div key={note} className={NOTE_CARD_CLS}>
-                    {note}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">快捷跳转</div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href="/market" className={LINK_CHIP_CLS}>
-                  去行情看板
-                </Link>
-                <Link href="/stock" className={LINK_CHIP_CLS}>
-                  去个股详情
-                </Link>
-                <Link href="/research" className={LINK_CHIP_CLS}>
-                  去研究页
-                </Link>
-                <Link href="/paper-trading" className={LINK_CHIP_CLS}>
-                  去模拟交易
-                </Link>
-              </div>
-              {activeGroup?.items.length ? (
-                <div className="mt-4">
-                  <button
-                    onClick={() =>
-                      exportCSV(
-                        activeGroup.items.map((item) => ({
-                          代码: item.code,
-                          名称: item.name,
-                          分组: activeGroup.name,
-                          添加时间: new Date(item.addedAt).toLocaleString('zh-CN'),
-                        })),
-                        `watchlist-${activeGroup.id}`,
-                      )
-                    }
-                    className={HERO_SECONDARY_BUTTON_CLS}
-                  >
-                    导出当前分组
-                  </button>
+          {!compactBoard ? (
+            <div className="grid gap-3">
+              <div className={PANEL_CLS}>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">使用建议</div>
+                <div className="mt-4 space-y-3">
+                  {heroNotes.map((note) => (
+                    <div key={note} className={NOTE_CARD_CLS}>
+                      {note}
+                    </div>
+                  ))}
                 </div>
-              ) : null}
+              </div>
+              <div className={PANEL_CLS}>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">快捷跳转</div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link href="/market" className={LINK_CHIP_CLS}>
+                    去行情看板
+                  </Link>
+                  <Link href="/stock" className={LINK_CHIP_CLS}>
+                    去个股详情
+                  </Link>
+                  <Link href="/research" className={LINK_CHIP_CLS}>
+                    去研究页
+                  </Link>
+                  <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+                    去模拟交易
+                  </Link>
+                </div>
+                {activeGroup?.items.length ? (
+                  <div className="mt-4">
+                    <button
+                      onClick={() =>
+                        exportCSV(
+                          activeGroup.items.map((item) => ({
+                            代码: item.code,
+                            名称: item.name,
+                            分组: activeGroup.name,
+                            添加时间: new Date(item.addedAt).toLocaleString('zh-CN'),
+                          })),
+                          `watchlist-${activeGroup.id}`,
+                        )
+                      }
+                      className={HERO_SECONDARY_BUTTON_CLS}
+                    >
+                      导出当前分组
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </section>
 
-      <ResultWorkbench pageKey="watchlist" title="自选研究工作台" result={watchlistResult} />
+      {!compactBoard || watchlistStatus !== 'ready' ? (
+        <ProgressiveWorkbenchSection
+          pageKey="watchlist"
+          title="自选研究工作台"
+          result={watchlistResult}
+          summaryMode="strip"
+        />
+      ) : null}
 
 
       <div className={PANEL_CLS}>
@@ -621,14 +709,43 @@ export default function WatchlistPage() {
                 <p className="mt-1 text-xs text-text-muted">未找到相关股票</p>
               ) : null}
               {searchQ.error ? (
-                <UnavailableState
-                  text="股票搜索暂不可用"
-                  hint={searchQ.error}
-                  onRetry={() => {
-                    if (searchPath) {
-                      void searchQ.refetch();
-                    }
-                  }}
+                <PageStatusCard
+                  status="unavailable"
+                  title="股票搜索暂不可用"
+                  reason={searchQ.error}
+                  primaryAction={(
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (searchPath) {
+                          void searchQ.refetch();
+                        }
+                      }}
+                      className={CHIP_BUTTON_CLS}
+                    >
+                      重试搜索
+                    </button>
+                  )}
+                  secondaryAction={(
+                    searchPath ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchPath(null);
+                          setSearchKeyword('');
+                        }}
+                        className={CHIP_BUTTON_CLS}
+                      >
+                        清空搜索
+                      </button>
+                    ) : (
+                      <Link href="/market" className={LINK_CHIP_CLS}>
+                        去行情看板
+                      </Link>
+                    )
+                  )}
+                  example="输入 600519 或 贵州茅台，把标的补进当前观察池。"
+                  className="mt-3"
                 />
               ) : null}
             </div>
@@ -701,12 +818,28 @@ export default function WatchlistPage() {
           </div>
         ) : batchQ.error && activeGroupItems.length > 0 ? (
           <div className="mt-5">
-            <UnavailableState
-              text="自选股实时行情暂不可用"
-              hint={batchQ.error}
-              onRetry={() => {
-                void batchQ.refetch();
-              }}
+            <PageStatusCard
+              status="degraded"
+              title="自选股实时行情暂不可用"
+              reason={batchQ.error}
+              freshness={watchlistFreshness}
+              primaryAction={(
+                <button
+                  type="button"
+                  onClick={() => {
+                    void batchQ.refetch();
+                  }}
+                  className={CHIP_BUTTON_CLS}
+                >
+                  重试行情
+                </button>
+              )}
+              secondaryAction={(
+                <Link href="/market" className={LINK_CHIP_CLS}>
+                  去行情看板
+                </Link>
+              )}
+              example="先按分组整理观察顺序，行情恢复后再回来自选页做价格判断。"
             />
           </div>
         ) : activeGroup && activeGroupItems.length > 0 ? (

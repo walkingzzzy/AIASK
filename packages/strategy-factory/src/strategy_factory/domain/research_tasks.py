@@ -141,6 +141,8 @@ class ResearchBatchResult:
     experiments: list[dict[str, Any]] = field(default_factory=list)
     persistence_failures: list[dict[str, Any]] = field(default_factory=list)
     stage_payload: dict[str, Any] = field(default_factory=dict)
+    full_market_topn: dict[str, Any] = field(default_factory=dict)
+    full_market_score_rows: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def completed_count(self) -> int:

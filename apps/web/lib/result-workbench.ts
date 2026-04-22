@@ -5,6 +5,8 @@ import type {
   ResultFreshness,
   ResultLink,
   ResultPlatformMeta,
+  ResultStateBlock,
+  ResultStatus,
   ResultView,
   ResultWorkbenchTask,
 } from '@aiask/shared-types';
@@ -13,12 +15,18 @@ import type { WorkspacePageKey } from '@/store/workbench-store';
 
 type LocalResultContractInput = {
   summary: string;
+  status?: ResultStatus;
   availableViews?: ResultView[];
   pageActions?: PageActionDefinition[];
   preferredActionIds?: string[];
+  primaryAction?: ResultAction | null;
+  secondaryActions?: ResultAction[];
   recommendedLinks?: ResultLink[];
+  recommendedNextActions?: string[];
   evidence?: ResultEvidenceItem[];
   riskNotes?: string[];
+  emptyState?: ResultStateBlock | null;
+  degradedState?: ResultStateBlock | null;
   freshness?: ResultFreshness | null;
   platformMeta?: ResultPlatformMeta | null;
   workbenchTask?: ResultWorkbenchTask | null;
@@ -83,17 +91,40 @@ export function defaultWorkbenchTask(
   };
 }
 
+function uniqueStrings(items: string[] = []) {
+  return uniqueByKey(items.filter(Boolean), (item) => item);
+}
+
 export function buildLocalResultContract(input: LocalResultContractInput): ResultContract {
   const availableViews = Array.from(
     new Set<ResultView>(['summary', ...(input.availableViews ?? []), 'next_step']),
   );
+  const pageResultActions = pageActionsToResultActions(input.pageActions ?? [], input.preferredActionIds);
+  const primaryAction = input.primaryAction ?? pageResultActions[0] ?? null;
+  const secondaryActions = uniqueByKey(
+    [
+      ...(input.secondaryActions ?? []),
+      ...pageResultActions.filter((action) => action.actionId !== primaryAction?.actionId),
+    ],
+    (item) => `${item.actionId ?? item.id}:${item.label}`,
+  );
+  const recommendedActions = uniqueByKey(
+    [...(primaryAction ? [primaryAction] : []), ...secondaryActions],
+    (item) => `${item.actionId ?? item.id}:${item.label}`,
+  );
   return {
     summary: input.summary,
+    status: input.status ?? (input.platformMeta?.degraded ? 'degraded' : 'ready'),
     availableViews,
-    recommendedActions: pageActionsToResultActions(input.pageActions ?? [], input.preferredActionIds),
+    primaryAction,
+    secondaryActions,
+    recommendedActions,
     recommendedLinks: uniqueByKey(input.recommendedLinks ?? [], (item) => `${item.href}:${item.label}`),
+    recommendedNextActions: uniqueStrings(input.recommendedNextActions),
     evidence: uniqueByKey(input.evidence ?? [], (item) => `${item.label}:${item.value}`),
     riskNotes: uniqueByKey((input.riskNotes ?? []).filter(Boolean), (item) => item),
+    emptyState: input.emptyState ?? null,
+    degradedState: input.degradedState ?? null,
     freshness: input.freshness ?? null,
     platformMeta: input.platformMeta ?? null,
     workbenchTask: input.workbenchTask ?? null,
@@ -117,11 +148,17 @@ export function resolveResultContract(
       typeof server.summary === 'string' && server.summary.trim()
         ? server.summary
         : localFallback.summary,
+    status: server.status ?? localFallback.status ?? 'ready',
     availableViews: Array.from(
       new Set<ResultView>([
         ...((server.availableViews as ResultView[] | undefined) ?? []),
         ...localFallback.availableViews,
       ]),
+    ),
+    primaryAction: server.primaryAction ?? localFallback.primaryAction ?? null,
+    secondaryActions: uniqueByKey(
+      [...(server.secondaryActions ?? []), ...(localFallback.secondaryActions ?? [])],
+      (item) => `${item.actionId ?? item.id}:${item.label}`,
     ),
     recommendedActions: uniqueByKey(
       [...(server.recommendedActions ?? []), ...(localFallback.recommendedActions ?? [])],
@@ -131,6 +168,10 @@ export function resolveResultContract(
       [...(server.recommendedLinks ?? []), ...(localFallback.recommendedLinks ?? [])],
       (item) => `${item.href}:${item.label}`,
     ),
+    recommendedNextActions: uniqueStrings([
+      ...(server.recommendedNextActions ?? []),
+      ...(localFallback.recommendedNextActions ?? []),
+    ]),
     evidence: uniqueByKey(
       [...(server.evidence ?? []), ...(localFallback.evidence ?? [])],
       (item) => `${item.label}:${item.value}`,
@@ -139,6 +180,8 @@ export function resolveResultContract(
       [...(server.riskNotes ?? []), ...(localFallback.riskNotes ?? [])].filter(Boolean),
       (item) => item,
     ),
+    emptyState: server.emptyState ?? localFallback.emptyState ?? null,
+    degradedState: server.degradedState ?? localFallback.degradedState ?? null,
     freshness: server.freshness ?? localFallback.freshness ?? null,
     platformMeta: server.platformMeta ?? localFallback.platformMeta ?? null,
     skillSuggestions: uniqueByKey(

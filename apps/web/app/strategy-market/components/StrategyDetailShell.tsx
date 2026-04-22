@@ -78,6 +78,8 @@ export function StrategyDetailHeroSection({
   onOpenPaperSession,
 }: StrategyDetailHeroSectionProps) {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const compactSummary =
+    compactLayout && strategySummary.length > 88 ? `${strategySummary.slice(0, 88)}…` : strategySummary;
 
   return (
     <section className="page-hero p-5 sm:p-6">
@@ -100,7 +102,7 @@ export function StrategyDetailHeroSection({
           <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
             {strategy.name}
           </h1>
-          <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">{strategySummary}</p>
+          <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">{compactSummary}</p>
           <div className="mt-5 flex flex-wrap gap-2">
             <button onClick={onAddToCart} data-testid="page-primary-action" className={heroPrimaryButtonCls}>
               加入组合
@@ -122,42 +124,65 @@ export function StrategyDetailHeroSection({
             >
               {subscribePending ? '处理中...' : !userId ? '登录后收藏' : isSubscribed ? '取消收藏' : '收藏策略'}
             </button>
-            <button type="button" onClick={onOpenPortfolio} className={heroSecondaryButtonCls}>
-              去组合页配置
-            </button>
-            <button type="button" onClick={onOpenPaperSession} className={heroSecondaryButtonCls}>
-              打开我的模拟盘测试
-            </button>
+            {!compactLayout ? (
+              <>
+                <button type="button" onClick={onOpenPortfolio} className={heroSecondaryButtonCls}>
+                  去组合页配置
+                </button>
+                <button type="button" onClick={onOpenPaperSession} className={heroSecondaryButtonCls}>
+                  打开我的模拟盘测试
+                </button>
+              </>
+            ) : null}
           </div>
           <div
             data-testid="page-primary-status"
-            className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+            className={`mt-4 rounded-[22px] border border-white/50 bg-white/28 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] ${compactLayout ? 'px-3.5 py-3' : 'px-4 py-3'}`}
           >
             <div className="font-medium text-text-primary">
-              当前处于 {activeTabLabel}，当前状态 {displayStatus.label}
+              当前处于 {activeTabLabel}，策略状态 {String(strategy.status ?? '-')}（{displayStatus.label}）
               {showIncubationStage ? `，孵化阶段 ${incubationStage.label}` : '，尚未进入真实孵化链路'}
-              ，收藏 {strategy.subscriber_count ?? 0}
+              ，订阅 {strategy.subscriber_count ?? 0}
             </div>
-            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+            <p className={`mt-1 mb-0 text-xs text-text-secondary ${compactLayout ? 'leading-5' : 'leading-6'}`}>
               质量评级 {latestQualityGrade ?? '-'} ｜ 最新决策 {latestIncubationDecision} ｜ 执行审计 {executionAuditGate}
               {' '}｜ 阻塞 {blockerCount} ｜ 风险 {riskCount}
             </p>
           </div>
 
-          <div className={`mt-5 grid gap-3 ${compactLayout ? 'grid-cols-2' : 'sm:grid-cols-4'}`}>
-            <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作流</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
-              <div className="mt-1 text-xs text-text-secondary">
-                {activeTab === 'factory' ? `分区 ${activeFactorySection}` : '可在下方继续切换视图'}
+          {compactLayout ? (
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="rounded-[20px] border border-white/45 bg-white/38 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前工作流</div>
+                <div className="mt-2 text-sm font-semibold text-text-primary">{activeTabLabel}</div>
+                <div className="mt-1 text-[11px] leading-5 text-text-secondary">
+                  {activeTab === 'factory' ? `分区 ${activeFactorySection}` : '向下继续切换视图'}
+                </div>
+              </div>
+              <div className="rounded-[20px] border border-white/45 bg-white/30 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">阻塞 / 风险</div>
+                <div className="mt-2 text-sm font-semibold text-text-primary">
+                  {blockerCount} / {riskCount}
+                </div>
+                <div className="mt-1 text-[11px] leading-5 text-text-secondary">
+                  样本期 {sampleStart || '-'} · {sampleWindow}
+                </div>
               </div>
             </div>
-            <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本期</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{sampleStart || '-'}</div>
-              <div className="mt-1 text-xs text-text-secondary">{sampleWindow}</div>
-            </div>
-            {!compactLayout ? (
+          ) : (
+            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作流</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {activeTab === 'factory' ? `分区 ${activeFactorySection}` : '可在下方继续切换视图'}
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本期</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{sampleStart || '-'}</div>
+                <div className="mt-1 text-xs text-text-secondary">{sampleWindow}</div>
+              </div>
               <>
                 <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险 / 向量</div>
@@ -174,8 +199,8 @@ export function StrategyDetailHeroSection({
                   </div>
                 </div>
               </>
-            ) : null}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-3">
@@ -231,6 +256,9 @@ export function StrategyDetailHeroSection({
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={onSubscribe} disabled={subscribePending || !userId} className={chipButtonCls}>
                     {isSubscribed ? '取消收藏' : '立即收藏'}
+                  </button>
+                  <button type="button" onClick={onOpenPortfolio} className={chipButtonCls}>
+                    去组合页配置
                   </button>
                   <button type="button" onClick={onOpenPaperSession} className={chipButtonCls}>
                     打开我的模拟盘测试

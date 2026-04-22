@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Unauthor
 import { Throttle } from '@nestjs/throttler';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
+import { Public } from '../rbac/public.decorator';
 import {
   ListDto,
   RankDto,
@@ -37,12 +38,14 @@ export class StrategyMarketController {
   }
 
   @Get('list')
+  @Public()
   async list(@Query() q: ListDto, @Req() req: Req_) {
     const data = await this.svc.list({ status: q.status, strategy_type: q.strategy_type, limit: q.limit, offset: q.offset });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('ranking')
+  @Public()
   async ranking(@Query() q: RankDto, @Req() req: Req_) {
     const data = await this.svc.rank({
       status: q.status,
@@ -88,6 +91,7 @@ export class StrategyMarketController {
   }
 
   @Get('capabilities')
+  @Public()
   async capabilities(@Req() req: Req_) {
     const data = await this.svc.capabilities({
       userId: req.user?.id,
@@ -97,18 +101,21 @@ export class StrategyMarketController {
   }
 
   @Get('daily-snapshots')
+  @Public()
   async dailySnapshots(@Query() q: DailySnapshotsQueryDto, @Req() req: Req_) {
     const data = await this.svc.dailySnapshots({ limit: q.limit, start_date: q.start_date, end_date: q.end_date });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('daily-snapshot')
+  @Public()
   async dailySnapshot(@Query('snapshot_date') snapshotDate: string, @Req() req: Req_) {
     const data = await this.svc.dailySnapshot(snapshotDate);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('task-runs')
+  @Public()
   async taskRuns(@Query() q: TaskRunsQueryDto, @Req() req: Req_) {
     const data = await this.svc.taskRuns({
       strategy_id: q.strategy_id,
@@ -121,6 +128,7 @@ export class StrategyMarketController {
   }
 
   @Get(':id/events')
+  @Public()
   async events(@Param('id') id: string, @Query() q: EventsQueryDto, @Req() req: Req_) {
     const data = await this.svc.events(id, {
       event_type: q.event_type,
@@ -135,6 +143,7 @@ export class StrategyMarketController {
   }
 
   @Get(':id')
+  @Public()
   async detail(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.detail(id, {
       userId: req.user?.id,
@@ -272,12 +281,14 @@ export class StrategyMarketController {
   }
 
   @Get(':id/forward-returns')
+  @Public()
   async forwardReturns(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.getForwardReturns(id);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get(':id/signal-stats')
+  @Public()
   async signalStats(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.getSignalStats(id);
     return { success: true, data, traceId: tid(req) };

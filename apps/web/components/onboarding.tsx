@@ -11,9 +11,9 @@ import {
   useRef,
   useState,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { getLlmConfig } from '@/lib/chat-api';
 import {
@@ -27,7 +27,9 @@ import {
   isStepResolved,
   mergeOnboardingSnapshots,
   parseOnboardingSnapshot,
-  resolveCurrentStepId,
+  prefersExpandedOnboarding,
+  resolveOnboardingEntrySurface,
+  resolveOnboardingRouteScope,
   type OnboardingSignal,
   type OnboardingOverlayMode,
   type OnboardingSnapshot,
@@ -36,6 +38,7 @@ import {
   type OnboardingStepState,
   type OnboardingStepStatus,
 } from '@/lib/onboarding';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useAuthStore } from '@/store/auth-store';
 import { useWatchlistStore } from '@/store/watchlist-store';
 
@@ -106,6 +109,7 @@ function findMatchedStepId(pathname: string) {
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const hydrated = useHydrated();
   const pathname = useStablePathname() ?? '/';
+  const compactOnboarding = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const groups = useWatchlistStore((state) => state.groups);
@@ -182,6 +186,9 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         return {
           ...current,
           currentStepId: stepId,
+          lastCompletedStep: status === 'done' ? stepId : current.lastCompletedStep,
+          dismissedUntil: status === 'done' ? undefined : current.dismissedUntil,
+          overlayMode: status === 'done' && current.overlayMode === 'expanded' ? 'minimized' : current.overlayMode,
           updatedAt: now,
           steps: {
             ...current.steps,
@@ -209,6 +216,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         ...current,
         currentStepId: stepId,
         overlayMode: 'expanded',
+        dismissedUntil: undefined,
         updatedAt: new Date().toISOString(),
       }));
     },
@@ -227,14 +235,17 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     updateSnapshot((current) => ({
       ...current,
       overlayMode: 'expanded',
+      dismissedUntil: undefined,
       updatedAt: new Date().toISOString(),
     }));
   }, [updateSnapshot]);
 
   const hide = useCallback(() => {
+    const dismissedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     updateSnapshot((current) => ({
       ...current,
       overlayMode: 'hidden',
+      dismissedUntil,
       updatedAt: new Date().toISOString(),
     }));
   }, [updateSnapshot]);
@@ -328,6 +339,42 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     }
     markStep(matchedStepId, 'visited');
   }, [completeStep, markStep, matchedStepId, ready, snapshot]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const routeScope = resolveOnboardingRouteScope(pathname);
+    const entrySurface = resolveOnboardingEntrySurface(pathname);
+    const keepExpanded = prefersExpandedOnboarding(pathname, compactOnboarding);
+    updateSnapshot((current) => {
+      const activeDismissal =
+        current.dismissedUntil && Date.parse(current.dismissedUntil) > Date.now()
+          ? current.dismissedUntil
+          : undefined;
+      const shouldRestore = current.overlayMode === 'hidden' && !activeDismissal && !current.completedAt;
+      const nextOverlayMode =
+        shouldRestore
+          ? (keepExpanded ? 'expanded' : 'minimized')
+          : current.overlayMode === 'expanded' && !keepExpanded
+            ? 'minimized'
+            : current.overlayMode;
+      if (
+        current.routeScope === routeScope
+        && current.entrySurface === entrySurface
+        && current.dismissedUntil === activeDismissal
+        && current.overlayMode === nextOverlayMode
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        routeScope,
+        entrySurface,
+        dismissedUntil: activeDismissal,
+        overlayMode: nextOverlayMode,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  }, [compactOnboarding, pathname, ready, updateSnapshot]);
 
   useEffect(() => {
     if (!ready || watchlistCount <= 0) return;
@@ -432,91 +479,119 @@ function StepStatusBadge({ status }: { status: OnboardingStepStatus }) {
   );
 }
 
-export function Onboarding() {
+export function Onboarding({ className = '' }: { className?: string }) {
+  const compactOnboarding = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const { ready, overlayMode, progress, currentStep, matchedStep, nextStep, expand, minimize } =
     useOnboarding();
+  const effectiveOverlayMode = compactOnboarding ? 'minimized' : overlayMode;
+  const sectionClassName =
+    effectiveOverlayMode === 'minimized'
+      ? 'panel-soft rounded-[20px] px-3 py-2.5 sm:px-4 sm:py-3'
+      : 'panel-soft rounded-[24px] p-4 sm:p-5';
 
-  if (!ready || !currentStep || progress.completed || overlayMode === 'hidden' || typeof document === 'undefined') {
+  if (!ready || !currentStep || progress.completed || overlayMode === 'hidden') {
     return null;
   }
 
-  return createPortal(
-    <div className="pointer-events-auto fixed bottom-[calc(var(--mobile-bottom-nav-height)+12px)] right-4 z-60 sm:bottom-6 sm:right-6">
-      {overlayMode === 'minimized' ? (
-        <button
-          type="button"
-          onClick={expand}
-          className="max-w-[280px] rounded-full border border-border bg-surface px-4 py-3 text-left text-sm font-medium text-text-primary shadow-lg"
-        >
-          <span className="block text-[11px] uppercase tracking-[0.16em] text-text-muted">快速上手</span>
-          <span className="mt-1 block">{`第 ${currentStep.order} 步 · ${currentStep.title}`}</span>
-        </button>
-      ) : (
-        <div className="w-[320px] rounded-[24px] border border-border bg-surface p-4 shadow-[0_28px_56px_-28px_rgba(15,23,42,0.4)] sm:w-[360px]">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="eyebrow">快速上手</div>
-              <h3 className="mb-0 mt-2 text-base font-semibold text-text-primary">当前步骤</h3>
+  if (
+    effectiveOverlayMode === 'minimized'
+    && matchedStep
+    && matchedStep.id !== currentStep.id
+    && isStepResolved(matchedStep.state.status)
+  ) {
+    return null;
+  }
+
+  return (
+    <section className={`${sectionClassName} ${className}`} data-testid="onboarding-banner">
+      {effectiveOverlayMode === 'minimized' ? (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+              快速上手
+            </span>
+            <div className="min-w-0 text-sm font-semibold text-text-primary">
+              第 {currentStep.order} 步 · {currentStep.title}
             </div>
-            <button
-              type="button"
-              onClick={minimize}
-              className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary"
-            >
-              关闭
+            <span className="text-xs text-text-secondary">
+              {progress.done + progress.skipped}/{progress.total} 步
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={expand} className="action-chip cursor-pointer text-sm text-text-primary">
+              展开当前步骤
             </button>
           </div>
-
-          <div className="mt-4 space-y-3">
-            <div className="rounded-[20px] border border-border bg-surface-alt/70 p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
-                  第 {currentStep.order} 步
+        </div>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                快速上手
+              </span>
+              <span className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary">
+                第 {currentStep.order} 步 / 共 {progress.total} 步
+              </span>
+              <StepStatusBadge status={currentStep.state.status} />
+              {matchedStep?.id === currentStep.id ? (
+                <span className="rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-[11px] font-medium text-success">
+                  当前页面
                 </span>
-                <span className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary">
-                  {currentStep.group}
-                </span>
-                <StepStatusBadge status={currentStep.state.status} />
-                {matchedStep?.id === currentStep.id ? (
-                  <span className="rounded-full border border-success/20 bg-success/10 px-2.5 py-1 text-[11px] font-medium text-success">
-                    当前页面
-                  </span>
-                ) : null}
-              </div>
-              <h4 className="mb-0 mt-3 text-lg font-semibold text-text-primary">{currentStep.title}</h4>
-              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">{currentStep.focus}</p>
-              <div className="mt-4">
-                <Link
-                  href={currentStep.actions[0]?.href ?? '/'}
-                  className="inline-flex items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white no-underline shadow-[0_18px_34px_-24px_rgba(11,107,203,0.48)] transition hover:-translate-y-0.5"
-                >
-                  {currentStep.actions[0]?.label ?? '打开当前步骤'}
-                </Link>
-              </div>
+              ) : null}
             </div>
+            <h3 className="mb-0 mt-3 text-lg font-semibold text-text-primary">{currentStep.title}</h3>
+            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">{currentStep.focus}</p>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-alt/70">
+              <div
+                className="h-full rounded-full bg-[linear-gradient(90deg,rgba(11,107,203,0.92),rgba(61,146,255,0.78))]"
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link
+                href={currentStep.actions[0]?.href ?? '/'}
+                className="inline-flex items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white no-underline shadow-[0_18px_34px_-24px_rgba(11,107,203,0.48)] transition hover:-translate-y-0.5"
+              >
+                {currentStep.actions[0]?.label ?? '打开当前步骤'}
+              </Link>
+              {nextStep && nextStep.id !== currentStep.id ? (
+                <Link href={nextStep.actions[0]?.href ?? '/'} className="action-chip text-sm no-underline text-inherit">
+                  {nextStep.actions[0]?.label ?? '打开下一步'}
+                </Link>
+              ) : null}
+              <button
+                type="button"
+                onClick={minimize}
+                className="action-chip cursor-pointer text-sm text-text-primary"
+              >
+                最小化
+              </button>
+            </div>
+          </div>
 
-            {nextStep && nextStep.id !== currentStep.id ? (
-              <div className="rounded-[20px] border border-border bg-surface-alt/40 p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">下一步</div>
-                <div className="mt-2 text-sm font-semibold text-text-primary">
-                  第 {nextStep.order} 步 · {nextStep.title}
-                </div>
-                <div className="mt-2 text-sm leading-6 text-text-secondary">{nextStep.focus}</div>
-                <div className="mt-4">
-                  <Link
-                    href={nextStep.actions[0]?.href ?? '/'}
-                    className="action-chip text-sm no-underline text-inherit"
-                  >
-                    {nextStep.actions[0]?.label ?? '打开下一步'}
-                  </Link>
-                </div>
+          <div className="rounded-[20px] border border-white/55 bg-white/26 p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">下一步建议</div>
+            <div className="mt-3 text-sm font-semibold text-text-primary">
+              {nextStep && nextStep.id !== currentStep.id ? `第 ${nextStep.order} 步 · ${nextStep.title}` : '先完成当前步骤'}
+            </div>
+            <div className="mt-2 text-sm leading-6 text-text-secondary">
+              {nextStep && nextStep.id !== currentStep.id ? nextStep.focus : currentStep.outcome}
+            </div>
+            <div className="mt-4 space-y-2">
+              <div className="metric-tile rounded-[18px] px-3 py-2 text-xs text-text-secondary">
+                已完成 {progress.done} 步，已跳过 {progress.skipped} 步，当前进度 {progress.percent}%
               </div>
-            ) : null}
+              {currentStep.outcome ? (
+                <div className="metric-tile rounded-[18px] px-3 py-2 text-xs text-text-secondary">
+                  完成后你会得到：{currentStep.outcome}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       )}
-    </div>,
-    document.body,
+    </section>
   );
 }
 

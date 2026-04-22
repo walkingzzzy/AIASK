@@ -4,7 +4,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 
 export type BffAvailabilityStatus = 'unknown' | 'checking' | 'online' | 'offline';
 
-const PROBE_TIMEOUT_MS = 2500;
+const PROBE_TIMEOUT_MS = 5000;
 const OFFLINE_RETRY_COOLDOWN_MS = 30_000;
 const OFFLINE_PROBE_INTERVAL_MS = 5_000;
 

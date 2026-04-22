@@ -265,18 +265,16 @@
                     reason="margin proxy unavailable",
                 )
 
-        hot_sectors = [
-            str(item).strip()
-            for item in list(snapshot.get("hot_sectors") or local_internals.get("hot_sectors") or [])
-            if str(item).strip()
-        ]
-        cold_sectors = [
-            str(item).strip()
-            for item in list(snapshot.get("cold_sectors") or local_internals.get("cold_sectors") or [])
-            if str(item).strip()
-        ]
-        snapshot["hot_sectors"] = hot_sectors[:5]
-        snapshot["cold_sectors"] = cold_sectors[:5]
+        hot_sectors = normalize_sector_labels(
+            snapshot.get("hot_sectors") or local_internals.get("hot_sectors") or [],
+            limit=5,
+        )
+        cold_sectors = normalize_sector_labels(
+            snapshot.get("cold_sectors") or local_internals.get("cold_sectors") or [],
+            limit=5,
+        )
+        snapshot["hot_sectors"] = hot_sectors
+        snapshot["cold_sectors"] = cold_sectors
         if snapshot["hot_sectors"] or snapshot["cold_sectors"]:
             record_source(
                 "sector_fund_flow",
@@ -350,6 +348,7 @@
             logger.warning("DataCollector: parameter distribution snapshot failed: %s", exc)
             snapshot["parameter_distribution_samples"] = []
             snapshot["parameter_distribution_summary"] = {
+                "sample_count": 0,
                 "eligible_sample_count": 0,
                 "factory_strategy_count": 0,
                 "strategy_type_counts": {},

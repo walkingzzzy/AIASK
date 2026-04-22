@@ -301,12 +301,8 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
     positions = [dict(row) for row in rows]
     if not positions:
         if account:
-            cash = float(account.get('current_capital') or 0)
             async with db.acquire() as conn:
-                await conn.execute(
-                    "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
-                    cash, cash, account_id
-                )
+                await _sync_account_from_ledger(conn, account_id)
         return []
 
     try:
@@ -356,11 +352,7 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
             refreshed_positions.append(refreshed)
             market_value_sum += market_value
 
-        current_capital = float(account.get('current_capital') or 0) if account else 0.0
-        await conn.execute(
-            "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
-            current_capital, current_capital + market_value_sum, account_id
-        )
+        await _sync_account_from_ledger(conn, account_id)
 
     return refreshed_positions
 
@@ -380,6 +372,245 @@ async def _ensure_account(user_id: str, db) -> str:
             account_id, user_id, f'默认账户_{user_id}', 100000
         )
         return account_id
+
+
+async def _sync_account_from_ledger(conn, account_id: str) -> dict:
+    """以 paper_trades + paper_positions 为唯一事实源回算账户现金与总资产。"""
+    account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id = $1", account_id)
+    if not account:
+        raise ValueError("账户不存在")
+
+    initial_capital = float(account.get('initial_capital') or 0.0)
+    cash_delta = await conn.fetchval(
+        """
+        SELECT COALESCE(SUM(
+            CASE
+                WHEN trade_type = 'buy' THEN -(amount + COALESCE(commission, 0))
+                WHEN trade_type = 'sell' THEN (amount - COALESCE(commission, 0))
+                ELSE 0
+            END
+        ), 0)
+        FROM paper_trades
+        WHERE account_id = $1
+        """,
+        account_id,
+    )
+    market_value = await conn.fetchval(
+        "SELECT COALESCE(SUM(market_value), 0) FROM paper_positions WHERE account_id = $1",
+        account_id,
+    )
+    current_capital = initial_capital + float(cash_delta or 0.0)
+    total_value = current_capital + float(market_value or 0.0)
+    await conn.execute(
+        "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
+        current_capital,
+        total_value,
+        account_id,
+    )
+    return {
+        'account_id': account_id,
+        'initial_capital': initial_capital,
+        'current_capital': current_capital,
+        'market_value': float(market_value or 0.0),
+        'total_value': total_value,
+    }
+
+
+def _position_signature(row: dict) -> tuple[int, float, float, float]:
+    return (
+        int(row.get('quantity') or 0),
+        round(float(row.get('cost_price') or 0.0), 6),
+        round(float(row.get('current_price') or 0.0), 6),
+        round(float(row.get('market_value') or 0.0), 6),
+    )
+
+
+def _collect_position_reconcile_reasons(
+    existing_rows: list[dict],
+    rebuilt_rows: list[dict],
+    *,
+    compare_market_values: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    existing_map = {
+        str(row.get('stock_code') or '').strip(): dict(row)
+        for row in existing_rows
+        if str(row.get('stock_code') or '').strip()
+    }
+    rebuilt_map = {
+        str(row.get('stock_code') or '').strip(): dict(row)
+        for row in rebuilt_rows
+        if str(row.get('stock_code') or '').strip()
+    }
+    existing_codes = set(existing_map.keys())
+    rebuilt_codes = set(rebuilt_map.keys())
+    if existing_codes != rebuilt_codes:
+        reasons.append('positions_symbol_set_mismatch')
+    for code in sorted(existing_codes & rebuilt_codes):
+        existing = existing_map[code]
+        rebuilt = rebuilt_map[code]
+        if int(existing.get('quantity') or 0) != int(rebuilt.get('quantity') or 0):
+            reasons.append(f'position_quantity_mismatch:{code}')
+        if round(float(existing.get('cost_price') or 0.0), 6) != round(float(rebuilt.get('cost_price') or 0.0), 6):
+            reasons.append(f'position_cost_mismatch:{code}')
+        if compare_market_values and _position_signature(existing) != _position_signature(rebuilt):
+            reasons.append(f'position_valuation_mismatch:{code}')
+    return reasons
+
+
+async def _build_reconciled_positions(conn, db, account_id: str, *, refresh_prices: bool) -> tuple[list[dict], list[dict]]:
+    existing_rows = [
+        dict(row)
+        for row in await conn.fetch(
+            "SELECT * FROM paper_positions WHERE account_id=$1 ORDER BY stock_code",
+            account_id,
+        )
+    ]
+    trades = await conn.fetch(
+        "SELECT * FROM paper_trades WHERE account_id=$1 ORDER BY trade_time, created_at, id",
+        account_id,
+    )
+    if not trades:
+        return existing_rows, []
+
+    existing_map = {
+        str(row.get('stock_code') or '').strip(): dict(row)
+        for row in existing_rows
+        if str(row.get('stock_code') or '').strip()
+    }
+    rebuilt: dict[str, dict] = {}
+    for trade in trades:
+        item = dict(trade)
+        code = str(item.get('stock_code') or '').strip()
+        if not code:
+            continue
+        quantity = int(item.get('quantity') or 0)
+        if quantity <= 0:
+            continue
+        trade_type = str(item.get('trade_type') or '').strip().lower()
+        price = float(item.get('price') or 0.0)
+        current = rebuilt.get(code) or {
+            'stock_code': code,
+            'stock_name': item.get('stock_name') or existing_map.get(code, {}).get('stock_name') or code,
+            'quantity': 0,
+            'cost_price': 0.0,
+        }
+
+        old_qty = int(current.get('quantity') or 0)
+        old_cost = float(current.get('cost_price') or 0.0)
+        if trade_type == 'buy':
+            new_qty = old_qty + quantity
+            new_cost = ((old_cost * old_qty) + (price * quantity)) / new_qty if new_qty > 0 else price
+            current['quantity'] = new_qty
+            current['cost_price'] = new_cost
+            rebuilt[code] = current
+        elif trade_type == 'sell':
+            new_qty = max(old_qty - quantity, 0)
+            if new_qty <= 0:
+                rebuilt.pop(code, None)
+            else:
+                current['quantity'] = new_qty
+                rebuilt[code] = current
+
+    rebuilt_rows: list[dict] = []
+    for code in sorted(rebuilt.keys()):
+        current = dict(rebuilt[code])
+        quantity = int(current.get('quantity') or 0)
+        if quantity <= 0:
+            continue
+        cost_price = float(current.get('cost_price') or 0.0)
+        existing = existing_map.get(code, {})
+        current_price = _safe_float(existing.get('current_price'))
+        if refresh_prices:
+            fetched_price = await _get_price(code, db)
+            if fetched_price is not None and float(fetched_price) > 0:
+                current_price = float(fetched_price)
+        if current_price is None or current_price <= 0:
+            current_price = _safe_float(existing.get('current_price')) or cost_price
+        market_value = float(current_price or 0.0) * quantity
+        profit_rate = ((float(current_price or 0.0) - cost_price) / cost_price) if cost_price else 0.0
+        rebuilt_rows.append({
+            'account_id': account_id,
+            'stock_code': code,
+            'stock_name': current.get('stock_name') or existing.get('stock_name') or code,
+            'quantity': quantity,
+            'cost_price': cost_price,
+            'current_price': float(current_price or 0.0),
+            'market_value': market_value,
+            'profit_rate': profit_rate,
+        })
+    return existing_rows, rebuilt_rows
+
+
+async def _persist_reconciled_positions(conn, account_id: str, rows: list[dict]) -> None:
+    await conn.execute("DELETE FROM paper_positions WHERE account_id=$1", account_id)
+    for row in rows:
+        await conn.execute(
+            """INSERT INTO paper_positions
+               (account_id, stock_code, stock_name, quantity, cost_price, current_price, market_value, profit_rate, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+               ON CONFLICT (account_id, stock_code) DO UPDATE SET
+                   stock_name=EXCLUDED.stock_name,
+                   quantity=EXCLUDED.quantity,
+                   cost_price=EXCLUDED.cost_price,
+                   current_price=EXCLUDED.current_price,
+                   market_value=EXCLUDED.market_value,
+                   profit_rate=EXCLUDED.profit_rate,
+                   updated_at=NOW()""",
+            account_id,
+            row.get('stock_code'),
+            row.get('stock_name'),
+            int(row.get('quantity') or 0),
+            float(row.get('cost_price') or 0.0),
+            float(row.get('current_price') or 0.0),
+            float(row.get('market_value') or 0.0),
+            float(row.get('profit_rate') or 0.0),
+        )
+
+
+async def _reconcile_account_state(db, account_id: str, *, refresh_prices: bool = True, force: bool = False) -> dict:
+    async with db.acquire() as conn:
+        account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+        if not account:
+            raise ValueError("账户不存在")
+        account_snapshot = dict(account)
+        existing_rows, rebuilt_rows = await _build_reconciled_positions(
+            conn,
+            db,
+            account_id,
+            refresh_prices=refresh_prices,
+        )
+        reasons = _collect_position_reconcile_reasons(
+            existing_rows,
+            rebuilt_rows,
+            compare_market_values=refresh_prices,
+        )
+        before_cash = float(account_snapshot.get('current_capital') or 0.0)
+        before_total_value = float(account_snapshot.get('total_value') or 0.0)
+        if force or reasons:
+            await _persist_reconciled_positions(conn, account_id, rebuilt_rows)
+        ledger_snapshot = await _sync_account_from_ledger(conn, account_id)
+        after_cash = float(ledger_snapshot.get('current_capital') or 0.0)
+        after_total_value = float(ledger_snapshot.get('total_value') or 0.0)
+        if abs(before_cash - after_cash) > 0.01:
+            reasons.append('account_cash_mismatch')
+        if abs(before_total_value - after_total_value) > 0.01:
+            reasons.append('account_total_value_mismatch')
+
+    return {
+        'account_id': account_id,
+        'drift_detected': bool(reasons),
+        'reconciled': bool(force or reasons),
+        'refresh_prices': refresh_prices,
+        'reasons': list(dict.fromkeys(reasons)),
+        'positions_before_count': len(existing_rows),
+        'positions_after_count': len(rebuilt_rows),
+        'cash_before': before_cash,
+        'cash_after': after_cash,
+        'total_value_before': before_total_value,
+        'total_value_after': after_total_value,
+        'positions': rebuilt_rows if (force or reasons) else existing_rows,
+    }
 
 
 def _aggregate_trade_position(existing: dict | None, fills: list[dict]) -> dict:
@@ -610,16 +841,7 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
             )
         capital_delta = amount - commission
 
-    old_capital = float(account.get('current_capital') or 0)
-    new_capital = old_capital + capital_delta
-    mv_sum = await conn.fetchval(
-        "SELECT COALESCE(SUM(market_value),0) FROM paper_positions WHERE account_id=$1", account_id
-    )
-    total_value = float(new_capital) + float(mv_sum or 0)
-    await conn.execute(
-        "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
-        new_capital, total_value, account_id
-    )
+    await _sync_account_from_ledger(conn, account_id)
     await _record_trade_position_fill(
         conn,
         position_id=linked_position_id,
@@ -640,110 +862,9 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
     return trade_id, commission
 
 async def _ensure_positions_consistency(db, account_id: str) -> list[dict]:
-    """当 paper_positions 为空时，尝试基于成交记录重建持仓，避免 orders/positions 不一致。"""
-    async with db.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM paper_positions WHERE account_id=$1 ORDER BY stock_code",
-            account_id
-        )
-        if rows:
-            return [dict(row) for row in rows]
-
-        trades = await conn.fetch(
-            "SELECT * FROM paper_trades WHERE account_id=$1 ORDER BY trade_time, created_at, id",
-            account_id
-        )
-        if not trades:
-            return []
-
-    rebuilt: dict[str, dict] = {}
-    for trade in trades:
-        item = dict(trade)
-        code = str(item.get('stock_code') or '').strip()
-        if not code:
-            continue
-        quantity = int(item.get('quantity') or 0)
-        if quantity <= 0:
-            continue
-        trade_type = str(item.get('trade_type') or '').strip().lower()
-        price = float(item.get('price') or 0.0)
-        current = rebuilt.get(code) or {
-            'stock_code': code,
-            'stock_name': item.get('stock_name') or code,
-            'quantity': 0,
-            'cost_price': 0.0,
-        }
-
-        old_qty = int(current.get('quantity') or 0)
-        old_cost = float(current.get('cost_price') or 0.0)
-
-        if trade_type == 'buy':
-            new_qty = old_qty + quantity
-            new_cost = ((old_cost * old_qty) + (price * quantity)) / new_qty if new_qty > 0 else price
-            current['quantity'] = new_qty
-            current['cost_price'] = new_cost
-            current['stock_name'] = item.get('stock_name') or current.get('stock_name') or code
-            rebuilt[code] = current
-        elif trade_type == 'sell':
-            new_qty = max(old_qty - quantity, 0)
-            if new_qty <= 0:
-                rebuilt.pop(code, None)
-            else:
-                current['quantity'] = new_qty
-                rebuilt[code] = current
-
-    rebuilt_rows: list[dict] = []
-    async with db.acquire() as conn:
-        await conn.execute("DELETE FROM paper_positions WHERE account_id=$1", account_id)
-        for code, current in rebuilt.items():
-            cost_price = float(current.get('cost_price') or 0.0)
-            quantity = int(current.get('quantity') or 0)
-            current_price = await _get_price(code, db) or cost_price
-            market_value = float(current_price or 0.0) * quantity
-            profit_rate = ((float(current_price or 0.0) - cost_price) / cost_price) if cost_price else 0.0
-            await conn.execute(
-                """INSERT INTO paper_positions
-                   (account_id, stock_code, stock_name, quantity, cost_price, current_price, market_value, profit_rate, created_at, updated_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
-                   ON CONFLICT (account_id, stock_code) DO UPDATE SET
-                       stock_name=EXCLUDED.stock_name,
-                       quantity=EXCLUDED.quantity,
-                       cost_price=EXCLUDED.cost_price,
-                       current_price=EXCLUDED.current_price,
-                       market_value=EXCLUDED.market_value,
-                       profit_rate=EXCLUDED.profit_rate,
-                       updated_at=NOW()""",
-                account_id,
-                code,
-                current.get('stock_name') or code,
-                quantity,
-                cost_price,
-                current_price,
-                market_value,
-                profit_rate,
-            )
-            rebuilt_rows.append({
-                'account_id': account_id,
-                'stock_code': code,
-                'stock_name': current.get('stock_name') or code,
-                'quantity': quantity,
-                'cost_price': cost_price,
-                'current_price': current_price,
-                'market_value': market_value,
-                'profit_rate': profit_rate,
-            })
-
-        account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
-        if account:
-            current_capital = float(account.get('current_capital') or 0.0)
-            total_market_value = float(sum(row.get('market_value') or 0.0 for row in rebuilt_rows))
-            await conn.execute(
-                "UPDATE paper_accounts SET total_value=$1, updated_at=NOW() WHERE id=$2",
-                current_capital + total_market_value,
-                account_id,
-            )
-
-    return rebuilt_rows
+    """基于 paper_trades 账本核对 paper_positions；发现漂移则自动校准。"""
+    result = await _reconcile_account_state(db, account_id, refresh_prices=False, force=False)
+    return list(result.get('positions') or [])
 
 async def _check_risk_before_buy(conn, account_id: str, code: str, amount: float) -> str | None:
     """买入前风控检查，返回拒绝原因或 None（通过）。"""

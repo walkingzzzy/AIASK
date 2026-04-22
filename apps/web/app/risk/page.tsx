@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
@@ -13,7 +13,7 @@ import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
-import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState, MetaLine, PageStatusCard } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
@@ -317,11 +317,27 @@ export default function RiskPage() {
     () =>
       buildLocalResultContract({
         summary: riskSummaryText,
+        status: error ? 'unavailable' : showInitialEmptyState || allEmpty ? 'empty' : summary?.degraded ? 'degraded' : 'ready',
         pageActions,
         preferredActionIds: ['risk.refresh', 'risk.set-lookback'],
         recommendedLinks: riskLinks,
+        recommendedNextActions: [
+          '先确认组合和回看窗口，再解释 VaR、压力和暴露结果。',
+          summary?.degraded ? '当前存在降级模块，先看原因再解释图表。' : '只有在总览异常时再钻到单模块图表。',
+          '需要执行动作时再跳绩效、组合或执行中心。',
+        ],
         evidence: riskEvidence,
         riskNotes,
+        emptyState: {
+          title: '还没有形成风险分析结果',
+          description: '先选择组合和窗口，再触发一次风险汇总。',
+          example: 'portfolioId=1，lookbackDays=252',
+        },
+        degradedState: summary?.degraded ? {
+          title: '风险页当前处于降级态',
+          description: '请先处理模块降级原因，再继续解释风险结论。',
+          reason: summary.degradeReasons?.join('；') || '部分模块结果暂不可用',
+        } : null,
         freshness: summary?.meta?.fetchedAt ? { updatedAt: summary.meta.fetchedAt, label: '风险抓取时间' } : null,
         platformMeta: {
           sourceTool: 'risk-summary',
@@ -340,6 +356,8 @@ export default function RiskPage() {
     pageKey: 'risk',
     title: '风险分析',
     summary: riskSummaryText,
+    primaryGoal: '锁定组合和观察窗口后，快速判断当前最需要处理的风险点。',
+    requiredInputs: ['portfolioId', 'lookbackDays'],
     objectType: portfolioId || summary?.portfolioId ? 'portfolio' : 'workspace',
     objectId: portfolioId || String(summary?.portfolioId ?? 'risk'),
     resultType: 'risk-summary',
@@ -349,11 +367,14 @@ export default function RiskPage() {
       '指出当前风险页最需要补的上下文或数据',
       '把风险分析整理成执行层面的行动建议',
     ],
+    recommendedNextActions: riskResult.recommendedNextActions,
     recommendedActions: riskResult.recommendedActions,
     recommendedLinks: riskResult.recommendedLinks,
     evidenceSummary: evidenceToSummary(riskResult.evidence),
     riskNotes: riskResult.riskNotes ?? [],
     freshness: riskResult.freshness ?? null,
+    dataFreshness: riskResult.freshness?.updatedAt ?? null,
+    degradedReason: summary?.degradeReasons ?? [],
     raw: {
       portfolioId: portfolioId || summary?.portfolioId || null,
       lookbackDays,
@@ -501,7 +522,28 @@ export default function RiskPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="risk" title="风险结果工作台" result={riskResult} />
+      <ProgressiveWorkbenchSection pageKey="risk" title="风险结果工作台" result={riskResult} summaryMode="strip" />
+
+      {!loading && !error && (showInitialEmptyState || allEmpty || partialDegraded) ? (
+        <PageStatusCard
+          status={partialDegraded ? 'degraded' : 'empty'}
+          title={partialDegraded ? '当前风险结果不完整' : '先选择组合再启动风险分析'}
+          reason={
+            partialDegraded
+              ? (summary?.degradeReasons?.join('；') || '部分模块结果暂不可用')
+              : '当前还没有可解释的风险结果，请先锁定组合与观察窗口。'
+          }
+          freshness={latestRiskRefreshText}
+          primaryAction={(
+            <button type="button" onClick={() => { void handlePrimaryRiskAction(); }} className={HERO_PRIMARY_BUTTON_CLS}>
+              {submittedQs ? '刷新风险结果' : '准备 252 天窗口'}
+            </button>
+          )}
+          secondaryAction={<Link href="/portfolio" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>去组合页</Link>}
+          example="portfolioId=1，lookbackDays=252"
+          className="mb-4"
+        />
+      ) : null}
 
       {loading ? <LoadingState text="加载风险分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}

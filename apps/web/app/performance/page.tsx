@@ -3,13 +3,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import AccountPerformanceDashboard from '@/app/performance/components/account-performance-dashboard';
 import PerformanceContextPanels from '@/app/performance/components/performance-context-panels';
 import PerformanceHero from '@/app/performance/components/performance-hero';
 import PortfolioAttributionDashboard from '@/app/performance/components/portfolio-attribution-dashboard';
 import PerformanceSecondarySidebar from '@/app/performance/components/performance-secondary-sidebar';
-import { EmptyState, ErrorState, LoadingState, UnavailableState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState, PageStatusCard } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
@@ -835,7 +835,21 @@ export default function PerformancePage() {
   if (isAccountMode && (summaryQ.isPending || positionsQ.isPending || navQ.isPending || performanceQ.isPending) && !summaryQ.data) {
     return (
       <PageContainer>
-        <LoadingState text="正在加载账户绩效、持仓与净值数据..." />
+        <div className="space-y-3">
+          <PageStatusCard
+            status="loading"
+            title="正在准备账户绩效工作区"
+            reason="账户绩效、持仓和净值曲线正在同步。若只是先确认交易结果，可以先回模拟盘；若长时间停留，可手动刷新。"
+            primaryAction={(
+              <button type="button" onClick={() => void refreshActiveModeData()} className="action-chip cursor-pointer text-sm text-text-primary">
+                刷新绩效
+              </button>
+            )}
+            secondaryAction={<Link href="/paper-trading" className="action-chip text-sm no-underline text-inherit">先去模拟盘</Link>}
+            example="mode=account，days=30"
+          />
+          <LoadingState text="正在加载账户绩效、持仓与净值数据..." />
+        </div>
       </PageContainer>
     );
   }
@@ -843,7 +857,21 @@ export default function PerformancePage() {
   if (!isAccountMode && portfoliosQ.isPending && portfolios.length === 0) {
     return (
       <PageContainer>
-        <LoadingState text="正在加载组合列表与归因上下文..." />
+        <div className="space-y-3">
+          <PageStatusCard
+            status="loading"
+            title="正在准备组合归因工作区"
+            reason="组合列表、归因数据和基准比较正在同步。若当前只想继续看组合本身，可以先回组合页。"
+            primaryAction={(
+              <button type="button" onClick={() => void refreshActiveModeData()} className="action-chip cursor-pointer text-sm text-text-primary">
+                刷新归因
+              </button>
+            )}
+            secondaryAction={<Link href="/portfolio" className="action-chip text-sm no-underline text-inherit">先去组合页</Link>}
+            example="mode=portfolio，portfolio_id=1，benchmark=000300"
+          />
+          <LoadingState text="正在加载组合列表与归因上下文..." />
+        </div>
       </PageContainer>
     );
   }
@@ -851,12 +879,18 @@ export default function PerformancePage() {
   if (isAccountMode && accountErrorMessage && !summaryQ.data) {
     return (
       <PageContainer>
-        <UnavailableState
-          text="账户绩效主链路暂不可用"
-          hint={accountErrorMessage}
-          onRetry={() => {
-            void Promise.allSettled([accountsQ.refetch(), summaryQ.refetch(), positionsQ.refetch(), navQ.refetch(), performanceQ.refetch()]);
-          }}
+        <PageStatusCard
+          status="unavailable"
+          title="账户绩效主链路暂不可用"
+          reason={accountErrorMessage}
+          freshness={summaryQ.dataUpdatedAt ? new Date(summaryQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
+          primaryAction={(
+            <button type="button" onClick={() => void refreshAccountData()} className="action-chip cursor-pointer text-sm text-text-primary">
+              重试账户绩效
+            </button>
+          )}
+          secondaryAction={<Link href="/paper-trading" className="action-chip text-sm no-underline text-inherit">回模拟盘</Link>}
+          example="mode=account，account_id=default"
         />
       </PageContainer>
     );
@@ -865,12 +899,18 @@ export default function PerformancePage() {
   if (!isAccountMode && portfolioErrorMessage && !attribution && !benchmarkComparison) {
     return (
       <PageContainer>
-        <UnavailableState
-          text="组合归因主链路暂不可用"
-          hint={portfolioErrorMessage}
-          onRetry={() => {
-            void Promise.allSettled([portfoliosQ.refetch(), portfolioDetailQ.refetch(), attributionQ.refetch(), benchmarkQ.refetch()]);
-          }}
+        <PageStatusCard
+          status="unavailable"
+          title="组合归因主链路暂不可用"
+          reason={portfolioErrorMessage}
+          freshness={attributionQ.dataUpdatedAt ? new Date(attributionQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
+          primaryAction={(
+            <button type="button" onClick={() => void refreshPortfolioData()} className="action-chip cursor-pointer text-sm text-text-primary">
+              重试组合归因
+            </button>
+          )}
+          secondaryAction={<Link href="/portfolio" className="action-chip text-sm no-underline text-inherit">回组合页</Link>}
+          example="mode=portfolio，portfolio_id=1"
         />
       </PageContainer>
     );
@@ -904,7 +944,12 @@ export default function PerformancePage() {
         portfolioNarrative={portfolioNarrative}
       />
 
-      <ResultWorkbench pageKey="performance" title="绩效结果工作台" result={performanceResult} />
+      <ProgressiveWorkbenchSection
+        pageKey="performance"
+        title="绩效结果工作台"
+        result={performanceResult}
+        summaryMode="strip"
+      />
 
 
       <WorkspaceToolbar

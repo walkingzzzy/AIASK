@@ -70,11 +70,14 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
   const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
   const prevReachableRef = useRef(bffAvailability.reachable);
+  const hasFallbackData = fallbackData !== undefined;
 
   // Extract module from path (e.g. '/portfolio/list' → 'portfolio')
   // so invalidateQueries({ queryKey: ['api', 'portfolio'] }) matches all portfolio queries.
   const module = path?.split('/').filter(Boolean)[0] ?? '__disabled__';
   const qk = ['api', module, path ?? '__disabled__', ...keyExtra, ...(body != null ? [body] : [])];
+
+  const queryEnabled = !isLoggingOut && enabled && path != null && !bffAvailability.unavailable;
 
   const query = useQuery<TData, Error>({
     queryKey: qk,
@@ -125,28 +128,39 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
       }
       return rawData as TData;
     },
-    enabled: !isLoggingOut && enabled && path != null && bffAvailability.reachable,
+    enabled: queryEnabled,
     refetchInterval: refetchInterval as number | false | undefined,
     staleTime,
     placeholderData: placeholderData === 'keepPrevious' ? keepPreviousData : undefined,
   });
 
-  const disabledByOffline = enabled && path != null && bffAvailability.unavailable;
-  const acceptanceStatus = disabledByOffline ? 'unavailable' : getApiErrorAcceptanceStatus(query.error);
+  const queryData = query.data;
+  const queryError = query.error;
+  const queryIsFetching = query.isFetching;
+  const queryIsPending = query.isPending;
+  const queryRefetch = query.refetch;
+  const queryDataUpdatedAt = query.dataUpdatedAt;
+  const hasQueryData = queryData != null;
+  const hasUsableDataResolved = hasQueryData || hasFallbackData;
+  const disabledByOffline = enabled && path != null && bffAvailability.unavailable && !hasUsableDataResolved;
+  const acceptanceStatus = disabledByOffline
+    ? 'unavailable'
+    : bffAvailability.unavailable && hasUsableDataResolved
+      ? 'degraded'
+      : getApiErrorAcceptanceStatus(queryError);
   const derivedError = nonFatal
     ? null
     : disabledByOffline
       ? '数据服务暂不可用'
-      : (query.error?.message ?? null);
-  const hasFallbackData = fallbackData !== undefined;
-  const derivedPending = ((enabled && path != null && bffAvailability.checking && !hasFallbackData) || query.isPending);
+      : (queryError?.message ?? null);
+  const derivedPending = queryIsPending || (enabled && path != null && bffAvailability.checking && !hasUsableDataResolved);
   const refetch = useCallback(async () => {
     if (enabled && path != null && !bffAvailability.reachable) {
       const reachable = await ensureBffAvailability({ force: true });
-      if (!reachable) return query.refetch();
+      if (!reachable) return queryRefetch();
     }
-    return query.refetch();
-  }, [bffAvailability.reachable, enabled, path, query]);
+    return queryRefetch();
+  }, [bffAvailability.reachable, enabled, path, queryRefetch]);
 
   useEffect(() => {
     const recovered = !prevReachableRef.current && bffAvailability.reachable;
@@ -154,29 +168,29 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
 
     if (!recovered) return;
     if (isLoggingOut || !enabled || path == null) return;
-    if (query.isFetching) return;
-    if (query.data != null && !query.error) return;
+    if (queryIsFetching) return;
+    if (queryData != null && !queryError) return;
 
-    void query.refetch();
+    void queryRefetch();
   }, [
     bffAvailability.reachable,
     enabled,
     isLoggingOut,
     path,
-    query.data,
-    query.error,
-    query.isFetching,
-    query.refetch,
+    queryData,
+    queryError,
+    queryIsFetching,
+    queryRefetch,
   ]);
 
   return {
-    data: query.data ?? fallbackData ?? null,
+    data: queryData ?? fallbackData ?? null,
     isPending: derivedPending,
-    isFetching: query.isFetching,
+    isFetching: queryIsFetching,
     error: derivedError,
-    rawError: query.error ?? null,
+    rawError: queryError ?? null,
     acceptanceStatus,
-    dataUpdatedAt: query.dataUpdatedAt,
+    dataUpdatedAt: queryDataUpdatedAt,
     refetch,
     serviceUnavailable: disabledByOffline,
   };

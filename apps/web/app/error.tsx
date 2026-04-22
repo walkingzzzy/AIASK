@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
-import * as Sentry from '@sentry/nextjs';
 import Link from 'next/link';
+import { reportClientException } from '@/lib/runtime-sentry';
 
 type ErrorAction = { label: string; href?: string; onClick?: () => void; primary?: boolean };
 type ErrorLevel = {
@@ -76,7 +76,7 @@ function classify(error: Error): ErrorLevel {
 
 export default function ErrorPage({ error, reset }: { error: Error; reset: () => void }) {
   useEffect(() => {
-    Sentry.captureException(error);
+    void reportClientException(error);
   }, [error]);
 
   const level = classify(error);

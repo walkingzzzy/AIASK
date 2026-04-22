@@ -19,6 +19,7 @@ from .._budget_feedback import (
 )
 from .._stock_universe_loader import load_stock_universe_rows
 from ..runtime import _call_optional_async
+from ..sector_taxonomy import normalize_sector_labels
 
 
 def rewrite_family_preference_order_by_feedback(
@@ -777,16 +778,8 @@ async def load_stock_family_allocation(
             factor_research_snapshot["family_preference_order"] = list(family_preference_order)
             matrix_snapshot["factor_research"] = factor_research_snapshot
 
-        hot_sectors = {
-            str(item).strip()
-            for item in list(snapshot.get("hot_sectors") or [])
-            if str(item).strip()
-        }
-        cold_sectors = {
-            str(item).strip()
-            for item in list(snapshot.get("cold_sectors") or [])
-            if str(item).strip()
-        }
+        hot_sectors = set(normalize_sector_labels(snapshot.get("hot_sectors") or [], limit=12))
+        cold_sectors = set(normalize_sector_labels(snapshot.get("cold_sectors") or [], limit=12))
         for row in rows:
             code = str(row.get("code") or "").strip()
             if not code:
@@ -814,7 +807,8 @@ async def load_stock_family_allocation(
                 cold_sectors=cold_sectors,
                 active_factors=active_factors,
             )
-            base_priority = max(0.05, min((base_score - 20.0) / 45.0, 0.92))
+            # v2 row priority now lives on a roughly 0-40 cross-sectional scale.
+            base_priority = max(0.05, min(base_score / 40.0, 0.92))
             hint_bonus = min(max(list(hint.get("scores") or [0.0]) or [0.0]), 1.0) * 0.18
             _track(
                 code,

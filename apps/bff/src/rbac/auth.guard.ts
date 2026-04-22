@@ -11,21 +11,28 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<{ headers: Record<string, string>; cookies?: Record<string, string>; user?: unknown }>();
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) return true;
-
-    const request = context.switchToHttp().getRequest<{ headers: Record<string, string>; cookies?: Record<string, string>; user?: unknown }>();
     const authorization = request.headers?.authorization;
     const token = this.extractBearer(authorization) || request.cookies?.access_token;
 
     if (!token) {
+      if (isPublic) return true;
       throw new UnauthorizedException('缺少 Bearer token');
     }
 
-    request.user = await this.authService.verifyAccessToken(token);
+    try {
+      request.user = await this.authService.verifyAccessToken(token);
+    } catch (error) {
+      if (isPublic) {
+        return true;
+      }
+      throw error;
+    }
+
     return true;
   }
 
@@ -36,4 +43,3 @@ export class AuthGuard implements CanActivate {
     return token;
   }
 }
-

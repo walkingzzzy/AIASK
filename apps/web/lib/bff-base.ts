@@ -6,6 +6,7 @@ const SERVER_LOOPBACK_HOST = '127.0.0.1';
 
 type RuntimePublicConfig = {
   bffBaseUrl?: string;
+  bffOrigin?: string;
   wsUrl?: string;
 };
 
@@ -54,9 +55,37 @@ function configuredBaseUrl() {
     if (normalized) return normalized;
   }
 
+  if (typeof window !== 'undefined') {
+    return null;
+  }
+
   const envValue = process.env.BFF_BASE_URL?.trim() || process.env.NEXT_PUBLIC_BFF_BASE_URL?.trim();
   if (!envValue) return null;
   return normalizeConfiguredUrl(envValue);
+}
+
+function configuredOrigin() {
+  const runtimeValue = readRuntimeConfig()?.bffOrigin;
+  if (runtimeValue) {
+    const normalized = normalizeConfiguredUrl(runtimeValue);
+    if (normalized) {
+      try {
+        return new URL(normalized).origin;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  const envValue = process.env.BFF_BASE_URL?.trim() || process.env.NEXT_PUBLIC_BFF_BASE_URL?.trim();
+  if (!envValue) return null;
+  const normalized = normalizeConfiguredUrl(envValue);
+  if (!normalized) return null;
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return null;
+  }
 }
 
 export function getBffBaseUrl() {
@@ -64,20 +93,16 @@ export function getBffBaseUrl() {
   if (configured) return configured;
 
   if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:${FALLBACK_PORT}/api`;
+    return '/api/bff';
   }
 
   return `${FALLBACK_PROTOCOL}//${FALLBACK_HOST}:${FALLBACK_PORT}/api`;
 }
 
 export function getBffOrigin() {
-  const configured = configuredBaseUrl();
+  const configured = configuredOrigin();
   if (configured) {
-    try {
-      return new URL(configured).origin;
-    } catch {
-      // Fall through to runtime-derived defaults.
-    }
+    return configured;
   }
 
   if (typeof window !== 'undefined') {

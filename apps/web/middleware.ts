@@ -13,7 +13,6 @@ const PROTECTED_PREFIXES = [
   '/research',
   '/alerts',
   '/strategy',
-  '/strategy-market',
   '/risk',
   '/user',
   '/settings',
@@ -42,7 +41,6 @@ const PROTECTED_PREFIXES = [
   '/workspace-templates',
   '/skills',
 ] as const;
-const authPagePaths = ['/login', '/register'] as const;
 function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
 }
@@ -106,7 +104,6 @@ export const config = {
     '/research/:path*',
     '/alerts/:path*',
     '/strategy/:path*',
-    '/strategy-market/:path*',
     '/risk/:path*',
     '/user/:path*',
     '/settings/:path*',

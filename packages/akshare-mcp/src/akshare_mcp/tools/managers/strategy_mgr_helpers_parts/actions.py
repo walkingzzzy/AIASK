@@ -273,6 +273,29 @@ def normalize_factory_run_summary_contract(row: Optional[dict]) -> dict:
         return {}
     dto = normalize_run_result_to_summary(raw).to_dict()
     detail_dto = normalize_run_result_to_detail(raw).to_dict()
+    summary_payload = dict(raw.get("summary") or dto.get("summary") or {})
+    try:
+        from strategy_factory.application.factory_market_views import (
+            build_research_window_status,
+            hydrate_full_market_topn_payload,
+        )
+
+        research_window = {
+            **dict(raw.get("research_window") or summary_payload.get("research_window") or {}),
+            **build_research_window_status(summary_payload),
+        }
+        full_market_topn = hydrate_full_market_topn_payload(
+            raw.get("full_market_topn")
+            or summary_payload.get("full_market_topn")
+            or {}
+        )
+    except Exception:
+        research_window = dict(raw.get("research_window") or summary_payload.get("research_window") or {})
+        full_market_topn = dict(
+            raw.get("full_market_topn")
+            or summary_payload.get("full_market_topn")
+            or {}
+        )
     return {
         **raw,
         **dto,
@@ -281,6 +304,8 @@ def normalize_factory_run_summary_contract(row: Optional[dict]) -> dict:
         "submission_artifact": dict(
             raw.get("submission_artifact") or detail_dto.get("submission_artifact") or {}
         ),
+        "research_window": research_window,
+        "full_market_topn": full_market_topn,
     }
 
 
@@ -303,6 +328,31 @@ def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
     if not raw:
         return {}
     dto = normalize_run_result_to_detail(raw).to_dict()
+    summary_payload = dict(raw.get("summary") or dto.get("summary") or {})
+    try:
+        from strategy_factory.application.factory_market_views import (
+            build_research_window_status,
+            hydrate_full_market_topn_payload,
+        )
+
+        research_window = {
+            **dict(raw.get("research_window") or summary_payload.get("research_window") or {}),
+            **build_research_window_status(summary_payload),
+        }
+        full_market_topn = hydrate_full_market_topn_payload(
+            raw.get("full_market_topn")
+            or summary_payload.get("full_market_topn")
+            or dict(dict(raw.get("stages") or {}).get("autonomy") or {}).get("full_market_topn")
+            or {}
+        )
+    except Exception:
+        research_window = dict(raw.get("research_window") or summary_payload.get("research_window") or {})
+        full_market_topn = dict(
+            raw.get("full_market_topn")
+            or summary_payload.get("full_market_topn")
+            or dict(dict(raw.get("stages") or {}).get("autonomy") or {}).get("full_market_topn")
+            or {}
+        )
     raw_submission_artifact = dict(raw.get("submission_artifact") or {})
     submission_artifact = dict(dto.get("submission_artifact") or {})
     if raw_submission_artifact:
@@ -355,6 +405,8 @@ def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
         "feedback_summary": dict(dto.get("feedback_summary") or {}),
         "incubation_summary": dict(dto.get("incubation_summary") or {}),
         "live_ready_summary": dict(dto.get("live_ready_summary") or {}),
+        "research_window": research_window,
+        "full_market_topn": full_market_topn,
     }
 
 

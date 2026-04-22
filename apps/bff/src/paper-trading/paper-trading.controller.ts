@@ -24,6 +24,12 @@ class UpdatePricesDto {
   @IsOptional() @IsString() account_id?: string;
 }
 
+class ReconcileDto {
+  @IsOptional() @IsString() account_id?: string;
+  @IsOptional() refresh_prices?: boolean;
+  @IsOptional() force?: boolean;
+}
+
 class RiskRulesDto {
   @IsOptional() @IsString() account_id?: string;
   @IsOptional() @Type(() => Number) @IsNumber() max_position_pct?: number;
@@ -143,6 +149,12 @@ export class PaperTradingController {
   @Post('update-prices')
   async updatePrices(@Body() body: UpdatePricesDto, @Req() req: Req_) {
     const data = await this.svc.updatePrices(userId(req), body.account_id);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Post('reconcile')
+  async reconcile(@Body() body: ReconcileDto, @Req() req: Req_) {
+    const data = await this.svc.reconcile(userId(req), body);
     return { success: true, data, traceId: traceId(req) };
   }
 

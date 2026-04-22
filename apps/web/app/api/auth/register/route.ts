@@ -1,5 +1,20 @@
 import { getBffOrigin } from '@/lib/bff-base';
 
+function copyUpstreamAuthHeaders(upstream: Response) {
+  const headers = new Headers();
+  const upstreamContentType = upstream.headers.get('content-type');
+  if (upstreamContentType) headers.set('content-type', upstreamContentType);
+
+  const setCookies: string[] = typeof upstream.headers.getSetCookie === 'function'
+    ? upstream.headers.getSetCookie()
+    : [upstream.headers.get('set-cookie')].filter((value): value is string => Boolean(value));
+  for (const value of setCookies) {
+    headers.append('set-cookie', value);
+  }
+
+  return headers;
+}
+
 export async function POST(request: Request) {
   const body = await request.text();
   const contentType = request.headers.get('content-type') ?? 'application/json';
@@ -16,16 +31,8 @@ export async function POST(request: Request) {
     redirect: 'manual',
   });
 
-  const headers = new Headers();
-  const upstreamContentType = upstream.headers.get('content-type');
-  if (upstreamContentType) headers.set('content-type', upstreamContentType);
-
-  const setCookie = upstream.headers.get('set-cookie');
-  if (setCookie) headers.set('set-cookie', setCookie);
-
   return new Response(await upstream.text(), {
     status: upstream.status,
-    headers,
+    headers: copyUpstreamAuthHeaders(upstream),
   });
 }
-

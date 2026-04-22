@@ -8,6 +8,15 @@ export const RESULT_VIEWS = [
 ] as const;
 
 export type ResultView = typeof RESULT_VIEWS[number];
+export const RESULT_STATUSES = [
+    'ready',
+    'loading',
+    'empty',
+    'degraded',
+    'unavailable',
+] as const;
+
+export type ResultStatus = typeof RESULT_STATUSES[number];
 
 export type ResultAction = {
     id: string;
@@ -69,6 +78,15 @@ export type ResultWorkbenchTask = {
     payload?: Record<string, unknown>;
 };
 
+export type ResultStateBlock = {
+    title: string;
+    description: string;
+    reason?: string;
+    primaryAction?: ResultAction | null;
+    secondaryActions?: ResultAction[];
+    example?: string;
+};
+
 export type ResultContractAliasHit = {
     canonical: string;
     matched: string;
@@ -85,11 +103,17 @@ export type ResultContractMeta = {
 
 export type ResultContract = {
     summary: string;
+    status?: ResultStatus;
     availableViews: ResultView[];
+    primaryAction?: ResultAction | null;
+    secondaryActions?: ResultAction[];
     recommendedActions?: ResultAction[];
     recommendedLinks?: ResultLink[];
+    recommendedNextActions?: string[];
     evidence?: ResultEvidenceItem[];
     riskNotes?: string[];
+    emptyState?: ResultStateBlock | null;
+    degradedState?: ResultStateBlock | null;
     freshness?: ResultFreshness | null;
     platformMeta?: ResultPlatformMeta | null;
     skillSuggestions?: ResultSkillSuggestion[];

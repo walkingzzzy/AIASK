@@ -591,6 +591,10 @@ async def handle_closure_review(db, params: dict) -> dict:
 async def handle_factory_status(db, params: dict) -> dict:
     from strategy_factory import get_factory_constants, get_strategy_factory_scheduler
     from strategy_factory.application._bulk_cursor import extract_bulk_stock_cursor
+    from strategy_factory.application.factory_market_views import (
+        build_research_window_status,
+        hydrate_full_market_topn_payload,
+    )
     from strategy_factory.api import FactoryStatusDTO
 
     scheduler = get_strategy_factory_scheduler()
@@ -682,6 +686,38 @@ async def handle_factory_status(db, params: dict) -> dict:
                 source="persisted_run",
                 run_id=latest_run.get("run_id"),
             )
+    research_window = {
+        **dict(
+            status.get("research_window")
+            or dict(status.get("last_summary") or {}).get("research_window")
+            or dict(status.get("last_result") or {}).get("research_window")
+            or {}
+        ),
+        **build_research_window_status(status.get("last_summary") or {}),
+    }
+    resolved_run_id = str(
+        (status.get("last_result") or {}).get("run_id")
+        or (latest_run or {}).get("run_id")
+        or ""
+    ).strip()
+    full_market_topn = {}
+    if resolved_run_id and hasattr(db, "get_strategy_factory_topn_snapshot"):
+        full_market_topn = dict(
+            await db.get_strategy_factory_topn_snapshot(resolved_run_id)
+            or {}
+        )
+    if not full_market_topn and hasattr(db, "get_latest_strategy_factory_topn_snapshot"):
+        full_market_topn = dict(await db.get_latest_strategy_factory_topn_snapshot() or {})
+    if not full_market_topn:
+        full_market_topn = dict(
+            status.get("full_market_topn")
+            or dict(status.get("last_summary") or {}).get("full_market_topn")
+            or dict(status.get("last_result") or {}).get("full_market_topn")
+            or {}
+        )
+    full_market_topn = hydrate_full_market_topn_payload(full_market_topn)
+    status["research_window"] = research_window
+    status["full_market_topn"] = full_market_topn
     status["execution_mode"] = (
         str(status.get("execution_mode") or "").strip()
         or str((status.get("last_result") or {}).get("execution_mode") or "").strip()
@@ -811,6 +847,11 @@ async def handle_factory_runs(db, params: dict) -> dict:
 
 
 async def handle_factory_run_detail(db, params: dict) -> dict:
+    from strategy_factory.application.factory_market_views import (
+        build_research_window_status,
+        hydrate_full_market_topn_payload,
+    )
+
     run_id = str(params.get("run_id") or "").strip()
     if not run_id:
         return fail("run_id is required")
@@ -824,6 +865,28 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     )
     hydrated_row = _hydrate_factory_run_artifacts(row, artifact_rows)
     detail = await refresh_factory_run_detail_quality_contract(db, hydrated_row)
+    research_window = {
+        **dict(
+            detail.get("research_window")
+            or dict(detail.get("summary") or {}).get("research_window")
+            or {}
+        ),
+        **build_research_window_status(detail.get("summary") or {}),
+    }
+    full_market_topn = dict(
+        detail.get("full_market_topn")
+        or dict(detail.get("summary") or {}).get("full_market_topn")
+        or {}
+    )
+    if hasattr(db, "get_strategy_factory_topn_snapshot"):
+        topn_snapshot = await db.get_strategy_factory_topn_snapshot(run_id)
+        if topn_snapshot:
+            full_market_topn = {**full_market_topn, **dict(topn_snapshot or {})}
+    if full_market_topn and hasattr(db, "count_strategy_factory_full_market_scores"):
+        full_market_topn["score_row_count"] = await db.count_strategy_factory_full_market_scores(run_id)
+    full_market_topn = hydrate_full_market_topn_payload(full_market_topn)
+    detail["research_window"] = research_window
+    detail["full_market_topn"] = full_market_topn
     detail["artifacts"] = artifact_rows
     detail["artifact_refs"] = list(
         detail.get("artifact_refs")
@@ -831,6 +894,80 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
         or []
     )
     return ok(detail)
+
+
+async def handle_factory_topn_latest(db, params: dict) -> dict:
+    from strategy_factory.application.factory_market_views import hydrate_full_market_topn_payload
+
+    if not hasattr(db, "get_latest_strategy_factory_topn_snapshot"):
+        return fail("factory Top N snapshots are unavailable")
+    limit = min(max(int(params.get("limit", 20)), 1), 100)
+    snapshot = await db.get_latest_strategy_factory_topn_snapshot()
+    if not snapshot:
+        return ok(
+            {
+                "available": False,
+                "snapshot": None,
+                "top_scores": [],
+                "score_row_count": 0,
+                "requested_limit": limit,
+            }
+        )
+    snapshot = hydrate_full_market_topn_payload(snapshot)
+    run_id = str((snapshot or {}).get("run_id") or "").strip()
+    top_scores = (
+        await db.list_strategy_factory_full_market_scores(run_id, limit=limit)
+        if run_id and hasattr(db, "list_strategy_factory_full_market_scores")
+        else []
+    )
+    score_row_count = (
+        await db.count_strategy_factory_full_market_scores(run_id)
+        if run_id and hasattr(db, "count_strategy_factory_full_market_scores")
+        else len(top_scores)
+    )
+    return ok(
+        {
+            "available": True,
+            "snapshot": snapshot,
+            "top_scores": list(top_scores or []),
+            "score_row_count": int(score_row_count or 0),
+            "requested_limit": limit,
+        }
+    )
+
+
+async def handle_factory_run_topn(db, params: dict) -> dict:
+    from strategy_factory.application.factory_market_views import hydrate_full_market_topn_payload
+
+    run_id = str(params.get("run_id") or "").strip()
+    if not run_id:
+        return fail("run_id is required")
+    if not hasattr(db, "get_strategy_factory_topn_snapshot"):
+        return fail("factory Top N snapshots are unavailable")
+    limit = min(max(int(params.get("limit", 20)), 1), 100)
+    snapshot = await db.get_strategy_factory_topn_snapshot(run_id)
+    if not snapshot:
+        return fail(f"Factory Top N snapshot not found: {run_id}")
+    snapshot = hydrate_full_market_topn_payload(snapshot)
+    top_scores = (
+        await db.list_strategy_factory_full_market_scores(run_id, limit=limit)
+        if hasattr(db, "list_strategy_factory_full_market_scores")
+        else []
+    )
+    score_row_count = (
+        await db.count_strategy_factory_full_market_scores(run_id)
+        if hasattr(db, "count_strategy_factory_full_market_scores")
+        else len(top_scores)
+    )
+    return ok(
+        {
+            "available": True,
+            "snapshot": snapshot,
+            "top_scores": list(top_scores or []),
+            "score_row_count": int(score_row_count or 0),
+            "requested_limit": limit,
+        }
+    )
 
 
 async def handle_execution_audit_verification(db, params: dict) -> dict:

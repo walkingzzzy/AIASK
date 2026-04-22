@@ -4,7 +4,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import Link from 'next/link';
 import { AskAiButton } from '@/components/ask-ai-button';
 import { useOnboarding } from '@/components/onboarding';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import {
@@ -22,7 +22,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { EmptyState, ErrorState } from '@/components/status-state';
+import { EmptyState, ErrorState, PageStatusCard } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
@@ -35,6 +35,8 @@ import {
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useMobile } from '@/hooks/use-mobile';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { ResultContract } from '@aiask/shared-types';
 
@@ -101,6 +103,7 @@ function highlight(text: string, kw: string): ReactNode {
 
 export default function ResearchPage() {
   const { completeStep } = useOnboarding();
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const mounted = useHydrated();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
@@ -331,11 +334,22 @@ export default function ResearchPage() {
     () => {
       const localFallback = buildLocalResultContract({
         summary: researchSummary,
+        status: error ? 'unavailable' : showPrimaryEmptyState ? 'empty' : 'ready',
         pageActions,
         preferredActionIds: ['research.refresh', 'research.open-market-news', 'research.expand-window'],
         recommendedLinks: researchLinks,
+        recommendedNextActions: [
+          resolvedCode ? '先锁定标的，再决定看研报、公告还是市场新闻。' : '先输入股票代码，避免研究页变成空列表。',
+          showPrimaryEmptyState ? '当前窗口没有结果，优先扩大时间范围或切换资讯分组。' : '只有在当前窗口证据不足时再扩大时间范围。',
+          '需要更强结论时再把当前结果送去 AI 或策略页。',
+        ],
         evidence: researchEvidence,
         riskNotes: researchRiskNotes,
+        emptyState: {
+          title: '当前窗口没有命中研究内容',
+          description: '先确认标的和时间范围，再决定是否扩大窗口或切到市场新闻。',
+          example: 'code=600519，days=90',
+        },
         freshness: freshness ? { updatedAt: freshness, label: '资讯抓取时间' } : null,
         platformMeta: {
           sourceTool: 'research-feed',
@@ -356,6 +370,8 @@ export default function ResearchPage() {
     pageKey: 'research',
     title: '研报公告',
     summary: researchSummary,
+    primaryGoal: '锁定研究标的和时间窗口后，尽快拿到首批可判断的证据。',
+    requiredInputs: ['stockCode', 'timeRange'],
     stockCode: resolvedCode || undefined,
     objectType: resolvedCode ? 'stock' : 'research-feed',
     objectId: resolvedCode || keyword || newsTab,
@@ -371,11 +387,14 @@ export default function ResearchPage() {
       '把当前资讯页整理成研究纪要',
       '指出当前资讯里最值得继续核验的结论',
     ],
+    recommendedNextActions: researchResult.recommendedNextActions,
     recommendedActions: researchResult.recommendedActions,
     recommendedLinks: researchResult.recommendedLinks,
     evidenceSummary: evidenceToSummary(researchResult.evidence),
     riskNotes: researchResult.riskNotes ?? [],
     freshness: researchResult.freshness ?? null,
+    dataFreshness: researchResult.freshness?.updatedAt ?? null,
+    degradedReason: researchRiskNotes,
     raw: {
       code: resolvedCode || null,
       range,
@@ -466,7 +485,7 @@ export default function ResearchPage() {
               研究工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              研究页先回答三件事：当前在看哪只股票、这次拉的时间窗口是什么、下一步该继续追研报还是切资讯流。先把范围和信息源收紧，再进入正文列表，避免一上来就被长列表淹没。
+              先锁定标的和时间窗口，再决定看研报、公告还是资讯流，避免首屏先被结果摘要和长列表抢走注意力。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button
@@ -501,7 +520,7 @@ export default function ResearchPage() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{resolvedCode || '-'}</div>
@@ -527,7 +546,7 @@ export default function ResearchPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
+          <div className="hidden xl:grid gap-3">
             <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前聚焦</div>
               <div className="mt-3 text-base font-semibold text-text-primary">{resolvedCode || '未选择标的'}</div>
@@ -568,8 +587,6 @@ export default function ResearchPage() {
           </div>
         </div>
       </section>
-
-      <ResultWorkbench pageKey="research" title="研究结果工作台" result={researchResult} />
 
       <SectionCard className="mt-0 p-4 sm:p-5">
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
@@ -700,8 +717,51 @@ export default function ResearchPage() {
         更新：{updatedAtLabel} ｜ 抓取：{fetchedAtLabel} ｜ 缓存：{cacheText(cache)}
       </div>
 
+      {!showPrimaryEmptyState || !compactLayout ? (
+        <ProgressiveWorkbenchSection
+          pageKey="research"
+          title="研究结果工作台"
+          result={researchResult}
+          summaryMode="strip"
+          className="mt-3"
+        />
+      ) : null}
+
+      {showPrimaryEmptyState ? (
+        <PageStatusCard
+          status="empty"
+          title="当前窗口还没有研究结果"
+          reason="先确认股票代码和时间范围，再决定是否扩大窗口或切换资讯分组。"
+          freshness={fetchedAtLabel}
+          primaryAction={(
+            <button
+              type="button"
+              onClick={() => submitListQuery('90', startDate, endDate, keyword)}
+              className={heroPrimaryButtonCls}
+            >
+              扩到近 90 天
+            </button>
+          )}
+          secondaryAction={(
+            <button
+              type="button"
+              onClick={() => {
+                setNewsTab('market-news');
+                fetchNews('market-news');
+              }}
+              className={heroSecondaryButtonCls}
+            >
+              查看市场新闻
+            </button>
+          )}
+          example="code=600519，days=90"
+          className="mt-4"
+        />
+      ) : null}
+
       <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
         {showPrimaryEmptyState ? (
+          compactLayout ? null : (
           <SectionCard className="xl:col-span-2 p-5">
             <h3 className="mt-0">当前条件下暂无结果</h3>
             <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
@@ -733,6 +793,7 @@ export default function ResearchPage() {
               </Link>
             </div>
           </SectionCard>
+          )
         ) : (
           <>
             <SectionCard className="p-4 sm:p-5">
@@ -1056,14 +1117,20 @@ export default function ResearchPage() {
 
   return (
     <PageContainer>
-      <WorkspaceToolbar pageKey="research" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceToolbar
+        pageKey="research"
+        currentView={currentView}
+        onApplyView={applyView}
+        supportsPagePanels
+        mobileSummaryMode="hidden"
+      />
       <WorkspaceSplitLayout
         pageKey="research"
         primary={primaryContent}
         secondary={secondaryContent}
         primaryLabel="研究主区"
         secondaryLabel="研究摘要"
-        defaultMobileTab="secondary"
+        defaultMobileTab="primary"
       />
     </PageContainer>
   );

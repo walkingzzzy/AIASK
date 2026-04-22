@@ -398,10 +398,54 @@ async def build_closure_review(
     )
 
     latest_factory_run = _latest(list(factory_runs or []))
+    latest_factory_run_summary = dict((latest_factory_run or {}).get("summary") or {})
     latest_pipeline_snapshot = _latest(list(pipeline_snapshots or []))
     latest_promotion_review = _latest(list(promotion_reviews or []))
     latest_risk_snapshot = _latest(list(risk_snapshots or []))
     latest_vector_index_snapshot = _latest(list(vector_index_snapshots or []))
+    try:
+        from strategy_factory.application.factory_market_views import (
+            build_research_window_status,
+            hydrate_full_market_topn_payload,
+        )
+
+        research_window = dict(
+            (latest_factory_run or {}).get("research_window")
+            or latest_factory_run_summary.get("research_window")
+            or build_research_window_status(latest_factory_run_summary)
+        )
+    except Exception:
+        research_window = dict(
+            (latest_factory_run or {}).get("research_window")
+            or latest_factory_run_summary.get("research_window")
+            or {}
+        )
+        hydrate_full_market_topn_payload = lambda payload: dict(payload or {})
+    latest_topn_snapshot = {}
+    if hasattr(db, "get_strategy_factory_topn_snapshot"):
+        latest_topn_snapshot = dict(
+            await _maybe_call(
+                getattr(db, "get_strategy_factory_topn_snapshot", None),
+                _string((latest_factory_run or {}).get("run_id")),
+                default=None,
+            )
+            or {}
+        )
+    if not latest_topn_snapshot and hasattr(db, "get_latest_strategy_factory_topn_snapshot"):
+        latest_topn_snapshot = dict(
+            await _maybe_call(
+                getattr(db, "get_latest_strategy_factory_topn_snapshot", None),
+                default=None,
+            )
+            or {}
+        )
+    if not latest_topn_snapshot:
+        latest_topn_snapshot = dict(
+            (latest_factory_run or {}).get("full_market_topn")
+            or latest_factory_run_summary.get("full_market_topn")
+            or {}
+        )
+    latest_topn_snapshot = hydrate_full_market_topn_payload(latest_topn_snapshot)
     if not latest_projection_snapshot:
         latest_projection_snapshot = _latest(list(projection_snapshots or []))
 
@@ -507,6 +551,8 @@ async def build_closure_review(
             "task_runs": list(task_runs or []),
         },
         factory={
+            "research_window": research_window,
+            "full_market_topn": latest_topn_snapshot,
             "latest_run": latest_factory_run,
             "runs": list(factory_runs or []),
         },
