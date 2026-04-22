@@ -18,7 +18,12 @@ from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_kline_list
 from ...data_source import data_source
 from ...storage import get_db
-from ...utils import safe_stderr_print, validate_stock_code_format
+from ...utils import (
+    attach_argument_contract_meta,
+    resolve_canonical_arg,
+    safe_stderr_print,
+    validate_stock_code_format,
+)
 from ..data_quality import build_quality_meta, infer_missing_fields
 try:
     from ...baostock_api import baostock_client
@@ -575,7 +580,15 @@ def _get_minute_kline_from_sina(code: str, minutes: int, limit: int) -> list[dic
 
 
 @cached(ttl=60.0)
-def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> dict:
+def get_minute_kline(
+    code: str = "",
+    period: str = "5m",
+    limit: int = 300,
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """获取分钟级K线数据（盘中实时）
 
     数据源优先级: DataSource 分钟链路 → AkShare → Sina
@@ -600,15 +613,31 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
     limiter.acquire()
     started_at = datetime.now().astimezone()
 
-    code = normalize_code(stock_code)
+    raw_code, alias_hits, _ = resolve_canonical_arg(
+        "code",
+        code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    code = normalize_code(raw_code)
+    canonical_args = {"code": code, "period": period, "limit": limit}
+    def _respond(payload: dict) -> dict:
+        return attach_argument_contract_meta(
+            payload,
+            canonical_tool="get_minute_kline",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
+
     minutes = _parse_minute_period(period)
     if minutes is None:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             "period 必须为 1m/5m/15m/30m/60m",
             source_chain=["validate.period"],
             fallback_reason=["invalid_period"],
             started_at=started_at,
-        )
+        ))
     fallback_reason: list[str] = []
     source_chain: list[str] = ["data_source.get_kline"]
 
@@ -621,7 +650,7 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
             if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
                 validated_results = _validated_kline_rows(ds_results)
                 if _has_validated_kline_rows(validated_results):
-                    return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
+                    return _respond(_ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at))
             # 如果返回的是日线数据（仅日期），跳过
             fallback_reason.append("data_source.get_kline returned non_intraday rows")
     except Exception as e:
@@ -638,32 +667,36 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
             fallback_reason.append("sina.getKLineData empty_or_failed")
 
     if not results:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             f"所有数据源均无法获取 {code} 的{minutes}分钟K线数据",
             source_chain=list(source_chain),
             fallback_reason=fallback_reason,
             started_at=started_at,
-        )
+        ))
 
     validated_results = _validated_kline_rows(results)
     if not _has_validated_kline_rows(validated_results):
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             f"所有数据源均返回了无效的 {code} {minutes}分钟K线数据",
             source_chain=list(source_chain),
             fallback_reason=fallback_reason + ["all_intraday_rows_rejected"],
             started_at=started_at,
-        )
+        ))
     resolved_source = "akshare_minute" if str((validated_results or [{}])[0].get("source") or "").startswith("akshare") else "sina"
-    return _ok_kline_response(validated_results, source=resolved_source, source_chain=list(source_chain), fallback_reason=fallback_reason, started_at=started_at)
+    return _respond(_ok_kline_response(validated_results, source=resolved_source, source_chain=list(source_chain), fallback_reason=fallback_reason, started_at=started_at))
 
 
 async def get_kline_data(
-    code: str,
+    code: str = "",
     period: str = "daily",
     start_date: str = None,
     end_date: str = None,
     limit: int = 30,
-    adjust: str = ""
+    adjust: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
 ) -> dict:
     """获取K线数据（Node.js 参数兼容入口，支持日期区间查询）
 
@@ -705,37 +738,55 @@ async def get_kline_data(
         '60m': '60',
     }
     valid_periods = set(period_map)
+    raw_code, alias_hits, _ = resolve_canonical_arg(
+        "code",
+        code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    code = str(raw_code or "")
+    canonical_args = {"code": normalize_code(code) if code else "", "period": period, "start_date": start_date, "end_date": end_date, "limit": limit, "adjust": adjust}
+
+    def _respond(payload: dict) -> dict:
+        return attach_argument_contract_meta(
+            payload,
+            canonical_tool="get_kline_data",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
+
     if str(period or "").strip() not in valid_periods:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             f"period 无效: {period}. 支持: {', '.join(sorted(valid_periods))}",
             source_chain=["validate.period"],
             fallback_reason=["invalid_period"],
-        )
+        ))
 
     mapped_period = period_map.get(period, period)
     started_at = datetime.now().astimezone()
     _, code_error = validate_stock_code_format(code)
     if code_error:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             code_error,
             source_chain=["validate.stock_code"],
             fallback_reason=["invalid_stock_code"],
             started_at=started_at,
-        )
+        ))
     if start_date and parse_date_input(start_date) is None:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             f"start_date 无效: {start_date}",
             source_chain=["validate.start_date"],
             fallback_reason=["invalid_start_date"],
             started_at=started_at,
-        )
+        ))
     if end_date and parse_date_input(end_date) is None:
-        return _fail_kline_response(
+        return _respond(_fail_kline_response(
             f"end_date 无效: {end_date}",
             source_chain=["validate.end_date"],
             fallback_reason=["invalid_end_date"],
             started_at=started_at,
-        )
+        ))
     
     if start_date or end_date:
         limiter = get_limiter("kline", max_calls=5, period=1.0)
@@ -758,7 +809,7 @@ async def get_kline_data(
                 if db_data:
                     validated_results = _validated_kline_rows(db_data)
                     if _has_validated_kline_rows(validated_results):
-                        return _ok_kline_response(validated_results, source="timescaledb", source_chain=list(source_chain), started_at=started_at)
+                        return _respond(_ok_kline_response(validated_results, source="timescaledb", source_chain=list(source_chain), started_at=started_at))
             except Exception as e_db:
                 safe_stderr_print(f"TimescaleDB K-line (date range) query failed for {code_normalized}: {e_db}")
                 fallback_reason.append(f"db.get_klines failed: {e_db}")
@@ -781,24 +832,24 @@ async def get_kline_data(
                     validated_results = _validated_kline_rows(filtered)
                     if _has_validated_kline_rows(validated_results):
                         await _async_save_klines_to_db(code_normalized, validated_results)
-                        return _ok_kline_response(
+                        return _respond(_ok_kline_response(
                             validated_results,
                             source="data_source",
                             source_chain=list(source_chain),
                             fallback_reason=fallback_reason,
                             started_at=started_at,
-                        )
+                        ))
         except Exception as e_ds:
             safe_stderr_print(f"DataSource K-line (date range) failed for {code_normalized}: {e_ds}")
             fallback_reason.append(f"data_source.get_kline failed: {e_ds}")
 
         if ak is None:
-            return _fail_kline_response(
+            return _respond(_fail_kline_response(
                 f'无法获取 {code} 的K线数据 (日期范围查询, 所有数据源均失败)',
                 source_chain=list(source_chain),
                 fallback_reason=fallback_reason or [f"date_range fetch failed for {code}"],
                 started_at=started_at,
-            )
+            ))
         _append_chain_step(source_chain, "akshare.stock_zh_a_hist")
         try:
             df = ak.stock_zh_a_hist(
@@ -810,33 +861,33 @@ async def get_kline_data(
             )
             if df is None or df.empty:
                 fallback_reason.append(f"no_kline_data:{code}")
-                return _fail_kline_response(
+                return _respond(_fail_kline_response(
                     f'No kline data for {code}',
                     source_chain=list(source_chain),
                     fallback_reason=fallback_reason,
                     started_at=started_at,
-                )
+                ))
             results = _process_kline_akshare(df, code_normalized)
             validated_results = _validated_kline_rows(results)
             if _has_validated_kline_rows(validated_results):
                 await _async_save_klines_to_db(code_normalized, validated_results)
-                return _ok_kline_response(
+                return _respond(_ok_kline_response(
                     validated_results,
                     source="akshare",
                     source_chain=list(source_chain),
                     fallback_reason=fallback_reason,
                     started_at=started_at,
-                )
+                ))
         except Exception as e:
             fallback_reason.append(str(e))
-            return _fail_kline_response(
+            return _respond(_fail_kline_response(
                 f'Failed to get kline data: {str(e)}',
                 source_chain=list(source_chain),
                 fallback_reason=fallback_reason,
                 started_at=started_at,
-            )
+            ))
 
-    return await get_kline(code, mapped_period, limit)
+    return _respond(await get_kline(code, mapped_period, limit))
 
 # ============================================================
 # 指数 K 线（独立于个股 K 线，避免代码混淆）

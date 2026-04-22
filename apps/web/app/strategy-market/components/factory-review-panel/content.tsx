@@ -204,7 +204,7 @@ export function FactoryReviewPanel({
           <div>
             <div className="eyebrow">Closure Summary</div>
             <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">
-              {presentation?.stage_label || '当前闭环阶段'}
+              闭环状态总览
             </h3>
             <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
               {presentation?.stage_summary || '先看当前阶段说明，再决定是否需要深入到孵化、运行时或实验明细。'}
@@ -214,18 +214,45 @@ export function FactoryReviewPanel({
             {canViewOperatorPanels ? '运营视图可用' : '默认用户视图'}
           </Badge>
         </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
+          {displayStatus.label !== marketStatus.label ? (
+            <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
+          ) : null}
+          {showIncubationStage ? <Badge variant={incubationSurface.stage.variant}>{incubationSurface.stage.label}</Badge> : null}
+          <Badge variant={incubationSurface.promotionReady ? 'success' : 'warning'}>
+            {incubationSurface.promotionReady ? '可推进晋级' : '继续孵化观察'}
+          </Badge>
+          <Badge variant={incubationSurface.latestDecision.variant}>
+            最新决策 · {incubationSurface.latestDecision.label}
+          </Badge>
+          <Badge variant={incubationSurface.executionAuditGate.variant}>
+            执行审计 · {incubationSurface.executionAuditGate.label}
+          </Badge>
+        </div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">为何关注</div>
-            <div className="mt-2 text-text-primary">{presentation?.why_watch || '关注当前阶段的证据是否足够支持下一步动作。'}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">状态条</div>
+            <div className="mt-2 space-y-2 text-text-primary">
+              <div>市场状态：{marketStatus.label}</div>
+              <div>孵化阶段：{showIncubationStage ? incubationSurface.stage.label : '未接入真实孵化'}</div>
+              <div>最新决策：{incubationSurface.latestDecision.label}</div>
+            </div>
           </div>
           <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前风险</div>
-            <div className="mt-2 text-text-primary">{presentation?.current_risks || '暂无额外说明，继续结合质量门、执行审计和风险事件判断。'}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">门禁与阻塞</div>
+            <div className="mt-2 space-y-2 text-text-primary">
+              <div>执行审计：{incubationSurface.executionAuditGate.label}</div>
+              <div>阻塞项：{incubationSurface.blockerCount}</div>
+              <div>风险事件：{incubationSurface.riskCount}</div>
+            </div>
           </div>
           <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
             <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">建议动作</div>
             <div className="mt-2 text-text-primary">{presentation?.recommended_action || '先确认当前分区是否需要补证据，再决定是否深入运营明细。'}</div>
+            <div className="mt-2 text-xs leading-6 text-text-secondary">
+              {presentation?.why_watch || '关注当前阶段的证据是否足够支持下一步动作。'}
+            </div>
           </div>
         </div>
       </SectionCard>
