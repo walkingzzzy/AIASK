@@ -10,7 +10,13 @@ from ..market.helpers import (
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
-from ...utils import resolve_existing_security_code_sync, safe_stderr_print, validate_int_range
+from ...utils import (
+    attach_argument_contract_meta,
+    resolve_canonical_arg,
+    resolve_existing_security_code_sync,
+    safe_stderr_print,
+    validate_int_range,
+)
 try:
     import akshare as ak
 except ImportError:
@@ -250,7 +256,13 @@ def _get_trade_details_tencent_direct(code: str, limit: int) -> Optional[list[di
 
 
 @cached(ttl=5.0)
-def get_order_book(stock_code: str) -> dict:
+def get_order_book(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """获取五档盘口数据
 
     数据源优先级: AkShare -> Sina -> Tencent
@@ -277,7 +289,26 @@ def get_order_book(stock_code: str) -> dict:
     limiter = get_limiter("quote", max_calls=10, period=1.0)
     limiter.acquire()
 
-    code = normalize_code(stock_code)
+    raw_code, alias_hits, _ = resolve_canonical_arg(
+        "code",
+        code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    code = normalize_code(raw_code)
+    canonical_args = {"code": code}
+
+    def _respond(payload: dict) -> dict:
+        return attach_argument_contract_meta(
+            payload,
+            canonical_tool="get_order_book",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
+
+    if not code:
+        return _respond(fail("需要提供股票代码（支持 code / stock_code / symbol / ticker）"))
 
     # 1. Try AkShare (if available)
     df = None
@@ -296,19 +327,26 @@ def get_order_book(stock_code: str) -> dict:
                 df = None
             parsed = _parse_order_book_df(df, code)
             if parsed:
-                return ok(parsed)
+                return _respond(ok(parsed))
 
     # 2. Try direct fetch
     for direct_fetch in (_get_order_book_sina_direct, _get_order_book_tencent_direct):
         parsed = direct_fetch(code)
         if parsed:
-            return ok(parsed)
+            return _respond(ok(parsed))
 
-    return fail(f"未获取到 {code} 的盘口数据 (尝试源: AkShare, Sina, Tencent)")
+    return _respond(fail(f"未获取到 {code} 的盘口数据 (尝试源: AkShare, Sina, Tencent)"))
 
 
 @cached(ttl=5.0)
-def get_trade_details(stock_code: str, limit: int = 20) -> dict:
+def get_trade_details(
+    code: str = "",
+    limit: int = 20,
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """获取成交明细
 
     Args:
@@ -334,12 +372,40 @@ def get_trade_details(stock_code: str, limit: int = 20) -> dict:
     limiter = get_limiter("quote", max_calls=10, period=1.0)
     limiter.acquire()
 
-    code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+    raw_code, alias_hits, _ = resolve_canonical_arg(
+        "code",
+        code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    code, _, error = resolve_existing_security_code_sync(code=raw_code)
+    canonical_args = {"code": code or raw_code, "limit": limit}
     if error:
-        return fail(error)
+        return attach_argument_contract_meta(
+            fail(error),
+            canonical_tool="get_trade_details",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1)
+    canonical_args["limit"] = limit
     if limit_error:
-        return fail(limit_error)
+        return attach_argument_contract_meta(
+            fail(limit_error),
+            canonical_tool="get_trade_details",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
+
+    def _respond(payload: dict) -> dict:
+        return attach_argument_contract_meta(
+            payload,
+            canonical_tool="get_trade_details",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
+
     df = None
     if ak is not None:
         for func_name, args in (
@@ -360,7 +426,7 @@ def get_trade_details(stock_code: str, limit: int = 20) -> dict:
     if df is None or df.empty:
         direct = _get_trade_details_tencent_direct(code, limit)
         if direct:
-            return ok(direct)
+            return _respond(ok(direct))
 
         # 非交易时段友好提示
         from datetime import datetime, time as dt_time
@@ -369,13 +435,13 @@ def get_trade_details(stock_code: str, limit: int = 20) -> dict:
                       dt_time(13, 0) <= now_time <= dt_time(15, 0))
         weekday = datetime.now().weekday()
         if not is_trading or weekday >= 5:
-            return ok({
+            return _respond(ok({
                 'code': code, 'trades': [],
                 'message': '当前非交易时段，成交明细数据仅在盘中可用',
                 'trading_hours': '09:30-11:30, 13:00-15:00 (工作日)'
-            })
+            }))
 
-        return fail(f"未获取到 {code} 的成交明细数据 (尝试源: AkShare, Tencent)")
+        return _respond(fail(f"未获取到 {code} 的成交明细数据 (尝试源: AkShare, Tencent)"))
 
     df = df.tail(limit)
     records: list[dict] = []
@@ -389,4 +455,4 @@ def get_trade_details(stock_code: str, limit: int = 20) -> dict:
             }
         )
 
-    return ok(records)
+    return _respond(ok(records))
