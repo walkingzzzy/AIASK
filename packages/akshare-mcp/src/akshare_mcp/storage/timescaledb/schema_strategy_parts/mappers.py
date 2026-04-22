@@ -86,6 +86,31 @@
         CREATE INDEX IF NOT EXISTS idx_strategy_incubation_pipeline_snapshots_status
             ON strategy_incubation_pipeline_snapshots(pipeline_status, evaluated_at DESC);
 
+        CREATE TABLE IF NOT EXISTS governance_report_snapshots (
+            id BIGSERIAL PRIMARY KEY,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT,
+            overall_status TEXT NOT NULL,
+            issues JSONB DEFAULT '[]'::jsonb,
+            payload_jsonb JSONB DEFAULT '{}'::jsonb,
+            generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_governance_report_snapshots_scope
+            ON governance_report_snapshots(scope_type, scope_id, generated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_governance_report_snapshots_status
+            ON governance_report_snapshots(overall_status, generated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS matching_engine_worker_state (
+            engine_name TEXT PRIMARY KEY,
+            worker_id TEXT NOT NULL,
+            lease_until TIMESTAMPTZ,
+            last_scan_at TIMESTAMPTZ,
+            last_processed_order_id BIGINT,
+            last_heartbeat_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS strategy_runtime_risk_events (
             id SERIAL PRIMARY KEY,
             strategy_id TEXT REFERENCES strategies(id) ON DELETE CASCADE,

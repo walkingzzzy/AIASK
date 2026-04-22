@@ -6,7 +6,12 @@ const POSTGRES_EXPORTER_PORT = process.env.POSTGRES_EXPORTER_PORT || '9187';
 const BLACKBOX_EXPORTER_PORT = process.env.BLACKBOX_EXPORTER_PORT || '9115';
 
 async function check({ name, url, expectStatus = 200, contentIncludes = [] }) {
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`${name} fetch failed @ ${url}: ${String(error?.message || error)}`);
+  }
   if (response.status !== expectStatus) {
     throw new Error(`${name} unexpected status ${response.status} @ ${url}`);
   }
@@ -24,7 +29,16 @@ async function main() {
     {
       name: 'bff-metrics',
       url: `http://127.0.0.1:${BFF_PORT}/api/metrics`,
-      contentIncludes: ['aiask_bff_http_requests_total', 'aiask_bff_mcp_calls_total'],
+      contentIncludes: [
+        'aiask_bff_http_requests_total',
+        'aiask_bff_mcp_calls_total',
+        'aiask_bff_dependency_status',
+      ],
+    },
+    {
+      name: 'bff-health-overview',
+      url: `http://127.0.0.1:${BFF_PORT}/api/health`,
+      contentIncludes: ['"service":"aiask-bff"', '"db":', '"cache":', '"mcp":', '"vector":', '"reasons":'],
     },
     {
       name: 'bff-health-live',

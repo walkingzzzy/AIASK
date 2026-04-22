@@ -3,6 +3,7 @@
 import type { CopilotActionMeta, CopilotActionPayload, CopilotActionScope } from '@/lib/copilot-types';
 
 export type PageActionDefinition = CopilotActionMeta & {
+  exposeToCopilot?: boolean;
   run: (payload?: CopilotActionPayload) => Promise<unknown> | unknown;
 };
 

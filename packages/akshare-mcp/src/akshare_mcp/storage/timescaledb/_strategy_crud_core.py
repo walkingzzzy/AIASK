@@ -6,6 +6,7 @@ import logging
 import os
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,151 @@ class _StrategyCrudCoreMixin:
                     """,
                     user_id,
                 )
-            return [dict(r) for r in rows]
+            return [self._decode_strategy_row(dict(r)) for r in rows]
+
+        async def list_user_strategies(
+            self,
+            user_id: str,
+            *,
+            include_archived: bool = False,
+            limit: int = 50,
+            offset: int = 0,
+        ) -> List[dict]:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           COALESCE((SELECT AVG(rating)::float FROM strategy_reviews WHERE strategy_id = s.id), 0) AS avg_rating,
+                           COALESCE((SELECT COUNT(*) FROM strategy_reviews WHERE strategy_id = s.id), 0) AS review_count
+                    FROM strategies s
+                    WHERE s.author_id = $1
+                      AND ($2::boolean OR s.status <> 'archived')
+                    ORDER BY s.updated_at DESC
+                    LIMIT $3 OFFSET $4
+                    """,
+                    user_id,
+                    bool(include_archived),
+                    max(1, min(int(limit or 50), 200)),
+                    max(0, int(offset or 0)),
+                )
+            return [self._decode_strategy_row(dict(row)) for row in rows]
+
+        async def update_strategy_fields(self, strategy_id: str, updates: dict) -> Optional[dict]:
+            payload = dict(updates or {})
+            if not payload:
+                return await self.get_strategy(strategy_id)
+            assignments: list[str] = []
+            values: list[Any] = []
+            allowed_fields = (
+                "name",
+                "description",
+                "params",
+                "factor_weights",
+                "tags",
+                "backtest_artifact_id",
+            )
+            for field in allowed_fields:
+                if field not in payload:
+                    continue
+                idx = len(values) + 2
+                if field in {"params", "factor_weights"}:
+                    assignments.append(f"{field} = ${idx}::jsonb")
+                    values.append(json.dumps(payload.get(field) or {}, ensure_ascii=False, default=str))
+                    continue
+                if field == "tags":
+                    assignments.append(f"{field} = ${idx}::text[]")
+                    values.append(list(payload.get(field) or []))
+                    continue
+                assignments.append(f"{field} = ${idx}")
+                values.append(payload.get(field))
+            if not assignments:
+                return await self.get_strategy(strategy_id)
+            values.append(datetime.now(timezone.utc))
+            updated_at_idx = len(values) + 1
+            async with self.acquire() as conn:
+                row = await conn.fetchrow(
+                    f"""
+                    UPDATE strategies
+                    SET {", ".join(assignments)},
+                        updated_at = ${updated_at_idx}::timestamptz
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    strategy_id,
+                    *values,
+                )
+            return self._decode_strategy_row(dict(row)) if row else None
+
+        async def save_strategy_paper_session(self, session: dict) -> dict:
+            payload = dict(session or {})
+            session_id = str(payload.get("id") or f"sps_{uuid4().hex[:16]}").strip()
+            async with self.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO strategy_paper_sessions
+                        (id, strategy_id, user_id, account_id, session_type, source_strategy_id,
+                         created_at, updated_at, last_used_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), COALESCE($7::timestamptz, NOW()))
+                    ON CONFLICT (user_id, strategy_id, session_type) DO UPDATE SET
+                        account_id = EXCLUDED.account_id,
+                        source_strategy_id = EXCLUDED.source_strategy_id,
+                        updated_at = NOW(),
+                        last_used_at = COALESCE(EXCLUDED.last_used_at, strategy_paper_sessions.last_used_at, NOW())
+                    RETURNING *
+                    """,
+                    session_id,
+                    str(payload.get("strategy_id") or ""),
+                    str(payload.get("user_id") or "default"),
+                    str(payload.get("account_id") or ""),
+                    str(payload.get("session_type") or "personal_paper"),
+                    payload.get("source_strategy_id"),
+                    self._coerce_timestamp(payload.get("last_used_at")),
+                )
+            return dict(row)
+
+        async def get_strategy_paper_session(
+            self,
+            strategy_id: str,
+            user_id: str,
+            session_type: str = "personal_paper",
+        ) -> Optional[dict]:
+            async with self.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT sps.*, pa.name AS account_name, pa.status AS account_status,
+                           pa.account_type, pa.strategy_id AS account_strategy_id
+                    FROM strategy_paper_sessions sps
+                    LEFT JOIN paper_accounts pa ON pa.id = sps.account_id
+                    WHERE sps.strategy_id = $1 AND sps.user_id = $2 AND sps.session_type = $3
+                    ORDER BY sps.updated_at DESC, sps.created_at DESC
+                    LIMIT 1
+                    """,
+                    strategy_id,
+                    user_id,
+                    session_type,
+                )
+            return dict(row) if row else None
+
+        async def touch_strategy_paper_session(
+            self,
+            strategy_id: str,
+            user_id: str,
+            session_type: str = "personal_paper",
+        ) -> Optional[dict]:
+            async with self.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE strategy_paper_sessions
+                    SET last_used_at = NOW(),
+                        updated_at = NOW()
+                    WHERE strategy_id = $1 AND user_id = $2 AND session_type = $3
+                    RETURNING *
+                    """,
+                    strategy_id,
+                    user_id,
+                    session_type,
+                )
+            return dict(row) if row else None
 
         async def save_strategy_lineage(self, strategy_id: str, parent_id: Optional[str],
                                          spawn_reason: str, birth_regime: dict) -> None:

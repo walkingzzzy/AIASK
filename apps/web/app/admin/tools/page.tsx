@@ -1,10 +1,14 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { ErrorState } from '@/components/status-state';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 /**
  * T-049: MCP Tools Dashboard
@@ -25,6 +29,12 @@ export default function ToolsDashboardPage() {
       avgLatency: Number(raw.avgLatency ?? 0),
       p99Latency: Number(raw.p99Latency ?? 0),
       errorRate: Number(raw.errorRate ?? 0),
+      reachable: raw.reachable !== false,
+      matched: raw.matched !== false,
+      toolCount: Number(raw.toolCount ?? 0),
+      expectedTools: Number(raw.expectedTools ?? 0),
+      transportKind: String((raw.transport as Record<string, unknown> | undefined)?.transportKind ?? raw.source ?? 'unknown'),
+      fallbackReason: String(raw.fallbackReason ?? '').trim(),
       tools: tools.slice(0, 20).map((t: Record<string, unknown>) => ({
         name: String(t.name ?? ''),
         calls: Number(t.calls ?? 0),
@@ -63,11 +73,123 @@ export default function ToolsDashboardPage() {
   const latestStatsRefreshText = statsQ.dataUpdatedAt
     ? new Date(statsQ.dataUpdatedAt).toLocaleString('zh-CN')
     : '等待首个工具快照';
+  const driftHint = !data.matched
+    ? `当前运行时工具数 ${data.toolCount}，配置期望值 ${data.expectedTools}，属于配置漂移而不是服务不可用。`
+    : '';
+  const mcpHealthLabel = !data.reachable
+    ? 'MCP 不可达'
+    : !data.matched
+      ? 'MCP 配置漂移'
+      : 'MCP 正常';
 
   async function refreshToolStats() {
     await statsQ.refetch();
     setLastManualRefreshAt(new Date().toLocaleString('zh-CN'));
   }
+
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'admin-tools.refresh',
+        label: '刷新工具统计',
+        description: '重新拉取 MCP 统计与健康快照',
+        keywords: ['刷新', '统计'],
+        scope: 'page' as const,
+        pageKey: 'admin-tools',
+        run: async () => {
+          await refreshToolStats();
+          return { message: '已刷新工具统计' };
+        },
+      },
+      {
+        id: 'admin-tools.focus-abnormal',
+        label: '聚焦异常工具区域',
+        description: '滚动到异常工具列表，优先处理风险项',
+        keywords: ['异常', '工具'],
+        scope: 'page' as const,
+        pageKey: 'admin-tools',
+        run: () => {
+          document.getElementById('admin-tools-abnormal-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return { message: '已聚焦异常工具区域' };
+        },
+      },
+    ],
+    [statsQ],
+  );
+
+  usePageActions(pageActions);
+  const toolsSummary = `当前状态 ${mcpHealthLabel}，总调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，异常工具 ${abnormalTools.length} 个，传输方式 ${data.transportKind}。`;
+  const toolsResult = buildLocalResultContract({
+    summary: toolsSummary,
+    availableViews: abnormalTools.length > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['admin-tools.refresh', 'admin-tools.focus-abnormal'],
+    recommendedLinks: [
+      { id: 'admin-tools-open-skills-link', label: '技能中心', href: '/skills?from=admin-tools' },
+      { id: 'admin-tools-open-data-link', label: '数据中心', href: '/data?tab=resource' },
+      { id: 'admin-tools-open-audit-link', label: '审计日志', href: '/settings/audit-log' },
+    ],
+    evidence: [
+      { label: 'MCP 状态', value: mcpHealthLabel },
+      { label: '总调用', value: String(data.totalCalls) },
+      { label: '错误率', value: `${data.errorRate.toFixed(2)}%` },
+      { label: '异常工具', value: String(abnormalTools.length) },
+      { label: '传输方式', value: data.transportKind },
+    ],
+    riskNotes: [
+      ...(driftHint ? [driftHint] : []),
+      ...(data.fallbackReason ? [data.fallbackReason] : []),
+      ...(statsQ.error ? [statsQ.error] : []),
+    ],
+    freshness: statsQ.dataUpdatedAt ? { updatedAt: new Date(statsQ.dataUpdatedAt).toISOString(), label: '统计快照' } : null,
+    platformMeta: {
+      sourceTool: 'mcp-stats',
+      sourceChain: ['admin-tools', data.transportKind],
+      degraded: !data.reachable || !data.matched || Boolean(statsQ.error),
+      fallbackReason: [data.fallbackReason, statsQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('admin-tools', '复查 MCP 工具健康', '/admin/tools', 'tool-registry-review', {
+      reachable: data.reachable,
+      matched: data.matched,
+      abnormalTools: abnormalTools.length,
+    }),
+  });
+
+  usePageContext({
+    pageKey: 'admin-tools',
+    title: 'MCP 工具仪表盘',
+    summary: toolsSummary,
+    objectType: 'tool-registry',
+    objectId: data.transportKind,
+    resultType: 'mcp-tool-dashboard',
+    tags: [
+      mcpHealthLabel,
+      `${abnormalTools.length} 个异常工具`,
+      `${data.toolCount}/${data.expectedTools || data.toolCount} 工具`,
+      `${data.transportKind} 传输`,
+    ],
+    suggestions: [
+      '先总结当前 MCP 工具健康状态和最需要处理的异常项',
+      '如果需要联动，请优先刷新统计或聚焦异常工具区域',
+      '解释当前是服务不可用还是配置漂移',
+    ],
+    recommendedActions: toolsResult.recommendedActions ?? [],
+    recommendedLinks: toolsResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(toolsResult.evidence),
+    riskNotes: toolsResult.riskNotes ?? [],
+    freshness: toolsResult.freshness ?? null,
+    raw: {
+      totalCalls: data.totalCalls,
+      errorRate: data.errorRate,
+      abnormalTools: abnormalTools.length,
+      reachable: data.reachable,
+      matched: data.matched,
+      toolCount: data.toolCount,
+      expectedTools: data.expectedTools,
+      transportKind: data.transportKind,
+      fallbackReason: data.fallbackReason || null,
+    },
+  });
 
   if (statsQ.error) {
     return (
@@ -85,6 +207,8 @@ export default function ToolsDashboardPage() {
   return (
     <PageContainer>
       <h1 className="text-lg font-semibold mb-4">🔧 MCP 工具仪表盘</h1>
+
+      <ResultWorkbench pageKey="admin-tools" title="MCP 工具工作台" result={toolsResult} />
 
       <SectionCard className="mb-4 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -111,9 +235,12 @@ export default function ToolsDashboardPage() {
         >
           <div className="font-medium text-text-primary">工具统计状态：{statsStatus}</div>
           <p className="mt-1 mb-0 text-xs text-text-secondary">
-            总调用 {data.totalCalls.toLocaleString()} ｜ 错误率 {(data.errorRate * 100).toFixed(2)}% ｜ 异常工具{' '}
+            总调用 {data.totalCalls.toLocaleString()} ｜ 错误率 {data.errorRate.toFixed(2)}% ｜ 异常工具{' '}
             {abnormalTools.length} 个
           </p>
+          {driftHint ? (
+            <p className="mt-2 mb-0 text-xs text-amber-700">{driftHint}</p>
+          ) : null}
           <p className="mt-2 mb-0 text-xs text-text-secondary">
             最近快照：{latestStatsRefreshText}
             {lastManualRefreshAt ? ` ｜ 手动刷新：${lastManualRefreshAt}` : ''}
@@ -125,11 +252,11 @@ export default function ToolsDashboardPage() {
         <KpiCard title="总调用次数" value={data.totalCalls.toLocaleString()} />
         <KpiCard title="平均延迟" value={`${data.avgLatency.toFixed(0)}ms`} />
         <KpiCard title="P99 延迟" value={`${data.p99Latency.toFixed(0)}ms`} />
-        <KpiCard title="错误率" value={`${(data.errorRate * 100).toFixed(2)}%`} />
+        <KpiCard title="错误率" value={`${data.errorRate.toFixed(2)}%`} />
       </KpiGrid>
 
       {abnormalTools.length > 0 && (
-        <SectionCard className="mt-4 p-4">
+        <SectionCard id="admin-tools-abnormal-section" className="mt-4 p-4">
           <h3 className="mt-0 text-sm font-semibold">优先关注工具</h3>
           <p className="mt-1 text-xs text-text-secondary">
             以下工具当前存在降级、不可用或错误次数偏高的情况，已前置到首屏方便管理员优先处理。

@@ -192,6 +192,19 @@ def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
     resolved_target_symbols = list((contract_snapshot.get("targeting") or {}).get("target_symbols") or resolved_target_symbols)
     resolved_stock_pool = _as_dict((contract_snapshot.get("targeting") or {}).get("stock_pool") or resolved_stock_pool)
     resolved_constraint_check = _as_dict((contract_snapshot.get("targeting") or {}).get("constraint_check") or resolved_constraint_check)
+    resolved_holding_horizon = _as_dict(contract_snapshot.get("holding_horizon") or {})
+    resolved_trade_plan = _as_dict(contract_snapshot.get("trade_plan") or {})
+    resolved_risk_rules = _as_dict(contract_snapshot.get("risk_rules") or {})
+    resolved_runtime_playbook = _as_dict(contract_snapshot.get("runtime_playbook") or {})
+    resolved_rebalance_rule = _as_dict(contract_snapshot.get("rebalance_rule") or {})
+    resolved_portfolio_spec = _as_dict(contract_snapshot.get("portfolio_spec") or {})
+    resolved_execution_assumptions = normalize_execution_assumptions(
+        contract_snapshot.get("execution_assumptions"),
+        portfolio_spec=resolved_portfolio_spec,
+        capacity_assumption=candidate_contract_value(resolved_payload, "capacity_assumption", {}),
+        holding_horizon=resolved_holding_horizon,
+        cost_sensitivity_grid=candidate_contract_value(resolved_payload, "cost_sensitivity_grid", {}),
+    )
     resolved_validation_profile = dict(
         contract_snapshot.get("validation_profile")
         or resolve_candidate_validation_profile(resolved_payload, research_task=normalized_task)
@@ -215,6 +228,13 @@ def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "resolved_target_symbols": list(resolved_target_symbols),
         "resolved_stock_pool": dict(resolved_stock_pool),
         "resolved_constraint_check": dict(resolved_constraint_check),
+        "resolved_holding_horizon": dict(resolved_holding_horizon),
+        "resolved_trade_plan": dict(resolved_trade_plan),
+        "resolved_risk_rules": dict(resolved_risk_rules),
+        "resolved_rebalance_rule": dict(resolved_rebalance_rule),
+        "resolved_portfolio_spec": dict(resolved_portfolio_spec),
+        "resolved_execution_assumptions": dict(resolved_execution_assumptions),
+        "resolved_runtime_playbook": dict(resolved_runtime_playbook),
         "resolved_validation_profile": dict(resolved_validation_profile),
         "resolved_targeting_policy": dict(resolved_targeting_policy),
         "candidate_contract_snapshot": contract_snapshot,
@@ -243,7 +263,13 @@ def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "target_symbols": list(envelope.get("resolved_target_symbols") or []),
         "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
         "constraint_check": dict(envelope.get("resolved_constraint_check") or {}),
-        "runtime_playbook": _as_dict(candidate_contract_value(payload, "runtime_playbook", {})),
+        "holding_horizon": dict(envelope.get("resolved_holding_horizon") or {}),
+        "trade_plan": dict(envelope.get("resolved_trade_plan") or {}),
+        "risk_rules": dict(envelope.get("resolved_risk_rules") or {}),
+        "rebalance_rule": dict(envelope.get("resolved_rebalance_rule") or {}),
+        "portfolio_spec": dict(envelope.get("resolved_portfolio_spec") or {}),
+        "execution_assumptions": dict(envelope.get("resolved_execution_assumptions") or {}),
+        "runtime_playbook": dict(envelope.get("resolved_runtime_playbook") or {}),
         "validation_profile": resolved_validation_profile,
         "targeting_policy": resolved_targeting_policy,
         "candidate_contract_snapshot": dict(envelope.get("candidate_contract_snapshot") or {}),
@@ -270,6 +296,13 @@ def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "target_symbols": list(envelope.get("resolved_target_symbols") or []),
         "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
         "constraint_check": dict(envelope.get("resolved_constraint_check") or {}),
+        "holding_horizon": dict(envelope.get("resolved_holding_horizon") or {}),
+        "trade_plan": dict(envelope.get("resolved_trade_plan") or {}),
+        "risk_rules": dict(envelope.get("resolved_risk_rules") or {}),
+        "rebalance_rule": dict(envelope.get("resolved_rebalance_rule") or {}),
+        "portfolio_spec": dict(envelope.get("resolved_portfolio_spec") or {}),
+        "execution_assumptions": dict(envelope.get("resolved_execution_assumptions") or {}),
+        "runtime_playbook": dict(envelope.get("resolved_runtime_playbook") or {}),
         "validation_profile": resolved_validation_profile,
         "targeting_policy": resolved_targeting_policy,
         "candidate_contract_snapshot": dict(envelope.get("candidate_contract_snapshot") or {}),

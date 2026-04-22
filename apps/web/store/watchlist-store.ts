@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { ensureBffAvailability, markBffAvailable, markBffUnavailable } from '@/lib/bff-availability';
-import { getBffBaseUrl } from '@/lib/bff-base';
-import { clearLoggedIn, hasLoggedInHint, refreshAuth } from '@/lib/auth';
+import { ensureBffAvailability } from '@/lib/bff-availability';
+import { hasLoggedInHint } from '@/lib/auth';
+import { authedFetch, buildApiError, rejectFallbackPayload } from '@/lib/api';
 
 export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
@@ -62,43 +62,41 @@ function notifySyncError(detail: string) {
 async function fetchServer(path: string, options?: RequestInit): Promise<unknown> {
   const reachable = await ensureBffAvailability();
   if (!reachable) {
-    return null;
+    const error = new Error('自选股服务暂不可用');
+    notifySyncError(error.message);
+    throw error;
   }
 
   const requestInit: RequestInit = {
-    credentials: 'include',
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   };
   try {
-    const bffBase = getBffBaseUrl();
-    let res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
-    markBffAvailable();
-    if (res.status === 401) {
-      const refreshed = await refreshAuth();
-      if (refreshed) {
-        res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
-        markBffAvailable();
-      } else {
-        clearLoggedIn();
-        notifySyncError('HTTP 401');
-        return null;
-      }
-    }
+    const res = await authedFetch(`/watchlist${path}`, requestInit);
+    const payload = await res.json().catch(() => null);
     if (!res.ok) {
-      notifySyncError(`HTTP ${res.status}`);
-      return null;
+      const error = buildApiError(payload, {
+        status: res.status,
+        path: `/watchlist${path}`,
+        fallbackMessage: `自选股请求失败 (HTTP ${res.status})`,
+      });
+      notifySyncError(error.message);
+      throw error;
     }
-    const json = await res.json();
-    const payload = json && typeof json === 'object' ? (json as Record<string, unknown>) : {};
-    return payload.data ?? null;
+    const fallbackReason = rejectFallbackPayload(payload);
+    if (fallbackReason) {
+      const error = new Error(`自选股请求未完成: ${fallbackReason}`);
+      notifySyncError(error.message);
+      throw error;
+    }
+    const body = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+    return body.data ?? null;
   } catch (err) {
-    markBffUnavailable();
     if (isAbortLikeError(err)) {
-      return null;
+      throw err;
     }
     notifySyncError(err instanceof Error ? err.message : 'network error');
-    return null;
+    throw err;
   }
 }
 
@@ -108,6 +106,7 @@ type WatchlistState = {
   groups: WatchGroup[];
   synced: boolean;
   syncing: boolean;
+  syncError: string | null;
   /** Check if any group contains code */
   has: (code: string) => boolean;
   /** Add stock to a group (default: first group) */
@@ -123,7 +122,7 @@ type WatchlistState = {
   /** Clear all items from default group */
   clear: () => void;
   /** Sync with server (pull) */
-  syncFromServer: () => Promise<void>;
+  syncFromServer: (force?: boolean) => Promise<void>;
   /** Push local changes to server */
   pushToServer: () => Promise<void>;
 };
@@ -137,46 +136,6 @@ function normalizeAddedAt(value: unknown): number {
   return Date.now();
 }
 
-function mergeItems(localItems: WatchItem[], serverItems: WatchItem[]): WatchItem[] {
-  const merged = [...localItems, ...serverItems].filter(
-    (item, index, arr) => arr.findIndex((candidate) => candidate.code === item.code) === index,
-  );
-
-  return merged.sort((a, b) => b.addedAt - a.addedAt);
-}
-
-function mergeGroups(localGroups: WatchGroup[], serverGroups: WatchGroup[]): WatchGroup[] {
-  const merged = new Map<string, WatchGroup>();
-
-  for (const group of serverGroups) {
-    merged.set(group.id, { ...group, items: [...group.items] });
-  }
-
-  for (const group of localGroups) {
-    const existing = merged.get(group.id);
-    if (!existing) {
-      merged.set(group.id, { ...group, items: [...group.items] });
-      continue;
-    }
-
-    merged.set(group.id, {
-      ...existing,
-      name: existing.name || group.name,
-      color: existing.color || group.color,
-      items: mergeItems(group.items, existing.items),
-    });
-  }
-
-  const groups = Array.from(merged.values());
-  const defaultIndex = groups.findIndex((group) => group.id === 'default');
-  if (defaultIndex > 0) {
-    const [defaultWatchGroup] = groups.splice(defaultIndex, 1);
-    groups.unshift(defaultWatchGroup);
-  }
-
-  return groups.length > 0 ? groups : [defaultGroup()];
-}
-
 function readWatchlistRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -184,38 +143,36 @@ function readWatchlistRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function readCreatedGroupId(payload: unknown, fallbackId: string): string {
+  const record = readWatchlistRecord(payload);
+  const result = readWatchlistRecord(record.result);
+  const data = readWatchlistRecord(result.data);
+  const candidate = String(record.group_id ?? data.group_id ?? data.id ?? fallbackId).trim();
+  return candidate || fallbackId;
+}
+
 export const useWatchlistStore = create<WatchlistState>((set, get) => ({
   groups: loadLocal(),
   synced: false,
   syncing: false,
+  syncError: null,
 
   has: (code) => get().groups.some((g) => g.items.some((i) => i.code === code)),
 
   add: async (code, name, groupId) => {
     const c = code.trim();
     if (!c) return;
-    const prev = get().groups;
-    const targetId = groupId || prev[0]?.id || 'default';
-    const next = prev.map((g) => {
-      if (g.id !== targetId) return g;
-      if (g.items.some((i) => i.code === c)) return g;
-      return {
-        ...g,
-        items: [{ code: c, name: name?.trim() || '', addedAt: Date.now() }, ...g.items],
-      };
-    });
-    if (JSON.stringify(next) === JSON.stringify(prev)) return;
-    saveLocal(next);
-    set({ groups: next });
-
+    const groups = get().groups;
+    const targetId = groupId || groups[0]?.id || 'default';
+    if (groups.some((group) => group.id === targetId && group.items.some((item) => item.code === c))) {
+      return;
+    }
     const synced = await fetchServer('/stocks/add', {
       method: 'POST',
-      body: JSON.stringify({ group: targetId, groupName: prev.find((g) => g.id === targetId)?.name, codes: [c] }),
+      body: JSON.stringify({ group: targetId, groupName: groups.find((g) => g.id === targetId)?.name, codes: [c] }),
     });
-    if (synced == null) {
-      saveLocal(prev);
-      set({ groups: prev });
-    }
+    if (synced == null) return;
+    await get().syncFromServer(true);
   },
 
   remove: async (code, groupId) => {
@@ -229,16 +186,6 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       .map((g) => g.id);
     if (targetGroupIds.length === 0) return;
 
-    const next = prev.map((g) => {
-      if (!targetGroupIds.includes(g.id)) return g;
-      return {
-        ...g,
-        items: g.items.filter((i) => i.code !== c),
-      };
-    });
-    saveLocal(next);
-    set({ groups: next });
-
     const results = await Promise.all(
       targetGroupIds.map((id) =>
         fetchServer(`/stocks/remove?group=${encodeURIComponent(id)}&code=${encodeURIComponent(c)}`, {
@@ -247,10 +194,8 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       ),
     );
 
-    if (results.some((result) => result == null)) {
-      saveLocal(prev);
-      set({ groups: prev });
-    }
+    if (results.some((result) => result == null)) return;
+    await get().syncFromServer(true);
   },
 
   toggle: async (code, name) => {
@@ -259,53 +204,20 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
   },
 
   createGroup: async (name, color) => {
-    const prev = get().groups;
     const id = `group_${Date.now()}`;
-    const newGroup: WatchGroup = {
-      id,
-      name: name.trim(),
-      color: color || '#6366f1',
-      items: [],
-    };
-    const next = [...prev, newGroup];
-    saveLocal(next);
-    set({ groups: next });
     const created = await fetchServer('/groups/create', {
       method: 'POST',
       body: JSON.stringify({ id, name: name.trim(), color }),
     });
-    if (created == null) {
-      saveLocal(prev);
-      set({ groups: prev });
-      return null;
-    }
-    return id;
+    if (created == null) return null;
+    const createdId = readCreatedGroupId(created, id);
+    await get().syncFromServer(true);
+    return createdId;
   },
 
   deleteGroup: async (groupId) => {
     const prev = get().groups;
     const group = prev.find((g) => g.id === groupId);
-    const fallbackDefault = defaultGroup();
-    const defaultIndex = prev.findIndex((g) => g.id === 'default');
-    const next = prev
-      .filter((g) => g.id !== groupId)
-      .map((g, index) => {
-        const isDefaultGroup = g.id === 'default' || (defaultIndex === -1 && index === 0);
-        if (!group || group.items.length === 0 || !isDefaultGroup) return g;
-
-        const mergedItems = [...group.items, ...g.items].filter(
-          (item, itemIndex, arr) => arr.findIndex((candidate) => candidate.code === item.code) === itemIndex,
-        );
-
-        return { ...g, items: mergedItems };
-      });
-
-    if (next.length === 0) {
-      next.push(group && group.items.length > 0 ? { ...fallbackDefault, items: group.items } : fallbackDefault);
-    }
-
-    saveLocal(next);
-    set({ groups: next });
     if (group) {
       const deleted = await fetchServer(
         `/groups/delete?id=${encodeURIComponent(group.id)}&name=${encodeURIComponent(group.name)}`,
@@ -313,10 +225,8 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
           method: 'DELETE',
         },
       );
-      if (deleted == null) {
-        saveLocal(prev);
-        set({ groups: prev });
-      }
+      if (deleted == null) return;
+      await get().syncFromServer(true);
     }
   },
 
@@ -326,34 +236,28 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     set({ groups: next });
   },
 
-  syncFromServer: async () => {
+  syncFromServer: async (force = false) => {
     if (_syncPromise) {
       await _syncPromise;
       return;
     }
 
     const current = get();
-    if (current.syncing || current.synced) {
+    if (current.syncing || (current.synced && !force)) {
       return;
     }
 
-    set({ syncing: true });
+    set({ syncing: true, syncError: null });
     _syncPromise = (async () => {
       try {
         const reachable = await ensureBffAvailability();
         if (!reachable) {
-          set({ syncing: false });
-          return;
+          throw new Error('自选股服务暂不可用');
         }
 
-        const localGroups = get().groups;
         const serverGroups = await fetchServer('/groups');
         if (!hasLoggedInHint()) {
-          set({ synced: true, syncing: false });
-          return;
-        }
-        if (serverGroups == null) {
-          set({ syncing: false });
+          set({ synced: true, syncing: false, syncError: null });
           return;
         }
 
@@ -376,21 +280,17 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
                 : [],
             };
           });
-          const mergedGroups = mergeGroups(localGroups, normalized);
-          saveLocal(mergedGroups);
-          set({ groups: mergedGroups, synced: true, syncing: false });
-
-          const needsBackfill = JSON.stringify(mergedGroups) !== JSON.stringify(normalized);
-          if (needsBackfill) {
-            await get().pushToServer();
-          }
+          saveLocal(normalized);
+          set({ groups: normalized, synced: true, syncing: false, syncError: null });
         } else {
-          // Server has no data — push local to server
-          set({ synced: true, syncing: false });
-          await get().pushToServer();
+          const next = [defaultGroup()];
+          saveLocal(next);
+          set({ groups: next, synced: true, syncing: false, syncError: null });
         }
-      } catch {
-        set({ syncing: false });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : '自选股同步失败';
+        set({ syncing: false, syncError: detail });
+        throw error;
       } finally {
         _syncPromise = null;
       }
@@ -400,18 +300,6 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
   },
 
   pushToServer: async () => {
-    const groups = get().groups;
-    for (const group of groups) {
-      if (group.items.length > 0) {
-        await fetchServer('/stocks/add', {
-          method: 'POST',
-          body: JSON.stringify({
-            group: group.id,
-            groupName: group.name,
-            codes: group.items.map((i) => i.code),
-          }),
-        });
-      }
-    }
+    await get().syncFromServer(true);
   },
 }));

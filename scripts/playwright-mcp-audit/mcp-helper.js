@@ -658,10 +658,14 @@ async (page, config) => {
     }
 
     if (surface.surfaceId === 'data' || surface.surfaceId === 'data-center-tabs') {
+      const optionInput = page.locator('#data-option-underlying').first();
+      if (await optionInput.isVisible().catch(() => false)) {
+        await optionInput.fill('510050').catch(() => {});
+      }
       await clickIfVisible(page.getByRole('button', { name: '查询期权链工作台', exact: true }), 900);
       await clickIfVisible(page.getByRole('tab', { name: '交易日历' }));
       await clickIfVisible(page.getByRole('button', { name: '加载交易日历工作台', exact: true }), 900);
-      result.workflow.push({ name: '数据中心查询', status: 'passed', note: '已触发期权链和交易日历查询' });
+      result.workflow.push({ name: '数据中心查询', status: 'passed', note: '已用真实输入触发期权链和交易日历查询' });
       return;
     }
 

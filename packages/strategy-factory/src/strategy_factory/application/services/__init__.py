@@ -9,12 +9,14 @@ Each service handles a single stage of the factory pipeline:
 
 from .candidate_pipeline import CandidatePipeline
 from .alpha_research_service import AlphaResearchService
+from .lifecycle_coordinator import StrategyLifecycleCoordinator
 from .readiness_service import ReadinessService
 from .task_orchestrator import TaskOrchestrator
 
 __all__ = [
     "AlphaResearchService",
     "CandidatePipeline",
+    "StrategyLifecycleCoordinator",
     "ReadinessService",
     "TaskOrchestrator",
 ]

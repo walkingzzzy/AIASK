@@ -130,11 +130,14 @@
             strategy: dict,
             snapshot: dict,
             gate: dict,
+            *,
+            trace_context: Optional[dict[str, Any]] = None,
         ) -> dict:
             review_account_id = None
             runtime_control = None
             promotion_review = None
             incubation_gateway = self._get_incubation_gateway()
+            trace_payload = dict(trace_context or {})
 
             try:
                 binding = await incubation_gateway.ensure_account(
@@ -170,12 +173,15 @@
                     action_summary={
                         "submission_lane": "live_ready_review",
                         "direct_trade_candidate": bool(gate.get("live_candidate_ready")),
+                        "factory_run_id": trace_payload.get("factory_run_id"),
+                        "correlation_id": trace_payload.get("correlation_id"),
                     },
                     metadata={
                         "submission_lane": "live_ready_review",
                         "snapshot_date": snapshot.get("date"),
                         "admission_stage": gate.get("admission_stage"),
                         "incubation_pass_mode": gate.get("incubation_pass_mode"),
+                        **trace_payload,
                     },
                     apply_runtime_changes=True,
                 )
@@ -188,6 +194,7 @@
                     strategy,
                     source="strategy_factory_live_ready_review",
                     auto_apply=True,
+                    metadata=trace_payload,
                 )
             except Exception as exc:
                 logger.warning("StrategyFactory: trigger live-ready promotion review failed for %s: %s", strategy.get("id"), exc)
@@ -299,129 +306,57 @@
             submission_lane: str,
             submission_action: Optional[dict[str, Any]] = None,
         ) -> dict:
-            """质检通过后：创建孵化账户、运行孵化 pipeline、构建向量画像、记录实验。"""
-            incubation_binding = None
-            incubation_pipeline = None
-            vector_profile = None
-            vector_audit: dict = {}
-            live_review_action: dict = {}
-            paper_action: dict = {}
+            """质检通过后的生命周期动作统一交给 coordinator 编排。"""
+            from ..services.lifecycle_coordinator import LifecycleTransitionRequest
+
             incubation_budget = dict(candidate.get("incubation_budget") or {})
             incubation_budget_track = str(incubation_budget.get("track") or "formal_incubation").strip().lower()
-            final_status = "rejected"
-            action_audit = dict(submission_action or {})
+            lifecycle_result = await self._lifecycle_coordinator.execute(
+                db,
+                LifecycleTransitionRequest(
+                    strategy_id=strategy_id,
+                    name=name,
+                    candidate=candidate,
+                    data=data,
+                    gate=gate,
+                    quality_report=quality_report,
+                    snapshot=snapshot,
+                    submission_lane=submission_lane,
+                    submission_action=dict(submission_action or {}),
+                    backtest_metrics=backtest_metrics,
+                    validation_report=validation_report,
+                    risk_report=risk_report,
+                    factory_run_id=candidate.get("factory_run_id") or snapshot.get("factory_run_id"),
+                    trace_id=candidate.get("trace_id"),
+                    correlation_id=(
+                        candidate.get("correlation_id")
+                        or candidate.get("trace_id")
+                        or snapshot.get("correlation_id")
+                    ),
+                    parent_task_run_id=candidate.get("task_run_id") or dict(candidate.get("params") or {}).get("task_run_id"),
+                    source_action="strategy_factory_submit",
+                    snapshot_date=snapshot.get("date"),
+                    quality_gate_summary=dict(quality_report.get("summary") or {}),
+                ),
+            )
+            lifecycle_payload = lifecycle_result.to_dict()
+            incubation_binding = lifecycle_payload.get("incubation_binding")
+            incubation_pipeline = lifecycle_payload.get("incubation_pipeline")
+            vector_profile = lifecycle_payload.get("vector_profile")
+            vector_audit = dict(lifecycle_payload.get("vector_audit") or {})
+            live_review_action = dict(lifecycle_payload.get("live_review_action") or {})
+            paper_action = dict(lifecycle_payload.get("paper_action") or {})
+            action_audit = dict(lifecycle_payload.get("action_audit") or {})
+            final_status = str(lifecycle_payload.get("final_status") or "rejected")
+
+            self._apply_submission_action_audit(
+                quality_report,
+                final_status=final_status,
+                submission_lane=submission_lane,
+                submission_audit=action_audit,
+            )
 
             if gate.get("passed"):
-                enriched_data = {**data, "id": strategy_id, "name": name}
-                if submission_lane == "formal_incubation":
-                    final_status = "incubating"
-                    incubation_gateway = self._get_incubation_gateway()
-                    await _update_strategy_status(
-                        db,
-                        strategy_id,
-                        "incubating",
-                        actor_id="strategy_factory",
-                        reason="quality_gate_provisional_passed" if gate.get("provisional_pass") else "quality_gate_passed",
-                        metadata={
-                            "quality_gate": gate,
-                            "validation_grade": quality_report["summary"].get("validation_grade"),
-                            "incubation_budget": incubation_budget,
-                        },
-                    )
-                    try:
-                        incubation_binding = await incubation_gateway.ensure_account(
-                            db,
-                            enriched_data,
-                            source_run_id=snapshot.get("date"),
-                        )
-                    except Exception as exc:
-                        logger.warning("StrategyFactory: ensure incubation account failed for %s: %s", strategy_id, exc)
-                    try:
-                        incubation_pipeline = await incubation_gateway.run_pipeline(
-                            db,
-                            {**enriched_data, "status": "incubating"},
-                            source="strategy_factory_submit",
-                            auto_apply_review=False,
-                        )
-                    except Exception as exc:
-                        logger.warning("StrategyFactory: initial incubation pipeline failed for %s: %s", strategy_id, exc)
-                    try:
-                        vector_profile = await build_strategy_vector_profile(db, enriched_data)
-                        vector_audit = dict((vector_profile or {}).get("metadata") or {}).get("audit") or {}
-                    except Exception as exc:
-                        logger.warning("StrategyFactory: build vector profile failed for %s: %s", strategy_id, exc)
-                    self._apply_submission_action_audit(
-                        quality_report,
-                        final_status=final_status,
-                        submission_lane=submission_lane,
-                        submission_audit={
-                            **action_audit,
-                            "paper_account_id": ((incubation_binding or {}).get("account") or {}).get("id"),
-                            "submission_action_completed": True,
-                        },
-                    )
-                    action_audit = {**action_audit, "submission_action_completed": True}
-                else:
-                    final_status = "submitted"
-                    if submission_lane == "live_ready_review":
-                        queue_reason = "quality_gate_live_ready"
-                    elif submission_lane == "observe_incubation":
-                        queue_reason = "paper_observation_queue"
-                    else:
-                        queue_reason = "incubation_budget_deferred_queue"
-                    await _update_strategy_status(
-                        db,
-                        strategy_id,
-                        "submitted",
-                        actor_id="strategy_factory",
-                        reason=queue_reason,
-                        metadata={
-                            "quality_gate": gate,
-                            "validation_grade": quality_report["summary"].get("validation_grade"),
-                            "incubation_budget": incubation_budget,
-                            "submission_lane": submission_lane,
-                            "live_candidate_ready": bool(gate.get("live_candidate_ready")),
-                        },
-                    )
-                    if submission_lane == "live_ready_review":
-                        live_review_action = await self._enqueue_live_ready_review(
-                            db,
-                            {**enriched_data, "status": final_status},
-                            snapshot,
-                            gate,
-                        )
-                        final_status = str(live_review_action.get("final_status") or final_status)
-                    elif submission_lane == "observe_incubation":
-                        paper_action = await self._enqueue_paper_observation(
-                            db,
-                            {**enriched_data, "status": final_status},
-                            snapshot,
-                        )
-                    self._apply_submission_action_audit(
-                        quality_report,
-                        final_status=final_status,
-                        submission_lane=submission_lane,
-                        submission_audit={
-                            **action_audit,
-                            **paper_action,
-                            **live_review_action,
-                            "submission_action_completed": bool(
-                                live_review_action
-                                or paper_action
-                                or action_audit.get("submission_action_completed")
-                            ),
-                        },
-                    )
-                    action_audit = {
-                        **action_audit,
-                        **paper_action,
-                        **live_review_action,
-                        "submission_action_completed": bool(
-                            live_review_action
-                            or paper_action
-                            or action_audit.get("submission_action_completed")
-                        ),
-                    }
                 await self._record_experiment(
                     db,
                     candidate,
@@ -437,22 +372,6 @@
                     incubation_pipeline,
                 )
             else:
-                final_status = str(action_audit.get("final_status") or "rejected")
-                transition_reason = str(action_audit.get("submission_action_trigger") or "quality_gate_failed")
-                await _update_strategy_status(
-                    db,
-                    strategy_id,
-                    final_status,
-                    actor_id="strategy_factory",
-                    reason=transition_reason,
-                    metadata={"quality_gate": gate, "validation_grade": quality_report["summary"].get("validation_grade")},
-                )
-                self._apply_submission_action_audit(
-                    quality_report,
-                    final_status=final_status,
-                    submission_lane=submission_lane,
-                    submission_audit=dict(action_audit or {}),
-                )
                 await self._record_experiment(
                     db,
                     candidate,
@@ -485,6 +404,13 @@
                 "vector_fallback_used": (vector_audit or {}).get("fallback_used"),
                 "vector_fallback_reason": (vector_audit or {}).get("fallback_reason"),
                 "vector_latency_ms": (vector_audit or {}).get("latency_ms"),
+                "execution_audit_snapshot_id": lifecycle_payload.get("execution_audit_snapshot_id"),
+                "correlation_id": lifecycle_payload.get("correlation_id"),
+                "trace_id": lifecycle_payload.get("trace_id"),
+                "factory_run_id": lifecycle_payload.get("factory_run_id"),
+                "parent_task_run_id": lifecycle_payload.get("parent_task_run_id"),
+                "lifecycle_task_run_id": ((lifecycle_payload.get("lifecycle_task_run") or {}).get("id")),
+                "lifecycle_transition_steps": lifecycle_payload.get("steps") or [],
                 **paper_action,
                 **live_review_action,
                 **action_audit,

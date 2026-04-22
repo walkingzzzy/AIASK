@@ -73,6 +73,7 @@ class _CompatRiskGateway:
 from ._submitter_helpers import _StrategySubmitterHelpersMixin
 from ._submitter_policy import _StrategySubmitterPolicyMixin
 from ._submitter_actions import _StrategySubmitterActionsMixin
+from .services.lifecycle_coordinator import StrategyLifecycleCoordinator
 from .services.submission_coordinator import SubmissionCoordinator
 
 
@@ -95,4 +96,5 @@ class StrategySubmitter(_StrategySubmitterHelpersMixin, _StrategySubmitterPolicy
             self._risk_gateway = risk_gateway
             self._incubation_gateway = incubation_gateway
             self._submission_coordinator = SubmissionCoordinator(self)
+            self._lifecycle_coordinator = StrategyLifecycleCoordinator(self)
             self._update_strategy_status = _update_strategy_status

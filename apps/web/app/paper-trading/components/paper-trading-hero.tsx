@@ -4,7 +4,6 @@ import {
   paperTradingChipButtonCls,
   paperTradingNoteCardCls,
   paperTradingPrimaryButtonCls,
-  paperTradingSecondaryButtonCls,
   paperTradingSidePanelCls,
 } from '@/app/paper-trading/components/paper-trading-panel-styles';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
@@ -34,7 +33,10 @@ type PaperTradingHeroProps = {
   riskHints: string[];
   tradeNotice: string | null;
   error: string | null;
-  onLoadExampleOrder: (code?: string) => void;
+  linkedStrategyId?: string | null;
+  linkedStrategyName?: string | null;
+  linkedStrategyStatus?: string | null;
+  personalStrategyMode?: boolean;
   onRefreshPrices: () => void;
   refreshPricesPending: boolean;
 };
@@ -64,7 +66,10 @@ export default function PaperTradingHero({
   riskHints,
   tradeNotice,
   error,
-  onLoadExampleOrder,
+  linkedStrategyId,
+  linkedStrategyName,
+  linkedStrategyStatus,
+  personalStrategyMode = false,
   onRefreshPrices,
   refreshPricesPending,
 }: PaperTradingHeroProps) {
@@ -85,21 +90,22 @@ export default function PaperTradingHero({
               模拟交易工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这里把首笔交易引导、下单预览、账户状态和绩效观察收成一条连续的交易链路。先确定委托参数，再顺着撮合、持仓和净值去看交易结果，比在多个面板之间跳转更容易形成稳定节奏。
+              这里把委托输入、账户状态和绩效观察收成一条连续交易链路。只有真实下单、真实撮合和真实账户变化才会驱动页面更新，不再提供示例委托来伪造完成态。
             </p>
+            {linkedStrategyId || linkedStrategyName ? (
+              <div className="mt-4 rounded-[24px] border border-white/45 bg-white/28 px-4 py-3 text-sm text-text-secondary shadow-[inset_0_1px_0_rgba(255,255,255,0.58)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前模拟策略</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {linkedStrategyName || linkedStrategyId}
+                </div>
+                <div className="mt-1 text-xs leading-6 text-text-secondary">
+                  {personalStrategyMode ? '这是你的个人模拟盘测试账户，不是工厂孵化账户。' : '当前账户已绑定策略上下文。'}
+                  {linkedStrategyStatus ? ` 当前阶段：${linkedStrategyStatus}。` : ''}
+                </div>
+              </div>
+            ) : null}
             <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={() => onLoadExampleOrder('600519')} className={paperTradingPrimaryButtonCls}>
-                载入茅台示例
-              </button>
-              <button type="button" onClick={() => onLoadExampleOrder('000001')} className={paperTradingSecondaryButtonCls}>
-                载入平安银行示例
-              </button>
-              <button
-                type="button"
-                onClick={onRefreshPrices}
-                disabled={refreshPricesPending}
-                className={paperTradingSecondaryButtonCls}
-              >
+              <button type="button" onClick={onRefreshPrices} disabled={refreshPricesPending} className={paperTradingPrimaryButtonCls}>
                 {refreshPricesPending ? '刷新中...' : '刷新价格'}
               </button>
             </div>
@@ -224,15 +230,9 @@ export default function PaperTradingHero({
               <div className="eyebrow">Bootstrap Flow</div>
               <h2 className="mt-2 mb-0 text-xl font-semibold text-text-primary">账户尚未开始交易</h2>
               <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
-                当前还没有持仓、挂单、成交和净值轨迹。最顺手的进入方式不是先看报表，而是直接载入一笔示例委托，完成首笔交易后再回来观察账户变化。
+                当前还没有持仓、挂单、成交和净值轨迹。请先输入真实标的和委托参数，再提交首笔模拟交易；只有成交后的真实账户变化才会驱动后续报表。
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
-                <button type="button" onClick={() => onLoadExampleOrder('600519')} className={paperTradingSecondaryButtonCls}>
-                  载入贵州茅台示例
-                </button>
-                <button type="button" onClick={() => onLoadExampleOrder('000001')} className={paperTradingSecondaryButtonCls}>
-                  载入平安银行示例
-                </button>
                 <button type="button" onClick={onRefreshPrices} className={paperTradingChipButtonCls}>
                   先刷新价格
                 </button>
@@ -241,7 +241,7 @@ export default function PaperTradingHero({
             <div className="panel-soft rounded-[24px] p-4">
               <div className="text-sm font-medium text-text-primary">推荐流程</div>
               <div className="mt-3 space-y-3">
-                <div className={paperTradingNoteCardCls}>1. 先载入示例代码，优先用 100 股市价单完成首笔交易。</div>
+                <div className={paperTradingNoteCardCls}>1. 先输入真实股票代码、方向、数量和订单类型。</div>
                 <div className={paperTradingNoteCardCls}>2. 如需价格参考，可先手动刷新一次行情再提交。</div>
                 <div className={paperTradingNoteCardCls}>3. 成交后再回来看持仓、净值和绩效变化。</div>
               </div>

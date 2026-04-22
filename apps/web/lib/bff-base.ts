@@ -2,6 +2,7 @@ const FALLBACK_PROTOCOL = 'http:';
 const FALLBACK_HOST = 'localhost';
 const FALLBACK_PORT = '3001';
 const LOCAL_LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
+const SERVER_LOOPBACK_HOST = '127.0.0.1';
 
 type RuntimePublicConfig = {
   bffBaseUrl?: string;
@@ -30,6 +31,10 @@ function normalizeConfiguredUrl(raw: string) {
     const parsed = new URL(trimmed);
     if (typeof window !== 'undefined' && shouldRewriteLocalHostname(parsed.hostname, window.location.hostname)) {
       parsed.hostname = window.location.hostname;
+    } else if (typeof window === 'undefined' && LOCAL_LOOPBACK_HOSTS.has(parsed.hostname)) {
+      // Server-side route handlers should prefer a concrete loopback address so
+      // local BFF fetches do not depend on IPv6 localhost resolution.
+      parsed.hostname = SERVER_LOOPBACK_HOST;
     }
     return parsed.toString().replace(/\/$/, '');
   } catch {

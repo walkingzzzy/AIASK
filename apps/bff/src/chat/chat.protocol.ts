@@ -1,3 +1,5 @@
+import type { ResultAction, ResultFreshness, ResultLink } from '@aiask/shared-types';
+
 export type ChatMode = 'chat' | 'copilot' | 'assistant';
 
 export type ChatMessageInput = {
@@ -10,8 +12,16 @@ export type ChatPageContext = {
   title: string;
   summary: string;
   stockCode?: string;
+  objectType?: string;
+  objectId?: string;
+  resultType?: string;
   tags?: string[];
   suggestions?: string[];
+  recommendedActions?: ResultAction[];
+  recommendedLinks?: ResultLink[];
+  evidenceSummary?: string[];
+  riskNotes?: string[];
+  freshness?: ResultFreshness | null;
   raw?: Record<string, unknown>;
 };
 

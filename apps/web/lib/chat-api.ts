@@ -1,4 +1,4 @@
-import { authedFetch, authedStreamFetch } from './api';
+import { authedFetch, authedStreamFetch, buildApiError, rejectFallbackPayload } from './api';
 import type { CopilotActionMeta, CopilotPageContext } from './copilot-types';
 
 export type ChatEvent =
@@ -9,7 +9,28 @@ export type ChatEvent =
   | { type: 'error'; message: string }
   | { type: 'done' };
 
-export type LlmConfig = { apiKey: string; baseUrl: string; model: string };
+export type LlmConfig = {
+  baseUrl: string;
+  model: string;
+  hasStoredApiKey: boolean;
+  apiKeyMasked: string;
+};
+export type ProbeCompatibility = {
+  modelsEndpoint: { ok: boolean; error?: string; models: string[] };
+  chatCompletions: { ok: boolean; error?: string; probeModel?: string; contentPreview?: string };
+};
+export type SaveLlmConfigInput = {
+  apiKey?: string;
+  baseUrl: string;
+  model: string;
+};
+export type SaveLlmConfigResult = {
+  saved: boolean;
+  normalizedBaseUrl: string;
+  hasStoredApiKey?: boolean;
+  apiKeyMasked?: string;
+  compatibility?: ProbeCompatibility;
+};
 export type ModelPreset = { provider: string; baseUrl: string; models: string[] };
 export type StreamChatOptions = {
   mode?: 'chat' | 'copilot' | 'assistant';
@@ -28,13 +49,25 @@ export async function getLlmConfig(): Promise<LlmConfig | null> {
   }
 }
 
-export async function saveLlmConfig(config: LlmConfig): Promise<void> {
+export async function saveLlmConfig(config: SaveLlmConfigInput): Promise<SaveLlmConfigResult> {
   const r = await authedFetch('/chat/config', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(config),
   });
-  if (!r.ok) throw new Error('保存失败');
+  const payload = await r.json().catch(() => null);
+  if (!r.ok) {
+    throw buildApiError(payload, {
+      status: r.status,
+      path: '/chat/config',
+      fallbackMessage: '保存失败',
+    });
+  }
+  const fallbackReason = rejectFallbackPayload(payload);
+  if (fallbackReason) {
+    throw new Error(`AI 配置保存未完成: ${fallbackReason}`);
+  }
+  return (payload?.data ?? {}) as SaveLlmConfigResult;
 }
 
 export async function getModelPresets(): Promise<ModelPreset[]> {
@@ -48,15 +81,29 @@ export async function getModelPresets(): Promise<ModelPreset[]> {
   }
 }
 
-export async function probeModels(baseUrl: string, apiKey: string): Promise<{ success: boolean; models: string[]; error?: string }> {
+export async function probeModels(
+  baseUrl: string,
+  apiKey: string,
+  model?: string,
+): Promise<{ success: boolean; models: string[]; error?: string; normalizedBaseUrl?: string; compatibility?: ProbeCompatibility }> {
   try {
     const r = await authedFetch('/chat/probe-models', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() }),
+      body: JSON.stringify({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model?.trim() }),
     }, { redirectOnUnauthorized: false });
     const d = await r.json().catch(() => null);
-    return { success: d?.success ?? r.ok, models: d?.models ?? [], error: d?.error };
+    const fallbackReason = rejectFallbackPayload(d);
+    if (fallbackReason) {
+      return { success: false, models: [], error: fallbackReason, normalizedBaseUrl: d?.normalizedBaseUrl, compatibility: d?.compatibility };
+    }
+    return {
+      success: d?.success ?? r.ok,
+      models: d?.models ?? [],
+      error: d?.error,
+      normalizedBaseUrl: d?.normalizedBaseUrl,
+      compatibility: d?.compatibility,
+    };
   } catch (error) {
     return {
       success: false,

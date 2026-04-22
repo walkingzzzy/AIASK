@@ -4,13 +4,47 @@ import { CommonCacheService } from '../common/cache.service';
 import { DbService } from '../db/db.service';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { NotificationService } from '../notification/notification.service';
+import { ObservabilityService } from '../observability/observability.service';
 
-type HealthStatus = 'ok' | 'degraded' | 'unavailable';
+type HealthStatus = 'normal' | 'degraded' | 'untrusted';
+type HealthSignal = 'operational' | 'boolean';
+type ComponentSnapshot = Record<string, unknown> & {
+  status: HealthStatus;
+  signal: HealthSignal;
+  reasons: string[];
+};
+type HealthSnapshot = {
+  success: true;
+  service: 'aiask-bff';
+  status: HealthStatus;
+  startedAt: string;
+  probes: {
+    liveness: 'normal';
+    startup: 'complete' | 'starting';
+    readiness: 'ready' | 'degraded' | 'blocked';
+  };
+  db: ComponentSnapshot;
+  cache: ComponentSnapshot;
+  audit: ComponentSnapshot;
+  notifications: ComponentSnapshot;
+  mcp: ComponentSnapshot;
+  vector: ComponentSnapshot;
+  reasons: string[];
+  degradedReasons: string[];
+  timestamp: string;
+};
+type HealthCacheEntry = {
+  value: HealthSnapshot;
+  expiresAt: number;
+};
 
 @Injectable()
 export class HealthService implements OnModuleInit {
+  private static readonly HEALTH_CACHE_TTL_MS = 10_000;
   private startedAt = new Date().toISOString();
   private startupCompleted = false;
+  private healthCache: HealthCacheEntry | null = null;
+  private healthInFlight: Promise<HealthSnapshot> | null = null;
 
   constructor(
     private readonly db: DbService,
@@ -18,84 +52,94 @@ export class HealthService implements OnModuleInit {
     private readonly auditStore: AuditStore,
     private readonly mcpGatewayService: McpGatewayService,
     private readonly notificationService: NotificationService,
+    private readonly observability: ObservabilityService,
   ) {}
 
   onModuleInit(): void {
     this.startupCompleted = true;
   }
 
-  async getHealth() {
+  async getHealth(): Promise<HealthSnapshot> {
+    const cached = this.getCachedHealth();
+    if (cached) {
+      return cached;
+    }
+
+    if (this.healthInFlight) {
+      return this.healthInFlight;
+    }
+
+    this.healthInFlight = this.buildHealth().finally(() => {
+      this.healthInFlight = null;
+    });
+    return this.healthInFlight;
+  }
+
+  private async buildHealth(): Promise<HealthSnapshot> {
     const cache = this.cache.getStats();
     const mcp = await this.mcpGatewayService.checkAvailableTools();
     const audit = this.auditStore.getStatus();
     const notifications = this.notificationService.getDeliveryStatus();
-    const degradedReasons: string[] = [];
+    const db = this.buildDbSnapshot();
+    const cacheSnapshot = this.buildCacheSnapshot(cache);
+    const mcpSnapshot = this.buildMcpSnapshot(mcp);
+    const vector = await this.buildVectorSnapshot(mcpSnapshot);
+    const auditSnapshot = this.buildAuditSnapshot(audit);
+    const notificationSnapshot = this.buildNotificationSnapshot(notifications);
 
-    if (this.db.enabled && !this.db.healthy) {
-      degradedReasons.push('db_unhealthy');
-    }
-    if (!cache.redisReady) {
-      degradedReasons.push('cache_memory_fallback');
-    }
-    if (audit.degraded) {
-      degradedReasons.push(audit.degradedReason ?? 'audit_degraded');
-    }
-    if (!mcp.reachable) {
-      degradedReasons.push('mcp_unreachable');
-    } else if (mcp.degraded) {
-      degradedReasons.push(mcp.fallbackReason ?? 'mcp_fallback_active');
-    }
-    if (notifications.configured && notifications.failed > 0 && notifications.delivered <= 0) {
-      degradedReasons.push('notification_external_delivery_failed');
-    }
+    const reasons = this.uniqueReasons(
+      db.reasons,
+      cacheSnapshot.reasons,
+      auditSnapshot.reasons,
+      mcpSnapshot.reasons,
+      vector.reasons,
+      notificationSnapshot.reasons,
+    );
 
-    const status: HealthStatus = !mcp.reachable
-      ? 'unavailable'
-      : degradedReasons.length > 0
-        ? 'degraded'
-        : 'ok';
+    const status: HealthStatus =
+      db.status === 'untrusted' || mcpSnapshot.status === 'untrusted'
+        ? 'untrusted'
+        : reasons.length > 0
+          ? 'degraded'
+          : 'normal';
 
-    return {
-      success: status !== 'unavailable',
+    this.observability.setDependencyState('vector', vector.status);
+    this.observability.setDependencyState('audit', auditSnapshot.status);
+    this.observability.setDependencyState('notifications', notificationSnapshot.status);
+
+    return this.cacheHealth({
+      success: true,
       service: 'aiask-bff',
       status,
       startedAt: this.startedAt,
       probes: {
-        liveness: 'ok',
+        liveness: 'normal',
         startup: this.startupCompleted ? 'complete' : 'starting',
-        readiness: status === 'unavailable' ? 'blocked' : degradedReasons.length > 0 ? 'degraded' : 'ready',
+        readiness: status === 'untrusted' ? 'blocked' : reasons.length > 0 ? 'degraded' : 'ready',
       },
-      db: {
-        enabled: this.db.enabled,
-        healthy: this.db.healthy,
-        mode: this.db.enabled ? 'postgres' : 'memory',
-      },
-      cache: {
-        redisReady: cache.redisReady,
-        activeBackend: cache.redisReady ? 'redis' : 'memory',
-        hitRate: cache.hitRate,
-        errors: cache.errors,
-      },
-      audit,
-      notifications,
-      mcp,
-      degradedReasons,
+      db,
+      cache: cacheSnapshot,
+      audit: auditSnapshot,
+      notifications: notificationSnapshot,
+      mcp: mcpSnapshot,
+      vector,
+      reasons,
+      degradedReasons: reasons,
       timestamp: new Date().toISOString(),
-    };
+    });
   }
 
   async getDbHealth() {
-    const base = {
-      enabled: this.db.enabled,
-      healthy: this.db.healthy,
-    };
-
     if (!this.db.enabled) {
-      return { success: true, data: { ...base, mode: 'memory' } };
+      return {
+        ...this.buildDbSnapshot(),
+        reachable: false,
+        latencyMs: null,
+      };
     }
 
     let reachable = false;
-    let latencyMs = -1;
+    let latencyMs: number | null = null;
     try {
       const start = Date.now();
       await this.db.query('SELECT 1');
@@ -105,14 +149,224 @@ export class HealthService implements OnModuleInit {
       reachable = false;
     }
 
+    const base = this.buildDbSnapshot();
     return {
-      success: reachable,
-      data: {
-        ...base,
-        reachable,
-        latencyMs,
-        mode: 'postgres',
-      },
+      ...base,
+      status: reachable ? 'normal' : 'untrusted',
+      reasons: reachable ? [] : this.uniqueReasons(base.reasons, ['db_probe_failed']),
+      reachable,
+      latencyMs,
     };
+  }
+
+  private buildDbSnapshot(): ComponentSnapshot {
+    const db = typeof (this.db as { getHealthSnapshot?: () => Record<string, unknown> }).getHealthSnapshot === 'function'
+      ? this.db.getHealthSnapshot()
+      : {
+        enabled: this.db.enabled,
+        healthy: this.db.healthy,
+        lastError: null,
+        lastLatencyMs: null,
+        lastCheckedAt: null,
+        lastFailureStage: null,
+      };
+    const reasons = !db.enabled
+      ? ['database_disabled']
+      : !db.healthy
+        ? this.uniqueReasons(
+          typeof db.lastFailureStage === 'string' ? [db.lastFailureStage] : [],
+          ['db_unhealthy'],
+        )
+        : [];
+
+    return {
+      ...db,
+      mode: db.enabled ? 'postgres' : 'memory',
+      status: !db.enabled ? 'degraded' : db.healthy ? 'normal' : 'untrusted',
+      signal: 'operational',
+      reasons,
+    };
+  }
+
+  private buildCacheSnapshot(cache: ReturnType<CommonCacheService['getStats']>): ComponentSnapshot {
+    const usingFallback = !cache.configured || !cache.redisReady || cache.fallbackActive === true;
+    const reasons: string[] = [];
+    if (!cache.configured) {
+      reasons.push('redis_not_configured');
+    } else if (usingFallback) {
+      reasons.push('cache_memory_fallback', 'redis_unavailable');
+    }
+    if (typeof cache.lastFailureStage === 'string' && cache.lastFailureStage.trim()) {
+      reasons.push(cache.lastFailureStage);
+    }
+
+    return {
+      ...cache,
+      activeBackend: usingFallback ? 'memory' : 'redis',
+      status: usingFallback ? 'degraded' : 'normal',
+      signal: 'operational',
+      reasons: this.uniqueReasons(reasons),
+    };
+  }
+
+  private buildAuditSnapshot(audit: ReturnType<AuditStore['getStatus']>): ComponentSnapshot {
+    const reasons = audit.degraded
+      ? [audit.degradedReason ?? 'audit_degraded']
+      : [];
+    return {
+      ...audit,
+      status: audit.degraded ? 'degraded' : 'normal',
+      signal: 'operational',
+      reasons,
+    };
+  }
+
+  private buildNotificationSnapshot(
+    notifications: ReturnType<NotificationService['getDeliveryStatus']>,
+  ): ComponentSnapshot {
+    const degraded =
+      notifications.configured
+      && notifications.failed > 0
+      && notifications.delivered <= 0;
+    return {
+      ...notifications,
+      status: degraded ? 'degraded' : 'normal',
+      signal: 'operational',
+      reasons: degraded ? ['notification_external_delivery_failed'] : [],
+    };
+  }
+
+  private buildMcpSnapshot(
+    mcp: Awaited<ReturnType<McpGatewayService['checkAvailableTools']>>,
+  ): ComponentSnapshot {
+    const reasons: string[] = [];
+    if (!mcp.reachable) {
+      reasons.push('mcp_unreachable');
+    }
+    if (mcp.fallbackReason) {
+      reasons.push(mcp.fallbackReason);
+    }
+    if (mcp.matched === false) {
+      reasons.push('mcp_tool_count_mismatch');
+    }
+
+    return {
+      ...mcp,
+      status: !mcp.reachable ? 'untrusted' : mcp.degraded || mcp.matched === false ? 'degraded' : 'normal',
+      signal: 'operational',
+      reasons: this.uniqueReasons(reasons),
+    };
+  }
+
+  private async buildVectorSnapshot(mcp: ComponentSnapshot): Promise<ComponentSnapshot> {
+    if (mcp.status === 'untrusted') {
+      return {
+        status: 'untrusted',
+        signal: 'operational',
+        reasons: ['mcp_unreachable', 'vector_health_unavailable'],
+      };
+    }
+
+    let payload: Record<string, unknown> | null = null;
+    let lastError: string | null = null;
+
+    try {
+      const result = await this.mcpGatewayService.callTool(
+        'strategy_manager',
+        {
+          action: 'vector_health',
+          params: {
+            index_name: 'strategy_behavior',
+            limit_versions: 5,
+          },
+        },
+        {
+          timeoutMs: 8_000,
+        },
+      );
+      payload = this.unwrapManagerPayload(result);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    if (!payload) {
+      return {
+        status: 'untrusted',
+        signal: 'operational',
+        reasons: ['vector_health_probe_failed'],
+        lastError,
+      };
+    }
+
+    const reasons = this.uniqueReasons(
+      this.readReasonList(payload.fallback_reason),
+      this.readReasonList(payload.quality_flags),
+      !payload.active_index ? ['vector_active_index_missing'] : [],
+      !payload.latest_snapshot ? ['vector_latest_snapshot_missing'] : [],
+      Number(payload.collection_count ?? 0) <= 0 ? ['vector_collection_missing'] : [],
+      payload.pgvector_enabled === false ? ['pgvector_disabled'] : [],
+      this.hasDegradedVectorStatus(payload) ? ['vector_snapshot_degraded'] : [],
+    );
+
+    return {
+      ...payload,
+      status: reasons.length > 0 ? 'degraded' : 'normal',
+      signal: 'operational',
+      reasons,
+      lastError,
+    };
+  }
+
+  private hasDegradedVectorStatus(payload: Record<string, unknown>): boolean {
+    const values = [
+      (payload.latest_snapshot as Record<string, unknown> | null | undefined)?.status,
+      (payload.active_index as Record<string, unknown> | null | undefined)?.status,
+    ];
+    return values.some((value) => String(value ?? '').trim().toLowerCase() === 'degraded');
+  }
+
+  private unwrapManagerPayload(result: unknown): Record<string, unknown> | null {
+    if (!result || typeof result !== 'object') {
+      return null;
+    }
+    const node = result as Record<string, unknown>;
+    if (node.success === false) {
+      return null;
+    }
+    if (node.data && typeof node.data === 'object' && !Array.isArray(node.data)) {
+      return node.data as Record<string, unknown>;
+    }
+    return node;
+  }
+
+  private readReasonList(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+    }
+    const normalized = String(value ?? '').trim();
+    return normalized ? [normalized] : [];
+  }
+
+  private uniqueReasons(...lists: string[][]): string[] {
+    return lists
+      .flat()
+      .map((item) => String(item ?? '').trim())
+      .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index);
+  }
+
+  private cacheHealth(value: HealthSnapshot): HealthSnapshot {
+    this.healthCache = {
+      value,
+      expiresAt: Date.now() + HealthService.HEALTH_CACHE_TTL_MS,
+    };
+    return value;
+  }
+
+  private getCachedHealth(): HealthSnapshot | null {
+    if (!this.healthCache) return null;
+    if (Date.now() > this.healthCache.expiresAt) {
+      return null;
+    }
+    return this.healthCache.value;
   }
 }

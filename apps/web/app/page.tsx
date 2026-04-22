@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { LoadingState, UnavailableState } from '@/components/status-state';
 import { AskAiButton } from '@/components/ask-ai-button';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -13,6 +15,7 @@ import { extractObject, extractArray, fmtAmount } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { tradingInterval } from '@/lib/trading-hours';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useAuthStore } from '@/store/auth-store';
 import { useDashboardPrefs } from '@/hooks/use-dashboard-prefs';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -147,21 +150,24 @@ export default function HomePage() {
     parse: (r) => ensureRecord(r, '恐慌贪婪指数'),
     redirectOnUnauthorized: false,
   });
-  const healthQ = useApiQuery<unknown>('/health/mcp', { enabled: mounted, redirectOnUnauthorized: false });
+  const healthQ = useApiQuery<unknown>('/health', { enabled: mounted, redirectOnUnauthorized: false });
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', {
     enabled: canLoadPersonalized,
     parse: (r) => ensureRecord(r, '用户配置'),
     redirectOnUnauthorized: false,
+    critical: true,
   });
   const paperSumQ = useApiQuery<PaperTradingSummary>('/paper-trading/summary', {
     enabled: canLoadPersonalized,
     parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary,
     redirectOnUnauthorized: false,
+    critical: true,
   });
   const paperPosQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', {
     enabled: canLoadPersonalized,
     parse: normalizePaperPositionsPayload,
     redirectOnUnauthorized: false,
+    critical: true,
   });
   const newsQ = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', {
     enabled: mounted,
@@ -189,17 +195,20 @@ export default function HomePage() {
     enabled: canLoadPersonalized && dashboardVisibility.alerts,
     parse: normalizeAlertsPayload,
     redirectOnUnauthorized: false,
+    critical: true,
   });
   const riskQ = useApiQuery<unknown>('/risk/summary?lookbackDays=252', {
     enabled: canLoadPersonalized && dashboardVisibility.risk,
     parse: (r) => ensureRecord(r, '风险汇总(首页)'),
     redirectOnUnauthorized: false,
+    critical: true,
   });
 
   const strategySubsQ = useApiQuery<unknown>(user ? '/strategy-market/my-subscriptions' : null, {
     enabled: mounted && dashboardVisibility.strategy && Boolean(user),
     parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)'),
     redirectOnUnauthorized: false,
+    critical: true,
   });
 
   const watchlistItems = useWatchlistStore((s) => s.groups.flatMap((g) => g.items));
@@ -300,7 +309,6 @@ export default function HomePage() {
     return mapped.some((m) => m.value !== 0) ? mapped : [];
   }, [sectorFlowQ.data]);
   const health = healthQ.data as Record<string, unknown> | null;
-  const mcp = (health?.mcp ?? {}) as Record<string, unknown>;
   const activeAlerts = useMemo<AlertItem[]>(() => alertsQ.data?.items ?? [], [alertsQ.data]);
   const paperSummary = useMemo(() => (paperSumQ.data ?? {}) as PaperTradingSummary, [paperSumQ.data]);
   const paperAccount = useMemo(
@@ -325,6 +333,22 @@ export default function HomePage() {
   const watchlistCount = hydratedWatchlistItems.length;
   const primaryStockCode = hydratedRecentStocks[0]?.code || hydratedWatchlistItems[0]?.code || undefined;
   const displayDateStr = mounted ? dateStr : '';
+  const personalChainLoading = canLoadPersonalized && (
+    (paperSumQ.isPending && !paperSumQ.data)
+    || (paperPosQ.isPending && !paperPosQ.data)
+    || (alertsQ.isPending && !alertsQ.data)
+  );
+  const personalChainUnavailable = canLoadPersonalized && Boolean(
+    paperSumQ.error || paperPosQ.error || alertsQ.error,
+  );
+  const operationsChainLoading = canLoadPersonalized && (
+    (riskQ.isPending && !riskQ.data)
+    || (user && strategySubsQ.isPending && !strategySubsQ.data)
+    || (alertsQ.isPending && !alertsQ.data)
+  );
+  const operationsChainUnavailable = canLoadPersonalized && Boolean(
+    riskQ.error || (user && strategySubsQ.error) || alertsQ.error,
+  );
 
   /* ── Module statuses ──────────────────────────────────────────── */
   const moduleStatuses = useMemo(() => {
@@ -604,7 +628,7 @@ export default function HomePage() {
         footer:
           activeAlerts.length > 0 ? (
             <div className="mt-2 text-xs text-text-secondary">
-              示例：{String(activeAlerts[0]?.indicator ?? '-')} {String(activeAlerts[0]?.condition ?? '')}{' '}
+              最近规则：{String(activeAlerts[0]?.indicator ?? '-')} {String(activeAlerts[0]?.condition ?? '')}{' '}
               {String(activeAlerts[0]?.value ?? '')}
             </div>
           ) : null,
@@ -627,32 +651,6 @@ export default function HomePage() {
       activeAlerts,
     ],
   );
-
-  usePageContext({
-    pageKey: 'home',
-    title: '首页',
-    summary: `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlertCount} 条，自选股 ${watchlistCount} 只。`,
-    stockCode: primaryStockCode,
-    tags: [
-      `${validIndices.length} 个指数`,
-      `${activeAlertCount} 条告警`,
-      `${watchlistCount} 只自选`,
-      fgLabel,
-    ],
-    suggestions: [
-      '总结首页最值得关注的市场信号',
-      '把今天的风险、策略和告警整理成行动清单',
-      '结合我的自选股给出盘中巡检建议',
-    ],
-    raw: {
-      indices: validIndices.length,
-      marketAnomalies: marketAnomalies.length,
-      alerts: activeAlertCount,
-      watchlist: watchlistCount,
-      fearGreed: fgValue,
-      northFund: Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0),
-    },
-  });
 
   const pageActions = useMemo(
     () => [
@@ -705,6 +703,88 @@ export default function HomePage() {
   );
 
   usePageActions(pageActions);
+
+  const homeSummary = `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlertCount} 条，自选股 ${watchlistCount} 只。`;
+  const homeEvidence = useMemo(
+    () => [
+      { label: '指数数量', value: String(validIndices.length) },
+      { label: '异常信号', value: String(marketAnomalies.length) },
+      { label: '活跃告警', value: String(activeAlertCount) },
+      { label: '自选股', value: String(watchlistCount) },
+      { label: '情绪温度', value: fgLabel },
+    ],
+    [activeAlertCount, fgLabel, marketAnomalies.length, validIndices.length, watchlistCount],
+  );
+  const homeLinks = useMemo(
+    () => [
+      { id: 'home-open-market', label: '进入行情看板', href: '/market?from=home' },
+      { id: 'home-open-risk', label: '去风险中心', href: '/risk?from=home' },
+      { id: 'home-open-strategy', label: '去策略超市', href: '/strategy-market?from=home' },
+      { id: 'home-open-skills', label: '去技能中心', href: '/skills?from=home' },
+    ],
+    [],
+  );
+  const homeRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (marketAnomalies.length > 0) {
+      notes.push(`当前存在 ${marketAnomalies.length} 条市场异常，建议先核查风险与告警联动。`);
+    }
+    if (activeAlertCount === 0) {
+      notes.push('当前没有活跃告警，若依赖盘中提醒，建议先补齐告警规则。');
+    }
+    return notes;
+  }, [activeAlertCount, marketAnomalies.length]);
+  const homeResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: homeSummary,
+        pageActions,
+        preferredActionIds: ['home.refresh', 'home.open-risk', 'home.open-watchlist'],
+        recommendedLinks: homeLinks,
+        evidence: homeEvidence,
+        riskNotes: homeRiskNotes,
+        workbenchTask: defaultWorkbenchTask('home', '首页盘中巡检', '/?from=workbench', 'home-summary', {
+          stockCode: primaryStockCode || null,
+          alerts: activeAlertCount,
+          watchlistCount,
+        }),
+      }),
+    [activeAlertCount, homeEvidence, homeLinks, homeRiskNotes, homeSummary, pageActions, primaryStockCode, watchlistCount],
+  );
+
+  usePageContext({
+    pageKey: 'home',
+    title: '首页',
+    summary: homeSummary,
+    stockCode: primaryStockCode,
+    objectType: primaryStockCode ? 'stock' : 'workspace',
+    objectId: primaryStockCode || 'home',
+    resultType: 'home-summary',
+    tags: [
+      `${validIndices.length} 个指数`,
+      `${activeAlertCount} 条告警`,
+      `${watchlistCount} 只自选`,
+      fgLabel,
+    ],
+    suggestions: [
+      '总结首页最值得关注的市场信号',
+      '把今天的风险、策略和告警整理成行动清单',
+      '结合我的自选股给出盘中巡检建议',
+    ],
+    recommendedActions: homeResult.recommendedActions,
+    recommendedLinks: homeResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(homeResult.evidence),
+    riskNotes: homeResult.riskNotes ?? [],
+    freshness: homeResult.freshness ?? null,
+    raw: {
+      indices: validIndices.length,
+      marketAnomalies: marketAnomalies.length,
+      alerts: activeAlertCount,
+      watchlist: watchlistCount,
+      fearGreed: fgValue,
+      northFund: Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0),
+    },
+  });
 
   const summaryTabs = [
     { key: 'market', label: '市场摘要' },
@@ -784,54 +864,77 @@ export default function HomePage() {
           去模拟交易
         </Link>
       </div>
-      <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
-        欢迎回来，{nickname}。这一块只保留账户状态、自选数量和当前需要优先处理的提醒。
-      </p>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">总资产</div>
-          <div className="mt-3 text-lg font-semibold text-text-primary">
-            {fmtAmount(paperSummary.total_value ?? paperAccount.total_value)}
-          </div>
-          <div className="mt-1 text-xs text-text-secondary">当前资金规模</div>
+      {personalChainLoading ? (
+        <div className="mt-4">
+          <LoadingState text="正在加载账户、持仓与告警摘要..." />
         </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">总收益率</div>
-          <div
-            className={`mt-3 text-lg font-semibold ${Number(paperSummary.total_return_pct ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}
-          >
-            {Number(paperSummary.total_return_pct ?? 0).toFixed(2)}%
-          </div>
-          <div className="mt-1 text-xs text-text-secondary">账户表现快照</div>
+      ) : personalChainUnavailable ? (
+        <div className="mt-4">
+          <UnavailableState
+            text="账户摘要主链路暂不可用"
+            hint={
+              paperSumQ.error
+              ?? paperPosQ.error
+              ?? alertsQ.error
+              ?? '请稍后重试，或直接进入模拟交易与告警页排查。'
+            }
+            onRetry={() => {
+              void Promise.allSettled([paperSumQ.refetch(), paperPosQ.refetch(), alertsQ.refetch()]);
+            }}
+          />
         </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">持仓 / 自选</div>
-          <div className="mt-3 text-lg font-semibold text-text-primary">
-            {paperPositions.length} / {watchlistCount}
+      ) : (
+        <>
+          <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
+            欢迎回来，{nickname}。这一块只保留账户状态、自选数量和当前需要优先处理的提醒。
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">总资产</div>
+              <div className="mt-3 text-lg font-semibold text-text-primary">
+                {fmtAmount(paperSummary.total_value ?? paperAccount.total_value)}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">当前资金规模</div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">总收益率</div>
+              <div
+                className={`mt-3 text-lg font-semibold ${Number(paperSummary.total_return_pct ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}
+              >
+                {Number(paperSummary.total_return_pct ?? 0).toFixed(2)}%
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">账户表现快照</div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">持仓 / 自选</div>
+              <div className="mt-3 text-lg font-semibold text-text-primary">
+                {paperPositions.length} / {watchlistCount}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">同时看仓位和候选标的</div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">活跃告警</div>
+              <div className={`mt-3 text-lg font-semibold ${activeAlerts.length > 0 ? 'text-danger' : 'text-text-primary'}`}>
+                {activeAlerts.length}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {activeAlerts[0]?.code ? `优先关注 ${String(activeAlerts[0].code)}` : '当前没有活跃告警'}
+              </div>
+            </div>
           </div>
-          <div className="mt-1 text-xs text-text-secondary">同时看仓位和候选标的</div>
-        </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">活跃告警</div>
-          <div className={`mt-3 text-lg font-semibold ${activeAlerts.length > 0 ? 'text-danger' : 'text-text-primary'}`}>
-            {activeAlerts.length}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Link href="/watchlist" className={LINK_CHIP_CLS}>
+              管理自选股
+            </Link>
+            <Link href={primaryStockCode ? `/stock?code=${encodeURIComponent(primaryStockCode)}` : '/stock'} className={LINK_CHIP_CLS}>
+              打开重点个股
+            </Link>
+            <Link href="/alerts?status=active" className={LINK_CHIP_CLS}>
+              查看告警
+            </Link>
           </div>
-          <div className="mt-1 text-xs text-text-secondary">
-            {activeAlerts[0]?.code ? `优先关注 ${String(activeAlerts[0].code)}` : '当前没有活跃告警'}
-          </div>
-        </div>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link href="/watchlist" className={LINK_CHIP_CLS}>
-          管理自选股
-        </Link>
-        <Link href={primaryStockCode ? `/stock?code=${encodeURIComponent(primaryStockCode)}` : '/stock'} className={LINK_CHIP_CLS}>
-          打开重点个股
-        </Link>
-        <Link href="/alerts?status=active" className={LINK_CHIP_CLS}>
-          查看告警
-        </Link>
-      </div>
+        </>
+      )}
     </section>
   );
 
@@ -846,63 +949,87 @@ export default function HomePage() {
           去风险中心
         </Link>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">风险状态</div>
-          <div className={`mt-3 text-lg font-semibold ${riskStatusLabel === '正常' ? 'text-text-primary' : 'text-danger'}`}>
-            {riskStatusLabel}
+      {operationsChainLoading ? (
+        <div className="mt-4">
+          <LoadingState text="正在加载风险、策略与告警摘要..." />
+        </div>
+      ) : operationsChainUnavailable ? (
+        <div className="mt-4">
+          <UnavailableState
+            text="运行摘要主链路暂不可用"
+            hint={
+              riskQ.error
+              ?? strategySubsQ.error
+              ?? alertsQ.error
+              ?? '请稍后重试，或直接进入风险页和策略页排查。'
+            }
+            onRetry={() => {
+              void Promise.allSettled([riskQ.refetch(), strategySubsQ.refetch(), alertsQ.refetch()]);
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">风险状态</div>
+              <div className={`mt-3 text-lg font-semibold ${riskStatusLabel === '正常' ? 'text-text-primary' : 'text-danger'}`}>
+                {riskStatusLabel}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {riskEmpty ? '还没有可巡检持仓' : riskSource.mode ? `来源 ${String(riskSource.mode)}` : '查看 VaR 与压测'}
+              </div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">策略订阅</div>
+              <div className="mt-3 text-lg font-semibold text-text-primary">{user ? strategySubs.length : '-'}</div>
+              <div className="mt-1 text-xs text-text-secondary">
+                {user ? (strategySubs.length > 0 ? '已建立策略跟踪' : '还没有订阅策略') : '登录后显示'}
+              </div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">首页模块</div>
+              <div className={`mt-3 text-lg font-semibold ${moduleErrorCount > 0 ? 'text-danger' : 'text-text-primary'}`}>
+                {moduleErrorCount > 0 ? `${moduleErrorCount} 个异常` : '运行正常'}
+              </div>
+              <div className="mt-1 text-xs text-text-secondary">模块加载与接口状态摘要</div>
+            </div>
+            <div className="metric-tile rounded-[22px] p-4">
+              <div className="metric-label">市场异动</div>
+              <div className="mt-3 text-lg font-semibold text-text-primary">{marketAnomalies[0]?.title ?? '暂无重点'}</div>
+              <div className="mt-1 text-xs text-text-secondary">{marketAnomalies[0]?.value ?? '等待交易时段或刷新'}</div>
+            </div>
           </div>
-          <div className="mt-1 text-xs text-text-secondary">
-            {riskEmpty ? '还没有可巡检持仓' : riskSource.mode ? `来源 ${String(riskSource.mode)}` : '查看 VaR 与压测'}
+          <div className="mt-4 space-y-2">
+            <div className={NOTE_CARD_CLS}>
+              {strategySubs[0]?.name
+                ? `最近订阅策略：${String(strategySubs[0].name ?? strategySubs[0].strategy_name ?? '-')}`
+                : '策略、风险和系统状态的完整内容已收进下方标签页。'}
+            </div>
+            <div className={NOTE_CARD_CLS}>
+              {healthQ.error ? '健康接口当前存在异常，可在下方运行与风险页继续排查。' : '健康状态、模块配置和系统细节不再默认占据首页首屏。'}
+            </div>
           </div>
-        </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">策略订阅</div>
-          <div className="mt-3 text-lg font-semibold text-text-primary">{user ? strategySubs.length : '-'}</div>
-          <div className="mt-1 text-xs text-text-secondary">
-            {user ? (strategySubs.length > 0 ? '已建立策略跟踪' : '还没有订阅策略') : '登录后显示'}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Link href="/strategy-market?from=home" className={LINK_CHIP_CLS}>
+              去策略超市
+            </Link>
+            <Link href="/alerts?status=active&from=home" className={LINK_CHIP_CLS}>
+              去告警中心
+            </Link>
+            <Link href="/backtest?from=home" className={LINK_CHIP_CLS}>
+              去回测分析
+            </Link>
           </div>
-        </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">首页模块</div>
-          <div className={`mt-3 text-lg font-semibold ${moduleErrorCount > 0 ? 'text-danger' : 'text-text-primary'}`}>
-            {moduleErrorCount > 0 ? `${moduleErrorCount} 个异常` : '运行正常'}
-          </div>
-          <div className="mt-1 text-xs text-text-secondary">模块加载与接口状态摘要</div>
-        </div>
-        <div className="metric-tile rounded-[22px] p-4">
-          <div className="metric-label">市场异动</div>
-          <div className="mt-3 text-lg font-semibold text-text-primary">{marketAnomalies[0]?.title ?? '暂无重点'}</div>
-          <div className="mt-1 text-xs text-text-secondary">{marketAnomalies[0]?.value ?? '等待交易时段或刷新'}</div>
-        </div>
-      </div>
-      <div className="mt-4 space-y-2">
-        <div className={NOTE_CARD_CLS}>
-          {strategySubs[0]?.name
-            ? `最近订阅策略：${String(strategySubs[0].name ?? strategySubs[0].strategy_name ?? '-')}`
-            : '策略、风险和系统状态的完整内容已收进下方标签页。'}
-        </div>
-        <div className={NOTE_CARD_CLS}>
-          {healthQ.error ? '健康接口当前存在异常，可在下方运行与风险页继续排查。' : '健康状态、模块配置和系统细节不再默认占据首页首屏。'}
-        </div>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Link href="/strategy-market?from=home" className={LINK_CHIP_CLS}>
-          去策略超市
-        </Link>
-        <Link href="/alerts?status=active&from=home" className={LINK_CHIP_CLS}>
-          去告警中心
-        </Link>
-        <Link href="/backtest?from=home" className={LINK_CHIP_CLS}>
-          去回测分析
-        </Link>
-      </div>
+        </>
+      )}
     </section>
   );
 
   /* ── Render ────────────────────────────────────────────────────── */
   return (
     <PageContainer className="app-theme-market space-y-4">
+
       <section className="page-hero p-4 sm:p-5">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,23vw,360px)]">
           <div>
@@ -1132,6 +1259,8 @@ export default function HomePage() {
         </div>
       </section>
 
+      <ResultWorkbench pageKey="home" title="首页研究工作台" result={homeResult} />
+
       <section className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -1216,43 +1345,76 @@ export default function HomePage() {
           ) : null}
 
           {detailTab === 'personal' ? (
-            <div className="space-y-4">
-              <PersonalSecondaryCards
-                watchlistItems={hydratedWatchlistItems}
-                paperPositions={paperPositions}
-                marketNews={marketNews}
-                quoteMap={quoteMap}
+            personalChainLoading ? (
+              <LoadingState text="正在加载账户、自选与研究模块..." />
+            ) : personalChainUnavailable ? (
+              <UnavailableState
+                text="个性化首页模块暂不可用"
+                hint={
+                  paperSumQ.error
+                  ?? paperPosQ.error
+                  ?? alertsQ.error
+                  ?? '请稍后重试，或直接进入模拟交易、自选股与告警页面。'
+                }
+                onRetry={() => {
+                  void Promise.allSettled([paperSumQ.refetch(), paperPosQ.refetch(), alertsQ.refetch()]);
+                }}
               />
-              <WatchlistRecent
-                mounted={mounted}
-                watchlistItems={hydratedWatchlistItems}
-                recentStocks={hydratedRecentStocks}
-                quoteMap={quoteMap}
-                batchQIsFetching={batchQ.isFetching}
-              />
-            </div>
+            ) : (
+              <div className="space-y-4">
+                <PersonalSecondaryCards
+                  watchlistItems={hydratedWatchlistItems}
+                  paperPositions={paperPositions}
+                  marketNews={marketNews}
+                  quoteMap={quoteMap}
+                />
+                <WatchlistRecent
+                  mounted={mounted}
+                  watchlistItems={hydratedWatchlistItems}
+                  recentStocks={hydratedRecentStocks}
+                  quoteMap={quoteMap}
+                  batchQIsFetching={batchQ.isFetching}
+                />
+              </div>
+            )
           ) : null}
 
           {detailTab === 'operations' ? (
-            <div className="space-y-4">
-              <DashboardCards
-                mounted={mounted}
-                dashboardVisibility={dashboardVisibility}
-                dashboardCards={dashboardCards}
-                marketAnomalies={marketAnomalies}
-                anomalyDegraded={anomalyDegraded}
+            operationsChainLoading ? (
+              <LoadingState text="正在加载风险、策略与系统模块..." />
+            ) : operationsChainUnavailable ? (
+              <UnavailableState
+                text="运行类首页模块暂不可用"
+                hint={
+                  riskQ.error
+                  ?? strategySubsQ.error
+                  ?? alertsQ.error
+                  ?? '请稍后重试，或直接进入风险页与策略页。'
+                }
+                onRetry={() => {
+                  void Promise.allSettled([riskQ.refetch(), strategySubsQ.refetch(), alertsQ.refetch()]);
+                }}
               />
-              <SystemStatus
-                moduleStatuses={moduleStatuses}
-                showDashboardSettings={showDashboardSettings}
-                setShowDashboardSettings={setShowDashboardSettings}
-                dashboardVisibility={dashboardVisibility}
-                toggleDashboardModule={toggleDashboardModule}
-                healthQ={healthQ}
-                health={health}
-                mcp={mcp}
-              />
-            </div>
+            ) : (
+              <div className="space-y-4">
+                <DashboardCards
+                  mounted={mounted}
+                  dashboardVisibility={dashboardVisibility}
+                  dashboardCards={dashboardCards}
+                  marketAnomalies={marketAnomalies}
+                  anomalyDegraded={anomalyDegraded}
+                />
+                <SystemStatus
+                  moduleStatuses={moduleStatuses}
+                  showDashboardSettings={showDashboardSettings}
+                  setShowDashboardSettings={setShowDashboardSettings}
+                  dashboardVisibility={dashboardVisibility}
+                  toggleDashboardModule={toggleDashboardModule}
+                  healthQ={healthQ}
+                  health={health}
+                />
+              </div>
+            )
           ) : null}
         </div>
       </details>

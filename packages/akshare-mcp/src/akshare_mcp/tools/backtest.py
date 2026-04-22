@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from ..services import backtest_engine
 from ..services.data_sync import data_sync_service
 from ..storage import get_db
-from ..utils import ok, fail, normalize_code, parse_date_input
+from ..utils import ok, fail, normalize_code, parse_date_input, resolve_existing_security_code_async
 from .manager_protocol import fail_with_meta, ok_with_meta
 from .market import get_kline_data
 from .pit_middleware import build_pit_meta_simple
@@ -560,7 +560,26 @@ def register(mcp):
         try:
             db = get_db()
 
-            code = normalize_code(code)
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail_with_meta(
+                    error,
+                    tool_name="run_simple_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "invalid_params"},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": normalize_code(code or ""),
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
             # 日期格式处理：支持 YYYY 或 YYYY-MM-DD
             start_date, end_date = _normalize_dates(start_date, end_date)

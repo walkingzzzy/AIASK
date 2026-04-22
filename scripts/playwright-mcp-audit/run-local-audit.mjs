@@ -3,10 +3,11 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 
 function parseArgs(argv) {
+  const defaultUserUsername = `pwl${Date.now().toString(36).slice(-8)}`;
   const args = {
     outputDir: null,
     baseUrl: 'http://127.0.0.1:3000',
-    userUsername: process.env.PW_AUDIT_USER_USERNAME || 'pw_audit_user',
+    userUsername: process.env.PW_AUDIT_USER_USERNAME || defaultUserUsername,
     userPassword: process.env.PW_AUDIT_USER_PASSWORD || 'PwAudit12345',
     adminUsername: process.env.PW_AUDIT_ADMIN_USERNAME || 'admin',
     adminPassword: process.env.PW_AUDIT_ADMIN_PASSWORD || 'admin123',

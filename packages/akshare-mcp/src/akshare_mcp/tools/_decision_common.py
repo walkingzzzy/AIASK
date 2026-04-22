@@ -23,7 +23,7 @@ from ..services.decision_event_builder import build_event_context as _build_even
 from ..services.decision_rule_gate import build_rule_gates as _build_rule_gates
 from ..services.decision_fusion import fuse_unified_decision as _fuse_unified_decision
 from ..services.factor_calculator import factor_calculator
-from ..utils import ok, fail, resolve_security_code
+from ..utils import ok, fail, resolve_existing_security_code_async
 import asyncio
 import statistics
 import time
@@ -48,6 +48,24 @@ from .investment_analysis import get_investment_analysis as _raw_get_investment_
 _monkey_patch_lock = asyncio.Lock()
 
 
+async def _resolve_existing_stock_code_or_fail(
+    code: str | None = None,
+    *,
+    stock_code: str | None = None,
+    symbol: str | None = None,
+    ticker: str | None = None,
+) -> tuple[str | None, dict | None]:
+    normalized_code, _, error = await resolve_existing_security_code_async(
+        code=code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    if error:
+        return None, fail(error)
+    return normalized_code, None
+
+
 async def get_investment_analysis(
     code: str | None = None,
     stock_code: str | None = None,
@@ -55,9 +73,14 @@ async def get_investment_analysis(
     ticker: str | None = None,
 ) -> dict:
     """兼容导出：默认将 decision.get_db 透传到 investment_analysis 模块。"""
-    code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-    if not code:
-        return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+    code, error_response = await _resolve_existing_stock_code_or_fail(
+        code=code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    if error_response is not None:
+        return error_response
     async with _monkey_patch_lock:
         original_get_db = getattr(investment_analysis_mod, 'get_db', None)
         investment_analysis_mod.get_db = get_db

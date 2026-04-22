@@ -1,9 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useOnboarding } from '@/components/onboarding';
 import { Badge, PageContainer, StockCodeInput, DataTable } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray } from '@/lib/data-utils';
@@ -13,6 +17,10 @@ import DecisionCard from '@/components/decision-card';
 import UnifiedDecisionPanel from '@/components/unified-decision-panel';
 import UnifiedDecisionDiffLogList from '@/components/unified-decision-diff-log-list';
 import CopilotDock from '@/components/copilot-dock';
+import ResultWorkbench from '@/components/result-workbench';
+import { useCopilotStore } from '@/store/copilot-store';
+import { useWorkbenchStore } from '@/store/workbench-store';
+import type { ResultAction, ResultContract, ResultLink } from '@aiask/shared-types';
 
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
@@ -77,8 +85,13 @@ const SECONDARY_ACTIONS = [
 ] as const;
 
 export default function AssistantPage() {
+  const { completeStep } = useOnboarding();
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const mobileOnly = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
+  const setDockOpen = useCopilotStore((state) => state.setDockOpen);
+  const setPendingInject = useCopilotStore((state) => state.setPendingInject);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const { trigger, data: rawData, isPending, error, reset } = useApiMutation<unknown>();
   const {
@@ -106,11 +119,92 @@ export default function AssistantPage() {
   const unifiedDetails =
     detailsEnvelope != null ? (detailsEnvelope.details ?? detailsEnvelope.raw ?? detailsEnvelope) : null;
   const unifiedLegacyComparison = detailsEnvelope?.legacyComparison ?? resultEnvelope?.legacyComparison ?? null;
+  const resultContract = useMemo(
+    () => ((resultEnvelope?.result_contract ?? detailsEnvelope?.result_contract ?? null) as ResultContract | null),
+    [detailsEnvelope?.result_contract, resultEnvelope?.result_contract],
+  );
   const shouldShowUnifiedDetailsLoader =
     lastEndpoint === '/assistant/unified-decision' && Boolean(resultEnvelope?.detailsAvailable);
   const investmentStyleLabel =
     investmentStyle === 'aggressive' ? '激进' : investmentStyle === 'conservative' ? '保守' : '平衡';
   const currentCodeLabel = trimmedCode || '未输入';
+  const contextStockCode = trimmedCode || String(lastRequestBody?.code ?? '').trim();
+  const assistantResultType = lastEndpoint === '/assistant/unified-decision'
+    ? 'assistant-unified-decision'
+    : lastEndpoint
+      ? 'assistant-result'
+      : undefined;
+  const assistantResultSummary = resultContract?.summary ?? (result ? `${actionLabel || 'AI 中心'} 已生成结果。` : '');
+  const assistantEvidenceSummary = useMemo(
+    () => resultContract?.evidence?.map((item) => `${item.label}：${item.value}`) ?? [],
+    [resultContract?.evidence],
+  );
+  const assistantResultLinks = useMemo<ResultLink[]>(
+    () =>
+      contextStockCode
+        ? [
+            { id: 'assistant-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(contextStockCode)}` },
+            {
+              id: 'assistant-fundamental',
+              label: '基本面',
+              href: `/fundamental?code=${encodeURIComponent(contextStockCode)}`,
+            },
+            {
+              id: 'assistant-technical',
+              label: '技术分析',
+              href: `/technical?code=${encodeURIComponent(contextStockCode)}`,
+            },
+          ]
+        : [],
+    [contextStockCode],
+  );
+  const assistantResultActions = useMemo<ResultAction[]>(
+    () =>
+      assistantResultSummary
+        ? [
+            {
+              id: 'assistant.open-copilot-followup',
+              actionId: 'assistant.open-copilot-followup',
+              label: '打开 Copilot 继续追问',
+              description: '把当前结果注入 Copilot，继续追问下一步动作。',
+            },
+          ]
+        : [],
+    [assistantResultSummary],
+  );
+  const assistantVisualContent = useMemo(() => {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+    const record = result as Record<string, unknown>;
+    const metrics = [
+      record.action ? { label: '建议动作', value: String(record.action) } : null,
+      record.confidence != null ? { label: '置信度', value: String(record.confidence) } : null,
+      record.finalScore != null ? { label: '综合评分', value: String(record.finalScore) } : null,
+      Array.isArray(record.reasons) ? { label: '关键信号', value: String(record.reasons.length) } : null,
+      Array.isArray(record.risks) ? { label: '风险项', value: String(record.risks.length) } : null,
+    ].filter((item): item is NonNullable<typeof item> => item != null);
+    if (metrics.length === 0) return null;
+    return (
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {metrics.map((item) => (
+          <div key={item.label} className="metric-tile rounded-[22px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{item.label}</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">{item.value}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }, [result]);
+  const assistantCompareContent = useMemo(() => {
+    if (!unifiedLegacyComparison) return null;
+    return (
+      <div className="rounded-[22px] border border-white/55 bg-white/28 p-4">
+        <div className="text-sm font-semibold text-text-primary">统一决策与旧入口差异快照</div>
+        <pre className="mt-3 max-h-[280px] overflow-auto rounded-[18px] bg-surface-alt/70 p-3 text-xs">
+          {JSON.stringify(unifiedLegacyComparison, null, 2)}
+        </pre>
+      </div>
+    );
+  }, [unifiedLegacyComparison]);
   const resultStateLabel = isPending ? '生成中' : result ? '已生成' : '等待执行';
   const detailsStateLabel =
     shouldShowUnifiedDetailsLoader || isDetailsPending
@@ -300,8 +394,192 @@ export default function AssistantPage() {
     </div>
   );
 
+  useEffect(() => {
+    if (result) {
+      completeStep('ai-tools');
+    }
+  }, [completeStep, result]);
+
+  useEffect(() => {
+    if (!workbenchHydrated || !resultContract) return;
+    updateWorkbenchContext({
+      stockCode: contextStockCode || null,
+      sourcePage: 'assistant',
+      taskType: lastEndpoint || null,
+      resultType: assistantResultType ?? null,
+    });
+  }, [assistantResultType, contextStockCode, lastEndpoint, resultContract, updateWorkbenchContext, workbenchHydrated]);
+
+  usePageContext({
+    pageKey: 'assistant',
+    title: 'AI 中心',
+    summary: `当前代码 ${currentCodeLabel}，投资风格 ${investmentStyleLabel}，最近主任务 ${actionLabel || '尚未执行'}，结果状态 ${resultStateLabel}，详情状态 ${detailsStateLabel}。`,
+    stockCode: contextStockCode || undefined,
+    objectType: contextStockCode ? 'stock' : undefined,
+    objectId: contextStockCode || undefined,
+    resultType: assistantResultType,
+    tags: [
+      `${investmentStyleLabel}风格`,
+      resultStateLabel,
+      detailsStateLabel,
+      legacyMode ? '旧入口对比开启' : '旧入口对比关闭',
+    ],
+    suggestions: [
+      '先复述当前 AI 中心的配置与结果状态',
+      '如果已有统一决策结果，帮我总结关键信号并决定要不要展开详情',
+      '请选择一个低风险页面动作并直接执行',
+    ],
+    recommendedActions: assistantResultActions,
+    recommendedLinks: assistantResultLinks,
+    evidenceSummary: assistantEvidenceSummary,
+    riskNotes: resultContract?.riskNotes ?? [],
+    freshness: resultContract?.freshness ?? null,
+    raw: {
+      code: contextStockCode || null,
+      investmentStyle,
+      lastEndpoint: lastEndpoint || null,
+      actionLabel: actionLabel || null,
+      resultReady: Boolean(result),
+      detailsAvailable: Boolean(resultEnvelope?.detailsAvailable),
+      detailsLoaded: Boolean(unifiedDetails),
+      legacyMode,
+    },
+  });
+
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'assistant.open-copilot-followup',
+        label: '打开 Copilot 继续追问',
+        description: '把当前结果注入 Copilot，并生成下一步追问提示。',
+        keywords: ['copilot', '追问', '结果'],
+        scope: 'page' as const,
+        pageKey: 'assistant',
+        run: () => {
+          if (!assistantResultSummary) {
+            throw new Error('当前还没有可继续追问的结果');
+          }
+          setPendingInject({
+            prompt: `请基于当前${actionLabel || 'AI 中心'}结果，总结关键信号并给出下一步动作。`,
+            contextPatch: {
+              ...(contextStockCode ? { stockCode: contextStockCode } : {}),
+              summary: assistantResultSummary,
+              resultType: assistantResultType,
+              recommendedActions: assistantResultActions,
+              recommendedLinks: assistantResultLinks,
+              evidenceSummary: assistantEvidenceSummary,
+              riskNotes: resultContract?.riskNotes ?? [],
+              freshness: resultContract?.freshness ?? null,
+              raw: {
+                code: contextStockCode || null,
+                actionLabel: actionLabel || null,
+                lastEndpoint: lastEndpoint || null,
+              },
+            },
+          });
+          setDockOpen(true);
+          return { message: '已打开 Copilot 并注入当前结果' };
+        },
+      },
+      {
+        id: 'assistant.run-unified-decision',
+        label: '运行统一决策',
+        description: '使用当前股票代码和投资风格运行统一决策流水线',
+        keywords: ['统一决策', '运行'],
+        scope: 'page' as const,
+        pageKey: 'assistant',
+        run: () => {
+          callAssistant('/assistant/unified-decision', '统一决策流水线');
+          return { message: '已请求运行统一决策' };
+        },
+      },
+      {
+        id: 'assistant.load-unified-details',
+        label: '加载统一决策详情',
+        description: '展开统一决策的详情与差异对比',
+        keywords: ['详情', '展开'],
+        scope: 'page' as const,
+        pageKey: 'assistant',
+        run: () => {
+          if (lastEndpoint !== '/assistant/unified-decision' || !lastRequestBody) {
+            throw new Error('当前没有可展开的统一决策结果');
+          }
+          loadUnifiedDetails();
+          return { message: '已请求加载统一决策详情' };
+        },
+      },
+      {
+        id: 'assistant.cycle-investment-style',
+        label: `切换投资风格（当前 ${investmentStyleLabel}）`,
+        description: '在平衡、激进、保守三种风格之间切换',
+        keywords: ['风格', '切换'],
+        scope: 'page' as const,
+        pageKey: 'assistant',
+        run: () => {
+          const nextStyle =
+            investmentStyle === 'balanced'
+              ? 'aggressive'
+              : investmentStyle === 'aggressive'
+                ? 'conservative'
+                : 'balanced';
+          setInvestmentStyle(nextStyle);
+          const nextLabel = nextStyle === 'aggressive' ? '激进' : nextStyle === 'conservative' ? '保守' : '平衡';
+          return { message: `已切换为 ${nextLabel} 风格` };
+        },
+      },
+      {
+        id: 'assistant.reset-task-input',
+        label: '重置当前任务输入',
+        description: '清空当前代码、附加参数与结果状态',
+        keywords: ['重置', '清空'],
+        scope: 'page' as const,
+        pageKey: 'assistant',
+        run: () => {
+          setCode('');
+          setSellBuyPrice('');
+          setSellHoldingDays('');
+          setIndustryKeyword('');
+          setDailyReportDate('');
+          setLegacyMode(false);
+          setActionLabel('');
+          setLastEndpoint('');
+          setLastRequestBody(null);
+          setFormError(null);
+          reset();
+          resetDetails();
+          return { message: '已重置当前任务输入' };
+        },
+      },
+    ],
+    [
+      actionLabel,
+      assistantEvidenceSummary,
+      assistantResultActions,
+      assistantResultLinks,
+      assistantResultSummary,
+      assistantResultType,
+      callAssistant,
+      contextStockCode,
+      investmentStyle,
+      investmentStyleLabel,
+      lastEndpoint,
+      lastRequestBody,
+      loadUnifiedDetails,
+      resultContract?.freshness,
+      resultContract?.riskNotes,
+      reset,
+      resetDetails,
+      setDockOpen,
+      setCode,
+      setPendingInject,
+    ],
+  );
+
+  usePageActions(pageActions);
+
   return (
     <PageContainer className="app-theme-research">
+
       <div
         className={`grid gap-4 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_clamp(320px,28vw,420px)]'}`}
         style={compactLayout ? undefined : { minHeight: 'calc(100dvh - 140px)' }}
@@ -331,6 +609,26 @@ export default function AssistantPage() {
                   </div>
                   <div className="mt-2 text-xs text-text-secondary">
                     {mobileOnly ? '移动端默认只保留主任务和当前结果状态，其余说明按需展开。' : '主区先收敛主任务，扩展任务、参数和说明全部按需展开。'}
+                  </div>
+                </div>
+                <div className="mt-4 rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">策略超市联动</div>
+                  <div className="mt-3 text-sm leading-6 text-text-secondary">
+                    AI 中心负责给出结论、跳转和追问。收藏策略、复制个人策略、保存草稿和模拟盘测试，请进入策略页后由页面按钮或 Copilot 页面动作执行。
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                    <Link href="/strategy-market" className="action-chip no-underline text-inherit">
+                      市场策略
+                    </Link>
+                    <Link href="/strategy-market?workspace=favorites" className="action-chip no-underline text-inherit">
+                      我的收藏
+                    </Link>
+                    <Link href="/strategy-market?workspace=mine" className="action-chip no-underline text-inherit">
+                      我的策略
+                    </Link>
+                    <Link href="/strategy-market?workspace=factory" className="action-chip no-underline text-inherit">
+                      工厂运行态
+                    </Link>
                   </div>
                 </div>
               </div>
@@ -474,67 +772,89 @@ export default function AssistantPage() {
             <ErrorState text={detailsError} hint="统一决策详情拉取失败，请稍后重试" />
           ) : null}
 
-          {result ? (
-            <div className={`${PANEL_CLS} mt-4`}>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <div className="eyebrow">Result Deck</div>
-                  <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">{actionLabel || '诊断结果'}</h2>
-                  <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                    结果区现在集中承接主结论、可展开详情和差异对比，避免入口在上方、结果却散落在多个区域里。
-                  </p>
-                </div>
-                <Badge variant={lastEndpoint === '/assistant/unified-decision' ? 'info' : 'success'}>
-                  {lastEndpoint === '/assistant/unified-decision' ? '统一决策结果' : '结构化结果'}
-                </Badge>
-              </div>
+          <div>
+            {result ? (
+              <>
+                <ResultWorkbench
+                  pageKey="assistant"
+                  title="研究结果下一步"
+                  result={resultContract}
+                  compareContent={assistantCompareContent}
+                  visualContent={assistantVisualContent}
+                  extraActions={assistantResultActions}
+                  extraLinks={assistantResultLinks}
+                  className="mt-4"
+                />
+                <div className={`${PANEL_CLS} mt-4`}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <div className="eyebrow">Result Deck</div>
+                      <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">{actionLabel || '诊断结果'}</h2>
+                      <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                        结果区现在集中承接主结论、可展开详情和差异对比，避免入口在上方、结果却散落在多个区域里。
+                      </p>
+                    </div>
+                    <Badge variant={lastEndpoint === '/assistant/unified-decision' ? 'info' : 'success'}>
+                      {lastEndpoint === '/assistant/unified-decision' ? '统一决策结果' : '结构化结果'}
+                    </Badge>
+                  </div>
 
-              {lastEndpoint === '/assistant/unified-decision' ? (
-                <>
-                  <UnifiedDecisionPanel
-                    card={result as Record<string, unknown>}
-                    details={unifiedDetails}
-                    detailsPending={isDetailsPending}
-                    canLoadDetails={shouldShowUnifiedDetailsLoader}
-                    onLoadDetails={loadUnifiedDetails}
-                    legacyComparison={unifiedLegacyComparison}
-                  />
-                  <UnifiedDecisionDiffLogList
-                    enabled={legacyMode}
-                    code={String(lastRequestBody?.code ?? trimmedCode ?? '')}
-                  />
-                </>
-              ) : (
-                <>
-                  <DecisionCard data={result as Record<string, unknown>} />
-                  <details className="mt-4">
-                    <summary className="cursor-pointer text-sm text-text-muted">查看详细数据</summary>
-                    {(() => {
-                      const rows = extractArray(result);
-                      return rows.length ? (
-                        <div className="mt-3">
-                          <DataTable rows={rows} maxHeight={300} onExport={() => exportCSV(rows, 'assistant-result')} />
-                        </div>
-                      ) : (
-                        <pre className="mt-3 max-h-[300px] overflow-auto rounded-[22px] bg-surface-alt/70 p-3 text-xs">
-                          {JSON.stringify(result, null, 2)}
-                        </pre>
-                      );
-                    })()}
-                  </details>
-                </>
-              )}
-            </div>
-          ) : null}
+                  {lastEndpoint === '/assistant/unified-decision' ? (
+                    <>
+                      <UnifiedDecisionPanel
+                        card={result as Record<string, unknown>}
+                        details={unifiedDetails}
+                        detailsPending={isDetailsPending}
+                        canLoadDetails={shouldShowUnifiedDetailsLoader}
+                        onLoadDetails={loadUnifiedDetails}
+                        legacyComparison={unifiedLegacyComparison}
+                      />
+                      <UnifiedDecisionDiffLogList
+                        enabled={legacyMode}
+                        code={String(lastRequestBody?.code ?? trimmedCode ?? '')}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <DecisionCard data={result as Record<string, unknown>} />
+                      <details className="mt-4">
+                        <summary className="cursor-pointer text-sm text-text-muted">查看详细数据</summary>
+                        {(() => {
+                          const rows = extractArray(result);
+                          return rows.length ? (
+                            <div className="mt-3">
+                              <DataTable rows={rows} maxHeight={300} onExport={() => exportCSV(rows, 'assistant-result')} />
+                            </div>
+                          ) : (
+                            <pre className="mt-3 max-h-[300px] overflow-auto rounded-[22px] bg-surface-alt/70 p-3 text-xs">
+                              {JSON.stringify(result, null, 2)}
+                            </pre>
+                          );
+                        })()}
+                      </details>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className={`${PANEL_CLS} mt-4`}>
+                <div className="eyebrow">Result Deck</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">等待第一张结果卡</h2>
+                <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                  先执行一次主任务，这里会生成第一轮结构化结论，随后再决定是否继续展开详情、对比和补充分析。
+                </p>
+              </div>
+            )}
+          </div>
 
         </div>
 
         {/* ---- 右侧：内嵌 AI 对话（桌面端常驻） ---- */}
         <div
-          className={`${compactLayout ? 'hidden' : 'hidden xl:flex'} min-h-0 sticky top-4 self-start`}
+          className={`${compactLayout ? 'hidden' : 'xl:flex'} min-h-0 sticky top-4 self-start`}
           style={{ height: 'calc(100dvh - 140px)' }}
         >
-          <CopilotDock variant="page" className="flex-1" />
+          <CopilotDock variant="assistant" className="flex-1" />
         </div>
       </div>
 
@@ -565,7 +885,7 @@ export default function AssistantPage() {
               </button>
             </div>
             <div className="min-h-0 flex-1">
-              <CopilotDock variant="page" />
+              <CopilotDock variant="assistant" />
             </div>
           </div>
         </div>

@@ -38,6 +38,7 @@ __pycache__/
 .playwright-mcp/
 .playwright-mcp-runtime/
 .playwright/
+.playwright-cli/
 
 # Baidu Cloud upload temp files
 *.baiduyun.uploading.cfg
@@ -60,11 +61,13 @@ output/
 
 # Project cleanup outputs
 reports/
+artifacts/
 artifacts/audit-results/playwright/
 artifacts/audit-results/
 artifacts/responsive-audit/
 frontend-audit-report/
 packages/akshare-mcp/htmlcov/
+packages/akshare-mcp/cache/
 packages/akshare-mcp/logs/*.log
 packages/akshare-mcp/sync_init_*.log
 packages/akshare-mcp/tests/archive/

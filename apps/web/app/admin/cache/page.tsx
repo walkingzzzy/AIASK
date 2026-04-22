@@ -2,13 +2,17 @@
 
 import Link from 'next/link';
 import { useState, useMemo } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, KpiGrid, KpiCard } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { EmptyState, ErrorState } from '@/components/status-state';
 import { isPermissionDeniedErrorMessage } from '@/lib/api';
 import { apiKeys } from '@/lib/query-keys';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 /**
  * T-050: Cache Management Panel
@@ -63,6 +67,97 @@ export default function CachePage() {
   );
   const statsUpdatedAt = cacheQ.dataUpdatedAt ? new Date(cacheQ.dataUpdatedAt).toLocaleString('zh-CN') : null;
   const statsStatus = cacheQ.isFetching ? '刷新中' : cacheQ.data ? '统计可用' : '等待统计';
+  const cachePageActions = useMemo(
+    () => [
+      {
+        id: 'admin-cache.refresh',
+        label: '刷新缓存统计',
+        description: '重新拉取缓存命中率、键数和前缀分布',
+        keywords: ['缓存', '刷新', '统计'],
+        scope: 'page' as const,
+        pageKey: 'admin-cache',
+        run: async () => {
+          await refreshStats();
+          return { message: '已刷新缓存统计' };
+        },
+      },
+      {
+        id: 'admin-cache.confirm-clear-all',
+        label: '准备清除全部缓存',
+        description: '打开全量清理确认框，谨慎执行高风险动作',
+        keywords: ['清缓存', '全量', '危险操作'],
+        scope: 'page' as const,
+        pageKey: 'admin-cache',
+        run: () => {
+          setConfirmTarget({ label: '全部缓存' });
+          return { message: '已打开全量清理确认' };
+        },
+      },
+    ],
+    [],
+  );
+  usePageActions(cachePageActions);
+  const cacheSummary = `缓存统计当前为 ${statsStatus}，总键数 ${stats.totalKeys.toLocaleString()}，命中率 ${(stats.hitRate * 100).toFixed(1)}%，内存占用 ${stats.memoryUsed}。`;
+  const cacheResult = buildLocalResultContract({
+    summary: cacheSummary,
+    availableViews: prefixStats.length > 1 ? ['compare'] : [],
+    pageActions: cachePageActions,
+    preferredActionIds: ['admin-cache.refresh', 'admin-cache.confirm-clear-all'],
+    recommendedLinks: [
+      { id: 'admin-cache-link-tools', label: '检查工具健康', href: '/admin/tools' },
+      { id: 'admin-cache-link-dead-letters', label: '查看死信队列', href: '/admin/dead-letters' },
+      { id: 'admin-cache-link-audit', label: '审计日志', href: '/settings/audit-log' },
+    ],
+    evidence: [
+      { label: '统计状态', value: statsStatus },
+      { label: '总键数', value: stats.totalKeys.toLocaleString() },
+      { label: '命中率', value: `${(stats.hitRate * 100).toFixed(1)}%` },
+      { label: '内存占用', value: stats.memoryUsed },
+      { label: '前缀数量', value: String(prefixStats.length) },
+    ],
+    riskNotes: [
+      ...(actionError ? [actionError] : []),
+      ...(clearReceipt?.fullClear ? ['最近一次执行的是全量清理，需要关注回源压力。'] : []),
+      ...(prefixStats.length === 0 ? ['当前还没有可用的前缀级缓存统计。'] : []),
+    ],
+    freshness: statsUpdatedAt ? { updatedAt: statsUpdatedAt, label: '缓存快照' } : null,
+    platformMeta: {
+      sourceTool: 'admin/cache-stats',
+      sourceChain: ['admin', 'cache'],
+      degraded: Boolean(actionError || cacheQ.error),
+      fallbackReason: [actionError, cacheQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('admin-cache', '复查缓存状态', '/admin/cache', 'cache-review', {
+      totalKeys: stats.totalKeys,
+      hitRate: stats.hitRate,
+      prefixCount: prefixStats.length,
+    }),
+  });
+  usePageContext({
+    pageKey: 'admin-cache',
+    title: '缓存管理',
+    summary: cacheSummary,
+    objectType: 'cache-cluster',
+    objectId: 'admin-cache',
+    resultType: 'cache-admin-panel',
+    tags: [statsStatus, `${stats.totalKeys} 键`, `${prefixStats.length} 个前缀`],
+    suggestions: [
+      '总结当前缓存健康状态和是否需要局部清理',
+      '如果命中率偏低，给出先检查的前缀或链路',
+      '解释为什么全量清理应该谨慎使用',
+    ],
+    recommendedActions: cacheResult.recommendedActions ?? [],
+    recommendedLinks: cacheResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(cacheResult.evidence),
+    riskNotes: cacheResult.riskNotes ?? [],
+    freshness: cacheResult.freshness ?? null,
+    raw: {
+      totalKeys: stats.totalKeys,
+      hitRate: stats.hitRate,
+      prefixCount: prefixStats.length,
+      statsStatus,
+    },
+  });
 
   const handleClear = async (target: { prefix?: string; label: string }) => {
     setClearing(true);
@@ -143,6 +238,8 @@ export default function CachePage() {
     <PageContainer>
       <h1 className="text-lg font-semibold mb-4">💾 缓存管理</h1>
       {actionError ? <ErrorState text={actionError} /> : null}
+
+      <ResultWorkbench pageKey="admin-cache" title="缓存管理结果工作台" result={cacheResult} />
 
       <SectionCard className="mb-4 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

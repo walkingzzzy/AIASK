@@ -9,13 +9,16 @@ import { AskAiButton } from '@/components/ask-ai-button';
 import { FreshnessTag } from '@/components/ui/freshness-tag';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
+import ResultWorkbench from '@/components/result-workbench';
 import { usePageContext } from '@/hooks/use-page-context';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { type PageActionDefinition } from '@/lib/page-action-bus';
+import { useCopilotStore } from '@/store/copilot-store';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import { authedFetch, extractApiErrorMessage } from '@/lib/api';
 import { exportCSV } from '@/lib/export';
 import { fmtNum } from '@/lib/data-utils';
+import type { ResultAction, ResultContract, ResultLink } from '@aiask/shared-types';
 
 /* ── 类型 ── */
 type ScreenerTab = 'semantic' | 'condition';
@@ -113,6 +116,8 @@ export default function ScreenerPage() {
   const workbenchHydrated = useWorkbenchStore((s) => s.hydrated);
   const workbenchContext = useWorkbenchStore((s) => selectActiveWorkspace(s).context);
   const updateWorkbenchContext = useWorkbenchStore((s) => s.updateContext);
+  const setDockOpen = useCopilotStore((s) => s.setDockOpen);
+  const setPendingInject = useCopilotStore((s) => s.setPendingInject);
 
   const [tab, setTab] = useState<ScreenerTab>('semantic');
   const [query, setQuery] = useState((workbenchContext as Record<string, unknown>).screenerQuery as string ?? '');
@@ -123,6 +128,7 @@ export default function ScreenerPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
+  const [lastResponse, setLastResponse] = useState<Record<string, unknown> | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -135,6 +141,86 @@ export default function ScreenerPage() {
     () => ({ tab, query, conditions }),
     [tab, query, conditions],
   );
+  const resultContract = useMemo(
+    () => ((readPath(lastResponse, 'data.result_contract') ?? null) as ResultContract | null),
+    [lastResponse],
+  );
+  const hasScreenOutcome = results.length > 0 || Boolean(resultContract);
+  const primaryResult = results[0] ?? null;
+  const primaryCode = String(primaryResult?.code ?? '').trim();
+  const primaryName = String(primaryResult?.name ?? primaryCode).trim();
+  const screenResultLinks = useMemo<ResultLink[]>(
+    () =>
+      primaryCode
+        ? [
+            { id: 'screener-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(primaryCode)}` },
+            { id: 'screener-fundamental', label: '基本面', href: `/fundamental?code=${encodeURIComponent(primaryCode)}` },
+            { id: 'screener-technical', label: '技术分析', href: `/technical?code=${encodeURIComponent(primaryCode)}` },
+            { id: 'screener-watchlist', label: '查看自选股', href: '/watchlist' },
+          ]
+        : [
+            { id: 'screener-market', label: '去行情看板', href: '/market' },
+            { id: 'screener-research', label: '继续研究页', href: '/research' },
+          ],
+    [primaryCode],
+  );
+  const screenResultSummary = resultContract?.summary ?? (results.length > 0
+    ? `当前筛到 ${results.length} 只股票，优先结果 ${primaryName || primaryCode || '未命名'}。`
+    : '');
+  const screenEvidenceSummary = useMemo(
+    () => resultContract?.evidence?.map((item) => `${item.label}：${item.value}`) ?? [],
+    [resultContract?.evidence],
+  );
+  const screenResultActions = useMemo<ResultAction[]>(
+    () =>
+      results.length > 0
+        ? [
+            {
+              id: 'screener.open-copilot-followup',
+              actionId: 'screener.open-copilot-followup',
+              label: '打开 Copilot 解读筛选结果',
+              description: '把当前选股结果注入 Copilot，继续做研究与排序。',
+            },
+          ]
+        : [],
+    [results.length],
+  );
+  const screenCompareContent = useMemo(() => {
+    if (results.length < 2) return null;
+    return (
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {results.slice(0, 3).map((row) => (
+          <div key={row.code} className="metric-tile rounded-[22px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{row.code}</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">{row.name || row.code}</div>
+            <div className="mt-2 text-xs leading-6 text-text-secondary">
+              行业 {String(row.industry ?? '未知')} ｜ 匹配分 {fmtNum(Number(row.score ?? 0), 2)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }, [results]);
+  const screenVisualContent = useMemo(() => {
+    const counts = results.reduce<Record<string, number>>((acc, row) => {
+      const key = String(row.industry ?? '未知');
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+    const items = Object.entries(counts).sort((left, right) => right[1] - left[1]).slice(0, 6);
+    if (items.length === 0) return null;
+    return (
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {items.map(([industry, count]) => (
+          <div key={industry} className="metric-tile rounded-[22px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">行业分布</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">{industry}</div>
+            <div className="mt-2 text-xs text-text-secondary">{count} 只候选股票</div>
+          </div>
+        ))}
+      </div>
+    );
+  }, [results]);
 
   const applyView = useCallback(
     (snapshot: Record<string, unknown>) => {
@@ -152,7 +238,13 @@ export default function ScreenerPage() {
     title: '条件选股',
     summary: results.length > 0
       ? `当前筛选到 ${results.length} 只股票，模式：${tab === 'semantic' ? '语义选股' : '条件组合'}`
+      : hasScreenOutcome
+        ? `当前${tab === 'semantic' ? '语义选股' : '条件组合'}已执行，但暂未命中可继续查看的股票结果。`
       : '条件选股工作台，支持自然语言和条件组合选股',
+    stockCode: primaryCode || undefined,
+    objectType: results.length > 0 ? 'stock-list' : hasScreenOutcome ? 'screen-result' : undefined,
+    objectId: primaryCode || (tab === 'semantic' ? query : conditions.join('|')) || undefined,
+    resultType: hasScreenOutcome ? 'screen-result' : undefined,
     tags: ['选股', 'screener', tab],
     suggestions: [
       '把筛选结果里市值最小的加入自选',
@@ -160,8 +252,25 @@ export default function ScreenerPage() {
       '对结果按行业做分类汇总',
       '生成当前结果的简要分析',
     ],
-    raw: { tab, query, conditions, resultCount: results.length },
-  }), [tab, query, conditions, results.length]));
+    recommendedActions: screenResultActions,
+    recommendedLinks: screenResultLinks,
+    evidenceSummary: screenEvidenceSummary,
+    riskNotes: resultContract?.riskNotes ?? [],
+    freshness: resultContract?.freshness ?? null,
+    raw: { tab, query, conditions, resultCount: results.length, primaryCode },
+  }), [
+    conditions,
+    primaryCode,
+    query,
+    resultContract?.freshness,
+    resultContract?.riskNotes,
+    results.length,
+    screenEvidenceSummary,
+    screenResultActions,
+    screenResultLinks,
+    tab,
+    hasScreenOutcome,
+  ]));
 
   /* ── PageActions ── */
   const runScreen = useCallback(async () => {
@@ -170,6 +279,7 @@ export default function ScreenerPage() {
     abortRef.current = ctrl;
     setIsPending(true);
     setErrorMsg(null);
+    setLastResponse(null);
 
     try {
       let url: string;
@@ -191,9 +301,20 @@ export default function ScreenerPage() {
         throw new Error(toolError);
       }
       const items = extractScreenItems(json);
+      setLastResponse(isRecord(json) ? json : null);
       setResults(items);
       setUpdatedAt(Date.now());
-      if (workbenchHydrated) updateWorkbenchContext({ screenerQuery: tab === 'semantic' ? query : undefined } as Record<string, unknown>);
+      if (workbenchHydrated) {
+        const first = items[0] ?? null;
+        const firstCode = String(first?.code ?? '').trim();
+        updateWorkbenchContext({
+          stockCode: firstCode || null,
+          screenerQuery: tab === 'semantic' ? query : null,
+          sourcePage: 'screener',
+          taskType: tab === 'semantic' ? 'semantic_screen' : 'condition_screen',
+          resultType: 'screen-result',
+        });
+      }
     } catch (e) {
       if ((e as Error).name !== 'AbortError') setErrorMsg((e as Error).message);
     } finally {
@@ -202,6 +323,40 @@ export default function ScreenerPage() {
   }, [tab, query, conditions, workbenchHydrated, updateWorkbenchContext]);
 
   const pageActions = useMemo<PageActionDefinition[]>(() => [
+    {
+      id: 'screener.open-copilot-followup',
+      label: '打开 Copilot 解读筛选结果',
+      description: '把当前选股结果注入 Copilot，继续做研究与排序。',
+      scope: 'page',
+      pageKey: 'screener',
+      run: () => {
+        if (!screenResultSummary) {
+          throw new Error('当前还没有可解读的筛选结果');
+        }
+        setPendingInject({
+          prompt: `请解读当前${tab === 'semantic' ? '语义选股' : '条件组合'}结果，并给出下一步研究建议。`,
+          contextPatch: {
+            ...(primaryCode ? { stockCode: primaryCode } : {}),
+            summary: screenResultSummary,
+            resultType: 'screen-result',
+            recommendedActions: screenResultActions,
+            recommendedLinks: screenResultLinks,
+            evidenceSummary: screenEvidenceSummary,
+            riskNotes: resultContract?.riskNotes ?? [],
+            freshness: resultContract?.freshness ?? null,
+            raw: {
+              tab,
+              query,
+              conditions,
+              resultCount: results.length,
+              primaryCode,
+            },
+          },
+        });
+        setDockOpen(true);
+        return { message: '已打开 Copilot 并注入筛选结果' };
+      },
+    },
     {
       id: 'screener.set-query',
       label: '填入语义选股条件',
@@ -235,7 +390,22 @@ export default function ScreenerPage() {
       pageKey: 'screener',
       run: () => void runScreen(),
     },
-  ], [runScreen]);
+  ], [
+    conditions,
+    primaryCode,
+    query,
+    resultContract?.freshness,
+    resultContract?.riskNotes,
+    results.length,
+    runScreen,
+    screenEvidenceSummary,
+    screenResultActions,
+    screenResultLinks,
+    screenResultSummary,
+    setDockOpen,
+    setPendingInject,
+    tab,
+  ]);
 
   usePageActions(pageActions);
 
@@ -396,6 +566,18 @@ export default function ScreenerPage() {
         </SectionCard>
       )}
 
+      {resultContract ? (
+        <ResultWorkbench
+          pageKey="screener"
+          title="筛选结果下一步"
+          result={resultContract}
+          compareContent={screenCompareContent}
+          visualContent={screenVisualContent}
+          extraActions={screenResultActions}
+          extraLinks={screenResultLinks}
+        />
+      ) : null}
+
       {results.length > 0 ? (
         <div className="flex items-center gap-2 mb-3">
           <button className="btn-secondary text-xs px-3 py-1" onClick={() => exportCSV(results, `screener_${Date.now()}.csv`)}>
@@ -413,7 +595,7 @@ export default function ScreenerPage() {
 
       {errorMsg ? <ErrorState text={errorMsg} onRetry={() => void runScreen()} /> : null}
       {isPending ? <LoadingState /> : null}
-      {!isPending && !errorMsg && results.length === 0 ? (
+      {!isPending && !errorMsg && results.length === 0 && !resultContract ? (
         <EmptyState text="暂无筛选结果，请输入选股条件后点击执行" />
       ) : null}
       {!isPending && results.length > 0 ? (

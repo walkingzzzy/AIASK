@@ -4,14 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from akshare_mcp._fragment_loader import exec_block as _exec_block
 
-from .constants import *  # noqa: F401,F403
-from .defaults import *  # noqa: F401,F403
-from .dsl_builder import *  # noqa: F401,F403
-from .normalizers import *  # noqa: F401,F403
-from .runtime_contracts import *  # noqa: F401,F403
+from . import constants as _constants
+from . import defaults as _defaults
+from . import dsl_builder as _dsl_builder
+from . import normalizers as _normalizers
+from . import runtime_contracts as _runtime_contracts
+
+for _module in (
+    _constants,
+    _normalizers,
+    _defaults,
+    _dsl_builder,
+    _runtime_contracts,
+):
+    globals().update(
+        {
+            name: getattr(_module, name)
+            for name in dir(_module)
+            if not name.startswith("__")
+        }
+    )
 
 _exec_block(
     globals(),

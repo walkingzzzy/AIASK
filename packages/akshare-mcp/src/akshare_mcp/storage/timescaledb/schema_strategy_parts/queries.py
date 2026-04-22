@@ -1,6 +1,24 @@
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_strategy_quality_reports_sid ON strategy_quality_reports(strategy_id, updated_at DESC);"
     )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_execution_audit_snapshots_as_of ON strategy_execution_audit_snapshots(as_of_date DESC, updated_at DESC);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_execution_audit_snapshots_correlation ON strategy_execution_audit_snapshots(correlation_id, updated_at DESC);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_execution_audit_snapshots_factory_run ON strategy_execution_audit_snapshots(factory_run_id, updated_at DESC);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_closure_snapshots_as_of ON strategy_closure_snapshots(snapshot_type, as_of_date DESC, updated_at DESC);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_closure_snapshots_correlation ON strategy_closure_snapshots(correlation_id, updated_at DESC);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_closure_snapshots_factory_run ON strategy_closure_snapshots(factory_run_id, updated_at DESC);"
+    )
 
     # 34. 策略状态事件（轻量 append-only 审计流）
     await conn.execute("""

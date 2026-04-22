@@ -207,6 +207,10 @@ class SchemaBase:
 
     async def _init_tables(self) -> None:
         """初始化数据库表结构（委托给 market / strategy 子模块）"""
+        from .schema_app_core import (
+            record_schema_namespace_checkpoint,
+            run_app_core_migrations,
+        )
         from .schema_market import init_market_tables
         from .schema_strategy import init_strategy_tables
         from .schema_vector import init_vector_tables
@@ -214,9 +218,28 @@ class SchemaBase:
         async with self.acquire() as conn:
             async with self._schema_init_lock(conn):
                 await self._ensure_pgvector(conn)
+                await run_app_core_migrations(conn)
                 await init_market_tables(conn)
                 await init_strategy_tables(conn, self._pgvector_enabled)
                 await init_vector_tables(conn, self._pgvector_enabled)
+                await record_schema_namespace_checkpoint(
+                    conn,
+                    namespace="market_runtime",
+                    migration_key="ddl_bootstrap_v1",
+                    source_module="akshare_mcp.storage.timescaledb.schema_market",
+                )
+                await record_schema_namespace_checkpoint(
+                    conn,
+                    namespace="strategy_runtime",
+                    migration_key="ddl_bootstrap_v1",
+                    source_module="akshare_mcp.storage.timescaledb.schema_strategy",
+                )
+                await record_schema_namespace_checkpoint(
+                    conn,
+                    namespace="vector_runtime",
+                    migration_key="ddl_bootstrap_v1",
+                    source_module="akshare_mcp.storage.timescaledb.schema_vector",
+                )
 
         logger.info("All tables initialized successfully (aligned with Node version)")
 

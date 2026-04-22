@@ -49,9 +49,14 @@ async def run_decision_gate(
 ):
     """运行统一决策规则闸门，可传入现成上下文，也可按代码自动构建。"""
     try:
-        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-        if not code:
-            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+        code, error_response = await _resolve_existing_stock_code_or_fail(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error_response is not None:
+            return error_response
         built_stock, built_quant, built_event, built_user = await _resolve_decision_contexts(
             code=code,
             user_id=user_id,
@@ -87,9 +92,14 @@ async def fuse_decision_payload(
 ):
     """融合统一决策上下文，输出 action/summary/weights/raw_ai_output。"""
     try:
-        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-        if not code:
-            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+        code, error_response = await _resolve_existing_stock_code_or_fail(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error_response is not None:
+            return error_response
         built_stock, built_quant, built_event, built_user = await _resolve_decision_contexts(
             code=code,
             user_id=user_id,
@@ -128,9 +138,14 @@ async def get_unified_decision_summary(
 ):
     """统一决策摘要：输出前端友好的 summary 卡片。"""
     try:
-        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-        if not code:
-            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+        code, error_response = await _resolve_existing_stock_code_or_fail(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error_response is not None:
+            return error_response
         payload = await get_unified_decision_summary_payload(
             code=code,
             investment_style=investment_style,
@@ -150,9 +165,14 @@ async def get_unified_decision_details(
 ):
     """统一决策详情：输出 summary + 全量 details 证据。"""
     try:
-        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-        if not code:
-            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+        code, error_response = await _resolve_existing_stock_code_or_fail(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error_response is not None:
+            return error_response
         payload = await get_unified_decision_details_payload(
             code=code,
             investment_style=investment_style,
@@ -173,9 +193,14 @@ async def get_unified_decision(
 ):
     """统一决策兼容包装器：按 detail_level 返回 summary 或 details。"""
     try:
-        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-        if not code:
-            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+        code, error_response = await _resolve_existing_stock_code_or_fail(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error_response is not None:
+            return error_response
         if str(detail_level or 'summary').strip().lower() == 'details':
             payload = await get_unified_decision_details_payload(
                 code=code,

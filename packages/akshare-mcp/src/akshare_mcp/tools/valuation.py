@@ -8,7 +8,7 @@ from typing import Optional, List
 import statistics
 
 from ..storage import get_db
-from ..utils import ok, fail, resolve_security_code
+from ..utils import ok, fail, resolve_existing_security_code_async
 
 # --- 从 engine 子模块导入纯计算函数 & 常量 ---
 from .valuation_engine import (
@@ -46,6 +46,22 @@ def register(mcp):
             if original_get_db is not None:
                 valuation_peer_mod.get_db = original_get_db
 
+    async def _resolve_existing_valuation_code(
+        code: Optional[str] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[dict]]:
+        resolved_code, _, error = await resolve_existing_security_code_async(
+            code=code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        if error:
+            return None, fail(error)
+        return resolved_code, None
+
     @mcp.tool()
     async def get_valuation_metrics(
         code: Optional[str] = None,
@@ -60,9 +76,9 @@ def register(mcp):
             code: 股票代码
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
 
             db = get_db()
             pe = pb = mcap = None
@@ -218,9 +234,9 @@ def register(mcp):
             enable_sensitivity: 是否执行敏感性分析
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
             if years < 1:
                 return fail('years 必须 >= 1')
 
@@ -490,9 +506,9 @@ def register(mcp):
             required_return: 要求回报率
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
             if growth_rate >= required_return:
                 return fail('增长率必须小于要求回报率')
 
@@ -572,9 +588,9 @@ def register(mcp):
             peers: 可比公司列表（不填则自动查找同行业公司）
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
             return await _run_valuation_peer_impl(_relative_valuation_impl, code, metrics, peers)
         except Exception as e:
             return fail(str(e))
@@ -600,9 +616,9 @@ def register(mcp):
             days: 查询天数
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
             return await _run_valuation_peer_impl(_get_historical_valuation_impl, code, days)
         except Exception as e:
             return fail(str(e))
@@ -700,9 +716,9 @@ def register(mcp):
             terminal_growth: 覆盖行业模板的永续增长率
         """
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, error_response = await _resolve_existing_valuation_code(code, stock_code, symbol, ticker)
+            if error_response is not None:
+                return error_response
             source_chain: list[str] = []
             fallback_reason: list[str] = []
             base_revenue_source = 'user_input' if base_revenue and base_revenue > 0 else 'auto'

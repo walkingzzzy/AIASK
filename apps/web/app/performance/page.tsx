@@ -3,12 +3,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import AccountPerformanceDashboard from '@/app/performance/components/account-performance-dashboard';
 import PerformanceContextPanels from '@/app/performance/components/performance-context-panels';
 import PerformanceHero from '@/app/performance/components/performance-hero';
 import PortfolioAttributionDashboard from '@/app/performance/components/portfolio-attribution-dashboard';
 import PerformanceSecondarySidebar from '@/app/performance/components/performance-secondary-sidebar';
-import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState, UnavailableState } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
@@ -18,6 +19,7 @@ import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
@@ -107,40 +109,40 @@ export default function PerformancePage() {
   const selectedPortfolioId = portfolioId && /^\d+$/.test(portfolioId) ? Number(portfolioId) : null;
   const portfolioLookbackDays = Math.max(days, 20);
 
-  const accountsQ = useApiQuery<PaperTradingAccountsResponse | unknown[]>('/paper-trading/accounts');
+  const accountsQ = useApiQuery<PaperTradingAccountsResponse | unknown[]>('/paper-trading/accounts', { critical: true });
   const summaryQ = useApiQuery<PaperTradingSummary>(
     accountQs ? `/paper-trading/summary${accountQs}` : '/paper-trading/summary',
-    { enabled: mode === 'account' },
+    { enabled: mode === 'account', critical: true },
   );
   const positionsQ = useApiQuery<PaperTradingPositionsResponse>(
     accountQs ? `/paper-trading/positions${accountQs}` : '/paper-trading/positions',
-    { enabled: mode === 'account' },
+    { enabled: mode === 'account', critical: true },
   );
   const navQ = useApiQuery<PaperTradingNavHistoryResponse>(
     accountQs ? `/paper-trading/nav-history${accountQs}` : '/paper-trading/nav-history',
-    { enabled: mode === 'account' },
+    { enabled: mode === 'account', critical: true },
   );
   const performanceQ = useApiQuery<PaperTradingPerformanceResponse>(
     `/paper-trading/performance${accountQs ? `${accountQs}&days=${days}` : `?days=${days}`}`,
-    { enabled: mode === 'account' },
+    { enabled: mode === 'account', critical: true },
   );
 
-  const portfoliosQ = useApiQuery<unknown>('/portfolio/list');
+  const portfoliosQ = useApiQuery<unknown>('/portfolio/list', { critical: true });
   const portfolioDetailQ = useApiQuery<unknown>(
     selectedPortfolioId ? `/portfolio/get?portfolioId=${selectedPortfolioId}` : null,
-    { enabled: mode === 'portfolio' && selectedPortfolioId != null },
+    { enabled: mode === 'portfolio' && selectedPortfolioId != null, critical: true },
   );
   const attributionQ = useApiQuery<PerformanceAttributionResponse>(
     selectedPortfolioId
       ? `/performance/attribution?portfolioId=${selectedPortfolioId}&lookbackDays=${portfolioLookbackDays}&benchmark=${encodeURIComponent(benchmark)}`
       : null,
-    { enabled: mode === 'portfolio' && selectedPortfolioId != null },
+    { enabled: mode === 'portfolio' && selectedPortfolioId != null, critical: true },
   );
   const benchmarkQ = useApiQuery<PerformanceBenchmarkComparisonResponse>(
     selectedPortfolioId
       ? `/performance/benchmark-comparison?portfolioId=${selectedPortfolioId}&lookbackDays=${portfolioLookbackDays}&benchmark=${encodeURIComponent(benchmark)}`
       : null,
-    { enabled: mode === 'portfolio' && selectedPortfolioId != null },
+    { enabled: mode === 'portfolio' && selectedPortfolioId != null, critical: true },
   );
 
   const accounts = useMemo(
@@ -563,47 +565,6 @@ export default function PerformancePage() {
     [accountId, benchmark, days, mode, portfolioId],
   );
 
-  usePageContext({
-    pageKey: 'performance',
-    title: '绩效中心',
-    summary: pageSummary,
-    tags: isAccountMode
-      ? [activeModeLabel, `${days} 天`, `${positions.length} 持仓`]
-      : [activeModeLabel, `${portfolioLookbackDays} 天`, benchmark, outperformance ? '跑赢基准' : '未跑赢基准'],
-    suggestions: isAccountMode
-      ? [
-          '刷新当前账户绩效数据',
-          '切换到组合归因视角',
-          accountLeader ? `打开 ${String(accountLeader.stock_code ?? '')} 查看持仓细节` : '打开风险中心对照回撤与暴露',
-        ]
-      : [
-          '刷新当前组合归因',
-          topContributor ? `打开 ${String(topContributor.code ?? '')} 查看最大贡献股` : '切换到账户绩效视角',
-          '总结当前组合的超额收益来源',
-        ],
-    raw: isAccountMode
-      ? {
-          mode,
-          accountId: accountId || 'default',
-          days,
-          totalValue,
-          totalReturnPct,
-          positions: positions.length,
-          metrics: accountMetrics,
-        }
-      : {
-          mode,
-          portfolioId: selectedPortfolioId,
-          portfolioName,
-          benchmark,
-          days: portfolioLookbackDays,
-          totalReturnPct: portfolioTotalReturnPct,
-          excessReturnPct: benchmarkComparison?.excessReturnPct ?? null,
-          informationRatio: benchmarkComparison?.informationRatio ?? null,
-          outperformance,
-        },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -767,6 +728,102 @@ export default function PerformancePage() {
   const accountErrorMessage = summaryQ.error || positionsQ.error || navQ.error || performanceQ.error || null;
   const portfolioErrorMessage = portfolioDetailQ.error || attributionQ.error || benchmarkQ.error || null;
   const linkedStockCode = String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? '').trim();
+  const performanceEvidence = useMemo(
+    () => [
+      { label: '视角', value: activeModeLabel },
+      { label: '窗口', value: heroWindowLabel },
+      { label: heroPrimaryMetricLabel, value: heroPrimaryMetricValue },
+      { label: '核心提示', value: focusMetricHint },
+    ],
+    [activeModeLabel, focusMetricHint, heroPrimaryMetricLabel, heroPrimaryMetricValue, heroWindowLabel],
+  );
+  const performanceLinks = useMemo(
+    () => [
+      { id: 'performance-open-risk-link', label: '去风险中心', href: '/risk?from=performance' },
+      { id: 'performance-open-source-link', label: isAccountMode ? '去模拟交易' : '去组合页', href: isAccountMode ? paperHref : portfolioHref },
+      focusStockCode ? { id: 'performance-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusStockCode)}` } : { id: 'performance-open-stock-link', label: '行情看板', href: '/market?from=performance' },
+      { id: 'performance-open-skills', label: '去技能中心', href: '/skills?from=performance' },
+    ],
+    [focusStockCode, isAccountMode, paperHref, portfolioHref],
+  );
+  const performanceRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (isAccountMode && accountErrorMessage) notes.push(accountErrorMessage);
+    if (!isAccountMode && portfolioErrorMessage) notes.push(portfolioErrorMessage);
+    return notes;
+  }, [accountErrorMessage, isAccountMode, portfolioErrorMessage]);
+  const performanceResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: pageSummary,
+        pageActions,
+        preferredActionIds: [
+          'performance.refresh',
+          isAccountMode ? 'performance.switch.portfolio' : 'performance.switch.account',
+          'performance.open-risk',
+          'performance.open-source',
+        ],
+        recommendedLinks: performanceLinks,
+        evidence: performanceEvidence,
+        riskNotes: performanceRiskNotes,
+        workbenchTask: defaultWorkbenchTask('performance', `绩效复盘：${isAccountMode ? accountId || 'default' : portfolioName}`, isAccountMode ? '/performance?mode=account' : `/performance?mode=portfolio&portfolio_id=${encodeURIComponent(selectedPortfolioId || '')}`, 'performance-review', {
+          mode,
+          accountId: accountId || null,
+          portfolioId: selectedPortfolioId || null,
+        }),
+      }),
+    [accountId, isAccountMode, mode, pageActions, pageSummary, performanceEvidence, performanceLinks, performanceRiskNotes, portfolioName, selectedPortfolioId],
+  );
+
+  usePageContext({
+    pageKey: 'performance',
+    title: '绩效中心',
+    summary: pageSummary,
+    objectType: isAccountMode ? 'workspace' : 'portfolio',
+    objectId: isAccountMode ? accountId || 'default' : String(selectedPortfolioId || 'performance'),
+    resultType: 'performance-summary',
+    tags: isAccountMode
+      ? [activeModeLabel, `${days} 天`, `${positions.length} 持仓`]
+      : [activeModeLabel, `${portfolioLookbackDays} 天`, benchmark, outperformance ? '跑赢基准' : '未跑赢基准'],
+    suggestions: isAccountMode
+      ? [
+          '刷新当前账户绩效数据',
+          '切换到组合归因视角',
+          accountLeader ? `打开 ${String(accountLeader.stock_code ?? '')} 查看持仓细节` : '打开风险中心对照回撤与暴露',
+        ]
+      : [
+          '刷新当前组合归因',
+          topContributor ? `打开 ${String(topContributor.code ?? '')} 查看最大贡献股` : '切换到账户绩效视角',
+          '总结当前组合的超额收益来源',
+        ],
+    recommendedActions: performanceResult.recommendedActions,
+    recommendedLinks: performanceResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(performanceResult.evidence),
+    riskNotes: performanceResult.riskNotes ?? [],
+    freshness: performanceResult.freshness ?? null,
+    raw: isAccountMode
+      ? {
+          mode,
+          accountId: accountId || 'default',
+          days,
+          totalValue,
+          totalReturnPct,
+          positions: positions.length,
+          metrics: accountMetrics,
+        }
+      : {
+          mode,
+          portfolioId: selectedPortfolioId,
+          portfolioName,
+          benchmark,
+          days: portfolioLookbackDays,
+          totalReturnPct: portfolioTotalReturnPct,
+          excessReturnPct: benchmarkComparison?.excessReturnPct ?? null,
+          informationRatio: benchmarkComparison?.informationRatio ?? null,
+          outperformance,
+        },
+  });
+
   const mobilePrimaryTabs = useMemo(
     () => [
       { key: 'filters', label: '条件' },
@@ -774,6 +831,50 @@ export default function PerformancePage() {
     ],
     [isAccountMode],
   );
+
+  if (isAccountMode && (summaryQ.isPending || positionsQ.isPending || navQ.isPending || performanceQ.isPending) && !summaryQ.data) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载账户绩效、持仓与净值数据..." />
+      </PageContainer>
+    );
+  }
+
+  if (!isAccountMode && portfoliosQ.isPending && portfolios.length === 0) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载组合列表与归因上下文..." />
+      </PageContainer>
+    );
+  }
+
+  if (isAccountMode && accountErrorMessage && !summaryQ.data) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="账户绩效主链路暂不可用"
+          hint={accountErrorMessage}
+          onRetry={() => {
+            void Promise.allSettled([accountsQ.refetch(), summaryQ.refetch(), positionsQ.refetch(), navQ.refetch(), performanceQ.refetch()]);
+          }}
+        />
+      </PageContainer>
+    );
+  }
+
+  if (!isAccountMode && portfolioErrorMessage && !attribution && !benchmarkComparison) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="组合归因主链路暂不可用"
+          hint={portfolioErrorMessage}
+          onRetry={() => {
+            void Promise.allSettled([portfoliosQ.refetch(), portfolioDetailQ.refetch(), attributionQ.refetch(), benchmarkQ.refetch()]);
+          }}
+        />
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>
@@ -803,6 +904,9 @@ export default function PerformancePage() {
         portfolioNarrative={portfolioNarrative}
       />
 
+      <ResultWorkbench pageKey="performance" title="绩效结果工作台" result={performanceResult} />
+
+
       <WorkspaceToolbar
         pageKey="performance"
         currentView={currentView}
@@ -825,35 +929,37 @@ export default function PerformancePage() {
             ) : null}
 
             {!collapseToTabs || mobilePrimaryTab === 'filters' ? (
-              <PerformanceContextPanels
-                isAccountMode={isAccountMode}
-                accountId={accountId}
-                accounts={accounts}
-                onAccountChange={setAccountId}
-                portfolios={portfolios}
-                portfolioId={portfolioId}
-                onPortfolioChange={setPortfolioId}
-                benchmark={benchmark}
-                benchmarkOptions={[...BENCHMARK_OPTIONS]}
-                onBenchmarkChange={setBenchmark}
-                windowPresets={windowPresets}
-                days={days}
-                onDaysChange={setDays}
-                portfolioNarrative={portfolioNarrative}
-                activeModeLabel={activeModeLabel}
-                portfolioLookbackDays={portfolioLookbackDays}
-                selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
-                topContributorCode={String(topContributor?.code ?? '')}
-                weakContributorCode={String(weakContributor?.code ?? '')}
-                linkedStockCode={linkedStockCode}
-                onOpenRisk={openRiskWorkspace}
-                onOpenStock={linkedStockCode ? () => openStockTarget(linkedStockCode) : null}
-                onOpenResearch={linkedStockCode ? () => openResearchTarget(linkedStockCode) : null}
-              />
+              <div>
+                <PerformanceContextPanels
+                  isAccountMode={isAccountMode}
+                  accountId={accountId}
+                  accounts={accounts}
+                  onAccountChange={setAccountId}
+                  portfolios={portfolios}
+                  portfolioId={portfolioId}
+                  onPortfolioChange={setPortfolioId}
+                  benchmark={benchmark}
+                  benchmarkOptions={[...BENCHMARK_OPTIONS]}
+                  onBenchmarkChange={setBenchmark}
+                  windowPresets={windowPresets}
+                  days={days}
+                  onDaysChange={setDays}
+                  portfolioNarrative={portfolioNarrative}
+                  activeModeLabel={activeModeLabel}
+                  portfolioLookbackDays={portfolioLookbackDays}
+                  selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
+                  topContributorCode={String(topContributor?.code ?? '')}
+                  weakContributorCode={String(weakContributor?.code ?? '')}
+                  linkedStockCode={linkedStockCode}
+                  onOpenRisk={openRiskWorkspace}
+                  onOpenStock={linkedStockCode ? () => openStockTarget(linkedStockCode) : null}
+                  onOpenResearch={linkedStockCode ? () => openResearchTarget(linkedStockCode) : null}
+                />
+              </div>
             ) : null}
 
             {!collapseToTabs || mobilePrimaryTab === 'dashboard' ? (
-              <>
+              <div>
                 {!isAccountMode && portfoliosQ.isFetching && portfolios.length === 0 ? (
                   <LoadingState text="加载组合列表中..." />
                 ) : null}
@@ -912,7 +1018,7 @@ export default function PerformancePage() {
                     onOpenResearchTarget={openResearchTarget}
                   />
                 )}
-              </>
+              </div>
             ) : null}
           </div>
         }

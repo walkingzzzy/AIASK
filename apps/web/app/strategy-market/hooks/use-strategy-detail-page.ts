@@ -33,6 +33,7 @@ import type {
   ListResponse,
   EventFilters,
   FactoryReviewSection,
+  StrategyClosureReviewResponse,
 } from '../types';
 import {
   parseIncubationOverviewResponse,
@@ -56,7 +57,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     { enabled: Boolean(id), staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const mySubscriptionsQ = useApiQuery<StrategySubscriptionsResponse>(
-    userId ? '/strategy-market/my-subscriptions' : null,
+    userId ? '/strategy-market/my-favorites' : null,
     { enabled: Boolean(userId), staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const subscribeApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
@@ -125,6 +126,14 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     if (!qs.has('limit')) qs.set('limit', '20');
     return `/strategy-market/${id}/events?${qs.toString()}`;
   }, [eventFilters, id]);
+  const closureReviewQ = useApiQuery<StrategyClosureReviewResponse>(
+    id && factoryMode ? `/strategy-market/${id}/closure-review` : null,
+    {
+      enabled: factoryMode,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+    },
+  );
+  const useLegacyFactoryQueries = Boolean(factoryMode && closureReviewQ.error);
 
   const signalStatsQ = useApiQuery<SignalStatsResponse>(
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signal-stats` : null,
@@ -135,110 +144,120 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const reviewReportQ = useApiQuery<ReviewReportResponse>(
     id ? `/strategy-market/${id}/review-report` : null,
     {
-      enabled: factorySummaryMode,
+      enabled: factorySummaryMode && useLegacyFactoryQueries,
       staleTime: FACTORY_SECTION_STALE_TIME,
       parse: parseReviewReportResponse,
     },
   );
   const eventsQ = useApiQuery<StrategyEventsResponse>(eventsPath, {
-    enabled: factorySummaryMode,
+    enabled: factorySummaryMode && useLegacyFactoryQueries,
     staleTime: FACTORY_SECTION_STALE_TIME,
     placeholderData: 'keepPrevious',
   });
   const incubationQ = useApiQuery<IncubationOverviewResponse>(
     id ? `/strategy-market/${id}/incubation-overview` : null,
     {
-      enabled: factorySummaryMode || factoryIncubationMode,
+      enabled: (factorySummaryMode || factoryIncubationMode) && useLegacyFactoryQueries,
       staleTime: FACTORY_SECTION_STALE_TIME,
       parse: parseIncubationOverviewResponse,
     },
   );
   const incubationMetricsQ = useApiQuery<ListResponse<IncubationMetric>>(
     id ? `/strategy-market/${id}/incubation-metrics?limit=12` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperAccountQ = useApiQuery<PaperAccountResponse>(
     id ? `/strategy-market/${id}/paper-account?limit=20` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperOrdersQ = useApiQuery<ListResponse<PaperOrder>>(
     id ? `/strategy-market/${id}/paper-orders?limit=20` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperNavQ = useApiQuery<ListResponse<PaperNav>>(
     id ? `/strategy-market/${id}/paper-nav?limit=20` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const incubationPipelineQ = useApiQuery<ListResponse<IncubationPipelineSnapshot>>(
     id ? `/strategy-market/${id}/incubation-pipeline?limit=10` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const executionAuditAcceptanceQ = useApiQuery<ExecutionAuditAcceptanceResponse>(
     id ? `/strategy-market/${id}/execution-audit` : null,
     {
-      enabled: factorySummaryMode || factoryIncubationMode,
+      enabled: (factorySummaryMode || factoryIncubationMode) && useLegacyFactoryQueries,
       staleTime: FACTORY_SECTION_STALE_TIME,
     },
   );
   const riskEventsQ = useApiQuery<ListResponse<RiskEvent>>(
     id ? `/strategy-market/${id}/risk-events?limit=20` : null,
-    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryRuntimeMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const riskSnapshotsQ = useApiQuery<ListResponse<RuntimeRiskSnapshot>>(
     id ? `/strategy-market/${id}/risk-snapshots?limit=10` : null,
-    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryRuntimeMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const vectorProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
     id ? `/strategy-market/${id}/vector-profiles?limit=10` : null,
-    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryVectorMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const similarProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
     id ? `/strategy-market/${id}/vector-ann-search?limit=10` : null,
-    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryVectorMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const vectorIndexSnapshotsQ = useApiQuery<ListResponse<VectorIndexSnapshot>>(
     '/strategy-market/vector-indexes/snapshots?index_name=strategy_behavior&limit=10',
-    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryVectorMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const aiExperimentsQ = useApiQuery<ListResponse<AiExperiment>>(
     id ? `/strategy-market/ai/experiments?strategy_id=${encodeURIComponent(strategyIdParam)}&limit=10` : null,
-    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryExperimentMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const domainEventsQ = useApiQuery<ListResponse<DomainEvent>>(
     id ? `/strategy-market/${id}/domain-events?limit=20` : null,
-    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryExperimentMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const taskRunsQ = useApiQuery<ListResponse<TaskRun>>(
     id ? `/strategy-market/task-runs?strategy_id=${encodeURIComponent(strategyIdParam)}&limit=10` : null,
-    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryExperimentMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const runtimeControlQ = useApiQuery<RuntimeControl>(
     id ? `/strategy-market/${id}/runtime-control` : null,
     {
-      enabled: factorySummaryMode || factoryRuntimeMode,
+      enabled: (factorySummaryMode || factoryRuntimeMode) && useLegacyFactoryQueries,
       staleTime: FACTORY_SECTION_STALE_TIME,
     },
   );
   const runtimeAlertsQ = useApiQuery<ListResponse<RuntimeAlert>>(
     id ? `/strategy-market/${id}/runtime-alerts?limit=20` : null,
-    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryRuntimeMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const promotionReviewsQ = useApiQuery<ListResponse<PromotionReview>>(
     id ? `/strategy-market/${id}/promotion-reviews?limit=10` : null,
-    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factoryIncubationMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const domainProjectionQ = useApiQuery<DomainProjection>(
     id ? `/strategy-market/${id}/domain-projection?limit=100` : null,
-    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factorySummaryMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const projectionSnapshotQ = useApiQuery<ListResponse<ProjectionSnapshot>>(
     id ? `/strategy-market/${id}/domain-projection/snapshot?limit=20` : null,
-    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    { enabled: factorySummaryMode && useLegacyFactoryQueries, staleTime: FACTORY_SECTION_STALE_TIME },
   );
 
   const detail = detailQ.data;
+  const closureReview = closureReviewQ.data;
+  const closureIncubation = closureReview?.incubation ?? null;
+  const closureRuntime = closureReview?.runtime ?? null;
+  const closureVectors = closureReview?.vectors ?? null;
+  const closureDomain = closureReview?.domain ?? null;
+  const closureAi = closureReview?.ai ?? null;
 
   const strategy = detail?.strategy ?? null;
+  const ownerState = closureReview?.owner_state ?? detail?.owner_state ?? null;
+  const favoriteState = closureReview?.favorite_state ?? detail?.favorite_state ?? null;
+  const paperSessionState = closureReview?.paper_session_state ?? detail?.paper_session_state ?? null;
+  const presentation = closureReview?.presentation ?? detail?.presentation ?? null;
   const metrics = useMemo(
     () => detail?.metrics ?? strategy?.metrics ?? [],
     [detail?.metrics, strategy?.metrics],
@@ -249,32 +268,32 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     () => detail?.nav_series ?? [],
     [detail?.nav_series],
   );
-  const latestQualityReport = reviewReportQ.data ?? detailViewModel?.quality?.latest_report ?? detail?.latest_quality_report ?? null;
-  const incubationOverview = incubationQ.data ?? detail?.incubation_overview ?? detailViewModel?.incubation?.overview ?? null;
-  const incubationAccount = detailViewModel?.incubation?.account ?? detail?.incubation_account ?? null;
-  const latestIncubationMetric = detailViewModel?.incubation?.latest_metric ?? detail?.latest_incubation_metric ?? null;
-  const latestPromotionReview = promotionReviewsQ.data?.latest ?? detail?.latest_promotion_review ?? null;
-  const latestProjectionSnapshot = projectionSnapshotQ.data?.latest ?? detailViewModel?.domain?.latest_projection_snapshot ?? detail?.latest_projection_snapshot ?? null;
-  const latestVectorIndexSnapshot = vectorIndexSnapshotsQ.data?.latest ?? detailViewModel?.vectors?.latest_index_snapshot ?? detail?.latest_vector_index_snapshot ?? null;
-  const latestIncubationPipelineSnapshot = incubationPipelineQ.data?.latest ?? detailViewModel?.incubation?.latest_pipeline_snapshot ?? detail?.latest_incubation_pipeline_snapshot ?? null;
-  const paperAccount = paperAccountQ.data?.account ?? null;
-  const paperPositions = paperAccountQ.data?.positions ?? [];
-  const paperOrderSummary = paperAccountQ.data?.order_summary ?? null;
-  const latestPaperNav = paperNavQ.data?.latest ?? paperAccountQ.data?.latest_nav ?? null;
-  const paperOrders = paperOrdersQ.data?.items ?? [];
-  const paperNavRows = paperNavQ.data?.items ?? [];
-  const latestRuntimeRiskSnapshot = riskSnapshotsQ.data?.latest ?? detailViewModel?.runtime?.latest_risk_snapshot ?? detail?.latest_runtime_risk_snapshot ?? null;
-  const runtimeControl = runtimeControlQ.data ?? detailViewModel?.runtime?.control ?? detail?.runtime_control ?? null;
-  const runtimeAlerts = (runtimeAlertsQ.data?.items?.length ? runtimeAlertsQ.data.items : detailViewModel?.runtime?.alerts ?? detail?.runtime_alerts) ?? [];
-  const domainProjection = domainProjectionQ.data ?? latestProjectionSnapshot?.projection ?? null;
-  const openRiskEvents = (riskEventsQ.data?.items?.length ? riskEventsQ.data.items : detailViewModel?.runtime?.risk_events ?? detail?.open_risk_events) ?? [];
-  const vectorProfiles = (vectorProfilesQ.data?.items?.length ? vectorProfilesQ.data.items : detailViewModel?.vectors?.profiles ?? detail?.vector_profiles) ?? [];
-  const similarProfiles = (similarProfilesQ.data?.items?.length ? similarProfilesQ.data.items : detailViewModel?.vectors?.similar_profiles ?? detail?.similar_vector_profiles) ?? [];
-  const vectorIndexSnapshots = vectorIndexSnapshotsQ.data?.items ?? [];
-  const incubationPipelineSnapshots = incubationPipelineQ.data?.items ?? [];
-  const runtimeRiskSnapshots = riskSnapshotsQ.data?.items ?? [];
-  const domainEvents = (domainEventsQ.data?.items?.length ? domainEventsQ.data.items : detailViewModel?.domain?.events ?? detail?.domain_events) ?? [];
-  const taskRuns = (taskRunsQ.data?.items?.length ? taskRunsQ.data.items : detailViewModel?.domain?.task_runs ?? detail?.task_runs) ?? [];
+  const latestQualityReport = closureReview?.report ?? reviewReportQ.data ?? detailViewModel?.quality?.latest_report ?? detail?.latest_quality_report ?? null;
+  const incubationOverview = closureIncubation?.overview ?? incubationQ.data ?? detail?.incubation_overview ?? detailViewModel?.incubation?.overview ?? null;
+  const incubationAccount = closureIncubation?.current_account ?? detailViewModel?.incubation?.account ?? detail?.incubation_account ?? null;
+  const latestIncubationMetric = closureIncubation?.latest_metric ?? detailViewModel?.incubation?.latest_metric ?? detail?.latest_incubation_metric ?? null;
+  const latestPromotionReview = closureIncubation?.promotion_reviews?.latest ?? promotionReviewsQ.data?.latest ?? detail?.latest_promotion_review ?? null;
+  const latestProjectionSnapshot = closureDomain?.latest_projection_snapshot ?? projectionSnapshotQ.data?.latest ?? detailViewModel?.domain?.latest_projection_snapshot ?? detail?.latest_projection_snapshot ?? null;
+  const latestVectorIndexSnapshot = closureVectors?.index_snapshots?.latest ?? vectorIndexSnapshotsQ.data?.latest ?? detailViewModel?.vectors?.latest_index_snapshot ?? detail?.latest_vector_index_snapshot ?? null;
+  const latestIncubationPipelineSnapshot = closureIncubation?.pipeline?.latest ?? incubationPipelineQ.data?.latest ?? detailViewModel?.incubation?.latest_pipeline_snapshot ?? detail?.latest_incubation_pipeline_snapshot ?? null;
+  const paperAccount = closureIncubation?.paper_account?.account ?? paperAccountQ.data?.account ?? null;
+  const paperPositions = closureIncubation?.paper_account?.positions ?? paperAccountQ.data?.positions ?? [];
+  const paperOrderSummary = closureIncubation?.paper_account?.order_summary ?? paperAccountQ.data?.order_summary ?? null;
+  const latestPaperNav = closureIncubation?.paper_account?.latest_nav ?? paperNavQ.data?.latest ?? paperAccountQ.data?.latest_nav ?? null;
+  const paperOrders = closureIncubation?.paper_orders ?? paperOrdersQ.data?.items ?? [];
+  const paperNavRows = closureIncubation?.paper_nav_rows ?? paperNavQ.data?.items ?? [];
+  const latestRuntimeRiskSnapshot = closureRuntime?.risk_snapshots?.latest ?? riskSnapshotsQ.data?.latest ?? detailViewModel?.runtime?.latest_risk_snapshot ?? detail?.latest_runtime_risk_snapshot ?? null;
+  const runtimeControl = closureRuntime?.control ?? runtimeControlQ.data ?? detailViewModel?.runtime?.control ?? detail?.runtime_control ?? null;
+  const runtimeAlerts = closureRuntime?.alerts ?? (runtimeAlertsQ.data?.items?.length ? runtimeAlertsQ.data.items : detailViewModel?.runtime?.alerts ?? detail?.runtime_alerts) ?? [];
+  const domainProjection = closureDomain?.projection ?? domainProjectionQ.data ?? latestProjectionSnapshot?.projection ?? null;
+  const openRiskEvents = closureRuntime?.risk_events ?? (riskEventsQ.data?.items?.length ? riskEventsQ.data.items : detailViewModel?.runtime?.risk_events ?? detail?.open_risk_events) ?? [];
+  const vectorProfiles = closureVectors?.profiles ?? (vectorProfilesQ.data?.items?.length ? vectorProfilesQ.data.items : detailViewModel?.vectors?.profiles ?? detail?.vector_profiles) ?? [];
+  const similarProfiles = closureVectors?.similar_profiles ?? (similarProfilesQ.data?.items?.length ? similarProfilesQ.data.items : detailViewModel?.vectors?.similar_profiles ?? detail?.similar_vector_profiles) ?? [];
+  const vectorIndexSnapshots = closureVectors?.index_snapshots?.items ?? vectorIndexSnapshotsQ.data?.items ?? [];
+  const incubationPipelineSnapshots = closureIncubation?.pipeline?.items ?? incubationPipelineQ.data?.items ?? [];
+  const runtimeRiskSnapshots = closureRuntime?.risk_snapshots?.items ?? riskSnapshotsQ.data?.items ?? [];
+  const domainEvents = closureDomain?.events ?? (domainEventsQ.data?.items?.length ? domainEventsQ.data.items : detailViewModel?.domain?.events ?? detail?.domain_events) ?? [];
+  const taskRuns = closureAi?.task_runs ?? (taskRunsQ.data?.items?.length ? taskRunsQ.data.items : detailViewModel?.domain?.task_runs ?? detail?.task_runs) ?? [];
   const subscribedStrategyIds = useMemo(() => {
     const rows = mySubscriptionsQ.data?.subscriptions ?? mySubscriptionsQ.data?.items ?? [];
     return new Set(
@@ -283,7 +302,14 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
         .filter(Boolean),
     );
   }, [mySubscriptionsQ.data]);
-  const isSubscribed = Boolean(id && (subscriptionOverride ?? subscribedStrategyIds.has(id)));
+  const isSubscribed = Boolean(
+    id
+      && (
+        subscriptionOverride
+        ?? favoriteState?.favorited
+        ?? subscribedStrategyIds.has(id)
+      ),
+  );
   const highConfidenceQualityUiEnabled = Boolean(
     capabilitiesQ.data?.quality_ui_v2_enabled,
   );
@@ -316,18 +342,18 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
 
   async function handleSubscribe() {
     if (!userId) {
-      window.alert('请先登录后再订阅策略');
+      window.alert('请先登录后再收藏策略');
       return;
     }
     if (!id) return;
 
     if (isSubscribed) {
-      await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'DELETE' }, {});
+      await subscribeApi.triggerAsync(`/strategy-market/${id}/favorite`, { method: 'DELETE' }, {});
       setSubscriptionOverride(false);
       return;
     }
 
-    await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'POST' }, {});
+    await subscribeApi.triggerAsync(`/strategy-market/${id}/favorite`, { method: 'POST' }, {});
     setSubscriptionOverride(true);
   }
 
@@ -397,15 +423,16 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   const factorySectionLoading: Record<FactoryReviewSection, boolean> = {
-    summary:
+    summary: closureReviewQ.isPending || (
       reviewReportQ.isPending ||
       eventsQ.isPending ||
       incubationQ.isPending ||
       executionAuditAcceptanceQ.isPending ||
       runtimeControlQ.isPending ||
       domainProjectionQ.isPending ||
-      projectionSnapshotQ.isPending,
-    incubation:
+      projectionSnapshotQ.isPending
+    ),
+    incubation: closureReviewQ.isPending || (
       incubationQ.isPending ||
       executionAuditAcceptanceQ.isPending ||
       incubationMetricsQ.isPending ||
@@ -413,20 +440,24 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       paperOrdersQ.isPending ||
       paperNavQ.isPending ||
       incubationPipelineQ.isPending ||
-      promotionReviewsQ.isPending,
-    runtime:
+      promotionReviewsQ.isPending
+    ),
+    runtime: closureReviewQ.isPending || (
       runtimeControlQ.isPending ||
       riskEventsQ.isPending ||
       riskSnapshotsQ.isPending ||
-      runtimeAlertsQ.isPending,
-    vectors:
+      runtimeAlertsQ.isPending
+    ),
+    vectors: closureReviewQ.isPending || (
       vectorProfilesQ.isPending ||
       similarProfilesQ.isPending ||
-      vectorIndexSnapshotsQ.isPending,
-    experiments:
+      vectorIndexSnapshotsQ.isPending
+    ),
+    experiments: closureReviewQ.isPending || (
       aiExperimentsQ.isPending ||
       domainEventsQ.isPending ||
-      taskRunsQ.isPending,
+      taskRunsQ.isPending
+    ),
   };
   const factoryLoading = factorySectionLoading[activeFactorySection];
 
@@ -455,6 +486,10 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       vectorProfiles,
       highConfidenceQualityUiEnabled,
       promotionReady: Boolean(incubationOverview?.promotion_ready),
+      ownerState,
+      favoriteState,
+      paperSessionState,
+      presentation,
       rating,
       setRating,
       comment,
@@ -473,8 +508,9 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     },
     factoryPanelProps: {
       highConfidenceQualityUiEnabled,
+      canViewOperatorPanels: Boolean(capabilitiesQ.data?.actor_permissions?.can_view_operator_panels),
       report: latestQualityReport,
-      events: eventsQ.data,
+      events: closureReview?.events ?? eventsQ.data,
       incubation: incubationOverview,
       currentAccount: incubationAccount,
       latestMetric: latestIncubationMetric,
@@ -483,7 +519,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       runtimeControl,
       domainProjection,
       latestIncubationPipelineSnapshot,
-      executionAuditAcceptance: executionAuditAcceptanceQ.data,
+      executionAuditAcceptance: closureIncubation?.execution_audit_acceptance ?? executionAuditAcceptanceQ.data,
       incubationPipelineSnapshots,
       paperAccount,
       paperPositions,
@@ -494,7 +530,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       latestRuntimeRiskSnapshot,
       runtimeAlerts,
       runtimeRiskSnapshots,
-      promotionReviews: promotionReviewsQ.data?.items ?? [],
+      promotionReviews: closureIncubation?.promotion_reviews?.items ?? promotionReviewsQ.data?.items ?? [],
       incubationMetrics: incubationMetricsQ.data?.items ?? [],
       riskEvents: openRiskEvents,
       vectorProfiles,
@@ -502,8 +538,12 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       vectorIndexSnapshots,
       latestVectorIndexSnapshot,
       domainEvents,
-      aiExperiments: aiExperimentsQ.data?.items ?? [],
+      aiExperiments: closureAi?.experiments ?? aiExperimentsQ.data?.items ?? [],
       taskRuns,
+      ownerState,
+      favoriteState,
+      paperSessionState,
+      presentation,
       activeSection: activeFactorySection,
       onSectionChange: setActiveFactorySection,
       sectionLoading: factorySectionLoading,

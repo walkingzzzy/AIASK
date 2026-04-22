@@ -15,7 +15,13 @@ def _build_execution_quality_snapshot(execution_quality: Optional[dict[str, Any]
         payload.get("execution_audit_gate_status") or audit.get("execution_audit_gate_status")
     ) or "missing"
     evidence_gap_codes = list(payload.get("evidence_gap_codes") or [])
-    if execution_audit_gate_status in {"missing", "bootstrap_pending", "insufficient_samples", "insufficient_evidence"}:
+    if execution_audit_gate_status in {
+        "missing",
+        "bootstrap_pending",
+        "insufficient_samples",
+        "bootstrap_ready",
+        "insufficient_evidence",
+    }:
         evidence_gap_codes.append(f"execution_audit_gate:{execution_audit_gate_status}")
     execution_quality_label = _string(payload.get("execution_quality_label")).lower()
     if execution_audit_gate_status == "passed":

@@ -1,7 +1,36 @@
 import type { FactoryRunsResponse } from '@aiask/shared-types';
+import type {
+  AiExperiment,
+  DomainEvent,
+  DomainProjection,
+  ExecutionAuditAcceptanceResponse,
+  IncubationAccount,
+  IncubationMetric,
+  IncubationOverviewResponse,
+  IncubationPipelineSnapshot,
+  PaperAccountResponse,
+  PaperNav,
+  PaperOrder,
+  ProjectionSnapshot,
+  PromotionReview,
+  ReviewReportResponse,
+  RiskEvent,
+  RuntimeAlert,
+  RuntimeControl,
+  RuntimeRiskSnapshot,
+  StrategyFavoriteState,
+  StrategyOwnerState,
+  StrategyPaperSessionState,
+  StrategyPresentationDto,
+  StrategyEventsResponse,
+  TaskRun,
+  VectorIndexSnapshot,
+  VectorProfile,
+} from '@aiask/shared-types';
 
 export type {
   Strategy,
+  StrategyIncubationSurface,
   RankingResponse,
   FactoryAutonomyTaskBrief,
   FactoryRunSummary,
@@ -48,6 +77,10 @@ export type {
   Signal,
   SignalsResponse,
   ReviewReportResponse,
+  StrategyOwnerState,
+  StrategyFavoriteState,
+  StrategyPaperSessionState,
+  StrategyPresentationDto,
   StrategyEventsResponse,
   IncubationOverviewResponse,
   IncubationAccount,
@@ -103,4 +136,55 @@ export type CapabilityBadge = {
   key: string;
   label: string;
   enabled: boolean;
+};
+
+export type StrategyClosureReviewResponse = {
+  strategy_id?: string;
+  as_of?: string;
+  correlation_id?: string;
+  factory_run_id?: string;
+  stale?: boolean;
+  owner_state?: StrategyOwnerState;
+  favorite_state?: StrategyFavoriteState;
+  paper_session_state?: StrategyPaperSessionState;
+  presentation?: StrategyPresentationDto;
+  data_freshness?: Record<string, unknown>;
+  report?: ReviewReportResponse | null;
+  events?: StrategyEventsResponse | null;
+  incubation?: {
+    overview?: IncubationOverviewResponse | null;
+    current_account?: IncubationAccount | null;
+    latest_metric?: IncubationMetric | null;
+    paper_account?: PaperAccountResponse | null;
+    paper_orders?: PaperOrder[];
+    paper_nav_rows?: PaperNav[];
+    pipeline?: { latest?: IncubationPipelineSnapshot | null; items?: IncubationPipelineSnapshot[]; count?: number };
+    promotion_reviews?: { latest?: PromotionReview | null; items?: PromotionReview[]; count?: number };
+    execution_audit_acceptance?: ExecutionAuditAcceptanceResponse | null;
+  } | null;
+  runtime?: {
+    control?: RuntimeControl | null;
+    risk_events?: RiskEvent[];
+    risk_snapshots?: { latest?: RuntimeRiskSnapshot | null; items?: RuntimeRiskSnapshot[]; count?: number };
+    alerts?: RuntimeAlert[];
+  } | null;
+  vectors?: {
+    profiles?: VectorProfile[];
+    similar_profiles?: VectorProfile[];
+    index_snapshots?: { latest?: VectorIndexSnapshot | null; items?: VectorIndexSnapshot[]; count?: number };
+  } | null;
+  domain?: {
+    projection?: DomainProjection | null;
+    latest_projection_snapshot?: ProjectionSnapshot | null;
+    projection_snapshots?: ProjectionSnapshot[];
+    events?: DomainEvent[];
+  } | null;
+  ai?: {
+    experiments?: AiExperiment[];
+    task_runs?: TaskRun[];
+  } | null;
+  factory?: {
+    latest_run?: FactoryRunItem | null;
+    runs?: FactoryRunItem[];
+  } | null;
 };

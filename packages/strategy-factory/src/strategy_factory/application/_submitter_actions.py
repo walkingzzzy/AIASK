@@ -319,7 +319,13 @@ def _gate_c_payload(candidate: dict[str, Any], gate: dict[str, Any], final_statu
         or ""
     ).strip()
     evidence_gap_codes = list(candidate.get("evidence_gap_codes") or [])
-    if execution_audit_status in {"missing", "bootstrap_pending", "insufficient_samples", "insufficient_evidence"}:
+    if execution_audit_status in {
+        "missing",
+        "bootstrap_pending",
+        "insufficient_samples",
+        "bootstrap_ready",
+        "insufficient_evidence",
+    }:
         evidence_gap_codes.append(f"execution_audit_gate:{execution_audit_status}")
     decision = "block" if blockers else "observe" if final_status else "pending"
     return {

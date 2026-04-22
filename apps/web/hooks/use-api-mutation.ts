@@ -1,12 +1,12 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { authedFetch, extractApiErrorMessage, unwrapApiEnvelope } from '@/lib/api';
+import { authedFetch, buildApiError, rejectFallbackPayload, unwrapApiEnvelope } from '@/lib/api';
 import { useToast } from '@/components/ui/toast';
 import type { Envelope } from '@aiask/shared-types';
 
 type FetchOptions = {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   headers?: Record<string, string>;
 };
 
@@ -21,6 +21,10 @@ type UseApiMutationOptions<TData> = {
   errorToast?: boolean;
   /** 可选数据解析器：用于运行时 schema 校验/结构转换 */
   parse?: (raw: unknown) => TData;
+  /** 关键写操作：拒绝 degraded/fallback/伪成功 */
+  critical?: boolean;
+  /** 额外业务校验，返回错误文案则视为失败 */
+  reject?: (raw: unknown) => string | null;
 };
 
 /**
@@ -44,14 +48,11 @@ export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<T
       const resp = await authedFetch(path, init);
       const bodyPayload = await resp.json().catch(() => null);
       if (!resp.ok) {
-        let msg = `HTTP ${resp.status} @ ${path}`;
-        const detail = extractApiErrorMessage(bodyPayload, msg);
-        if (detail !== msg) msg = `${detail} @ ${path}`;
-        const traceId = bodyPayload && typeof bodyPayload === 'object' && typeof (bodyPayload as { traceId?: unknown }).traceId === 'string'
-          ? (bodyPayload as { traceId: string }).traceId
-          : undefined;
-        if (traceId) msg = `${msg} (traceId: ${traceId})`;
-        throw new Error(msg);
+        throw buildApiError(bodyPayload, {
+          status: resp.status,
+          path,
+          fallbackMessage: `HTTP ${resp.status}`,
+        });
       }
       const envelope = bodyPayload as Envelope<TData>;
       const unwrapped = unwrapApiEnvelope<TData>(envelope);
@@ -60,6 +61,18 @@ export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<T
         throw new Error(`${unwrapped.errorMessage} @ ${path}${trace}`);
       }
       const rawData = unwrapped.data;
+      if (options.critical) {
+        const fallbackReason = rejectFallbackPayload(rawData);
+        if (fallbackReason) {
+          throw new Error(`关键写操作未完成: ${fallbackReason} @ ${path}${trace}`);
+        }
+      }
+      if (options.reject) {
+        const rejection = options.reject(rawData);
+        if (rejection) {
+          throw new Error(`${rejection} @ ${path}${trace}`);
+        }
+      }
       if (options.parse) {
         try {
           return options.parse(rawData);

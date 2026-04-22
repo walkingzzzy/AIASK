@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from .constants import *  # noqa: F401,F403
-from .normalizers import *  # noqa: F401,F403
+from .constants import _FACTOR_VALIDATION_TYPES
+from .normalizers import (
+    _normalize_code_list,
+    _normalize_turnover_band,
+    _safe_float,
+    _safe_int,
+    _safe_normalize_research_task,
+)
 
 def _derive_half_life_semantics(alpha_half_life: Any) -> dict[str, Any]:
     half_life = _safe_float(alpha_half_life, 0.0)
@@ -339,6 +345,200 @@ def _default_position_sizing(target_symbols: list[str]) -> dict[str, Any]:
     }
 
 
+def _default_event_prefilter(
+    strategy_type: str,
+    validation_profile: dict[str, Any],
+) -> dict[str, Any]:
+    profile = dict(validation_profile or {})
+    required = bool(
+        profile.get("event_prefilter_required")
+        or str(strategy_type or "").strip().lower() == "event_structure_breakout"
+    )
+    prefilter_profile = str(
+        profile.get("event_prefilter_profile")
+        or ("announcement_flow_sector_v1" if required else "")
+    ).strip() or ("announcement_flow_sector_v1" if required else "")
+    min_confirmations = max(
+        1,
+        _safe_int(profile.get("event_prefilter_min_confirmations"), 1),
+    ) if required else 0
+    return {
+        "required": required,
+        "profile": prefilter_profile or None,
+        "allowed_sources": ["announcement", "fund_flow", "sector_catalyst"] if required else [],
+        "observed_sources": [],
+        "observed_confirmation_count": 0,
+        "confirmation_count": 0,
+        "min_confirmations": min_confirmations,
+        "passed": not required,
+        "status": "missing" if required else "not_required",
+        "focus_industries": [],
+        "event_anchor": {},
+        "anchor_strength": None,
+    }
+
+
+def _default_targeting_policy(research_task: dict[str, Any]) -> dict[str, Any]:
+    task = _safe_normalize_research_task(research_task)
+    task_source = str(task.get("task_source") or "snapshot").strip().lower() or "snapshot"
+    target_symbols = _normalize_code_list(
+        task.get("target_symbols"),
+        task.get("stock_pool"),
+        limit=12,
+    )
+    stock_pool = dict(task.get("stock_pool") or {})
+    target_alignment_contract = dict(task.get("target_alignment_contract") or {})
+    selection_mode = str(
+        stock_pool.get("selection_mode")
+        or ("explicit" if target_symbols else "screened")
+    ).strip().lower() or ("explicit" if target_symbols else "screened")
+    universe_scope = str(
+        stock_pool.get("universe_scope")
+        or task.get("universe_scope")
+        or ("task_target_only" if target_symbols else "market_screened")
+    ).strip().lower() or ("task_target_only" if target_symbols else "market_screened")
+    max_target_symbols = max(
+        1,
+        _safe_int(
+            target_alignment_contract.get("max_candidate_target_symbols"),
+            len(target_symbols) or 8,
+        ),
+    )
+    mode = "targeted" if target_symbols else ("event_driven" if task_source == "event_driven" else "screened")
+    payload: dict[str, Any] = {
+        "mode": mode,
+        "selection_mode": selection_mode,
+        "source": str(task.get("generator_mode") or task.get("generator_type") or task_source or "research_task"),
+        "reason": (
+            "target_symbols_from_research_task"
+            if target_symbols
+            else "fallback_to_screened_universe"
+        ),
+        "task_source": task_source,
+        "target_symbol_policy": str(
+            task.get("target_symbol_policy")
+            or ("strict_intersection" if task_source == "event_driven" else "prefer_intersection")
+        ).strip().lower(),
+        "universe_expansion_policy": str(
+            task.get("universe_expansion_policy")
+            or ("forbid" if task_source == "event_driven" else "allow_market_fallback")
+        ).strip().lower(),
+        "universe_scope": universe_scope,
+        "max_target_symbols": max_target_symbols,
+    }
+    if target_symbols:
+        payload["target_symbols"] = list(target_symbols[:max_target_symbols])
+        payload["symbols"] = list(target_symbols[:max_target_symbols])
+    return payload
+
+
+def _default_constraint_check(
+    *,
+    target_symbols: list[str],
+    research_task: dict[str, Any],
+    targeting_policy: dict[str, Any],
+) -> dict[str, Any]:
+    task = _safe_normalize_research_task(research_task)
+    research_symbols = _normalize_code_list(
+        task.get("target_symbols"),
+        task.get("stock_pool"),
+        limit=12,
+    )
+    candidate_before = _normalize_code_list(target_symbols, limit=12)
+    target_alignment_contract = dict(task.get("target_alignment_contract") or {})
+    policy = str(
+        dict(targeting_policy or {}).get("target_symbol_policy")
+        or task.get("target_symbol_policy")
+        or ("strict_intersection" if str(task.get("task_source") or "").strip().lower() == "event_driven" else "prefer_intersection")
+    ).strip().lower()
+    expansion_policy = str(
+        dict(targeting_policy or {}).get("universe_expansion_policy")
+        or task.get("universe_expansion_policy")
+        or ("forbid" if str(task.get("task_source") or "").strip().lower() == "event_driven" else "allow_market_fallback")
+    ).strip().lower()
+
+    resolved = list(candidate_before)
+    expansion_applied = False
+    expansion_reason = ""
+    expansion_source = ""
+    constraint_violation = None
+
+    contract_target_cap = _safe_int(
+        target_alignment_contract.get("max_candidate_target_symbols"),
+        _safe_int(dict(targeting_policy or {}).get("max_target_symbols"), len(resolved) or len(research_symbols) or 8),
+    )
+    resolved_limit = max(1, min(contract_target_cap or 8, 40))
+
+    if research_symbols:
+        intersection = [code for code in resolved if code in set(research_symbols)]
+        if policy == "strict_intersection":
+            if intersection:
+                if intersection != resolved:
+                    expansion_applied = True
+                    expansion_reason = "strict_intersection_trimmed"
+                    expansion_source = "research_task.target_symbols"
+                resolved = list(intersection)
+            else:
+                resolved = list(research_symbols[:resolved_limit])
+                expansion_applied = True
+                expansion_reason = "fallback_research_symbols"
+                expansion_source = "research_task.target_symbols"
+                constraint_violation = "strict_intersection_empty"
+        elif not resolved:
+            resolved = list(research_symbols[:resolved_limit])
+            expansion_applied = True
+            expansion_reason = "fallback_research_symbols"
+            expansion_source = "research_task.target_symbols"
+
+    resolved = list(resolved[:resolved_limit])
+    overlap_count = len(set(resolved).intersection(research_symbols))
+    coverage_ratio = round(overlap_count / max(1, len(resolved)), 4) if resolved else 0.0
+    intersection_ratio = round(overlap_count / max(1, len(research_symbols)), 4) if research_symbols else None
+
+    alignment_contract_ok = True
+    alignment_contract_violation = None
+    if target_alignment_contract.get("quality_gate_enabled"):
+        min_coverage_ratio = _safe_float(target_alignment_contract.get("min_coverage_ratio"), 0.0)
+        min_intersection_ratio = (
+            None
+            if target_alignment_contract.get("min_intersection_ratio") is None
+            else _safe_float(target_alignment_contract.get("min_intersection_ratio"), 0.0)
+        )
+        min_required_overlap_count = _safe_int(target_alignment_contract.get("min_required_overlap_count"), 0)
+        if not resolved and research_symbols:
+            alignment_contract_ok = False
+            alignment_contract_violation = "empty_target_symbols_after_alignment"
+        elif coverage_ratio < min_coverage_ratio:
+            alignment_contract_ok = False
+            alignment_contract_violation = "coverage_ratio_below_contract"
+        elif min_intersection_ratio is not None and (intersection_ratio or 0.0) < min_intersection_ratio:
+            alignment_contract_ok = False
+            alignment_contract_violation = "intersection_ratio_below_contract"
+        elif min_required_overlap_count > 0 and overlap_count < min_required_overlap_count:
+            alignment_contract_ok = False
+            alignment_contract_violation = "target_overlap_count_below_contract"
+
+    return {
+        "target_symbols_before_normalize": list(candidate_before),
+        "target_symbols_after_normalize": list(resolved),
+        "research_target_symbols": list(research_symbols),
+        "same_theme_symbols": [],
+        "target_symbol_policy": policy or None,
+        "universe_expansion_policy": expansion_policy or None,
+        "expansion_applied": expansion_applied,
+        "expansion_reason": expansion_reason or None,
+        "expansion_source": expansion_source or None,
+        "constraint_violation": constraint_violation,
+        "expansion_blocked_reason": None,
+        "coverage_ratio": coverage_ratio,
+        "intersection_ratio": intersection_ratio,
+        "target_overlap_count": int(overlap_count),
+        "alignment_contract_ok": alignment_contract_ok,
+        "alignment_contract_violation": alignment_contract_violation,
+        "target_alignment_contract": dict(target_alignment_contract),
+    }
+
+
 def _default_rebalance_rule(
     strategy_type: str,
     task_source: str,
@@ -479,5 +679,3 @@ def _runtime_playbook_family(strategy_type: str) -> str:
     if family in {"quality_factor", "value_factor"}:
         return "slow_factor"
     return "default"
-
-

@@ -8,5 +8,6 @@
 """
 
 from akshare_mcp._fragment_loader import exec_fragments as _exec_fragments
+from akshare_mcp.utils import resolve_existing_security_code_async
 
 _exec_fragments(globals(), 'trade_plan_parts', ['parsers.py', 'payloads.py', 'formatters.py', 'actions.py'], future_annotations=True)

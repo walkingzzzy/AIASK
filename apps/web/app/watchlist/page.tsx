@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
+import ResultWorkbench from '@/components/result-workbench';
 import { Badge, PageContainer, SectionCard, KpiCard, KpiGrid, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -12,9 +13,11 @@ import { StockLink } from '@/components/stock-link';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import Link from 'next/link';
 import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
-import { EmptyState } from '@/components/status-state';
+import { EmptyState, LoadingState, UnavailableState } from '@/components/status-state';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useMobile } from '@/hooks/use-mobile';
+import { useToast } from '@/components/ui/toast';
 
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
@@ -30,17 +33,22 @@ const FIELD_CLS =
 export default function WatchlistPage() {
   const hydrated = useHydrated();
   const compactBoard = useMobile(640);
+  const { toast } = useToast();
   const groups = useWatchlistStore((s) => s.groups);
   const syncFromServer = useWatchlistStore((s) => s.syncFromServer);
   const createGroup = useWatchlistStore((s) => s.createGroup);
   const deleteGroup = useWatchlistStore((s) => s.deleteGroup);
   const remove = useWatchlistStore((s) => s.remove);
   const add = useWatchlistStore((s) => s.add);
+  const synced = useWatchlistStore((s) => s.synced);
+  const syncing = useWatchlistStore((s) => s.syncing);
+  const syncError = useWatchlistStore((s) => s.syncError);
 
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [newGroupName, setNewGroupName] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
   const [showAllActiveItems, setShowAllActiveItems] = useState(false);
   const [pendingDialog, setPendingDialog] = useState<
     | { type: 'remove'; code: string; groupId?: string; groupName: string }
@@ -51,7 +59,7 @@ export default function WatchlistPage() {
   // ── 搜索/添加自选股 ──
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searchPath, setSearchPath] = useState<string | null>(null);
-  const searchQ = useApiQuery<unknown>(searchPath);
+  const searchQ = useApiQuery<unknown>(searchPath, { critical: true });
   const searchRows = useMemo(() => extractArray(searchQ.data) as Record<string, unknown>[], [searchQ.data]);
 
   const handleSearch = () => {
@@ -62,16 +70,20 @@ export default function WatchlistPage() {
     else setSearchPath(p);
   };
 
-  const handleAddStock = (code: string, name: string) => {
-    void add(code, name, activeGroup?.id);
-    // 清空搜索结果，方便继续操作
-    setSearchKeyword('');
-    setSearchPath(null);
+  const handleAddStock = async (code: string, name: string) => {
+    try {
+      await add(code, name, activeGroup?.id);
+      setSearchKeyword('');
+      setSearchPath(null);
+      toast(`已将 ${name || code} 加入 ${activeGroup?.name ?? '当前分组'}`, 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '添加自选失败', 'error');
+    }
   };
 
   // Sync on mount
   useEffect(() => {
-    syncFromServer();
+    void syncFromServer().catch(() => {});
   }, [syncFromServer]);
 
   const visibleGroups = hydrated ? groups : [];
@@ -101,6 +113,7 @@ export default function WatchlistPage() {
     body: { codes: allCodes },
     refetchInterval: 30000,
     placeholderData: 'keepPrevious',
+    critical: true,
   });
 
   const quoteMap = useMemo(() => {
@@ -148,14 +161,22 @@ export default function WatchlistPage() {
   const handleCreateGroup = async () => {
     const groupName = newGroupName.trim();
     if (!groupName) return;
-
-    const createdGroupId = await createGroup(groupName);
-    if (createdGroupId) {
-      setActiveGroupId(createdGroupId);
+    try {
+      const createdGroupId = await createGroup(groupName);
+      if (createdGroupId) {
+        setActiveGroupId(createdGroupId);
+      }
+      setNewGroupName('');
+      setShowNewGroup(false);
+      toast(`已创建分组 ${groupName}`, 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '创建分组失败', 'error');
     }
+  };
 
-    setNewGroupName('');
-    setShowNewGroup(false);
+  const handleOpenGroupComposer = () => {
+    setManagementOpen(true);
+    setShowNewGroup(true);
   };
 
   const handleRemoveStock = (code: string, groupName: string) => {
@@ -166,42 +187,24 @@ export default function WatchlistPage() {
     setPendingDialog({ type: 'delete-group', groupId, groupName });
   };
 
-  const handleConfirmPendingAction = () => {
+  const handleConfirmPendingAction = async () => {
     if (!pendingDialog) return;
-    if (pendingDialog.type === 'remove') {
-      void remove(pendingDialog.code, pendingDialog.groupId);
-    } else {
-      if (activeGroupId === pendingDialog.groupId) {
-        setActiveGroupId('default');
+    try {
+      if (pendingDialog.type === 'remove') {
+        await remove(pendingDialog.code, pendingDialog.groupId);
+        toast(`已从 ${pendingDialog.groupName} 移除 ${pendingDialog.code}`, 'success');
+      } else {
+        if (activeGroupId === pendingDialog.groupId) {
+          setActiveGroupId('default');
+        }
+        await deleteGroup(pendingDialog.groupId);
+        toast(`已删除分组 ${pendingDialog.groupName}`, 'success');
       }
-      void deleteGroup(pendingDialog.groupId);
+      setPendingDialog(null);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '自选股操作失败', 'error');
     }
-    setPendingDialog(null);
   };
-
-  usePageContext({
-    pageKey: 'watchlist',
-    title: '自选股',
-    summary: `当前共有 ${visibleGroups.length} 个分组，活跃分组 ${activeGroup?.name ?? '未选择'}，包含 ${activeGroup?.items.length ?? 0} 只股票。`,
-    stockCode: activeGroup?.items[0]?.code,
-    tags: [
-      `${visibleGroups.length} 个分组`,
-      `${activeGroup?.items.length ?? 0} 只股票`,
-      viewMode === 'grid' ? '网格视图' : '列表视图',
-    ],
-    suggestions: [
-      '总结当前分组里最值得关注的股票',
-      '按涨跌幅和成交额给自选股做优先级排序',
-      '把当前分组整理成盘中巡检清单',
-    ],
-    raw: {
-      groupCount: visibleGroups.length,
-      activeGroupId: activeGroup?.id ?? null,
-      activeGroupName: activeGroup?.name ?? null,
-      stockCount: activeGroup?.items.length ?? 0,
-      viewMode,
-    },
-  });
 
   const pageActions = [
     {
@@ -212,7 +215,7 @@ export default function WatchlistPage() {
       scope: 'page' as const,
       pageKey: 'watchlist',
       run: async () => {
-        await syncFromServer();
+        await syncFromServer(true);
         await batchQ.refetch();
         return { message: '已刷新自选股与行情' };
       },
@@ -248,6 +251,92 @@ export default function WatchlistPage() {
 
   usePageActions(pageActions);
 
+  const watchlistSummary = `当前共有 ${visibleGroups.length} 个分组，活跃分组 ${activeGroup?.name ?? '未选择'}，包含 ${activeGroup?.items.length ?? 0} 只股票。`;
+  const watchlistEvidence = [
+    { label: '分组数量', value: String(visibleGroups.length) },
+    { label: '当前分组', value: activeGroup?.name ?? '未选择' },
+    { label: '股票数量', value: String(activeGroup?.items.length ?? 0) },
+    { label: '视图模式', value: viewMode === 'grid' ? '网格视图' : '列表视图' },
+  ];
+  const leadCode = activeGroup?.items[0]?.code?.trim() || '';
+  const watchlistLinks = [
+    leadCode ? { id: 'watchlist-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(leadCode)}` } : { id: 'watchlist-open-market', label: '行情看板', href: '/market?from=watchlist' },
+    { id: 'watchlist-open-research', label: '研报公告', href: leadCode ? `/research?code=${encodeURIComponent(leadCode)}` : '/research' },
+    { id: 'watchlist-open-paper', label: '模拟交易', href: '/paper-trading?from=watchlist' },
+    { id: 'watchlist-open-skills', label: '技能中心', href: '/skills?from=watchlist' },
+  ];
+  const watchlistRiskNotes = [] as string[];
+  if ((activeGroup?.items.length ?? 0) === 0) {
+    watchlistRiskNotes.push('当前分组为空，建议先补入候选标的后再做排序和巡检。');
+  }
+  const watchlistResult = buildLocalResultContract({
+    summary: watchlistSummary,
+    pageActions,
+    preferredActionIds: ['watchlist.refresh', 'watchlist.toggle-view', 'watchlist.export-active'],
+    recommendedLinks: watchlistLinks,
+    evidence: watchlistEvidence,
+    riskNotes: watchlistRiskNotes,
+    workbenchTask: defaultWorkbenchTask('watchlist', `自选巡检：${activeGroup?.name ?? '当前分组'}`, '/watchlist', 'watchlist-review', {
+      groupId: activeGroup?.id ?? null,
+      groupName: activeGroup?.name ?? null,
+      stockCount: activeGroup?.items.length ?? 0,
+    }),
+  });
+
+  usePageContext({
+    pageKey: 'watchlist',
+    title: '自选股',
+    summary: watchlistSummary,
+    stockCode: activeGroup?.items[0]?.code,
+    objectType: activeGroup?.items.length ? 'stock-list' : 'workspace',
+    objectId: activeGroup?.id ?? 'watchlist',
+    resultType: 'watchlist-summary',
+    tags: [
+      `${visibleGroups.length} 个分组`,
+      `${activeGroup?.items.length ?? 0} 只股票`,
+      viewMode === 'grid' ? '网格视图' : '列表视图',
+    ],
+    suggestions: [
+      '总结当前分组里最值得关注的股票',
+      '按涨跌幅和成交额给自选股做优先级排序',
+      '把当前分组整理成盘中巡检清单',
+    ],
+    recommendedActions: watchlistResult.recommendedActions,
+    recommendedLinks: watchlistResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(watchlistResult.evidence),
+    riskNotes: watchlistResult.riskNotes ?? [],
+    freshness: watchlistResult.freshness ?? null,
+    raw: {
+      groupCount: visibleGroups.length,
+      activeGroupId: activeGroup?.id ?? null,
+      activeGroupName: activeGroup?.name ?? null,
+      stockCount: activeGroup?.items.length ?? 0,
+      viewMode,
+    },
+  });
+
+  if (hydrated && syncing && !synced) {
+    return (
+      <PageContainer className="app-theme-market">
+        <LoadingState text="正在同步自选股分组与行情工作台..." />
+      </PageContainer>
+    );
+  }
+
+  if (hydrated && !synced && syncError) {
+    return (
+      <PageContainer className="app-theme-market">
+        <UnavailableState
+          text="自选股主链路暂不可用"
+          hint={syncError}
+          onRetry={() => {
+            void syncFromServer(true).catch(() => {});
+          }}
+        />
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer className="app-theme-market space-y-4">
       <section className="page-hero p-5 sm:p-6">
@@ -280,7 +369,7 @@ export default function WatchlistPage() {
               >
                 {viewMode === 'grid' ? '切到列表视图' : '切到网格视图'}
               </button>
-              <button type="button" onClick={() => setShowNewGroup(true)} className={HERO_PRIMARY_BUTTON_CLS}>
+              <button type="button" onClick={handleOpenGroupComposer} className={HERO_PRIMARY_BUTTON_CLS}>
                 新建分组
               </button>
             </div>
@@ -361,6 +450,9 @@ export default function WatchlistPage() {
         </div>
       </section>
 
+      <ResultWorkbench pageKey="watchlist" title="自选研究工作台" result={watchlistResult} />
+
+
       <div className={PANEL_CLS}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -398,13 +490,17 @@ export default function WatchlistPage() {
           >
             {viewMode === 'grid' ? '切到列表视图' : '切到网格视图'}
           </button>
-          <button type="button" onClick={() => setShowNewGroup(true)} className={HERO_PRIMARY_BUTTON_CLS}>
+          <button type="button" onClick={handleOpenGroupComposer} className={HERO_PRIMARY_BUTTON_CLS}>
             新建分组
           </button>
         </div>
       </div>
 
-      <details className={`${PANEL_CLS} overflow-hidden`}>
+      <details
+        open={managementOpen}
+        onToggle={(event) => setManagementOpen(event.currentTarget.open)}
+        className={`${PANEL_CLS} overflow-hidden`}
+      >
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-[24px] text-left">
           <div>
             <div className="eyebrow">Management Zone</div>
@@ -524,6 +620,17 @@ export default function WatchlistPage() {
               {searchPath && !searchQ.isFetching && searchRows.length === 0 ? (
                 <p className="mt-1 text-xs text-text-muted">未找到相关股票</p>
               ) : null}
+              {searchQ.error ? (
+                <UnavailableState
+                  text="股票搜索暂不可用"
+                  hint={searchQ.error}
+                  onRetry={() => {
+                    if (searchPath) {
+                      void searchQ.refetch();
+                    }
+                  }}
+                />
+              ) : null}
             </div>
           </SectionCard>
 
@@ -562,8 +669,15 @@ export default function WatchlistPage() {
             <button
               type="button"
               onClick={() => {
-                void syncFromServer();
-                void batchQ.refetch();
+                void (async () => {
+                  try {
+                    await syncFromServer(true);
+                    await batchQ.refetch();
+                    toast('已刷新自选股与行情', 'success');
+                  } catch (error) {
+                    toast(error instanceof Error ? error.message : '刷新自选股失败', 'error');
+                  }
+                })();
               }}
               className={CHIP_BUTTON_CLS}
             >
@@ -584,6 +698,16 @@ export default function WatchlistPage() {
         {!hydrated ? (
           <div className="mt-5 rounded-[24px] border border-white/45 bg-white/30 p-4 text-sm text-text-secondary">
             正在加载自选数据...
+          </div>
+        ) : batchQ.error && activeGroupItems.length > 0 ? (
+          <div className="mt-5">
+            <UnavailableState
+              text="自选股实时行情暂不可用"
+              hint={batchQ.error}
+              onRetry={() => {
+                void batchQ.refetch();
+              }}
+            />
           </div>
         ) : activeGroup && activeGroupItems.length > 0 ? (
           viewMode === 'grid' ? (
@@ -764,19 +888,16 @@ export default function WatchlistPage() {
               variant="full"
               action={
                 <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchKeyword('600519');
-                      setSearchPath('/market/search?keyword=600519');
-                    }}
-                    className={HERO_SECONDARY_BUTTON_CLS}
-                  >
-                    试试 600519
-                  </button>
                   <Link href="/market" className={LINK_CHIP_CLS}>
                     去行情看板添加
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewGroup(true)}
+                    className={HERO_SECONDARY_BUTTON_CLS}
+                  >
+                    先建分组
+                  </button>
                 </>
               }
             />
@@ -811,7 +932,9 @@ export default function WatchlistPage() {
         }
         confirmText={pendingDialog?.type === 'remove' ? '确认移除' : '确认删除'}
         danger
-        onConfirm={handleConfirmPendingAction}
+        onConfirm={() => {
+          void handleConfirmPendingAction();
+        }}
         onCancel={() => setPendingDialog(null)}
       />
     </PageContainer>

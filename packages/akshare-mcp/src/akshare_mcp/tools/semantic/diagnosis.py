@@ -2,7 +2,13 @@
 
 from datetime import datetime
 
-from ...utils import fail, normalize_code, ok
+from ...utils import (
+    attach_argument_contract_meta,
+    fail,
+    ok,
+    resolve_canonical_arg,
+    resolve_existing_security_code_async,
+)
 from ..investment_analysis import get_investment_analysis
 
 
@@ -79,34 +85,69 @@ def _build_evidence(context: dict) -> tuple[list[dict], list[str], list[str], st
     return evidence, highlights, risks, recommendation, recommendation_text
 
 
-async def smart_stock_diagnosis(stock_code: str):
+async def smart_stock_diagnosis(
+    code: str = "",
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+):
     """结构化股票诊断，输出证据而非硬编码总分。"""
     try:
-        code = normalize_code(stock_code)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code, _, error = await resolve_existing_security_code_async(code=raw_code)
+        canonical_args = {"code": code or raw_code}
+        if error:
+            return attach_argument_contract_meta(
+                fail(error),
+                canonical_tool="smart_stock_diagnosis",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
         analysis = await get_investment_analysis(code)
         if not analysis.get("success"):
-            return fail(analysis.get("error", "diagnosis_failed"))
+            return attach_argument_contract_meta(
+                fail(analysis.get("error", "diagnosis_failed")),
+                canonical_tool="smart_stock_diagnosis",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
         context = analysis.get("data", {}) or {}
         evidence, highlights, risks, recommendation, recommendation_text = _build_evidence(context)
         basic_info = context.get("basic_info", {}) if isinstance(context.get("basic_info"), dict) else {}
         price_context = context.get("price_context", {}) if isinstance(context.get("price_context"), dict) else {}
-        return ok({
-            "code": code,
-            "name": basic_info.get("name", ""),
-            "recommendation": recommendation,
-            "recommendation_text": recommendation_text,
-            "decision_mode": "context_aggregator",
-            "analysis_context": context,
-            "evidence": evidence,
-            "highlights": highlights,
-            "risks": risks,
-            "summary": {
-                "positive_evidence_count": len(highlights),
-                "risk_count": len(risks),
-                "market_regime": context.get("momentum", {}).get("market_regime"),
-            },
-            "current_price": price_context.get("current_price"),
-            "analysis_date": price_context.get("analysis_date") or datetime.now().strftime("%Y-%m-%d"),
-        })
+        return attach_argument_contract_meta(
+            ok({
+                "code": code,
+                "name": basic_info.get("name", ""),
+                "recommendation": recommendation,
+                "recommendation_text": recommendation_text,
+                "decision_mode": "context_aggregator",
+                "analysis_context": context,
+                "evidence": evidence,
+                "highlights": highlights,
+                "risks": risks,
+                "summary": {
+                    "positive_evidence_count": len(highlights),
+                    "risk_count": len(risks),
+                    "market_regime": context.get("momentum", {}).get("market_regime"),
+                },
+                "current_price": price_context.get("current_price"),
+                "analysis_date": price_context.get("analysis_date") or datetime.now().strftime("%Y-%m-%d"),
+            }),
+            canonical_tool="smart_stock_diagnosis",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     except Exception as e:
-        return fail(str(e))
+        return attach_argument_contract_meta(
+            fail(str(e)),
+            canonical_tool="smart_stock_diagnosis",
+            canonical_args={"code": code or ""},
+            alias_hits=[],
+        )

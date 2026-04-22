@@ -4,6 +4,9 @@ import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PreferencesService } from '../auth/preferences.service';
 import { UserContextService } from './user-context.service';
 import { CHAT_TOOLS, buildSystemPrompt } from './chat.tools';
+import { BehaviorService } from '../behavior/behavior.service';
+import { LOCAL_CONTEXT_TOOL_NAMES, LOCAL_CONTEXT_TOOLS } from './tools/local-context';
+import { sanitizeReasoningDelta } from './chat-safety';
 import type {
   ChatEvent,
   ChatMessageInput,
@@ -16,6 +19,8 @@ type ToolCallRecord = { name: string; args: Record<string, unknown>; result: unk
 
 const MAX_TOOL_ROUNDS = 10;
 const CLIENT_ACTION_TOOL_NAME = 'request_client_action';
+const FIRST_RESPONSE_TIMEOUT_MS = 15_000;
+const ROUND_TIMEOUT_MS = 75_000;
 
 @Injectable()
 export class ChatService {
@@ -25,6 +30,7 @@ export class ChatService {
     private readonly mcp: McpGatewayService,
     private readonly preferencesService: PreferencesService,
     private readonly userContextService: UserContextService,
+    private readonly behaviorService: BehaviorService,
   ) {}
 
   async *streamChat(userId: string, payload: ChatRequestPayload): AsyncGenerator<ChatEvent> {
@@ -37,9 +43,15 @@ export class ChatService {
 
     const openai = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseUrl });
     const userContext = await this.userContextService.getUserContext(userId);
-    const systemPrompt = buildSystemPrompt(userContext);
+    const behaviorSummary = await this.behaviorService.getRecentSummary(userId, { limit: 20, days: 30 });
+    const systemPrompt = buildSystemPrompt({
+      ...userContext,
+      behaviorSummary: behaviorSummary?.summary,
+    });
     const clientActionTool = this.buildClientActionTool(availableActions);
-    const tools = clientActionTool ? [...CHAT_TOOLS, clientActionTool] : CHAT_TOOLS;
+    const tools = clientActionTool
+      ? [...CHAT_TOOLS, ...LOCAL_CONTEXT_TOOLS, clientActionTool]
+      : [...CHAT_TOOLS, ...LOCAL_CONTEXT_TOOLS];
 
     const conversationMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -54,42 +66,79 @@ export class ChatService {
     let lastProfileArgs: Record<string, unknown> | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const stream = await openai.chat.completions.create({
-        model: config.model,
-        messages: conversationMessages,
-        tools,
-        stream: true,
-      });
+      const timeoutGuard = this.createRoundTimeoutGuard();
+      let stream: Awaited<ReturnType<OpenAI['chat']['completions']['create']>>;
+      try {
+        stream = await openai.chat.completions.create({
+          model: config.model,
+          messages: conversationMessages,
+          tools,
+          stream: true,
+        }, {
+          signal: timeoutGuard.controller.signal,
+        });
+      } catch (error) {
+        timeoutGuard.dispose();
+        if (this.isAbortLikeError(error)) {
+          yield { type: 'error', message: timeoutGuard.message };
+          yield { type: 'done' };
+          return;
+        }
+        throw error;
+      }
 
       let assistantContent = '';
+      let reasoningReplacementInserted = false;
       const toolCallFragments: Map<number, { id: string; name: string; arguments: string }> = new Map();
+      try {
+        for await (const chunk of stream) {
+          const choice = chunk.choices[0];
+          if (!choice) continue;
 
-      for await (const chunk of stream) {
-        const choice = chunk.choices[0];
-        if (!choice) continue;
+          const delta = choice.delta;
+          if (
+            !timeoutGuard.firstResponseSeen
+            && (Boolean(delta?.content) || Boolean(delta?.tool_calls?.length) || Boolean(choice.finish_reason))
+          ) {
+            timeoutGuard.markFirstResponse();
+          }
 
-        const delta = choice.delta;
-        if (delta?.content) {
-          assistantContent += delta.content;
-          yield { type: 'delta', content: delta.content };
-        }
-
-        if (delta?.tool_calls) {
-          for (const toolCall of delta.tool_calls) {
-            const index = toolCall.index;
-            if (!toolCallFragments.has(index)) {
-              toolCallFragments.set(index, {
-                id: toolCall.id ?? '',
-                name: toolCall.function?.name ?? '',
-                arguments: '',
-              });
+          if (delta?.content) {
+            const sanitized = sanitizeReasoningDelta(delta.content, reasoningReplacementInserted);
+            reasoningReplacementInserted = sanitized.replaced;
+            assistantContent += sanitized.content;
+            if (sanitized.content) {
+              yield { type: 'delta', content: sanitized.content };
             }
-            const fragment = toolCallFragments.get(index)!;
-            if (toolCall.id) fragment.id = toolCall.id;
-            if (toolCall.function?.name) fragment.name = toolCall.function.name;
-            if (toolCall.function?.arguments) fragment.arguments += toolCall.function.arguments;
+          }
+
+          if (delta?.tool_calls) {
+            for (const toolCall of delta.tool_calls) {
+              const index = toolCall.index;
+              if (!toolCallFragments.has(index)) {
+                toolCallFragments.set(index, {
+                  id: toolCall.id ?? '',
+                  name: toolCall.function?.name ?? '',
+                  arguments: '',
+                });
+              }
+              const fragment = toolCallFragments.get(index)!;
+              if (toolCall.id) fragment.id = toolCall.id;
+              if (toolCall.function?.name) fragment.name = toolCall.function.name;
+              if (toolCall.function?.arguments) fragment.arguments += toolCall.function.arguments;
+            }
           }
         }
+      } catch (error) {
+        timeoutGuard.dispose();
+        if (this.isAbortLikeError(error)) {
+          yield { type: 'error', message: timeoutGuard.message };
+          yield { type: 'done' };
+          return;
+        }
+        throw error;
+      } finally {
+        timeoutGuard.dispose();
       }
 
       if (toolCallFragments.size === 0) {
@@ -145,6 +194,18 @@ export class ChatService {
             yield actionEvent;
           }
 
+          conversationMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result),
+          } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
+          continue;
+        }
+
+        if (this.isLocalToolName(toolCall.function.name)) {
+          yield { type: 'tool_call', name: toolCall.function.name, args };
+          const result = await this.callLocalTool(userId, toolCall.function.name, args);
+          yield { type: 'tool_result', name: toolCall.function.name, result };
           conversationMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -388,12 +449,20 @@ export class ChatService {
       if (pageContext.suggestions?.length) lines.push(`- 建议问题: ${pageContext.suggestions.join('；')}`);
       if (pageContext.raw) lines.push(`- 原始上下文: ${JSON.stringify(pageContext.raw)}`);
     }
+    if (pageContext || availableActions.length) {
+      lines.push('页面联动协议:');
+      lines.push(`- 用户明确要求打开、跳转、刷新、切换页面动作时，优先调用 ${CLIENT_ACTION_TOOL_NAME}。`);
+      lines.push('- 没有合适动作时，必须明确说明当前页没有可执行动作，不能挂起或转去调用无关工具。');
+      lines.push('- 回答当前页问题时，至少引用页面上下文中的具体事实，不要退化成泛 Copilot 话术。');
+    }
     if (availableActions.length) {
       lines.push('客户端可执行动作:');
       availableActions.slice(0, 20).forEach((action) => {
         lines.push(`- ${action.id}: ${action.label}${action.description ? `，${action.description}` : ''}`);
       });
       lines.push(`如果需要前端执行动作，请调用 ${CLIENT_ACTION_TOOL_NAME}。`);
+    } else if (pageContext) {
+      lines.push('当前页面未注册可执行动作；如果用户要求联动，必须明确说明当前页没有安全动作可执行。');
     }
 
     return lines.length ? [{ role: 'system', content: lines.join('\n') }] : [];
@@ -459,5 +528,87 @@ export class ChatService {
         : undefined,
       autoExecute: args.autoExecute === true,
     };
+  }
+
+  private isLocalToolName(name: string) {
+    return Object.values(LOCAL_CONTEXT_TOOL_NAMES).includes(name as typeof LOCAL_CONTEXT_TOOL_NAMES[keyof typeof LOCAL_CONTEXT_TOOL_NAMES]);
+  }
+
+  private async callLocalTool(userId: string, name: string, args: Record<string, unknown>) {
+    if (name === LOCAL_CONTEXT_TOOL_NAMES.behaviorSummary) {
+      const summary = await this.behaviorService.getRecentSummary(userId, {
+        limit: this.toClampedNumber(args.limit, 20, 1, 50),
+        days: this.toClampedNumber(args.days, 30, 1, 30),
+      });
+      return summary ?? {
+        visible: false,
+        message: '当前没有可用的前端行为摘要',
+      };
+    }
+
+    if (name === LOCAL_CONTEXT_TOOL_NAMES.behaviorEvidence) {
+      return {
+        items: await this.behaviorService.getEvidence(userId, {
+          limit: this.toClampedNumber(args.limit, 12, 1, 20),
+          days: this.toClampedNumber(args.days, 30, 1, 30),
+          pageKey: this.toOptionalString(args.pageKey),
+          eventType: this.toOptionalString(args.eventType),
+          source: this.toOptionalString(args.source),
+        }),
+      };
+    }
+
+    return { error: `unknown local tool: ${name}` };
+  }
+
+  private toClampedNumber(value: unknown, fallback: number, min: number, max: number) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, parsed));
+  }
+
+  private toOptionalString(value: unknown) {
+    const normalized = String(value ?? '').trim();
+    return normalized || null;
+  }
+
+  private createRoundTimeoutGuard() {
+    const controller = new AbortController();
+    let message = `模型在 ${FIRST_RESPONSE_TIMEOUT_MS / 1000} 秒内未返回内容或动作，请重试`;
+    let firstResponseSeen = false;
+    const firstResponseTimer = setTimeout(() => {
+      message = `模型在 ${FIRST_RESPONSE_TIMEOUT_MS / 1000} 秒内未返回内容或动作，请重试`;
+      controller.abort();
+    }, FIRST_RESPONSE_TIMEOUT_MS);
+    const roundTimer = setTimeout(() => {
+      message = `单轮对话超过 ${ROUND_TIMEOUT_MS / 1000} 秒，请重试`;
+      controller.abort();
+    }, ROUND_TIMEOUT_MS);
+
+    return {
+      controller,
+      get firstResponseSeen() {
+        return firstResponseSeen;
+      },
+      get message() {
+        return message;
+      },
+      markFirstResponse() {
+        if (firstResponseSeen) return;
+        firstResponseSeen = true;
+        clearTimeout(firstResponseTimer);
+      },
+      dispose() {
+        clearTimeout(firstResponseTimer);
+        clearTimeout(roundTimer);
+      },
+    };
+  }
+
+  private isAbortLikeError(error: unknown) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return true;
+    }
+    return /abort/i.test(error instanceof Error ? error.message : String(error));
   }
 }

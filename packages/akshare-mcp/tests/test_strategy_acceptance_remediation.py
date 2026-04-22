@@ -5,6 +5,8 @@ from datetime import date
 
 from akshare_mcp.services.incubation import _resolve_strategy_target_codes
 from akshare_mcp.services.strategy_acceptance_remediation import (
+    StrategyAcceptanceRemediationService,
+    _build_bootstrap_lineage_fallback,
     _select_bootstrap_round_trips,
     _group_backtest_round_trips,
     build_failed_metrics_filter_patch,
@@ -135,3 +137,137 @@ def test_summarize_code_performance_aggregates_closed_positions():
     assert summary[0]["losses"] == 1
     by_code = {item["code"]: item for item in summary}
     assert by_code["920000"]["avg_return"] == 0.03
+
+
+class _SignalEvidenceCaptureDb:
+    def __init__(self):
+        self.saved_rows: list[dict] = []
+
+    async def save_strategy_signal_evidence(self, evidence: dict):
+        payload = dict(evidence or {})
+        self.saved_rows.append(payload)
+        return payload
+
+
+class _BootstrapMarketDataDb:
+    def __init__(self):
+        self.requested_codes: list[str] = []
+
+    async def list_strategy_trade_positions(self, *, strategy_id: str, limit: int = 20):
+        assert strategy_id == "strategy-runtime-fallback"
+        return [
+            {"code": "000333"},
+            {"code": "000063"},
+        ][:limit]
+
+    async def list_strategy_paper_trades(self, strategy_id: str, limit: int = 20):
+        assert strategy_id == "strategy-runtime-fallback"
+        return []
+
+    async def list_strategy_paper_orders(self, *, strategy_id: str, limit: int = 20):
+        assert strategy_id == "strategy-runtime-fallback"
+        return []
+
+    async def get_klines(self, code: str, limit: int = 250):
+        self.requested_codes.append(code)
+        return [
+            {"date": "2026-04-20", "close": 10.0},
+            {"date": "2026-04-21", "close": 10.5},
+        ]
+
+
+def test_build_bootstrap_lineage_fallback_generates_deterministic_native_tokens():
+    fallback = _build_bootstrap_lineage_fallback(
+        {
+            "id": "legacy-strategy",
+            "strategy_type": "mean-reversion.v2",
+        },
+        code="688303.SH",
+        phase="entry",
+        action_reason="bootstrap backtest entry",
+    )
+
+    assert fallback["applied_claim_id"] == "bootstrap_entry_mean_reversion_v2_688303_sh_claim"
+    assert fallback["applied_trade_step_id"] == "bootstrap_entry_mean_reversion_v2_688303_sh_step"
+    assert fallback["runtime_action_reason"] == "bootstrap_backtest_entry"
+    assert fallback["runtime_action_source"] == (
+        "strategy_acceptance_remediation.synthetic_bootstrap_lineage"
+    )
+
+
+def test_save_bootstrap_signal_evidence_synthesizes_lineage_for_legacy_contract_strategy():
+    service = StrategyAcceptanceRemediationService()
+    db = _SignalEvidenceCaptureDb()
+    strategy = {
+        "id": "legacy-bootstrap",
+        "strategy_type": "momentum_rotation",
+        "params": {
+            "target_symbols": ["688303"],
+            "holding_days": 10,
+        },
+    }
+
+    asyncio.run(
+        service._save_bootstrap_signal_evidence(
+            db,
+            strategy,
+            signal_id="sig-entry",
+            position_id="pos-bootstrap",
+            account_id="acc-bootstrap",
+            signal_date=date(2026, 4, 21),
+            code="688303",
+            backtest_id="bt-demo",
+            source_type="backtest_bootstrap_entry",
+            trade_payload={"price": 18.52, "shares": 100},
+            selection_payload={"policy": "bootstrap_demo"},
+        )
+    )
+    asyncio.run(
+        service._save_bootstrap_signal_evidence(
+            db,
+            strategy,
+            signal_id="sig-exit",
+            position_id="pos-bootstrap",
+            account_id="acc-bootstrap",
+            signal_date=date(2026, 4, 22),
+            code="688303",
+            backtest_id="bt-demo",
+            source_type="backtest_bootstrap_exit",
+            trade_payload={"price": 19.24, "shares": 100},
+            action_reason="take_profit",
+            selection_payload={"policy": "bootstrap_demo"},
+        )
+    )
+
+    assert len(db.saved_rows) == 2
+    entry_row = db.saved_rows[0]
+    exit_row = db.saved_rows[1]
+
+    assert entry_row["applied_claim_id"] == "bootstrap_entry_momentum_rotation_688303_claim"
+    assert entry_row["applied_trade_step_id"] == "bootstrap_entry_momentum_rotation_688303_step"
+    assert entry_row["runtime_action_reason"] == "bootstrap_backtest_entry"
+    assert entry_row["payload"]["synthetic_bootstrap_lineage"] is True
+
+    assert exit_row["applied_claim_id"] == "bootstrap_exit_momentum_rotation_688303_claim"
+    assert exit_row["applied_trade_step_id"] == "bootstrap_exit_momentum_rotation_688303_step"
+    assert exit_row["runtime_action_reason"] == "take_profit"
+    assert exit_row["payload"]["synthetic_bootstrap_lineage"] is True
+
+
+def test_load_market_data_falls_back_to_runtime_position_codes_when_targets_missing():
+    service = StrategyAcceptanceRemediationService()
+    db = _BootstrapMarketDataDb()
+
+    market_data = asyncio.run(
+        service._load_market_data(
+            db,
+            {
+                "id": "strategy-runtime-fallback",
+                "strategy_type": "momentum",
+                "params": {"universe": "沪深300"},
+            },
+        )
+    )
+
+    assert sorted(market_data.keys()) == ["000063", "000333"]
+    assert db.requested_codes == ["000333", "000063"]

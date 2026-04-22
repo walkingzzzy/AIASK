@@ -4,6 +4,7 @@ AKShare MCP Server Utilities
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -18,6 +19,11 @@ from urllib.request import Request, urlopen
 import pandas as pd
 
 SOURCE_NAME = "akshare"
+_STRICT_STOCK_CODE_PATTERNS = (
+    re.compile(r"^\d{1,6}$"),
+    re.compile(r"^(?:sh|sz|bj)(\d{6})$", re.IGNORECASE),
+    re.compile(r"^(\d{6})\.(?:sh|sz|bj)$", re.IGNORECASE),
+)
 
 
 def now_iso() -> str:
@@ -208,6 +214,40 @@ def normalize_code(code: str) -> str:
     return m.group(1).zfill(6)
 
 
+def normalize_stock_code_strict(code: Any) -> Optional[str]:
+    """严格规范化股票代码，仅接受纯数字或带交易所前后缀的别名。"""
+    text = str(code or "").strip()
+    if not text:
+        return None
+    for pattern in _STRICT_STOCK_CODE_PATTERNS:
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        if match.lastindex:
+            return str(match.group(1)).zfill(6)
+        return text.zfill(6)
+    return None
+
+
+def resolve_security_code_strict(
+    code: Any = None,
+    *,
+    stock_code: Any = None,
+    symbol: Any = None,
+    ticker: Any = None,
+) -> str:
+    """严格解析证券代码别名；非法格式返回空字符串。"""
+    for candidate in (code, stock_code, symbol, ticker):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        normalized = normalize_stock_code_strict(text)
+        if normalized:
+            return normalized
+        return ""
+    return ""
+
+
 def resolve_security_code(
     code: Any = None,
     *,
@@ -231,6 +271,238 @@ def resolve_security_code(
             continue
         return normalize_code(text) if normalize else text
     return ""
+
+
+def stock_code_missing_error() -> str:
+    return "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+
+
+def stock_code_format_error(raw_code: Any) -> str:
+    return f"股票代码格式无效: {raw_code}。需为 6 位数字或带 sh/sz/bj 前后缀"
+
+
+def stock_code_not_found_error(code: str) -> str:
+    return f"未找到股票 {code} 的信息"
+
+
+def validate_stock_code_format(
+    raw_code: Any,
+    *,
+    allow_empty: bool = False,
+    field_name: str = "股票代码",
+) -> tuple[Optional[str], Optional[str]]:
+    text = str(raw_code or "").strip()
+    if not text:
+        if allow_empty:
+            return None, None
+        return None, f"需要提供{field_name}"
+    normalized = normalize_stock_code_strict(text)
+    if not normalized:
+        return None, stock_code_format_error(text)
+    return normalized, None
+
+
+def _stock_info_payload_is_usable(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        str(payload.get(key) or "").strip()
+        for key in ("name", "stock_name", "industry", "list_date", "listDate")
+    )
+
+
+async def lookup_existing_stock_info_async(code: str) -> Optional[dict[str, Any]]:
+    normalized = normalize_stock_code_strict(code)
+    if not normalized:
+        return None
+
+    try:
+        from .storage import get_db
+
+        db = get_db()
+        if hasattr(db, "get_stock_info"):
+            payload = await db.get_stock_info(normalized)
+            if _stock_info_payload_is_usable(payload):
+                return dict(payload)
+    except Exception:
+        pass
+
+    try:
+        from .tools.finance import get_stock_info as finance_get_stock_info
+
+        response = await asyncio.to_thread(finance_get_stock_info, normalized)
+        payload = response.get("data") if isinstance(response, dict) and response.get("success") else None
+        if _stock_info_payload_is_usable(payload):
+            return dict(payload)
+    except Exception:
+        pass
+
+    return None
+
+
+def lookup_existing_stock_info_sync(code: str) -> Optional[dict[str, Any]]:
+    normalized = normalize_stock_code_strict(code)
+    if not normalized:
+        return None
+
+    try:
+        from .tools.finance import get_stock_info as finance_get_stock_info
+
+        response = finance_get_stock_info(normalized)
+        payload = response.get("data") if isinstance(response, dict) and response.get("success") else None
+        if _stock_info_payload_is_usable(payload):
+            return dict(payload)
+    except Exception:
+        pass
+    return None
+
+
+async def resolve_existing_security_code_async(
+    code: Any = None,
+    *,
+    stock_code: Any = None,
+    symbol: Any = None,
+    ticker: Any = None,
+) -> tuple[Optional[str], Optional[dict[str, Any]], Optional[str]]:
+    raw_code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker, normalize=False)
+    if not raw_code:
+        return None, None, stock_code_missing_error()
+    normalized, format_error = validate_stock_code_format(raw_code)
+    if format_error:
+        return None, None, format_error
+    stock_info = await lookup_existing_stock_info_async(str(normalized))
+    if stock_info is None:
+        return None, None, stock_code_not_found_error(str(normalized))
+    return str(normalized), stock_info, None
+
+
+def resolve_existing_security_code_sync(
+    code: Any = None,
+    *,
+    stock_code: Any = None,
+    symbol: Any = None,
+    ticker: Any = None,
+) -> tuple[Optional[str], Optional[dict[str, Any]], Optional[str]]:
+    raw_code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker, normalize=False)
+    if not raw_code:
+        return None, None, stock_code_missing_error()
+    normalized, format_error = validate_stock_code_format(raw_code)
+    if format_error:
+        return None, None, format_error
+    stock_info = lookup_existing_stock_info_sync(str(normalized))
+    if stock_info is None:
+        return None, None, stock_code_not_found_error(str(normalized))
+    return str(normalized), stock_info, None
+
+
+def validate_int_range(
+    value: Any,
+    *,
+    field_name: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> tuple[Optional[int], Optional[str]]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"{field_name} 必须为整数"
+
+    if minimum is not None and parsed < minimum:
+        if maximum is None:
+            return None, f"{field_name} 必须 >= {minimum}"
+        return None, f"{field_name} 必须介于 {minimum} 和 {maximum}"
+    if maximum is not None and parsed > maximum:
+        if minimum is not None:
+            return None, f"{field_name} 必须介于 {minimum} 和 {maximum}"
+        return None, f"{field_name} 必须 <= {maximum}"
+    return parsed, None
+
+
+def _tool_arg_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def resolve_canonical_arg(
+    canonical_name: str,
+    canonical_value: Any = None,
+    **aliases: Any,
+) -> tuple[Any, list[dict[str, Any]], Optional[str]]:
+    if _tool_arg_present(canonical_value):
+        return canonical_value, [], canonical_name
+    for alias_name, alias_value in aliases.items():
+        if not _tool_arg_present(alias_value):
+            continue
+        return (
+            alias_value,
+            [
+                {
+                    "canonical": canonical_name,
+                    "matched": alias_name,
+                    "deprecated": True,
+                }
+            ],
+            alias_name,
+        )
+    return canonical_value, [], None
+
+
+def attach_argument_contract_meta(
+    result: dict[str, Any],
+    *,
+    canonical_tool: str,
+    canonical_args: dict[str, Any],
+    alias_hits: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return result
+
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+
+    filtered_args = {
+        str(key): value
+        for key, value in dict(canonical_args or {}).items()
+        if _tool_arg_present(value)
+    }
+    normalized_hits = []
+    for hit in alias_hits or []:
+        if not isinstance(hit, dict):
+            continue
+        matched = str(hit.get("matched") or "").strip()
+        canonical = str(hit.get("canonical") or "").strip()
+        if not matched or not canonical:
+            continue
+        normalized_hits.append(
+            {
+                "canonical": canonical,
+                "matched": matched,
+                "deprecated": bool(hit.get("deprecated", False)),
+            }
+        )
+
+    meta["argument_contract"] = {
+        "canonical_tool": str(canonical_tool or "").strip(),
+        "canonical_args": filtered_args,
+        "args_matched": sorted(filtered_args.keys()),
+        "alias_hits": normalized_hits,
+        "deprecated_aliases": [hit["matched"] for hit in normalized_hits if hit.get("deprecated")],
+        "contract_version": "aiask.tool_args.v1",
+    }
+    if normalized_hits:
+        meta["deprecation_warnings"] = [
+            f"参数别名 {hit['matched']} 已废弃，请改用 {hit['canonical']}"
+            for hit in normalized_hits
+            if hit.get("deprecated")
+        ]
+    result["meta"] = meta
+    return result
 
 
 def format_period(value: Any) -> str:

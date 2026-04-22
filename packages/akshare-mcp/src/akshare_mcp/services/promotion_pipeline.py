@@ -200,6 +200,7 @@ class StrategyPromotionPipelineService:
         *,
         source: str = 'manual',
         auto_apply: bool = False,
+        metadata: Optional[dict] = None,
     ) -> dict:
         from .strategy_lifecycle_shared import (
             build_incubation_overview as _build_incubation_overview,
@@ -207,6 +208,7 @@ class StrategyPromotionPipelineService:
             validate_transition as _validate_transition,
         )
 
+        trace_metadata = dict(metadata or {})
         overview = await _build_incubation_overview(db, strategy)
         sid = strategy['id']
         metric = await db.get_latest_strategy_incubation_metric(sid) if hasattr(db, 'get_latest_strategy_incubation_metric') else None
@@ -261,6 +263,7 @@ class StrategyPromotionPipelineService:
             'metadata': {
                 'overview': overview,
                 'metric': metric or {},
+                **trace_metadata,
             },
         }) if hasattr(db, 'save_strategy_promotion_review') else {
             'strategy_id': sid,
@@ -281,13 +284,14 @@ class StrategyPromotionPipelineService:
                 'event_type': 'promotion.reviewed',
                 'source': source,
                 'severity': 'warning' if status == 'rejected' else 'info',
-                'correlation_id': (account or {}).get('account_id'),
+                'correlation_id': trace_metadata.get('correlation_id') or (account or {}).get('account_id'),
                 'payload': {
                     'status': status,
                     'recommendation': recommendation,
                     'score': score,
                     'blockers': blockers,
                     'risk_flags': risk_flags,
+                    'trace': trace_metadata,
                 },
             })
 
@@ -301,7 +305,7 @@ class StrategyPromotionPipelineService:
                     'listed',
                     actor_id=source,
                     reason='promotion_pipeline_approved',
-                    metadata={'promotion_review_id': review.get('id'), 'score': score},
+                    metadata={'promotion_review_id': review.get('id'), 'score': score, **trace_metadata},
                 )
                 applied_transition = {'from': current_status, 'to': 'listed'}
                 if account and hasattr(db, 'save_strategy_incubation_account'):
@@ -311,7 +315,11 @@ class StrategyPromotionPipelineService:
                         stage='promoted',
                         status='active',
                         source_run_id=(account or {}).get('source_run_id'),
-                        metadata={**dict((account or {}).get('metadata') or {}), 'promotion_review_id': review.get('id')},
+                        metadata={
+                            **dict((account or {}).get('metadata') or {}),
+                            'promotion_review_id': review.get('id'),
+                            **trace_metadata,
+                        },
                     )
             elif recommendation == 'deprecate' and _validate_transition(current_status, 'deprecated'):
                 await _update_status(
@@ -320,7 +328,7 @@ class StrategyPromotionPipelineService:
                     'deprecated',
                     actor_id=source,
                     reason='promotion_pipeline_rejected',
-                    metadata={'promotion_review_id': review.get('id'), 'score': score},
+                    metadata={'promotion_review_id': review.get('id'), 'score': score, **trace_metadata},
                 )
                 applied_transition = {'from': current_status, 'to': 'deprecated'}
                 if account and hasattr(db, 'save_strategy_incubation_account'):
@@ -330,7 +338,11 @@ class StrategyPromotionPipelineService:
                         stage='failed',
                         status='retired',
                         source_run_id=(account or {}).get('source_run_id'),
-                        metadata={**dict((account or {}).get('metadata') or {}), 'promotion_review_id': review.get('id')},
+                        metadata={
+                            **dict((account or {}).get('metadata') or {}),
+                            'promotion_review_id': review.get('id'),
+                            **trace_metadata,
+                        },
                     )
 
         if applied_transition and hasattr(db, 'save_strategy_domain_event'):
@@ -341,14 +353,35 @@ class StrategyPromotionPipelineService:
                 'event_type': 'promotion.applied',
                 'source': source,
                 'severity': 'info',
-                'correlation_id': (account or {}).get('account_id'),
+                'correlation_id': trace_metadata.get('correlation_id') or (account or {}).get('account_id'),
                 'payload': {
                     'transition': applied_transition,
                     'status': status,
                     'recommendation': recommendation,
                     'score': score,
+                    'trace': trace_metadata,
                 },
             })
+
+        try:
+            from .strategy_lifecycle_shared import build_closure_review as _build_closure_review
+
+            await _build_closure_review(
+                db,
+                {
+                    **dict(strategy or {}),
+                    'status': (applied_transition or {}).get('to') or strategy.get('status'),
+                },
+                as_of=(overview or {}).get('as_of'),
+                correlation_id=trace_metadata.get('correlation_id'),
+                force_recompute=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "StrategyPromotionPipelineService: closure review refresh failed for %s: %s",
+                sid,
+                exc,
+            )
 
         return {
             'review': review,

@@ -18,7 +18,7 @@ from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_kline_list
 from ...data_source import data_source
 from ...storage import get_db
-from ...utils import safe_stderr_print
+from ...utils import safe_stderr_print, validate_stock_code_format
 from ..data_quality import build_quality_meta, infer_missing_fields
 try:
     from ...baostock_api import baostock_client
@@ -704,9 +704,38 @@ async def get_kline_data(
         '30m': '30',
         '60m': '60',
     }
-    
+    valid_periods = set(period_map)
+    if str(period or "").strip() not in valid_periods:
+        return _fail_kline_response(
+            f"period 无效: {period}. 支持: {', '.join(sorted(valid_periods))}",
+            source_chain=["validate.period"],
+            fallback_reason=["invalid_period"],
+        )
+
     mapped_period = period_map.get(period, period)
     started_at = datetime.now().astimezone()
+    _, code_error = validate_stock_code_format(code)
+    if code_error:
+        return _fail_kline_response(
+            code_error,
+            source_chain=["validate.stock_code"],
+            fallback_reason=["invalid_stock_code"],
+            started_at=started_at,
+        )
+    if start_date and parse_date_input(start_date) is None:
+        return _fail_kline_response(
+            f"start_date 无效: {start_date}",
+            source_chain=["validate.start_date"],
+            fallback_reason=["invalid_start_date"],
+            started_at=started_at,
+        )
+    if end_date and parse_date_input(end_date) is None:
+        return _fail_kline_response(
+            f"end_date 无效: {end_date}",
+            source_chain=["validate.end_date"],
+            fallback_reason=["invalid_end_date"],
+            started_at=started_at,
+        )
     
     if start_date or end_date:
         limiter = get_limiter("kline", max_calls=5, period=1.0)

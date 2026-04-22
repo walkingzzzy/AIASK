@@ -17,10 +17,31 @@ export const BUDGET_LIMITS = {
 
 const DEFAULT_AUDIT_API_BASE_URL = 'http://127.0.0.1:3001/api';
 
+function normalizeApiBaseUrl(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    parsed.pathname = '/api';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
 export function getAuditApiBaseUrl(baseUrl) {
+  const explicit = normalizeApiBaseUrl(process.env.PW_AUDIT_API_BASE_URL);
+  if (explicit) {
+    return explicit;
+  }
   try {
     const parsed = new URL(String(baseUrl || DEFAULT_AUDIT_API_BASE_URL));
-    parsed.port = '3001';
+    const derivedPort =
+      process.env.PW_AUDIT_API_PORT?.trim() ||
+      (parsed.port && /^\d+$/.test(parsed.port) ? String(Number(parsed.port) + 1) : '3001');
+    parsed.port = derivedPort;
     parsed.pathname = '/api';
     parsed.search = '';
     parsed.hash = '';
@@ -101,20 +122,50 @@ async function postJson(page, path, payload) {
   );
 }
 
+function readAuthErrorMessage(result) {
+  return String(result?.body?.error?.message || result?.body?.message || '').trim();
+}
+
+function isTransientAuthCapacityError(result) {
+  if (!result || result.ok) return false;
+  if (result.status < 500) return false;
+  const message = readAuthErrorMessage(result);
+  return /too many clients already|db_query_failed|temporarily unavailable|请稍后重试/i.test(message);
+}
+
 export async function login(page, baseUrl, credentials) {
   await gotoStable(page, `${baseUrl}/login`);
-  let loginResult = await postJson(page, '/api/auth/login', credentials);
-  if (!loginResult.ok && loginResult.status === 401 && shouldProvisionAuditUser(credentials)) {
-    const registerResult = await postJson(page, '/api/auth/register', credentials);
-    if (!registerResult.ok && registerResult.status !== 409) {
-      const registerMessage =
-        registerResult.body?.error?.message || registerResult.body?.message || `register failed: HTTP ${registerResult.status}`;
-      throw new Error(registerMessage);
-    }
+  let loginResult = null;
+  let provisionTried = false;
+  const maxAttempts = 5;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     loginResult = await postJson(page, '/api/auth/login', credentials);
+    if (loginResult.ok) {
+      break;
+    }
+
+    if (!provisionTried && loginResult.status === 401 && shouldProvisionAuditUser(credentials)) {
+      provisionTried = true;
+      const registerResult = await postJson(page, '/api/auth/register', credentials);
+      if (!registerResult.ok && registerResult.status !== 409) {
+        const registerMessage =
+          registerResult.body?.error?.message || registerResult.body?.message || `register failed: HTTP ${registerResult.status}`;
+        throw new Error(registerMessage);
+      }
+      continue;
+    }
+
+    if (isTransientAuthCapacityError(loginResult) && attempt < maxAttempts - 1) {
+      await page.waitForTimeout(1200 * (attempt + 1));
+      continue;
+    }
+
+    break;
   }
+
   if (!loginResult.ok) {
-    throw new Error(loginResult.body?.error?.message || loginResult.body?.message || 'login failed');
+    throw new Error(readAuthErrorMessage(loginResult) || 'login failed');
   }
   await page.evaluate(() => {
     window.localStorage.setItem('onboarding-done', '1');
@@ -232,6 +283,14 @@ export async function resolveDynamicPath(page, baseUrl, surface) {
   }
 
   if (surface.dynamicResolver === 'execution-first-artifact') {
+    const artifacts = await fetchJson(page, resolveAuditApiUrl(baseUrl, '/api/execution/artifacts')).catch(() => null);
+    const artifactList = Array.isArray(artifacts?.body?.data?.artifacts) ? artifacts.body.data.artifacts : [];
+    const artifactId = artifactList
+      .map((item) => String(item?.artifactId || item?.artifact_id || '').trim())
+      .find(Boolean);
+    if (artifactId) {
+      return { path: `/execution/artifacts/${encodeURIComponent(artifactId)}`, reason: null };
+    }
     await gotoStable(page, `${baseUrl}/execution`);
     await waitForSettledUi(page, 900);
     const href = await page

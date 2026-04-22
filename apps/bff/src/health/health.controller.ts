@@ -20,7 +20,7 @@ export class HealthController {
       success: true,
       data: {
         service: base.service,
-        status: 'ok',
+        status: 'normal',
         probe: 'liveness',
         startedAt: base.startedAt,
         timestamp: base.timestamp,
@@ -33,8 +33,12 @@ export class HealthController {
   async getMcpHealth() {
     const base = await this.healthService.getHealth();
     return {
-      success: true,
-      data: { ...base, mcp: base.mcp },
+      service: base.service,
+      status: base.mcp.status,
+      signal: base.mcp.signal,
+      reasons: base.mcp.reasons,
+      mcp: base.mcp,
+      timestamp: base.timestamp,
     };
   }
 
@@ -61,7 +65,7 @@ export class HealthController {
       success: started,
       data: {
         service: base.service,
-        status: started ? 'ok' : 'starting',
+        status: started ? 'normal' : 'starting',
         probe: 'startup',
         startedAt: base.startedAt,
         timestamp: base.timestamp,
@@ -80,8 +84,12 @@ export class HealthController {
   async getCacheHealth() {
     const base = await this.healthService.getHealth();
     return {
-      ...base,
+      service: base.service,
+      status: base.cache.status,
+      signal: base.cache.signal,
+      reasons: base.cache.reasons,
       cache: base.cache,
+      timestamp: base.timestamp,
     };
   }
 

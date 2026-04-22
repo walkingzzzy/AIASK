@@ -18,13 +18,19 @@ export type WorkspaceSharedContext = {
     artifactId?: string;
     portfolioId?: string;
     benchmark?: string;
-    mode?: 'account' | 'portfolio';
+    mode?: 'account' | 'portfolio' | 'personal-strategy';
     days?: number;
     lookbackDays?: number;
     strategyId?: string;
     strategyName?: string;
+    linkedStrategyId?: string;
+    linkedStrategyName?: string;
     copilotConversationId?: string;
     screenerQuery?: string;
+    sourcePage?: string;
+    taskType?: string;
+    resultType?: string;
+    strategyTestMode?: 'personal-strategy' | 'factory-incubation';
 };
 
 export type WorkspacePagePanelLayout = {

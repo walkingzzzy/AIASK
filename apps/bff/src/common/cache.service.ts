@@ -1,9 +1,20 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { ObservabilityService } from '../observability/observability.service';
 
 type MemoryEntry = { payload: string; expiresAt: number };
 type CacheBackend = 'redis' | 'memory' | 'none';
+type CacheFailureStage =
+  | 'redis_not_configured'
+  | 'redis_init_failed'
+  | 'redis_connect_failed'
+  | 'redis_runtime_error'
+  | 'redis_read_failed'
+  | 'redis_write_failed'
+  | 'redis_delete_failed'
+  | 'redis_increment_failed'
+  | 'redis_clear_failed';
 
 type CacheStats = {
   requests: number;
@@ -39,13 +50,22 @@ export class CommonCacheService implements OnModuleDestroy {
   private readonly ttlDefaultSeconds: number;
   private readonly ttlOverrides: Record<string, number>;
   private readonly memoryMaxEntries: number;
+  private readonly redisConfigured: boolean;
   private redis: Redis | null = null;
   private redisReady = false;
+  private fallbackActive = false;
+  private lastError: string | null = null;
+  private lastErrorAt: string | null = null;
+  private lastFailureStage: CacheFailureStage | null = null;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly observability: ObservabilityService,
+  ) {
     this.ttlDefaultSeconds = this.readDefaultTtl();
     this.ttlOverrides = this.readTtlOverrides();
     this.memoryMaxEntries = Math.max(100, Number(this.configService.get('CACHE_MEMORY_MAX_ENTRIES', '5000')) || 5000);
+    this.redisConfigured = Boolean(this.configService.get<string>('REDIS_URL', '').trim());
     this.initRedis();
   }
 
@@ -70,6 +90,7 @@ export class CommonCacheService implements OnModuleDestroy {
     if (this.redisReady && this.redis) {
       try {
         const raw = await this.redis.get(normalizedKey);
+        this.clearRedisFailure();
         if (!raw) {
           this.stats.misses += 1;
           return { value: null, meta: { hit: false, backend: 'none' } };
@@ -79,7 +100,7 @@ export class CommonCacheService implements OnModuleDestroy {
         return { value: JSON.parse(raw) as T, meta: { hit: true, backend: 'redis' } };
       } catch (error) {
         this.stats.errors += 1;
-        this.logger.warn(`Redis 读取失败，降级内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 读取失败，降级内存缓存', 'redis_read_failed');
       }
     }
 
@@ -115,11 +136,12 @@ export class CommonCacheService implements OnModuleDestroy {
     if (this.redisReady && this.redis) {
       try {
         await this.redis.set(normalizedKey, payload, 'EX', safeTtl);
+        this.clearRedisFailure();
         this.stats.redisSets += 1;
         return;
       } catch (error) {
         this.stats.errors += 1;
-        this.logger.warn(`Redis 写入失败，降级内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 写入失败，降级内存缓存', 'redis_write_failed');
       }
     }
 
@@ -156,9 +178,10 @@ export class CommonCacheService implements OnModuleDestroy {
     if (this.redisReady && this.redis) {
       try {
         await this.redis.del(normalizedKey);
+        this.clearRedisFailure();
       } catch (error) {
         this.stats.errors += 1;
-        this.logger.warn(`Redis 删除失败，降级内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 删除失败，降级内存缓存', 'redis_delete_failed');
       }
     }
     this.memory.delete(normalizedKey);
@@ -174,13 +197,14 @@ export class CommonCacheService implements OnModuleDestroy {
         pipeline.incr(normalizedKey);
         pipeline.expire(normalizedKey, safeTtl);
         const results = await pipeline.exec();
+        this.clearRedisFailure();
         const count = Number(results?.[0]?.[1] ?? 0);
         if (Number.isFinite(count) && count > 0) {
           return count;
         }
       } catch (error) {
         this.stats.errors += 1;
-        this.logger.warn(`Redis 计数失败，降级内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 计数失败，降级内存缓存', 'redis_increment_failed');
       }
     }
 
@@ -215,8 +239,13 @@ export class CommonCacheService implements OnModuleDestroy {
     return {
       ...this.stats,
       hitRate,
+      configured: this.redisConfigured,
       redisReady: this.redisReady,
+      fallbackActive: this.fallbackActive,
       memorySize: this.memory.size,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+      lastFailureStage: this.lastFailureStage,
       ttl: {
         defaultSeconds: this.ttlDefaultSeconds,
         overrides: this.ttlOverrides,
@@ -246,7 +275,7 @@ export class CommonCacheService implements OnModuleDestroy {
         }
       } catch (error) {
         this.stats.errors += 1;
-        this.logger.warn(`Redis 清除失败: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 清除失败', 'redis_clear_failed');
       }
     }
 
@@ -265,6 +294,9 @@ export class CommonCacheService implements OnModuleDestroy {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
       this.logger.log('未配置 REDIS_URL，启用内存缓存');
+      this.fallbackActive = true;
+      this.lastFailureStage = 'redis_not_configured';
+      this.observability.setDependencyState('cache', 'degraded');
       return;
     }
 
@@ -277,24 +309,26 @@ export class CommonCacheService implements OnModuleDestroy {
 
       client.on('ready', () => {
         this.redisReady = true;
+        this.clearRedisFailure();
+        this.observability.setDependencyState('cache', 'normal');
         this.logger.log('Redis 缓存已连接');
       });
 
       client.on('error', (error) => {
         this.redisReady = false;
-        this.logger.warn(`Redis 错误，回退内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 错误，回退内存缓存', 'redis_runtime_error');
       });
 
       client.connect().catch((error) => {
         this.redisReady = false;
-        this.logger.warn(`Redis 连接失败，回退内存缓存: ${this.errMsg(error)}`);
+        this.recordRedisError(error, 'Redis 连接失败，回退内存缓存', 'redis_connect_failed');
       });
 
       this.redis = client;
     } catch (error) {
       this.redisReady = false;
       this.redis = null;
-      this.logger.warn(`Redis 初始化失败，回退内存缓存: ${this.errMsg(error)}`);
+      this.recordRedisError(error, 'Redis 初始化失败，回退内存缓存', 'redis_init_failed');
     }
   }
 
@@ -340,5 +374,21 @@ export class CommonCacheService implements OnModuleDestroy {
 
   private errMsg(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private clearRedisFailure(): void {
+    this.fallbackActive = false;
+    this.lastError = null;
+    this.lastErrorAt = null;
+    this.lastFailureStage = null;
+  }
+
+  private recordRedisError(error: unknown, message: string, stage: CacheFailureStage): void {
+    this.fallbackActive = true;
+    this.lastError = this.errMsg(error);
+    this.lastErrorAt = new Date().toISOString();
+    this.lastFailureStage = stage;
+    this.observability.setDependencyState('cache', 'degraded');
+    this.logger.warn(`${message}: ${this.lastError}`);
   }
 }

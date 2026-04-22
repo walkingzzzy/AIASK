@@ -3,6 +3,7 @@
 import type { buildFactoryReviewViewModel } from '@/app/strategy-market/lib/factory-review-view-model';
 import type {
   ReviewReportResponse,
+  StrategyPresentationDto,
   StrategyEventsResponse,
   IncubationOverviewResponse,
   IncubationAccount,
@@ -21,6 +22,8 @@ import type {
   RuntimeRiskSnapshot,
   RuntimeAlert,
   RiskEvent,
+  StrategyOwnerState,
+  StrategyPaperSessionState,
   VectorProfile,
   VectorIndexSnapshot,
   DomainEvent,
@@ -40,7 +43,12 @@ export type FactoryReviewAuditRows = FactoryReviewViewModel['reviewAuditRows'];
 
 export type FactoryReviewPanelProps = {
   highConfidenceQualityUiEnabled: boolean;
+  canViewOperatorPanels: boolean;
+  strategyStatus?: string | null;
+  ownerState?: StrategyOwnerState | null;
+  paperSessionState?: StrategyPaperSessionState | null;
   report: ReviewReportResponse | null | undefined;
+  presentation?: StrategyPresentationDto | null;
   events: StrategyEventsResponse | null | undefined;
   incubation: IncubationOverviewResponse | null | undefined;
   currentAccount: IncubationAccount | null | undefined;

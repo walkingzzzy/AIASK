@@ -8,6 +8,7 @@ import type {
   PerformanceSectorPerformanceItem,
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
+import { buildPrerequisiteMissingException } from '../common/acceptance';
 
 type PortfolioContext = {
   portfolioId: number;
@@ -27,18 +28,11 @@ export class PerformanceService {
   ): Promise<PerformanceAttributionResponse> {
     const context = await this.resolvePortfolioContext(userId, portfolioId);
     if (!context) {
-      return {
-        message: '当前用户暂无组合，请先创建组合后再查看归因结果',
-        portfolioId: null,
-        portfolioName: null,
-        autoSelectedPortfolio: false,
+      throw buildPrerequisiteMissingException('当前用户暂无组合，请先创建组合后再查看归因结果', {
+        userId,
+        requestedPortfolioId: portfolioId ?? null,
         benchmark,
-        lookbackDays: this.normalizeLookbackDays(lookbackDays),
-        attributionByStock: [],
-        sectorPerformance: [],
-        sourceTool: 'performance_manager',
-        argsMatched: {},
-      };
+      });
     }
 
     const normalizedLookbackDays = this.normalizeLookbackDays(lookbackDays);
@@ -50,18 +44,7 @@ export class PerformanceService {
         benchmark,
       },
     };
-    let payload: unknown;
-    try {
-      payload = await this.callManager('attribution', argsMatched.params);
-    } catch (error) {
-      return this.buildAttributionFallback(
-        context,
-        benchmark,
-        normalizedLookbackDays,
-        argsMatched,
-        this.extractNonFatalAttributionMessage(error) || this.extractExceptionDetail(error) || '当前无法获取组合归因，已返回空结果。',
-      );
-    }
+    const payload = await this.callManager('attribution', argsMatched.params);
     const record = this.extractDataRecord(payload);
     const dataWindow = this.asRecord(record.data_window);
     const attribution = this.asRecord(record.attribution);
@@ -102,16 +85,11 @@ export class PerformanceService {
   ): Promise<PerformanceBenchmarkComparisonResponse> {
     const context = await this.resolvePortfolioContext(userId, portfolioId);
     if (!context) {
-      return {
-        message: '当前用户暂无组合，请先创建组合后再查看基准对比',
-        portfolioId: null,
-        portfolioName: null,
-        autoSelectedPortfolio: false,
+      throw buildPrerequisiteMissingException('当前用户暂无组合，请先创建组合后再查看基准对比', {
+        userId,
+        requestedPortfolioId: portfolioId ?? null,
         benchmark,
-        lookbackDays: this.normalizeLookbackDays(lookbackDays),
-        sourceTool: 'performance_manager',
-        argsMatched: {},
-      };
+      });
     }
 
     const normalizedLookbackDays = this.normalizeLookbackDays(lookbackDays);
@@ -123,18 +101,7 @@ export class PerformanceService {
         benchmark,
       },
     };
-    let payload: unknown;
-    try {
-      payload = await this.callManager('benchmark_comparison', argsMatched.params);
-    } catch (error) {
-      return this.buildBenchmarkComparisonFallback(
-        context,
-        benchmark,
-        normalizedLookbackDays,
-        argsMatched,
-        this.extractNonFatalBenchmarkMessage(error),
-      );
-    }
+    const payload = await this.callManager('benchmark_comparison', argsMatched.params);
     const record = this.extractDataRecord(payload);
 
     return {
@@ -224,46 +191,6 @@ export class PerformanceService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-
-  private buildAttributionFallback(
-    context: PortfolioContext,
-    benchmark: string,
-    lookbackDays: number,
-    argsMatched: { action: string; params: Record<string, unknown> },
-    message: string,
-  ): PerformanceAttributionResponse {
-    return {
-      message,
-      portfolioId: context.portfolioId,
-      portfolioName: context.portfolioName,
-      autoSelectedPortfolio: context.autoSelectedPortfolio,
-      benchmark,
-      lookbackDays,
-      attributionByStock: [],
-      sectorPerformance: [],
-      sourceTool: 'performance_manager',
-      argsMatched,
-    };
-  }
-
-  private buildBenchmarkComparisonFallback(
-    context: PortfolioContext,
-    benchmark: string,
-    lookbackDays: number,
-    argsMatched: { action: string; params: Record<string, unknown> },
-    message: string,
-  ): PerformanceBenchmarkComparisonResponse {
-    return {
-      message,
-      portfolioId: context.portfolioId,
-      portfolioName: context.portfolioName,
-      autoSelectedPortfolio: context.autoSelectedPortfolio,
-      benchmark,
-      lookbackDays,
-      sourceTool: 'performance_manager',
-      argsMatched,
-    };
   }
 
   private extractNonFatalAttributionMessage(error: unknown): string | null {

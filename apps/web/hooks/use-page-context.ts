@@ -12,8 +12,16 @@ function buildContextSignature(context: PageContextInput) {
     title: context.title,
     summary: context.summary ?? null,
     stockCode: context.stockCode ?? null,
+    objectType: context.objectType ?? null,
+    objectId: context.objectId ?? null,
+    resultType: context.resultType ?? null,
     tags: context.tags ?? [],
     suggestions: context.suggestions ?? [],
+    recommendedActions: context.recommendedActions ?? [],
+    recommendedLinks: context.recommendedLinks ?? [],
+    evidenceSummary: context.evidenceSummary ?? [],
+    riskNotes: context.riskNotes ?? [],
+    freshness: context.freshness ?? null,
     raw: context.raw ?? null,
   });
 }

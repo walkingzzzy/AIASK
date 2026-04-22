@@ -1,10 +1,13 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, DataTable, PageContainer, SectionCard, TabBar } from '@/components/ui';
+import { LoadingState, UnavailableState } from '@/components/status-state';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useToast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth-store';
 import { clearLoggedIn } from '@/lib/auth';
@@ -46,10 +49,18 @@ function buildProfileForm(value: unknown): ProfileFormState {
   };
 }
 
+function parseTabKey(value: unknown): TabKey | null {
+  return value === 'account' || value === 'ai' || value === 'security' || value === 'sessions'
+    ? value
+    : null;
+}
+
 export default function SettingsPage() {
+  const router = useRouter();
+  const searchParams = useStableSearchParams();
   const { toast } = useToast();
   const setUser = useAuthStore((s) => s.setUser);
-  const [tab, setTab] = useState<TabKey>('account');
+  const [tab, setTab] = useState<TabKey>(() => parseTabKey(searchParams.get('tab')) ?? 'account');
   const [profileForm, setProfileForm] = useState<ProfileFormState>(() => buildProfileForm(null));
   const [profileReady, setProfileReady] = useState(false);
   const [profileDirty, setProfileDirty] = useState(false);
@@ -59,14 +70,35 @@ export default function SettingsPage() {
   const [passwordFormError, setPasswordFormError] = useState<string | null>(null);
   const [reportText, setReportText] = useState('');
 
-  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
-  const logsQ = useApiQuery<Record<string, unknown>>(tab === 'security' ? '/audit/my-logs?limit=30' : null);
-  const sessionsQ = useApiQuery<Record<string, unknown>>(tab === 'sessions' ? '/auth/sessions' : null);
-  const profileApi = useApiMutation<Record<string, unknown>>({ successToast: '个人资料已保存' });
-  const passwordApi = useApiMutation<Record<string, unknown>>({ successToast: false });
-  const revokeApi = useApiMutation<Record<string, unknown>>({ successToast: '会话已吊销' });
-  const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
-  const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
+  const logsQ = useApiQuery<Record<string, unknown>>(tab === 'security' ? '/audit/my-logs?limit=30' : null, { critical: true });
+  const sessionsQ = useApiQuery<Record<string, unknown>>(tab === 'sessions' ? '/auth/sessions' : null, { critical: true });
+  const profileApi = useApiMutation<Record<string, unknown>>({ successToast: '个人资料已保存', critical: true });
+  const passwordApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
+  const revokeApi = useApiMutation<Record<string, unknown>>({ successToast: '会话已吊销', critical: true });
+  const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
+  const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
+
+  useEffect(() => {
+    const requestedTab = parseTabKey(searchParams.get('tab'));
+    if (requestedTab && requestedTab !== tab) {
+      setTab(requestedTab);
+    }
+  }, [searchParams, tab]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (tab === 'account') {
+      params.delete('tab');
+    } else {
+      params.set('tab', tab);
+    }
+
+    const nextQuery = params.toString();
+    const currentQuery = searchParams.toString();
+    if (nextQuery === currentQuery) return;
+    router.replace(nextQuery ? `/settings?${nextQuery}` : '/settings', { scroll: false });
+  }, [router, searchParams, tab]);
 
   useEffect(() => {
     if (profileDirty) return;
@@ -183,6 +215,72 @@ export default function SettingsPage() {
     await sessionsQ.refetch();
   }
 
+  if (tab === 'account' && profileQ.isPending && !profileQ.data) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载账户设置..." />
+      </PageContainer>
+    );
+  }
+
+  if (tab === 'account' && profileQ.error && !profileQ.data) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="账户设置主链路暂不可用"
+          hint={profileQ.error}
+          onRetry={() => {
+            void profileQ.refetch();
+          }}
+        />
+      </PageContainer>
+    );
+  }
+
+  if (tab === 'security' && logsQ.isPending && !logsQ.data) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载安全日志..." />
+      </PageContainer>
+    );
+  }
+
+  if (tab === 'security' && logsQ.error && !logsQ.data) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="安全日志暂不可用"
+          hint={logsQ.error}
+          onRetry={() => {
+            void logsQ.refetch();
+          }}
+        />
+      </PageContainer>
+    );
+  }
+
+  if (tab === 'sessions' && sessionsQ.isPending && !sessionsQ.data) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载活跃会话..." />
+      </PageContainer>
+    );
+  }
+
+  if (tab === 'sessions' && sessionsQ.error && !sessionsQ.data) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="活跃会话暂不可用"
+          hint={sessionsQ.error}
+          onRetry={() => {
+            void sessionsQ.refetch();
+          }}
+        />
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer>
       {/* ---- 精简 Hero ---- */}
@@ -214,7 +312,10 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <TabBar tabs={TABS} active={tab} onChange={setTab} />
+      <div>
+        <TabBar tabs={TABS} active={tab} onChange={setTab} />
+      </div>
+
 
       {/* ======== 账户信息 Tab ======== */}
       {tab === 'account' ? (
@@ -486,6 +587,8 @@ function AiModelConfig() {
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
+  const [apiKeyMasked, setApiKeyMasked] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -497,35 +600,61 @@ function AiModelConfig() {
   const { toast } = useToast();
   const setConfigLoaded = useChatStore((s) => s.setConfigLoaded);
 
-  useEffect(() => {
-    getLlmConfig().then((c) => {
-      if (c) { setBaseUrl(c.baseUrl); setModel(c.model); setApiKey(c.apiKey); }
-      setLoaded(true);
-    }).catch(() => setLoaded(true));
-  }, []);
-
-  const doProbe = useCallback((url: string, key: string) => {
-    if (!url.trim() || !key.trim()) { setDetectedModels([]); setProbeError(''); return; }
+  const doProbe = useCallback((url: string, key: string, preferredModel?: string) => {
+    if (!url.trim() || (!key.trim() && !hasStoredApiKey)) { setDetectedModels([]); setProbeError(''); return; }
     setProbing(true); setProbeError('');
-    probeModels(url, key)
+    probeModels(url, key, preferredModel || model)
       .then((r) => {
+        if (r.normalizedBaseUrl) {
+          setBaseUrl(r.normalizedBaseUrl);
+        }
         if (r.success && r.models.length > 0) { setDetectedModels(r.models); setProbeError(''); }
         else { setDetectedModels([]); setProbeError(r.error || '未检测到可用模型'); }
       })
       .catch(() => { setDetectedModels([]); setProbeError('检测请求失败'); })
       .finally(() => setProbing(false));
+  }, [hasStoredApiKey, model]);
+
+  useEffect(() => {
+    getLlmConfig().then((c) => {
+      if (c) {
+        setBaseUrl(c.baseUrl);
+        setModel(c.model);
+        setHasStoredApiKey(c.hasStoredApiKey);
+        setApiKeyMasked(c.apiKeyMasked);
+      }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
   }, []);
+
+  useEffect(() => {
+    if (baseUrl && hasStoredApiKey) {
+      doProbe(baseUrl, '', model);
+    }
+  }, [baseUrl, doProbe, hasStoredApiKey, model]);
 
   function scheduleProbe(url: string, key: string) {
     if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
-    probeTimerRef.current = setTimeout(() => doProbe(url, key), 600);
+    probeTimerRef.current = setTimeout(() => doProbe(url, key, model), 600);
   }
 
   async function onSave() {
-    if (!apiKey.trim() || !baseUrl.trim() || !model.trim()) { setError('请填写完整配置'); return; }
+    if ((!apiKey.trim() && !hasStoredApiKey) || !baseUrl.trim() || !model.trim()) { setError('请填写完整配置'); return; }
     setSaving(true); setError('');
     try {
-      await saveLlmConfig({ apiKey: apiKey.trim(), baseUrl: baseUrl.trim(), model: model.trim() });
+      const saved = await saveLlmConfig({ apiKey: apiKey.trim() || undefined, baseUrl: baseUrl.trim(), model: model.trim() });
+      if (saved.normalizedBaseUrl) {
+        setBaseUrl(saved.normalizedBaseUrl);
+      }
+      const confirmed = await getLlmConfig();
+      if (!confirmed) {
+        throw new Error('配置保存后未能重新读取，请稍后重试');
+      }
+      setBaseUrl(confirmed.baseUrl);
+      setModel(confirmed.model);
+      setHasStoredApiKey(confirmed.hasStoredApiKey);
+      setApiKeyMasked(confirmed.apiKeyMasked);
+      setApiKey('');
       setConfigLoaded(true, true);
       toast('AI 模型配置已保存', 'success');
     } catch (err) { setError(err instanceof Error ? err.message : '保存失败'); }
@@ -561,9 +690,10 @@ function AiModelConfig() {
             type="password"
             value={apiKey}
             onChange={(e) => { setApiKey(e.target.value); setError(''); scheduleProbe(baseUrl, e.target.value); }}
-            placeholder="sk-..."
+            placeholder={hasStoredApiKey ? `${apiKeyMasked || '已保存 API Key'}（留空表示不修改）` : 'sk-...'}
             className={INPUT_CLS}
           />
+          {hasStoredApiKey ? <div className="mt-1 text-xs text-text-muted">当前已保存 Key，留空即可保留原值。</div> : null}
         </label>
 
         <div>
@@ -580,8 +710,8 @@ function AiModelConfig() {
               <input value={model} onChange={(e) => { setModel(e.target.value); setError(''); }} placeholder="gpt-4o" className={INPUT_CLS} />
               {probeError ? (
                 <div className="mt-1 text-xs text-text-muted">{probeError}，可手动输入模型名称</div>
-              ) : baseUrl.trim() && apiKey.trim() ? (
-                <button type="button" onClick={() => doProbe(baseUrl, apiKey)} className="mt-1 cursor-pointer border-none bg-transparent p-0 text-xs text-primary hover:underline">
+              ) : baseUrl.trim() && (apiKey.trim() || hasStoredApiKey) ? (
+                <button type="button" onClick={() => doProbe(baseUrl, apiKey, model)} className="mt-1 cursor-pointer border-none bg-transparent p-0 text-xs text-primary hover:underline">
                   点击重新检测
                 </button>
               ) : null}

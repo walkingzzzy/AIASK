@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { normalizeSurfaceContract } from './platform-contract.mjs';
+
 function parseArgs(argv) {
   const args = {
     outputDir: null,
@@ -29,29 +31,46 @@ async function main() {
   const outputPath = path.join(args.outputDir, 'raw', 'surface-manifest.json');
   const catalog = JSON.parse(await fs.readFile(catalogPath, 'utf8'));
 
-  const surfaces = catalog.map((surface, index) => ({
-    ordinal: index + 1,
-    surfaceId: surface.surfaceId,
-    label: surface.label,
-    group: surface.group,
-    route: surface.route,
-    path: surface.path || surface.route,
-    auth: surface.auth,
-    requiresAuth: Boolean(surface.requiresAuth ?? surface.auth !== 'public'),
-    family: surface.family || surface.group,
-    budgetClass: surface.budgetClass || 'overview',
-    dynamicResolver: surface.dynamicResolver || null,
-    mutationRisk: surface.mutationRisk,
-    emptyStatePolicy: surface.emptyStatePolicy,
-    scenarioSet: surface.scenarioSet,
-    seedDependencies: surface.seedDependencies,
-  }));
+  const surfaces = catalog.map((surface, index) => {
+    const contract = normalizeSurfaceContract(surface);
+    return {
+      ordinal: index + 1,
+      surfaceId: contract.surfaceId,
+      label: contract.label,
+      group: contract.group,
+      route: contract.route,
+      path: contract.path || contract.route,
+      auth: contract.auth,
+      requiresAuth: Boolean(contract.requiresAuth ?? contract.auth !== 'public'),
+      family: contract.family || contract.group,
+      budgetClass: contract.budgetClass || 'overview',
+      dynamicResolver: contract.dynamicResolver || null,
+      mutationRisk: contract.mutationRisk,
+      mutationMode: contract.mutationMode,
+      emptyStatePolicy: contract.emptyStatePolicy,
+      scenarioSet: contract.scenarioSet,
+      seedDependencies: contract.seedDependencies,
+      proofMode: contract.proofMode,
+      readProofRequired: contract.readProofRequired,
+      writeProofRequired: contract.writeProofRequired,
+      prerequisites: contract.prerequisites,
+      seedStrategy: contract.seedStrategy,
+      cleanupStrategy: contract.cleanupStrategy,
+      artifactKey: contract.artifactKey,
+      inScope: contract.inScope,
+    };
+  });
 
   const manifest = {
     generatedAt: new Date().toISOString(),
     total: surfaces.length,
     byAuth: surfaces.reduce((acc, surface) => {
       acc[surface.auth] = (acc[surface.auth] || 0) + 1;
+      return acc;
+    }, {}),
+    byScope: surfaces.reduce((acc, surface) => {
+      const key = surface.inScope ? 'inScope' : 'outOfScope';
+      acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {}),
     byGroup: surfaces.reduce((acc, surface) => {
@@ -64,6 +83,14 @@ async function main() {
     }, {}),
     byBudgetClass: surfaces.reduce((acc, surface) => {
       acc[surface.budgetClass] = (acc[surface.budgetClass] || 0) + 1;
+      return acc;
+    }, {}),
+    byProofMode: surfaces.reduce((acc, surface) => {
+      acc[surface.proofMode] = (acc[surface.proofMode] || 0) + 1;
+      return acc;
+    }, {}),
+    byMutationMode: surfaces.reduce((acc, surface) => {
+      acc[surface.mutationMode] = (acc[surface.mutationMode] || 0) + 1;
       return acc;
     }, {}),
     surfaces,

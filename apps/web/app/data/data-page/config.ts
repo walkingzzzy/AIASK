@@ -14,7 +14,6 @@ export const RESOURCE_PRESETS = [
     requiresId: false,
     inputLabel: '对象标识',
     placeholder: '工具目录不需要额外 ID',
-    example: '',
     description: '查看 AI 工具目录、必填参数、输出摘要和副作用级别。',
   },
   {
@@ -22,17 +21,15 @@ export const RESOURCE_PRESETS = [
     label: '工作流指南',
     requiresId: true,
     inputLabel: '指南名称',
-    placeholder: 'stock-analysis-guide',
-    example: 'stock-analysis-guide',
-    description: '查看 stock analysis、factor governance 等标准工作流模板。',
+    placeholder: '输入工作流指南名称',
+    description: '查看标准工作流模板、步骤要求和输出契约。',
   },
   {
     key: 'runSnapshot',
     label: 'Run 快照',
     requiresId: true,
     inputLabel: 'Run ID',
-    placeholder: 'run_demo_001',
-    example: 'run_demo_001',
+    placeholder: '输入 Run ID',
     description: '回看一次运行的 linege、artifact 和关键摘要。',
   },
   {
@@ -40,8 +37,7 @@ export const RESOURCE_PRESETS = [
     label: 'Dataset 质量',
     requiresId: true,
     inputLabel: 'Dataset ID',
-    placeholder: 'dataset_demo',
-    example: 'dataset_demo',
+    placeholder: '输入 Dataset ID',
     description: '查看数据集质量状态、校验标记和修复建议。',
   },
   {
@@ -49,8 +45,7 @@ export const RESOURCE_PRESETS = [
     label: 'Dataset 档案',
     requiresId: true,
     inputLabel: 'Dataset ID',
-    placeholder: 'dataset_demo',
-    example: 'dataset_demo',
+    placeholder: '输入 Dataset ID',
     description: '查看 dataset profile、lineage 和最新验证快照。',
   },
   {
@@ -58,8 +53,7 @@ export const RESOURCE_PRESETS = [
     label: 'Factor 档案',
     requiresId: true,
     inputLabel: 'Factor ID',
-    placeholder: 'factor_demo',
-    example: 'factor_demo',
+    placeholder: '输入 Factor ID',
     description: '查看因子候选、验证结果、注册状态与衰减信息。',
   },
   {
@@ -67,8 +61,7 @@ export const RESOURCE_PRESETS = [
     label: 'Model 档案',
     requiresId: true,
     inputLabel: 'Model ID',
-    placeholder: 'model_demo',
-    example: 'model_demo',
+    placeholder: '输入 Model ID',
     description: '查看模型 profile、校准信息和 champion/challenger 关系。',
   },
   {
@@ -76,8 +69,7 @@ export const RESOURCE_PRESETS = [
     label: '策略治理',
     requiresId: true,
     inputLabel: 'Strategy ID',
-    placeholder: 'strat_demo',
-    example: 'strat_demo',
+    placeholder: '输入 Strategy ID',
     description: '查看策略审查状态、门禁结果与上线风险摘要。',
   },
   {
@@ -85,8 +77,7 @@ export const RESOURCE_PRESETS = [
     label: '实验摘要',
     requiresId: true,
     inputLabel: 'Experiment ID',
-    placeholder: 'exp_demo',
-    example: 'exp_demo',
+    placeholder: '输入 Experiment ID',
     description: '查看实验对象、关键指标和 artifact 关联关系。',
   },
   {
@@ -95,7 +86,6 @@ export const RESOURCE_PRESETS = [
     requiresId: false,
     inputLabel: '对象标识',
     placeholder: '治理总览不需要额外 ID',
-    example: '',
     description: '查看系统级治理、风险与告警概览。',
   },
 ] as const;

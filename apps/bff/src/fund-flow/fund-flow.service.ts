@@ -1,6 +1,16 @@
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
+import { buildMcpTransportFailureDetail } from '../mcp-gateway/mcp-transport.contract';
 import { CommonCacheService } from '../common/cache.service';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+} from '../common/result-contract';
+import {
+  buildResultContractMeta,
+  callToolWithContract,
+} from '../common/tool-contracts';
 
 export type NormalizedFlowItem = {
   date: string; name: string; netInflow: number | null; mainInflow: number | null;
@@ -14,8 +24,6 @@ export class FundFlowService {
   private static readonly SECTOR_TTL_SECONDS = 120;
   private static readonly CONCEPT_TTL_SECONDS = 120;
   private static readonly NORTH_TTL_SECONDS = 120;
-  private readonly logger = new Logger(FundFlowService.name);
-
   constructor(
     private readonly mcp: McpGatewayService,
     private readonly cacheService: CommonCacheService,
@@ -30,13 +38,9 @@ export class FundFlowService {
       return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
     }
 
-    const attempts: Array<Record<string, unknown>> = [
-      { stock_code: stockCode },
-      { code: stockCode },
-      { symbol: stockCode },
-    ];
+    const attempts: Array<Record<string, unknown>> = [{ code: stockCode }];
 
-    const { payload } = await this.callWithArgs('get_stock_fund_flow', attempts);
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_stock_fund_flow', attempts);
     const root = this.unwrapPayload(payload);
     const data = this.asRecord(root);
     // MCP returns a single flat object, not an array — wrap it
@@ -49,7 +53,33 @@ export class FundFlowService {
       retailInflow: this.toNum(data.smallNetInflow ?? data.small_net_inflow),
       retailOutflow: null,
     }];
-    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+    const fetchedAt = new Date().toISOString();
+    const result = {
+      data: { flows },
+      meta: { fetchedAt, cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      result_contract: buildResultContract({
+        summary: `${stockCode} 资金流已加载，当前样本 ${flows.length} 条。`,
+        availableViews: ['summary', 'compare', 'next_step'],
+        evidence: [
+          { label: '股票代码', value: stockCode },
+          { label: '样本数', value: String(flows.length) },
+          { label: '主力净流入', value: flows[0]?.mainInflow == null ? '-' : String(flows[0].mainInflow) },
+          { label: '散户净流入', value: flows[0]?.retailInflow == null ? '-' : String(flows[0].retailInflow) },
+        ],
+        freshness: extractFreshness(payload, fetchedAt, '资金流抓取时间'),
+        platformMeta: extractPlatformMeta(payload, {
+          sourceTool: canonicalTool,
+          referencePath: '/fund-flow/stock',
+          freshnessLabel: '资金流抓取时间',
+        }),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
+    };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
   }
@@ -64,16 +94,26 @@ export class FundFlowService {
 
     try {
       const payload = await this.mcp.callTool('get_sector_fund_flow', {});
-      const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+      const result = {
+        data: { flows: this.normalizeFlows(payload) },
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      };
       await this.cacheService.set(cacheKey, result, ttlSeconds);
       return result;
     } catch (error) {
-      this.logger.warn(`fund-flow.sector 降级到空结果: ${this.errorMessage(error)}`);
+      const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
+        acceptanceStatus: 'degraded',
+        path: '/fund-flow/sector',
+        upstream: this.extractUpstreamDetail(error),
+      });
       return {
         data: { flows: [] },
-        degraded: true,
-        message: '板块资金流暂时不可用，已返回空结果',
         meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        degraded: true,
+        message: '板块资金流暂时不可用，已降级为空结果',
+        fallback_reason: ['sector_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
+        detail,
+        transport: detail.transport,
       };
     }
   }
@@ -263,23 +303,26 @@ export class FundFlowService {
   }
 
   private async callWithArgs(primaryTool: string, attempts: Array<Record<string, unknown>>) {
-    let lastError: unknown = null;
-    for (const args of attempts) {
-      try {
-        const payload = await this.mcp.callTool(primaryTool, args);
-        return { payload, argsMatched: args };
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw new BadGatewayException({
-      success: false,
-      message: `MCP ${primaryTool} 调用失败`,
-      detail: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+    const result = await callToolWithContract(
+      primaryTool,
+      attempts,
+      (name, args) => this.mcp.callTool(name, args),
+    );
+    return {
+      payload: result.payload,
+      argsMatched: result.argsMatched,
+      canonicalArgs: result.canonicalArgs,
+      aliasHits: result.aliasHits,
+      canonicalTool: result.canonicalTool,
+    };
   }
 
-  private errorMessage(error: unknown) {
-    return error instanceof Error ? error.message : String(error);
+  private extractUpstreamDetail(error: unknown): unknown {
+    if (error && typeof error === 'object' && typeof (error as { getResponse?: () => unknown }).getResponse === 'function') {
+      return (error as { getResponse: () => unknown }).getResponse();
+    }
+    return {
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 }

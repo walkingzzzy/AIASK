@@ -288,6 +288,88 @@ TOOL_CONTRACTS: dict[str, dict[str, Any]] = {
         ],
         tags=["workflow", "data-quality", "dataset", "validation"],
     ),
+    "semantic_stock_search": _contract(
+        name="semantic_stock_search",
+        title="Semantic Stock Search",
+        category="search",
+        description="Resolve stock ideas from natural-language cues such as sector, style, theme, code or stock name.",
+        required_params=["query"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language stock query in Chinese or ticker/name form."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        side_effect_level="read_only",
+        freshness="vector_index_and_market_taxonomy_snapshot",
+        examples=[
+            {"description": "Search high-dividend bank stocks", "arguments": {"query": "高股息银行股", "limit": 20}},
+            {"description": "Search by stock code or short name", "arguments": {"query": "600519", "limit": 10}},
+        ],
+        tags=["search", "semantic", "screening", "vector"],
+    ),
+    "search_similar_stocks": _contract(
+        name="search_similar_stocks",
+        title="Search Similar Stocks",
+        category="search",
+        description="Find similar stocks for a given target code using profile, fundamental and technical similarity signals.",
+        required_params=["code"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Target stock code."},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+                "similarity_type": {
+                    "type": "string",
+                    "enum": ["both", "profile", "fundamental", "technical"],
+                },
+                "search_backend": {"type": "string", "enum": ["db", "memory"]},
+                "allow_fallback": {"type": "boolean"},
+            },
+            "required": ["code"],
+            "additionalProperties": True,
+        },
+        side_effect_level="read_only",
+        freshness="vector_index_and_recent_stock_profile_snapshot",
+        examples=[
+            {
+                "description": "Find stocks similar to Kweichow Moutai",
+                "arguments": {"code": "600519", "top_n": 10, "similarity_type": "both"},
+            }
+        ],
+        tags=["search", "similarity", "vector", "research"],
+    ),
+    "search_by_kline": _contract(
+        name="search_by_kline",
+        title="Search By Kline Pattern",
+        category="quant",
+        description="Find stocks with K-line shapes similar to a target stock over a recent window.",
+        required_params=["code"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Target stock code."},
+                "days": {"type": "integer", "minimum": 5, "maximum": 240},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+                "search_backend": {"type": "string", "enum": ["db", "memory"]},
+                "allow_fallback": {"type": "boolean"},
+            },
+            "required": ["code"],
+            "additionalProperties": True,
+        },
+        side_effect_level="read_only",
+        freshness="recent_kline_vector_snapshot",
+        examples=[
+            {
+                "description": "Match recent 20-day K-line patterns",
+                "arguments": {"code": "600519", "days": 20, "top_n": 10},
+            }
+        ],
+        tags=["quant", "kline", "vector", "pattern-search"],
+    ),
     "available_tools": _contract(
         name="available_tools",
         title="Available Tools",

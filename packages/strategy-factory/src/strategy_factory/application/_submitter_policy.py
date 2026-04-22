@@ -311,6 +311,18 @@ class _StrategySubmitterPolicyMixin:
                     "refresh_mode": (candidate.get("dedup_result") or {}).get("refresh_mode"),
                     "refresh_existing_contract": dict((quality_gate or {}).get("refresh_existing_contract") or {}),
                     "submission_lane": submission_lane,
+                    "execution_audit_gate_status": quality_gate.get("execution_audit_gate_status"),
+                    "execution_audit_gate_reasons": list(quality_gate.get("execution_audit_gate_reasons") or []),
+                    "execution_hard_gate_passed": quality_gate.get("execution_hard_gate_passed"),
+                    "trace_id": candidate.get("trace_id"),
+                    "correlation_id": (
+                        candidate.get("correlation_id")
+                        or candidate.get("trace_id")
+                        or snapshot.get("correlation_id")
+                    ),
+                    "factory_run_id": candidate.get("factory_run_id") or snapshot.get("factory_run_id"),
+                    "parent_task_run_id": candidate.get("task_run_id") or dict(candidate.get("params") or {}).get("task_run_id"),
+                    "source_action": "strategy_factory_submit",
                     "direct_trade_candidate": bool((quality_gate or {}).get("live_candidate_ready")),
                     "committee_review": dict(candidate.get("committee_review") or {}),
                     "task_preference": dict((quality_gate or {}).get("task_preference") or {}),

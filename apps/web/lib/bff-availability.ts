@@ -6,6 +6,7 @@ export type BffAvailabilityStatus = 'unknown' | 'checking' | 'online' | 'offline
 
 const PROBE_TIMEOUT_MS = 2500;
 const OFFLINE_RETRY_COOLDOWN_MS = 30_000;
+const OFFLINE_PROBE_INTERVAL_MS = 5_000;
 
 let status: BffAvailabilityStatus = 'unknown';
 let lastCheckedAt = 0;
@@ -116,6 +117,19 @@ export function useBffAvailability(options: { probeOnMount?: boolean } = {}) {
     if (!probeOnMount) return;
     if (currentStatus === 'online' || currentStatus === 'checking') return;
     void ensureBffAvailability();
+  }, [currentStatus, probeOnMount]);
+
+  useEffect(() => {
+    if (!probeOnMount) return;
+    if (currentStatus !== 'offline') return;
+
+    const timer = window.setTimeout(() => {
+      void ensureBffAvailability({ force: true });
+    }, OFFLINE_PROBE_INTERVAL_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [currentStatus, probeOnMount]);
 
   return {

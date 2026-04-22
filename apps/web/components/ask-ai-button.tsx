@@ -1,6 +1,7 @@
 'use client';
 
 import { type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { useCopilotStore } from '@/store/copilot-store';
 
 export type AskAiButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & {
@@ -44,6 +45,7 @@ export function AskAiButton({
   const setPendingInject = useCopilotStore((s) => s.setPendingInject);
 
   const handleClick = () => {
+    const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
     const parts: string[] = [];
     if (prompt) {
       parts.push(prompt);
@@ -63,6 +65,18 @@ export function AskAiButton({
         ...(summary ? { summary } : {}),
         ...(raw ? { raw } : {}),
       },
+    });
+    trackBehaviorEvent({
+      pageKey: 'ask-ai-button',
+      route: currentPath,
+      eventType: 'ask_ai_inject',
+      targetType: 'button',
+      targetLabel: typeof label === 'string' ? label : stockCode ? `Ask AI ${stockCode}` : 'Ask AI',
+      payload: {
+        stockCode,
+        summary,
+      },
+      source: 'ask-ai-button',
     });
     setDockOpen(true);
   };

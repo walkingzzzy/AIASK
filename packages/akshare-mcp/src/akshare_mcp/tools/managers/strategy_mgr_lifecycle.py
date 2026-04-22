@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ...services.strategy_lifecycle_shared import build_closure_review
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
     build_factory_recent_run_diagnostics,
@@ -298,6 +299,43 @@ async def _build_recheck_quality_inputs(db, strategy: dict, latest_report: Optio
     return validation_report, risk_report, backtest_metrics
 
 
+async def _refresh_closure_review_after_mutation(
+    db,
+    strategy: dict,
+    *,
+    as_of: Optional[str],
+    correlation_id: Optional[str] = None,
+    actor_id: Optional[str] = None,
+    actor_roles: Any = None,
+) -> Optional[dict]:
+    try:
+        return await build_closure_review(
+            db,
+            strategy,
+            as_of=as_of,
+            correlation_id=correlation_id,
+            actor_id=actor_id,
+            actor_roles=actor_roles,
+            force_recompute=True,
+        )
+    except TypeError:
+        return await build_closure_review(
+            db,
+            strategy,
+            as_of=as_of,
+            correlation_id=correlation_id,
+            actor_id=actor_id,
+            actor_roles=actor_roles,
+        )
+    except Exception as exc:
+        logger.warning(
+            "strategy_manager closure review refresh failed for %s: %s",
+            strategy.get("id"),
+            exc,
+        )
+        return None
+
+
 async def handle_review_report_recheck(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
@@ -314,6 +352,7 @@ async def handle_review_report_recheck(db, params: dict) -> dict:
         risk_report=risk_report,
         backtest_metrics=backtest_metrics,
     )
+    recomputed_as_of = datetime.now(timezone.utc).date().isoformat()
     report_type = f"recheck:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
     report = build_quality_report(
         strategy_id=sid,
@@ -330,8 +369,25 @@ async def handle_review_report_recheck(db, params: dict) -> dict:
         spawn_reason=((latest_report or {}).get("summary") or {}).get("spawn_reason"),
         submission_audit=_quality_report_submission_audit(latest_report),
     )
+    report["recomputed"] = True
+    report["as_of"] = recomputed_as_of
     await save_quality_report(db, sid, report, report_type=report_type)
-    return ok(report)
+    closure_review = await _refresh_closure_review_after_mutation(
+        db,
+        strategy,
+        as_of=recomputed_as_of,
+        correlation_id=str(
+            dict((report.get("summary") or {})).get("correlation_id") or ""
+        ).strip() or None,
+    )
+    return ok(
+        {
+            **report,
+            "recomputed": True,
+            "as_of": recomputed_as_of,
+            "closure_review": closure_review,
+        }
+    )
 
 
 def _resolve_replay_strategy_ids(params: dict) -> list[str]:
@@ -365,6 +421,7 @@ async def handle_submission_replay(db, params: dict) -> dict:
 
     submitter = StrategySubmitter()
     items: list[dict] = []
+    recomputed_as_of = datetime.now(timezone.utc).date().isoformat()
     for sid in strategy_ids:
         strategy = await db.get_strategy(sid)
         if not strategy:
@@ -411,9 +468,24 @@ async def handle_submission_replay(db, params: dict) -> dict:
                 "submission_action_trigger": replayed.get("submission_action_trigger"),
                 "paper_lane_ready": replayed.get("paper_lane_ready"),
                 "live_review_ready": replayed.get("live_review_ready"),
+                "execution_audit_snapshot_id": replayed.get("execution_audit_snapshot_id"),
+                "correlation_id": replayed.get("correlation_id"),
+                "factory_run_id": replayed.get("factory_run_id"),
+                "trace_id": replayed.get("trace_id"),
+                "lifecycle_task_run_id": replayed.get("lifecycle_task_run_id"),
+                "recomputed": bool(recheck_reports),
+                "as_of": recomputed_as_of,
             }
         )
-    return ok({"count": len(items), "recheck_reports": recheck_reports, "items": items})
+    return ok(
+        {
+            "count": len(items),
+            "recheck_reports": recheck_reports,
+            "recomputed": bool(recheck_reports),
+            "as_of": recomputed_as_of,
+            "items": items,
+        }
+    )
 
 
 async def handle_submit(db, params: dict) -> dict:
@@ -439,6 +511,7 @@ async def handle_submit(db, params: dict) -> dict:
     snapshot = dict((latest_report or {}).get("snapshot") or {})
     if not snapshot.get("date"):
         snapshot["date"] = datetime.now(timezone.utc).date().isoformat()
+    recomputed_as_of = datetime.now(timezone.utc).date().isoformat()
     replayed = await submitter.replay_existing_submission(
         strategy,
         snapshot,
@@ -449,6 +522,12 @@ async def handle_submit(db, params: dict) -> dict:
         latest_report=latest_report,
     )
     gate_result = dict(replayed.get("gate") or {})
+    closure_review = await _refresh_closure_review_after_mutation(
+        db,
+        {**strategy, "status": replayed.get("status") or strategy.get("status")},
+        as_of=recomputed_as_of,
+        correlation_id=str(replayed.get("correlation_id") or "").strip() or None,
+    )
     return ok({
         "strategy_id": sid,
         "status": replayed.get("status"),
@@ -461,6 +540,14 @@ async def handle_submit(db, params: dict) -> dict:
         "live_review_ready": replayed.get("live_review_ready"),
         "incubation_account_id": ((replayed.get("incubation_binding") or {}).get("account") or {}).get("id"),
         "vector_profile_id": (replayed.get("vector_profile") or {}).get("id"),
+        "execution_audit_snapshot_id": replayed.get("execution_audit_snapshot_id"),
+        "correlation_id": replayed.get("correlation_id"),
+        "factory_run_id": replayed.get("factory_run_id"),
+        "trace_id": replayed.get("trace_id"),
+        "lifecycle_task_run_id": replayed.get("lifecycle_task_run_id"),
+        "recomputed": True,
+        "as_of": recomputed_as_of,
+        "closure_review": closure_review,
     })
 
 
@@ -480,6 +567,25 @@ async def handle_incubation_overview(db, params: dict) -> dict:
     incubating = await db.list_strategies("incubating", limit=limit)
     items = [await build_incubation_overview(db, s) for s in incubating]
     return ok({"items": items, "count": len(items)})
+
+
+async def handle_closure_review(db, params: dict) -> dict:
+    sid = str(params.get("strategy_id") or params.get("id") or "").strip()
+    if not sid:
+        return fail("strategy_id is required")
+    strategy = await db.get_strategy(sid)
+    if not strategy:
+        return fail(f"Strategy not found: {sid}")
+    return ok(
+        await build_closure_review(
+            db,
+            strategy,
+            as_of=params.get("as_of"),
+            correlation_id=str(params.get("correlation_id") or "").strip() or None,
+            actor_id=str(params.get("actor_id") or params.get("user_id") or "").strip() or None,
+            actor_roles=params.get("actor_roles") or params.get("roles") or params.get("actor_role") or params.get("role"),
+        )
+    )
 
 
 async def handle_factory_status(db, params: dict) -> dict:

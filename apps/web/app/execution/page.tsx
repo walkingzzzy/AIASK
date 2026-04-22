@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import ExecutionHero from '@/app/execution/components/execution-hero';
@@ -21,6 +22,12 @@ import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray, fmtNum } from '@/lib/data-utils';
+import {
+  buildLocalResultContract,
+  defaultWorkbenchTask,
+  evidenceToSummary,
+  resolveResultContract,
+} from '@/lib/result-workbench';
 import { buildExecutionArtifactDetailHref } from '@/lib/surface-contracts';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import {
@@ -368,17 +375,6 @@ export default function ExecutionPage() {
     setSubmittedArtifactId(nextId);
   }
 
-  function loadExample(nextCode: string) {
-    setCode(nextCode);
-    setDirection('buy');
-    setQuantity('100');
-    setOrderType('market');
-    setPrice('');
-    setStopPrice('');
-    setUrgency('normal');
-    setFormError(null);
-  }
-
   function selectExecutionTask(nextTaskId: string, nextArtifactId: string) {
     if (nextTaskId) {
       setExecutionIdInput(nextTaskId);
@@ -582,45 +578,7 @@ export default function ExecutionPage() {
     ],
   );
 
-  usePageContext({
-    pageKey: 'execution',
-    title: '执行中心',
-    summary: `当前执行标的为 ${trimmedCode || '未输入'}，方向 ${direction === 'buy' ? '买入' : '卖出'}，数量 ${quantity || '未输入'} 股，执行模式 ${urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'}。当前执行单号 ${currentExecutionId || '未查询'}。`,
-    stockCode: trimmedCode || undefined,
-    tags: [
-      urgency === 'high' ? '高优先级' : '标准执行',
-      orderType === 'market' ? '市价单' : orderType === 'limit' ? '限价单' : '止损单',
-      `${pendingOrders.length} 挂单`,
-    ],
-    suggestions: [
-      '载入一笔示例执行参数',
-      urgency === 'high' ? '切回标准执行模式' : '切换到高优先级执行',
-      executionInsight ? '打开执行复盘摘要并继续联动' : '查询最新执行状态',
-    ],
-    raw: {
-      code: trimmedCode,
-      direction,
-      quantity: quantityValue,
-      urgency,
-      orderType,
-      executionId: currentExecutionId || null,
-      pendingOrders: pendingOrders.length,
-    },
-  });
-
   const pageActions = [
-    {
-      id: 'execution.load-example',
-      label: '载入茅台执行示例',
-      description: '填充 600519 的执行参数',
-      keywords: ['示例', '执行', '600519'],
-      scope: 'page' as const,
-      pageKey: 'execution',
-      run: () => {
-        loadExample('600519');
-        return { message: '已载入 600519 执行示例' };
-      },
-    },
     {
       id: 'execution.update-form',
       label: '更新执行参数',
@@ -756,6 +714,77 @@ export default function ExecutionPage() {
 
   usePageActions(pageActions);
 
+  const executionEvidence = [
+    { label: '当前标的', value: trimmedCode || '-' },
+    { label: '执行方向', value: direction === 'buy' ? '买入' : '卖出' },
+    { label: '执行模式', value: urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP' },
+    { label: '挂单数量', value: String(pendingOrders.length) },
+    { label: '执行单号', value: currentExecutionId || '-' },
+  ];
+  const executionLinks = [
+    activeExecutionCode ? { id: 'execution-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeExecutionCode)}` } : { id: 'execution-open-stock-link', label: '行情看板', href: '/market?from=execution' },
+    { id: 'execution-open-performance-link', label: '绩效中心', href: '/performance?from=execution' },
+    { id: 'execution-open-risk-link', label: '风险中心', href: '/risk?from=execution' },
+    { id: 'execution-open-skills-link', label: '技能中心', href: '/skills?from=execution' },
+  ];
+  const executionRiskNotes = [] as string[];
+  if (!trimmedCode) executionRiskNotes.push('当前还没有锁定执行标的，建议先补齐代码与数量。');
+  if (executionWorkbench?.warnings?.length) {
+    executionRiskNotes.push(
+      ...executionWorkbench.warnings.slice(0, 2).map((warning) => warning.message || warning.title),
+    );
+  }
+  const executionResult = resolveResultContract(
+    executionWorkbench?.result_contract,
+    buildLocalResultContract({
+      summary: `当前执行标的为 ${trimmedCode || '未输入'}，方向 ${direction === 'buy' ? '买入' : '卖出'}，数量 ${quantity || '未输入'} 股，执行模式 ${urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'}。当前执行单号 ${currentExecutionId || '未查询'}。`,
+      pageActions,
+      preferredActionIds: ['execution.update-form', 'execution.query-status', 'execution.open-performance', 'execution.open-risk'],
+      recommendedLinks: executionLinks,
+      evidence: executionEvidence,
+      riskNotes: executionRiskNotes,
+      workbenchTask: defaultWorkbenchTask('execution', `执行复盘：${activeExecutionCode || trimmedCode || '当前执行'}`, '/execution', 'execution-review', {
+        code: activeExecutionCode || trimmedCode || null,
+        executionId: currentExecutionId || null,
+        artifactId: currentArtifactId || null,
+      }),
+    }),
+  );
+
+  usePageContext({
+    pageKey: 'execution',
+    title: '执行中心',
+    summary: executionResult.summary,
+    stockCode: trimmedCode || undefined,
+    objectType: trimmedCode ? 'stock' : 'workspace',
+    objectId: currentExecutionId || currentArtifactId || trimmedCode || 'execution',
+    resultType: 'execution-summary',
+    tags: [
+      urgency === 'high' ? '高优先级' : '标准执行',
+      orderType === 'market' ? '市价单' : orderType === 'limit' ? '限价单' : '止损单',
+      `${pendingOrders.length} 挂单`,
+    ],
+    suggestions: [
+      '填入一笔真实执行参数',
+      urgency === 'high' ? '切回标准执行模式' : '切换到高优先级执行',
+      executionInsight ? '打开执行复盘摘要并继续联动' : '查询最新执行状态',
+    ],
+    recommendedActions: executionResult.recommendedActions,
+    recommendedLinks: executionResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(executionResult.evidence),
+    riskNotes: executionResult.riskNotes ?? [],
+    freshness: executionResult.freshness ?? null,
+    raw: {
+      code: trimmedCode,
+      direction,
+      quantity: quantityValue,
+      urgency,
+      orderType,
+      executionId: currentExecutionId || null,
+      pendingOrders: pendingOrders.length,
+    },
+  });
+
   const gatewayPanel = (
     <ExecutionLiveGatewayPanel
       {...liveGatewayPanelProps}
@@ -791,7 +820,6 @@ export default function ExecutionPage() {
       routeExecutionError={routeExecutionApi.error}
       routeExecutionPending={routeExecutionApi.isPending}
       onSubmit={handleRouteExecution}
-      onLoadExample={loadExample}
     />
   );
 
@@ -883,6 +911,8 @@ export default function ExecutionPage() {
         onStatusQuery={() => handleStatusQuery()}
         onRefreshLiveGateway={liveGatewayPanelProps.onRefresh}
       />
+
+      <ResultWorkbench pageKey="execution" title="执行结果工作台" result={executionResult} />
 
       <WorkspaceToolbar
         pageKey="execution"

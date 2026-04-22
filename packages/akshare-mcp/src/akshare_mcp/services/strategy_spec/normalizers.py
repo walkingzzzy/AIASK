@@ -14,7 +14,7 @@ from strategy_factory.application.research_protocol_contract import (
     normalize_prediction_trace_id,
 )
 
-from .constants import *  # noqa: F401,F403
+from .constants import _EMPTY_VALUES
 
 def _normalize_code_list(*values: Any, limit: int = 12) -> list[str]:
     codes: list[str] = []
@@ -497,5 +497,4 @@ def _normalize_instrument_profile(
     if str(normalized.get("asset_class") or "").strip().lower() == "futures":
         normalized["board_bucket"] = "futures"
     return normalized
-
 

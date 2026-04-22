@@ -2,10 +2,14 @@
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { apiKeys } from '@/lib/query-keys';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type NotificationType = 'alert' | 'signal' | 'trade' | 'system' | 'news';
 
@@ -192,6 +196,111 @@ export default function NotificationsPage() {
     await handleDelete(targetIds);
     setSelectedIds((prev) => prev.filter((id) => !targetIds.includes(id)));
   };
+  const notificationsActions = useMemo(
+    () => [
+      {
+        id: 'notifications.mark-all-read',
+        label: '全部标记已读',
+        description: '把所有未读通知统一收口到已读队列',
+        keywords: ['通知', '已读'],
+        scope: 'page' as const,
+        pageKey: 'notifications',
+        run: async () => {
+          await handleMarkAllRead();
+          return { message: '已处理全部未读通知' };
+        },
+      },
+      {
+        id: 'notifications.refresh',
+        label: '刷新通知',
+        description: '重新拉取最新通知流',
+        keywords: ['通知', '刷新'],
+        scope: 'page' as const,
+        pageKey: 'notifications',
+        run: async () => {
+          await listQ.refetch();
+          return { message: '已刷新通知列表' };
+        },
+      },
+      {
+        id: 'notifications.filter-alerts',
+        label: '只看告警',
+        description: '优先聚焦告警类消息',
+        keywords: ['告警', '筛选'],
+        scope: 'page' as const,
+        pageKey: 'notifications',
+        run: () => {
+          setActiveType('alert');
+          return { message: '已切到告警通知' };
+        },
+      },
+    ],
+    [listQ],
+  );
+  usePageActions(notificationsActions);
+  const notificationsSummary = `当前筛选 ${currentTypeLabel}，总通知 ${rawItems.length} 条，未读 ${unreadCount} 条，可见未读 ${visibleUnreadCount} 条，已选 ${selectedCount} 条。`;
+  const notificationsResult = buildLocalResultContract({
+    summary: notificationsSummary,
+    availableViews: rawItems.length > 1 ? ['compare'] : [],
+    pageActions: notificationsActions,
+    preferredActionIds: ['notifications.mark-all-read', 'notifications.refresh', 'notifications.filter-alerts'],
+    recommendedLinks: [
+      { id: 'notifications-link-alerts', label: '告警中心', href: '/alerts' },
+      { id: 'notifications-link-strategy', label: '策略超市', href: '/strategy-market' },
+      { id: 'notifications-link-paper', label: '模拟交易', href: '/paper-trading' },
+      { id: 'notifications-link-research', label: '研究页', href: '/research' },
+    ],
+    evidence: [
+      { label: '总通知', value: String(rawItems.length) },
+      { label: '当前筛选', value: currentTypeLabel },
+      { label: '未读', value: String(unreadCount), tone: unreadCount > 0 ? 'warning' : 'neutral' },
+      { label: '可见未读', value: String(visibleUnreadCount) },
+      { label: '已选', value: String(selectedCount) },
+    ],
+    riskNotes: [
+      ...(actionError ? [actionError] : []),
+      ...(unreadCount === 0 ? ['当前没有未读通知。'] : []),
+      ...(selectedCount === 0 ? ['当前还没有选中批量处理项。'] : []),
+    ],
+    freshness: rawItems[0]?.createdAt ? { updatedAt: rawItems[0].createdAt, label: '最近通知' } : null,
+    platformMeta: {
+      sourceTool: 'notifications',
+      sourceChain: ['notifications-center'],
+      degraded: Boolean(actionError || listQ.error),
+      fallbackReason: [actionError, listQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('notifications', `复查通知中心 · ${currentTypeLabel}`, '/notifications', 'notification-review', {
+      activeType,
+      unreadCount,
+      selectedCount,
+    }),
+  });
+  usePageContext({
+    pageKey: 'notifications',
+    title: '通知中心工作台',
+    summary: notificationsSummary,
+    objectType: 'notification-stream',
+    objectId: activeType,
+    resultType: 'notification-center',
+    tags: [currentTypeLabel, `${unreadCount} 条未读`, `${selectedCount} 条已选`],
+    suggestions: [
+      '总结当前通知中心最该先处理哪一类消息',
+      '如果要降噪，先看哪种分类最有效',
+      '解释为什么通知处理不应该停在“已看到”',
+    ],
+    recommendedActions: notificationsResult.recommendedActions ?? [],
+    recommendedLinks: notificationsResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(notificationsResult.evidence),
+    riskNotes: notificationsResult.riskNotes ?? [],
+    freshness: notificationsResult.freshness ?? null,
+    raw: {
+      activeType,
+      total: rawItems.length,
+      unreadCount,
+      visibleUnreadCount,
+      selectedCount,
+    },
+  });
 
   return (
     <PageContainer className="app-theme-market space-y-4">
@@ -304,6 +413,8 @@ export default function NotificationsPage() {
           </div>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="notifications" title="通知结果工作台" result={notificationsResult} />
 
       {actionError ? (
         <div className="rounded-[22px] border border-danger/20 bg-[linear-gradient(180deg,rgba(217,45,32,0.12),rgba(255,255,255,0.52))] p-4 text-sm text-danger shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-xl">

@@ -22,10 +22,14 @@ function buildMetaSignature(actions: PageActionDefinition[]) {
 export function usePageActions(actions: PageActionDefinition[]) {
   const setPageActions = useCopilotStore((state) => state.setPageActions);
   const actionsRef = useRef(new Map<string, PageActionDefinition>());
+  const copilotActions = useMemo(
+    () => actions.filter((action) => action.exposeToCopilot !== false),
+    [actions],
+  );
 
   const metas = useMemo(
     () =>
-      actions.map((action) => ({
+      copilotActions.map((action) => ({
         id: action.id,
         label: action.label,
         description: action.description,
@@ -33,9 +37,9 @@ export function usePageActions(actions: PageActionDefinition[]) {
         scope: action.scope,
         pageKey: action.pageKey,
       })),
-    [actions],
+    [copilotActions],
   );
-  const metaSignature = useMemo(() => buildMetaSignature(actions), [actions]);
+  const metaSignature = useMemo(() => buildMetaSignature(copilotActions), [copilotActions]);
 
   useEffect(() => {
     actionsRef.current = new Map(actions.map((action) => [action.id, action]));

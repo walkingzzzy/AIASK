@@ -7,10 +7,20 @@ import type {
   NormalizedKlinePoint,
   NormalizedOrderBook,
   NormalizedQuote,
+  ResultContractMeta,
   ToolArgs,
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+} from '../common/result-contract';
+import {
+  buildResultContractMeta,
+  callToolWithContract,
+} from '../common/tool-contracts';
 
 @Injectable()
 export class MarketService {
@@ -40,22 +50,42 @@ export class MarketService {
       };
     }
 
-    const attempts: ToolArgs[] = [
-      { stock_code: stockCode },
-      { code: stockCode },
-      { symbol: stockCode },
-    ];
+    const attempts: ToolArgs[] = [{ code: stockCode }];
 
-    const { payload, argsMatched } = await this.callWithArgs('get_realtime_quote', attempts);
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_realtime_quote', attempts);
+    const quote = this.normalizeQuote(payload, stockCode);
+    const fetchedAt = new Date().toISOString();
     const result: MarketQuoteResponseDto = {
-      quote: this.normalizeQuote(payload, stockCode),
+      quote,
       tool: 'get_realtime_quote',
       argsTried: attempts,
       argsMatched,
       meta: {
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      result_contract: buildResultContract({
+        summary: `${quote.name || quote.code || stockCode} 最新价 ${quote.price ?? '-'}，涨跌幅 ${quote.changePercent ?? '-'}%。`,
+        availableViews: ['summary', 'visual', 'next_step'],
+        evidence: [
+          { label: '标的', value: quote.name || quote.code || stockCode },
+          { label: '最新价', value: quote.price == null ? '-' : String(quote.price) },
+          { label: '涨跌幅', value: quote.changePercent == null ? '-' : `${quote.changePercent}%` },
+          { label: '成交量', value: quote.volume == null ? '-' : String(quote.volume) },
+        ],
+        freshness: extractFreshness(payload, fetchedAt, '行情抓取时间'),
+        platformMeta: extractPlatformMeta(payload, {
+          sourceTool: 'get_realtime_quote',
+          referencePath: '/market/quote',
+          freshnessLabel: '行情抓取时间',
+        }),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -82,21 +112,42 @@ export class MarketService {
       };
     }
 
-    const attempts: ToolArgs[] = [
-      { code: normalized, period: klinePeriod, limit: klineLimit, start_date: '', end_date: '', adjust: '' },
-      { stock_code: normalized, period: klinePeriod, limit: klineLimit },
-    ];
+    const attempts: ToolArgs[] = [{ code: normalized, period: klinePeriod, limit: klineLimit, start_date: '', end_date: '', adjust: '' }];
 
-    const { payload, argsMatched } = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
+    const kline = this.normalizeKline(payload);
+    const fetchedAt = new Date().toISOString();
     const result: MarketKlineResponseDto = {
-      kline: this.normalizeKline(payload),
+      kline,
       tool: 'get_kline_data',
       argsTried: attempts,
       argsMatched,
       meta: {
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      result_contract: buildResultContract({
+        summary: `${normalized} ${klinePeriod} K 线已加载，共 ${kline.length} 根。`,
+        availableViews: ['summary', 'visual', 'next_step'],
+        evidence: [
+          { label: '标的', value: normalized },
+          { label: '周期', value: klinePeriod },
+          { label: '样本数', value: String(kline.length) },
+          { label: '最新日期', value: kline.at(-1)?.date || '-' },
+        ],
+        freshness: extractFreshness(payload, fetchedAt, 'K线抓取时间'),
+        platformMeta: extractPlatformMeta(payload, {
+          sourceTool: canonicalTool,
+          referencePath: '/market/kline',
+          freshnessLabel: 'K线抓取时间',
+        }),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -117,22 +168,42 @@ export class MarketService {
       };
     }
 
-    const attempts: ToolArgs[] = [
-      { stock_code: normalized },
-      { code: normalized },
-      { symbol: normalized },
-    ];
+    const attempts: ToolArgs[] = [{ code: normalized }];
 
-    const { payload, argsMatched } = await this.callWithArgs('get_order_book', attempts);
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_order_book', attempts);
+    const orderBook = this.normalizeOrderBook(payload, normalized);
+    const fetchedAt = new Date().toISOString();
     const result: MarketOrderBookResponseDto = {
-      orderBook: this.normalizeOrderBook(payload, normalized),
+      orderBook,
       tool: 'get_order_book',
       argsTried: attempts,
       argsMatched,
       meta: {
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      result_contract: buildResultContract({
+        summary: `${normalized} 五档盘口已加载，买盘 ${orderBook.bids.length} 档，卖盘 ${orderBook.asks.length} 档。`,
+        availableViews: ['summary', 'compare', 'next_step'],
+        evidence: [
+          { label: '标的', value: normalized },
+          { label: '买盘档数', value: String(orderBook.bids.length) },
+          { label: '卖盘档数', value: String(orderBook.asks.length) },
+          { label: '盘口时间', value: orderBook.timestamp || '-' },
+        ],
+        freshness: extractFreshness(payload, fetchedAt, '盘口抓取时间'),
+        platformMeta: extractPlatformMeta(payload, {
+          sourceTool: canonicalTool,
+          referencePath: '/market/order-book',
+          freshnessLabel: '盘口抓取时间',
+        }),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -525,38 +596,26 @@ export class MarketService {
     attempts: Array<Record<string, unknown>>,
     fallbackTool?: string,
   ) {
-    let lastError: unknown = null;
-    for (const args of attempts) {
-      try {
-        const payload = await this.mcpGatewayService.callTool(primaryTool, args);
+    const result = await callToolWithContract(
+      primaryTool,
+      attempts,
+      async (name, args) => {
+        const payload = await this.mcpGatewayService.callTool(name, args);
         const toolError = this.extractToolError(payload);
         if (toolError) {
           throw new Error(toolError);
         }
-        return { payload, argsMatched: args };
-      } catch (error) {
-        lastError = error;
-      }
-
-      if (fallbackTool) {
-        try {
-          const payload = await this.mcpGatewayService.callTool(fallbackTool, args);
-          const toolError = this.extractToolError(payload);
-          if (toolError) {
-            throw new Error(toolError);
-          }
-          return { payload, argsMatched: args };
-        } catch (error) {
-          lastError = error;
-        }
-      }
-    }
-
-    throw new BadGatewayException({
-      success: false,
-      message: `调用 MCP ${primaryTool} 失败`,
-      detail: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+        return payload;
+      },
+      fallbackTool ? [fallbackTool] : [],
+    );
+    return {
+      payload: result.payload,
+      argsMatched: result.argsMatched,
+      canonicalArgs: result.canonicalArgs,
+      aliasHits: result.aliasHits,
+      canonicalTool: result.canonicalTool,
+    };
   }
 
   private async callTool(name: string, args: Record<string, unknown>) {

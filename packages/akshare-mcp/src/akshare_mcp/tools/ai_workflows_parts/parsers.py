@@ -8,12 +8,29 @@
         as_of: str | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
+        validated_code, _, validation_error = await resolve_existing_security_code_async(code=code)
         resolved_code = normalize_code(code)
         lineage = LineageContext.create(
             "analyze_stock_workflow",
             security_code=resolved_code,
         )
         try:
+            if validation_error:
+                return fail_with_meta(
+                    validation_error,
+                    tool_name="analyze_stock_workflow",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=["workflow.analyze_stock"],
+                    extra_meta={
+                        "side_effect": {"level": "read_only", "target": resolved_code, "confirmation_required": False},
+                        "pit": build_pit_meta_simple(as_of),
+                        "lineage": lineage.to_meta(),
+                        "quality": {"status": "invalid_params", "workflow": "analyze_stock_workflow"},
+                        "degraded": True,
+                    },
+                )
+            resolved_code = str(validated_code)
             from ..resources.stock_and_watchlist import build_stock_profile_resource_payload
 
             steps: list[dict[str, Any]] = []
@@ -114,14 +131,31 @@
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
         source_chain = ["workflow.stock_deep_analysis", "service.stock_deep_analysis"]
+        validated_code, _, validation_error = await resolve_existing_security_code_async(code=code)
         lineage = LineageContext.create(
             "analyze_stock_product_workflow",
             security_code=normalize_code(code),
             run_id=run_id,
         )
         try:
+            if validation_error:
+                return fail_with_meta(
+                    validation_error,
+                    tool_name="analyze_stock_product_workflow",
+                    action=str(task or "deep_analysis"),
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    error_code="INVALID_PARAMS",
+                    extra_meta={
+                        "side_effect": {"level": "stateful", "target": normalize_code(code), "confirmation_required": False},
+                        "pit": build_pit_meta_simple(as_of),
+                        "lineage": lineage.to_meta(),
+                        "quality": {"status": "invalid_params", "workflow": "analyze_stock_product_workflow"},
+                        "degraded": True,
+                    },
+                )
             payload = await run_stock_deep_analysis(
-                code=code,
+                code=str(validated_code),
                 task=task,
                 user_id=user_id,
                 investment_style=investment_style,
@@ -154,7 +188,7 @@
                     ),
                     "side_effect": {
                         "level": "stateful",
-                        "target": normalize_code(code),
+                        "target": str(validated_code),
                         "confirmation_required": False,
                         "idempotent": False,
                     },

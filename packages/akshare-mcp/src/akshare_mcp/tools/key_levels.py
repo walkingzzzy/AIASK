@@ -19,7 +19,7 @@ import numpy as np
 
 from ..services.technical_analysis import TechnicalAnalysis as _TA
 from ..storage import get_db
-from ..utils import fail, ok
+from ..utils import fail, ok, resolve_existing_security_code_async
 
 logger = logging.getLogger(__name__)
 
@@ -482,4 +482,7 @@ def register(mcp):
             code: 股票代码
             lookback_days: 回看天数 (默认120)
         """
-        return await compute_key_levels(code, lookback_days=lookback_days)
+        normalized_code, _, error = await resolve_existing_security_code_async(code=code)
+        if error:
+            return fail(error)
+        return await compute_key_levels(normalized_code, lookback_days=lookback_days)

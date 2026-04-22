@@ -54,7 +54,15 @@ export class SkillsService {
       };
     } catch (error) {
       this.logger.error(`Failed to list skills from MCP registry: ${error}`);
-      return { data: [], count: 0, source: 'unavailable' };
+      if (error instanceof BadGatewayException) {
+        throw error;
+      }
+      throw new BadGatewayException({
+        success: false,
+        code: 'SKILLS_REGISTRY_UNAVAILABLE',
+        message: '技能注册表暂不可用',
+        detail: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -145,12 +153,27 @@ export class SkillsService {
   }
 
   private extractSkillRegistry(raw: unknown): SkillRegistryPayload {
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      throw new BadGatewayException({
+        success: false,
+        code: 'SKILLS_REGISTRY_UNAVAILABLE',
+        message: raw.trim(),
+      });
+    }
+
     const envelope = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    if (envelope.isError === true) {
+      throw new BadGatewayException({
+        success: false,
+        code: 'SKILLS_REGISTRY_UNAVAILABLE',
+        message: this.readMcpErrorMessage(envelope),
+      });
+    }
     if (envelope.success === false) {
       throw new BadGatewayException({
         success: false,
         code: 'SKILLS_REGISTRY_UNAVAILABLE',
-        message: String(envelope.error || envelope.message || 'MCP skills registry unavailable'),
+        message: this.readMcpErrorMessage(envelope),
         detail: envelope.detail,
       });
     }
@@ -171,6 +194,27 @@ export class SkillsService {
       count: typeof payload.count === 'number' ? payload.count : skills.length,
       source: payload.source ? String(payload.source) : undefined,
     };
+  }
+
+  private readMcpErrorMessage(envelope: Record<string, unknown>): string {
+    if (typeof envelope.error === 'string' && envelope.error.trim().length > 0) {
+      return envelope.error.trim();
+    }
+    if (typeof envelope.message === 'string' && envelope.message.trim().length > 0) {
+      return envelope.message.trim();
+    }
+    if (Array.isArray(envelope.content)) {
+      const textBlock = envelope.content.find(
+        (item) =>
+          item &&
+          typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).text === 'string',
+      ) as Record<string, unknown> | undefined;
+      if (typeof textBlock?.text === 'string' && textBlock.text.trim().length > 0) {
+        return textBlock.text.trim();
+      }
+    }
+    return 'MCP skills registry unavailable';
   }
 
   private extractSkillTriggerPayload(raw: unknown, fallbackSkill: SkillRegistryItem): SkillTriggerPayload {

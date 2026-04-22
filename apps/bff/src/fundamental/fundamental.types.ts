@@ -1,3 +1,5 @@
+import type { ResultContract, ResultContractMeta } from '@aiask/shared-types';
+
 export type FundamentalOverviewDto = {
   code: string;
   financials: NormalizedFinancials;
@@ -14,6 +16,11 @@ export type FundamentalOverviewDto = {
     fetchedAt: string;
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
+  result_contract?: ResultContract | null;
+  contract_meta?: {
+    financials: ResultContractMeta;
+    valuation: ResultContractMeta;
+  };
 };
 
 export type FundamentalHistoryDto = {
@@ -26,6 +33,8 @@ export type FundamentalHistoryDto = {
     fetchedAt: string;
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
+  result_contract?: ResultContract | null;
+  contract_meta?: ResultContractMeta | null;
 };
 
 export type FundamentalCapitalDto = {
@@ -52,6 +61,7 @@ export type FundamentalCapitalDto = {
     fetchedAt: string;
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
+  contract_meta?: ResultContractMeta | null;
 };
 
 export type FundamentalPeersDto = {
@@ -74,6 +84,7 @@ export type FundamentalPeersDto = {
     fetchedAt: string;
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
+  contract_meta?: ResultContractMeta | null;
 };
 
 export type NormalizedValuation = {

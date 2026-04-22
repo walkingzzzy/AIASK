@@ -1,9 +1,6 @@
 import type { FormEvent } from 'react';
 import { Badge, SectionCard, StockCodeInput } from '@/components/ui';
-import {
-  paperTradingChipButtonCls,
-  paperTradingNoteCardCls,
-} from '@/app/paper-trading/components/paper-trading-panel-styles';
+import { paperTradingNoteCardCls } from '@/app/paper-trading/components/paper-trading-panel-styles';
 import { fmtNum } from '@/lib/data-utils';
 
 type PaperTradingOrderWorkspaceProps = {
@@ -40,7 +37,6 @@ type PaperTradingOrderWorkspaceProps = {
   formError: string | null;
   formStatus: string | null;
   lastActionResult: string | null;
-  onLoadExampleOrder: (code?: string) => void;
 };
 
 export default function PaperTradingOrderWorkspace({
@@ -77,7 +73,6 @@ export default function PaperTradingOrderWorkspace({
   formError,
   formStatus,
   lastActionResult,
-  onLoadExampleOrder,
 }: PaperTradingOrderWorkspaceProps) {
   return (
     <SectionCard className="mb-4 p-4 sm:p-5">
@@ -88,12 +83,12 @@ export default function PaperTradingOrderWorkspace({
               <div className="eyebrow">Order Workspace</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">委托输入与提交流程</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                把参数输入、风控开关和示例引导放在同一块 glass 表单里，提交前就能确认方向、账户、价格和执行路径。
+                把参数输入、风控开关和提交预览放在同一块表单里，提交前就能确认方向、账户、价格和执行路径。
               </p>
             </div>
             {showAccountBootstrap ? (
               <div className="panel-soft rounded-[20px] px-3 py-2 text-xs text-text-secondary">
-                首笔交易建议使用示例代码和 100 股市价单
+                首笔交易需要真实代码和真实委托参数
               </div>
             ) : null}
           </div>
@@ -219,12 +214,6 @@ export default function PaperTradingOrderWorkspace({
                     : direction === 'buy'
                       ? '确认买入'
                       : '确认卖出'}
-              </button>
-              <button type="button" onClick={() => onLoadExampleOrder('600519')} className={paperTradingChipButtonCls}>
-                载入茅台示例
-              </button>
-              <button type="button" onClick={() => onLoadExampleOrder('000001')} className={paperTradingChipButtonCls}>
-                载入平安银行示例
               </button>
             </div>
           </form>

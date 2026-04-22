@@ -6,6 +6,7 @@
 import time
 from datetime import date, timedelta
 from .manager_protocol import ok_with_meta
+from ..utils import fail, resolve_existing_security_code_async, validate_int_range
 
 
 def register(mcp):
@@ -22,6 +23,10 @@ def register(mcp):
         try:
             from ..storage import get_db
             db = get_db()
+            if stock_code:
+                stock_code, _, error = await resolve_existing_security_code_async(stock_code=stock_code)
+                if error:
+                    return fail(error)
             since = date.today() - timedelta(days=days)
             conditions = ["publish_date >= $1"]
             params: list = [since]
@@ -69,6 +74,9 @@ def register(mcp):
         """
         started_at = time.perf_counter()
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
             from ..storage import get_db
             db = get_db()
             async with db.acquire() as conn:
@@ -128,13 +136,19 @@ def register(mcp):
         """
         started_at = time.perf_counter()
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
+            limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1, maximum=50)
+            if limit_error:
+                return fail(limit_error)
             from ..storage import get_db
             db = get_db()
             async with db.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT title, rating, target_price, institution, analyst, publish_date, summary "
                     "FROM research_reports WHERE code = $1 ORDER BY publish_date DESC LIMIT $2",
-                    code.strip(), min(limit, 50),
+                    code.strip(), limit,
                 )
 
             summaries = [dict(r) for r in rows] if rows else []

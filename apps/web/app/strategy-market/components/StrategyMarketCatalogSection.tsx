@@ -6,7 +6,20 @@ import { StrategyCard } from '@/components/strategy-card';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
 import type { Strategy } from '../types';
-import { CATEGORIES, resolveCategoryLabel, type StrategySortKey } from './strategy-market-support';
+import {
+  INCUBATION_STAGE_FILTER_OPTIONS,
+  resolveIncubationSurface,
+  resolveIncubationStageFilterLabel,
+  type StrategyIncubationStageFilter,
+} from '../lib/incubation-surface';
+import {
+  CATEGORIES,
+  resolveCategoryLabel,
+  resolveStrategyStatusMeta,
+  type StrategyMarketStatusCounts,
+  type StrategyMarketStatusSegment,
+  type StrategySortKey,
+} from './strategy-market-support';
 
 type StrategyMarketCatalogSectionProps = {
   category: string;
@@ -21,9 +34,19 @@ type StrategyMarketCatalogSectionProps = {
   toggleSortDir: () => void;
   strategies: Strategy[];
   activeCategoryLabel: string;
+  showStatusFilters?: boolean;
+  statusSegment?: StrategyMarketStatusSegment;
+  setStatusSegment?: (value: StrategyMarketStatusSegment) => void;
+  statusCounts?: StrategyMarketStatusCounts;
+  statusLabel?: string;
+  statusHelpText?: string;
+  incubationStageFilter?: StrategyIncubationStageFilter;
+  setIncubationStageFilter?: (value: StrategyIncubationStageFilter) => void;
+  catalogTotalCount?: number;
   featuredStrategies: Strategy[];
   onAddToCart: (strategy: Strategy) => void;
   showResults?: boolean;
+  emptyText?: string;
 };
 
 export function StrategyMarketCatalogSection({
@@ -39,10 +62,29 @@ export function StrategyMarketCatalogSection({
   toggleSortDir,
   strategies,
   activeCategoryLabel,
+  showStatusFilters = false,
+  statusSegment = 'visible',
+  setStatusSegment,
+  statusCounts,
+  statusLabel = '全部状态',
+  statusHelpText = '',
+  incubationStageFilter = 'all',
+  setIncubationStageFilter,
+  catalogTotalCount = strategies.length,
   featuredStrategies,
   onAddToCart,
   showResults = true,
+  emptyText = '暂无可展示策略',
 }: StrategyMarketCatalogSectionProps) {
+  const statusTabs = [
+    { key: 'visible', label: `市场可见 ${statusCounts?.visible ?? 0}` },
+    { key: 'submitted', label: `已提交 ${statusCounts?.submitted ?? 0}` },
+    { key: 'draft', label: `草稿 ${statusCounts?.draft ?? 0}` },
+    { key: 'rejected', label: `已淘汰 ${statusCounts?.rejected ?? 0}` },
+    { key: 'archived', label: `已归档 ${statusCounts?.archived ?? 0}` },
+    { key: 'all', label: `全部 ${statusCounts?.all ?? strategies.length}` },
+  ] as const;
+
   const strategyColumns = [
     {
       key: 'name',
@@ -79,6 +121,38 @@ export function StrategyMarketCatalogSection({
       },
     },
     {
+      key: 'status',
+      label: '市场状态',
+      render: (value: unknown) => {
+        const meta = resolveStrategyStatusMeta(String(value ?? ''));
+        return <Badge variant={meta.variant}>{meta.label}</Badge>;
+      },
+    },
+    {
+      key: 'incubation_stage',
+      label: '孵化阶段',
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const strategy = row as Strategy;
+        const incubation = resolveIncubationSurface({
+          strategyStatus: strategy.status,
+          incubationSurface: strategy.incubation_surface,
+        });
+        return <Badge variant={incubation.stage.variant}>{incubation.stage.label}</Badge>;
+      },
+    },
+    {
+      key: 'incubation_summary',
+      label: '孵化摘要',
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const strategy = row as Strategy;
+        const incubation = resolveIncubationSurface({
+          strategyStatus: strategy.status,
+          incubationSurface: strategy.incubation_surface,
+        });
+        return <div className="min-w-[180px] text-xs leading-6 text-text-secondary">{incubation.summaryLine}</div>;
+      },
+    },
+    {
       key: 'annual_return',
       label: '年化收益',
       align: 'right' as const,
@@ -103,7 +177,7 @@ export function StrategyMarketCatalogSection({
     },
     {
       key: 'subscriber_count',
-      label: '订阅',
+      label: '收藏',
       align: 'right' as const,
       render: (value: unknown) => String(value ?? 0),
     },
@@ -157,7 +231,7 @@ export function StrategyMarketCatalogSection({
                 <option value="totalReturn">按年化</option>
                 <option value="sharpe">按 Sharpe</option>
                 <option value="maxDrawdown">按最大回撤</option>
-                <option value="subscriber_count">按订阅数</option>
+                <option value="subscriber_count">按收藏数</option>
               </select>
               <button
                 type="button"
@@ -167,17 +241,51 @@ export function StrategyMarketCatalogSection({
               >
                 {sortDir === 'desc' ? '↓ 降序' : '↑ 升序'}
               </button>
+              <select
+                value={incubationStageFilter}
+                onChange={(event) => setIncubationStageFilter?.(event.target.value as StrategyIncubationStageFilter)}
+                aria-label="孵化阶段筛选"
+                className="w-32 px-2 py-2 text-xs"
+              >
+                {INCUBATION_STAGE_FILTER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <button type="button" onClick={() => setShowFeatured(!showFeatured)} className="action-chip ml-auto text-xs">
                 {showFeatured ? '收起精选卡片' : '展开精选卡片'}
               </button>
               <Link href="/paper-trading?from=strategy-market" className="action-chip text-xs no-underline text-inherit">
-                去模拟盘
+                去模拟盘总览
               </Link>
               <Link href="/portfolio?from=strategy-market" className="action-chip text-xs no-underline text-inherit">
-                去组合页
+                去组合页创建组合
               </Link>
             </div>
           </div>
+          <div className="rounded-[18px] border border-white/45 bg-white/24 px-4 py-3 text-xs leading-6 text-text-secondary">
+            列表页当前只负责筛选、查看详情和加入组合。市场状态和孵化阶段会并列展示，帮助区分“是否处于市场生命周期可见态”和“在孵化器内部走到哪一步”；收藏策略、复制为个人策略与创建模拟盘测试请进入策略详情页执行。
+          </div>
+          {showStatusFilters ? (
+            <div className="rounded-[20px] border border-white/45 bg-white/28 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="eyebrow mb-0">生命周期分层</div>
+                <span className="text-xs text-text-muted">
+                  当前分层 <span className="font-semibold text-text-primary">{statusLabel}</span> · 目录总量{' '}
+                  <span className="font-semibold text-text-primary">{catalogTotalCount}</span>
+                </span>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <TabBar
+                  tabs={statusTabs}
+                  active={statusSegment}
+                  onChange={(value) => setStatusSegment?.(value as StrategyMarketStatusSegment)}
+                />
+              </div>
+              <div className="mt-3 text-xs leading-6 text-text-secondary">{statusHelpText}</div>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-3">
             <div className="overflow-x-auto">
               <TabBar
@@ -190,7 +298,13 @@ export function StrategyMarketCatalogSection({
               />
             </div>
             <span className="ml-auto shrink-0 text-xs text-text-muted">
-              共 <span className="font-semibold text-text-primary">{strategies.length}</span> 个策略
+              当前结果 <span className="font-semibold text-text-primary">{strategies.length}</span> 条
+              {' '}· 孵化阶段 <span className="font-semibold text-text-primary">{resolveIncubationStageFilterLabel(incubationStageFilter)}</span>
+              {showStatusFilters ? (
+                <>
+                  {' '}· 目录总量 <span className="font-semibold text-text-primary">{catalogTotalCount}</span> 条
+                </>
+              ) : null}
             </span>
           </div>
         </div>
@@ -206,25 +320,45 @@ export function StrategyMarketCatalogSection({
                   <h2 className="mt-1">前 3 个候选（按当前排序）</h2>
                 </div>
                 <div className="panel-soft rounded-[22px] px-4 py-3 text-sm text-text-secondary">
+                  {showStatusFilters ? (
+                    <>
+                      分层：<span className="font-semibold text-text-primary">{statusLabel}</span> ·{' '}
+                    </>
+                  ) : null}
+                  孵化阶段：<span className="font-semibold text-text-primary">{resolveIncubationStageFilterLabel(incubationStageFilter)}</span> ·{' '}
                   分类：<span className="font-semibold text-text-primary">{activeCategoryLabel}</span>
                 </div>
               </div>
-              <div className="mt-4 grid gap-4 lg:grid-cols-3">
-                {featuredStrategies.map((strategy) => (
-                  <StrategyCard key={strategy.id} s={strategy} onAdd={(item) => onAddToCart(item)} />
-                ))}
-              </div>
+              {featuredStrategies.length ? (
+                <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                  {featuredStrategies.map((strategy) => (
+                    <StrategyCard key={strategy.id} s={strategy} onAdd={(item) => onAddToCart(item)} />
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-[18px] border border-dashed border-border bg-surface-alt/40 px-4 py-4 text-sm text-text-secondary">
+                  当前分层或搜索条件下暂无可展示的精选策略，请切换状态分层或调整筛选条件。
+                </div>
+              )}
             </SectionCard>
           ) : null}
 
-          <SectionCard className="mt-0">
+          <SectionCard className="mt-0" data-testid="strategy-market-catalog">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="eyebrow">全量目录</div>
                 <h2 className="mt-1">策略表格视图</h2>
               </div>
               <span className="text-xs text-text-muted">
-                共 {strategies.length} 条 · 按{' '}
+                当前结果 {strategies.length} 条
+                {showStatusFilters ? (
+                  <>
+                    {' '}· 分层 <b className="text-text-primary">{statusLabel}</b> · 目录总量 {catalogTotalCount} 条 · 按{' '}
+                  </>
+                ) : (
+                  <> · 按{' '}</>
+                )}
+                · 孵化阶段 <b className="text-text-primary">{resolveIncubationStageFilterLabel(incubationStageFilter)}</b> ·{' '}
                 <b className="text-text-primary">
                   {sortBy === 'totalReturn'
                     ? '年化'
@@ -232,7 +366,7 @@ export function StrategyMarketCatalogSection({
                       ? 'Sharpe'
                       : sortBy === 'maxDrawdown'
                         ? '最大回撤'
-                        : '订阅数'}
+                        : '收藏数'}
                 </b>{' '}
                 {sortDir === 'desc' ? '降序' : '升序'}
               </span>
@@ -242,9 +376,15 @@ export function StrategyMarketCatalogSection({
               columns={strategyColumns}
               rowKey="id"
               maxHeight={560}
+              emptyText={emptyText}
               mobileCardRender={(row) => {
                 const strategy = row as Strategy;
                 const metrics = getStrategyMetricSnapshot(strategy);
+                const statusMeta = resolveStrategyStatusMeta(strategy.status);
+                const incubation = resolveIncubationSurface({
+                  strategyStatus: strategy.status,
+                  incubationSurface: strategy.incubation_surface,
+                });
                 return (
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
@@ -256,7 +396,14 @@ export function StrategyMarketCatalogSection({
                           {strategy.description || strategy.strategy_type || '暂无描述'}
                         </div>
                       </div>
-                      <Badge variant="neutral">{resolveCategoryLabel(strategy.strategy_type)}</Badge>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Badge variant="neutral">{resolveCategoryLabel(strategy.strategy_type)}</Badge>
+                        <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+                        <Badge variant={incubation.stage.variant}>{incubation.stage.label}</Badge>
+                      </div>
+                    </div>
+                    <div className="rounded-[14px] border border-border bg-surface-alt/50 px-3 py-2 text-[11px] leading-5 text-text-secondary">
+                      {incubation.summaryLine}
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-xs text-text-secondary">
                       <div>
@@ -275,7 +422,7 @@ export function StrategyMarketCatalogSection({
                       </div>
                     </div>
                     <div className="flex items-center justify-between gap-2 border-t border-border pt-3 text-xs text-text-secondary">
-                      <span>{strategy.subscriber_count ?? 0} 人订阅</span>
+                      <span>{strategy.subscriber_count ?? 0} 人收藏 · 详情页可继续收藏 / 模拟盘</span>
                       <button
                         type="button"
                         onClick={() => onAddToCart(strategy)}
@@ -291,7 +438,6 @@ export function StrategyMarketCatalogSection({
           </SectionCard>
         </>
       )}
-
     </>
   );
 }

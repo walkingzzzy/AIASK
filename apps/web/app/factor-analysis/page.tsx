@@ -1,14 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, StockCodeInput, Badge, TabBar } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 
 type FactorItem = { name: string; description: string; category: string };
@@ -133,6 +137,122 @@ export default function FactorAnalysisPage() {
     factors.length > 0 ? factors : [{ name: factor, description: '当前默认研究因子', category: 'default' }];
   const activeFactorMeta = factorOptions.find((item) => item.name === factor);
   const activeTabLabel = RESULT_TABS.find((item) => item.key === resultTab)?.label ?? '配置';
+  const factorAnalysisActions = useMemo(
+    () => [
+      {
+        id: 'factor-analysis.load-library',
+        label: libraryLoaded ? '刷新因子库' : '加载因子库',
+        description: '加载或刷新可选因子列表',
+        keywords: ['因子库', '刷新'],
+        scope: 'page' as const,
+        pageKey: 'factor-analysis',
+        run: () => {
+          loadLibrary();
+          if (libraryLoaded) {
+            void libraryQ.refetch();
+          }
+          return { message: libraryLoaded ? '已刷新因子库' : '已加载因子库' };
+        },
+      },
+      {
+        id: 'factor-analysis.run',
+        label: '运行分析',
+        description: '同时发起 IC、分组收益和衰减分析',
+        keywords: ['因子', '分析'],
+        scope: 'page' as const,
+        pageKey: 'factor-analysis',
+        run: () => {
+          runAnalysis();
+          return { message: `已发起 ${factor} 的单因子分析` };
+        },
+      },
+      {
+        id: 'factor-analysis.view-ic',
+        label: '切到 IC',
+        description: '把视图切到 IC 时序与快判指标',
+        keywords: ['IC', '切换视图'],
+        scope: 'page' as const,
+        pageKey: 'factor-analysis',
+        run: () => {
+          setResultTab('ic');
+          return { message: '已切到 IC 视图' };
+        },
+      },
+    ],
+    [factor, libraryLoaded, libraryQ],
+  );
+  usePageActions(factorAnalysisActions);
+  const factorAnalysisSummary = analysisReady
+    ? `当前因子 ${factor} 已生成单因子分析，样本 ${sampleUniverse.length} 只，IC ${fmtNum(ic?.ic ?? null, 4)}，当前视图 ${activeTabLabel}。`
+    : `当前因子 ${factor} 尚未生成分析结果，样本 ${sampleUniverse.length} 只，建议先运行一次分析再判断 IC、衰减和分组收益。`;
+  const factorAnalysisResult = buildLocalResultContract({
+    summary: factorAnalysisSummary,
+    availableViews: analysisReady ? ['compare', 'visual'] : [],
+    pageActions: factorAnalysisActions,
+    preferredActionIds: ['factor-analysis.run', 'factor-analysis.view-ic', 'factor-analysis.load-library'],
+    recommendedLinks: [
+      { id: 'factor-analysis-link-factor', label: '回因子研究工作台', href: '/factor' },
+      { id: 'factor-analysis-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor-analysis&symbol=${encodeURIComponent(trimmedCode || '600519')}` },
+    ],
+    evidence: [
+      { label: '当前因子', value: factor },
+      { label: '样本数量', value: String(sampleUniverse.length) },
+      { label: '当前视图', value: activeTabLabel },
+      { label: 'IC', value: fmtNum(ic?.ic ?? null, 4) },
+      { label: 'IC IR', value: fmtNum(ic?.ic_ir ?? null, 4) },
+      { label: '分组数', value: String(groupBars.cats.length) },
+    ],
+    riskNotes: [
+      ...(error ? [error] : []),
+      ...(analysisReady ? [] : ['当前还没有生成单因子分析结果。']),
+      ...(decayView?.halfLife != null && decayView.halfLife < 5 ? ['当前信号半衰期较短，落地前需要确认稳定性。'] : []),
+    ],
+    platformMeta: {
+      sourceTool: 'factor-analysis',
+      sourceChain: ['factor/ic', 'factor/backtest', 'factor/decay'],
+      degraded: Boolean(error),
+      fallbackReason: [error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('factor-analysis', `复查因子 ${factor}`, '/factor-analysis', 'factor-analysis-review', {
+      factor,
+      code: trimmedCode || '600519',
+      ic: ic?.ic ?? null,
+      tab: resultTab,
+    }),
+  });
+  usePageContext({
+    pageKey: 'factor-analysis',
+    title: '因子洞察工作台',
+    summary: factorAnalysisSummary,
+    objectType: 'factor',
+    objectId: factor,
+    resultType: 'factor-analysis',
+    tags: [
+      factor,
+      `${sampleUniverse.length} 样本`,
+      activeTabLabel,
+      analysisReady ? '已生成结果' : '待运行',
+    ],
+    suggestions: [
+      '总结当前单因子是否值得继续深挖',
+      '如果 IC、衰减和分组收益不一致，解释冲突原因',
+      '给出下一步应回因子研究页还是继续做组合验证',
+    ],
+    recommendedActions: factorAnalysisResult.recommendedActions ?? [],
+    recommendedLinks: factorAnalysisResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(factorAnalysisResult.evidence),
+    riskNotes: factorAnalysisResult.riskNotes ?? [],
+    freshness: factorAnalysisResult.freshness ?? null,
+    raw: {
+      factor,
+      code: trimmedCode || '600519',
+      resultTab,
+      sampleSize: sampleUniverse.length,
+      ic: ic?.ic ?? null,
+      halfLife: decayView?.halfLife ?? null,
+    },
+  });
 
   return (
     <PageContainer className="app-theme-strategy">
@@ -199,6 +319,8 @@ export default function FactorAnalysisPage() {
           </details>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="factor-analysis" title="因子洞察结果工作台" result={factorAnalysisResult} />
 
       {loading ? <LoadingState text="因子分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}

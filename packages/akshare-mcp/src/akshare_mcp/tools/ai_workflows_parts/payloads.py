@@ -336,6 +336,8 @@
         run_runtime_cycle: bool = False,
         idempotency_key: str | None = None,
         as_of: str | None = None,
+        actor_id: str | None = None,
+        actor_roles: list[str] | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
         resolved_strategy_id = str(strategy_id or "").strip()
@@ -352,6 +354,9 @@
                 run_factory_once=run_factory_once,
                 run_runtime_cycle=run_runtime_cycle,
                 runtime_alert_limit=20,
+                as_of=as_of,
+                actor_id=actor_id,
+                actor_roles=actor_roles,
             )
             steps = list(result_payload.get("steps") or [])
             failed_steps = _collect_failed_steps(steps)

@@ -2,11 +2,15 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, DataTable, Badge, KpiCard, KpiGrid } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { extractObject } from '@/lib/data-utils';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type MacroRecord = {
     date?: string;
@@ -88,6 +92,124 @@ export default function MacroPage() {
             change: ordered.map((row) => Number(row.yoy ?? row.yoyChange ?? row.momChange ?? 0)),
         };
     }, [macroRows]);
+    const indicatorLabel = indicators.find((item) => item.value === indicator)?.label ?? indicator.toUpperCase();
+    const latestMacroRow = macroRows[0] ?? null;
+    const pageActions = useMemo(
+        () => [
+            {
+                id: 'macro.refresh-selected',
+                label: `刷新 ${indicator.toUpperCase()}`,
+                description: '重新拉取当前宏观指标的最新数据',
+                keywords: ['宏观', '刷新', indicator],
+                scope: 'page' as const,
+                pageKey: 'macro',
+                run: async () => {
+                    await refetch();
+                    return { message: `已刷新 ${indicatorLabel}` };
+                },
+            },
+            {
+                id: 'macro.switch-cpi',
+                label: '切到 CPI',
+                description: '快速切到消费价格指数',
+                keywords: ['CPI', '物价'],
+                scope: 'page' as const,
+                pageKey: 'macro',
+                run: () => {
+                    setIndicator('cpi');
+                    return { message: '已切到 CPI' };
+                },
+            },
+            {
+                id: 'macro.switch-pmi',
+                label: '切到 PMI',
+                description: '快速切到采购经理人指数',
+                keywords: ['PMI', '景气度'],
+                scope: 'page' as const,
+                pageKey: 'macro',
+                run: () => {
+                    setIndicator('pmi');
+                    return { message: '已切到 PMI' };
+                },
+            },
+        ],
+        [indicator, indicatorLabel, refetch],
+    );
+    usePageActions(pageActions);
+    const macroSummary = macroRows.length
+        ? `${indicatorLabel} 当前已返回 ${macroRows.length} 条记录，链路状态 ${qualityStatus}，后端来源 ${backendUsed}${typeof latestMacroRow?.value === 'number' ? `，最近值 ${latestMacroRow.value}` : ''}。`
+        : `${indicatorLabel} 当前暂无可展示的结构化数据，建议先切到 CPI、PMI 或 M2 判断是单指标缺口还是链路整体异常。`;
+    const macroResult = useMemo(
+        () =>
+            buildLocalResultContract({
+                summary: macroSummary,
+                availableViews: chartData ? ['visual'] : [],
+                pageActions,
+                preferredActionIds: ['macro.refresh-selected', 'macro.switch-cpi', 'macro.switch-pmi'],
+                recommendedLinks: [
+                    { id: 'macro-link-data', label: '去数据中心', href: '/data' },
+                    { id: 'macro-link-research', label: '去研究页', href: '/research' },
+                    { id: 'macro-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=macro&indicator=${encodeURIComponent(indicator)}` },
+                ],
+                evidence: [
+                    { label: '当前指标', value: indicatorLabel },
+                    { label: '记录条数', value: String(macroRows.length) },
+                    { label: '链路状态', value: qualityStatus, tone: degraded ? 'warning' : 'neutral' },
+                    { label: '后端来源', value: backendUsed },
+                    { label: '缓存状态', value: cacheHit ? '命中' : '实时拉取' },
+                    { label: '链路节点', value: String(sourceChain.length) },
+                ],
+                riskNotes: [
+                    ...(degraded ? ['当前宏观链路存在降级，结论需要结合数据中心或其他高频指标交叉确认。'] : []),
+                    ...(macroRows.length === 0 ? [`${indicatorLabel} 当前没有返回结构化记录。`] : []),
+                ],
+                freshness: cacheMeta?.fetchedAt || cacheMeta?.updatedAt || cacheMeta?.asOf
+                    ? {
+                        updatedAt: String(cacheMeta?.updatedAt ?? cacheMeta?.fetchedAt ?? ''),
+                        asOf: String(cacheMeta?.asOf ?? ''),
+                        label: '宏观快照',
+                    }
+                    : null,
+                platformMeta: {
+                    sourceTool: `macro/${indicator}`,
+                    sourceChain,
+                    degraded,
+                },
+                workbenchTask: defaultWorkbenchTask('macro', `复查 ${indicatorLabel}`, '/macro', 'macro-review', {
+                    indicator,
+                    qualityStatus,
+                    rowCount: macroRows.length,
+                }),
+            }),
+        [backendUsed, cacheHit, cacheMeta?.asOf, cacheMeta?.fetchedAt, cacheMeta?.updatedAt, chartData, degraded, indicator, indicatorLabel, macroRows.length, macroSummary, pageActions, qualityStatus, sourceChain],
+    );
+    usePageContext({
+        pageKey: 'macro',
+        title: '宏观经济数据分析',
+        summary: macroSummary,
+        objectType: 'macro-indicator',
+        objectId: indicator,
+        resultType: 'macro-indicator-analysis',
+        tags: [indicatorLabel, qualityStatus, backendUsed, cacheHit ? '缓存命中' : '实时拉取'],
+        suggestions: [
+            `总结 ${indicatorLabel} 当前趋势与异常点`,
+            '判断当前是单指标缺口还是链路整体异常',
+            '给出下一步适合联动的数据页或研究页',
+        ],
+        recommendedActions: macroResult.recommendedActions ?? [],
+        recommendedLinks: macroResult.recommendedLinks ?? [],
+        evidenceSummary: evidenceToSummary(macroResult.evidence),
+        riskNotes: macroResult.riskNotes ?? [],
+        freshness: macroResult.freshness ?? null,
+        raw: {
+            indicator,
+            rowCount: macroRows.length,
+            sourceChain,
+            qualityStatus,
+            backendUsed,
+            degraded,
+        },
+    });
 
     return (
         <PageContainer>
@@ -143,6 +265,8 @@ export default function MacroPage() {
                     </div>
                 </div>
             </SectionCard>
+
+            <ResultWorkbench pageKey="macro" title="宏观结果工作台" result={macroResult} />
 
             <SectionCard className="mb-6 p-4">
                 <KpiGrid cols={4}>

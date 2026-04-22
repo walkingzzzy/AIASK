@@ -16,10 +16,14 @@ import {
 } from './strategy-detail-panel-styles';
 
 type BadgeVariant = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
+type StatusBadge = { label: string; variant: BadgeVariant };
 
 type StrategyDetailHeroSectionProps = {
   strategy: StrategyCore;
-  statusVariant: BadgeVariant;
+  displayStatus: StatusBadge;
+  marketStatus: StatusBadge;
+  incubationStage: StatusBadge;
+  showIncubationStage: boolean;
   promotionReady: boolean;
   strategySummary: string;
   activeTab: 'overview' | 'tracking' | 'factory';
@@ -30,7 +34,10 @@ type StrategyDetailHeroSectionProps = {
   openRiskEventsCount: number;
   vectorProfilesCount: number;
   latestQualityGrade: string | null | undefined;
-  latestIncubationDecision: string | null | undefined;
+  latestIncubationDecision: string;
+  executionAuditGate: string;
+  blockerCount: number;
+  riskCount: number;
   multipleTestingMode: string | null;
   isSubscribed: boolean;
   subscribePending: boolean;
@@ -38,11 +45,15 @@ type StrategyDetailHeroSectionProps = {
   onAddToCart: () => void;
   onSubscribe: () => void;
   onOpenPortfolio: () => void;
+  onOpenPaperSession: () => void;
 };
 
 export function StrategyDetailHeroSection({
   strategy,
-  statusVariant,
+  displayStatus,
+  marketStatus,
+  incubationStage,
+  showIncubationStage,
   promotionReady,
   strategySummary,
   activeTab,
@@ -54,6 +65,9 @@ export function StrategyDetailHeroSection({
   vectorProfilesCount,
   latestQualityGrade,
   latestIncubationDecision,
+  executionAuditGate,
+  blockerCount,
+  riskCount,
   multipleTestingMode,
   isSubscribed,
   subscribePending,
@@ -61,6 +75,7 @@ export function StrategyDetailHeroSection({
   onAddToCart,
   onSubscribe,
   onOpenPortfolio,
+  onOpenPaperSession,
 }: StrategyDetailHeroSectionProps) {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
@@ -73,9 +88,13 @@ export function StrategyDetailHeroSection({
           </Link>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Badge variant="info">Strategy Workspace</Badge>
-            <Badge variant={statusVariant}>{strategy.status ?? '-'}</Badge>
+            <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
+            {displayStatus.label !== marketStatus.label ? (
+              <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
+            ) : null}
+            {showIncubationStage ? <Badge variant={incubationStage.variant}>{incubationStage.label}</Badge> : null}
             <Badge variant={promotionReady ? 'success' : 'warning'}>
-              {promotionReady ? '达到上架条件' : '仍在孵化观察'}
+              {promotionReady ? '可推进晋级' : '继续孵化观察'}
             </Badge>
           </div>
           <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
@@ -92,19 +111,22 @@ export function StrategyDetailHeroSection({
               data-testid="strategy-subscribe-action"
               aria-label={
                 subscribePending
-                  ? '策略头图订阅操作处理中'
+                  ? '策略头图收藏操作处理中'
                   : !userId
-                    ? '策略头图登录后订阅'
+                    ? '策略头图登录后收藏'
                     : isSubscribed
-                      ? '策略头图取消订阅'
-                      : '策略头图订阅策略'
+                      ? '策略头图取消收藏'
+                      : '策略头图收藏策略'
               }
               className={`${heroSecondaryButtonCls} ${isSubscribed ? 'border-primary/35 bg-primary/12 text-primary' : ''}`}
             >
-              {subscribePending ? '处理中...' : !userId ? '登录后订阅' : isSubscribed ? '取消订阅' : '订阅策略'}
+              {subscribePending ? '处理中...' : !userId ? '登录后收藏' : isSubscribed ? '取消收藏' : '收藏策略'}
             </button>
             <button type="button" onClick={onOpenPortfolio} className={heroSecondaryButtonCls}>
               去组合页配置
+            </button>
+            <button type="button" onClick={onOpenPaperSession} className={heroSecondaryButtonCls}>
+              打开我的模拟盘测试
             </button>
           </div>
           <div
@@ -112,11 +134,13 @@ export function StrategyDetailHeroSection({
             className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
           >
             <div className="font-medium text-text-primary">
-              当前处于 {activeTabLabel}，策略状态 {strategy.status ?? '-'}，订阅 {strategy.subscriber_count ?? 0}
+              当前处于 {activeTabLabel}，当前状态 {displayStatus.label}
+              {showIncubationStage ? `，孵化阶段 ${incubationStage.label}` : '，尚未进入真实孵化链路'}
+              ，收藏 {strategy.subscriber_count ?? 0}
             </div>
             <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
-              质量评级 {latestQualityGrade ?? '-'} ｜ 最新孵化决策 {latestIncubationDecision ?? '-'} ｜ 风险事件{' '}
-              {openRiskEventsCount}
+              质量评级 {latestQualityGrade ?? '-'} ｜ 最新决策 {latestIncubationDecision} ｜ 执行审计 {executionAuditGate}
+              {' '}｜ 阻塞 {blockerCount} ｜ 风险 {riskCount}
             </p>
           </div>
 
@@ -143,7 +167,7 @@ export function StrategyDetailHeroSection({
                   <div className="mt-1 text-xs text-text-secondary">开放风险事件 / 向量画像</div>
                 </div>
                 <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">订阅与评分</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">收藏与评分</div>
                   <div className="mt-3 text-2xl font-semibold text-text-primary">{strategy.subscriber_count ?? 0}</div>
                   <div className="mt-1 text-xs text-text-secondary">
                     {strategy.avg_rating != null ? `平均评分 ${strategy.avg_rating.toFixed(1)}` : '暂无公开评分'}
@@ -176,9 +200,9 @@ export function StrategyDetailHeroSection({
                 <div className={sideMetricCls}>
                   <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前决策</div>
                   <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
-                    <div>
-                      最新孵化决策：
-                      <span className="font-medium text-text-primary">{latestIncubationDecision ?? '-'}</span>
+                  <div>
+                    最新孵化决策：
+                      <span className="font-medium text-text-primary">{latestIncubationDecision}</span>
                     </div>
                     <div>
                       多重检验：
@@ -189,8 +213,8 @@ export function StrategyDetailHeroSection({
                   </div>
                 </div>
                 <div className={sideMetricCls}>
-                  风险 / 向量：<span className="font-medium text-text-primary">{openRiskEventsCount} / {vectorProfilesCount}</span>；
-                  订阅 {strategy.subscriber_count ?? 0}
+                  执行审计：<span className="font-medium text-text-primary">{executionAuditGate}</span>；
+                  阻塞 / 风险：<span className="font-medium text-text-primary">{blockerCount} / {riskCount}</span>
                 </div>
                 <div className={sideMetricCls}>
                   {activeTab === 'overview'
@@ -206,10 +230,10 @@ export function StrategyDetailHeroSection({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={onSubscribe} disabled={subscribePending || !userId} className={chipButtonCls}>
-                    {isSubscribed ? '取消订阅' : '立即订阅'}
+                    {isSubscribed ? '取消收藏' : '立即收藏'}
                   </button>
-                  <button type="button" onClick={() => window.location.assign('/paper-trading')} className={chipButtonCls}>
-                    查看模拟交易
+                  <button type="button" onClick={onOpenPaperSession} className={chipButtonCls}>
+                    打开我的模拟盘测试
                   </button>
                 </div>
               </div>
@@ -235,8 +259,8 @@ export function StrategyDetailHeroSection({
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前决策</div>
                 <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
                   <div>
-                    最新孵化决策：
-                    <span className="font-medium text-text-primary">{latestIncubationDecision ?? '-'}</span>
+                  最新孵化决策：
+                    <span className="font-medium text-text-primary">{latestIncubationDecision}</span>
                   </div>
                   <div>
                     多重检验：
@@ -265,8 +289,8 @@ export function StrategyDetailHeroSection({
               </div>
               <div className={sideMetricCls}>
                 {isSubscribed
-                  ? '你已订阅该策略，可继续留在当前页做深度复盘。'
-                  : '若准备持续跟踪，建议先订阅，再把它加入组合购物车。'}
+                  ? '你已收藏该策略，可继续留在当前页做深度复盘。'
+                  : '若准备持续跟踪，建议先收藏，再把它加入组合购物车。'}
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -277,19 +301,19 @@ export function StrategyDetailHeroSection({
                 data-testid="strategy-subscribe-secondary-action"
                 aria-label={
                   subscribePending
-                    ? '策略建议区订阅操作处理中'
+                    ? '策略建议区收藏操作处理中'
                     : !userId
-                      ? '策略建议区登录后订阅'
+                      ? '策略建议区登录后收藏'
                       : isSubscribed
-                        ? '策略建议区取消订阅'
-                        : '策略建议区立即订阅'
+                        ? '策略建议区取消收藏'
+                        : '策略建议区立即收藏'
                 }
                 className={chipButtonCls}
               >
-                {isSubscribed ? '取消订阅' : '立即订阅'}
+                {isSubscribed ? '取消收藏' : '立即收藏'}
               </button>
-              <button type="button" onClick={() => window.location.assign('/paper-trading')} className={chipButtonCls}>
-                查看模拟交易
+              <button type="button" onClick={onOpenPaperSession} className={chipButtonCls}>
+                打开我的模拟盘测试
               </button>
             </div>
           </div>
@@ -303,8 +327,10 @@ export function StrategyDetailHeroSection({
 
 type StrategyDetailSidebarProps = {
   strategyName: string;
-  statusVariant: BadgeVariant;
-  strategyStatus: string | null | undefined;
+  displayStatus: StatusBadge;
+  marketStatus: StatusBadge;
+  incubationStage: StatusBadge;
+  showIncubationStage: boolean;
   promotionReady: boolean;
   sampleWindow: string;
   subscriberCount: number;
@@ -313,7 +339,10 @@ type StrategyDetailSidebarProps = {
   activeTab: 'overview' | 'tracking' | 'factory';
   activeTabLabel: string;
   latestQualityGrade: string | null | undefined;
-  latestIncubationDecision: string | null | undefined;
+  latestIncubationDecision: string;
+  executionAuditGate: string;
+  blockerCount: number;
+  riskCount: number;
   multipleTestingMode: string | null;
   trackingTotalSignals: number;
   trackingRealtime: boolean;
@@ -333,8 +362,10 @@ type StrategyDetailSidebarProps = {
 
 export function StrategyDetailSidebar({
   strategyName,
-  statusVariant,
-  strategyStatus,
+  displayStatus,
+  marketStatus,
+  incubationStage,
+  showIncubationStage,
   promotionReady,
   sampleWindow,
   subscriberCount,
@@ -344,6 +375,9 @@ export function StrategyDetailSidebar({
   activeTabLabel,
   latestQualityGrade,
   latestIncubationDecision,
+  executionAuditGate,
+  blockerCount,
+  riskCount,
   multipleTestingMode,
   trackingTotalSignals,
   trackingRealtime,
@@ -366,9 +400,13 @@ export function StrategyDetailSidebar({
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前策略</div>
         <div className="mt-3 text-base font-semibold text-text-primary">{strategyName}</div>
         <div className="mt-3 flex flex-wrap gap-2">
-          <Badge variant={statusVariant}>{strategyStatus ?? '-'}</Badge>
+          <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
+          {displayStatus.label !== marketStatus.label ? (
+            <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
+          ) : null}
+          {showIncubationStage ? <Badge variant={incubationStage.variant}>{incubationStage.label}</Badge> : null}
           <Badge variant={promotionReady ? 'success' : 'warning'}>
-            {promotionReady ? '达到上架条件' : '仍在孵化观察'}
+            {promotionReady ? '可推进晋级' : '继续孵化观察'}
           </Badge>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -380,7 +418,7 @@ export function StrategyDetailSidebar({
             <div className="grid grid-cols-3 gap-3 text-center">
               <div>
                 <div className="text-lg font-semibold text-text-primary">{subscriberCount}</div>
-                <div className="mt-1 text-[11px] text-text-secondary">订阅</div>
+                <div className="mt-1 text-[11px] text-text-secondary">收藏</div>
               </div>
               <div>
                 <div className="text-lg font-semibold text-text-primary">{openRiskEventsCount}</div>
@@ -407,13 +445,19 @@ export function StrategyDetailSidebar({
                 </div>
                 <div>
                   最新孵化决策：
-                  <span className="font-medium text-text-primary">{latestIncubationDecision ?? '-'}</span>
+                  <span className="font-medium text-text-primary">{latestIncubationDecision}</span>
                 </div>
                 <div>
                   多重检验：
                   <span className="font-medium text-text-primary">
                     {formatMultipleTestingMode(multipleTestingMode)}
                   </span>
+                </div>
+                <div>
+                  执行审计：<span className="font-medium text-text-primary">{executionAuditGate}</span>
+                </div>
+                <div>
+                  阻塞 / 风险：<span className="font-medium text-text-primary">{blockerCount} / {riskCount}</span>
                 </div>
               </div>
             </div>

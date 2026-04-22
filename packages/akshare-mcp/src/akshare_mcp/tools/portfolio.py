@@ -73,6 +73,24 @@ def register(mcp):
         started_at = time.perf_counter()
         source_chain = ["portfolio.optimize_portfolio"]
         try:
+            if not isinstance(stocks, list) or not stocks:
+                return fail_with_meta(
+                    'stocks 不能为空',
+                    tool_name="optimize_portfolio",
+                    action="validate",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="invalid_params", target="portfolio_optimization", degraded=True),
+                )
+            if int(lookback_days or 0) < 2:
+                return fail_with_meta(
+                    'lookback_days 必须 >= 2',
+                    tool_name="optimize_portfolio",
+                    action="validate",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="invalid_params", target="portfolio_optimization", degraded=True),
+                )
             if method == 'equal_weight':
                 weights = portfolio_optimizer.optimize_equal_weight(stocks)
                 return ok_with_meta(
@@ -496,6 +514,15 @@ def register(mcp):
         started_at = time.perf_counter()
         source_chain = ["portfolio.stress_test_portfolio", "risk_model.stress_test"]
         try:
+            if not isinstance(holdings, list) or not holdings:
+                return fail_with_meta(
+                    'holdings 不能为空',
+                    tool_name="stress_test_portfolio",
+                    action="stress_test",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="invalid_params", target="portfolio_stress", degraded=True),
+                )
             if not scenarios:
                 scenarios = ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
 

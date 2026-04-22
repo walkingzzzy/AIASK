@@ -30,7 +30,12 @@ export type PendingPortfolioAction =
   | {
       type: 'create';
       summary: string;
-      payload: { name: string; description: string; initialCapital: string };
+      payload: {
+        name: string;
+        description: string;
+        initialCapital: string;
+        strategies?: Array<{ strategyId: string; weight: number }>;
+      };
     }
   | {
       type: 'addHolding';

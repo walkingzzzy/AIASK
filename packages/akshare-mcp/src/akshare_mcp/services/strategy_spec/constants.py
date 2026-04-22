@@ -26,3 +26,4 @@ _FACTOR_VALIDATION_TYPES = {"value_factor", "quality_factor", "growth_factor", "
 _TREND_EXECUTABLE_DSL_TYPES = {"ma_cross", "momentum", "volatility_breakout", "event_structure_breakout"}
 _PROXY_RUNTIME_FACTOR_TYPES = {"quality_factor", "value_factor", "growth_factor"}
 _HIGH_VOL_BOARD_BUCKETS = {"star", "chinext", "beijing"}
+_EMPTY_VALUES = (None, "", [], {})

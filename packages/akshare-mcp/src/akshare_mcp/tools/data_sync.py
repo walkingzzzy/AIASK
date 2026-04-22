@@ -16,7 +16,7 @@ from typing import Optional, List
 
 from ..services.data_sync import data_sync_service, CACHE_TTL
 from ..cache import cache
-from ..utils import enrich_response_meta, fail, now_iso, ok
+from ..utils import enrich_response_meta, fail, now_iso, ok, parse_date_input, validate_int_range, validate_stock_code_format
 
 
 def _sync_envelope(result: dict, *, source: str) -> dict:
@@ -72,6 +72,22 @@ def register(mcp):
             sync_kline_data("600519")
             sync_kline_data("000001", period="weekly", limit=50)
         """
+        _, code_error = validate_stock_code_format(stock_code)
+        if code_error:
+            return _sync_envelope(fail(code_error), source="data_sync.kline")
+        valid_periods = {"daily", "weekly", "monthly"}
+        if str(period or "").strip() not in valid_periods:
+            return _sync_envelope(
+                fail(f"period 无效: {period}. 支持: {', '.join(sorted(valid_periods))}"),
+                source="data_sync.kline",
+            )
+        limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1)
+        if limit_error:
+            return _sync_envelope(fail(limit_error), source="data_sync.kline")
+        if start_date and parse_date_input(start_date) is None:
+            return _sync_envelope(fail(f"start_date 无效: {start_date}"), source="data_sync.kline")
+        if end_date and parse_date_input(end_date) is None:
+            return _sync_envelope(fail(f"end_date 无效: {end_date}"), source="data_sync.kline")
         result = await data_sync_service.get_kline_with_cache(
             stock_code=stock_code,
             period=period,
@@ -130,6 +146,22 @@ def register(mcp):
                 fail("codes 不能为空"),
                 source="data_sync.batch_sync_klines",
             )
+        invalid_codes = [code for code in normalized_codes if validate_stock_code_format(code)[1] is not None]
+        if invalid_codes:
+            return _sync_envelope(
+                fail(f"存在无效股票代码: {', '.join(invalid_codes)}"),
+                source="data_sync.batch_sync_klines",
+            )
+        valid_periods = {"daily", "weekly", "monthly"}
+        if str(period or "").strip() not in valid_periods:
+            return _sync_envelope(
+                fail(f"period 无效: {period}. 支持: {', '.join(sorted(valid_periods))}"),
+                source="data_sync.batch_sync_klines",
+            )
+        if start_date and parse_date_input(start_date) is None:
+            return _sync_envelope(fail(f"start_date 无效: {start_date}"), source="data_sync.batch_sync_klines")
+        if end_date and parse_date_input(end_date) is None:
+            return _sync_envelope(fail(f"end_date 无效: {end_date}"), source="data_sync.batch_sync_klines")
 
         result = await data_sync_service.sync_stock_klines(
             codes=normalized_codes,

@@ -1,10 +1,11 @@
 """告警工具 — P3 增强：RSI/MACD/volume 指标评估 + combo 告警 + DB 持久化"""
 
+import json
 import logging
 import time
 from typing import List, Dict, Any
 import numpy as np
-from ..utils import fail, normalize_code
+from ..utils import fail, normalize_code, resolve_existing_security_code_sync
 from .manager_protocol import fail_with_meta, ok_with_meta
 from .market import get_realtime_quote
 
@@ -21,6 +22,89 @@ _COMPARE_OPS = {
     '<=': lambda p, v: p <= v,
     '==': lambda p, v: abs(p - v) < 1e-6,
 }
+_SUPPORTED_INDICATORS = {'price', 'change_pct', 'rsi', 'macd', 'ma5', 'ma20', 'volume'}
+_VALID_COMBO_LOGICS = {'AND', 'OR'}
+
+
+def _validate_indicator_alert_payload(code: str, indicator: str, condition: str) -> tuple[str | None, str | None]:
+    normalized_code, _, code_error = resolve_existing_security_code_sync(stock_code=code)
+    if code_error:
+        return None, code_error
+    if str(indicator or "").strip().lower() not in _SUPPORTED_INDICATORS:
+        return None, f"indicator 无效: {indicator}. 支持: {', '.join(sorted(_SUPPORTED_INDICATORS))}"
+    if condition not in _COMPARE_OPS:
+        return None, f"condition 无效: {condition}. 支持: {', '.join(_COMPARE_OPS.keys())}"
+    return normalized_code, None
+
+
+async def _indicator_alert_exists(code: str, indicator: str, condition: str, *, user_id: str = "default") -> bool:
+    alert_id = f'alert_{code}_{indicator}_{condition}'
+    if alert_id in _alerts_store:
+        return True
+    try:
+        from ..storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 1
+                FROM alerts
+                WHERE user_id = $1 AND code = $2 AND indicator = $3 AND condition = $4
+                LIMIT 1
+                """,
+                user_id,
+                code,
+                indicator,
+                condition,
+            )
+        return row is not None
+    except Exception:
+        return False
+
+
+def _indicator_row_to_alert(row: Any) -> dict[str, Any] | None:
+    code = normalize_code(str(row.get('code', '') or ''))
+    indicator = str(row.get('indicator', '') or '').strip().lower()
+    condition = str(row.get('condition', '') or '').strip()
+    if not code or indicator not in _SUPPORTED_INDICATORS or condition not in _COMPARE_OPS:
+        return None
+    return {
+        'alert_id': f"alert_{code}_{indicator}_{condition}",
+        'code': code,
+        'indicator': indicator,
+        'condition': condition,
+        'value': float(row.get('value', 0) or 0),
+        'active': True,
+        'type': 'indicator',
+        'triggered': False,
+    }
+
+
+def _combo_row_to_alert(row: Any) -> dict[str, Any] | None:
+    logic = str(row.get('logic', 'AND') or 'AND').upper().strip()
+    if logic not in _VALID_COMBO_LOGICS:
+        return None
+    name = str(row.get('name', '') or '').strip()
+    if not name:
+        return None
+    conds = row.get('conditions', '[]')
+    if isinstance(conds, str):
+        try:
+            conds = json.loads(conds)
+        except Exception:
+            return None
+    if not isinstance(conds, list):
+        return None
+    return {
+        'alert_id': f'combo_{name}',
+        'name': name,
+        'conditions': conds,
+        'logic': logic,
+        'active': True,
+        'type': 'combo',
+        'triggered': False,
+    }
 
 
 def _calc_rsi(closes: list, period: int = 14) -> float | None:
@@ -186,8 +270,25 @@ def register(mcp):
         """
         started_at = time.perf_counter()
         try:
-            code = normalize_code(code)
+            code, validation_error = _validate_indicator_alert_payload(code, indicator, condition)
+            if validation_error:
+                return fail_with_meta(
+                    validation_error,
+                    tool_name="create_indicator_alert",
+                    action="create",
+                    started_at=started_at,
+                    source_chain=["alerts.memory_store"],
+                )
+            indicator = str(indicator).strip().lower()
             alert_id = f'alert_{code}_{indicator}_{condition}'
+            if await _indicator_alert_exists(code, indicator, condition):
+                return fail_with_meta(
+                    f"告警已存在: {alert_id}。如需修改请使用 update",
+                    tool_name="create_indicator_alert",
+                    action="create",
+                    started_at=started_at,
+                    source_chain=["alerts.memory_store"],
+                )
             alert = {
                 'alert_id': alert_id,
                 'code': code,
@@ -253,6 +354,15 @@ def register(mcp):
         """
         started_at = time.perf_counter()
         try:
+            logic = str(logic or 'AND').upper().strip()
+            if logic not in _VALID_COMBO_LOGICS:
+                return fail_with_meta(
+                    f"logic 无效: {logic}. 支持: AND, OR",
+                    tool_name="create_combo_alert",
+                    action="create",
+                    started_at=started_at,
+                    source_chain=["alerts.memory_store"],
+                )
             alert_id = f'combo_{name}'
             alert = {
                 'alert_id': alert_id,
@@ -268,7 +378,6 @@ def register(mcp):
             # 持久化到 DB combo_alerts 表
             persist_error = None
             try:
-                import json as _json
                 from ..storage import get_db
                 db = get_db()
                 async with db.acquire() as conn:
@@ -276,7 +385,7 @@ def register(mcp):
                         """INSERT INTO combo_alerts (name, conditions, logic, status)
                            VALUES ($1, $2, $3, 'active')
                            ON CONFLICT DO NOTHING""",
-                        name, _json.dumps(conditions), logic
+                        name, json.dumps(conditions), logic
                     )
             except Exception as e:
                 persist_error = str(e)
@@ -323,47 +432,46 @@ def register(mcp):
                 return fail(f"invalid alert_type: {alert_type}. supported: indicator, combo, all")
             # 每次从 DB 同步告警（DB 为 source of truth）
             sync_error = None
+            warnings: list[str] = []
+            skipped_invalid = 0
             try:
-                import json as _json
                 from ..storage import get_db
                 db = get_db()
                 async with db.acquire() as conn:
                     # 加载指标告警
                     rows = await conn.fetch("SELECT * FROM alerts WHERE status='active'")
                     for r in rows:
-                        aid = f"alert_{r.get('code','')}_{r.get('indicator','')}_{r.get('condition','')}"
-                        _alerts_store[aid] = {
-                            'alert_id': aid,
-                            'code': r.get('code', ''),
-                            'indicator': r.get('indicator', 'price'),
-                            'condition': r.get('condition', '>'),
-                            'value': float(r.get('value', 0)),
-                            'active': True,
-                            'type': 'indicator',
-                            'triggered': False,
-                        }
+                        alert = _indicator_row_to_alert(r)
+                        if alert is None:
+                            skipped_invalid += 1
+                            warnings.append(f"skip invalid indicator alert row id={r.get('id')}")
+                            continue
+                        _alerts_store[alert['alert_id']] = alert
                     # 加载组合告警
                     combo_rows = await conn.fetch("SELECT * FROM combo_alerts WHERE status='active'")
                     for r in combo_rows:
-                        name = r.get('name', '')
-                        aid = f"combo_{name}"
-                        conds = r.get('conditions', '[]')
-                        if isinstance(conds, str):
-                            conds = _json.loads(conds)
-                        _alerts_store[aid] = {
-                            'alert_id': aid,
-                            'name': name,
-                            'conditions': conds,
-                            'logic': r.get('logic', 'AND'),
-                            'active': True,
-                            'type': 'combo',
-                            'triggered': False,
-                        }
+                        alert = _combo_row_to_alert(r)
+                        if alert is None:
+                            skipped_invalid += 1
+                            warnings.append(f"skip invalid combo alert row id={r.get('id')}")
+                            continue
+                        _alerts_store[alert['alert_id']] = alert
             except Exception as e:
                 sync_error = str(e)
                 logger.warning("[Alerts] DB sync failed: %s", e)
 
-            alerts = list(_alerts_store.values())
+            alerts = []
+            for cached_alert in list(_alerts_store.values()):
+                if cached_alert.get('type') == 'combo':
+                    normalized_alert = _combo_row_to_alert(cached_alert)
+                else:
+                    normalized_alert = _indicator_row_to_alert(cached_alert)
+                if normalized_alert is None:
+                    skipped_invalid += 1
+                    warnings.append(f"skip invalid cached alert alert_id={cached_alert.get('alert_id')}")
+                    continue
+                _alerts_store[normalized_alert['alert_id']] = normalized_alert
+                alerts.append(normalized_alert)
             if status == 'active':
                 alerts = [a for a in alerts if a.get('active', True)]
             elif status == 'inactive':
@@ -395,6 +503,9 @@ def register(mcp):
             }
             if sync_error:
                 payload['note'] = f"DB sync failed: {sync_error}"
+            if warnings:
+                payload['warnings'] = warnings
+                payload['skipped_invalid_count'] = skipped_invalid
             return ok_with_meta(
                 payload,
                 tool_name="check_all_alerts",
@@ -402,8 +513,8 @@ def register(mcp):
                 started_at=started_at,
                 source_chain=["alerts.memory_store"],
                 extra_meta={
-                    "degraded": bool(sync_error),
-                    "quality": {"status": "degraded" if sync_error else "available"},
+                    "degraded": bool(sync_error) or bool(warnings),
+                    "quality": {"status": "degraded" if sync_error or warnings else "available"},
                 },
             )
         except Exception as e:

@@ -1,0 +1,32 @@
+groups:
+  - name: aiask-production-readiness
+    rules:
+      - alert: AiaskBffReadyProbeFailed
+        expr: probe_success{job="aiask-bff-health", instance="http://host.docker.internal:3001/api/health/ready"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          surface: readiness
+        annotations:
+          summary: "BFF readiness probe is failing"
+          description: "Prometheus cannot get a successful response from /api/health/ready."
+
+      - alert: AiaskBffMcpDependencyDegraded
+        expr: aiask_bff_dependency_status{dependency="mcp"} < 2
+        for: 5m
+        labels:
+          severity: warning
+          surface: mcp
+        annotations:
+          summary: "BFF MCP dependency is degraded"
+          description: "The MCP dependency gauge dropped below normal. Check /api/health/mcp and transport fallback state."
+
+      - alert: AiaskBffCacheDependencyDegraded
+        expr: aiask_bff_dependency_status{dependency="cache"} < 2
+        for: 10m
+        labels:
+          severity: warning
+          surface: cache
+        annotations:
+          summary: "BFF cache dependency is degraded"
+          description: "The cache dependency gauge is no longer normal. Inspect Redis connectivity and fallback state."

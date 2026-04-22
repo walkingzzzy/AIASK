@@ -2,14 +2,18 @@
 
 import Link from 'next/link';
 import { useState, useMemo } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, Badge, DataTable, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { isPermissionDeniedErrorMessage } from '@/lib/api';
 import { apiKeys } from '@/lib/query-keys';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type DeadLetterItem = {
     id: string;
@@ -117,6 +121,101 @@ export default function DeadLettersPage() {
             recent,
         };
     }, [letters]);
+    const refreshDeadLetters = async () => {
+        await dlQ.refetch();
+    };
+    const deadLettersActions = useMemo(
+        () => [
+            {
+                id: 'admin-dead-letters.refresh',
+                label: '刷新死信队列',
+                description: '重新拉取待处理死信及其优先级',
+                keywords: ['死信', '刷新'],
+                scope: 'page' as const,
+                pageKey: 'admin-dead-letters',
+                run: async () => {
+                    await refreshDeadLetters();
+                    return { message: '已刷新死信队列' };
+                },
+            },
+            {
+                id: 'admin-dead-letters.confirm-clear',
+                label: '准备清空队列',
+                description: '打开死信清空确认框',
+                keywords: ['死信', '清空', '危险操作'],
+                scope: 'page' as const,
+                pageKey: 'admin-dead-letters',
+                run: () => {
+                    setConfirmClearOpen(true);
+                    return { message: '已打开清空确认' };
+                },
+            },
+        ],
+        [],
+    );
+    usePageActions(deadLettersActions);
+    const deadLettersSummary = summary.total > 0
+        ? `当前待处理死信 ${summary.total} 条，其中 ${summary.urgent} 条需要人工处理，最近 24 小时新增 ${summary.recent} 条。`
+        : '当前没有待处理死信，后台任务队列处于空闲或已完成清理状态。';
+    const deadLettersResult = buildLocalResultContract({
+        summary: deadLettersSummary,
+        availableViews: sortedLetters.length > 1 ? ['compare'] : [],
+        pageActions: deadLettersActions,
+        preferredActionIds: ['admin-dead-letters.refresh', 'admin-dead-letters.confirm-clear'],
+        recommendedLinks: [
+            { id: 'dead-letters-link-tools', label: '检查工具健康', href: '/admin/tools' },
+            { id: 'dead-letters-link-cache', label: '查看缓存状态', href: '/admin/cache' },
+            { id: 'dead-letters-link-audit', label: '审计日志', href: '/settings/audit-log' },
+        ],
+        evidence: [
+            { label: '待处理死信', value: String(summary.total) },
+            { label: '人工处理', value: String(summary.urgent), tone: summary.urgent > 0 ? 'warning' : 'neutral' },
+            { label: '反复失败', value: String(summary.repeated) },
+            { label: '24 小时新增', value: String(summary.recent) },
+        ],
+        riskNotes: [
+            ...(actionError ? [actionError] : []),
+            ...(summary.urgent > 0 ? [`当前有 ${summary.urgent} 条死信已经连续失败多次。`] : []),
+            ...(summary.total === 0 ? ['当前死信队列为空。'] : []),
+        ],
+        freshness: dlQ.dataUpdatedAt ? { updatedAt: new Date(dlQ.dataUpdatedAt).toISOString(), label: '死信快照' } : null,
+        platformMeta: {
+            sourceTool: 'admin/dead-letters',
+            sourceChain: ['admin', 'dead-letters'],
+            degraded: Boolean(actionError || dlQ.error),
+            fallbackReason: [actionError, dlQ.error].filter((item): item is string => Boolean(item)),
+        },
+        workbenchTask: defaultWorkbenchTask('admin-dead-letters', '复查死信队列', '/admin/dead-letters', 'dead-letter-review', {
+            total: summary.total,
+            urgent: summary.urgent,
+            repeated: summary.repeated,
+        }),
+    });
+    usePageContext({
+        pageKey: 'admin-dead-letters',
+        title: '死信队列',
+        summary: deadLettersSummary,
+        objectType: 'dead-letter-queue',
+        objectId: 'admin-dead-letters',
+        resultType: 'dead-letter-panel',
+        tags: [`${summary.total} 条待处理`, `${summary.urgent} 条人工处理`, `${summary.recent} 条新增`],
+        suggestions: [
+            '总结当前死信队列风险和优先处理项',
+            '判断应先检查工具健康、缓存还是上游依赖',
+            '解释为什么不应直接盲目清空队列',
+        ],
+        recommendedActions: deadLettersResult.recommendedActions ?? [],
+        recommendedLinks: deadLettersResult.recommendedLinks ?? [],
+        evidenceSummary: evidenceToSummary(deadLettersResult.evidence),
+        riskNotes: deadLettersResult.riskNotes ?? [],
+        freshness: deadLettersResult.freshness ?? null,
+        raw: {
+            total: summary.total,
+            urgent: summary.urgent,
+            repeated: summary.repeated,
+            recent: summary.recent,
+        },
+    });
 
     const handleRetry = async (id: string) => {
         setRetrying(id);
@@ -176,6 +275,8 @@ export default function DeadLettersPage() {
                 <p className="mt-1 text-sm text-text-secondary">首屏只保留待处理概览和主表，排障说明与危险动作全部下沉。</p>
             </div>
             {actionError ? <ErrorState text={actionError} /> : null}
+
+            <ResultWorkbench pageKey="admin-dead-letters" title="死信结果工作台" result={deadLettersResult} />
 
             {letters.length > 0 ? (
                 <SectionCard className="mb-4 p-4">

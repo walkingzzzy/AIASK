@@ -47,6 +47,7 @@ class StrategyRuntimeControlService:
             raise ValueError('strategy id is required')
 
         mode = str(control_mode or 'active').strip().lower() or 'active'
+        trace_metadata = dict(metadata or {})
         existing = await db.get_strategy_runtime_control(sid) if hasattr(db, 'get_strategy_runtime_control') else None
         existing_mode = str((existing or {}).get('control_mode') or 'active').strip().lower()
         priority = {'active': 0, 'throttled': 1, 'halted': 2, 'manual_stop': 3}
@@ -68,7 +69,7 @@ class StrategyRuntimeControlService:
             'action_summary': action_summary or {},
             'metadata': {
                 **dict((existing or {}).get('metadata') or {}),
-                **dict(metadata or {}),
+                **trace_metadata,
             },
             'activated_at': (existing or {}).get('activated_at') if mode == 'active' and existing else now,
             'released_at': now if mode == 'active' else None,
@@ -99,7 +100,12 @@ class StrategyRuntimeControlService:
                         'suspended',
                         actor_id=source,
                         reason='runtime_control_engaged',
-                        metadata={'control_mode': mode, 'trigger_event_type': trigger_event_type, 'reason': reason},
+                        metadata={
+                            'control_mode': mode,
+                            'trigger_event_type': trigger_event_type,
+                            'reason': reason,
+                            **trace_metadata,
+                        },
                     )
                     transition = {'from': current_status, 'to': 'suspended'}
             elif mode == 'throttled':
@@ -117,12 +123,17 @@ class StrategyRuntimeControlService:
                     if _validate_transition(current_status, recover_to):
                         await _update_status(
                             db,
-                            sid,
-                            recover_to,
-                            actor_id=source,
-                            reason='runtime_control_released',
-                            metadata={'control_mode': mode, 'trigger_event_type': trigger_event_type, 'reason': reason},
-                        )
+                        sid,
+                        recover_to,
+                        actor_id=source,
+                        reason='runtime_control_released',
+                        metadata={
+                            'control_mode': mode,
+                            'trigger_event_type': trigger_event_type,
+                            'reason': reason,
+                            **trace_metadata,
+                        },
+                    )
                         transition = {'from': current_status, 'to': recover_to}
 
         if hasattr(db, 'save_strategy_domain_event'):
@@ -133,7 +144,7 @@ class StrategyRuntimeControlService:
                 'event_type': 'runtime_control.changed',
                 'source': source,
                 'severity': 'warning' if mode in self.BLOCKING_MODES else ('info' if mode == 'active' else 'medium'),
-                'correlation_id': account_id,
+                'correlation_id': trace_metadata.get('correlation_id') or account_id,
                 'payload': {
                     'previous_mode': (existing or {}).get('control_mode'),
                     'control_mode': mode,
@@ -141,6 +152,7 @@ class StrategyRuntimeControlService:
                     'reason': reason,
                     'action_summary': action_summary or {},
                     'transition': transition,
+                    'trace': trace_metadata,
                 },
             })
 

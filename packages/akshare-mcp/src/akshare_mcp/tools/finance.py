@@ -9,6 +9,7 @@ from ..utils import (
     normalize_code,
     ok,
     parse_numeric,
+    resolve_existing_security_code_sync,
 )
 
 # Import optimization modules
@@ -323,7 +324,9 @@ async def get_financials(stock_code: str) -> dict:
     limiter = get_limiter("finance", max_calls=5, period=1.0)
     limiter.acquire()
 
-    code = normalize_code(stock_code)
+    code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+    if error:
+        return fail(error)
     started_at = datetime.now().astimezone()
 
     # 0. Check Cache (TTL 24h)

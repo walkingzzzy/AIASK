@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import UnifiedDecisionPanel from '@/components/unified-decision-panel';
@@ -11,6 +12,7 @@ import { PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
@@ -34,26 +36,6 @@ export default function DecisionPage() {
   const detailsEnvelope = rawDetails && typeof rawDetails === 'object' ? rawDetails as Record<string, unknown> : null;
   const details = detailsEnvelope?.details ?? detailsEnvelope?.raw ?? null;
   const legacyComparison = detailsEnvelope?.legacyComparison ?? envelope?.legacyComparison ?? null;
-
-  usePageContext({
-    pageKey: 'decision',
-    title: '统一决策工作台',
-    summary: `${trimmedCode || '未选择股票'}，风格 ${investmentStyle}，legacy diff ${legacyMode ? '开启' : '关闭'}。`,
-    stockCode: trimmedCode || undefined,
-    tags: [investmentStyle, legacyMode ? 'legacy diff' : 'modern decision'],
-    suggestions: [
-      trimmedCode ? `解释 ${trimmedCode} 当前统一决策结果` : '选择股票后解释统一决策结果',
-      '比较当前 unified decision 和 legacy diff 的差异',
-      '把当前决策页整理成执行建议',
-    ],
-    raw: {
-      code: trimmedCode || null,
-      investmentStyle,
-      legacyMode,
-      hasResult: Boolean(result),
-      hasDetails: Boolean(details),
-    },
-  });
 
   function runDecision() {
     if (!validate()) return;
@@ -80,32 +62,94 @@ export default function DecisionPage() {
     updateWorkbenchContext({ stockCode: trimmedCode || null });
   }, [trimmedCode, updateWorkbenchContext, workbenchHydrated]);
 
-  usePageActions([
-    {
-      id: 'decision.run',
-      label: '运行统一决策',
-      description: '按当前股票和风格运行 unified decision',
-      keywords: ['决策', '运行'],
-      scope: 'page',
-      pageKey: 'decision',
-      run: () => {
-        runDecision();
-        return { message: '已触发统一决策' };
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'decision.run',
+        label: '运行统一决策',
+        description: '按当前股票和风格运行 unified decision',
+        keywords: ['决策', '运行'],
+        scope: 'page' as const,
+        pageKey: 'decision',
+        run: () => {
+          runDecision();
+          return { message: '已触发统一决策' };
+        },
       },
-    },
-    {
-      id: 'decision.load-details',
-      label: '加载决策详情',
-      description: '加载统一决策的完整证据链详情',
-      keywords: ['详情', '证据链'],
-      scope: 'page',
-      pageKey: 'decision',
-      run: () => {
-        loadDetails();
-        return { message: '已触发决策详情加载' };
+      {
+        id: 'decision.load-details',
+        label: '加载决策详情',
+        description: '加载统一决策的完整证据链详情',
+        keywords: ['详情', '证据链'],
+        scope: 'page' as const,
+        pageKey: 'decision',
+        run: () => {
+          loadDetails();
+          return { message: '已触发决策详情加载' };
+        },
       },
+    ],
+    [details, investmentStyle, legacyMode, trimmedCode],
+  );
+  usePageActions(pageActions);
+  const decisionSummary = `${trimmedCode || '未选择股票'}，风格 ${investmentStyle}，legacy diff ${legacyMode ? '开启' : '关闭'}。`;
+  const decisionResult = buildLocalResultContract({
+    summary: decisionSummary,
+    pageActions,
+    preferredActionIds: ['decision.run', 'decision.load-details'],
+    recommendedLinks: [
+      { id: 'decision-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
+      { id: 'decision-open-stock-link', label: '个股详情', href: trimmedCode ? `/stock?code=${encodeURIComponent(trimmedCode)}` : '/stock' },
+      { id: 'decision-open-risk-link', label: '风险中心', href: '/risk' },
+      { id: 'decision-open-execution-link', label: '执行中心', href: trimmedCode ? `/execution?code=${encodeURIComponent(trimmedCode)}` : '/execution' },
+    ],
+    evidence: [
+      { label: '股票', value: trimmedCode || '未选择' },
+      { label: '风格', value: investmentStyle },
+      { label: 'Legacy diff', value: legacyMode ? '开启' : '关闭' },
+      { label: '结果', value: result ? '已生成' : '未生成' },
+      { label: '详情', value: details ? '已加载' : '未加载' },
+    ],
+    riskNotes: [error].filter((item): item is string => Boolean(item)),
+    platformMeta: {
+      sourceTool: 'unified-decision',
+      sourceChain: ['decision', investmentStyle, legacyMode ? 'legacy' : 'modern'],
+      degraded: Boolean(error),
+      fallbackReason: error ? [error] : undefined,
     },
-  ]);
+    workbenchTask: defaultWorkbenchTask('decision', `复查统一决策 ${trimmedCode || ''}`.trim(), trimmedCode ? `/decision?code=${encodeURIComponent(trimmedCode)}` : '/decision', 'decision-review', {
+      code: trimmedCode || null,
+      investmentStyle,
+      legacyMode,
+    }),
+  });
+  usePageContext({
+    pageKey: 'decision',
+    title: '统一决策工作台',
+    summary: decisionSummary,
+    stockCode: trimmedCode || undefined,
+    objectType: 'stock',
+    objectId: trimmedCode || 'unselected',
+    resultType: 'unified-decision',
+    tags: [investmentStyle, legacyMode ? 'legacy diff' : 'modern decision'],
+    suggestions: [
+      trimmedCode ? `解释 ${trimmedCode} 当前统一决策结果` : '选择股票后解释统一决策结果',
+      '比较当前 unified decision 和 legacy diff 的差异',
+      '把当前决策页整理成执行建议',
+    ],
+    recommendedActions: decisionResult.recommendedActions ?? [],
+    recommendedLinks: decisionResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(decisionResult.evidence),
+    riskNotes: decisionResult.riskNotes ?? [],
+    freshness: decisionResult.freshness ?? null,
+    raw: {
+      code: trimmedCode || null,
+      investmentStyle,
+      legacyMode,
+      hasResult: Boolean(result),
+      hasDetails: Boolean(details),
+    },
+  });
 
   const currentView = useMemo<Record<string, unknown>>(
     () => ({
@@ -183,6 +227,8 @@ export default function DecisionPage() {
           </div>
         </div>
       </SectionCard>
+
+      <ResultWorkbench pageKey="decision" title="统一决策工作台" result={decisionResult} />
 
       {isPending ? (
         <div className="mt-4 rounded-xl border border-glass-border bg-surface-alt/20 p-8">

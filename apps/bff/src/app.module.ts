@@ -48,6 +48,7 @@ import { WorkspaceModule } from './workspace/workspace.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { ObservabilityInterceptor } from './observability/observability.interceptor';
 import { McpJobsModule } from './mcp-jobs/mcp-jobs.module';
+import { BehaviorModule } from './behavior/behavior.module';
 
 const DEFAULT_HTTP_THROTTLE_TTL_MS = 60_000;
 const DEFAULT_HTTP_THROTTLE_LIMIT = 600;
@@ -83,6 +84,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
     McpGatewayModule,
     McpJobsModule,
     AuthModule,
+    BehaviorModule,
     HealthModule,
     MarketModule,
     FundamentalModule,

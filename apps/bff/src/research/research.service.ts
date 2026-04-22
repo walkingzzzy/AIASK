@@ -1,8 +1,25 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
+import type { ResultContract, ResultContractMeta } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
+import { buildMcpTransportFailureDetail } from '../mcp-gateway/mcp-transport.contract';
 import { CommonCacheService } from '../common/cache.service';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+} from '../common/result-contract';
+import {
+  buildResultContractMeta,
+  callToolWithContract,
+} from '../common/tool-contracts';
 
-type ToolCallResult = { payload: unknown; argsMatched: Record<string, unknown> };
+type ToolCallResult = {
+  payload: unknown;
+  argsMatched: Record<string, unknown>;
+  canonicalArgs: Record<string, unknown>;
+  aliasHits: ResultContractMeta['aliasHits'];
+  canonicalTool: string;
+};
 
 export type ResearchQueryOptions = {
   days?: number;
@@ -24,6 +41,11 @@ export type ResearchListDto = {
   meta: {
     fetchedAt: string;
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
+  };
+  result_contract?: ResultContract | null;
+  contract_meta?: {
+    reports: ResultContractMeta;
+    notices: ResultContractMeta;
   };
 };
 
@@ -54,20 +76,13 @@ export class ResearchService {
       };
     }
 
-    const reportAttempts: Array<Record<string, unknown>> = [
-      { stock_code: normalized, limit },
-      { symbol: normalized, limit },
-      { code: normalized, limit },
-    ];
-
-    const noticeAttempts: Array<Record<string, unknown>> = [
-      { start_date: startDate, end_date: endDate, stock_code: normalized, types: null },
-      { start_date: startDate, end_date: endDate, code: normalized, types: null },
-      { start_date: startDate, end_date: endDate, symbol: normalized, types: null },
-    ];
-
-    const reportsCall = await this.callWithArgs('get_stock_research', reportAttempts);
-    const noticesCall = await this.callWithArgs('get_stock_notices', noticeAttempts);
+    const reportsCall = await this.callWithArgs('get_stock_research', [{ code: normalized, limit }]);
+    const noticesCall = await this.callWithArgs('get_stock_notices', [{
+      code: normalized,
+      start_date: startDate,
+      end_date: endDate,
+      types: null,
+    }]);
 
     const reports = this.filterItems(
       this.normalizeItems(this.extractArray(reportsCall.payload), 'report'),
@@ -94,6 +109,45 @@ export class ResearchService {
       meta: {
         fetchedAt: new Date().toISOString(),
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+      result_contract: buildResultContract({
+        summary: `${normalized} 在 ${startDate} 至 ${endDate} 区间内命中 ${reports.length} 条研报、${notices.length} 条公告。`,
+        availableViews: ['summary', 'compare', 'next_step'],
+        evidence: [
+          { label: '股票代码', value: normalized },
+          { label: '研报数量', value: String(reports.length) },
+          { label: '公告数量', value: String(notices.length) },
+          { label: '关键词', value: keyword || '未设置' },
+        ],
+        riskNotes: reports.length + notices.length === 0 ? ['当前窗口未命中研报或公告，建议扩大时间范围或切换关键词。'] : [],
+        freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '资讯抓取时间'),
+        platformMeta: extractPlatformMeta(
+          {
+            meta: {
+              fetchedAt: new Date().toISOString(),
+              source_chain: ['get_stock_research', 'get_stock_notices'],
+            },
+          },
+          {
+            sourceTool: 'research.list',
+            referencePath: '/research/list',
+            freshnessLabel: '资讯抓取时间',
+          },
+        ),
+      }),
+      contract_meta: {
+        reports: buildResultContractMeta({
+          canonicalTool: reportsCall.canonicalTool,
+          canonicalArgs: reportsCall.canonicalArgs,
+          argsMatched: reportsCall.argsMatched,
+          aliasHits: reportsCall.aliasHits,
+        }),
+        notices: buildResultContractMeta({
+          canonicalTool: noticesCall.canonicalTool,
+          canonicalArgs: noticesCall.canonicalArgs,
+          argsMatched: noticesCall.argsMatched,
+          aliasHits: noticesCall.aliasHits,
+        }),
       },
     };
 
@@ -122,17 +176,34 @@ export class ResearchService {
   }
 
   async getMarketNews(limit = 20) {
-    const payload = await this.callTool('get_market_news', { limit });
-    const list = this.asRecordArray(this.unwrapPayload(payload));
-    return {
-      items: list.map((item) => ({
-        title: String(item.title ?? ''),
-        date: String(item.date ?? item.publish_date ?? ''),
-        source: String(item.source ?? ''),
-        url: String(item.url ?? item.link ?? ''),
-      })),
-      count: list.length,
-    };
+    try {
+      const payload = await this.callTool('get_market_news', { limit });
+      const list = this.asRecordArray(this.unwrapPayload(payload));
+      return {
+        items: list.map((item) => ({
+          title: String(item.title ?? ''),
+          date: String(item.date ?? item.publish_date ?? ''),
+          source: String(item.source ?? ''),
+          url: String(item.url ?? item.link ?? ''),
+        })),
+        count: list.length,
+      };
+    } catch (error) {
+      const detail = buildMcpTransportFailureDetail(this.mcpGatewayService.getTransportSnapshot(), {
+        acceptanceStatus: 'degraded',
+        path: '/research/market-news',
+        upstream: this.extractUpstreamDetail(error),
+      });
+      return {
+        items: [],
+        count: 0,
+        degraded: true,
+        message: '市场新闻暂时不可用，已降级为空结果',
+        fallback_reason: ['market_news_unavailable', detail.transport.fallback_reason].filter(Boolean),
+        detail,
+        transport: detail.transport,
+      };
+    }
   }
 
   async searchResearch(keyword?: string, code?: string, days = 30) {
@@ -273,19 +344,26 @@ export class ResearchService {
   }
 
   private async callWithArgs(tool: string, attempts: Array<Record<string, unknown>>): Promise<ToolCallResult> {
-    let lastError: unknown = null;
-    for (const args of attempts) {
-      try {
-        const payload = await this.mcpGatewayService.callTool(tool, args);
-        return { payload, argsMatched: args };
-      } catch (error) {
-        lastError = error;
-      }
+    const result = await callToolWithContract(
+      tool,
+      attempts,
+      (name, args) => this.mcpGatewayService.callTool(name, args),
+    );
+    return {
+      payload: result.payload,
+      argsMatched: result.argsMatched,
+      canonicalArgs: result.canonicalArgs,
+      aliasHits: result.aliasHits,
+      canonicalTool: result.canonicalTool,
+    };
+  }
+
+  private extractUpstreamDetail(error: unknown): unknown {
+    if (error && typeof error === 'object' && typeof (error as { getResponse?: () => unknown }).getResponse === 'function') {
+      return (error as { getResponse: () => unknown }).getResponse();
     }
-    throw new BadGatewayException({
-      success: false,
-      message: `调用 MCP ${tool} 失败`,
-      detail: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+    return {
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 }

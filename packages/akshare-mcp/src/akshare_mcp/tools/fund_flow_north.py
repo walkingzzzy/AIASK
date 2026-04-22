@@ -18,7 +18,7 @@ import akshare as ak
 import pandas as pd
 import requests
 
-from ..utils import fail, normalize_code, ok, parse_numeric, safe_float, suppress_stdout
+from ..utils import fail, normalize_code, ok, parse_numeric, resolve_existing_security_code_sync, safe_float, suppress_stdout, validate_int_range
 from ..data_source import data_source
 from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
@@ -714,7 +714,9 @@ def get_north_fund(days: int = 30) -> dict:
 def get_north_fund_holding(stock_code: str) -> dict:
     """获取单只股票北向资金持股"""
     try:
-        code = normalize_code(stock_code)
+        code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+        if error:
+            return fail(error)
         items = _fetch_eastmoney_datacenter(
             {
                 "sortColumns": "TRADE_DATE",
@@ -746,7 +748,9 @@ def get_north_fund_holding(stock_code: str) -> dict:
 def get_north_fund_top(top_n: int = 20) -> dict:
     """获取北向资金持股排行"""
     try:
-        top_n = int(top_n) if int(top_n or 0) > 0 else 20
+        top_n, top_n_error = validate_int_range(top_n, field_name="top_n", minimum=1)
+        if top_n_error:
+            return fail(top_n_error)
         items = _fetch_eastmoney_datacenter(
             {
                 "sortColumns": "HOLD_MARKET_CAP",

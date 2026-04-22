@@ -30,6 +30,8 @@ type DbMetric = {
   errored: boolean;
 };
 
+type DependencyStatus = 'normal' | 'degraded' | 'untrusted';
+
 @Injectable()
 export class ObservabilityService {
   private readonly registry = new Registry();
@@ -96,7 +98,7 @@ export class ObservabilityService {
     });
     this.dependencyStatus = new Gauge({
       name: 'aiask_bff_dependency_status',
-      help: 'Dependency status gauge where 1 means healthy/ready and 0 means degraded or unavailable.',
+      help: 'Dependency status gauge where 2 means normal, 1 means degraded, and 0 means untrusted.',
       labelNames: ['dependency'],
       registers: [this.registry],
     });
@@ -133,10 +135,11 @@ export class ObservabilityService {
     this.dbQueryDurationSeconds.observe(labels, Math.max(0, metric.durationMs) / 1000);
   }
 
-  setDependencyState(dependency: string, healthy: boolean): void {
+  setDependencyState(dependency: string, status: boolean | DependencyStatus): void {
+    const normalizedStatus = this.normalizeDependencyStatus(status);
     this.dependencyStatus.set(
       { dependency: this.normalizeMetricName(dependency || 'unknown') },
-      healthy ? 1 : 0,
+      normalizedStatus === 'normal' ? 2 : normalizedStatus === 'degraded' ? 1 : 0,
     );
   }
 
@@ -153,6 +156,7 @@ export class ObservabilityService {
       service: this.serviceName,
       environment: this.environment,
       metricsEndpoint: '/api/metrics',
+      schemaOwner: 'mcp',
     };
   }
 
@@ -171,5 +175,14 @@ export class ObservabilityService {
     return raw
       .replace(/\/\d+/g, '/:id')
       .replace(/\/[a-f0-9]{8,}/gi, '/:id');
+  }
+
+  private normalizeDependencyStatus(status: boolean | DependencyStatus): DependencyStatus {
+    if (typeof status === 'boolean') {
+      return status ? 'normal' : 'untrusted';
+    }
+    return status === 'normal' || status === 'degraded' || status === 'untrusted'
+      ? status
+      : 'untrusted';
   }
 }

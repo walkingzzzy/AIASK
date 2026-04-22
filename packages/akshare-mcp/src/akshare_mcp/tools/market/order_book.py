@@ -10,7 +10,7 @@ from ..market.helpers import (
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
-from ...utils import safe_stderr_print
+from ...utils import resolve_existing_security_code_sync, safe_stderr_print, validate_int_range
 try:
     import akshare as ak
 except ImportError:
@@ -334,8 +334,12 @@ def get_trade_details(stock_code: str, limit: int = 20) -> dict:
     limiter = get_limiter("quote", max_calls=10, period=1.0)
     limiter.acquire()
 
-    code = normalize_code(stock_code)
-    limit = int(limit) if int(limit or 0) > 0 else 20
+    code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+    if error:
+        return fail(error)
+    limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1)
+    if limit_error:
+        return fail(limit_error)
     df = None
     if ak is not None:
         for func_name, args in (

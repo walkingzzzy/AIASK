@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..storage import get_db
-from ..utils import fail, ok
+from ..utils import fail, ok, validate_int_range, validate_stock_code_format
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +272,12 @@ def register(mcp):
             codes: 要检查的股票代码列表。为空时检查数据库中所有股票。
             max_stale_days: 最大允许过期天数（默认5天，即超过5天视为过期）
         """
+        max_stale_days, stale_error = validate_int_range(max_stale_days, field_name="max_stale_days", minimum=0)
+        if stale_error:
+            return fail(stale_error)
+        invalid_codes = [code for code in list(codes or []) if validate_stock_code_format(code)[1] is not None]
+        if invalid_codes:
+            return fail(f"存在无效股票代码: {', '.join(invalid_codes)}")
         if not codes:
             db = get_db()
             codes = await _get_all_tracked_codes(db)
@@ -297,6 +303,12 @@ def register(mcp):
             codes: 要同步的股票代码列表。为空时自动扫描数据库中所有过期股票。
             max_stale_days: 最大允许过期天数（默认5天）
         """
+        max_stale_days, stale_error = validate_int_range(max_stale_days, field_name="max_stale_days", minimum=0)
+        if stale_error:
+            return fail(stale_error)
+        invalid_codes = [code for code in list(codes or []) if validate_stock_code_format(code)[1] is not None]
+        if invalid_codes:
+            return fail(f"存在无效股票代码: {', '.join(invalid_codes)}")
         result = await sync_stale(
             codes, max_stale_days=max_stale_days,
         )

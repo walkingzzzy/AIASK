@@ -11,7 +11,7 @@ from uuid import uuid4
 from ..services.artifact_registry import get_artifact_async, register_artifact_async
 from ..services.lineage_tracker import LineageContext
 from ..services.stock_deep_analysis import run_stock_deep_analysis
-from ..utils import normalize_code
+from ..utils import normalize_code, resolve_existing_security_code_async
 from ._decision_unified import get_unified_decision_summary
 from .data_quality import build_quality_meta, infer_missing_fields
 from .finance import get_financials

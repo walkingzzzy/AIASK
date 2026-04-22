@@ -1,11 +1,15 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, DataTable, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { ErrorState } from '@/components/status-state';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 function readRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -82,6 +86,99 @@ export default function UsersPage() {
     await usersQ.refetch();
     setLastManualRefreshAt(new Date().toLocaleString('zh-CN'));
   }
+  const usersPageActions = useMemo(
+    () => [
+      {
+        id: 'admin-users.refresh',
+        label: '刷新用户列表',
+        description: '重新拉取用户快照并更新统计',
+        keywords: ['用户', '刷新'],
+        scope: 'page' as const,
+        pageKey: 'admin-users',
+        run: async () => {
+          await refreshUsers();
+          return { message: '已刷新用户列表' };
+        },
+      },
+      {
+        id: 'admin-users.filter-admin',
+        label: '只看管理员',
+        description: '快速聚焦管理员账号',
+        keywords: ['管理员', '筛选'],
+        scope: 'page' as const,
+        pageKey: 'admin-users',
+        run: () => {
+          setRoleFilter('admin');
+          return { message: '已筛到管理员账号' };
+        },
+      },
+    ],
+    [],
+  );
+  usePageActions(usersPageActions);
+  const usersSummary = `当前展示 ${filteredUsers.length} / ${users.length} 位用户，活跃 ${stats.active}，管理员 ${stats.admins}，今日活跃 ${stats.today}。`;
+  const usersResult = buildLocalResultContract({
+    summary: usersSummary,
+    availableViews: filteredUsers.length > 1 ? ['compare'] : [],
+    pageActions: usersPageActions,
+    preferredActionIds: ['admin-users.refresh', 'admin-users.filter-admin'],
+    recommendedLinks: [
+      { id: 'admin-users-link-audit', label: '审计日志', href: '/settings/audit-log' },
+      { id: 'admin-users-link-tools', label: 'MCP 工具', href: '/admin/tools' },
+      { id: 'admin-users-link-cache', label: '缓存管理', href: '/admin/cache' },
+    ],
+    evidence: [
+      { label: '总用户', value: String(stats.total) },
+      { label: '活跃用户', value: String(stats.active) },
+      { label: '管理员', value: String(stats.admins) },
+      { label: '今日活跃', value: String(stats.today) },
+      { label: '当前筛选', value: roleFilter === 'all' ? '全部角色' : roleFilter },
+    ],
+    riskNotes: [
+      ...(usersQ.error ? [usersQ.error] : []),
+      ...(filteredUsers.length === 0 ? ['当前筛选条件下没有匹配用户。'] : []),
+    ],
+    freshness: usersQ.dataUpdatedAt ? { updatedAt: new Date(usersQ.dataUpdatedAt).toISOString(), label: '用户快照' } : null,
+    platformMeta: {
+      sourceTool: 'admin/users',
+      sourceChain: ['admin', 'users'],
+      degraded: Boolean(usersQ.error),
+      fallbackReason: [usersQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('admin-users', '复查用户列表', '/admin/users', 'user-admin-review', {
+      total: stats.total,
+      active: stats.active,
+      admins: stats.admins,
+      roleFilter,
+    }),
+  });
+  usePageContext({
+    pageKey: 'admin-users',
+    title: '用户管理',
+    summary: usersSummary,
+    objectType: 'user-directory',
+    objectId: 'admin-users',
+    resultType: 'user-admin-panel',
+    tags: [roleFilter === 'all' ? '全部角色' : roleFilter, `${stats.total} 用户`, `${stats.admins} 管理员`],
+    suggestions: [
+      '总结当前用户盘点和活跃度分布',
+      '如果要审计权限，先聚焦管理员账号',
+      '解释当前筛选结果是否异常',
+    ],
+    recommendedActions: usersResult.recommendedActions ?? [],
+    recommendedLinks: usersResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(usersResult.evidence),
+    riskNotes: usersResult.riskNotes ?? [],
+    freshness: usersResult.freshness ?? null,
+    raw: {
+      total: stats.total,
+      active: stats.active,
+      admins: stats.admins,
+      today: stats.today,
+      roleFilter,
+      searchText,
+    },
+  });
 
   const ROLE_COLORS: Record<string, 'danger' | 'warning' | 'info' | 'success'> = {
     admin: 'danger',
@@ -106,6 +203,8 @@ export default function UsersPage() {
   return (
     <PageContainer>
       <h1 className="text-lg font-semibold mb-4">👥 用户管理</h1>
+
+      <ResultWorkbench pageKey="admin-users" title="用户管理结果工作台" result={usersResult} />
 
       <SectionCard className="mb-4 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

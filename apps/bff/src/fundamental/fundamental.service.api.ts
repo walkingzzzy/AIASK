@@ -1,4 +1,10 @@
 import { BadGatewayException } from '@nestjs/common';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+} from '../common/result-contract';
+import { buildResultContractMeta } from '../common/tool-contracts';
 import type {
   FundamentalCapitalDto,
   FundamentalHistoryDto,
@@ -47,9 +53,10 @@ export async function getOverview(service: any, code: string): Promise<Fundament
       }
     }
 
+    const financials = service.normalizeFinancials(financialsCall.payload);
     const result: FundamentalOverviewDto = {
       code: normalized,
-      financials: service.normalizeFinancials(financialsCall.payload),
+      financials,
       valuation,
       sourceTools: {
         financials: 'get_financials',
@@ -62,6 +69,45 @@ export async function getOverview(service: any, code: string): Promise<Fundament
       meta: {
         fetchedAt: new Date().toISOString(),
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+      result_contract: buildResultContract({
+        summary: `${normalized} 当前 ROE ${resultValue(financials.roe)}，PE ${resultValue(valuation.pe)}x，PB ${resultValue(valuation.pb)}x。`,
+        availableViews: ['summary', 'compare', 'next_step'],
+        evidence: [
+          { label: '股票代码', value: normalized },
+          { label: 'ROE', value: resultValue(financials.roe) },
+          { label: 'PE', value: resultValue(valuation.pe) },
+          { label: 'PB', value: resultValue(valuation.pb) },
+          { label: '市值', value: resultValue(valuation.marketCap) },
+        ],
+        freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '基本面抓取时间'),
+        platformMeta: extractPlatformMeta(
+          {
+            meta: {
+              fetchedAt: new Date().toISOString(),
+              source_chain: ['get_financials', 'get_valuation_metrics'],
+            },
+          },
+          {
+            sourceTool: 'fundamental.overview',
+            referencePath: '/fundamental/overview',
+            freshnessLabel: '基本面抓取时间',
+          },
+        ),
+      }),
+      contract_meta: {
+        financials: buildResultContractMeta({
+          canonicalTool: financialsCall.canonicalTool,
+          canonicalArgs: financialsCall.canonicalArgs,
+          argsMatched: financialsCall.argsMatched,
+          aliasHits: financialsCall.aliasHits,
+        }),
+        valuation: buildResultContractMeta({
+          canonicalTool: valuationCall.canonicalTool,
+          canonicalArgs: valuationCall.canonicalArgs,
+          argsMatched: valuationCall.argsMatched,
+          aliasHits: valuationCall.aliasHits,
+        }),
       },
     };
 
@@ -121,6 +167,37 @@ export async function getHistory(service: any, code: string, days = 90): Promise
         fetchedAt: new Date().toISOString(),
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      result_contract: buildResultContract({
+        summary: `${normalized} ${safeDays} 天估值历史已加载，共 ${points.length} 个采样点。`,
+        availableViews: ['summary', 'visual', 'next_step'],
+        evidence: [
+          { label: '股票代码', value: normalized },
+          { label: '窗口天数', value: String(safeDays) },
+          { label: '采样点', value: String(points.length) },
+          { label: '最新日期', value: points.at(-1)?.date || '-' },
+        ],
+        riskNotes: points.length === 0 ? ['当前窗口没有可用估值历史，结果可能来自合成回退或上游缺数。'] : [],
+        freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '历史估值抓取时间'),
+        platformMeta: extractPlatformMeta(
+          {
+            meta: {
+              fetchedAt: new Date().toISOString(),
+              source_chain: [sourceTool],
+            },
+          },
+          {
+            sourceTool,
+            referencePath: '/fundamental/history',
+            freshnessLabel: '历史估值抓取时间',
+          },
+        ),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool: sourceTool,
+        canonicalArgs: points.length > 0 && argsMatched.synthetic ? { code: normalized, days: safeDays } : argsMatched,
+        argsMatched,
+        aliasHits: argsMatched.synthetic ? [] : undefined,
+      }),
     };
 
     if (points.length > 0) {
@@ -173,6 +250,11 @@ export async function getCapital(service: any, code: string): Promise<Fundamenta
         fetchedAt: new Date().toISOString(),
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      contract_meta: buildResultContractMeta({
+        canonicalTool: 'get_stock_capital',
+        canonicalArgs: { code: normalized },
+        argsMatched,
+      }),
     };
 
     if (capitalData.length > 0 || totalShares != null || floatShares != null) {
@@ -292,11 +374,21 @@ export async function getPeers(service: any, code: string): Promise<FundamentalP
         fetchedAt: new Date().toISOString(),
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
+      contract_meta: buildResultContractMeta({
+        canonicalTool: 'relative_valuation',
+        canonicalArgs: { code: normalized, metrics: ['pe', 'pb', 'ps'] },
+        argsMatched,
+      }),
     };
 
     if (result.peers.length > 0) {
       await service.cacheService.set(cacheKey, result, ttlSeconds);
-    }
+}
+
+function resultValue(value: unknown): string {
+  if (value == null || value === '') return '-';
+  return String(value);
+}
 
     return result;
   }
@@ -501,3 +593,10 @@ export async function getF10Info(service: any, code: string) {
 
     return buildAggregatedProfile();
   }
+
+function resultValue(value: unknown): string {
+  if (value == null || value === '') {
+    return '-';
+  }
+  return String(value);
+}

@@ -1,3 +1,4 @@
+    @classmethod
     def _is_exploration_candidate(
         cls,
         candidate: dict[str, Any],

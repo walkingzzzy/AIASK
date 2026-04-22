@@ -1,9 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DbService } from '../db/db.service';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 
 export type LlmConfig = { apiKey: string; baseUrl: string; model: string };
+export type SaveLlmConfigInput = { apiKey?: string | null; baseUrl: string; model: string };
+export type MaskedLlmConfig = {
+  baseUrl: string;
+  model: string;
+  hasStoredApiKey: boolean;
+  apiKeyMasked: string;
+};
 type UserPreferences = { llm?: LlmConfig; [key: string]: unknown };
 
 @Injectable()
@@ -29,21 +36,33 @@ export class PreferencesService {
     }
   }
 
-  async setLlmConfig(userId: string, config: LlmConfig): Promise<void> {
+  async setLlmConfig(userId: string, config: SaveLlmConfigInput): Promise<LlmConfig> {
     const prefs = await this.getUserPreferences(userId);
+    const existingEncryptedKey = prefs?.llm?.apiKey;
+    const nextApiKey = this.resolveNextApiKey(config.apiKey, existingEncryptedKey);
     const updated: UserPreferences = {
       ...prefs,
-      llm: { apiKey: this.encrypt(config.apiKey), baseUrl: config.baseUrl, model: config.model },
+      llm: {
+        apiKey: nextApiKey.encrypted,
+        baseUrl: config.baseUrl,
+        model: config.model,
+      },
     };
     await this.setUserPreferences(userId, updated);
+    return { apiKey: nextApiKey.decrypted, baseUrl: config.baseUrl, model: config.model };
   }
 
-  async getMaskedLlmConfig(userId: string): Promise<{ apiKey: string; baseUrl: string; model: string } | null> {
+  async getMaskedLlmConfig(userId: string): Promise<MaskedLlmConfig | null> {
     const prefs = await this.getUserPreferences(userId);
     if (!prefs?.llm?.apiKey) return null;
     try {
       const realKey = this.decrypt(prefs.llm.apiKey);
-      return { apiKey: this.maskApiKey(realKey), baseUrl: prefs.llm.baseUrl, model: prefs.llm.model };
+      return {
+        baseUrl: prefs.llm.baseUrl,
+        model: prefs.llm.model,
+        hasStoredApiKey: true,
+        apiKeyMasked: this.maskApiKey(realKey),
+      };
     } catch {
       return null;
     }
@@ -106,5 +125,34 @@ export class PreferencesService {
     const decipher = createDecipheriv('aes-256-gcm', this.encKey, iv);
     decipher.setAuthTag(tag);
     return decipher.update(encrypted) + decipher.final('utf8');
+  }
+
+  private resolveNextApiKey(input: string | null | undefined, existingEncryptedKey?: string): {
+    encrypted: string;
+    decrypted: string;
+  } {
+    const trimmed = String(input ?? '').trim();
+    if (!trimmed) {
+      if (!existingEncryptedKey) {
+        throw new BadRequestException('请填写 API Key');
+      }
+      return {
+        encrypted: existingEncryptedKey,
+        decrypted: this.decrypt(existingEncryptedKey),
+      };
+    }
+
+    if (this.looksLikeMaskedApiKey(trimmed)) {
+      throw new BadRequestException('请不要提交脱敏后的 API Key；留空即可保留原有 Key');
+    }
+
+    return {
+      encrypted: this.encrypt(trimmed),
+      decrypted: trimmed,
+    };
+  }
+
+  private looksLikeMaskedApiKey(value: string): boolean {
+    return /^sk-[A-Za-z0-9]{0,6}\*{2,}[A-Za-z0-9]{0,8}$/.test(value) || /\*{2,}/.test(value);
   }
 }

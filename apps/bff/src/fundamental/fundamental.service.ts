@@ -2,6 +2,7 @@ import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 import { DbService } from '../db/db.service';
+import { callToolWithContract } from '../common/tool-contracts';
 import {
   getCapital,
   getF10Info,
@@ -600,23 +601,18 @@ export class FundamentalService {
   }
 
   private async callWithArgs(tool: string, attempts: Array<Record<string, unknown>>, altTool?: string) {
-    let lastError: unknown = null;
-    const tools = altTool ? [tool, altTool] : [tool];
-    for (const t of tools) {
-      for (const args of attempts) {
-        try {
-          const payload = await this.mcpGatewayService.callTool(t, args);
-          return { payload, argsMatched: args };
-        } catch (error) {
-          lastError = error;
-        }
-      }
-    }
-
-    throw new BadGatewayException({
-      success: false,
-      message: `调用 MCP ${tool} 失败`,
-      detail: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+    const result = await callToolWithContract(
+      tool,
+      attempts,
+      (name, args) => this.mcpGatewayService.callTool(name, args),
+      altTool ? [altTool] : [],
+    );
+    return {
+      payload: result.payload,
+      argsMatched: result.argsMatched,
+      canonicalArgs: result.canonicalArgs,
+      aliasHits: result.aliasHits,
+      canonicalTool: result.canonicalTool,
+    };
   }
 }

@@ -316,6 +316,7 @@ class _StrategyCrudMarketMixin:
                 "sell": "rqmcl",
             }
             sort_column = sort_column_map.get(sort_key, "rzrqye")
+            sort_expr = f"CASE WHEN {sort_column} IS NULL OR {sort_column}::text = 'NaN' THEN NULL ELSE {sort_column} END"
             async with self.acquire() as conn:
                 latest_trade_date = await conn.fetchval(
                     """
@@ -332,7 +333,7 @@ class _StrategyCrudMarketMixin:
                     SELECT trade_date, ts_code, rzye, rqye, rzmre, rqyl, rzche, rqchl, rqmcl, rzrqye
                     FROM margin_detail
                     WHERE trade_date = $1
-                    ORDER BY {sort_column} DESC NULLS LAST, ts_code ASC
+                    ORDER BY {sort_expr} DESC NULLS LAST, ts_code ASC
                     LIMIT $2
                     """,
                     latest_trade_date,

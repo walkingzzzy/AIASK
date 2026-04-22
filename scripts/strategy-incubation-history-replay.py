@@ -22,10 +22,21 @@ from akshare_mcp.services.incubation import get_strategy_incubation_service
 from akshare_mcp.storage import get_db, run_with_db_cleanup
 
 
+ACCEPTANCE_REPORT_TYPE = "execution_audit_acceptance"
+ACCEPTANCE_REPORT_SCHEMA_VERSION = "execution_audit_acceptance.v2"
+REPLAY_REPORT_TYPE = "strategy_incubation_history_replay"
+REPLAY_REPORT_SCHEMA_VERSION = "strategy_incubation_history_replay.v2"
+SAMPLE_GAP_CATEGORY = "sample_gap"
 SAMPLE_GAP_BLOCKERS = {
     "realized_trade_evidence_insufficient",
     "bootstrap_pending",
     "insufficient_samples",
+    "promotion_hard_gate_pending",
+}
+SAMPLE_GAP_GATE_STATUSES = {
+    "bootstrap_pending",
+    "insufficient_samples",
+    "bootstrap_ready",
 }
 
 
@@ -39,6 +50,15 @@ def _now_iso() -> str:
 
 def _normalize_csv(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _unique_tokens(values) -> list[str]:
+    tokens: list[str] = []
+    for item in list(values or []):
+        token = str(item or "").strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def _coerce_date(value: str) -> date | None:
@@ -71,16 +91,60 @@ def _parse_affected_rows(execute_result: Any) -> int:
         return 0
 
 
+def _acceptance_blockers(row: dict[str, Any]) -> list[str]:
+    details = [dict(item) for item in list(row.get("blocker_details") or []) if isinstance(item, dict)]
+    return _unique_tokens([*_unique_tokens(row.get("blockers")), *_unique_tokens(item.get("blocker") for item in details)])
+
+
+def _acceptance_gap_categories(row: dict[str, Any]) -> list[str]:
+    details = [dict(item) for item in list(row.get("blocker_details") or []) if isinstance(item, dict)]
+    categories = _unique_tokens(
+        [
+            *_unique_tokens(row.get("gap_categories")),
+            *_unique_tokens(item.get("category") for item in details),
+        ]
+    )
+    if categories:
+        return categories
+    blockers = set(_acceptance_blockers(row))
+    if not blockers.isdisjoint(SAMPLE_GAP_BLOCKERS):
+        return [SAMPLE_GAP_CATEGORY]
+    gate_status = str(
+        dict(row.get("trade_audit_summary") or {}).get("execution_audit_gate_status") or ""
+    ).strip()
+    if gate_status in SAMPLE_GAP_GATE_STATUSES:
+        return [SAMPLE_GAP_CATEGORY]
+    return []
+
+
+def _acceptance_has_sample_gap(row: dict[str, Any]) -> bool:
+    marker = row.get("has_sample_gap")
+    if marker is not None:
+        return bool(marker)
+    return SAMPLE_GAP_CATEGORY in _acceptance_gap_categories(row)
+
+
+def _validate_acceptance_report_payload(payload: dict[str, Any], *, path: Path) -> list[dict[str, Any]]:
+    report_type = str(payload.get("report_type") or "").strip()
+    if report_type and report_type != ACCEPTANCE_REPORT_TYPE:
+        raise ValueError(
+            f"{path} is not an {ACCEPTANCE_REPORT_TYPE} report (report_type={report_type})"
+        )
+    strategy_rows = payload.get("strategy_results")
+    if not isinstance(strategy_rows, list):
+        raise ValueError(f"{path} missing strategy_results[] in acceptance report")
+    normalized_rows = [dict(item) for item in strategy_rows if isinstance(item, dict)]
+    if len(normalized_rows) != len(strategy_rows):
+        raise ValueError(f"{path} contains non-object strategy_results rows")
+    return normalized_rows
+
+
 def _load_strategy_ids_from_acceptance_report(path: Path, *, sample_gap_only: bool) -> list[str]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = _validate_acceptance_report_payload(payload, path=path)
     strategy_ids: list[str] = []
-    for row in list(payload.get("strategy_results") or []):
-        blockers = {
-            str(item).strip()
-            for item in list(row.get("blockers") or [])
-            if str(item).strip()
-        }
-        if sample_gap_only and blockers.isdisjoint(SAMPLE_GAP_BLOCKERS):
+    for row in rows:
+        if sample_gap_only and not _acceptance_has_sample_gap(row):
             continue
         strategy_id = str(row.get("strategy_id") or "").strip()
         if strategy_id:
@@ -216,35 +280,89 @@ async def _reset_strategy_runtime_state(
     }
 
 
+def _summarize_acceptance(acceptance: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(acceptance or {})
+    gap_categories = _acceptance_gap_categories(payload)
+    blockers = _acceptance_blockers(payload)
+    trade_audit_summary = dict(payload.get("trade_audit_summary") or {})
+    acceptance_matrix = dict(payload.get("acceptance_matrix") or {})
+    return {
+        "status": str(payload.get("status") or "").strip() or None,
+        "overall_ready": bool(acceptance_matrix.get("overall_ready")),
+        "blockers": blockers,
+        "gap_categories": gap_categories,
+        "has_sample_gap": _acceptance_has_sample_gap(payload),
+        "execution_audit_gate_status": str(
+            trade_audit_summary.get("execution_audit_gate_status") or ""
+        ).strip()
+        or None,
+        "realized_trade_count": int(trade_audit_summary.get("realized_trade_count") or 0),
+    }
+
+
+def _annotate_replay_items(items) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    ready_count = 0
+    sample_gap_remaining_count = 0
+    blocker_counts: dict[str, int] = {}
+    for raw_item in list(items or []):
+        item = dict(raw_item or {})
+        acceptance_summary = _summarize_acceptance(item.get("acceptance"))
+        if acceptance_summary["overall_ready"]:
+            ready_count += 1
+        if acceptance_summary["has_sample_gap"]:
+            sample_gap_remaining_count += 1
+        for blocker in acceptance_summary["blockers"]:
+            blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+        item["acceptance_summary"] = acceptance_summary
+        annotated.append(item)
+    post_acceptance = {
+        "ready_count": ready_count,
+        "pending_count": len(annotated) - ready_count,
+        "sample_gap_remaining_count": sample_gap_remaining_count,
+        "top_blockers": [
+            {"blocker": blocker, "count": count}
+            for blocker, count in sorted(
+                blocker_counts.items(),
+                key=lambda pair: (-pair[1], pair[0]),
+            )[:10]
+        ],
+    }
+    return annotated, post_acceptance
+
+
 def _write_markdown(report: dict[str, Any], path: Path) -> None:
     summary = dict(report.get("summary") or {})
     lines = [
         "# Strategy Incubation History Replay",
         "",
-        f"- Generated at: {_now_iso()}",
+        f"- Generated at: {report.get('finished_at') or _now_iso()}",
+        f"- Report schema: {report.get('schema_version') or REPLAY_REPORT_SCHEMA_VERSION}",
         f"- Strategy count: {summary.get('strategy_count', 0)}",
         f"- Replayed days: {summary.get('replayed_days', 0)}",
         f"- Non-empty days: {summary.get('non_empty_days', 0)}",
         f"- Orders created: {summary.get('orders_created', 0)}",
         f"- Orders filled: {summary.get('orders_filled', 0)}",
         f"- Rejected orders: {summary.get('rejected_orders', 0)}",
+        f"- Post-acceptance ready: {dict(summary.get('post_acceptance') or {}).get('ready_count', 0)}",
+        f"- Sample-gap remaining: {dict(summary.get('post_acceptance') or {}).get('sample_gap_remaining_count', 0)}",
         "",
         "## Strategies",
         "",
-        "| Strategy | Replayed Days | Non-empty Days | Orders Filled | Acceptance Blockers |",
-        "| --- | --- | --- | --- | --- |",
+        "| Strategy | Replayed Days | Non-empty Days | Orders Filled | Acceptance Status | Acceptance Blockers |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     items = list(report.get("items") or [])
     for item in items:
-        blockers = ", ".join(
-            list(((item.get("acceptance") or {}).get("blockers") or []))
-        ) or "-"
+        acceptance_summary = dict(item.get("acceptance_summary") or {})
+        blockers = ", ".join(list(acceptance_summary.get("blockers") or [])) or "-"
         lines.append(
             f"| {item.get('strategy_id') or '-'} | {int(item.get('replayed_days') or 0)} | "
-            f"{int(item.get('non_empty_days') or 0)} | {int(item.get('orders_filled') or 0)} | {blockers} |"
+            f"{int(item.get('non_empty_days') or 0)} | {int(item.get('orders_filled') or 0)} | "
+            f"{acceptance_summary.get('status') or '-'} | {blockers} |"
         )
     if not items:
-        lines.append("| - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -253,6 +371,11 @@ async def _async_main(args: argparse.Namespace) -> int:
     env_path = load_mcp_env(override=False)
     db = get_db()
     service = get_strategy_incubation_service()
+    acceptance_report_path = (
+        str(Path(args.from_acceptance_report).resolve())
+        if args.from_acceptance_report
+        else None
+    )
 
     strategy_ids = _normalize_csv(args.strategy_ids)
     if not strategy_ids and args.from_acceptance_report:
@@ -295,11 +418,15 @@ async def _async_main(args: argparse.Namespace) -> int:
         force_close_open_positions=bool(args.force_close_open_positions),
         run_acceptance=not bool(args.skip_acceptance),
     )
+    items, post_acceptance = _annotate_replay_items(result.get("items") or [])
 
     report = {
+        "report_type": REPLAY_REPORT_TYPE,
+        "schema_version": REPLAY_REPORT_SCHEMA_VERSION,
         "started_at": started_at,
         "finished_at": _now_iso(),
         "env_source": str(env_path) if env_path else None,
+        "source_acceptance_report": acceptance_report_path,
         "arguments": _json_safe(vars(args)),
         "summary": {
             "strategy_count": int(result.get("count") or 0),
@@ -310,9 +437,10 @@ async def _async_main(args: argparse.Namespace) -> int:
             "rejected_orders": int(result.get("rejected_orders") or 0),
             "metrics_recorded": int(result.get("metrics_recorded") or 0),
             "reset_count": len(resets),
+            "post_acceptance": post_acceptance,
         },
         "reset_state": _json_safe(resets),
-        "items": _json_safe(result.get("items") or []),
+        "items": _json_safe(items),
     }
 
     report_dir = Path(args.report_dir).resolve()
@@ -329,10 +457,10 @@ async def _async_main(args: argparse.Namespace) -> int:
     print(f"report_json: {json_path}")
     print(f"report_md: {md_path}")
     for item in report["items"]:
-        acceptance = dict(item.get("acceptance") or {})
+        acceptance_summary = dict(item.get("acceptance_summary") or {})
         print(
             f"{item.get('strategy_id')}: replayed_days={item.get('replayed_days')} "
-            f"filled={item.get('orders_filled')} blockers={len(list(acceptance.get('blockers') or []))}"
+            f"filled={item.get('orders_filled')} blockers={len(list(acceptance_summary.get('blockers') or []))}"
         )
     return 0
 

@@ -30,7 +30,7 @@ export function StrategyMarketFactoryOverviewSection({
   failedRunsCount,
 }: StrategyMarketFactoryOverviewSectionProps) {
   return (
-    <SectionCard className="mt-0">
+    <SectionCard className="mt-0" data-testid="strategy-market-factory-overview">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="eyebrow">工厂概况</div>
@@ -123,7 +123,7 @@ export function StrategyMarketObservabilitySection({
   retrainStatusSummary,
 }: StrategyMarketObservabilitySectionProps) {
   return (
-    <SectionCard className="mt-0">
+    <SectionCard className="mt-0" data-testid="strategy-market-observability">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="eyebrow">联动观测</div>

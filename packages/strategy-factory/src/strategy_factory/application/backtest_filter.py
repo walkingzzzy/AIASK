@@ -106,6 +106,57 @@ def _is_single_target_bulk_candidate_target_only(
     )
 
 
+_TARGET_ONLY_VALIDATION_FOCUSES = frozenset({
+    "candidate_target_only",
+    "event_target_only",
+    "target_only",
+})
+
+
+def _resolve_required_sample_count(
+    candidate: Optional[dict[str, Any]],
+    *,
+    thresholds: Optional[dict[str, Any]] = None,
+    research_task: Optional[dict[str, Any]] = None,
+    validation_focus: Optional[str] = None,
+    target_codes: Optional[list[str]] = None,
+) -> int:
+    payload = dict(candidate or {})
+    normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
+    resolved_validation_focus = str(
+        validation_focus if validation_focus is not None else normalized_task.get("validation_focus") or ""
+    ).strip().lower()
+    resolved_target_codes = list(
+        target_codes
+        if target_codes is not None
+        else _extract_target_codes_from_payload(payload, limit=12)
+    )
+    required_sample_count = max(1, int(dict(thresholds or {}).get("min_samples") or 1))
+    if _is_single_target_bulk_candidate_target_only(
+        payload,
+        research_task=normalized_task,
+        validation_focus=resolved_validation_focus,
+        target_codes=resolved_target_codes,
+    ):
+        return 1
+
+    if resolved_validation_focus not in _TARGET_ONLY_VALIDATION_FOCUSES or not resolved_target_codes:
+        return required_sample_count
+
+    # Target-only validation should not require more code samples than the basket
+    # can actually provide. The floor still respects the target-alignment contract.
+    target_sample_cap = max(1, len(resolved_target_codes))
+    required_sample_count = min(required_sample_count, target_sample_cap)
+    target_alignment_contract = _build_target_alignment_contract(normalized_task, candidate=payload)
+    min_target_sample_count = max(0, int(target_alignment_contract.get("min_target_sample_count") or 0))
+    if min_target_sample_count > 0:
+        required_sample_count = max(
+            required_sample_count,
+            min(target_sample_cap, min_target_sample_count),
+        )
+    return max(1, required_sample_count)
+
+
 def _preferred_target_order(candidate: Optional[dict[str, Any]]) -> list[str]:
     payload = dict(candidate or {})
     params = dict(payload.get("params") or {})

@@ -1,6 +1,16 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+  uniqueStrings,
+} from '../common/result-contract';
+import {
+  buildResultContractMeta,
+  callToolWithContract,
+} from '../common/tool-contracts';
 
 export type DecisionCardDto = {
   action: string;
@@ -22,33 +32,67 @@ export class AssistantService {
 
   async diagnosis(code: string) {
     const stockCode = code.trim();
-    const attempts: Array<Record<string, unknown>> = [
-      { stock_code: stockCode },
-      { code: stockCode },
-      { symbol: stockCode },
-    ];
-    const { payload } = await this.callWithArgs('smart_stock_diagnosis', attempts);
-    return { card: this.normalizeCard(payload), raw: payload };
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('smart_stock_diagnosis', [{ code: stockCode }]);
+    const card = this.normalizeCard(payload);
+    return {
+      card,
+      raw: payload,
+      result_contract: this.buildDecisionResultContract(card, payload, {
+        code: stockCode,
+        sourceTool: 'smart_stock_diagnosis',
+        taskLabel: '个股诊断',
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
+    };
   }
 
   async shouldBuy(code: string) {
     const stockCode = code.trim();
-    const attempts: Array<Record<string, unknown>> = [
-      { code: stockCode },
-      { stock_code: stockCode },
-      { symbol: stockCode },
-    ];
-    const { payload } = await this.callWithArgs('should_i_buy', attempts);
-    return { card: this.normalizeCard(payload), raw: payload };
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('should_i_buy', [{ code: stockCode }]);
+    const card = this.normalizeCard(payload);
+    return {
+      card,
+      raw: payload,
+      result_contract: this.buildDecisionResultContract(card, payload, {
+        code: stockCode,
+        sourceTool: 'should_i_buy',
+        taskLabel: '买入逻辑分析',
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
+    };
   }
 
   async shouldSell(code: string, buyPrice: number, holdingDays = 0) {
     const stockCode = code.trim();
-    const attempts: Array<Record<string, unknown>> = [
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('should_i_sell', [
       { code: stockCode, buy_price: buyPrice, holding_days: holdingDays },
-    ];
-    const { payload } = await this.callWithArgs('should_i_sell', attempts);
-    return { card: this.normalizeCard(payload), raw: payload };
+    ]);
+    const card = this.normalizeCard(payload);
+    return {
+      card,
+      raw: payload,
+      result_contract: this.buildDecisionResultContract(card, payload, {
+        code: stockCode,
+        sourceTool: 'should_i_sell',
+        taskLabel: '卖出风险提示',
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
+    };
   }
 
   async analyzeWorkflow(
@@ -80,7 +124,16 @@ export class AssistantService {
         detail: toolError,
       });
     }
-    return { card: this.normalizeWorkflowCard(payload), raw: payload };
+    const card = this.normalizeWorkflowCard(payload);
+    return {
+      card,
+      raw: payload,
+      result_contract: this.buildDecisionResultContract(card, payload, {
+        code: stockCode,
+        sourceTool: 'analyze_stock_workflow',
+        taskLabel: '全方位综合体检',
+      }),
+    };
   }
 
   async decisionManagerAnalyze(code: string) {
@@ -89,8 +142,23 @@ export class AssistantService {
       { action: 'analyze', code: stockCode },
       { action: 'analyze', kwargs: JSON.stringify({ code: stockCode }) },
     ];
-    const { payload } = await this.callWithArgs('decision_manager', attempts);
-    return { card: this.normalizeCard(payload), raw: payload };
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('decision_manager', attempts);
+    const card = this.normalizeCard(payload);
+    return {
+      card,
+      raw: payload,
+      result_contract: this.buildDecisionResultContract(card, payload, {
+        code: stockCode,
+        sourceTool: 'decision_manager',
+        taskLabel: '统一决策分析',
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool,
+        canonicalArgs,
+        argsMatched,
+        aliasHits,
+      }),
+    };
   }
 
   async getIndustryChain(keyword?: string, chainId?: string) {
@@ -101,14 +169,16 @@ export class AssistantService {
     const root = this.unwrapPayload(payload);
     const data = this.asRecord(root);
     const chains = this.asRecordArray(data.chains ?? root);
+    const normalizedChains = chains.map((chain) => ({
+      id: this.toText(chain.id),
+      name: this.toText(chain.name),
+      upstream: this.toTextArray(chain.upstream),
+      midstream: this.toTextArray(chain.midstream),
+      downstream: this.toTextArray(chain.downstream),
+    }));
     return {
-      chains: chains.map((chain) => ({
-        id: this.toText(chain.id),
-        name: this.toText(chain.name),
-        upstream: this.toTextArray(chain.upstream),
-        midstream: this.toTextArray(chain.midstream),
-        downstream: this.toTextArray(chain.downstream),
-      })),
+      chains: normalizedChains,
+      result_contract: this.buildIndustryChainResultContract(payload, normalizedChains, keyword, chainId),
     };
   }
 
@@ -117,13 +187,17 @@ export class AssistantService {
     if (date) args.date = date.trim();
     const payload = await this.mcp.callTool('generate_daily_report', args);
     const data = this.asRecord(this.unwrapPayload(payload));
-    return {
+    const report = {
       date: this.toText(data.date),
       marketSummary: this.toText(data.market_summary ?? data.marketSummary),
       hotSectors: this.asRecordArray(data.hot_sectors ?? data.hotSectors),
       sentiment: this.toText(data.sentiment),
       outlook: this.toText(data.outlook),
       generatedAt: this.toText(data.generated_at ?? data.generatedAt),
+    };
+    return {
+      ...report,
+      result_contract: this.buildDailyReportResultContract(payload, report),
     };
   }
 
@@ -227,6 +301,342 @@ export class AssistantService {
     };
   }
 
+  private buildDecisionResultContract(
+    card: DecisionCardDto,
+    payload: unknown,
+    options: {
+      code?: string;
+      sourceTool: string;
+      taskLabel: string;
+    },
+  ) {
+    const confidencePct = card.confidence != null ? `${Math.round(card.confidence * 100)}%` : '';
+    const followupQuery = options.code || card.action || options.taskLabel;
+    const evidence = [
+      card.action ? { label: '建议动作', value: card.action, tone: 'positive' as const } : null,
+      confidencePct ? { label: '置信度', value: confidencePct } : null,
+      ...card.reasons.slice(0, 3).map((reason) => ({ label: '关键信号', value: reason })),
+    ].filter((item): item is NonNullable<typeof item> => item != null);
+
+    return buildResultContract({
+      summary: card.summary || `${options.taskLabel}已生成，请继续查看下一步建议。`,
+      availableViews: ['summary', 'next_step', ...(evidence.length > 2 ? (['visual'] as const) : [])],
+      recommendedActions: [
+        {
+          id: 'assistant.open-copilot-followup',
+          actionId: 'assistant.open-copilot-followup',
+          label: '打开 Copilot 继续追问',
+          description: '把当前分析结果继续转成研究和执行动作。',
+          payload: {
+            code: options.code ?? null,
+            sourceTool: options.sourceTool,
+          },
+        },
+      ],
+      recommendedLinks: [
+        options.code
+          ? {
+              id: 'assistant-open-stock',
+              label: '个股详情',
+              href: `/stock?code=${encodeURIComponent(options.code)}`,
+            }
+          : {
+              id: 'assistant-open-data',
+              label: '数据说明',
+              href: '/data',
+            },
+        {
+          id: 'assistant-open-skills',
+          label: '去技能中心',
+          href: `/skills?skill=${encodeURIComponent('akshare-stock-deep-analysis')}`,
+        },
+        {
+          id: 'assistant-open-strategy-market',
+          label: '去策略超市',
+          href: `/strategy-market?from=assistant&task=strategy_review&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'assistant-open-favorites',
+          label: '去我的收藏',
+          href: `/strategy-market?workspace=favorites&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'assistant-open-mine',
+          label: '去我的策略',
+          href: `/strategy-market?workspace=mine&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'assistant-open-factory',
+          label: '去工厂运行态',
+          href: `/strategy-market?from=assistant&task=factory_cycle&q=${encodeURIComponent(followupQuery)}`,
+        },
+      ],
+      evidence,
+      riskNotes: uniqueStrings([...card.risks, card.complianceNotice]),
+      freshness: extractFreshness(payload, null, '结果时效'),
+      platformMeta: extractPlatformMeta(payload, {
+        sourceTool: options.sourceTool,
+        referencePath: '/data/tool-catalog',
+        freshnessLabel: 'MCP 实时结果',
+      }),
+      skillSuggestions: this.buildAssistantSkillSuggestions(),
+      strategySuggestions: [
+        {
+          id: `${options.sourceTool}-strategy-followup`,
+          label: '去策略超市继续研究',
+          description: '把当前结论转到策略页继续筛选与跟踪。',
+          query: followupQuery,
+          task: 'strategy_review',
+        },
+        {
+          id: `${options.sourceTool}-factory-followup`,
+          label: '去工厂看运行态',
+          description: '把当前结论带到策略工厂运行态继续跟踪。',
+          query: followupQuery,
+          task: 'factory_cycle',
+        },
+      ],
+      workbenchTask: {
+        title: `${options.taskLabel}${options.code ? `：${options.code}` : ''}`,
+        href: options.code ? `/assistant?code=${encodeURIComponent(options.code)}` : '/assistant',
+        kind: 'assistant-result',
+        payload: {
+          code: options.code ?? null,
+          sourceTool: options.sourceTool,
+          action: card.action || null,
+        },
+      },
+    });
+  }
+
+  private buildIndustryChainResultContract(
+    payload: unknown,
+    chains: Array<{
+      id: string;
+      name: string;
+      upstream: string[];
+      midstream: string[];
+      downstream: string[];
+    }>,
+    keyword?: string,
+    chainId?: string,
+  ) {
+    const primary = chains[0] ?? null;
+    const followupQuery = primary?.name || keyword || chainId || '产业链';
+    return buildResultContract({
+      summary: primary
+        ? `已找到 ${chains.length} 条产业链线索，当前聚焦 ${primary.name || primary.id || '首条产业链'}。`
+        : `未找到明确产业链结果，建议调整关键词${keyword ? `“${keyword}”` : ''}后重试。`,
+      availableViews: ['summary', 'next_step', ...(primary ? (['visual'] as const) : [])],
+      recommendedActions: [
+        {
+          id: 'assistant.open-copilot-followup',
+          actionId: 'assistant.open-copilot-followup',
+          label: '打开 Copilot 继续追问',
+          description: '继续围绕当前产业链结果做追问和联动。',
+          payload: {
+            keyword: keyword ?? null,
+            chainId: chainId ?? null,
+          },
+        },
+      ],
+      recommendedLinks: [
+        {
+          id: 'industry-open-skills',
+          label: '去技能中心',
+          href: `/skills?skill=${encodeURIComponent('akshare-stock-deep-analysis')}`,
+        },
+        {
+          id: 'industry-open-strategy-market',
+          label: '去策略超市',
+          href: `/strategy-market?from=assistant&task=strategy_review&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'industry-open-favorites',
+          label: '去我的收藏',
+          href: `/strategy-market?workspace=favorites&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'industry-open-mine',
+          label: '去我的策略',
+          href: `/strategy-market?workspace=mine&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'industry-open-factory',
+          label: '去工厂运行态',
+          href: `/strategy-market?from=assistant&task=factory_cycle&q=${encodeURIComponent(followupQuery)}`,
+        },
+      ],
+      evidence: primary
+        ? [
+            { label: '产业链', value: primary.name || primary.id || '首条结果' },
+            { label: '上游节点', value: String(primary.upstream.length) },
+            { label: '中游节点', value: String(primary.midstream.length) },
+            { label: '下游节点', value: String(primary.downstream.length) },
+          ]
+        : [],
+      riskNotes: primary ? [] : ['当前结果为空，建议缩短关键词或改用更明确的产业链名称。'],
+      freshness: extractFreshness(payload, null, '产业链结果'),
+      platformMeta: extractPlatformMeta(payload, {
+        sourceTool: 'get_industry_chain',
+        referencePath: '/data/tool-catalog',
+      }),
+      skillSuggestions: this.buildAssistantSkillSuggestions(),
+      strategySuggestions: [
+        {
+          id: 'industry-chain-strategy-followup',
+          label: '去策略超市继续匹配相关策略',
+          description: '围绕当前主题继续看策略族与工厂运行态。',
+          query: followupQuery,
+          task: 'strategy_review',
+        },
+        {
+          id: 'industry-chain-factory-followup',
+          label: '去工厂看运行态',
+          description: '围绕当前主题查看工厂运行与治理状态。',
+          query: followupQuery,
+          task: 'factory_cycle',
+        },
+      ],
+      workbenchTask: {
+        title: `跟踪产业链${primary?.name ? `：${primary.name}` : ''}`,
+        href: '/assistant',
+        kind: 'industry-chain',
+        payload: {
+          keyword: keyword ?? null,
+          chainId: chainId ?? null,
+          primaryChain: primary?.name || primary?.id || null,
+        },
+      },
+    });
+  }
+
+  private buildDailyReportResultContract(
+    payload: unknown,
+    report: {
+      date: string;
+      marketSummary: string;
+      hotSectors: Record<string, unknown>[];
+      sentiment: string;
+      outlook: string;
+      generatedAt: string;
+    },
+  ) {
+    const primarySector = report.hotSectors[0]
+      ? this.toText(
+          report.hotSectors[0].name
+            ?? report.hotSectors[0].sector
+            ?? report.hotSectors[0].label,
+        )
+      : '';
+    const followupQuery = primarySector || report.sentiment || '市场复盘';
+    return buildResultContract({
+      summary: report.marketSummary || `已生成 ${report.date || '当日'} 盘后复盘摘要。`,
+      availableViews: ['summary', 'next_step', ...(report.hotSectors.length > 0 ? (['visual'] as const) : [])],
+      recommendedActions: [
+        {
+          id: 'assistant.open-copilot-followup',
+          actionId: 'assistant.open-copilot-followup',
+          label: '打开 Copilot 继续追问',
+          description: '围绕当前复盘结果继续形成后续研究动作。',
+          payload: {
+            date: report.date || null,
+            primarySector: primarySector || null,
+          },
+        },
+      ],
+      recommendedLinks: [
+        {
+          id: 'daily-report-open-skills',
+          label: '去技能中心',
+          href: `/skills?skill=${encodeURIComponent('akshare-fund-news')}`,
+        },
+        {
+          id: 'daily-report-open-strategy-market',
+          label: '去策略超市',
+          href: `/strategy-market?from=assistant&task=strategy_review&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'daily-report-open-favorites',
+          label: '去我的收藏',
+          href: `/strategy-market?workspace=favorites&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'daily-report-open-mine',
+          label: '去我的策略',
+          href: `/strategy-market?workspace=mine&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'daily-report-open-factory',
+          label: '去工厂运行态',
+          href: `/strategy-market?from=assistant&task=factory_cycle&q=${encodeURIComponent(followupQuery)}`,
+        },
+      ],
+      evidence: [
+        report.date ? { label: '复盘日期', value: report.date } : null,
+        report.sentiment ? { label: '市场情绪', value: report.sentiment } : null,
+        report.hotSectors.length > 0 ? { label: '热点板块数', value: String(report.hotSectors.length) } : null,
+        primarySector ? { label: '首个热点', value: primarySector } : null,
+      ].filter((item): item is NonNullable<typeof item> => item != null),
+      riskNotes: uniqueStrings([report.outlook]),
+      freshness: extractFreshness(payload, report.generatedAt || null, '盘后复盘'),
+      platformMeta: extractPlatformMeta(payload, {
+        sourceTool: 'generate_daily_report',
+        referencePath: '/data/governance-report',
+      }),
+      skillSuggestions: this.buildAssistantSkillSuggestions(),
+      strategySuggestions: [
+        {
+          id: 'daily-report-strategy-followup',
+          label: '去策略超市继续跟踪热点',
+          description: '把复盘里的热点板块带到策略页继续筛选。',
+          query: followupQuery,
+          task: 'factory_cycle',
+        },
+        {
+          id: 'daily-report-factory-followup',
+          label: '去工厂看运行态',
+          description: '把复盘热点直接带到工厂运行态继续跟踪。',
+          query: followupQuery,
+          task: 'factory_cycle',
+        },
+      ],
+      workbenchTask: {
+        title: `复查盘后复盘${report.date ? `：${report.date}` : ''}`,
+        href: '/assistant',
+        kind: 'daily-report',
+        payload: {
+          date: report.date || null,
+          sentiment: report.sentiment || null,
+          primarySector: primarySector || null,
+        },
+      },
+    });
+  }
+
+  private buildAssistantSkillSuggestions() {
+    return [
+      {
+        skillId: 'akshare-stock-deep-analysis',
+        label: '个股深度分析',
+        reason: '把当前结果继续沉淀成更完整的研究包。',
+        supportedTask: 'quick_scan',
+      },
+      {
+        skillId: 'akshare-trading-decision',
+        label: '交易决策计划',
+        reason: '把当前判断继续转成更明确的交易计划。',
+        supportedTask: 'trade_plan',
+      },
+      {
+        skillId: 'akshare-fundamental',
+        label: '基本面快照',
+        reason: '快速补齐当前标的的基本面证据。',
+        supportedTask: 'fundamental_snapshot',
+      },
+    ];
+  }
+
   private unwrapPayload(payload: unknown): unknown {
     const record = this.asRecord(payload);
     return record.data !== undefined ? record.data : payload;
@@ -285,24 +695,25 @@ export class AssistantService {
   }
 
   private async callWithArgs(primaryTool: string, attempts: Array<Record<string, unknown>>) {
-    let lastError: unknown = null;
-    for (const args of attempts) {
-      try {
-        const payload = await this.mcp.callTool(primaryTool, args);
+    const result = await callToolWithContract(
+      primaryTool,
+      attempts,
+      async (name, args) => {
+        const payload = await this.mcp.callTool(name, args);
         const toolError = this.extractToolError(payload);
         if (toolError) {
           throw new Error(toolError);
         }
-        return { payload, argsMatched: args };
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw new BadGatewayException({
-      success: false,
-      message: `MCP ${primaryTool} 调用失败`,
-      detail: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+        return payload;
+      },
+    );
+    return {
+      payload: result.payload,
+      argsMatched: result.argsMatched,
+      canonicalArgs: result.canonicalArgs,
+      aliasHits: result.aliasHits,
+      canonicalTool: result.canonicalTool,
+    };
   }
 
   private extractToolError(payload: unknown): string | null {
@@ -316,6 +727,9 @@ export class AssistantService {
     const record = payload as Record<string, unknown>;
     if (record.success === false && typeof record.error === 'string') {
       return record.error;
+    }
+    if (record.success === false && typeof record.message === 'string' && record.message.trim()) {
+      return record.message;
     }
     if (record.success === false && record.error && typeof record.error === 'object') {
       const nested = record.error as Record<string, unknown>;

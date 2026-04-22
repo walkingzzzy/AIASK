@@ -16,7 +16,7 @@ import {
   marketSecondaryButtonCls,
   marketSidebarActionCardCls,
 } from '@/app/market/components/market-panel-styles';
-import { MARKET_STARTER_CODES, type SavedMarketView } from '@/app/market/lib/market-view';
+import type { SavedMarketView } from '@/app/market/lib/market-view';
 import type { NormalizedQuote } from '@aiask/shared-types';
 
 type CandleDatum = {
@@ -47,7 +47,6 @@ type MarketMainWorkspaceProps = {
   candleData: CandleDatum[];
   activeDisplayCode: string;
   quickJumpLinks: Array<{ label: string; href: string }>;
-  onUseStarterCode: (code: string) => void;
   onApplyPreset: (preset: Partial<SavedMarketView>) => void;
   obView: OrderBookView;
   compactSummaryOnly?: boolean;
@@ -66,7 +65,6 @@ export default function MarketMainWorkspace({
   candleData,
   activeDisplayCode,
   quickJumpLinks,
-  onUseStarterCode,
   onApplyPreset,
   obView,
   compactSummaryOnly = false,
@@ -83,15 +81,12 @@ export default function MarketMainWorkspace({
       {pageOffline || quoteErrorMessage || tabErrorMessage ? (
         <div className="grid gap-3 md:grid-cols-2">
           {pageOffline ? (
-            <div className={`${marketNoteCardCls} border-primary/18 px-4 py-3 text-text-secondary md:col-span-2`}>
-              数据服务当前未连接，页面已切换为离线壳层展示。你仍然可以查看布局、切换预设和继续导航；等 BFF
-              恢复后点击“查询主行情”即可重新拉取数据。
+            <div className={`${marketNoteCardCls} border-danger/15 px-4 py-3 text-danger md:col-span-2`}>
+              数据服务当前未连接，行情工作区不会展示离线壳层结果；请等服务恢复后重新查询。
             </div>
           ) : null}
           {quoteErrorMessage ? (
-            <div className={`${marketNoteCardCls} border-danger/15 px-4 py-3 text-danger`}>
-              降级提示：{quoteErrorMessage}
-            </div>
+            <div className={`${marketNoteCardCls} border-danger/15 px-4 py-3 text-danger`}>{quoteErrorMessage}</div>
           ) : null}
           {tabErrorMessage ? (
             <div className={`${marketNoteCardCls} border-danger/15 px-4 py-3 text-danger`}>{tabErrorMessage}</div>
@@ -141,20 +136,10 @@ export default function MarketMainWorkspace({
                 <EmptyState
                   variant="full"
                   className="w-full border-white/70 bg-white/44"
-                  text="当前标的还没有可展示的 K 线"
-                  hint="先切到示例标的确认页面正常，再决定是否换代码或切换到指数、板块视图继续看盘。"
+                  text="当前还没有可展示的 K 线"
+                  hint="请先输入并查询一只真实标的，或切换到指数、板块等无需个股代码的视图。"
                   action={
                     <>
-                      {MARKET_STARTER_CODES.slice(0, 2).map((item) => (
-                        <button
-                          key={`kline-${item.code}`}
-                          type="button"
-                          onClick={() => onUseStarterCode(item.code)}
-                          className={marketPrimaryButtonCls}
-                        >
-                          看 {item.label}
-                        </button>
-                      ))}
                       <button
                         type="button"
                         onClick={() => onApplyPreset({ activeTab: 'index', indexCode: '000300' })}
@@ -280,7 +265,7 @@ export default function MarketMainWorkspace({
                       variant="full"
                       className="w-full border-white/70 bg-white/44"
                       text="当前没有可展示的行情摘要"
-                      hint="首次进入建议直接点示例标的；如果你想先看整体环境，也可以切到板块或涨停复盘视图。"
+                      hint="请先查询真实标的；如果你想先看整体环境，也可以切到板块或涨停复盘视图。"
                       action={
                         <>
                           <button

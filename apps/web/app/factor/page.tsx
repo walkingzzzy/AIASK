@@ -1,14 +1,18 @@
 'use client';
 
 import { useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge, TabBar } from '@/components/ui';
 import { BarChart, LineChart } from '@/components/charts';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 
@@ -280,6 +284,114 @@ export default function FactorPage() {
     }
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+  const factorPageActions = [
+    {
+      id: 'factor.run-sample',
+      label: '运行推荐研究样例',
+      description: '按默认样本池启动一轮标准因子研究链路',
+      keywords: ['因子', '样例', '研究'],
+      scope: 'page' as const,
+      pageKey: 'factor',
+      run: () => {
+        runRecommendedResearchSample();
+        return { message: '已发起推荐因子研究样例' };
+      },
+    },
+    {
+      id: 'factor.open-ic',
+      label: '跳到 IC 分析',
+      description: '切到 IC 分析视图继续确认信号方向',
+      keywords: ['IC', '信号验证'],
+      scope: 'page' as const,
+      pageKey: 'factor',
+      run: () => {
+        scrollToSection('factor-ic');
+        return { message: '已切到 IC 分析' };
+      },
+    },
+    {
+      id: 'factor.open-mining',
+      label: '切到 AI 挖掘',
+      description: '切到 AI 候选生成与治理工作区',
+      keywords: ['AI 挖掘', '候选治理'],
+      scope: 'page' as const,
+      pageKey: 'factor',
+      run: () => {
+        setStageTab('mining');
+        return { message: '已切到 AI 挖掘工作区' };
+      },
+    },
+  ];
+  usePageActions(factorPageActions);
+  const factorSummary = `当前因子研究聚焦 ${calcName.trim() || '-'}，样本 ${splitCodes(calcCodes).length} 只，IC ${currentIc != null ? fmtNum(currentIc, 4) : '-'}，夏普 ${currentSharpe != null ? fmtNum(currentSharpe, 2) : '-'}。`;
+  const factorResult = buildLocalResultContract({
+    summary: factorSummary,
+    availableViews: calcMut.data || btMut.data || icMut.data ? ['compare', 'visual'] : [],
+    pageActions: factorPageActions,
+    preferredActionIds: ['factor.run-sample', 'factor.open-ic', 'factor.open-mining'],
+    recommendedLinks: [
+      { id: 'factor-link-analysis', label: '单因子快判页', href: '/factor-analysis' },
+      { id: 'factor-link-strategy', label: '策略超市', href: '/strategy-market?from=factor&task=factor_research' },
+      { id: 'factor-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor&factor=${encodeURIComponent(calcName.trim() || 'momentum')}` },
+    ],
+    evidence: [
+      { label: '当前因子', value: calcName.trim() || '-' },
+      { label: '样本池', value: String(splitCodes(calcCodes).length) },
+      { label: '研究阶段', value: stageTab === 'foundation' ? '基础研究' : stageTab === 'validation' ? '收益验证' : 'AI 挖掘' },
+      { label: 'IC', value: currentIc != null ? fmtNum(currentIc, 4) : '-' },
+      { label: '总收益', value: currentBacktestReturn != null ? fmtPct(currentBacktestReturn) : '-' },
+      { label: '样本外', value: oosMut.data ? (oosPassed ? '通过' : '未通过') : '待验证' },
+    ],
+    riskNotes: [
+      ...(error ? [error] : []),
+      ...(!calcMut.data ? ['当前还没有完成首轮样本计算。'] : []),
+      ...(oosMut.data && !oosPassed ? ['样本外验证未通过，进入策略或组合前需要复核。'] : []),
+      ...(robMut.data && !robustPassed ? ['稳健性检验未通过，建议不要直接进入治理池或策略落地。'] : []),
+    ],
+    platformMeta: {
+      sourceTool: 'factor',
+      sourceChain: ['factor/library', 'factor/calculate', 'factor/ic', 'factor/backtest', 'factor/oos', 'factor/robustness'],
+      degraded: Boolean(error),
+      fallbackReason: [error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('factor', `复查因子研究 ${calcName.trim() || 'momentum'}`, '/factor', 'factor-research-review', {
+      factor: calcName.trim() || 'momentum',
+      sampleSize: splitCodes(calcCodes).length,
+      stageTab,
+    }),
+  });
+  usePageContext({
+    pageKey: 'factor',
+    title: '因子研究工作台',
+    summary: factorSummary,
+    objectType: 'factor',
+    objectId: calcName.trim() || 'momentum',
+    resultType: 'factor-research',
+    tags: [
+      calcName.trim() || 'momentum',
+      `${splitCodes(calcCodes).length} 样本`,
+      stageTab === 'foundation' ? '基础研究' : stageTab === 'validation' ? '收益验证' : 'AI 挖掘',
+      calcMut.data ? '已完成样本计算' : '待计算',
+    ],
+    suggestions: [
+      '总结当前因子研究是否值得继续推进',
+      '如果验证结果冲突，解释最需要先修正哪一环',
+      '给出下一步是继续做验证还是进入 AI 挖掘治理',
+    ],
+    recommendedActions: factorResult.recommendedActions ?? [],
+    recommendedLinks: factorResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(factorResult.evidence),
+    riskNotes: factorResult.riskNotes ?? [],
+    freshness: factorResult.freshness ?? null,
+    raw: {
+      factor: calcName.trim() || 'momentum',
+      stageTab,
+      sampleSize: splitCodes(calcCodes).length,
+      currentIc,
+      currentSharpe,
+      currentBacktestReturn,
+    },
+  });
 
   return (
     <PageContainer className="app-theme-strategy">
@@ -440,6 +552,8 @@ export default function FactorPage() {
           )}
         </div>
       </section>
+
+      <ResultWorkbench pageKey="factor" title="因子研究结果工作台" result={factorResult} />
 
       {anyLoading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} hint="请先确认因子名称与股票池输入" /> : null}

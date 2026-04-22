@@ -5,6 +5,7 @@ import BacktestConfigWorkspace from '@/app/backtest/components/backtest-config-w
 import BacktestHero from '@/app/backtest/components/backtest-hero';
 import BacktestHistoryBatch from '@/app/backtest/components/backtest-history-batch';
 import { backtestChipButtonCls, backtestNavCardCls } from '@/app/backtest/components/backtest-panel-styles';
+import ResultWorkbench from '@/components/result-workbench';
 import {
   PageContainer,
   SectionCard,
@@ -19,11 +20,14 @@ import {
 import { LineChart, Chart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import type {
   BacktestBatchResponse,
   BacktestBatchResultItem,
@@ -512,6 +516,108 @@ export default function BacktestPage() {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'backtest.focus-results',
+        label: '查看结果总览',
+        description: '切换到结果总览工作区',
+        keywords: ['结果', '回测'],
+        scope: 'page' as const,
+        pageKey: 'backtest',
+        run: () => {
+          setSurfaceTab('results');
+          setResultTab('overview');
+          return { message: '已切到结果总览' };
+        },
+      },
+      {
+        id: 'backtest.focus-research',
+        label: '查看参数研究',
+        description: '切换到参数研究工作区',
+        keywords: ['参数研究', '优化'],
+        scope: 'page' as const,
+        pageKey: 'backtest',
+        run: () => {
+          setSurfaceTab('research');
+          return { message: '已切到参数研究' };
+        },
+      },
+      {
+        id: 'backtest.focus-history',
+        label: '查看历史与批量',
+        description: '切换到历史与批量回测工作区',
+        keywords: ['历史', '批量'],
+        scope: 'page' as const,
+        pageKey: 'backtest',
+        run: () => {
+          setSurfaceTab('history');
+          return { message: '已切到历史与批量' };
+        },
+      },
+    ],
+    [],
+  );
+
+  usePageActions(pageActions);
+
+  const backtestSummary = `当前标的 ${trimmedCode || '未填写'}，策略 ${strategyLabel}，时间范围 ${dateRangeLabel}，运行状态 ${runStatusLabel}。`;
+  const backtestResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: backtestSummary,
+        pageActions,
+        preferredActionIds: ['backtest.focus-results', 'backtest.focus-research', 'backtest.focus-history'],
+        recommendedLinks: [
+          trimmedCode ? { id: 'backtest-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'backtest-open-market', label: '行情看板', href: '/market?from=backtest' },
+          { id: 'backtest-open-skills', label: '去技能中心', href: '/skills?skill=akshare-portfolio' },
+          { id: 'backtest-open-strategy', label: '去策略超市', href: `/strategy-market?from=backtest&q=${encodeURIComponent(trimmedCode || strategy)}` },
+          { id: 'backtest-open-data', label: '去数据中心', href: '/data?from=backtest' },
+        ],
+        evidence: [
+          { label: '当前标的', value: trimmedCode || '-' },
+          { label: '策略', value: strategyLabel },
+          { label: '时间范围', value: dateRangeLabel },
+          { label: '运行状态', value: runStatusLabel },
+          { label: '批量结果', value: String(batchResults.length) },
+        ],
+        riskNotes: formError ? [formError] : runFailure?.reason ? [runFailure.reason] : [],
+        workbenchTask: defaultWorkbenchTask('backtest', `回测复盘：${trimmedCode || strategyLabel}`, '/backtest', 'backtest-review', {
+          code: trimmedCode || null,
+          strategy,
+          surfaceTab,
+        }),
+      }),
+    [backtestSummary, batchResults.length, dateRangeLabel, formError, pageActions, runFailure?.reason, runStatusLabel, strategy, strategyLabel, surfaceTab, trimmedCode],
+  );
+
+  usePageContext({
+    pageKey: 'backtest',
+    title: '回测工作台',
+    summary: backtestSummary,
+    stockCode: trimmedCode || undefined,
+    objectType: trimmedCode ? 'stock' : 'workspace',
+    objectId: trimmedCode || strategy,
+    resultType: 'backtest-summary',
+    tags: [strategyLabel, dateRangeLabel, runStatusLabel, `${batchResults.length} 批量结果`],
+    suggestions: [
+      '总结当前回测结果的收益、回撤和交易次数',
+      '判断现在更适合继续参数研究还是切到历史与批量',
+      '把当前回测结论整理成下一步研究动作',
+    ],
+    recommendedActions: backtestResult.recommendedActions,
+    recommendedLinks: backtestResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(backtestResult.evidence),
+    riskNotes: backtestResult.riskNotes ?? [],
+    freshness: backtestResult.freshness ?? null,
+    raw: {
+      code: trimmedCode || null,
+      strategy,
+      surfaceTab,
+      resultTab,
+    },
+  });
+
   return (
     <PageContainer className="app-theme-strategy">
       <SectionCard className="mb-4 p-4 sm:p-5">
@@ -558,6 +664,8 @@ export default function BacktestPage() {
         hasAnyResultBlock={hasAnyResultBlock}
         configurationSummary={configurationSummary}
       />
+
+      <ResultWorkbench pageKey="backtest" title="回测结果工作台" result={backtestResult} />
 
       <KpiGrid cols={5} className="mb-4">
         <KpiCard title="策略" value={strategyLabel} />

@@ -15,7 +15,6 @@ type MarketTradeTabProps = {
   error: string | null;
   onQueryTrade: () => void;
   onShowSearch: () => void;
-  onLoadSample: () => void;
 };
 
 export default function MarketTradeTab({
@@ -26,7 +25,6 @@ export default function MarketTradeTab({
   error,
   onQueryTrade,
   onShowSearch,
-  onLoadSample,
 }: MarketTradeTabProps) {
   return (
     <SectionCard tabAttached>
@@ -72,9 +70,6 @@ export default function MarketTradeTab({
             <>
               <button type="button" onClick={onShowSearch} className={marketPrimaryButtonCls}>
                 先去搜索标的
-              </button>
-              <button type="button" onClick={onLoadSample} className={marketSecondaryButtonCls}>
-                加载示例标的
               </button>
             </>
           }

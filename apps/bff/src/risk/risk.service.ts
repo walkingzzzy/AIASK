@@ -1,6 +1,7 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import { buildPrerequisiteMissingException } from '../common/acceptance';
 
 export type RiskSummaryInput = {
   userId?: string;
@@ -47,6 +48,10 @@ type RiskSummaryResult = {
   };
 };
 
+function getSafeCallReason(result: SafeCall): string | null {
+  return result.ok ? null : result.error;
+}
+
 @Injectable()
 export class RiskService {
   private static readonly SUMMARY_TTL_SECONDS = 60;
@@ -79,35 +84,11 @@ export class RiskService {
 
     const riskContext = await this.resolveRiskContext(userId, portfolioId);
     if (riskContext.mode === 'empty') {
-      const result = {
-        portfolioId: null,
+      throw buildPrerequisiteMissingException(riskContext.reason, {
+        portfolioId: portfolioId ?? null,
         lookbackDays,
-        injectedFail: injectFail ?? null,
-        sourceContext: riskContext,
-        sourceTools: {
-          var: 'risk_manager' as const,
-          stress: 'risk_manager' as const,
-          exposure: 'risk_manager' as const,
-        },
-        argsMatched: { var: null, stress: null, exposure: null },
-        varResult: null,
-        stressResult: null,
-        exposureResult: null,
-        moduleStatus: {
-          var: { ok: false, reason: riskContext.reason },
-          stress: { ok: false, reason: riskContext.reason },
-          exposure: { ok: false, reason: riskContext.reason },
-        },
-        degraded: false,
-        empty: true,
-        degradeReasons: [],
-        meta: {
-          fetchedAt: new Date().toISOString(),
-          cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds },
-        },
-      };
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
-      return result;
+        userId,
+      });
     }
 
     const varKwargs: Record<string, unknown> = { lookback_days: lookbackDays };
@@ -142,6 +123,25 @@ export class RiskService {
       .filter((x) => !x.ok)
       .map((x) => x.error);
 
+    if (degraded) {
+      throw new BadGatewayException({
+        success: false,
+        code: 'RISK_SUMMARY_UNAVAILABLE',
+        message: '风险汇总暂不可用',
+        detail: {
+          portfolioId: riskContext.mode === 'portfolio' ? riskContext.portfolioId : null,
+          lookbackDays,
+          sourceContext: riskContext,
+          degradeReasons,
+          moduleStatus: {
+            var: { ok: varResult.ok, reason: getSafeCallReason(varResult) },
+            stress: { ok: stressResult.ok, reason: getSafeCallReason(stressResult) },
+            exposure: { ok: exposureResult.ok, reason: getSafeCallReason(exposureResult) },
+          },
+        },
+      });
+    }
+
     const result = {
       portfolioId: riskContext.mode === 'portfolio' ? riskContext.portfolioId : null,
       lookbackDays,
@@ -161,9 +161,9 @@ export class RiskService {
       stressResult: stressResult.ok ? stressResult.data : null,
       exposureResult: exposureResult.ok ? exposureResult.data : null,
       moduleStatus: {
-        var: { ok: varResult.ok, reason: varResult.ok ? null : varResult.error },
-        stress: { ok: stressResult.ok, reason: stressResult.ok ? null : stressResult.error },
-        exposure: { ok: exposureResult.ok, reason: exposureResult.ok ? null : exposureResult.error },
+        var: { ok: varResult.ok, reason: getSafeCallReason(varResult) },
+        stress: { ok: stressResult.ok, reason: getSafeCallReason(stressResult) },
+        exposure: { ok: exposureResult.ok, reason: getSafeCallReason(exposureResult) },
       },
       degraded,
       empty: false,
@@ -239,26 +239,18 @@ export class RiskService {
   }
 
   async getVarOnly(input: RiskSummaryInput) {
-    try {
-      const summary = await this.getSummary(input);
-      return {
-        portfolioId: summary.portfolioId,
-        lookbackDays: summary.lookbackDays,
-        sourceContext: summary.sourceContext ?? null,
-        sourceTool: summary.sourceTools.var,
-        argsMatched: summary.argsMatched.var,
-        result: summary.varResult,
-        degraded: summary.varResult == null,
-        degradedReason: summary.moduleStatus?.var?.reason ?? null,
-        meta: summary.meta,
-      };
-    } catch (error) {
-      throw new BadGatewayException({
-        success: false,
-        message: '获取 VaR 数据失败',
-        detail: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const summary = await this.getSummary(input);
+    return {
+      portfolioId: summary.portfolioId,
+      lookbackDays: summary.lookbackDays,
+      sourceContext: summary.sourceContext ?? null,
+      sourceTool: summary.sourceTools.var,
+      argsMatched: summary.argsMatched.var,
+      result: summary.varResult,
+      degraded: false,
+      degradedReason: null,
+      meta: summary.meta,
+    };
   }
 
   private async resolveRiskContext(userId: string, requestedPortfolioId?: number) {

@@ -6,6 +6,7 @@ Heavy logic lives in sub-modules:
   quant_analysis     — IC, grouped backtest, OOS, robustness
 """
 
+import json
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -13,7 +14,7 @@ import numpy as np
 from ..services.conditional_returns import calculate_conditional_returns
 from ..services.data_pipeline import compute_signal_hit_rate, normalize_klines
 from ..storage import get_db
-from ..utils import fail, ok, parse_date_input
+from ..utils import fail, ok, parse_date_input, resolve_existing_security_code_async, validate_int_range
 
 from .quant_definitions import (
     DEFAULT_FACTOR_LOOKBACK,
@@ -41,6 +42,9 @@ from .quant_analysis import (
 
 def _factor_library_payload(category: str = "all") -> dict:
     category_key = str(category or "all").strip().lower()
+    categories = sorted({meta["category"] for meta in SUPPORTED_FACTORS.values()})
+    if category_key not in {"all", *categories}:
+        raise ValueError(f"Unsupported category: {category_key}. Supported: all, {', '.join(categories)}")
     factors = [
         {
             "name": name,
@@ -62,9 +66,9 @@ def _factor_library_payload(category: str = "all") -> dict:
     return {
         "factors": factors,
         "count": len(factors),
-        "categories": sorted({meta["category"] for meta in SUPPORTED_FACTORS.values()}),
+        "categories": categories,
         "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
-        "total_categories": len({meta["category"] for meta in SUPPORTED_FACTORS.values()}),
+        "total_categories": len(categories),
         "note": f"Factor library includes {len(SUPPORTED_FACTORS)} factors.",
     }
 
@@ -149,7 +153,10 @@ def register(mcp):
         Returns:
             dict: 标准 ``ok(...)`` 响应，包含因子分类、说明和支持列表。
         """
-        return ok(_factor_library_payload(category))
+        try:
+            return ok(_factor_library_payload(category))
+        except Exception as e:
+            return fail(str(e))
 
     @mcp.tool()
     def list_factors(category: str = "all"):
@@ -161,9 +168,12 @@ def register(mcp):
         Returns:
             dict: 标准 ``ok(...)`` 响应，包含因子列表和来源标记。
         """
-        payload = _factor_library_payload(category)
-        payload["source"] = "SUPPORTED_FACTORS"
-        return ok(payload)
+        try:
+            payload = _factor_library_payload(category)
+            payload["source"] = "SUPPORTED_FACTORS"
+            return ok(payload)
+        except Exception as e:
+            return fail(str(e))
 
     @mcp.tool()
     async def calculate_factor(
@@ -182,6 +192,9 @@ def register(mcp):
             dict: 标准 ``ok(...)`` 响应，包含因子值、样本量和是否依赖财务数据。
         """
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
             normalized_start_date = parse_date_input(start_date).isoformat() if start_date else None
             normalized_end_date = parse_date_input(end_date).isoformat() if end_date else None
             if start_date and normalized_start_date is None:
@@ -410,8 +423,20 @@ def register(mcp):
             lookback_days (int, optional): 回溯K线天数，默认 250，最小 30
         """
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
             if conditions in (None, "", [], {}):
                 return fail("conditions is required")
+            if isinstance(conditions, str):
+                try:
+                    conditions = json.loads(conditions)
+                except Exception:
+                    return fail("conditions 必须是有效的 JSON")
+            if not isinstance(conditions, (list, dict)):
+                return fail("conditions 必须是对象或对象数组")
+            if str(logic or "AND").strip().upper() not in {"AND", "OR"}:
+                return fail("logic 必须为 AND 或 OR")
             lookback = max(30, int(lookback_days))
             db = get_db()
             klines = await db.get_klines(code, limit=lookback)
@@ -453,6 +478,9 @@ def register(mcp):
             dict: 标准 ``ok(...)`` 响应，包含相似样本、聚合收益和窗口信息。
         """
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
             forward = [int(day) for day in (forward_days or [5, 10, 20])]
             db = get_db()
             klines = await db.get_klines(code, limit=max(int(lookback_days), int(window_days) * 4))
@@ -488,6 +516,9 @@ def register(mcp):
             dict: 标准 ``ok(...)`` 响应，包含命中次数、收益分布和窗口配置。
         """
         try:
+            code, _, error = await resolve_existing_security_code_async(code=code)
+            if error:
+                return fail(error)
             forward = [int(day) for day in (forward_days or [5, 10, 20])]
             db = get_db()
             klines = await db.get_klines(code, limit=max(60, int(lookback_days)))
@@ -514,6 +545,18 @@ def register(mcp):
     ):
         """P2-2: Factor robustness check — multi-window IC stability, parameter sensitivity, sub-sample consistency."""
         try:
+            if windows is not None:
+                if not isinstance(windows, list):
+                    return fail("windows 必须是整数列表")
+                parsed_windows = []
+                for item in windows:
+                    value, value_error = validate_int_range(item, field_name="window", minimum=1)
+                    if value_error:
+                        return fail(value_error)
+                    parsed_windows.append(value)
+                windows = parsed_windows
+            if param_variations is not None and not isinstance(param_variations, list):
+                return fail("param_variations 必须是列表")
             return await run_factor_robustness_check(
                 codes=codes,
                 factor=factor,

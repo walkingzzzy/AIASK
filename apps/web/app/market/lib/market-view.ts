@@ -16,13 +16,7 @@ export type SavedMarketView = {
 
 export type InitialMarketViewState = SavedMarketView;
 
-export const DEFAULT_MARKET_CODE = '600519';
-
-export const MARKET_STARTER_CODES = [
-  { code: '600519', label: '贵州茅台' },
-  { code: '000001', label: '平安银行' },
-  { code: '300750', label: '宁德时代' },
-] as const;
+export const DEFAULT_MARKET_CODE = '';
 
 export const TABS = [
   { key: 'main', label: '基础行情' },
@@ -88,7 +82,7 @@ export function resolveInitialMarketViewState({
   return {
     activeTab: initialTab,
     code: DEFAULT_MARKET_CODE,
-    submittedCode: hasExplicitContext ? null : DEFAULT_MARKET_CODE,
+    submittedCode: hasExplicitContext || !DEFAULT_MARKET_CODE ? null : DEFAULT_MARKET_CODE,
     period: 'daily',
     submittedPeriod: 'daily',
     indexCode: initialIndexCode,

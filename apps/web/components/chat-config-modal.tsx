@@ -8,6 +8,8 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
+  const [apiKeyMasked, setApiKeyMasked] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -21,11 +23,50 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
   const titleId = useId();
   const descriptionId = useId();
 
+  const doProbe = useCallback((url: string, key: string, preferredModel?: string) => {
+    if (!url.trim() || (!key.trim() && !hasStoredApiKey)) {
+      setDetectedModels([]);
+      setProbeError('');
+      return;
+    }
+    setProbing(true);
+    setProbeError('');
+    probeModels(url, key, preferredModel || model)
+      .then((result) => {
+        if (result.normalizedBaseUrl) {
+          setBaseUrl(result.normalizedBaseUrl);
+        }
+        if (result.success && result.models.length > 0) {
+          setDetectedModels(result.models);
+          setProbeError('');
+        } else {
+          setDetectedModels([]);
+          setProbeError(result.error || '未检测到可用模型');
+        }
+      })
+      .catch(() => {
+        setDetectedModels([]);
+        setProbeError('检测请求失败');
+      })
+      .finally(() => setProbing(false));
+  }, [hasStoredApiKey, model]);
+
   useEffect(() => {
     getLlmConfig().then((c) => {
-      if (c) { setBaseUrl(c.baseUrl); setModel(c.model); setApiKey(c.apiKey); }
+      if (c) {
+        setBaseUrl(c.baseUrl);
+        setModel(c.model);
+        setHasStoredApiKey(c.hasStoredApiKey);
+        setApiKeyMasked(c.apiKeyMasked);
+      }
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (baseUrl && hasStoredApiKey) {
+      doProbe(baseUrl, '', model);
+    }
+  }, [baseUrl, doProbe, hasStoredApiKey, model]);
 
   useEffect(() => {
     const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -46,34 +87,9 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
     };
   }, [onClose]);
 
-  const doProbe = useCallback((url: string, key: string) => {
-    if (!url.trim() || !key.trim()) {
-      setDetectedModels([]);
-      setProbeError('');
-      return;
-    }
-    setProbing(true);
-    setProbeError('');
-    probeModels(url, key)
-      .then((result) => {
-        if (result.success && result.models.length > 0) {
-          setDetectedModels(result.models);
-          setProbeError('');
-        } else {
-          setDetectedModels([]);
-          setProbeError(result.error || '未检测到可用模型');
-        }
-      })
-      .catch(() => {
-        setDetectedModels([]);
-        setProbeError('检测请求失败');
-      })
-      .finally(() => setProbing(false));
-  }, []);
-
   function scheduleProbe(url: string, key: string) {
     if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
-    probeTimerRef.current = setTimeout(() => doProbe(url, key), 600);
+    probeTimerRef.current = setTimeout(() => doProbe(url, key, model), 600);
   }
 
   function onBaseUrlChange(value: string) {
@@ -89,10 +105,21 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
   }
 
   async function onSave() {
-    if (!apiKey.trim() || !baseUrl.trim() || !model.trim()) return setError('请填写完整配置');
+    if ((!apiKey.trim() && !hasStoredApiKey) || !baseUrl.trim() || !model.trim()) return setError('请填写完整配置');
     setSaving(true); setError('');
     try {
-      await saveLlmConfig({ apiKey: apiKey.trim(), baseUrl: baseUrl.trim(), model: model.trim() });
+      const saved = await saveLlmConfig({ apiKey: apiKey.trim() || undefined, baseUrl: baseUrl.trim(), model: model.trim() });
+      if (saved.normalizedBaseUrl) {
+        setBaseUrl(saved.normalizedBaseUrl);
+      }
+      const confirmed = await getLlmConfig();
+      if (confirmed) {
+        setBaseUrl(confirmed.baseUrl);
+        setModel(confirmed.model);
+        setHasStoredApiKey(confirmed.hasStoredApiKey);
+        setApiKeyMasked(confirmed.apiKeyMasked);
+      }
+      setApiKey('');
       setConfigLoaded(true, true);
       onClose();
     } catch (err) { setError(err instanceof Error ? err.message : '保存失败'); }
@@ -158,9 +185,10 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
             type="password"
             value={apiKey}
             onChange={(e) => onApiKeyChange(e.target.value)}
-            placeholder="sk-..."
+            placeholder={hasStoredApiKey ? `${apiKeyMasked || '已保存 API Key'}（留空表示不修改）` : 'sk-...'}
             className="block w-full mt-1 px-2 py-1.5 box-border"
           />
+          {hasStoredApiKey ? <div className="mt-1 text-xs text-text-muted">当前已保存 Key，留空即可保留原值。</div> : null}
         </label>
 
         <label className="block mb-4">
@@ -186,10 +214,10 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
               />
               {probeError ? (
                 <div className="mt-1 text-xs text-text-muted">{probeError}，可手动输入模型名称</div>
-              ) : baseUrl.trim() && apiKey.trim() ? (
+              ) : baseUrl.trim() && (apiKey.trim() || hasStoredApiKey) ? (
                 <button
                   type="button"
-                  onClick={() => doProbe(baseUrl, apiKey)}
+                  onClick={() => doProbe(baseUrl, apiKey, model)}
                   className="mt-1 text-xs text-primary cursor-pointer bg-transparent border-none p-0 hover:underline"
                 >
                   点击重新检测

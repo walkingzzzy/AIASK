@@ -4,6 +4,16 @@ import { getBffBaseUrl } from './bff-base';
 import type { CacheMeta, Envelope } from '@aiask/shared-types';
 
 export type { CacheMeta, Envelope } from '@aiask/shared-types';
+export type ApiAcceptanceStatus = 'unavailable' | 'prerequisite_missing' | 'degraded';
+
+export class ApiError extends Error {
+  status?: number;
+  code?: string;
+  traceId?: string;
+  acceptanceStatus?: ApiAcceptanceStatus;
+  detail?: unknown;
+  path?: string;
+}
 
 /** Guard: only one redirect to login at a time */
 let redirecting = false;
@@ -37,6 +47,57 @@ function buildAbortError(message = '请求已取消'): Error {
 
 export function isPermissionDeniedErrorMessage(message: string | null | undefined): boolean {
   return /(?:^|\b)403(?:\b|$)|forbidden|permission denied|权限|无权/i.test(String(message ?? ''));
+}
+
+function extractApiErrorCode(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const body = payload as Record<string, unknown>;
+  if (typeof body.code === 'string' && body.code.trim()) return body.code;
+  if (body.error && typeof body.error === 'object') {
+    const errorBody = body.error as Record<string, unknown>;
+    if (typeof errorBody.code === 'string' && errorBody.code.trim()) return errorBody.code;
+  }
+  return undefined;
+}
+
+export function extractAcceptanceStatus(payload: unknown): ApiAcceptanceStatus | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const body = payload as Record<string, unknown>;
+  const value = body.acceptanceStatus;
+  if (value === 'unavailable' || value === 'prerequisite_missing' || value === 'degraded') {
+    return value;
+  }
+  return undefined;
+}
+
+export function extractTraceId(payload: unknown): string | undefined {
+  return payload && typeof payload === 'object' && typeof (payload as { traceId?: unknown }).traceId === 'string'
+    ? (payload as { traceId: string }).traceId
+    : undefined;
+}
+
+export function buildApiError(
+  payload: unknown,
+  options: {
+    status?: number;
+    path?: string;
+    fallbackMessage?: string;
+  } = {},
+): ApiError {
+  const baseMessage = extractApiErrorMessage(payload, options.fallbackMessage ?? '请求失败');
+  const traceId = extractTraceId(payload);
+  const acceptanceStatus = extractAcceptanceStatus(payload);
+  const pathSuffix = options.path ? ` @ ${options.path}` : '';
+  const traceSuffix = traceId ? ` (traceId: ${traceId})` : '';
+  const error = new ApiError(`${baseMessage}${pathSuffix}${traceSuffix}`);
+  error.name = 'ApiError';
+  error.status = options.status;
+  error.code = extractApiErrorCode(payload);
+  error.traceId = traceId;
+  error.acceptanceStatus = acceptanceStatus;
+  error.detail = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).detail : undefined;
+  error.path = options.path;
+  return error;
 }
 
 async function redirectAfterAuthExpired(): Promise<never> {
@@ -138,6 +199,75 @@ export function extractApiErrorMessage(payload: unknown, fallback = '请求失�
     return body.message;
   }
   return fallback;
+}
+
+function findFirstRecord(value: unknown, seen = new Set<unknown>(), depth = 0): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || depth > 5 || seen.has(value)) return null;
+  seen.add(value);
+  if (!Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (
+      record.degraded === true ||
+      record.fallback != null ||
+      record.fallback_reason != null ||
+      record.fallbackReason != null ||
+      typeof record.message === 'string'
+    ) {
+      return record;
+    }
+    for (const nested of Object.values(record)) {
+      const hit = findFirstRecord(nested, seen, depth + 1);
+      if (hit) return hit;
+    }
+    return record;
+  }
+  for (const item of value) {
+    const hit = findFirstRecord(item, seen, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function rejectFallbackPayload(payload: unknown): string | null {
+  const record = findFirstRecord(payload);
+  if (!record) return null;
+
+  if (record.degraded === true) {
+    return typeof record.message === 'string' && record.message.trim() ? record.message : '上游能力暂不可用';
+  }
+  if (record.fallback && typeof record.fallback === 'object') {
+    const fallback = record.fallback as Record<string, unknown>;
+    if (fallback.used === true) {
+      return typeof fallback.reason === 'string' && fallback.reason.trim()
+        ? fallback.reason
+        : '上游能力已回退，不接受降级结果';
+    }
+  }
+  const fallbackReason = record.fallback_reason ?? record.fallbackReason;
+  if (Array.isArray(fallbackReason) && fallbackReason.some((item) => String(item).trim())) {
+    return fallbackReason.map((item) => String(item).trim()).filter(Boolean).join('；');
+  }
+  if (typeof fallbackReason === 'string' && fallbackReason.trim()) {
+    return fallbackReason.trim();
+  }
+  const message = typeof record.message === 'string' ? record.message.trim() : '';
+  if (/已返回空结果|降级到缓存|降级到空结果|暂时不可用/i.test(message)) {
+    return message;
+  }
+  return null;
+}
+
+export function getApiErrorAcceptanceStatus(error: unknown): ApiAcceptanceStatus | null {
+  return error instanceof ApiError && error.acceptanceStatus ? error.acceptanceStatus : null;
+}
+
+export function isPrerequisiteMissingError(error: unknown): boolean {
+  return getApiErrorAcceptanceStatus(error) === 'prerequisite_missing';
+}
+
+export function isUnavailableApiError(error: unknown): boolean {
+  const status = getApiErrorAcceptanceStatus(error);
+  return status === 'unavailable' || status === 'degraded';
 }
 
 function unwrapRedundantDataLayers(payload: unknown): unknown {

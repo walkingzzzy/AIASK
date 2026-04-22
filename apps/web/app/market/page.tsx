@@ -10,9 +10,10 @@ import MarketMinuteTab from '@/app/market/components/market-minute-tab';
 import MarketQueryShell from '@/app/market/components/market-query-shell';
 import MarketSearchTab from '@/app/market/components/market-search-tab';
 import MarketTradeTab from '@/app/market/components/market-trade-tab';
+import ResultWorkbench from '@/components/result-workbench';
+import { useOnboarding } from '@/components/onboarding';
 import { Badge, PageContainer } from '@/components/ui';
 import {
-  DEFAULT_MARKET_CODE,
   MARKET_VIEW_STORAGE_KEY,
   TABS,
   formatStableDateTime,
@@ -28,18 +29,26 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { cacheText } from '@/lib/api';
 import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import {
+  buildLocalResultContract,
+  defaultWorkbenchTask,
+  evidenceToSummary,
+  resolveResultContract,
+} from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useToast } from '@/components/ui/toast';
-import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook } from '@aiask/shared-types';
+import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook, ResultContract } from '@aiask/shared-types';
 
-type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta };
-type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta };
-type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta };
+type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
+type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
+type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
 export default function MarketPage() {
   const searchParams = useStableSearchParams();
   const requestedTab = searchParams.get('tab');
@@ -75,6 +84,7 @@ function MarketPageInner({
   task: string | null;
   from: string | null;
 }) {
+  const { completeStep } = useOnboarding();
   const hydrated = useHydrated();
   const compactHeroDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const compactHero = hydrated ? compactHeroDetected : true;
@@ -100,6 +110,7 @@ function MarketPageInner({
   const activeCode = submittedCode ?? resolvedCode ?? null;
 
   const quoteQ = useApiQuery<QuoteData>(activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null, {
+    critical: true,
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情报价');
       if ('quote' in obj && obj.quote != null && typeof obj.quote !== 'object') {
@@ -111,6 +122,7 @@ function MarketPageInner({
   const klineQ = useApiQuery<KlineData>(
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}` : null,
     {
+      critical: true,
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -121,6 +133,7 @@ function MarketPageInner({
     },
   );
   const obQ = useApiQuery<ObData>(activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null, {
+    critical: true,
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情盘口');
       if ('orderBook' in obj && obj.orderBook != null && typeof obj.orderBook !== 'object') {
@@ -509,15 +522,6 @@ function MarketPageInner({
     );
   }
 
-  const useStarterCode = useCallback(
-    (nextCode: string) => {
-      setCode(nextCode);
-      setSubmittedCode(nextCode);
-      setSubmittedPeriod(period);
-    },
-    [period, setCode],
-  );
-
   const applyMarketPreset = useCallback(
     (preset: Partial<SavedMarketView>, label?: string) => {
       applyPreset(preset);
@@ -527,6 +531,151 @@ function MarketPageInner({
     },
     [applyPreset, toast],
   );
+
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'market.refresh',
+        label: '刷新当前行情',
+        description: '刷新当前主图、报价与当前 tab 数据',
+        keywords: ['刷新', '行情'],
+        scope: 'page' as const,
+        pageKey: 'market',
+        run: async () => {
+          await Promise.allSettled([
+            quoteQ.refetch(),
+            klineQ.refetch(),
+            obQ.refetch(),
+            limitUpQ.refetch(),
+            blocksQ.refetch(),
+            tradeQ.refetch(),
+            indexQuoteQ.refetch(),
+            minuteKlineQ.refetch(),
+            searchQ.refetch(),
+            stockListQ.refetch(),
+            blockStocksQ.refetch(),
+          ]);
+          return { message: '已刷新当前行情工作台' };
+        },
+      },
+      {
+        id: 'market.switch-main',
+        label: '切回主图',
+        description: '返回基础行情主图与盘口工作区',
+        keywords: ['主图', '基础行情'],
+        scope: 'page' as const,
+        pageKey: 'market',
+        run: () => {
+          applyMarketPreset({ activeTab: 'main' }, '主图');
+          return { message: '已切回主图' };
+        },
+      },
+      {
+        id: 'market.switch-blocks',
+        label: '切到板块热力',
+        description: '查看板块强弱与扩散',
+        keywords: ['板块', '热力'],
+        scope: 'page' as const,
+        pageKey: 'market',
+        run: () => {
+          applyMarketPreset({ activeTab: 'blocks' }, '板块热力');
+          return { message: '已切到板块热力' };
+        },
+      },
+      {
+        id: 'market.open-stock',
+        label: '打开当前标的详情',
+        description: '进入当前主标的个股详情页',
+        keywords: ['个股详情', '标的'],
+        scope: 'page' as const,
+        pageKey: 'market',
+        run: () => {
+          if (!activeDisplayCode) return { message: '当前还没有可打开的标的' };
+          window.location.href = `/stock?code=${encodeURIComponent(activeDisplayCode)}`;
+          return { message: `已打开 ${activeDisplayCode} 个股详情` };
+        },
+      },
+    ],
+    [activeDisplayCode, applyMarketPreset, blockStocksQ, blocksQ, indexQuoteQ, klineQ, limitUpQ, minuteKlineQ, obQ, quoteQ, searchQ, stockListQ, tradeQ],
+  );
+
+  usePageActions(pageActions);
+
+  const marketEvidence = useMemo(
+    () => [
+      { label: '当前任务', value: activeTaskLabel },
+      { label: '当前标的', value: activeDisplayCode || '未选择' },
+      { label: '周期', value: activePeriodLabel },
+      { label: '报价', value: activeQuote ? fmtNum(activeQuote.price as number | null, 2) : '-' },
+      { label: '刷新时间', value: freshnessLabel },
+    ],
+    [activeDisplayCode, activePeriodLabel, activeQuote, activeTaskLabel, freshnessLabel],
+  );
+  const marketRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (quoteErrorMessage) notes.push(quoteErrorMessage);
+    if (tabErrorMessage) notes.push(tabErrorMessage);
+    if (!activeDisplayCode) notes.push('当前还没有锁定主标的，建议先确认代码或切回指数/板块视图。');
+    return notes;
+  }, [activeDisplayCode, quoteErrorMessage, tabErrorMessage]);
+  const marketResult = useMemo(
+    () => {
+      const localFallback = buildLocalResultContract({
+        summary: workspaceSummary,
+        pageActions,
+        preferredActionIds: ['market.refresh', 'market.switch-main', 'market.switch-blocks', 'market.open-stock'],
+        recommendedLinks: quickJumpLinks.map((item, index) => ({ id: `market-link-${index}`, label: item.label, href: item.href })),
+        evidence: marketEvidence,
+        riskNotes: marketRiskNotes,
+        freshness: freshness ? { updatedAt: freshness, label: freshnessLabel || '行情刷新时间' } : null,
+        platformMeta: {
+          sourceTool: 'market-workspace',
+          sourceChain: [activeTaskLabel, activePeriodLabel],
+        },
+        workbenchTask: defaultWorkbenchTask('market', `行情跟踪：${activeDisplayCode || activeTaskLabel}`, activeDisplayCode ? `/market?tab=${encodeURIComponent(activeTab)}&indexCode=${encodeURIComponent(indexCode)}` : '/market', 'market-review', {
+          tab: activeTab,
+          code: activeDisplayCode || null,
+          period: activePeriodLabel,
+        }),
+      });
+      return resolveResultContract(quote?.result_contract ?? kline?.result_contract ?? ob?.result_contract, localFallback);
+    },
+    [activeDisplayCode, activePeriodLabel, activeTab, activeTaskLabel, freshness, freshnessLabel, indexCode, kline?.result_contract, marketEvidence, marketRiskNotes, ob?.result_contract, pageActions, quickJumpLinks, quote?.result_contract, workspaceSummary],
+  );
+
+  usePageContext({
+    pageKey: 'market',
+    title: '行情工作台',
+    summary: workspaceSummary,
+    stockCode: activeDisplayCode || undefined,
+    objectType: activeDisplayCode ? 'stock' : 'workspace',
+    objectId: activeDisplayCode || activeTab,
+    resultType: 'market-summary',
+    tags: [activeTaskLabel, activePeriodLabel, pageOffline ? '服务离线' : '服务在线'],
+    suggestions: [
+      '总结当前行情主图与盘口的关键信号',
+      '判断现在更适合切板块、指数还是继续看个股',
+      '把当前行情页整理成下一步研究路线',
+    ],
+    recommendedActions: marketResult.recommendedActions,
+    recommendedLinks: marketResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(marketResult.evidence),
+    riskNotes: marketResult.riskNotes ?? [],
+    freshness: marketResult.freshness ?? null,
+    raw: {
+      tab: activeTab,
+      code: activeDisplayCode || null,
+      period: activePeriodLabel,
+      from,
+      task,
+    },
+  });
+
+  useEffect(() => {
+    if (activeTab !== 'main' || period !== 'daily' || Boolean(submittedCode)) {
+      completeStep('market');
+    }
+  }, [activeTab, completeStep, period, submittedCode]);
 
   return (
     <PageContainer className="space-y-5">
@@ -568,6 +717,9 @@ function MarketPageInner({
         />
       )}
 
+      <ResultWorkbench pageKey="market" title="行情结果工作台" result={marketResult} />
+
+
       <MarketQueryShell
         code={code}
         onCodeChange={setCode}
@@ -578,7 +730,6 @@ function MarketPageInner({
         showPrimaryLoading={showPrimaryLoading}
         onSaveCurrentView={saveCurrentView}
         submittedCode={submittedCode}
-        onUseStarterCode={useStarterCode}
         onApplyPreset={applyMarketPreset}
         activeTab={activeTab}
         onActiveTabChange={setActiveTab}
@@ -602,7 +753,6 @@ function MarketPageInner({
         candleData={candleData}
         activeDisplayCode={activeDisplayCode}
         quickJumpLinks={quickJumpLinks}
-        onUseStarterCode={useStarterCode}
         onApplyPreset={applyPreset}
         obView={obView}
         compactSummaryOnly={compactHero && activeTab !== 'main'}
@@ -640,10 +790,6 @@ function MarketPageInner({
           error={tradeQ.error}
           onQueryTrade={queryTradeTab}
           onShowSearch={() => applyPreset({ activeTab: 'search' })}
-          onLoadSample={() => {
-            setCode(DEFAULT_MARKET_CODE);
-            setSubmittedCode(DEFAULT_MARKET_CODE);
-          }}
         />
       ) : null}
 
@@ -655,7 +801,6 @@ function MarketPageInner({
           indexObj={indexObj}
           error={indexQuoteQ.error}
           onQueryIndex={queryIndexTab}
-          onUseExampleCode={setIndexCode}
         />
       ) : null}
 

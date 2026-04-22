@@ -165,7 +165,8 @@ export default function ExecutionLiveGatewayPanel({
         <KpiCard title="Provider" value={liveGateway?.provider || '-'} />
         <KpiCard title="配置状态" value={liveGateway?.configured ? '已配置' : '未配置'} />
         <KpiCard title="连接状态" value={liveGateway?.connected ? '已连接' : '未连接'} />
-        <KpiCard title="模式" value={liveGateway?.read_only ? '只读/预览' : '可写'} />
+        <KpiCard title="网关模式" value={liveGateway?.broker_env || (liveGateway?.paper ? 'paper' : 'live')} />
+        <KpiCard title="写权限" value={liveGateway?.allow_write ? '允许真实写入' : '只读/预演'} />
         <KpiCard title="真实订单" value={liveOrders.length} />
         <KpiCard title="成交回报" value={liveFillRows.length} />
       </KpiGrid>
@@ -176,6 +177,8 @@ export default function ExecutionLiveGatewayPanel({
           <div className="mt-2 grid gap-2 text-xs text-text-secondary sm:grid-cols-2">
             <div>Base URL：{liveGateway?.base_url || '-'}</div>
             <div>Paper：{liveGateway?.paper ? '是' : '否'}</div>
+            <div>Broker Env：{liveGateway?.broker_env || '-'}</div>
+            <div>Allow Write：{liveGateway?.allow_write ? 'true' : 'false'}</div>
             <div>账户：{liveAccount?.account_id || '-'}</div>
             <div>状态：{liveAccount?.status || '-'}</div>
             <div>现金：{liveAccount?.cash != null ? fmtNum(liveAccount.cash) : '-'}</div>
@@ -415,8 +418,8 @@ export default function ExecutionLiveGatewayPanel({
           {liveSubmitResult ? (
             <div className={`${executionNoteCardCls} mt-3`}>
               {liveSubmitResult.submitted
-                ? `真实订单已提交：${liveSubmitResult.order?.order_id || '-'}`
-                : `当前返回为 ${liveSubmitResult.mode || 'preview'}，未真正提交真实订单。`}
+                ? `真实订单已提交：${liveSubmitResult.order?.order_id || '-'} · ${liveSubmitResult.broker_env || '-'} · allow_write=${liveSubmitResult.allow_write ? 'true' : 'false'}`
+                : `当前返回为 ${liveSubmitResult.mode || 'preview'}，broker_env=${liveSubmitResult.broker_env || '-'}，allow_write=${liveSubmitResult.allow_write ? 'true' : 'false'}，未真正提交真实订单。`}
             </div>
           ) : null}
           {liveMirrorResult ? (

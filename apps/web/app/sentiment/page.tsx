@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import {
   PageContainer,
   SectionCard,
@@ -13,10 +14,13 @@ import {
 import { GaugeChart, BarChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { ensureRecord } from '@/lib/query-parse';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { unwrapToolPayload } from '@/lib/tool-result';
@@ -58,14 +62,6 @@ export default function SentimentPage() {
   function fetchStockSentiment() {
     if (!validate()) return;
     const path = `/sentiment/stock?code=${encodeURIComponent(code.trim())}`;
-    if (path === effectiveStockSentimentPath) stockSentimentQ.refetch();
-    else setStockSentimentPath(path);
-    setResultTab('stock');
-  }
-
-  function loadSampleSentiment(sampleCode = '600519') {
-    setCode(sampleCode);
-    const path = `/sentiment/stock?code=${encodeURIComponent(sampleCode)}`;
     if (path === effectiveStockSentimentPath) stockSentimentQ.refetch();
     else setStockSentimentPath(path);
     setResultTab('stock');
@@ -114,8 +110,121 @@ export default function SentimentPage() {
       : stockScore >= 70
         ? '优先核对估值与风险'
         : stockScore <= 30
-          ? '优先核对基本面'
-          : '优先核对技术与资金流';
+        ? '优先核对基本面'
+        : '优先核对技术与资金流';
+  const sentimentPageActions = useMemo(
+    () => [
+      {
+        id: 'sentiment.fetch-stock',
+        label: '查询个股情绪',
+        description: '对当前股票代码重新计算个股情绪分数',
+        keywords: ['情绪', '个股', focusCode],
+        scope: 'page' as const,
+        pageKey: 'sentiment',
+        run: () => {
+          fetchStockSentiment();
+          return { message: `已发起 ${focusCode} 的情绪查询` };
+        },
+      },
+      {
+        id: 'sentiment.refresh-market',
+        label: '刷新市场温度',
+        description: '刷新恐贪指数与市场情绪组件',
+        keywords: ['恐贪指数', '市场情绪'],
+        scope: 'page' as const,
+        pageKey: 'sentiment',
+        run: async () => {
+          await fearGreedQ.refetch();
+          setResultTab('market');
+          return { message: '已刷新市场温度' };
+        },
+      },
+      {
+        id: 'sentiment.switch-stock',
+        label: '切回个股情绪',
+        description: '把主视图切回个股情绪结果',
+        keywords: ['个股情绪'],
+        scope: 'page' as const,
+        pageKey: 'sentiment',
+        run: () => {
+          setResultTab('stock');
+          return { message: '已切到个股情绪' };
+        },
+      },
+    ],
+    [fearGreedQ, focusCode],
+  );
+  usePageActions(sentimentPageActions);
+  const sentimentSummaryText = stockScore != null
+    ? `${focusCode} 当前情绪分数 ${fmtNum(stockScore, 1)}，市场温度 ${fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}，下一步建议 ${nextStepLabel}。`
+    : `${focusCode} 当前还没有个股情绪结果，市场温度 ${fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}，建议先完成一次查询。`;
+  const sentimentResult = buildLocalResultContract({
+    summary: sentimentSummaryText,
+    availableViews: stockComponents.length > 1 || fearGreedComponents.length > 1 ? ['compare', 'visual'] : [],
+    pageActions: sentimentPageActions,
+    preferredActionIds: ['sentiment.fetch-stock', 'sentiment.refresh-market', 'sentiment.switch-stock'],
+    recommendedLinks: resultActionLinks.length > 0
+      ? resultActionLinks.map((link, index) => ({ id: `sentiment-link-${index}`, label: link.label, href: link.href }))
+      : [
+          { id: 'sentiment-link-watchlist', label: '去自选页', href: '/watchlist' },
+          { id: 'sentiment-link-assistant', label: '继续追问 Copilot', href: '/assistant?from=sentiment' },
+        ],
+    evidence: [
+      { label: '当前标的', value: focusCode },
+      { label: '个股情绪', value: stockScore != null ? fmtNum(stockScore, 1) : '-' },
+      { label: '情绪结论', value: stockSentiment || '-' },
+      { label: '市场温度', value: fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-' },
+      { label: '市场状态', value: fearGreedLevel || '-' },
+      { label: '当前视图', value: resultTab === 'stock' ? '个股情绪' : '市场温度' },
+    ],
+    riskNotes: [
+      ...(stockSentimentQ.error ? [stockSentimentQ.error] : []),
+      ...(fearGreedQ.error ? [fearGreedQ.error] : []),
+      ...(stockScore == null ? ['当前个股情绪尚未返回，需要先完成一次查询。'] : []),
+    ],
+    platformMeta: {
+      sourceTool: 'sentiment',
+      sourceChain: ['sentiment-stock', 'fear-greed'],
+      degraded: Boolean(stockSentimentQ.error || fearGreedQ.error),
+      fallbackReason: [stockSentimentQ.error, fearGreedQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('sentiment', `复查情绪 ${focusCode}`, '/sentiment', 'sentiment-review', {
+      code: focusCode,
+      stockScore,
+      fearGreedIndex,
+    }),
+  });
+  usePageContext({
+    pageKey: 'sentiment',
+    title: '情绪分析工作台',
+    summary: sentimentSummaryText,
+    objectType: stockCode ? 'stock' : 'market-sentiment',
+    objectId: stockCode || 'market-sentiment',
+    resultType: 'sentiment-analysis',
+    tags: [
+      focusCode,
+      stockScore != null ? `个股 ${fmtNum(stockScore, 1)}` : '个股待查询',
+      fearGreedIndex != null ? `市场 ${fmtNum(fearGreedIndex, 0)}` : '市场待刷新',
+      resultTab === 'stock' ? '个股情绪' : '市场温度',
+    ],
+    suggestions: [
+      '总结当前个股情绪和市场温度是同向还是背离',
+      '解释下一步应该联动技术、资金流还是风险页',
+      '如果情绪偏热或偏冷，给出更稳妥的复核路径',
+    ],
+    recommendedActions: sentimentResult.recommendedActions ?? [],
+    recommendedLinks: sentimentResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(sentimentResult.evidence),
+    riskNotes: sentimentResult.riskNotes ?? [],
+    freshness: sentimentResult.freshness ?? null,
+    raw: {
+      stockCode,
+      stockScore,
+      fearGreedIndex,
+      fearGreedLevel,
+      resultTab,
+    },
+  });
 
   return (
     <PageContainer>
@@ -141,9 +250,9 @@ export default function SentimentPage() {
               <button type="button" onClick={fetchStockSentiment} disabled={isPending} className={HERO_PRIMARY_BUTTON_CLS}>
                 {isPending ? '分析中...' : '查询个股情绪'}
               </button>
-              <button type="button" onClick={() => loadSampleSentiment('600519')} className={HERO_SECONDARY_BUTTON_CLS}>
-                示例：600519
-              </button>
+              <Link href="/watchlist" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
+                从自选股开始
+              </Link>
             </div>
             {compactLayout ? (
               <div className="mt-4 text-sm text-text-secondary">
@@ -183,6 +292,8 @@ export default function SentimentPage() {
         </div>
       </section>
 
+      <ResultWorkbench pageKey="sentiment" title="情绪结果工作台" result={sentimentResult} />
+
       {stockSentimentQ.error || fearGreedQ.error ? <ErrorState text={stockSentimentQ.error || fearGreedQ.error!} /> : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
@@ -213,12 +324,6 @@ export default function SentimentPage() {
               </button>
               <button type="button" onClick={() => fearGreedQ.refetch()} className={HERO_SECONDARY_BUTTON_CLS}>
                 刷新市场温度
-              </button>
-              <button type="button" onClick={() => loadSampleSentiment('600519')} className={CHIP_BUTTON_CLS}>
-                600519
-              </button>
-              <button type="button" onClick={() => loadSampleSentiment('300750')} className={CHIP_BUTTON_CLS}>
-                300750
               </button>
             </div>
           </div>
@@ -285,14 +390,9 @@ export default function SentimentPage() {
                     text="输入股票代码后查看个股情绪分数"
                     hint="推荐先从关注名单中的个股开始，确认市场讨论与预期是偏热还是偏冷。"
                     action={
-                      <>
-                        <button type="button" onClick={() => loadSampleSentiment('600519')} className={CHIP_BUTTON_CLS}>
-                          示例：600519
-                        </button>
-                        <Link href="/watchlist" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
-                          查看自选股
-                        </Link>
-                      </>
+                      <Link href="/watchlist" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+                        查看自选股
+                      </Link>
                     }
                   />
                 ) : (

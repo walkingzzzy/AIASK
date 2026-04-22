@@ -224,6 +224,8 @@ def get_limit_up_stocks(date: str = "") -> dict:
     limiter.acquire()
 
     target_date = parse_date_input(date) if date else datetime.now().date()
+    if date and target_date is None:
+        return fail(f"date 无效: {date}")
     fallback_reason: list[str] = []
     # 尝试最近 10 个交易日
     for days_back in range(10):

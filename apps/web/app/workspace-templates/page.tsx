@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, PageContainer, SectionCard, TabBar, useToast } from '@/components/ui';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -8,6 +9,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import {
   WORKSPACE_BLUEPRINTS,
   WORKSPACE_TASK_TEMPLATES,
@@ -235,35 +237,6 @@ export default function WorkspaceTemplatesPage() {
     [rollbackTemplateRun, toast],
   );
 
-  usePageContext({
-    pageKey: 'workspace-templates',
-    title: '模板中心',
-    summary: `当前模板中心聚焦工作区 ${activeWorkspace.name}，已选工作流 ${selectedWorkflow.label}、工作区模板 ${selectedBlueprint.label}、任务模板 ${selectedTemplate.label}，支持跨模板串行编排、依赖条件、默认值策略与执行记录回滚。`,
-    tags: [
-      activeWorkspace.name,
-      selectedWorkflow.label,
-      selectedBlueprint.label,
-      selectedTemplate.label,
-      `${templateRuns.length} 条运行记录`,
-    ],
-    suggestions: [
-      `执行 ${selectedWorkflow.label}`,
-      `创建 ${selectedBlueprint.label}`,
-      `把 ${selectedTemplate.label} 注入当前工作区`,
-      '总结当前模板参数应如何填写',
-    ],
-    raw: {
-      activeWorkspaceId: activeWorkspace.id,
-      selectedWorkflowId,
-      selectedBlueprintId,
-      selectedTemplateId,
-      latestTemplateRunId: latestTemplateRun?.id ?? null,
-      selectedWorkflowOverrides,
-      selectedBlueprintOverrides,
-      selectedTemplateOverrides,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -334,6 +307,127 @@ export default function WorkspaceTemplatesPage() {
   );
 
   usePageActions(pageActions);
+  const templatesSummary = `当前模板中心聚焦工作区 ${activeWorkspace.name}，已选工作流 ${selectedWorkflow.label}、工作区模板 ${selectedBlueprint.label}、任务模板 ${selectedTemplate.label}，支持跨模板串行编排、依赖条件、默认值策略与执行记录回滚。`;
+  const templateCenterResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: templatesSummary,
+        pageActions,
+        preferredActionIds: [
+          'workspace-templates.run-workflow',
+          'workspace-templates.create-selected',
+          'workspace-templates.apply-selected',
+        ],
+        recommendedLinks: [
+          { id: 'workspace-templates-link-assistant', label: '打开 Copilot', href: '/assistant?from=workspace-templates' },
+          {
+            id: 'workspace-templates-link-strategy',
+            label: '策略超市',
+            href: `/strategy-market?from=workspace-templates&task=workflow_design&q=${encodeURIComponent(selectedWorkflow.label)}`,
+          },
+          {
+            id: 'workspace-templates-link-skills',
+            label: '技能中心',
+            href: `/skills?from=workspace-templates&skill=akshare-strategy-factory`,
+          },
+        ],
+        evidence: [
+          { label: '当前工作区', value: activeWorkspace.name },
+          { label: '工作流', value: selectedWorkflow.label },
+          { label: '蓝图', value: selectedBlueprint.label },
+          { label: '任务模板', value: selectedTemplate.label },
+          { label: '可执行步骤', value: String(selectedWorkflowPreview.executableStepCount) },
+          { label: '运行记录', value: String(templateRuns.length) },
+        ],
+        riskNotes: [
+          ...(hasWorkflowErrors ? ['当前工作流参数尚未满足执行要求。'] : []),
+          ...(hasBlueprintErrors ? ['当前蓝图参数存在必填缺口。'] : []),
+          ...(hasTemplateErrors ? ['当前任务模板参数存在必填缺口。'] : []),
+          ...(latestTemplateRun?.summary ? [`最近一次运行：${latestTemplateRun.summary}`] : ['当前还没有模板执行记录。']),
+        ],
+        freshness: latestTemplateRun?.createdAt
+          ? { updatedAt: String(latestTemplateRun.createdAt), label: '最近模板执行' }
+          : null,
+        platformMeta: {
+          sourceTool: 'workspace-templates',
+          sourceChain: ['workbench-store', 'workspace-templates'],
+          degraded: hasWorkflowErrors || hasBlueprintErrors || hasTemplateErrors,
+          fallbackReason: [
+            hasWorkflowErrors ? 'workflow-parameter-error' : null,
+            hasBlueprintErrors ? 'blueprint-parameter-error' : null,
+            hasTemplateErrors ? 'task-template-parameter-error' : null,
+          ].filter((item): item is string => Boolean(item)),
+        },
+        workbenchTask: defaultWorkbenchTask(
+          'workspace-templates',
+          `复查模板中心 · ${selectedWorkflow.label}`,
+          '/workspace-templates',
+          'workspace-template-review',
+          {
+            workspaceId: activeWorkspace.id,
+            selectedWorkflowId,
+            selectedBlueprintId,
+            selectedTemplateId,
+          },
+        ),
+      }),
+    [
+      activeWorkspace.id,
+      activeWorkspace.name,
+      hasBlueprintErrors,
+      hasTemplateErrors,
+      hasWorkflowErrors,
+      latestTemplateRun?.createdAt,
+      latestTemplateRun?.summary,
+      pageActions,
+      selectedBlueprint.label,
+      selectedBlueprintId,
+      selectedTemplate.label,
+      selectedTemplateId,
+      selectedWorkflow.label,
+      selectedWorkflow.id,
+      selectedWorkflowPreview.executableStepCount,
+      templateRuns.length,
+      templatesSummary,
+    ],
+  );
+
+  usePageContext({
+    pageKey: 'workspace-templates',
+    title: '模板中心',
+    summary: templatesSummary,
+    objectType: 'workspace',
+    objectId: activeWorkspace.id,
+    resultType: 'workspace-template-center',
+    tags: [
+      activeWorkspace.name,
+      selectedWorkflow.label,
+      selectedBlueprint.label,
+      selectedTemplate.label,
+      `${templateRuns.length} 条运行记录`,
+    ],
+    suggestions: [
+      `执行 ${selectedWorkflow.label}`,
+      `创建 ${selectedBlueprint.label}`,
+      `把 ${selectedTemplate.label} 注入当前工作区`,
+      '总结当前模板参数应如何填写',
+    ],
+    recommendedActions: templateCenterResult.recommendedActions ?? [],
+    recommendedLinks: templateCenterResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(templateCenterResult.evidence),
+    riskNotes: templateCenterResult.riskNotes ?? [],
+    freshness: templateCenterResult.freshness ?? null,
+    raw: {
+      activeWorkspaceId: activeWorkspace.id,
+      selectedWorkflowId,
+      selectedBlueprintId,
+      selectedTemplateId,
+      latestTemplateRunId: latestTemplateRun?.id ?? null,
+      selectedWorkflowOverrides,
+      selectedBlueprintOverrides,
+      selectedTemplateOverrides,
+    },
+  });
 
   return (
     <PageContainer>
@@ -506,6 +600,12 @@ export default function WorkspaceTemplatesPage() {
           ) : null}
         </div>
       </SectionCard>
+
+      <ResultWorkbench
+        pageKey="workspace-templates"
+        title="模板中心结果工作台"
+        result={templateCenterResult}
+      />
 
       {!compactLayout ? (
         <WorkspaceToolbar

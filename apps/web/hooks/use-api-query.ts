@@ -1,8 +1,14 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { authedFetch, extractApiErrorMessage, unwrapApiEnvelope } from '@/lib/api';
+import {
+  authedFetch,
+  buildApiError,
+  getApiErrorAcceptanceStatus,
+  rejectFallbackPayload,
+  unwrapApiEnvelope,
+} from '@/lib/api';
 import { ensureBffAvailability, useBffAvailability } from '@/lib/bff-availability';
 import { useAuthStore } from '@/store/auth-store';
 import type { Envelope } from '@aiask/shared-types';
@@ -35,6 +41,10 @@ export type UseApiQueryOptions<TData> = {
   fallbackData?: TData | null;
   /** 当接口属于非致命依赖时，失败不向页面冒泡 error */
   nonFatal?: boolean;
+  /** 关键依赖：拒绝 degraded/fallback/空壳成功态 */
+  critical?: boolean;
+  /** 额外业务校验，返回错误文案则视为失败 */
+  reject?: (raw: unknown) => string | null;
 };
 
 /**
@@ -54,9 +64,12 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     redirectOnUnauthorized = true,
     fallbackData,
     nonFatal = false,
+    critical = false,
+    reject,
   } = options;
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
   const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
+  const prevReachableRef = useRef(bffAvailability.reachable);
 
   // Extract module from path (e.g. '/portfolio/list' → 'portfolio')
   // so invalidateQueries({ queryKey: ['api', 'portfolio'] }) matches all portfolio queries.
@@ -77,17 +90,11 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
       const resp = await authedFetch(path!, init, { redirectOnUnauthorized });
       const bodyPayload = await resp.json().catch(() => null);
       if (!resp.ok) {
-        let msg = `HTTP ${resp.status} @ ${path}`;
-        const detail = extractApiErrorMessage(bodyPayload, msg);
-        if (detail !== msg) msg = `${detail} @ ${path}`;
-        const traceId =
-          bodyPayload &&
-          typeof bodyPayload === 'object' &&
-          typeof (bodyPayload as { traceId?: unknown }).traceId === 'string'
-            ? (bodyPayload as { traceId: string }).traceId
-            : undefined;
-        if (traceId) msg = `${msg} (traceId: ${traceId})`;
-        throw new Error(msg);
+        throw buildApiError(bodyPayload, {
+          status: resp.status,
+          path: path!,
+          fallbackMessage: `HTTP ${resp.status}`,
+        });
       }
       const envelope = bodyPayload as Envelope<TData>;
       const unwrapped = unwrapApiEnvelope<TData>(envelope);
@@ -96,6 +103,18 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
         throw new Error(`${unwrapped.errorMessage} @ ${path}${trace}`);
       }
       const rawData = unwrapped.data;
+      if (critical) {
+        const fallbackReason = rejectFallbackPayload(rawData);
+        if (fallbackReason) {
+          throw new Error(`关键数据不可用: ${fallbackReason} @ ${path}${trace}`);
+        }
+      }
+      if (reject) {
+        const rejection = reject(rawData);
+        if (rejection) {
+          throw new Error(`${rejection} @ ${path}${trace}`);
+        }
+      }
       if (parse) {
         try {
           return parse(rawData);
@@ -113,6 +132,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   });
 
   const disabledByOffline = enabled && path != null && bffAvailability.unavailable;
+  const acceptanceStatus = disabledByOffline ? 'unavailable' : getApiErrorAcceptanceStatus(query.error);
   const derivedError = nonFatal
     ? null
     : disabledByOffline
@@ -128,11 +148,34 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     return query.refetch();
   }, [bffAvailability.reachable, enabled, path, query]);
 
+  useEffect(() => {
+    const recovered = !prevReachableRef.current && bffAvailability.reachable;
+    prevReachableRef.current = bffAvailability.reachable;
+
+    if (!recovered) return;
+    if (isLoggingOut || !enabled || path == null) return;
+    if (query.isFetching) return;
+    if (query.data != null && !query.error) return;
+
+    void query.refetch();
+  }, [
+    bffAvailability.reachable,
+    enabled,
+    isLoggingOut,
+    path,
+    query.data,
+    query.error,
+    query.isFetching,
+    query.refetch,
+  ]);
+
   return {
     data: query.data ?? fallbackData ?? null,
     isPending: derivedPending,
     isFetching: query.isFetching,
     error: derivedError,
+    rawError: query.error ?? null,
+    acceptanceStatus,
     dataUpdatedAt: query.dataUpdatedAt,
     refetch,
     serviceUnavailable: disabledByOffline,

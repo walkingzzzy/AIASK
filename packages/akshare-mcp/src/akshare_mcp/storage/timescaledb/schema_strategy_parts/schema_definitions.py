@@ -61,6 +61,23 @@
             UNIQUE(strategy_id, user_id)
         );
         CREATE INDEX IF NOT EXISTS idx_strategy_subs_user ON strategy_subscriptions(user_id);
+
+        CREATE TABLE IF NOT EXISTS strategy_paper_sessions (
+            id TEXT PRIMARY KEY,
+            strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            session_type TEXT NOT NULL DEFAULT 'personal_paper',
+            source_strategy_id TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            last_used_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(user_id, strategy_id, session_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_paper_sessions_user
+            ON strategy_paper_sessions(user_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_paper_sessions_strategy
+            ON strategy_paper_sessions(strategy_id, updated_at DESC);
     """)
 
     # 28. 策略前向信号表
@@ -279,5 +296,51 @@
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(strategy_id, report_type)
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_execution_audit_snapshots (
+            strategy_id TEXT PRIMARY KEY REFERENCES strategies(id) ON DELETE CASCADE,
+            snapshot_id TEXT NOT NULL UNIQUE,
+            as_of_date DATE,
+            source_run_id TEXT,
+            factory_run_id TEXT,
+            correlation_id TEXT,
+            trace_id TEXT,
+            submission_lane TEXT,
+            parent_task_run_id TEXT,
+            source_action TEXT,
+            verdict_status TEXT NOT NULL DEFAULT 'missing',
+            verdict_reasons JSONB DEFAULT '[]'::jsonb,
+            execution_hard_gate_passed BOOLEAN DEFAULT FALSE,
+            verification JSONB DEFAULT '{}'::jsonb,
+            acceptance JSONB DEFAULT '{}'::jsonb,
+            audit_summary JSONB DEFAULT '{}'::jsonb,
+            snapshot JSONB DEFAULT '{}'::jsonb,
+            metadata JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_closure_snapshots (
+            strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+            snapshot_type TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL UNIQUE,
+            as_of_date DATE,
+            source_run_id TEXT,
+            factory_run_id TEXT,
+            correlation_id TEXT,
+            trace_id TEXT,
+            submission_lane TEXT,
+            parent_task_run_id TEXT,
+            source_action TEXT,
+            snapshot JSONB DEFAULT '{}'::jsonb,
+            metadata JSONB DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY(strategy_id, snapshot_type)
         );
     """)

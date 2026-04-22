@@ -1,0 +1,29 @@
+aiask_timescaledb_extension:
+  query: |
+    SELECT
+      CASE
+        WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
+          THEN 1
+        ELSE 0
+      END AS up
+  metrics:
+    - up:
+        usage: "GAUGE"
+        description: "TimescaleDB extension presence on the configured database."
+
+aiask_pgvector_extension:
+  query: |
+    SELECT
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM pg_extension
+          WHERE extname IN ('vector', 'pgvector')
+        )
+          THEN 1
+        ELSE 0
+      END AS up
+  metrics:
+    - up:
+        usage: "GAUGE"
+        description: "pgvector extension presence on the configured database."

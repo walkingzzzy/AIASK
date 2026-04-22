@@ -69,6 +69,7 @@ class _StrategyVectorPlatformProfilesMixin:
                     metric=metric,
                 )
                 backend_audit = self._build_backend_audit(db, started_at)
+                trace_metadata = dict(strategy.get('_closure_trace') or {})
 
                 profile = await db.save_strategy_vector_profile({
                     'strategy_id': strategy.get('id'),
@@ -91,6 +92,7 @@ class _StrategyVectorPlatformProfilesMixin:
                         'audit': backend_audit,
                         'unified_collection_name': collection_name,
                         'model_id': model_id,
+                        'trace': trace_metadata,
                         **embedding_meta,
                     },
                 })

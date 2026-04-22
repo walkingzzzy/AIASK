@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -37,6 +38,10 @@ from .incubation import (
     resolve_incubation_action_plan,
     resolve_incubation_pipeline_stage,
 )
+from .execution_audit_snapshot import (
+    snapshot_verdict_payload,
+    with_execution_audit_snapshot_metadata,
+)
 from .prediction_trace import (
     _build_prediction_trace_ledger_view,
     _build_execution_lineage,
@@ -44,6 +49,13 @@ from .prediction_trace import (
     _extract_semantic_lineage,
     _load_prediction_trace_entity_chain,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _quality_report_timestamp(payload: dict[str, Any] | None) -> str | None:
+    report = dict(payload or {})
+    return _string(report.get("updated_at") or report.get("created_at")) or None
 
 def _resolve_risk_hard_gate(
     strategy: dict,
@@ -80,25 +92,70 @@ def _resolve_risk_hard_gate(
     elif apply_as_hard_gate and review_drawdown_pct is not None and review_drawdown_pct > 0 and max_drawdown >= review_drawdown_pct and status == "passed":
         status = "forced_review"
         reasons.append(f"max_drawdown>={review_drawdown_pct:.0%}")
-    return {
+    result = {
         "status": status,
         "reasons": list(dict.fromkeys(reasons)),
         "drawdown_invalidation_contract": drawdown_contract,
         "parameter_coherence_audit": parameter_coherence_audit,
     }
+    return result
 
 
-async def build_incubation_overview(db, strategy: dict) -> dict:
-    metrics = await db.get_strategy_metrics(strategy["id"])
-    all_m = next((m for m in metrics if m.get("period") == "all"), {})
-    backtest_m = next((m for m in metrics if m.get("period") == "backtest"), all_m)
-    quality_report = await get_latest_quality_report(db, strategy["id"])
+async def build_incubation_overview(
+    db,
+    strategy: dict,
+    *,
+    force_recompute: bool = False,
+) -> dict:
+    strategy_id = str(strategy["id"])
+    quality_report = await get_latest_quality_report(db, strategy_id)
     quality_gate = dict((quality_report or {}).get("quality_gate") or {})
     quality_summary = dict((quality_report or {}).get("summary") or {})
     validation_report = dict((quality_report or {}).get("validation_report") or {})
     validation_rating = dict(validation_report.get("rating") or {})
     validation_profile = dict((quality_report or {}).get("validation_profile") or {})
-    signal_stats = await db.get_signal_stats(strategy["id"])
+    quality_report_updated_at = _quality_report_timestamp(quality_report)
+    execution_audit_snapshot = None
+    get_latest_execution_audit_snapshot = getattr(db, "get_latest_execution_audit_snapshot", None)
+    if callable(get_latest_execution_audit_snapshot):
+        try:
+            execution_audit_snapshot = await get_latest_execution_audit_snapshot(strategy_id)
+        except Exception:
+            execution_audit_snapshot = None
+    if not force_recompute:
+        get_latest_closure_snapshot = getattr(db, "get_latest_strategy_closure_snapshot", None)
+        if callable(get_latest_closure_snapshot):
+            try:
+                cached_snapshot = await get_latest_closure_snapshot(
+                    strategy_id,
+                    snapshot_type="incubation_overview",
+                )
+            except Exception:
+                cached_snapshot = None
+            cached_metadata = dict((cached_snapshot or {}).get("metadata") or {})
+            cached_payload = dict((cached_snapshot or {}).get("snapshot") or {})
+            if (
+                cached_payload
+                and _string((cached_snapshot or {}).get("as_of")) == date.today().isoformat()
+                and _string(cached_metadata.get("strategy_status")) == _string(strategy.get("status"))
+                and _string(cached_metadata.get("quality_report_updated_at")) == _string(quality_report_updated_at)
+                and _string(cached_metadata.get("execution_audit_snapshot_id"))
+                == _string((execution_audit_snapshot or {}).get("snapshot_id"))
+            ):
+                cached_payload["as_of"] = _string(cached_payload.get("as_of")) or _string((cached_snapshot or {}).get("as_of")) or date.today().isoformat()
+                cached_payload["recomputed"] = False
+                cached_payload["cached"] = True
+                cached_payload["closure_snapshot_id"] = (cached_snapshot or {}).get("snapshot_id")
+                cached_payload["snapshot_source"] = "strategy_closure_snapshots"
+                return with_execution_audit_snapshot_metadata(
+                    cached_payload,
+                    snapshot=execution_audit_snapshot,
+                )
+
+    metrics = await db.get_strategy_metrics(strategy_id)
+    all_m = next((m for m in metrics if m.get("period") == "all"), {})
+    backtest_m = next((m for m in metrics if m.get("period") == "backtest"), all_m)
+    signal_stats = await db.get_signal_stats(strategy_id)
 
     sharpe = float((all_m or backtest_m).get("sharpe_ratio") or 0)
     mdd = abs(float((all_m or backtest_m).get("max_drawdown") or 0))
@@ -403,6 +460,17 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         if _string(item)
     ]
     execution_hard_gate_passed = bool(execution_quality.get("execution_hard_gate_passed"))
+    snapshot_verdict = snapshot_verdict_payload(execution_audit_snapshot)
+    if execution_audit_snapshot:
+        execution_audit_gate_status = _string(snapshot_verdict.get("status")) or execution_audit_gate_status
+        execution_audit_gate_reasons = [
+            _string(item)
+            for item in list(snapshot_verdict.get("reasons") or execution_audit_gate_reasons)
+            if _string(item)
+        ]
+        execution_hard_gate_passed = bool(snapshot_verdict.get("hard_gate_passed"))
+        if dict(execution_audit_snapshot.get("audit_summary") or {}):
+            audit_summary = dict(execution_audit_snapshot.get("audit_summary") or {})
     signal_stage_without_execution_gate = resolve_incubation_pipeline_stage(
         signal_quality,
         open_risk_count=0,
@@ -474,6 +542,8 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "execution_audit_gate_status": execution_audit_gate_status,
         "execution_audit_gate_reasons": execution_audit_gate_reasons,
         "execution_hard_gate_passed": execution_hard_gate_passed,
+        "execution_audit_snapshot_id": (execution_audit_snapshot or {}).get("snapshot_id"),
+        "execution_audit_snapshot_as_of": (execution_audit_snapshot or {}).get("as_of"),
         "diagnosis": execution_quality.get("diagnosis"),
         "diagnosis_reasons": list(execution_quality.get("diagnosis_reasons") or []),
         "signal_to_fill_ratio": execution_quality_contract.get("signal_to_fill_ratio"),
@@ -661,7 +731,9 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
     )
     if not execution_hard_gate_passed and execution_audit_gate_status in {
         "missing",
+        "bootstrap_pending",
         "insufficient_samples",
+        "bootstrap_ready",
         "failed_metrics",
     }:
         execution_gate_reason = f"execution_audit_gate:{execution_audit_gate_status}"
@@ -709,7 +781,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         hard_gate_result=hard_gate_result,
     )
 
-    return {
+    result = {
         "strategy_id": strategy["id"],
         "strategy_name": strategy.get("name"),
         "status": strategy.get("status"),
@@ -729,6 +801,7 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "execution_quality": execution_quality_contract,
         "execution_quality_snapshot": execution_quality_snapshot,
         "execution_diagnostics": execution_diagnostics,
+        "execution_audit_snapshot": execution_audit_snapshot,
         "objective_profile": high_precision_context.get("objective_profile"),
         "precision_readiness": high_precision_context.get("precision_readiness"),
         "regime_validation_summary": dict(high_precision_context.get("regime_validation_summary") or {}),
@@ -860,3 +933,48 @@ async def build_incubation_overview(db, strategy: dict) -> dict:
         "revision_required": bool(action_plan.get("revision_required")),
         "cleanup_recommended": bool(action_plan.get("cleanup_recommended")),
     }
+    result["as_of"] = date.today().isoformat()
+    result["recomputed"] = True
+    result["cached"] = False
+    result["snapshot_source"] = "computed"
+    upsert_strategy_closure_snapshot = getattr(db, "upsert_strategy_closure_snapshot", None)
+    if callable(upsert_strategy_closure_snapshot):
+        try:
+            closure_snapshot = await upsert_strategy_closure_snapshot(
+                {
+                    "strategy_id": strategy_id,
+                    "snapshot_type": "incubation_overview",
+                    "snapshot_id": f"cls_{strategy_id}_incubation_overview",
+                    "as_of": result.get("as_of"),
+                    "source_run_id": (execution_audit_snapshot or {}).get("source_run_id"),
+                    "factory_run_id": (execution_audit_snapshot or {}).get("factory_run_id"),
+                    "correlation_id": (execution_audit_snapshot or {}).get("correlation_id"),
+                    "trace_id": (execution_audit_snapshot or {}).get("trace_id"),
+                    "submission_lane": (execution_audit_snapshot or {}).get("submission_lane"),
+                    "parent_task_run_id": (execution_audit_snapshot or {}).get("parent_task_run_id"),
+                    "source_action": (execution_audit_snapshot or {}).get("source_action") or "incubation_overview",
+                    "snapshot": result,
+                    "metadata": {
+                        "strategy_status": strategy.get("status"),
+                        "quality_report_updated_at": quality_report_updated_at,
+                        "execution_audit_snapshot_id": (execution_audit_snapshot or {}).get("snapshot_id"),
+                        "pipeline_stage": result.get("pipeline_stage"),
+                        "promotion_gate_status": result.get("promotion_gate_status"),
+                        "latest_signal_snapshot_as_of": dict(result.get("latest_signal_snapshot") or {}).get("as_of_date"),
+                        "snapshot_source": "incubation_overview",
+                    },
+                }
+            )
+            if closure_snapshot:
+                result["closure_snapshot_id"] = closure_snapshot.get("snapshot_id")
+                result["snapshot_source"] = "strategy_closure_snapshots"
+        except Exception as exc:
+            logger.warning(
+                "failed to persist incubation overview closure snapshot for %s: %s",
+                strategy_id,
+                exc,
+            )
+    return with_execution_audit_snapshot_metadata(
+        result,
+        snapshot=execution_audit_snapshot,
+    )

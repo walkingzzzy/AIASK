@@ -1,5 +1,24 @@
 import { getBffBaseUrl } from './bff-base';
 
+/** 仅允许站内相对路径，避免把登录后的跳转交给外部地址。 */
+export function normalizeAppRedirectPath(returnPath?: string | null, fallback = '/market') {
+  const candidate = String(returnPath ?? '').trim();
+  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) {
+    return fallback;
+  }
+
+  try {
+    const baseOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+    const next = new URL(candidate, baseOrigin);
+    if (next.origin !== baseOrigin || !next.pathname.startsWith('/')) {
+      return fallback;
+    }
+    return `${next.pathname}${next.search}${next.hash}`;
+  } catch {
+    return fallback;
+  }
+}
+
 /** 设置非敏感登录指示器（供 middleware 判断） */
 export function setLoggedIn() {
   document.cookie = 'logged_in=1; Path=/; Max-Age=604800; SameSite=Lax';
@@ -18,7 +37,8 @@ export function hasLoggedInHint() {
 
 /** 跳转到登录页 */
 export function redirectToLogin(returnPath?: string) {
-  const p = returnPath ?? `${window.location.pathname}${window.location.search}`;
+  const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const p = normalizeAppRedirectPath(returnPath ?? currentPath);
   window.location.href = `/login?redirect=${encodeURIComponent(p)}`;
 }
 

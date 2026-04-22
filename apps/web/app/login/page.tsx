@@ -3,10 +3,12 @@
 import { FormEvent, useState } from 'react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui';
-import { setLoggedIn } from '@/lib/auth';
+import { normalizeAppRedirectPath, setLoggedIn } from '@/lib/auth';
 import { useHydrated } from '@/hooks/use-hydrated';
 
 const LOGIN_ACTION = '/api/auth/login';
+const REDIRECT_FALLBACK = '/market';
+const OTP_CODE_RE = /^(\d{6}|[A-Za-z0-9]{8})$/;
 
 const LOGIN_HIGHLIGHTS = [
   {
@@ -34,15 +36,42 @@ export default function LoginPage() {
 
   async function submitLogin() {
     if (!hydrated || loading) return;
+    const normalizedUsername = username.trim();
+    const normalizedOtpCode = otpCode.trim().replace(/\s+/g, '').toUpperCase();
+
+    if (!normalizedUsername) {
+      setError('请输入用户名');
+      return;
+    }
+    if (!password) {
+      setError('请输入密码');
+      return;
+    }
+    if (password.length < 3) {
+      setError('密码至少 3 个字符');
+      return;
+    }
+    if (normalizedOtpCode && !OTP_CODE_RE.test(normalizedOtpCode)) {
+      setError('2FA 验证码必须为 6 位动态码或 8 位恢复码');
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    const redirectTo = new URLSearchParams(window.location.search).get('redirect') || '/market';
+    const redirectTo = normalizeAppRedirectPath(
+      new URLSearchParams(window.location.search).get('redirect'),
+      REDIRECT_FALLBACK,
+    );
 
     try {
       const response = await fetch(LOGIN_ACTION, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username, password, otpCode: otpCode.trim() || undefined }),
+        body: JSON.stringify({
+          username: normalizedUsername,
+          password,
+          otpCode: normalizedOtpCode || undefined,
+        }),
         credentials: 'include',
       });
 
@@ -70,10 +99,15 @@ export default function LoginPage() {
     void submitLogin();
   }
 
+  const trimmedUsername = username.trim();
+  const trimmedOtpCode = otpCode.trim().replace(/\s+/g, '').toUpperCase();
+  const otpCodeValid = !trimmedOtpCode || OTP_CODE_RE.test(trimmedOtpCode);
+  const submitDisabled = !hydrated || loading || !trimmedUsername || password.length < 3 || !otpCodeValid;
+
   return (
-    <main className="mx-auto min-h-screen w-full max-w-[1180px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.14fr)_420px]">
-        <section className="page-hero p-6 sm:p-8">
+    <main className="mx-auto min-h-screen w-full max-w-[clamp(20rem,94vw,86rem)] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] xl:grid-cols-[minmax(0,1.14fr)_minmax(0,0.86fr)]">
+        <section className="order-2 min-w-0 page-hero p-6 sm:p-8 lg:order-1">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="info">AIASK</Badge>
             <Badge variant="neutral">登录入口</Badge>
@@ -114,15 +148,15 @@ export default function LoginPage() {
               ))}
             </div>
             <div className="metric-tile mt-4 rounded-[20px] px-4 py-3 text-sm leading-6 text-text-secondary">
-              登录页只是账户入口：优先回到 `redirect` 指定页面，没有指定时进入 `/market`。
+              登录后会优先回到你刚才访问的页面；如果没有来源页，则进入行情看板。
             </div>
           </div>
         </section>
 
-        <section className="panel-solid rounded-[30px] p-6 sm:p-8">
+        <section className="order-1 min-w-0 w-full panel-solid rounded-[30px] p-6 sm:p-8 lg:order-2 lg:justify-self-end lg:max-w-[clamp(22rem,34vw,32rem)]">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="warning">账户登录</Badge>
-            <Badge variant="neutral">Secure Entry</Badge>
+            <Badge variant="neutral">安全入口</Badge>
           </div>
           <h2 className="mt-2">登录账号</h2>
           <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">使用账号密码登录。已启用 2FA 的账户需要补充动态码或恢复码。</p>
@@ -136,8 +170,12 @@ export default function LoginPage() {
                 name="username"
                 placeholder="请输入用户名"
                 autoComplete="username"
+                required
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm"
               />
             </label>
@@ -150,8 +188,13 @@ export default function LoginPage() {
                 name="password"
                 placeholder="请输入密码"
                 autoComplete="current-password"
+                required
+                minLength={3}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm"
               />
             </label>
@@ -164,8 +207,12 @@ export default function LoginPage() {
                 name="otpCode"
                 placeholder="6 位动态码或 8 位恢复码"
                 autoComplete="one-time-code"
+                maxLength={8}
                 value={otpCode}
-                onChange={(e) => setOtpCode(e.target.value.replace(/\s+/g, '').slice(0, 8))}
+                onChange={(e) => {
+                  setOtpCode(e.target.value.replace(/\s+/g, '').slice(0, 8).toUpperCase());
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm font-mono tracking-[0.25em]"
               />
             </label>
@@ -180,9 +227,8 @@ export default function LoginPage() {
             ) : null}
 
             <button
-              type="button"
-              onClick={() => void submitLogin()}
-              disabled={!hydrated || loading}
+              type="submit"
+              disabled={submitDisabled}
               data-testid="login-submit-action"
               className="min-h-11 rounded-full bg-primary px-4 py-2.5 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -191,7 +237,7 @@ export default function LoginPage() {
           </form>
 
           <div className="panel-soft mt-4 rounded-[20px] px-4 py-3 text-xs leading-5 text-text-secondary">
-            登录成功后会优先回到 `redirect` 指定页面，否则进入 `/market`。
+            登录成功后会回到你刚才要访问的位置；如果没有来源页，则进入行情看板。
           </div>
 
           <p className="mb-0 mt-4 text-sm text-text-secondary">

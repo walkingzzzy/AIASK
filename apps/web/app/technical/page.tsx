@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import {
   PageContainer,
   TabBar,
@@ -13,12 +14,15 @@ import {
   KpiCard,
 } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { LineChart, COLORS } from '@/components/charts';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
@@ -271,6 +275,113 @@ export default function TechnicalPage() {
   const activeTabLabel = TABS.find((item) => item.key === tab)?.label ?? '技术分析';
   const focusCode = trimmedCode || resolvedCode || '600519';
   const periodLabel = period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线';
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'technical.run-recommended',
+        label: '运行推荐分析',
+        description: '用推荐参数直接发起技术分析',
+        keywords: ['推荐分析', '技术'],
+        scope: 'page' as const,
+        pageKey: 'technical',
+        run: () => {
+          runRecommendedAnalysis();
+          return { message: '已触发推荐技术分析' };
+        },
+      },
+      {
+        id: 'technical.submit',
+        label: tab === 'available' ? '刷新可用形态' : tab === 'indicators' ? '计算指标' : '识别形态',
+        description: '按当前参数提交技术分析请求',
+        keywords: ['技术分析', '提交'],
+        scope: 'page' as const,
+        pageKey: 'technical',
+        run: () => {
+          submit();
+          return { message: '已提交当前技术分析请求' };
+        },
+      },
+      {
+        id: 'technical.open-stock',
+        label: '打开个股详情',
+        description: '跳到个股详情页继续看行情和盘口',
+        keywords: ['个股详情', '跳转'],
+        scope: 'page' as const,
+        pageKey: 'technical',
+        run: () => {
+          window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
+          return { message: '已跳到个股详情' };
+        },
+      },
+    ],
+    [focusCode, tab],
+  );
+  usePageActions(pageActions);
+  const technicalSummary = `当前技术页聚焦 ${focusCode}，Tab 为 ${activeTabLabel}，周期 ${periodLabel}，状态 ${isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析'}。`;
+  const technicalViews = [
+    ...(rows.length > 1 || indicatorSeries.length > 1 ? (['compare'] as const) : []),
+    ...(indicatorSeries.length > 0 ? (['visual'] as const) : []),
+  ];
+  const technicalResult = buildLocalResultContract({
+    summary: technicalSummary,
+    availableViews: technicalViews,
+    pageActions,
+    preferredActionIds: ['technical.run-recommended', 'technical.submit', 'technical.open-stock'],
+    recommendedLinks: [
+      { id: 'technical-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode)}` },
+      { id: 'technical-open-fund-flow-link', label: '资金流', href: `/fund-flow?code=${encodeURIComponent(focusCode)}` },
+      { id: 'technical-open-risk-link', label: '风险页', href: '/risk' },
+      { id: 'technical-open-backtest-link', label: '回测', href: `/backtest?code=${encodeURIComponent(focusCode)}` },
+    ],
+    evidence: [
+      { label: '当前 Tab', value: activeTabLabel },
+      { label: '标的', value: focusCode },
+      { label: '周期', value: periodLabel },
+      { label: '结果条数', value: String(rows.length || indicatorSeries.length || indicatorSummary.length) },
+      { label: '状态', value: isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析' },
+    ],
+    riskNotes: [error, mcpErr, explanation?.description].filter((item): item is string => Boolean(item)),
+    freshness: lastUpdatedText ? { label: '最近更新', updatedAt: lastUpdatedText } : null,
+    platformMeta: {
+      sourceTool: 'technical',
+      sourceChain: ['technical', tab, period],
+      degraded: Boolean(error),
+      fallbackReason: error ? [error] : undefined,
+    },
+    workbenchTask: defaultWorkbenchTask('technical', `复查${activeTabLabel}`, `/technical?code=${encodeURIComponent(focusCode)}`, 'technical-review', {
+      code: focusCode,
+      tab,
+      period,
+      limit,
+    }),
+  });
+  usePageContext({
+    pageKey: 'technical',
+    title: '技术分析工作台',
+    summary: technicalSummary,
+    stockCode: focusCode || undefined,
+    objectType: 'stock',
+    objectId: focusCode,
+    resultType: `technical-${tab}`,
+    tags: [activeTabLabel, periodLabel, focusCode],
+    suggestions: [
+      `总结 ${focusCode} 当前技术面的关键结论`,
+      '告诉我下一步更该看资金流还是风险',
+      '把当前技术结果整理成操作清单',
+    ],
+    recommendedActions: technicalResult.recommendedActions ?? [],
+    recommendedLinks: technicalResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(technicalResult.evidence),
+    riskNotes: technicalResult.riskNotes ?? [],
+    freshness: technicalResult.freshness ?? null,
+    raw: {
+      code: focusCode,
+      tab,
+      period,
+      limit,
+      hasData: Boolean(rawData),
+    },
+  });
 
   return (
     <PageContainer>
@@ -333,6 +444,8 @@ export default function TechnicalPage() {
           </details>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="technical" title="技术结果工作台" result={technicalResult} />
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ...utils import fail, normalize_code, ok
+from ...utils import fail, normalize_code, ok, resolve_existing_security_code_sync
 from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
@@ -283,6 +283,25 @@ async def _delete_alert_from_db(alert: dict) -> None:
         logger.warning("[AlertsManager] DB delete failed for alert_id=%s: %s", alert.get("alert_id"), exc)
 
 
+async def _delete_combo_alert_from_db(alert_id: str) -> bool:
+    name = str(alert_id or "").strip()
+    if not name.startswith("combo_"):
+        return False
+    combo_name = name[len("combo_"):]
+    if not combo_name:
+        return False
+    try:
+        from ...storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            result = await conn.execute("DELETE FROM combo_alerts WHERE name = $1", combo_name)
+        return str(result or "").strip().endswith("1")
+    except Exception as exc:
+        logger.warning("[AlertsManager] combo DB delete failed for alert_id=%s: %s", alert_id, exc)
+        return False
+
+
 def register_alerts_manager(mcp):
     """Register the unified alerts manager tool."""
 
@@ -350,7 +369,9 @@ def register_alerts_manager(mcp):
                 if not all([code, indicator, condition, value is not None]):
                     return fail("需要提供 code, indicator, condition, value")
 
-                code = normalize_code(code)
+                code, _, code_error = resolve_existing_security_code_sync(stock_code=code)
+                if code_error:
+                    return fail(code_error)
                 indicator = str(indicator).strip()
                 condition = str(condition).strip()
                 if indicator not in _VALID_INDICATORS:
@@ -363,9 +384,13 @@ def register_alerts_manager(mcp):
                 except Exception:
                     return fail("value 必须是数字")
 
+                existing_alert_id = _make_alert_id(user_id, code, indicator, condition)
+                if await _load_alert_by_id(user_id, existing_alert_id):
+                    return fail(f"告警已存在: {existing_alert_id}。如需修改请使用 update")
+
                 persisted = await _persist_new_alert(user_id, code, indicator, condition, threshold)
                 alert = persisted or {
-                    "alert_id": _make_alert_id(user_id, code, indicator, condition),
+                    "alert_id": existing_alert_id,
                     "user_id": user_id,
                     "code": code,
                     "indicator": indicator,
@@ -438,7 +463,10 @@ def register_alerts_manager(mcp):
                 updated_alert = dict(alert)
 
                 if kwargs.get("code"):
-                    updated_alert["code"] = normalize_code(kwargs.get("code"))
+                    normalized_code, _, code_error = resolve_existing_security_code_sync(stock_code=kwargs.get("code"))
+                    if code_error:
+                        return fail(code_error)
+                    updated_alert["code"] = normalized_code
 
                 if kwargs.get("indicator"):
                     candidate_indicator = str(kwargs.get("indicator")).strip()
@@ -489,6 +517,13 @@ def register_alerts_manager(mcp):
                 resolved_alert_id = str(kwargs.get("alert_id") or "").strip()
                 if not resolved_alert_id:
                     return fail("需要提供 alert_id")
+
+                if resolved_alert_id.startswith("combo_"):
+                    deleted = await _delete_combo_alert_from_db(resolved_alert_id)
+                    _alerts_store.pop(resolved_alert_id, None)
+                    if deleted:
+                        return ok({"alert_id": resolved_alert_id, "deleted": True})
+                    return fail(f"告警不存在: {resolved_alert_id}")
 
                 alert = await _load_alert_by_id(user_id, resolved_alert_id)
                 if not alert:

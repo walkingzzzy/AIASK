@@ -4,10 +4,20 @@ import asyncio
 import os
 import random
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from ...storage import get_db
 from ...utils import fail, ok
+from ...services.strategy_lifecycle_shared.presentation import (
+    build_favorite_state,
+    build_owner_state,
+    build_paper_session_state,
+    build_strategy_presentation,
+    is_admin_actor,
+    is_personal_strategy,
+    normalize_actor_roles,
+)
 from .strategy_mgr_helpers import (
     build_factory_capability_health,
     build_incubation_overview,
@@ -60,6 +70,74 @@ def _execution_audit_entity_chain_available(db) -> bool:
 
 async def _resolved(value):
     return value
+
+
+def _trimmed(value) -> str:
+    return str(value or "").strip()
+
+
+def _actor_context(params: dict) -> tuple[str | None, list[str]]:
+    actor_id = _trimmed(params.get("actor_id") or params.get("user_id")) or None
+    actor_roles = normalize_actor_roles(
+        params.get("actor_roles")
+        or params.get("roles")
+        or params.get("actor_role")
+        or params.get("role")
+    )
+    return actor_id, actor_roles
+
+
+def _strategy_source_strategy_id(strategy: dict | None) -> str | None:
+    payload = dict(strategy or {})
+    metadata = dict(dict(payload.get("params") or {}).get("metadata") or {})
+    value = _trimmed(metadata.get("source_strategy_id"))
+    return value or None
+
+
+def _ensure_personal_strategy_mutation_allowed(
+    strategy: dict | None,
+    *,
+    actor_id: str | None,
+    actor_roles: list[str],
+) -> str | None:
+    payload = dict(strategy or {})
+    if not payload:
+        return "Strategy not found"
+    if is_admin_actor(actor_roles):
+        return None
+    if not actor_id:
+        return "actor_id is required"
+    if _trimmed(payload.get("author_id")) != actor_id:
+        return "only the strategy owner can modify this strategy"
+    if not is_personal_strategy(payload):
+        return "market strategies are read-only"
+    return None
+
+
+async def _load_personal_strategy_surface_state(
+    db,
+    strategy: dict | None,
+    *,
+    actor_id: str | None,
+    actor_roles: list[str],
+) -> tuple[dict, dict, dict]:
+    payload = dict(strategy or {})
+    owner_state = build_owner_state(payload, actor_id=actor_id, actor_roles=actor_roles)
+    is_favorited = False
+    if actor_id and payload.get("id") and hasattr(db, "is_subscribed"):
+        try:
+            is_favorited = bool(await db.is_subscribed(str(payload.get("id")), actor_id))
+        except Exception:
+            is_favorited = False
+    favorite_state = build_favorite_state(actor_id=actor_id, is_favorited=is_favorited)
+    paper_session = None
+    if actor_id and payload.get("id") and hasattr(db, "get_strategy_paper_session"):
+        try:
+            paper_session = await db.get_strategy_paper_session(str(payload.get("id")), actor_id)
+        except Exception:
+            paper_session = None
+    paper_session_state = build_paper_session_state(paper_session, actor_id=actor_id)
+    return owner_state, favorite_state, paper_session_state
 
 
 def _resolve_strategy_status_filter(raw_status, *, default: str = "visible"):
@@ -131,7 +209,184 @@ def _extract_strategy_market_summary_value(strategy: dict, key: str):
     return None
 
 
-def _build_strategy_market_summary(strategy: dict, *, metrics: dict | None = None) -> dict:
+def _normalize_strategy_status_value(value) -> str:
+    raw = _trimmed(value)
+    if not raw:
+        return ""
+    normalized = normalize_status_alias(raw)
+    return _trimmed(normalized or raw).lower()
+
+
+def _incubation_surface_issue_count(value) -> int:
+    if isinstance(value, (list, tuple, set)):
+        return len([item for item in value if _trimmed(item)])
+    return 0
+
+
+def _incubation_surface_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = _trimmed(value).lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _closure_snapshot_overview_payload(snapshot: dict | None, *, strategy_status: str) -> dict:
+    payload = dict((snapshot or {}).get("snapshot") or {})
+    metadata = dict((snapshot or {}).get("metadata") or {})
+    snapshot_status = _normalize_strategy_status_value(metadata.get("strategy_status"))
+    if snapshot_status and strategy_status and snapshot_status != strategy_status:
+        return {}
+    return payload
+
+
+def _resolve_incubation_surface_stage(
+    *,
+    strategy_status: str,
+    latest_pipeline_snapshot: dict | None = None,
+    overview: dict | None = None,
+    incubation_account: dict | None = None,
+) -> str:
+    for value in (
+        (latest_pipeline_snapshot or {}).get("pipeline_stage"),
+        (overview or {}).get("pipeline_stage"),
+        (incubation_account or {}).get("stage"),
+    ):
+        normalized = _trimmed(value)
+        if normalized:
+            return normalized
+    if strategy_status == "listed":
+        return "promoted"
+    if strategy_status == "incubating":
+        return "observe"
+    return "not_started"
+
+
+def _build_strategy_incubation_surface(
+    strategy: dict,
+    *,
+    latest_pipeline_snapshot: dict | None = None,
+    overview: dict | None = None,
+    incubation_account: dict | None = None,
+    latest_metric: dict | None = None,
+) -> dict:
+    strategy_status = _normalize_strategy_status_value(strategy.get("status"))
+    snapshot = dict(latest_pipeline_snapshot or {})
+    overview_payload = dict(overview or {})
+    account = dict(incubation_account or {})
+    metric = dict(latest_metric or {})
+    pipeline_stage = _resolve_incubation_surface_stage(
+        strategy_status=strategy_status,
+        latest_pipeline_snapshot=snapshot,
+        overview=overview_payload,
+        incubation_account=account,
+    )
+    snapshot_summary = dict(snapshot.get("summary") or {})
+    hard_gate_result = dict(snapshot.get("hard_gate_result") or {})
+    promotion_ready = _incubation_surface_bool(overview_payload.get("promotion_ready"))
+    if promotion_ready is None:
+        promotion_ready = _incubation_surface_bool(snapshot_summary.get("promotion_ready"))
+    if promotion_ready is None:
+        promotion_ready = pipeline_stage in {"graduation_ready", "promoted"}
+
+    blockers = overview_payload.get("blockers")
+    if blockers is None:
+        blockers = snapshot.get("blockers")
+    risk_flags = overview_payload.get("risk_flags")
+    if risk_flags is None:
+        risk_flags = snapshot.get("risk_flags")
+
+    entered_incubator = bool(
+        snapshot
+        or overview_payload
+        or account
+        or pipeline_stage != "not_started"
+        or strategy_status in {"incubating", "listed"}
+    )
+
+    return {
+        "entered_incubator": entered_incubator,
+        "pipeline_stage": pipeline_stage,
+        "promotion_ready": bool(promotion_ready),
+        "latest_decision": _trimmed(snapshot.get("latest_decision")) or _trimmed(metric.get("decision")) or None,
+        "execution_audit_gate_status": (
+            _trimmed(overview_payload.get("execution_audit_gate_status"))
+            or _trimmed(hard_gate_result.get("execution_audit_gate_status"))
+            or _trimmed(snapshot_summary.get("execution_audit_gate_status"))
+            or None
+        ),
+        "blocker_count": _incubation_surface_issue_count(blockers),
+        "risk_count": _incubation_surface_issue_count(risk_flags),
+    }
+
+
+async def _load_strategy_incubation_surface(db, strategy: dict) -> dict:
+    sid = _trimmed((strategy or {}).get("id"))
+    if not sid:
+        return _build_strategy_incubation_surface(strategy or {})
+
+    latest_pipeline_snapshot_task = (
+        db.get_latest_strategy_incubation_pipeline_snapshot(sid)
+        if hasattr(db, "get_latest_strategy_incubation_pipeline_snapshot")
+        else _resolved(None)
+    )
+    incubation_account_task = (
+        db.get_strategy_incubation_account(sid)
+        if hasattr(db, "get_strategy_incubation_account")
+        else _resolved(None)
+    )
+    closure_snapshot_task = (
+        db.get_latest_strategy_closure_snapshot(sid, snapshot_type="incubation_overview")
+        if hasattr(db, "get_latest_strategy_closure_snapshot")
+        else _resolved(None)
+    )
+    latest_pipeline_snapshot, incubation_account, closure_snapshot = await asyncio.gather(
+        latest_pipeline_snapshot_task,
+        incubation_account_task,
+        closure_snapshot_task,
+    )
+
+    strategy_status = _normalize_strategy_status_value((strategy or {}).get("status"))
+    overview = _closure_snapshot_overview_payload(closure_snapshot, strategy_status=strategy_status)
+    if not overview and strategy_status in {"incubating", "listed", "deprecated", "suspended"}:
+        overview = await _resolve_strategy_incubation_overview(db, strategy) or {}
+
+    pipeline_stage = _resolve_incubation_surface_stage(
+        strategy_status=strategy_status,
+        latest_pipeline_snapshot=latest_pipeline_snapshot,
+        overview=overview,
+        incubation_account=incubation_account,
+    )
+    latest_metric = None
+    if (
+        hasattr(db, "get_latest_strategy_incubation_metric")
+        and not _trimmed((latest_pipeline_snapshot or {}).get("latest_decision"))
+        and pipeline_stage != "not_started"
+    ):
+        latest_metric = await db.get_latest_strategy_incubation_metric(sid)
+
+    return _build_strategy_incubation_surface(
+        strategy or {},
+        latest_pipeline_snapshot=latest_pipeline_snapshot,
+        overview=overview,
+        incubation_account=incubation_account,
+        latest_metric=latest_metric,
+    )
+
+
+def _build_strategy_market_summary(
+    strategy: dict,
+    *,
+    metrics: dict | None = None,
+    incubation_surface: dict | None = None,
+) -> dict:
     summary = {
         "id": strategy.get("id"),
         "name": strategy.get("name"),
@@ -146,6 +401,7 @@ def _build_strategy_market_summary(strategy: dict, *, metrics: dict | None = Non
         "turnover_rate": _extract_strategy_market_summary_value(strategy, "turnover_rate"),
         "capacity": _extract_strategy_market_summary_value(strategy, "capacity"),
         "capacity_label": _extract_strategy_market_summary_value(strategy, "capacity_label"),
+        "incubation_surface": incubation_surface,
     }
 
     if metrics:
@@ -168,10 +424,13 @@ def _build_strategy_market_summary(strategy: dict, *, metrics: dict | None = Non
 
 async def _enrich_rank_strategy(db, strategy: dict, semaphore: asyncio.Semaphore) -> dict:
     async with semaphore:
-        metrics_list = await db.get_strategy_metrics(strategy["id"])
+        metrics_list, incubation_surface = await asyncio.gather(
+            db.get_strategy_metrics(strategy["id"]),
+            _load_strategy_incubation_surface(db, strategy),
+        )
 
     all_period = next((m for m in metrics_list if m.get("period") == "all"), {})
-    return _build_strategy_market_summary(strategy, metrics=all_period)
+    return _build_strategy_market_summary(strategy, metrics=all_period, incubation_surface=incubation_surface)
 
 
 async def handle_help(db, params: dict) -> dict:
@@ -179,13 +438,15 @@ async def handle_help(db, params: dict) -> dict:
         "actions": [
             "create", "publish", "archive", "list", "detail",
             "update_metrics", "review", "subscribe", "unsubscribe",
-            "my_subscriptions", "rank", "submit", "capabilities", "daily_snapshot", "daily_snapshots",
+            "my_subscriptions", "my_strategies", "fork_strategy", "update_strategy", "delete_personal_strategy",
+            "paper_session_get", "paper_session_get_or_create",
+            "rank", "submit", "capabilities", "daily_snapshot", "daily_snapshots",
             "incubation_accounts", "incubation_metrics", "paper_account", "paper_orders", "paper_nav", "incubation_sync_run", "risk_events", "risk_snapshots", "risk_scan_run", "risk_recovery", "resolve_risk_event", "runtime_alerts", "runtime_alert_dispatch_run", "runtime_alert_ack",
             "vector_profiles", "vector_indexes", "vector_reconcile", "vector_rebuild", "vector_health", "vector_cleanup",
-            "ai_generate", "ai_experiments", "task_runs", "domain_events", "domain_projection", "domain_projection_snapshot", "domain_projection_rebuild",
+            "ai_generate", "ai_optimize_personal_strategy", "ai_experiments", "task_runs", "domain_events", "domain_projection", "domain_projection_snapshot", "domain_projection_rebuild",
             "runtime_control", "runtime_control_set", "promotion_reviews", "promotion_review_run",
             "runtime_cycle_run", "runtime_cycle_status", "lifecycle_scan", "get_signals", "get_forward_returns", "get_signal_stats",
-            "factory_status", "factory_run_once", "factory_runs", "factory_run_detail", "execution_audit_verification", "review_report", "review_report_recheck", "submission_replay", "events",
+            "factory_status", "factory_run_once", "factory_runs", "factory_run_detail", "execution_audit_verification", "review_report", "review_report_recheck", "submission_replay", "events", "closure_review",
             "incubation_overview", "help",
         ],
         "description": "策略超市管理器（含生命周期与前向信号跟踪）",
@@ -198,6 +459,13 @@ async def handle_create(db, params: dict) -> dict:
         return fail("name is required")
     strategy_type = str(params.get("strategy_type") or params.get("type") or "custom").strip()
     sid = f"strat_{int(time.time())}_{uuid4().hex[:8]}"
+    tags = list(params.get("tags") or [])
+    metadata = dict(dict(params.get("params") or {}).get("metadata") or {})
+    if params.get("personal_strategy") or metadata.get("source_strategy_id"):
+        tags = [*tags, "personal_strategy"]
+    if "personal_strategy" in {str(item or "").strip().lower() for item in tags}:
+        tags = [str(item or "").strip() for item in tags if str(item or "").strip()]
+        tags = list(dict.fromkeys(tags))
     data = {
         "id": sid,
         "name": name,
@@ -207,7 +475,7 @@ async def handle_create(db, params: dict) -> dict:
         "params": params.get("params") or {},
         "factor_weights": params.get("factor_weights") or {},
         "status": "draft",
-        "tags": params.get("tags") or [],
+        "tags": tags,
         "backtest_artifact_id": params.get("backtest_artifact_id"),
     }
     result = await db.save_strategy(data)
@@ -236,7 +504,17 @@ async def handle_list(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 20)), 1), 100)
     offset = max(int(params.get("offset", 0)), 0)
     rows = await db.list_strategies(status, strategy_type, limit, offset)
-    return ok({"strategies": [_build_strategy_market_summary(row) for row in rows], "count": len(rows)})
+    incubation_surfaces = await asyncio.gather(*[
+        _load_strategy_incubation_surface(db, row)
+        for row in rows
+    ]) if rows else []
+    return ok({
+        "strategies": [
+            _build_strategy_market_summary(row, incubation_surface=incubation_surfaces[index])
+            for index, row in enumerate(rows)
+        ],
+        "count": len(rows),
+    })
 
 
 async def handle_detail(db, params: dict) -> dict:
@@ -247,7 +525,8 @@ async def handle_detail(db, params: dict) -> dict:
     if not strategy:
         return fail(f"Strategy not found: {sid}")
 
-    user_id = str(params.get("user_id", "default"))
+    actor_id, actor_roles = _actor_context(params)
+    user_id = str(actor_id or params.get("user_id") or "default")
     metrics, reviews, is_sub, latest_quality_report, incubation_overview, incubation_account, incubation_metric, risk_events, latest_runtime_risk_snapshot, runtime_control, runtime_alerts, latest_promotion_review, latest_projection_snapshot, latest_vector_index_snapshot, latest_incubation_pipeline_snapshot, vector_profiles, similar_vector_profiles, domain_events, task_runs, nav_series, signal_event_snapshots = await asyncio.gather(
         db.get_strategy_metrics(sid),
         db.get_reviews(sid, limit=10),
@@ -285,6 +564,22 @@ async def handle_detail(db, params: dict) -> dict:
         strategy_type=strategy.get("strategy_type"),
         default_review_source="strategy_manager.detail",
     )
+    owner_state, favorite_state, paper_session_state = await _load_personal_strategy_surface_state(
+        db,
+        strategy,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    presentation = build_strategy_presentation(
+        strategy,
+        owner_state=owner_state,
+        favorite_state=favorite_state,
+        paper_session_state=paper_session_state,
+        overview=incubation_overview,
+        report=latest_quality_report,
+        runtime_control=runtime_control,
+        risk_events=risk_events,
+    )
 
     return ok({
         "strategy": strategy, "metrics": metrics, "reviews": reviews,
@@ -306,6 +601,10 @@ async def handle_detail(db, params: dict) -> dict:
         "similar_vector_profiles": similar_vector_profiles,
         "domain_events": domain_events,
         "task_runs": task_runs,
+        "owner_state": owner_state,
+        "favorite_state": favorite_state,
+        "paper_session_state": paper_session_state,
+        "presentation": presentation,
     })
 
 
@@ -407,6 +706,238 @@ async def handle_my_subscriptions(db, params: dict) -> dict:
     return ok({"subscriptions": rows, "count": len(rows)})
 
 
+async def handle_my_strategies(db, params: dict) -> dict:
+    actor_id, actor_roles = _actor_context(params)
+    if not actor_id:
+        return fail("actor_id is required")
+    include_archived = str(params.get("include_archived") or "").strip().lower() in {"1", "true", "yes"}
+    limit = min(max(int(params.get("limit", 50)), 1), 200)
+    offset = max(int(params.get("offset", 0)), 0)
+    rows = await db.list_user_strategies(
+        actor_id,
+        include_archived=include_archived,
+        limit=limit,
+        offset=offset,
+    ) if hasattr(db, "list_user_strategies") else []
+    favorite_rows = await db.list_user_subscriptions(actor_id) if hasattr(db, "list_user_subscriptions") else []
+    favorite_ids = {
+        _trimmed(item.get("id") or item.get("strategy_id"))
+        for item in list(favorite_rows or [])
+        if _trimmed(item.get("id") or item.get("strategy_id"))
+    }
+    incubation_surfaces = await asyncio.gather(*[
+        _load_strategy_incubation_surface(db, row)
+        for row in rows
+    ]) if rows else []
+    items = []
+    for index, row in enumerate(rows):
+        owner_state = build_owner_state(row, actor_id=actor_id, actor_roles=actor_roles)
+        favorite_state = build_favorite_state(actor_id=actor_id, is_favorited=row.get("id") in favorite_ids)
+        session = await db.get_strategy_paper_session(row.get("id"), actor_id) if hasattr(db, "get_strategy_paper_session") else None
+        paper_session_state = build_paper_session_state(session, actor_id=actor_id)
+        items.append({
+            **_build_strategy_market_summary(row, incubation_surface=incubation_surfaces[index]),
+            "owner_state": owner_state,
+            "favorite_state": favorite_state,
+            "paper_session_state": paper_session_state,
+        })
+    return ok({"strategies": items, "items": items, "count": len(items)})
+
+
+async def handle_fork_strategy(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    if not actor_id:
+        return fail("actor_id is required")
+    parent = await db.get_strategy(sid)
+    if not parent:
+        return fail(f"Strategy not found: {sid}")
+    fork_id = f"strat_{int(time.time())}_{uuid4().hex[:8]}"
+    parent_tags = [str(item or "").strip() for item in list(parent.get("tags") or []) if str(item or "").strip()]
+    tags = list(dict.fromkeys([*parent_tags, "personal_strategy", "forked_strategy"]))
+    parent_params = dict(parent.get("params") or {})
+    metadata = dict(parent_params.get("metadata") or {})
+    metadata.update({
+        "source_strategy_id": sid,
+        "forked_at": datetime.now(timezone.utc).isoformat(),
+        "forked_by": actor_id,
+    })
+    fork_params = {
+        **parent_params,
+        "metadata": metadata,
+    }
+    data = {
+        "id": fork_id,
+        "name": f"{parent.get('name') or sid} · 我的版本",
+        "description": parent.get("description") or "",
+        "author_id": actor_id,
+        "strategy_type": str(parent.get("strategy_type") or "custom"),
+        "params": fork_params,
+        "factor_weights": dict(parent.get("factor_weights") or {}),
+        "status": "draft",
+        "tags": tags,
+        "backtest_artifact_id": parent.get("backtest_artifact_id"),
+    }
+    strategy = await db.save_strategy(data)
+    if hasattr(db, "save_strategy_lineage"):
+        await db.save_strategy_lineage(
+            fork_id,
+            sid,
+            "user_fork",
+            {"source": "strategy_market", "actor_id": actor_id, "actor_roles": actor_roles},
+        )
+    owner_state, favorite_state, paper_session_state = await _load_personal_strategy_surface_state(
+        db,
+        strategy,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    return ok({
+        "strategy_id": fork_id,
+        "source_strategy_id": sid,
+        "strategy": strategy,
+        "owner_state": owner_state,
+        "favorite_state": favorite_state,
+        "paper_session_state": paper_session_state,
+    })
+
+
+async def handle_update_strategy(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    strategy = await db.get_strategy(sid)
+    error = _ensure_personal_strategy_mutation_allowed(
+        strategy,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    if error:
+        return fail(error)
+    updates = dict(params.get("updates") or {})
+    for field in ("name", "description", "params", "factor_weights", "tags", "backtest_artifact_id"):
+        if field in params:
+            updates[field] = params.get(field)
+    if "tags" in updates:
+        updates["tags"] = list(dict.fromkeys(
+            [str(item or "").strip() for item in list(updates.get("tags") or []) if str(item or "").strip()]
+        ))
+    updated = await db.update_strategy_fields(sid, updates) if hasattr(db, "update_strategy_fields") else None
+    if not updated:
+        return fail(f"Strategy not found: {sid}")
+    owner_state, favorite_state, paper_session_state = await _load_personal_strategy_surface_state(
+        db,
+        updated,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    return ok({
+        "strategy_id": sid,
+        "strategy": updated,
+        "owner_state": owner_state,
+        "favorite_state": favorite_state,
+        "paper_session_state": paper_session_state,
+    })
+
+
+async def handle_delete_personal_strategy(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    strategy = await db.get_strategy(sid)
+    error = _ensure_personal_strategy_mutation_allowed(
+        strategy,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    if error:
+        return fail(error)
+    await update_status(
+        db,
+        sid,
+        "archived",
+        actor_id=actor_id or "strategy_manager",
+        reason="personal_strategy_deleted",
+    )
+    return ok({"strategy_id": sid, "archived": True, "status": "archived"})
+
+
+async def handle_paper_session_get(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    if not actor_id:
+        return fail("actor_id is required")
+    strategy = await db.get_strategy(sid)
+    if not strategy:
+        return fail(f"Strategy not found: {sid}")
+    session = await db.get_strategy_paper_session(sid, actor_id) if hasattr(db, "get_strategy_paper_session") else None
+    state = build_paper_session_state(session, actor_id=actor_id)
+    return ok({
+        "strategy_id": sid,
+        "strategy_name": strategy.get("name"),
+        "session": session,
+        "paper_session_state": state,
+    })
+
+
+async def handle_paper_session_get_or_create(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    if not actor_id:
+        return fail("actor_id is required")
+    strategy = await db.get_strategy(sid)
+    if not strategy:
+        return fail(f"Strategy not found: {sid}")
+    existing = await db.get_strategy_paper_session(sid, actor_id) if hasattr(db, "get_strategy_paper_session") else None
+    created = False
+    session = existing
+    if existing and hasattr(db, "touch_strategy_paper_session"):
+        session = await db.touch_strategy_paper_session(sid, actor_id) or existing
+    if not existing:
+        account_id = f"pp_{uuid4().hex[:8]}"
+        account = await db.save_paper_account({
+            "id": account_id,
+            "user_id": actor_id,
+            "name": f"个人策略模拟盘_{strategy.get('name') or sid}",
+            "initial_capital": 100000,
+            "current_capital": 100000,
+            "total_value": 100000,
+            "account_type": "personal_strategy",
+            "status": "active",
+        }) if hasattr(db, "save_paper_account") else {"id": account_id}
+        session = await db.save_strategy_paper_session({
+            "strategy_id": sid,
+            "user_id": actor_id,
+            "account_id": account.get("id") or account_id,
+            "session_type": "personal_paper",
+            "source_strategy_id": _strategy_source_strategy_id(strategy),
+            "last_used_at": datetime.now(timezone.utc).isoformat(),
+        }) if hasattr(db, "save_strategy_paper_session") else None
+        created = True
+    account = await db.get_paper_account(session.get("account_id")) if session and hasattr(db, "get_paper_account") else None
+    payload = dict(session or {})
+    if account:
+        payload.setdefault("account_name", account.get("name"))
+        payload.setdefault("account_status", account.get("status"))
+    state = build_paper_session_state(payload, actor_id=actor_id)
+    return ok({
+        "strategy_id": sid,
+        "strategy_name": strategy.get("name"),
+        "created": created,
+        "session": payload or None,
+        "account": account,
+        "paper_session_state": state,
+    })
+
+
 async def handle_rank(db, params: dict) -> dict:
     from ...services.ranking import rrf_rank
 
@@ -430,6 +961,142 @@ async def handle_rank(db, params: dict) -> dict:
     ranked = rrf_rank(enriched, rank_keys)
     page = ranked[offset:offset + limit]
     return ok({"strategies": page, "count": len(ranked), "offset": offset, "limit": limit})
+
+
+async def handle_ai_optimize_personal_strategy(db, params: dict) -> dict:
+    sid = _trimmed(params.get("strategy_id") or params.get("id"))
+    if not sid:
+        return fail("strategy_id is required")
+    actor_id, actor_roles = _actor_context(params)
+    strategy = await db.get_strategy(sid)
+    error = _ensure_personal_strategy_mutation_allowed(
+        strategy,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+    if error:
+        return fail(error)
+    before = {
+        "name": strategy.get("name"),
+        "description": strategy.get("description"),
+        "params": dict(strategy.get("params") or {}),
+        "factor_weights": dict(strategy.get("factor_weights") or {}),
+        "tags": list(strategy.get("tags") or []),
+    }
+    started_at = datetime.now(timezone.utc)
+    task_run = await db.save_strategy_task_run({
+        "strategy_id": sid,
+        "task_name": "ai_optimize_personal_strategy",
+        "task_scope": "strategy_market.personal_strategy",
+        "task_key": f"{sid}:ai_optimize_personal_strategy",
+        "status": "running",
+        "trace_id": f"ai_opt_{uuid4().hex[:12]}",
+        "payload": {
+            "strategy_id": sid,
+            "actor_id": actor_id,
+            "before": before,
+        },
+        "started_at": started_at.isoformat(),
+    }) if hasattr(db, "save_strategy_task_run") else None
+    experiment_id = f"sge_{uuid4().hex[:16]}"
+    try:
+        params_payload = dict(before.get("params") or {})
+        metadata = dict(params_payload.get("metadata") or {})
+        metadata.update({
+            "ai_optimized_at": datetime.now(timezone.utc).isoformat(),
+            "ai_optimizer": "strategy_manager.personal_strategy_optimizer",
+            "source_strategy_id": metadata.get("source_strategy_id") or sid,
+        })
+        params_payload["metadata"] = metadata
+        tags = list(dict.fromkeys([
+            *[str(item or "").strip() for item in list(before.get("tags") or []) if str(item or "").strip()],
+            "ai_optimized",
+            "personal_strategy",
+        ]))
+        description = _trimmed(before.get("description"))
+        if "AI优化" not in description:
+            description = (
+                f"{description}｜AI优化建议：补齐风险约束、执行纪律和样本跟踪。"
+                if description else "AI优化建议：补齐风险约束、执行纪律和样本跟踪。"
+            )
+        factor_weights = dict(before.get("factor_weights") or {})
+        numeric_items = {
+            key: float(value)
+            for key, value in factor_weights.items()
+            if isinstance(value, (int, float))
+        }
+        if numeric_items:
+            total = sum(abs(value) for value in numeric_items.values()) or 1.0
+            factor_weights = {
+                **factor_weights,
+                **{key: round(value / total, 6) for key, value in numeric_items.items()},
+            }
+        updates = {
+            "description": description,
+            "params": params_payload,
+            "factor_weights": factor_weights,
+            "tags": tags,
+        }
+        updated = await db.update_strategy_fields(sid, updates) if hasattr(db, "update_strategy_fields") else None
+        if not updated:
+            raise ValueError(f"Strategy not found: {sid}")
+        after = {
+            "name": updated.get("name"),
+            "description": updated.get("description"),
+            "params": dict(updated.get("params") or {}),
+            "factor_weights": dict(updated.get("factor_weights") or {}),
+            "tags": list(updated.get("tags") or []),
+        }
+        changed_fields = [
+            key for key in ("description", "params", "factor_weights", "tags")
+            if before.get(key) != after.get(key)
+        ]
+        if hasattr(db, "save_strategy_generation_experiment"):
+            await db.save_strategy_generation_experiment({
+                "experiment_id": experiment_id,
+                "strategy_id": sid,
+                "generated_strategy_id": sid,
+                "task_run_id": task_run.get("id") if task_run else None,
+                "source": "strategy_manager.personal_strategy",
+                "generator_type": "personal_strategy_optimizer",
+                "optimizer_type": "heuristic",
+                "status": "completed",
+                "hypothesis": "Improve personal strategy readiness with stronger metadata and normalized weights.",
+                "parameters": {"actor_id": actor_id, "requested_changes": list(changed_fields)},
+                "strategy_spec": {"before": before, "after": after},
+                "evaluation": {"changed_fields": changed_fields},
+                "result": after,
+            })
+        if task_run and hasattr(db, "update_strategy_task_run"):
+            await db.update_strategy_task_run(
+                int(task_run.get("id")),
+                status="success",
+                result={
+                    "strategy_id": sid,
+                    "experiment_id": experiment_id,
+                    "changed_fields": changed_fields,
+                    "after": after,
+                },
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        return ok({
+            "strategy_id": sid,
+            "task_run_id": task_run.get("id") if task_run else None,
+            "experiment_id": experiment_id,
+            "before": before,
+            "after": after,
+            "changed_fields": changed_fields,
+            "strategy": updated,
+        })
+    except Exception as exc:
+        if task_run and hasattr(db, "update_strategy_task_run"):
+            await db.update_strategy_task_run(
+                int(task_run.get("id")),
+                status="failed",
+                error=str(exc),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        return fail(f"ai optimize failed: {exc}")
 
 
 async def handle_capabilities(db, params: dict) -> dict:
@@ -499,6 +1166,8 @@ async def handle_capabilities(db, params: dict) -> dict:
         "domain_events": hasattr(db, "save_strategy_domain_event") and hasattr(db, "list_strategy_domain_events"),
         "domain_projection": hasattr(db, "list_strategy_status_events") and hasattr(db, "list_strategy_domain_events"),
         "runtime_cycle": hasattr(db, "save_strategy_task_run") and hasattr(db, "save_strategy_incubation_metric"),
+        "personal_strategy_crud": hasattr(db, "list_user_strategies") and hasattr(db, "update_strategy_fields"),
+        "personal_paper_sessions": hasattr(db, "save_strategy_paper_session") and hasattr(db, "get_strategy_paper_session"),
         "capability_health": capability_health,
     })
 

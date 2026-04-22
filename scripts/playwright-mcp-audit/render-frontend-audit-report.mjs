@@ -523,6 +523,8 @@ async function main() {
   const localResults = await readJson(path.join(args.outputDir, 'raw', 'mcp-crawl-results.json'), []);
   const flowResults = await readJson(path.join(args.outputDir, 'raw', 'flow-results.json'), []);
   const flowSummary = await readJson(path.join(args.outputDir, 'raw', 'flow-summary.json'), {});
+  const surfaceResults = await readJson(path.join(args.outputDir, 'raw', 'surface-results.json'), []);
+  const platformSummary = await readJson(path.join(args.outputDir, 'raw', 'platform-summary.json'), {});
   const envSnapshot = await readJson(path.join(args.outputDir, 'raw', 'env-snapshot.json'), null);
   const envRestore = await readJson(path.join(args.outputDir, 'raw', 'env-restore.json'), null);
 
@@ -696,7 +698,20 @@ async function main() {
   for (const flow of flowResults) {
     indexLines.push(`- [${flow.label}](./flows/${flow.flowId}.md)`);
   }
-  indexLines.push('', '## 原始结果', '', '- `raw/surface-manifest.json`', '- `raw/mcp-crawl-results.json`', '- `raw/responsive-audit-results.json`', '- `raw/flow-results.json`', '- `raw/env-snapshot.json`', '- `raw/env-restore.json`', '');
+  if (platformSummary?.surfaces?.inScope?.total) {
+    indexLines.push(
+      '',
+      '## 平台签收',
+      '',
+      `- in-scope: ${platformSummary.surfaces.inScope.passed}/${platformSummary.surfaces.inScope.total} 通过`,
+      `- blocked: ${platformSummary.surfaces.inScope.blocked}`,
+      `- failed: ${platformSummary.surfaces.inScope.failed}`,
+      `- surface checks: ${surfaceResults.length}`,
+      '',
+    );
+  }
+
+  indexLines.push('', '## 原始结果', '', '- `raw/surface-manifest.json`', '- `raw/mcp-crawl-results.json`', '- `raw/responsive-audit-results.json`', '- `raw/flow-results.json`', '- `raw/surface-results.json`', '- `raw/platform-summary.json`', '- `raw/env-snapshot.json`', '- `raw/env-restore.json`', '');
 
   await fs.writeFile(executivePath, `${executiveLines.join('\n')}\n`, 'utf8');
   await fs.writeFile(blueprintPath, `${blueprintLines.join('\n')}\n`, 'utf8');

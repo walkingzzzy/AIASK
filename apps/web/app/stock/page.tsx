@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, PageContainer } from '@/components/ui';
+import ResultWorkbench from '@/components/result-workbench';
 import { ErrorState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -13,6 +14,7 @@ import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { tradingInterval } from '@/lib/trading-hours';
 import { unwrapToolPayload } from '@/lib/tool-result';
 import { useQuoteSubscription, type QuoteData as LiveQuoteData } from '@/lib/ws';
@@ -283,34 +285,6 @@ export default function StockPage() {
     };
   }, [contextCode, klineQ.data?.kline, quickLinks, quote, sentimentScore, valuationMetrics.pe, valuationMetrics.pe_ttm]);
 
-  usePageContext({
-    pageKey: 'stock',
-    title: quote ? `${quote.name} ${contextCode}` : '股票详情',
-    summary: quote
-      ? `${contextCode} 当前价 ${fmtNum(Number(quote.price), 2)}，涨跌幅 ${fmtPct(Number(quote.changePercent ?? quote.change_pct ?? 0))}，情绪分数 ${fmtNum(sentimentScore, 0)}。`
-      : `股票详情页，当前输入 ${code || '未填写'}。`,
-    stockCode: contextCode || undefined,
-    tags: [
-      submittedPeriod === 'daily' ? '日线' : submittedPeriod === 'weekly' ? '周线' : '月线',
-      infoTab,
-      quote ? `PE ${fmtNum(Number(valuationMetrics.pe ?? valuationMetrics.pe_ttm ?? 0), 2)}` : '未加载估值',
-    ],
-    suggestions: [
-      contextCode ? `总结 ${contextCode} 当前最强和最弱的信号` : '选择一个股票后总结当前信号',
-      '结合技术面、资金流和估值给出短中期观察重点',
-      '把当前个股页整理成一个复盘清单',
-    ],
-    raw: {
-      code: contextCode || null,
-      period: submittedPeriod,
-      tab: infoTab,
-      hasQuote: Boolean(quote),
-      sentimentScore,
-      fundFlowItems: fundFlowItems.length,
-      newsItems: newsItems.length,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -365,13 +339,6 @@ export default function StockPage() {
 
   usePageActions(pageActions);
 
-  useEffect(() => {
-    if (quote) document.title = `${quote.name}(${activeCode ?? ''}) | AIASK`;
-    return () => {
-      document.title = 'AIASK 智能股票分析';
-    };
-  }, [activeCode, quote]);
-
   const priceChangePct = Number(quote?.changePercent ?? quote?.change_pct ?? 0);
   const chgColor = priceChangePct >= 0 ? 'text-danger' : 'text-success';
   const amplitude =
@@ -396,6 +363,95 @@ export default function StockPage() {
         '第一次使用时优先跑 600519 之类的熟悉标的，更容易判断信号是否合理。',
       ];
   const askAiSummary = quote ? `${quote.name}，现价 ${fmtNum(Number(quote.price), 2)}，涨跌幅 ${fmtPct(priceChangePct)}` : undefined;
+
+  const stockSummary = quote
+    ? `${contextCode} 当前价 ${fmtNum(Number(quote.price), 2)}，涨跌幅 ${fmtPct(Number(quote.changePercent ?? quote.change_pct ?? 0))}，情绪分数 ${fmtNum(sentimentScore, 0)}。`
+    : `股票详情页，当前输入 ${code || '未填写'}。`;
+  const stockEvidence = useMemo(
+    () => [
+      { label: '当前代码', value: currentFocusCode },
+      { label: '当前标签', value: activeTabLabel },
+      quote ? { label: '现价', value: fmtNum(Number(quote.price), 2) } : null,
+      quote ? { label: '涨跌幅', value: fmtPct(priceChangePct) } : null,
+      { label: '情绪分数', value: fmtNum(sentimentScore, 0) },
+    ].filter((item): item is NonNullable<typeof item> => item != null),
+    [activeTabLabel, currentFocusCode, priceChangePct, quote, sentimentScore],
+  );
+  const stockLinks = useMemo(
+    () => [
+      ...quickLinks.slice(0, 3).map((item, index) => ({ id: `stock-quick-${index}`, label: item.label, href: item.href })),
+      { id: 'stock-open-skills', label: '去技能中心', href: '/skills?skill=akshare-stock-deep-analysis' },
+    ],
+    [quickLinks],
+  );
+  const stockRiskNotes = useMemo(() => {
+    const notes = actionCard?.reasons?.slice(0, 2) ?? [];
+    if (!hasQuoteData) notes.push('当前报价尚未加载，建议先刷新行情后再解读信号。');
+    return notes;
+  }, [actionCard?.reasons, hasQuoteData]);
+  const stockResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: stockSummary,
+        pageActions,
+        preferredActionIds: ['stock.refresh', 'stock.open-research', 'stock.switch-tab'],
+        recommendedLinks: stockLinks,
+        evidence: stockEvidence,
+        riskNotes: stockRiskNotes,
+        freshness: quote?.timestamp ? { updatedAt: quote.timestamp, label: '行情抓取时间' } : null,
+        platformMeta: {
+          sourceTool: 'stock-detail',
+          sourceChain: [activeTabLabel, submittedPeriod],
+        },
+        workbenchTask: defaultWorkbenchTask('stock', `个股复盘：${currentFocusCode}`, currentFocusCode ? `/stock?code=${encodeURIComponent(currentFocusCode)}` : '/stock', 'stock-review', {
+          code: currentFocusCode,
+          tab: infoTab,
+          period: submittedPeriod,
+        }),
+      }),
+    [activeTabLabel, currentFocusCode, infoTab, pageActions, quote?.timestamp, stockEvidence, stockLinks, stockRiskNotes, stockSummary, submittedPeriod],
+  );
+
+  usePageContext({
+    pageKey: 'stock',
+    title: quote ? `${quote.name} ${contextCode}` : '股票详情',
+    summary: stockSummary,
+    stockCode: contextCode || undefined,
+    objectType: contextCode ? 'stock' : 'workspace',
+    objectId: contextCode || code || 'stock',
+    resultType: 'stock-detail',
+    tags: [
+      submittedPeriod === 'daily' ? '日线' : submittedPeriod === 'weekly' ? '周线' : '月线',
+      infoTab,
+      quote ? `PE ${fmtNum(Number(valuationMetrics.pe ?? valuationMetrics.pe_ttm ?? 0), 2)}` : '未加载估值',
+    ],
+    suggestions: [
+      contextCode ? `总结 ${contextCode} 当前最强和最弱的信号` : '选择一个股票后总结当前信号',
+      '结合技术面、资金流和估值给出短中期观察重点',
+      '把当前个股页整理成一个复盘清单',
+    ],
+    recommendedActions: stockResult.recommendedActions,
+    recommendedLinks: stockResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(stockResult.evidence),
+    riskNotes: stockResult.riskNotes ?? [],
+    freshness: stockResult.freshness ?? null,
+    raw: {
+      code: contextCode || null,
+      period: submittedPeriod,
+      tab: infoTab,
+      hasQuote: Boolean(quote),
+      sentimentScore,
+      fundFlowItems: fundFlowItems.length,
+      newsItems: newsItems.length,
+    },
+  });
+
+  useEffect(() => {
+    if (quote) document.title = `${quote.name}(${activeCode ?? ''}) | AIASK`;
+    return () => {
+      document.title = 'AIASK 智能股票分析';
+    };
+  }, [activeCode, quote]);
 
   return (
     <PageContainer className="app-theme-market space-y-4">
@@ -476,6 +532,8 @@ export default function StockPage() {
           watchlistName={String(quote?.name ?? '')}
         />
       )}
+
+      <ResultWorkbench pageKey="stock" title="个股研究工作台" result={stockResult} />
 
       <StockQueryShell
         code={code}

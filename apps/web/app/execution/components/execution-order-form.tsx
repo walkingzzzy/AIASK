@@ -2,7 +2,6 @@ import type { FormEventHandler } from 'react';
 import { StockCodeInput, SectionCard } from '@/components/ui';
 import { fmtNum } from '@/lib/data-utils';
 import {
-  executionChipButtonCls,
   executionNoteCardCls,
   executionPrimaryButtonCls,
   executionSidePanelCls,
@@ -34,7 +33,6 @@ type ExecutionOrderFormProps = {
   routeExecutionError: string | null;
   routeExecutionPending: boolean;
   onSubmit: FormEventHandler<HTMLFormElement>;
-  onLoadExample: (code: string) => void;
 };
 
 export default function ExecutionOrderForm({
@@ -63,7 +61,6 @@ export default function ExecutionOrderForm({
   routeExecutionError,
   routeExecutionPending,
   onSubmit,
-  onLoadExample,
 }: ExecutionOrderFormProps) {
   return (
     <SectionCard className="mb-4">
@@ -170,9 +167,6 @@ export default function ExecutionOrderForm({
             <div className="col-span-2 flex items-end gap-2 sm:col-span-4">
               <button type="submit" disabled={routeExecutionPending} className={executionPrimaryButtonCls}>
                 {routeExecutionPending ? '执行中...' : '提交执行'}
-              </button>
-              <button type="button" onClick={() => onLoadExample('600519')} className={executionChipButtonCls}>
-                载入示例
               </button>
             </div>
           </form>

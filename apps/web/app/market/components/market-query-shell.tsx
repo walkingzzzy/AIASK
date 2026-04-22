@@ -13,7 +13,6 @@ import {
   marketSelectCls,
 } from '@/app/market/components/market-panel-styles';
 import {
-  MARKET_STARTER_CODES,
   MARKET_VIEW_PRESETS,
   TABS,
   type MarketTab,
@@ -31,7 +30,6 @@ type MarketQueryShellProps = {
   showPrimaryLoading: boolean;
   onSaveCurrentView: () => void;
   submittedCode: string | null;
-  onUseStarterCode: (code: string) => void;
   onApplyPreset: (preset: Partial<SavedMarketView>, label?: string) => void;
   activeTab: MarketTab;
   onActiveTabChange: (tab: MarketTab) => void;
@@ -52,7 +50,6 @@ export default function MarketQueryShell({
   showPrimaryLoading,
   onSaveCurrentView,
   submittedCode,
-  onUseStarterCode,
   onApplyPreset,
   activeTab,
   onActiveTabChange,
@@ -83,18 +80,10 @@ export default function MarketQueryShell({
                     </p>
                   ) : null}
                 </div>
-                {!compactLayout ? (
-                  <div className="flex flex-wrap gap-2">
-                    {MARKET_STARTER_CODES.map((item) => (
-                      <button
-                        key={`starter-inline-${item.code}`}
-                        type="button"
-                        onClick={() => onUseStarterCode(item.code)}
-                        className={`${marketChipButtonCls} ${submittedCode === item.code ? 'border-primary/28 bg-primary/10 text-primary shadow-[0_16px_30px_-24px_rgba(11,107,203,0.46)]' : ''}`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
+                {!compactLayout && submittedCode ? (
+                  <div className={`${marketNoteCardCls} px-3 py-2 text-sm text-text-secondary`}>
+                    当前已锁定标的：
+                    <span className="ml-1 font-medium text-text-primary">{submittedCode}</span>
                   </div>
                 ) : null}
               </div>
@@ -210,21 +199,6 @@ export default function MarketQueryShell({
               </div>
             </div>
             <div className="mt-4 space-y-3">
-              <div>
-                <div className="metric-label">常用标的</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {MARKET_STARTER_CODES.map((item) => (
-                    <button
-                      key={`starter-detail-${item.code}`}
-                      type="button"
-                      onClick={() => onUseStarterCode(item.code)}
-                      className={`${marketChipButtonCls} ${submittedCode === item.code ? 'border-primary/28 bg-primary/10 text-primary shadow-[0_16px_30px_-24px_rgba(11,107,203,0.46)]' : ''}`}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
               <div>
                 <div className="metric-label">视图预设</div>
                 <div className="mt-2 flex flex-wrap gap-2">

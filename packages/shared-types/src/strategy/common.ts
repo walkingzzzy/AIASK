@@ -29,9 +29,20 @@ export type StrategyTrustedInfo = {
     capacity_label?: string;
 };
 
+export type StrategyIncubationSurface = {
+    entered_incubator?: boolean;
+    pipeline_stage?: string | null;
+    promotion_ready?: boolean;
+    latest_decision?: string | null;
+    execution_audit_gate_status?: string | null;
+    blocker_count?: number;
+    risk_count?: number;
+};
+
 export type Strategy = {
     id: string;
     name: string;
+    status?: string;
     strategy_type?: string;
     description?: string;
     subscriber_count?: number;
@@ -45,6 +56,7 @@ export type Strategy = {
         win_rate?: number;
     };
     nav_series?: number[];
+    incubation_surface?: StrategyIncubationSurface;
 } & StrategyTrustedInfo;
 
 export type RankingResponse = { strategies?: Strategy[] } | Strategy[];

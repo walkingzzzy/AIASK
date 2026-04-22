@@ -262,6 +262,29 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     } as T;
   }
 
+  private buildActorPermissions(input?: { userId?: string | null; role?: string | null }) {
+    const userId = String(input?.userId ?? '').trim();
+    const role = String(input?.role ?? 'user').trim().toLowerCase();
+    const isAdmin = role === 'admin';
+    return {
+      can_run_factory: isAdmin,
+      can_ai_generate: isAdmin,
+      can_create_personal_strategy: Boolean(userId),
+      can_edit_own_strategy: Boolean(userId),
+      can_create_paper_session: Boolean(userId),
+      can_view_operator_panels: isAdmin,
+    };
+  }
+
+  private managerActorParams(input?: { actorId?: string | null; role?: string | null }) {
+    const actorId = String(input?.actorId ?? '').trim();
+    const role = String(input?.role ?? '').trim();
+    return {
+      ...(actorId ? { actor_id: actorId, user_id: actorId } : {}),
+      ...(role ? { actor_role: role, actor_roles: [role] } : {}),
+    };
+  }
+
   private normalizeStrategyDetail<T>(payload: T): T {
     return normalizeStrategyDetailResponse(payload) as T;
   }
@@ -472,8 +495,11 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('list', params);
   }
 
-  async detail(id: string) {
-    const result = await this.call('detail', { strategy_id: id });
+  async detail(id: string, actor?: { userId?: string | null; role?: string | null }) {
+    const result = await this.call('detail', {
+      strategy_id: id,
+      ...this.managerActorParams({ actorId: actor?.userId, role: actor?.role }),
+    });
     if (!result) throw new NotFoundException(`策略 ${id} 不存在`);
     const detail = this.normalizeStrategyDetail(result) as Record<string, unknown>;
     const strategy = this.asRecord(detail.strategy);
@@ -506,6 +532,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       idempotency_key?: string;
       as_of?: string;
     } = {},
+    actor?: { userId?: string | null; role?: string | null },
   ) {
     const payload = await this.mcp.callTool('strategy_review_workflow', {
       strategy_id: id,
@@ -516,8 +543,34 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       run_runtime_cycle: params.run_runtime_cycle,
       idempotency_key: params.idempotency_key,
       as_of: params.as_of,
+      actor_id: actor?.userId,
+      actor_roles: actor?.role ? [actor.role] : undefined,
     });
-    return this.flattenMcpResult(payload);
+    const result = this.asRecord(this.flattenMcpResult(payload));
+    if (!result.owner_state && this.asRecord(result.closure_review).owner_state) {
+      result.owner_state = this.asRecord(result.closure_review).owner_state;
+      result.favorite_state = this.asRecord(result.closure_review).favorite_state;
+      result.paper_session_state = this.asRecord(result.closure_review).paper_session_state;
+      result.presentation = this.asRecord(result.closure_review).presentation;
+    }
+    return result;
+  }
+
+  async closureReview(
+    id: string,
+    params: {
+      as_of?: string;
+      correlation_id?: string;
+      user_id?: string;
+      role?: string;
+    } = {},
+  ) {
+    return this.call('closure_review', {
+      strategy_id: id,
+      as_of: params.as_of,
+      correlation_id: params.correlation_id,
+      ...this.managerActorParams({ actorId: params.user_id, role: params.role }),
+    });
   }
 
   async events(
@@ -624,6 +677,78 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('my_subscriptions', { user_id: userId });
   }
 
+  async favorite(id: string, userId: string) {
+    return this.subscribe(id, userId);
+  }
+
+  async unfavorite(id: string, userId: string) {
+    return this.unsubscribe(id, userId);
+  }
+
+  async myFavorites(userId: string) {
+    const payload = this.asRecord(await this.mySubscriptions(userId));
+    return {
+      ...payload,
+      favorites: Array.isArray(payload.subscriptions) ? payload.subscriptions : (Array.isArray(payload.items) ? payload.items : []),
+    };
+  }
+
+  async myStrategies(
+    actorId: string,
+    role: string,
+    params: { include_archived?: boolean; limit?: number; offset?: number } = {},
+  ) {
+    return this.call('my_strategies', {
+      ...this.managerActorParams({ actorId, role }),
+      include_archived: params.include_archived,
+      limit: params.limit,
+      offset: params.offset,
+    });
+  }
+
+  async forkStrategy(id: string, actor: { actorId: string; role: string }) {
+    return this.call('fork_strategy', {
+      strategy_id: id,
+      ...this.managerActorParams(actor),
+    });
+  }
+
+  async updateStrategy(id: string, updates: Record<string, unknown>, actor: { actorId: string; role: string }) {
+    return this.call('update_strategy', {
+      strategy_id: id,
+      updates,
+      ...this.managerActorParams(actor),
+    });
+  }
+
+  async deletePersonalStrategy(id: string, actor: { actorId: string; role: string }) {
+    return this.call('delete_personal_strategy', {
+      strategy_id: id,
+      ...this.managerActorParams(actor),
+    });
+  }
+
+  async paperSession(id: string, actor: { actorId: string; role: string }) {
+    return this.call('paper_session_get', {
+      strategy_id: id,
+      ...this.managerActorParams(actor),
+    });
+  }
+
+  async getOrCreatePaperSession(id: string, actor: { actorId: string; role: string }) {
+    return this.call('paper_session_get_or_create', {
+      strategy_id: id,
+      ...this.managerActorParams(actor),
+    });
+  }
+
+  async aiOptimizePersonalStrategy(id: string, actor: { actorId: string; role: string }) {
+    return this.call('ai_optimize_personal_strategy', {
+      strategy_id: id,
+      ...this.managerActorParams(actor),
+    });
+  }
+
   async submit(id: string) {
     return this.call('submit', { strategy_id: id });
   }
@@ -710,8 +835,13 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('get_signal_stats', { strategy_id: id });
   }
 
-  async capabilities() {
-    return this.call('capabilities');
+  async capabilities(actor?: { userId?: string | null; role?: string | null }) {
+    const capabilities = this.asRecord(await this.call('capabilities'));
+    return {
+      ...capabilities,
+      system_capabilities: capabilities,
+      actor_permissions: this.buildActorPermissions(actor),
+    };
   }
 
   async dailySnapshots(params: { limit?: number; start_date?: string; end_date?: string } = {}) {

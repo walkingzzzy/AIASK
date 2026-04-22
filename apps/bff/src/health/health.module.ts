@@ -9,5 +9,6 @@ import { McpGatewayModule } from '../mcp-gateway/mcp-gateway.module';
   imports: [McpGatewayModule, AuditModule, NotificationModule],
   controllers: [HealthController],
   providers: [HealthService],
+  exports: [HealthService],
 })
 export class HealthModule {}

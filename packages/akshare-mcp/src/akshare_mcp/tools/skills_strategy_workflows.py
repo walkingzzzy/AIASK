@@ -90,6 +90,9 @@ async def build_strategy_review_workflow_payload(
     run_factory_once: bool = False,
     run_runtime_cycle: bool = False,
     runtime_alert_limit: int = 20,
+    as_of: str | None = None,
+    actor_id: str | None = None,
+    actor_roles: Any = None,
 ) -> Dict[str, Any]:
     resolved_strategy_id = _trim_text(strategy_id)
     if not resolved_strategy_id:
@@ -112,6 +115,17 @@ async def build_strategy_review_workflow_payload(
             },
         )
     )
+
+    closure_review_payload = await runtime_strategy_manager(
+        action="closure_review",
+        params={
+            "strategy_id": resolved_strategy_id,
+            **({"as_of": as_of} if _trim_text(as_of) else {}),
+            **({"actor_id": actor_id} if _trim_text(actor_id) else {}),
+            **({"actor_roles": actor_roles} if actor_roles not in (None, "", [], ()) else {}),
+        },
+    )
+    steps.append(_workflow_step("strategy_manager.closure_review", closure_review_payload))
 
     if include_review_report:
         review_payload = await runtime_strategy_manager(
@@ -141,6 +155,15 @@ async def build_strategy_review_workflow_payload(
 
     failed_steps = _workflow_failed_steps(steps)
     completed_stages = [step["step"] for step in steps if step.get("success")]
+    closure_review_data = dict((closure_review_payload or {}).get("data") or {})
+    closure_runtime = dict(closure_review_data.get("runtime") or {})
+    closure_overview = dict(dict(closure_review_data.get("incubation") or {}).get("overview") or {})
+    runtime_risk_events = closure_runtime.get("risk_events")
+    open_risk_count = (
+        len(list(runtime_risk_events or []))
+        if isinstance(runtime_risk_events, list)
+        else ((resource_payload.get("summary") or {}).get("open_risk_count"))
+    )
 
     execution_reality_payload: dict[str, Any] | None = None
     try:
@@ -155,13 +178,27 @@ async def build_strategy_review_workflow_payload(
         "strategy_id": resolved_strategy_id,
         "steps": steps,
         "summary": {
-            "current_status": ((resource_payload.get("summary") or {}).get("current_status")),
-            "open_risk_count": ((resource_payload.get("summary") or {}).get("open_risk_count")),
+            "current_status": (
+                closure_overview.get("status")
+                or ((resource_payload.get("summary") or {}).get("current_status"))
+            ),
+            "open_risk_count": open_risk_count,
+            "as_of": closure_review_data.get("as_of"),
+            "correlation_id": closure_review_data.get("correlation_id"),
+            "factory_run_id": closure_review_data.get("factory_run_id"),
+            "owner_state": closure_review_data.get("owner_state"),
+            "favorite_state": closure_review_data.get("favorite_state"),
+            "paper_session_state": closure_review_data.get("paper_session_state"),
             "failed_steps": failed_steps,
         },
         "artifacts": {
             "strategy_review_resource": f"resource://strategy/{resolved_strategy_id}/review",
         },
+        "closure_review": closure_review_data or None,
+        "owner_state": closure_review_data.get("owner_state"),
+        "favorite_state": closure_review_data.get("favorite_state"),
+        "paper_session_state": closure_review_data.get("paper_session_state"),
+        "presentation": closure_review_data.get("presentation"),
         "workflow_stage": {
             "completed_stages": completed_stages,
             "last_completed_stage": completed_stages[-1] if completed_stages else None,
@@ -245,6 +282,7 @@ async def _exec_strategy_review_task(
             run_factory_once=trigger_factory_run,
             run_runtime_cycle=trigger_runtime_cycle,
             runtime_alert_limit=runtime_alert_limit,
+            as_of=_trim_text(params.get("as_of")) or None,
         )
         steps.append(
             skill_support._step_result(

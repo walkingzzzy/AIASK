@@ -1,3 +1,5 @@
+import type { ResultContract, ResultContractMeta } from './result-contract';
+
 export type ExecutionWorkbenchSeverity = 'high' | 'medium' | 'low' | 'unknown';
 
 export type ExecutionWorkbenchWarning = {
@@ -93,6 +95,8 @@ export type ExecutionWorkbenchResponse = {
     sourceTools?: Record<string, string | undefined>;
     argsMatched?: Record<string, unknown>;
     result?: unknown;
+    result_contract?: ResultContract | null;
+    contract_meta?: ResultContractMeta | null;
 };
 
 export type ExecutionTasksResponse = {
@@ -139,8 +143,12 @@ export type LiveTradingGatewayStatusResponse = {
         [key: string]: unknown;
     } | null;
     read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
     base_url?: string;
     paper?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     error?: string | null;
     raw?: unknown;
 };
@@ -159,6 +167,11 @@ export type LiveTradingAccountResponse = {
     cash?: number | null;
     buying_power?: number | null;
     status?: string | null;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: Record<string, unknown>;
 };
 
@@ -175,6 +188,11 @@ export type LiveTradingPositionItem = {
 export type LiveTradingPositionsResponse = {
     positions?: LiveTradingPositionItem[];
     count?: number;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -194,11 +212,21 @@ export type LiveTradingOrderItem = {
 export type LiveTradingOrdersResponse = {
     orders?: LiveTradingOrderItem[];
     count?: number;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
 export type LiveTradingOrderStatusResponse = {
     order?: LiveTradingOrderItem | null;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -238,6 +266,11 @@ export type LiveTradingOrderEventsResponse = {
         [key: string]: unknown;
     } | null;
     count?: number;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -260,6 +293,11 @@ export type LiveTradingFillItem = {
 export type LiveTradingFillsResponse = {
     fills?: LiveTradingFillItem[];
     count?: number;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -271,6 +309,11 @@ export type LiveTradingBrokerReceiptResponse = {
         [key: string]: unknown;
     } | null;
     order_id?: string;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -280,6 +323,11 @@ export type LiveTradingSubmitOrderResponse = {
     message?: string;
     mode?: string | null;
     order?: LiveTradingOrderItem | null;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -287,6 +335,11 @@ export type LiveTradingCancelOrderResponse = {
     cancelled?: boolean;
     message?: string;
     order?: LiveTradingOrderItem | Record<string, unknown> | null;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -297,6 +350,11 @@ export type LiveTradingMirrorToPaperResponse = {
     mirrorable_count?: number | null;
     placed_order_count?: number | null;
     message?: string;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };
 
@@ -309,5 +367,10 @@ export type LiveTradingSyncOrderEventsResponse = {
         [key: string]: unknown;
     } | null;
     message?: string;
+    read_only?: boolean;
+    write_enabled?: boolean;
+    allow_write?: boolean;
+    broker_env?: 'paper' | 'live' | string;
+    meta?: Record<string, unknown>;
     raw?: unknown;
 };

@@ -2,6 +2,59 @@ import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, forwardRef }
 import { MarketService } from './market.service';
 import { WsGateway } from '../ws/ws.gateway';
 
+const FALSE_VALUES = new Set(['0', 'false', 'no']);
+
+function normalizeEnv(value: string | undefined | null) {
+    return String(value ?? '').trim().toLowerCase();
+}
+
+export function resolveMarketSchedulerEnabled(env: NodeJS.ProcessEnv = process.env) {
+    const explicit = normalizeEnv(env.MARKET_SCHEDULER_ENABLED);
+    if (explicit) {
+        return !FALSE_VALUES.has(explicit);
+    }
+
+    const startupProfile = normalizeEnv(env.MCP_STDIO_STARTUP_PROFILE);
+    if (startupProfile === 'tool-only' || startupProfile === 'tool_only') {
+        return false;
+    }
+
+    const fullProfilePoolSlots = Number(env.MCP_FULL_PROFILE_POOL_SLOTS ?? '');
+    if (Number.isFinite(fullProfilePoolSlots) && fullProfilePoolSlots <= 0) {
+        return false;
+    }
+
+    return !(
+        env.NODE_ENV !== 'production'
+        && Number(env.MCP_POOL_SIZE ?? '8') <= 1
+    );
+}
+
+export function resolveMarketSchedulerDisabledReason(env: NodeJS.ProcessEnv = process.env) {
+    const explicit = normalizeEnv(env.MARKET_SCHEDULER_ENABLED);
+    if (explicit && FALSE_VALUES.has(explicit)) {
+        return 'MARKET_SCHEDULER_ENABLED=false';
+    }
+
+    if (!explicit) {
+        const startupProfile = normalizeEnv(env.MCP_STDIO_STARTUP_PROFILE);
+        if (startupProfile === 'tool-only' || startupProfile === 'tool_only') {
+            return 'MCP_STDIO_STARTUP_PROFILE=tool-only';
+        }
+
+        const fullProfilePoolSlots = Number(env.MCP_FULL_PROFILE_POOL_SLOTS ?? '');
+        if (Number.isFinite(fullProfilePoolSlots) && fullProfilePoolSlots <= 0) {
+            return 'MCP_FULL_PROFILE_POOL_SLOTS=0';
+        }
+
+        if (env.NODE_ENV !== 'production' && Number(env.MCP_POOL_SIZE ?? '8') <= 1) {
+            return 'MCP_POOL_SIZE<=1 in non-production';
+        }
+    }
+
+    return null;
+}
+
 /**
  * 行情推送调度器 — 定时拉取行情数据并通过 WebSocket 推送到前端。
  *
@@ -13,12 +66,7 @@ import { WsGateway } from '../ws/ws.gateway';
 export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(MarketScheduler.name);
     private static readonly QUOTE_BATCH_SIZE = 50;
-    private static readonly ENABLED = !['0', 'false', 'no'].includes(
-        String(
-            process.env.MARKET_SCHEDULER_ENABLED
-            ?? ((process.env.NODE_ENV !== 'production' && Number(process.env.MCP_POOL_SIZE ?? '8') <= 1) ? 'false' : 'true'),
-        ).trim().toLowerCase(),
-    );
+    private static readonly ENABLED = resolveMarketSchedulerEnabled();
     private quoteTimer: NodeJS.Timeout | null = null;
     private indexTimer: NodeJS.Timeout | null = null;
     private nextQuoteCursor = 0;
@@ -37,7 +85,8 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
 
     onModuleInit() {
         if (!MarketScheduler.ENABLED) {
-            this.logger.log('行情推送调度器已禁用');
+            const reason = resolveMarketSchedulerDisabledReason();
+            this.logger.log(`行情推送调度器已禁用${reason ? `（${reason}）` : ''}`);
             return;
         }
 

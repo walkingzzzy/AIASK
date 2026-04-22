@@ -26,6 +26,30 @@ export function ErrorState({ text, hint, onRetry }: { text: string; hint?: strin
   );
 }
 
+export function UnavailableState({
+  text = '当前页面所需服务暂不可用',
+  hint,
+  onRetry,
+}: {
+  text?: string;
+  hint?: string;
+  onRetry?: () => void;
+}) {
+  return <ErrorState text={text} hint={hint ?? '请稍后重试，或先检查 BFF / MCP / 上游服务状态。'} onRetry={onRetry} />;
+}
+
+export function PrerequisiteState({
+  text,
+  hint,
+  action,
+}: {
+  text: string;
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return <EmptyState text={text} hint={hint} action={action} variant="full" />;
+}
+
 /**
  * 紧凑空状态组件
  * - compact（默认）：小图标 + 一行提示 + CTA，高度约 80px

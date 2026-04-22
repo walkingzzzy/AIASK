@@ -16,7 +16,15 @@ from ...services.db_first_market_context import load_db_first_document_context
 from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
-from ...utils import fail, format_period, normalize_code, ok, parse_date_input
+from ...utils import (
+    attach_argument_contract_meta,
+    fail,
+    format_period,
+    normalize_code,
+    ok,
+    parse_date_input,
+    resolve_canonical_arg,
+)
 from ..fund_flow_common import _run_storage_call_sync
 from .helpers import _RETRY_SLEEP_SECONDS, _try_tushare_anns
 
@@ -179,6 +187,9 @@ def get_stock_notices(
     types: Optional[list[str]] = None,
     stock_code: str = "",
     *,
+    code: str = "",
+    symbol: str = "",
+    ticker: str = "",
     prefer_db: bool = True,
 ) -> dict:
     """
@@ -200,10 +211,23 @@ def get_stock_notices(
     limiter.acquire()
 
     try:
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
         start = parse_date_input(start_date)
         end = parse_date_input(end_date)
+        canonical_args = {"code": normalize_code(raw_code) if raw_code else "", "start_date": start_date, "end_date": end_date, "types": types}
         if not start or not end:
-            return fail("日期格式错误，需 YYYY-MM-DD 或 YYYYMMDD")
+            return attach_argument_contract_meta(
+                fail("日期格式错误，需 YYYY-MM-DD 或 YYYYMMDD"),
+                canonical_tool="get_stock_notices",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
         if end < start:
             start, end = end, start
 
@@ -234,13 +258,23 @@ def get_stock_notices(
         if not normalized_types:
             normalized_types = ["全部"]
 
-        code_filter = normalize_code(stock_code) if stock_code else ""
+        code_filter = normalize_code(raw_code) if raw_code else ""
+        canonical_args["code"] = code_filter
+        canonical_args["types"] = normalized_types
         events: list[dict[str, Any]] = []
         max_seconds = int(os.getenv("AKSHARE_NOTICE_MAX_SECONDS", "8"))
         max_retry = int(os.getenv("AKSHARE_NOTICE_RETRY", "1"))
         max_items = int(os.getenv("AKSHARE_NOTICE_MAX_ITEMS", "500"))
         start_ts = time.monotonic()
         partial = False
+
+        def _respond(payload: dict) -> dict:
+            return attach_argument_contract_meta(
+                payload,
+                canonical_tool="get_stock_notices",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
 
         if not code_filter:
             max_items = min(max_items, 200)
@@ -259,7 +293,7 @@ def get_stock_notices(
                 )
                 db_events = list((db_context or {}).get("notices") or [])
                 if db_events:
-                    return ok(
+                    return _respond(ok(
                         {
                             "startDate": start.isoformat(),
                             "endDate": end.isoformat(),
@@ -268,7 +302,7 @@ def get_stock_notices(
                             "truncated": len(db_events) > max_items,
                             "partial": False,
                         }
-                    )
+                    ))
             except Exception:
                 pass
 
@@ -276,7 +310,7 @@ def get_stock_notices(
         try:
             tushare_items = _try_tushare_anns(start.isoformat(), end.isoformat(), code_filter, max_items)
             if tushare_items:
-                return ok(
+                return _respond(ok(
                     {
                         "startDate": start.isoformat(),
                         "endDate": end.isoformat(),
@@ -285,7 +319,7 @@ def get_stock_notices(
                         "truncated": len(tushare_items) > max_items,
                         "partial": False,
                     }
-                )
+                ))
         except Exception:
             pass
 
@@ -318,7 +352,7 @@ def get_stock_notices(
                         break
 
                 fast_events = sorted(fast_events, key=lambda x: str(x.get("date") or ""), reverse=True)
-                return ok(
+                return _respond(ok(
                     {
                         "startDate": start.isoformat(),
                         "endDate": end.isoformat(),
@@ -327,7 +361,7 @@ def get_stock_notices(
                         "truncated": len(fast_events) > max_items,
                         "partial": partial,
                     }
-                )
+                ))
             except Exception:
                 partial = False
 
@@ -378,7 +412,7 @@ def get_stock_notices(
         if truncated:
             events = events[:max_items]
 
-        return ok(
+        return _respond(ok(
             {
                 "startDate": start.isoformat(),
                 "endDate": end.isoformat(),
@@ -387,6 +421,11 @@ def get_stock_notices(
                 "truncated": truncated,
                 "partial": partial,
             }
-        )
+        ))
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_stock_notices",
+            canonical_args={"code": normalize_code(code) if code else "", "start_date": start_date, "end_date": end_date, "types": types},
+            alias_hits=[],
+        )

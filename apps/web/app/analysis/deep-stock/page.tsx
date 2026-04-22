@@ -1,10 +1,14 @@
 'use client';
 
 import { FormEvent, useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { Badge, PageContainer, SectionCard } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { ensureRecord } from '@/lib/query-parse';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import type {
   AnalysisGapItem,
   AnalysisReportBundle,
@@ -90,26 +94,129 @@ export default function DeepStockAnalysisPage() {
     const success = stages.filter((item) => item.success).length;
     return { total, success };
   }, [stages]);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function startAnalysis(nextTask = task, runId?: string) {
     const normalizedCode = code.trim();
     if (!normalizedCode) return;
     await createRun.triggerAsync(
       '/v1/analysis/deep-stock/runs',
       { method: 'POST' },
-      { code: normalizedCode, task },
+      { code: normalizedCode, task: nextTask, ...(runId ? { runId } : {}) },
     );
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await startAnalysis(task);
   }
 
   async function rebuildReport() {
     if (!activeRunId) return;
-    await createRun.triggerAsync(
-      '/v1/analysis/deep-stock/runs',
-      { method: 'POST' },
-      { code: code.trim(), task: 'rebuild_report', runId: activeRunId },
-    );
+    await startAnalysis('rebuild_report', activeRunId);
   }
+  const deepStockActions = useMemo(
+    () => [
+      {
+        id: 'deep-stock.start-analysis',
+        label: '启动分析',
+        description: '按当前代码与任务模式启动或刷新一轮深度分析',
+        keywords: ['深度分析', '启动', code.trim()],
+        scope: 'page' as const,
+        pageKey: 'analysis-deep-stock',
+        run: async () => {
+          await startAnalysis(task);
+          return { message: `已发起 ${code.trim() || '当前标的'} 的 ${task}` };
+        },
+      },
+      {
+        id: 'deep-stock.rebuild-report',
+        label: '重建报告',
+        description: '针对当前 run 重新生成 standalone 报告工件',
+        keywords: ['报告', '重建'],
+        scope: 'page' as const,
+        pageKey: 'analysis-deep-stock',
+        run: async () => {
+          if (!activeRunId) throw new Error('当前还没有可重建的 run');
+          await rebuildReport();
+          return { message: '已触发报告重建' };
+        },
+      },
+    ],
+    [activeRunId, code, task],
+  );
+  usePageActions(deepStockActions);
+  const deepStockSummary = run
+    ? `${code.trim() || summary?.code || '当前标的'} 当前状态 ${run.status ?? 'unknown'}，已完成 ${stageStats.success}/${stageStats.total} 个阶段，缺口 ${gaps.length} 个，报告 ${summary?.report_ready ? '已就绪' : '待生成'}。`
+    : `${code.trim() || '当前标的'} 还没有创建深度分析 run，建议先启动一次分析，确认 evidence、review、synthesis 和报告工件是否完整。`;
+  const deepStockResult = buildLocalResultContract({
+    summary: deepStockSummary,
+    availableViews: report?.standalone_html || stages.length > 1 ? ['compare', 'visual'] : [],
+    pageActions: deepStockActions,
+    preferredActionIds: ['deep-stock.start-analysis', 'deep-stock.rebuild-report'],
+    recommendedLinks: [
+      { id: 'deep-stock-link-stock', label: '去个股详情', href: `/stock?code=${encodeURIComponent(code.trim() || '600519')}` },
+      { id: 'deep-stock-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(code.trim() || '600519')}` },
+      { id: 'deep-stock-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=analysis-deep-stock&code=${encodeURIComponent(code.trim() || '600519')}` },
+    ],
+    evidence: [
+      { label: '当前代码', value: code.trim() || summary?.code || '-' },
+      { label: '任务模式', value: task },
+      { label: '运行状态', value: String(run?.status ?? 'idle') },
+      { label: '阶段进度', value: `${stageStats.success}/${stageStats.total}` },
+      { label: '缺口数量', value: String(gaps.length), tone: gaps.length > 0 ? 'warning' : 'neutral' },
+      { label: '报告状态', value: summary?.report_ready ? '已就绪' : '待生成' },
+    ],
+    riskNotes: [
+      ...(createRun.error ? [createRun.error] : []),
+      ...(reportQuery.error ? [reportQuery.error] : []),
+      ...(gaps.length > 0 ? [`当前存在 ${gaps.length} 个结构化缺口。`] : []),
+      ...(run?.analysis_agent_review?.conflicts?.length ? [`AI Review 有 ${run.analysis_agent_review.conflicts.length} 条冲突待消解。`] : []),
+    ],
+    freshness: summary?.updated_at ? { updatedAt: summary.updated_at, label: '分析运行快照' } : null,
+    platformMeta: {
+      sourceTool: 'analysis/deep-stock',
+      sourceChain: ['workflow', 'skill', 'resource', 'bff', 'web'],
+      degraded: Boolean(createRun.error || reportQuery.error),
+      fallbackReason: [createRun.error, reportQuery.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('analysis-deep-stock', `复查深度分析 ${code.trim() || '600519'}`, '/analysis/deep-stock', 'deep-stock-review', {
+      code: code.trim() || '600519',
+      task,
+      runId: activeRunId,
+      gapCount: gaps.length,
+    }),
+  });
+  usePageContext({
+    pageKey: 'analysis-deep-stock',
+    title: '个股深度分析工作台',
+    summary: deepStockSummary,
+    objectType: 'stock',
+    objectId: code.trim() || summary?.code || 'deep-stock',
+    resultType: 'deep-stock-analysis',
+    tags: [
+      code.trim() || summary?.code || '未指定标的',
+      task,
+      run?.status ?? 'idle',
+      summary?.report_ready ? '报告已就绪' : '等待报告',
+    ],
+    suggestions: [
+      '总结当前深度分析还缺哪些关键证据',
+      '如果 integrity gate 阻断了结果，解释下一步恢复动作',
+      '给出应该先看阶段进度、缺口还是最终报告的判断',
+    ],
+    recommendedActions: deepStockResult.recommendedActions ?? [],
+    recommendedLinks: deepStockResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(deepStockResult.evidence),
+    riskNotes: deepStockResult.riskNotes ?? [],
+    freshness: deepStockResult.freshness ?? null,
+    raw: {
+      code: code.trim() || summary?.code || null,
+      task,
+      runId: activeRunId,
+      status: run?.status ?? null,
+      gapCount: gaps.length,
+      reportReady: summary?.report_ready ?? false,
+    },
+  });
 
   return (
     <PageContainer className="px-4 py-6 sm:px-6 lg:px-8" narrow>
@@ -177,6 +284,8 @@ export default function DeepStockAnalysisPage() {
         </div>
         {createRun.error ? <div className="mt-4 text-sm text-danger">{createRun.error}</div> : null}
       </section>
+
+      <ResultWorkbench pageKey="analysis-deep-stock" title="深度分析结果工作台" result={deepStockResult} />
 
       <div className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <SectionCard className="mt-0">

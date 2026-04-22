@@ -8,6 +8,8 @@ import { existsSync } from 'node:fs';
 import { delimiter, isAbsolute, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { ObservabilityService } from '../observability/observability.service';
+import { McpGatewayTimeoutError } from './mcp-gateway.errors';
+import { withToolTransportMeta } from './mcp-transport.contract';
 
 type McpTransportMode = 'stdio' | 'streamable-http' | 'sse' | 'auto';
 type McpTransportKind = 'stdio' | 'streamable-http' | 'sse';
@@ -62,6 +64,34 @@ type Waiter = {
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 };
+
+type BuildIsolatedPythonPathOptions = {
+  cwd: string;
+  configured?: string | null;
+  exists?: (path: string) => boolean;
+};
+
+export function buildIsolatedPythonPath({
+  cwd,
+  configured,
+  exists = existsSync,
+}: BuildIsolatedPythonPathOptions): string {
+  const sources = [
+    configured,
+    resolve(cwd, 'src'),
+    resolve(cwd, '..', 'strategy-factory', 'src'),
+  ];
+
+  const parts = sources
+    .flatMap((value) => (value ? value.split(delimiter) : []))
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => (isAbsolute(part) ? part : resolve(cwd, part)))
+    .filter((part, index, list) => list.indexOf(part) === index)
+    .filter((part) => exists(part));
+
+  return parts.join(delimiter);
+}
 
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
@@ -217,15 +247,16 @@ export class McpGatewayService implements OnModuleDestroy {
     const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
     const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
     const startedAt = performance.now();
-    const timeoutMs = Math.max(1000, Number(options?.timeoutMs ?? this.toolCallTimeoutMs));
+    const timeoutMs = this.resolveToolTimeoutMs(options?.timeoutMs);
     try {
       const result = await this.withTimeout(
         conn.client.callTool({ name, arguments: args }),
         timeoutMs,
         `MCP tool ${name} timed out after ${timeoutMs}ms`,
+        'tool_call',
       );
       this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
-      return this.normalizeToolResult(result);
+      return this.normalizeToolResult(result, conn.meta);
     } catch (error) {
       this.recordToolMetric(name, performance.now() - startedAt, true, conn.meta);
       if (this.isTransportError(error)) {
@@ -247,6 +278,7 @@ export class McpGatewayService implements OnModuleDestroy {
         conn.client.readResource({ uri }),
         this.toolCallTimeoutMs,
         `MCP resource ${uri} timed out after ${this.toolCallTimeoutMs}ms`,
+        'resource_read',
       );
       this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false, conn.meta);
       return this.normalizeResourceResult(result);
@@ -318,6 +350,10 @@ export class McpGatewayService implements OnModuleDestroy {
       healthyConnections: liveConnections.length,
       dedicatedConnections: this.dedicatedConnections.size,
     };
+  }
+
+  resolveToolTimeoutMs(timeoutMs?: number | null): number {
+    return Math.max(1000, Number(timeoutMs ?? this.toolCallTimeoutMs));
   }
 
   /* ── Pool Management ── */
@@ -518,6 +554,7 @@ export class McpGatewayService implements OnModuleDestroy {
           client.connect(transport),
           this.streamableHttpTimeoutMs,
           `MCP Streamable HTTP connection timed out after ${this.streamableHttpTimeoutMs}ms`,
+          'transport_connect',
         );
       } catch (error) {
         try { await transport.close(); } catch { /* ignore */ }
@@ -536,6 +573,7 @@ export class McpGatewayService implements OnModuleDestroy {
         client.connect(transport),
         this.streamableHttpTimeoutMs,
         `MCP SSE connection timed out after ${this.streamableHttpTimeoutMs}ms`,
+        'transport_connect',
       );
     } catch (error) {
       try { await transport.close(); } catch { /* ignore */ }
@@ -639,6 +677,9 @@ export class McpGatewayService implements OnModuleDestroy {
   /* ── Utilities ── */
 
   private isTransportError(error: unknown): boolean {
+    if (error instanceof McpGatewayTimeoutError) {
+      return error.scope === 'transport_connect';
+    }
     if (!error || typeof error !== 'object') return true;
     const msg = String((error as Error).message ?? '').toLowerCase();
     return (
@@ -711,9 +752,14 @@ export class McpGatewayService implements OnModuleDestroy {
     });
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    message: string,
+    scope: 'resource_read' | 'tool_call' | 'transport_connect',
+  ): Promise<T> {
     return await new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      const timer = setTimeout(() => reject(new McpGatewayTimeoutError(message, scope)), timeoutMs);
       promise.then(
         (value) => {
           clearTimeout(timer);
@@ -728,6 +774,10 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   private cacheHealth(value: McpHealth): McpHealth {
+    this.observability.setDependencyState(
+      'mcp',
+      !value.reachable ? 'untrusted' : value.degraded || value.matched === false ? 'degraded' : 'normal',
+    );
     this.healthCache = {
       value,
       expiresAt: Date.now() + this.healthCacheTtlMs,
@@ -783,22 +833,9 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private buildPythonPath(cwd: string): string {
     const configured = this.configService.get<string>('MCP_STDIO_PYTHONPATH');
-    const sources = [
-      process.env.PYTHONPATH,
-      configured,
-      resolve(cwd, 'src'),
-      resolve(cwd, '..', 'strategy-factory', 'src'),
-    ];
-
-    const parts = sources
-      .flatMap((value) => (value ? value.split(delimiter) : []))
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0)
-      .map((part) => (isAbsolute(part) ? part : resolve(cwd, part)))
-      .filter((part, index, list) => list.indexOf(part) === index)
-      .filter((part) => existsSync(part));
-
-    return parts.join(delimiter);
+    // Keep MCP stdio imports isolated from ambient shell/watcher PYTHONPATH.
+    // Extra import roots must be added explicitly through MCP_STDIO_PYTHONPATH.
+    return buildIsolatedPythonPath({ cwd, configured });
   }
 
   private parseArgs(raw: string): string[] {
@@ -867,6 +904,13 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   private withFallbackMetaDefaults(payload: unknown): unknown {
+    return this.withFallbackMetaDefaultsForTransport(payload, null);
+  }
+
+  private withFallbackMetaDefaultsForTransport(
+    payload: unknown,
+    transportMeta: McpConnectionMeta | null,
+  ): unknown {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return payload;
     }
@@ -883,7 +927,10 @@ export class McpGatewayService implements OnModuleDestroy {
     if (!hasFallbackShape) {
       const nestedData = node.data;
       if (nestedData && typeof nestedData === 'object' && !Array.isArray(nestedData)) {
-        const normalizedData = this.withFallbackMetaDefaults(nestedData) as Record<string, unknown>;
+        const normalizedData = this.withFallbackMetaDefaultsForTransport(
+          nestedData,
+          transportMeta,
+        ) as Record<string, unknown>;
         const nestedHasFallbackShape =
           normalizedData &&
           typeof normalizedData === 'object' &&
@@ -909,6 +956,7 @@ export class McpGatewayService implements OnModuleDestroy {
               typeof normalizedData.latency_ms === 'number'
                 ? normalizedData.latency_ms
                 : 0,
+            transport: normalizedData.transport ?? null,
           };
         }
       }
@@ -938,24 +986,51 @@ export class McpGatewayService implements OnModuleDestroy {
         : backendRequested !== backendUsed;
 
     const latencyMs = typeof node.latency_ms === 'number' ? node.latency_ms : 0;
+    const fallbackReason =
+      typeof node.fallback_reason === 'string'
+        ? node.fallback_reason
+        : node.fallback_reason != null
+          ? String(node.fallback_reason)
+          : null;
+    const transport = transportMeta
+      ? withToolTransportMeta(
+        {
+          backend_requested: backendRequested,
+          backend_used: backendUsed,
+          fallback_used: fallbackUsed,
+          fallback_reason: fallbackReason,
+          latency_ms: latencyMs,
+        },
+        {
+          requestedTransport: transportMeta.requestedTransport,
+          transportKind: transportMeta.transportKind,
+          degraded: transportMeta.degraded,
+          fallbackReason: transportMeta.fallbackReason,
+          sourceChain: transportMeta.sourceChain,
+          endpoint: transportMeta.endpoint,
+          lastError: transportMeta.lastError,
+        },
+      ).transport
+      : null;
 
     return {
       ...node,
       backend_requested: backendRequested,
       backend_used: backendUsed,
       fallback_used: fallbackUsed,
-      fallback_reason: node.fallback_reason ?? null,
+      fallback_reason: fallbackReason,
       latency_ms: latencyMs,
+      ...(transport ? { transport } : {}),
     };
   }
 
-  private normalizeToolResult(result: unknown): unknown {
+  private normalizeToolResult(result: unknown, transportMeta: McpConnectionMeta): unknown {
     if (!result || typeof result !== 'object') return result;
 
     const node = result as Record<string, unknown>;
 
     if ('structuredContent' in node && node.structuredContent !== undefined) {
-      return this.withFallbackMetaDefaults(node.structuredContent);
+      return this.withFallbackMetaDefaultsForTransport(node.structuredContent, transportMeta);
     }
 
     if (Array.isArray(node.content)) {
@@ -969,14 +1044,14 @@ export class McpGatewayService implements OnModuleDestroy {
 
       if (textBlock?.text && typeof textBlock.text === 'string') {
         try {
-          return this.withFallbackMetaDefaults(JSON.parse(textBlock.text));
+          return this.withFallbackMetaDefaultsForTransport(JSON.parse(textBlock.text), transportMeta);
         } catch {
           return textBlock.text;
         }
       }
     }
 
-    return this.withFallbackMetaDefaults(result);
+    return this.withFallbackMetaDefaultsForTransport(result, transportMeta);
   }
 
   private normalizeResourceResult(result: unknown): unknown {

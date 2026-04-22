@@ -58,7 +58,26 @@ export class StrategyFactoryController {
 
   @Get(':id/review-workflow')
   async reviewWorkflow(@Param('id') id: string, @Query() query: ReviewWorkflowQueryDto, @Req() req: Req_) {
-    const data = await this.svc.reviewWorkflow(id, query);
+    const data = await this.svc.reviewWorkflow(id, query, {
+      userId: req.user?.id,
+      role: req.user?.role,
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/closure-review')
+  async closureReview(
+    @Param('id') id: string,
+    @Query('as_of') asOf: string,
+    @Query('correlation_id') correlationId: string,
+    @Req() req: Req_,
+  ) {
+    const data = await this.svc.closureReview(id, {
+      as_of: asOf,
+      correlation_id: correlationId,
+      user_id: req.user?.id,
+      role: req.user?.role,
+    });
     return { success: true, data, traceId: tid(req) };
   }
 

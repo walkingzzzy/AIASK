@@ -21,7 +21,9 @@ import type { FactoryReviewPanelProps } from './types';
 
 export function FactoryReviewPanel({
   highConfidenceQualityUiEnabled,
+  canViewOperatorPanels,
   report,
+  presentation,
   events,
   incubation,
   currentAccount,
@@ -142,7 +144,8 @@ export function FactoryReviewPanel({
       vectorProfiles,
     ],
   );
-  const activeSectionLoading = sectionLoading[activeSection] || loading;
+  const resolvedSection = canViewOperatorPanels ? activeSection : 'summary';
+  const activeSectionLoading = sectionLoading[resolvedSection] || loading;
   const highConfidencePanel = summaryState.highConfidencePanel;
   const showHighConfidencePanel = highConfidenceQualityUiEnabled && [
     highConfidencePanel.predictionQualityLabel,
@@ -173,7 +176,38 @@ export function FactoryReviewPanel({
   const promotionReadyBadge = Boolean(incubation?.promotion_ready) && !promotionBlockedBySnapshots;
 
   return (
-    <div className="mt-4 space-y-4">
+    <div className="mt-4 space-y-4" data-testid="strategy-detail-factory-review">
+      <SectionCard className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">Closure Summary</div>
+            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">
+              {presentation?.stage_label || '当前闭环阶段'}
+            </h3>
+            <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
+              {presentation?.stage_summary || '先看当前阶段说明，再决定是否需要深入到孵化、运行时或实验明细。'}
+            </p>
+          </div>
+          <Badge variant={canViewOperatorPanels ? 'info' : 'neutral'}>
+            {canViewOperatorPanels ? '运营视图可用' : '默认用户视图'}
+          </Badge>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">为何关注</div>
+            <div className="mt-2 text-text-primary">{presentation?.why_watch || '关注当前阶段的证据是否足够支持下一步动作。'}</div>
+          </div>
+          <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前风险</div>
+            <div className="mt-2 text-text-primary">{presentation?.current_risks || '暂无额外说明，继续结合质量门、执行审计和风险事件判断。'}</div>
+          </div>
+          <div className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">建议动作</div>
+            <div className="mt-2 text-text-primary">{presentation?.recommended_action || '先确认当前分区是否需要补证据，再决定是否深入运营明细。'}</div>
+          </div>
+        </div>
+      </SectionCard>
+
       <KpiGrid cols={6}>
         <KpiCard title="质量门禁" value={review == null ? '-' : review.passed ? '通过' : '未通过'} />
         <KpiCard
@@ -276,9 +310,15 @@ export function FactoryReviewPanel({
         </SectionCard>
       ) : null}
 
-      <div className="overflow-x-auto">
-        <TabBar tabs={FACTORY_SECTION_TABS} active={activeSection} onChange={onSectionChange} />
-      </div>
+      {canViewOperatorPanels ? (
+        <div className="overflow-x-auto">
+          <TabBar tabs={FACTORY_SECTION_TABS} active={activeSection} onChange={onSectionChange} />
+        </div>
+      ) : (
+        <SectionCard className="p-3 text-sm text-text-secondary">
+          当前账号默认只展示用户视图摘要。若需要查看孵化、运行时、向量和实验的原始分区，请使用具备运营权限的账号。
+        </SectionCard>
+      )}
 
       {activeSectionLoading ? (
         <SectionCard className="p-4">
@@ -286,7 +326,7 @@ export function FactoryReviewPanel({
         </SectionCard>
       ) : null}
 
-      {!activeSectionLoading && activeSection === 'summary' ? (
+      {!activeSectionLoading && resolvedSection === 'summary' ? (
         <SummarySection
           review={review}
           incubation={incubation}
@@ -310,7 +350,7 @@ export function FactoryReviewPanel({
         />
       ) : null}
 
-      {!activeSectionLoading && activeSection === 'incubation' ? (
+      {!activeSectionLoading && resolvedSection === 'incubation' ? (
         <IncubationSection
           incubationState={incubationState}
           onRunIncubationPipeline={onRunIncubationPipeline}
@@ -320,7 +360,7 @@ export function FactoryReviewPanel({
         />
       ) : null}
 
-      {!activeSectionLoading && activeSection === 'runtime' ? (
+      {!activeSectionLoading && resolvedSection === 'runtime' ? (
         <RuntimeSection
           runtimeState={runtimeState}
           onRunRiskScan={onRunRiskScan}
@@ -334,11 +374,11 @@ export function FactoryReviewPanel({
         />
       ) : null}
 
-      {!activeSectionLoading && activeSection === 'vectors' ? (
+      {!activeSectionLoading && resolvedSection === 'vectors' ? (
         <VectorsSection vectorState={vectorState} />
       ) : null}
 
-      {!activeSectionLoading && activeSection === 'experiments' ? (
+      {!activeSectionLoading && resolvedSection === 'experiments' ? (
         <ExperimentsSection experimentState={experimentState} />
       ) : null}
     </div>

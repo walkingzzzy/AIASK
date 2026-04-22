@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { Badge } from '@/components/ui';
 import { LineChart } from '@/components/charts';
+import { resolveStrategyStatusMeta } from '@/app/strategy-market/components/strategy-market-support';
+import { resolveIncubationSurface } from '@/app/strategy-market/lib/incubation-surface';
 import { fmtPct, fmtNum } from '@/lib/data-utils';
 import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
 import type { Strategy } from '@aiask/shared-types';
@@ -30,6 +32,11 @@ function Stars({ rating }: { rating: number }) {
 
 export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) => void }) {
   const t = TYPE_LABELS[s.strategy_type || ''] ?? { label: s.strategy_type || '其他', variant: 'neutral' as const };
+  const statusMeta = resolveStrategyStatusMeta(s.status);
+  const incubation = resolveIncubationSurface({
+    strategyStatus: s.status,
+    incubationSurface: s.incubation_surface,
+  });
   const metrics = getStrategyMetricSnapshot(s);
   const nav = s.nav_series ?? [];
   const cats = nav.map((_, i) => `${i}`);
@@ -46,7 +53,11 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
     >
       <div className="flex items-center justify-between">
         <span className="truncate text-sm font-semibold text-text-primary">{s.name}</span>
-        <Badge variant={t.variant}>{t.label}</Badge>
+        <div className="ml-3 flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Badge variant={t.variant}>{t.label}</Badge>
+          <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+          <Badge variant={incubation.stage.variant}>{incubation.stage.label}</Badge>
+        </div>
       </div>
 
       {nav.length > 2 && (
@@ -80,10 +91,18 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
         </div>
       ) : null}
 
+      <div className="rounded-[16px] border border-border-light bg-surface-alt/50 px-3 py-2 text-[11px] leading-5 text-text-secondary">
+        {incubation.summaryLine}
+      </div>
+
+      <div className="rounded-[16px] border border-border-light bg-surface-alt/50 px-3 py-2 text-[11px] leading-5 text-text-secondary">
+        收藏、复制个人策略和创建模拟盘测试需进入详情页执行。
+      </div>
+
       <div className="flex items-center justify-between border-t border-border pt-2 text-xs text-text-secondary">
         <div className="flex items-center gap-2">
           {s.avg_rating != null && <Stars rating={s.avg_rating} />}
-          <span>{s.subscriber_count ?? 0} 订阅</span>
+          <span>{s.subscriber_count ?? 0} 收藏</span>
         </div>
         {onAdd && (
           <button

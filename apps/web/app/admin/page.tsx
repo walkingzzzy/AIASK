@@ -14,6 +14,11 @@ import {
 } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { ErrorState } from '@/components/status-state';
+import {
+  formatHealthStatusLabel,
+  healthStatusVariant,
+  normalizeSystemHealthSnapshot,
+} from '@/lib/system-health';
 
 type AdminIssue = {
   title: string;
@@ -32,37 +37,49 @@ const QUICK_LINKS = [
 
 export default function AdminPage() {
   const [lastManualRefreshAt, setLastManualRefreshAt] = useState<string | null>(null);
-  const healthQ = useApiQuery<unknown>('/health/mcp', {
+  const healthQ = useApiQuery<unknown>('/health', {
     staleTime: 15000,
     placeholderData: 'keepPrevious',
     parse: (raw) => raw,
   });
 
-  const data = (healthQ.data ?? {}) as Record<string, unknown>;
-  const db = (data.db ?? {}) as Record<string, unknown>;
-  const mcp = (data.mcp ?? {}) as Record<string, unknown>;
+  const snapshot = normalizeSystemHealthSnapshot(healthQ.data);
+  const db = snapshot.dependencies.db.raw;
+  const cache = snapshot.dependencies.cache.raw;
+  const mcp = snapshot.dependencies.mcp.raw;
+  const vector = snapshot.dependencies.vector.raw;
   const hasHealthSnapshot = healthQ.data != null;
   const loadingSnapshot = !hasHealthSnapshot && !healthQ.error;
-  const lastUpdated = typeof data.timestamp === 'string' ? new Date(data.timestamp).toLocaleString('zh-CN') : '-';
+  const lastUpdated = snapshot.timestamp ? new Date(snapshot.timestamp).toLocaleString('zh-CN') : '-';
 
   const issues: AdminIssue[] = [];
-  if (hasHealthSnapshot && String(data.status ?? 'unknown') !== 'ok') {
+  if (hasHealthSnapshot && snapshot.status === 'untrusted') {
     issues.push({
       title: '服务状态异常',
-      detail: `当前 health 状态为 ${String(data.status ?? 'unknown')}，建议先检查 BFF 日志与部署状态。`,
+      detail: `当前 health 状态为 ${formatHealthStatusLabel(snapshot.status)}，建议先检查 BFF 日志与部署状态。`,
       href: '/settings/audit-log',
       tone: 'danger',
     });
   }
-  if (hasHealthSnapshot && db.enabled === true && db.healthy !== true) {
+  if (hasHealthSnapshot && snapshot.status === 'degraded') {
+    issues.push({
+      title: '系统存在降级链路',
+      detail: snapshot.reasons.length > 0 ? snapshot.reasons.join(' / ') : '至少有一个依赖正在降级运行。',
+      href: '/admin/tools',
+      tone: 'warning',
+    });
+  }
+  if (hasHealthSnapshot && snapshot.dependencies.db.status === 'untrusted') {
     issues.push({
       title: '数据库健康检查失败',
-      detail: '数据库已启用但健康状态未通过，优先确认连接、迁移和资源占用。',
+      detail: snapshot.dependencies.db.reasons.length > 0
+        ? snapshot.dependencies.db.reasons.join(' / ')
+        : `数据库状态 ${formatHealthStatusLabel(snapshot.dependencies.db.status)}，优先确认连接、迁移和资源占用。`,
       href: '/settings/audit-log',
       tone: 'danger',
     });
   }
-  if (hasHealthSnapshot && mcp.reachable !== true) {
+  if (hasHealthSnapshot && snapshot.dependencies.mcp.status === 'untrusted') {
     issues.push({
       title: 'MCP 网关不可达',
       detail: 'AI/数据工具可能无法调用，建议先检查 MCP 进程与连接来源。',
@@ -70,11 +87,31 @@ export default function AdminPage() {
       tone: 'danger',
     });
   }
-  if (hasHealthSnapshot && mcp.matched === false) {
+  if (hasHealthSnapshot && snapshot.dependencies.mcp.status === 'degraded') {
     issues.push({
-      title: 'MCP 工具数量不匹配',
-      detail: `当前可用 ${String(mcp.toolCount ?? 0)} / 期望 ${String(mcp.expectedTools ?? 0)}，存在能力缺口。`,
+      title: 'MCP 处于降级模式',
+      detail: `当前可用 ${String(mcp.toolCount ?? 0)} / 期望 ${String(mcp.expectedTools ?? 0)}，存在能力缺口或传输回退。`,
       href: '/admin/tools',
+      tone: 'warning',
+    });
+  }
+  if (hasHealthSnapshot && snapshot.dependencies.vector.status !== 'normal') {
+    issues.push({
+      title: '向量链路不可完全信任',
+      detail: snapshot.dependencies.vector.reasons.length > 0
+        ? snapshot.dependencies.vector.reasons.join(' / ')
+        : `向量状态为 ${formatHealthStatusLabel(snapshot.dependencies.vector.status)}。`,
+      href: '/strategy-market?from=admin',
+      tone: snapshot.dependencies.vector.status === 'untrusted' ? 'danger' : 'warning',
+    });
+  }
+  if (hasHealthSnapshot && snapshot.dependencies.cache.status !== 'normal') {
+    issues.push({
+      title: '缓存未处于 Redis 正常态',
+      detail: snapshot.dependencies.cache.reasons.length > 0
+        ? snapshot.dependencies.cache.reasons.join(' / ')
+        : '当前缓存处于内存回退路径。',
+      href: '/admin/cache',
       tone: 'warning',
     });
   }
@@ -82,11 +119,13 @@ export default function AdminPage() {
     ? '刷新中'
     : !hasHealthSnapshot
       ? '等待快照'
-      : issues.length > 0
-        ? '发现异常'
-        : '运行正常';
+      : snapshot.status === 'untrusted'
+        ? '发现不可信状态'
+        : snapshot.status === 'degraded'
+          ? '存在降级'
+          : '运行正常';
   const snapshotHint = hasHealthSnapshot
-    ? `服务 ${String(data.status ?? '-') || '-'} / 数据库 ${db.enabled ? (db.healthy ? '健康' : '异常') : '未启用'} / MCP ${mcp.reachable ? '已连接' : '未连接'}`
+    ? `服务 ${formatHealthStatusLabel(snapshot.status)} / DB ${formatHealthStatusLabel(snapshot.dependencies.db.status)} / Cache ${formatHealthStatusLabel(snapshot.dependencies.cache.status)} / MCP ${formatHealthStatusLabel(snapshot.dependencies.mcp.status)} / Vector ${formatHealthStatusLabel(snapshot.dependencies.vector.status)}`
     : '首屏保持静态摘要；需要最新运行态时请手动刷新快照。';
 
   async function refreshSnapshot() {
@@ -121,7 +160,7 @@ export default function AdminPage() {
             type="button"
             onClick={() => void refreshSnapshot()}
             disabled={healthQ.isFetching}
-            data-testid="page-primary-action"
+            data-testid="admin-refresh-snapshot-action"
             data-action-testid="admin-refresh-snapshot-action"
             className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -188,16 +227,17 @@ export default function AdminPage() {
         </QuickActionGrid>
       </SectionCard>
 
-      <KpiGrid cols={4} className="mb-4">
-        <KpiCard title="服务状态" value={hasHealthSnapshot ? String(data.status ?? '-') : '加载中'} />
+      <KpiGrid cols={5} className="mb-4">
+        <KpiCard title="服务状态" value={hasHealthSnapshot ? formatHealthStatusLabel(snapshot.status) : '加载中'} />
         <KpiCard
           title="数据库"
-          value={hasHealthSnapshot ? (db.enabled ? (db.healthy ? '健康' : '异常') : '未启用') : '加载中'}
+          value={hasHealthSnapshot ? formatHealthStatusLabel(snapshot.dependencies.db.status) : '加载中'}
         />
-        <KpiCard title="MCP 连接" value={hasHealthSnapshot ? (mcp.reachable ? '已连接' : '未连接') : '加载中'} />
+        <KpiCard title="缓存" value={hasHealthSnapshot ? formatHealthStatusLabel(snapshot.dependencies.cache.status) : '加载中'} />
+        <KpiCard title="MCP 连接" value={hasHealthSnapshot ? formatHealthStatusLabel(snapshot.dependencies.mcp.status) : '加载中'} />
         <KpiCard
-          title="工具匹配"
-          value={hasHealthSnapshot ? `${String(mcp.toolCount ?? 0)}/${String(mcp.expectedTools ?? 0)}` : '加载中'}
+          title="向量状态"
+          value={hasHealthSnapshot ? formatHealthStatusLabel(snapshot.dependencies.vector.status) : '加载中'}
         />
       </KpiGrid>
 
@@ -232,7 +272,7 @@ export default function AdminPage() {
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">服务名</span>
                 <span className="font-medium">
-                  {hasHealthSnapshot ? String(data.service ?? 'aiask-bff') : '加载中'}
+                  {hasHealthSnapshot ? snapshot.service : '加载中'}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -241,14 +281,32 @@ export default function AdminPage() {
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">MCP 状态</span>
-                <Badge variant={hasHealthSnapshot ? (mcp.reachable ? 'success' : 'danger') : 'warning'}>
-                  {hasHealthSnapshot ? (mcp.reachable ? String(mcp.message ?? 'ok') : 'offline') : 'loading'}
+                <Badge variant={hasHealthSnapshot ? healthStatusVariant(snapshot.dependencies.mcp.status) : 'warning'}>
+                  {hasHealthSnapshot ? formatHealthStatusLabel(snapshot.dependencies.mcp.status) : 'loading'}
                 </Badge>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">数据库模式</span>
                 <span className="font-medium">
                   {hasHealthSnapshot ? (db.enabled ? '持久化' : '内存模式') : '加载中'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-text-secondary">DB 原因</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? String((snapshot.dependencies.db.reasons[0] ?? db.lastFailureStage ?? '-')) : '加载中'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-text-secondary">缓存后端</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? String(cache.activeBackend ?? '-') : '加载中'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-text-secondary">Cache 原因</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? String((snapshot.dependencies.cache.reasons[0] ?? cache.lastFailureStage ?? '-')) : '加载中'}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -260,9 +318,23 @@ export default function AdminPage() {
                 </span>
               </div>
               <div className="flex items-center justify-between gap-3">
+                <span className="text-text-secondary">向量 backend / mode</span>
+                <span className="font-medium">
+                  {hasHealthSnapshot ? `${String(vector.backend ?? '-')} / ${String(vector.health_mode ?? vector.healthMode ?? '-')}` : '加载中'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
                 <span className="text-text-secondary">最近更新</span>
                 <span className="font-medium">{hasHealthSnapshot ? lastUpdated : '加载中'}</span>
               </div>
+              {snapshot.reasons.length > 0 ? (
+                <div className="rounded-xl border border-border bg-surface-alt/30 p-3">
+                  <div className="text-xs font-medium text-text-primary">主要原因</div>
+                  <p className="mt-1 mb-0 text-xs text-text-secondary break-all">
+                    {snapshot.reasons.join(' / ')}
+                  </p>
+                </div>
+              ) : null}
             </div>
           )}
           {!loadingSnapshot ? (

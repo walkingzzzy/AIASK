@@ -19,7 +19,12 @@ from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_quote
 from ...data_source import data_source
 from ...storage import get_db, run_with_db_cleanup
-from ...utils import safe_stderr_print
+from ...utils import (
+    attach_argument_contract_meta,
+    resolve_canonical_arg,
+    resolve_existing_security_code_sync,
+    safe_stderr_print,
+)
 from ..data_quality import build_quality_meta, infer_missing_fields, normalize_reason_list
 try:
     import akshare as ak
@@ -79,7 +84,13 @@ def _ok_quote_response(
     return response
 
 
-def get_realtime_quote(stock_code: str) -> dict:
+def get_realtime_quote(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """获取单只股票实时行情（优化版）
 
     数据源优先级: DataSource(Tushare/公开源) → AkShare(分钟K/日K/全市场) → Sina → Tencent
@@ -124,7 +135,31 @@ def get_realtime_quote(stock_code: str) -> dict:
         return v
 
     try:
-        code = normalize_code(stock_code)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code, _, code_error = resolve_existing_security_code_sync(code=raw_code)
+        canonical_args = {"code": code or raw_code}
+        def _respond(payload: dict) -> dict:
+            return attach_argument_contract_meta(
+                payload,
+                canonical_tool="get_realtime_quote",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+        if code_error:
+            return _respond(
+                _fail_quote_response(
+                    code_error,
+                    attempted_sources=[],
+                    source_chain=["validate.stock_code"],
+                    fallback_reason=code_error,
+                )
+            )
         attempted_sources: list[str] = []
         fallback_reason_parts: list[str] = []
 
@@ -136,7 +171,7 @@ def get_realtime_quote(stock_code: str) -> dict:
                 validated = _as_plain_quote(validate_quote(res))
                 if isinstance(validated, dict):
                     validated = _backfill_prev_close(validated, code)
-                return _ok_quote_response(validated, attempted_sources=attempted_sources, source_chain=["data_source"])
+                return _respond(_ok_quote_response(validated, attempted_sources=attempted_sources, source_chain=["data_source"]))
         except Exception as e:
             fallback_reason_parts.append(f"data_source失败: {e}")
             safe_stderr_print(f"DataSource quote failed for {code}: {e}")
@@ -153,11 +188,13 @@ def get_realtime_quote(stock_code: str) -> dict:
             validated = _as_plain_quote(validate_quote(res))
             if isinstance(validated, dict):
                 validated = _backfill_prev_close(validated, code)
-            return _ok_quote_response(
-                validated,
-                attempted_sources=attempted_sources,
-                source_chain=["data_source", "akshare"],
-                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "DataSource不可用，已降级至AkShare",
+            return _respond(
+                _ok_quote_response(
+                    validated,
+                    attempted_sources=attempted_sources,
+                    source_chain=["data_source", "akshare"],
+                    fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "DataSource不可用，已降级至AkShare",
+                )
             )
 
         # 3. Try Sina
@@ -168,11 +205,13 @@ def get_realtime_quote(stock_code: str) -> dict:
             validated = _as_plain_quote(validate_quote(res))
             if isinstance(validated, dict):
                 validated = _backfill_prev_close(validated, code)
-            return _ok_quote_response(
-                validated,
-                attempted_sources=attempted_sources,
-                source_chain=["data_source", "akshare", "sina"],
-                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Sina",
+            return _respond(
+                _ok_quote_response(
+                    validated,
+                    attempted_sources=attempted_sources,
+                    source_chain=["data_source", "akshare", "sina"],
+                    fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Sina",
+                )
             )
 
         # 4. Try Tencent
@@ -183,27 +222,36 @@ def get_realtime_quote(stock_code: str) -> dict:
             validated = _as_plain_quote(validate_quote(res))
             if isinstance(validated, dict):
                 validated = _backfill_prev_close(validated, code)
-            return _ok_quote_response(
-                validated,
-                attempted_sources=attempted_sources,
-                source_chain=["data_source", "akshare", "sina", "tencent"],
-                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Tencent",
+            return _respond(
+                _ok_quote_response(
+                    validated,
+                    attempted_sources=attempted_sources,
+                    source_chain=["data_source", "akshare", "sina", "tencent"],
+                    fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Tencent",
+                )
             )
 
         attempted = " -> ".join(attempted_sources)
         reason = "; ".join(fallback_reason_parts) if fallback_reason_parts else "所有上游源均返回空数据"
-        return _fail_quote_response(
-            f"所有数据源均无法获取 {code} 的实时行情（attempted={attempted}, reason={reason}）",
-            attempted_sources=attempted_sources,
-            source_chain=["data_source", "akshare", "sina", "tencent"],
-            fallback_reason=reason,
+        return _respond(
+            _fail_quote_response(
+                f"所有数据源均无法获取 {code} 的实时行情（attempted={attempted}, reason={reason}）",
+                attempted_sources=attempted_sources,
+                source_chain=["data_source", "akshare", "sina", "tencent"],
+                fallback_reason=reason,
+            )
         )
     except Exception as e:
-        return _fail_quote_response(
-            str(e),
-            attempted_sources=[],
-            source_chain=["get_realtime_quote"],
-            fallback_reason=str(e),
+        return attach_argument_contract_meta(
+            _fail_quote_response(
+                str(e),
+                attempted_sources=[],
+                source_chain=["get_realtime_quote"],
+                fallback_reason=str(e),
+            ),
+            canonical_tool="get_realtime_quote",
+            canonical_args={"code": code or ""},
+            alias_hits=[],
         )
 
 

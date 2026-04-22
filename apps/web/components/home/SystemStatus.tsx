@@ -3,6 +3,13 @@
 import { SectionCard, Badge, Skeleton } from '@/components/ui';
 import { ErrorState, EmptyState } from '@/components/status-state';
 import { getBffBaseUrl } from '@/lib/bff-base';
+import {
+  formatHealthSignalLabel,
+  formatHealthStatusLabel,
+  healthStatusVariant,
+  normalizeSystemHealthSnapshot,
+  type RuntimeHealthComponent,
+} from '@/lib/system-health';
 import { DASHBOARD_MODULES } from '@/hooks/use-dashboard-prefs';
 import type { DashboardModuleKey } from '@/hooks/use-dashboard-prefs';
 
@@ -20,16 +27,15 @@ export interface SystemStatusProps {
   /* Health */
   healthQ: { error: string | null; isPending: boolean; data: unknown; refetch: () => void };
   health: Record<string, unknown> | null;
-  mcp: Record<string, unknown>;
 }
 
 /* ------------------------------------------------------------------ */
 /* Module status bar + settings                                        */
 /* ------------------------------------------------------------------ */
 
-function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboardSettings, dashboardVisibility, toggleDashboardModule }: Omit<SystemStatusProps, 'healthQ' | 'health' | 'mcp'>) {
+function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboardSettings, dashboardVisibility, toggleDashboardModule }: Omit<SystemStatusProps, 'healthQ' | 'health'>) {
   return (
-    <SectionCard>
+    <SectionCard data-testid="home-system-status-modules">
       <div className="flex items-center justify-between gap-3 mb-2">
         <div>
           <div className="eyebrow">运行状态</div>
@@ -69,39 +75,153 @@ function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboa
 /* Health details                                                      */
 /* ------------------------------------------------------------------ */
 
-function HealthDetails({ healthQ, health, mcp }: Pick<SystemStatusProps, 'healthQ' | 'health' | 'mcp'>) {
+function formatPercent(value: unknown): string {
+  const numeric = Number(value ?? NaN);
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(1)}%` : '-';
+}
+
+function detailText(value: unknown): string {
+  const text = String(value ?? '').trim();
+  return text || '-';
+}
+
+function ComponentCard({
+  title,
+  component,
+  summary,
+  detail,
+  lastError,
+}: {
+  title: string;
+  component: RuntimeHealthComponent;
+  summary: string;
+  detail: string;
+  lastError?: string | null;
+}) {
+  return (
+    <div className="rounded-[18px] border border-border bg-surface-alt/35 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-medium text-text-primary">{title}</div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Badge variant={healthStatusVariant(component.status)}>{formatHealthStatusLabel(component.status)}</Badge>
+          <Badge variant={component.signal === 'operational' ? 'info' : 'neutral'}>
+            {formatHealthSignalLabel(component.signal)}
+          </Badge>
+        </div>
+      </div>
+      <div className="mt-2 text-sm text-text-primary">{summary}</div>
+      <div className="mt-1 text-xs text-text-secondary">{detail}</div>
+      {component.reasons.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {component.reasons.slice(0, 4).map((reason) => (
+            <Badge key={reason} variant={component.status === 'untrusted' ? 'danger' : 'warning'}>
+              {reason}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      {lastError ? <div className="mt-2 text-xs text-danger break-all">{lastError}</div> : null}
+    </div>
+  );
+}
+
+function HealthDetails({ healthQ, health }: Pick<SystemStatusProps, 'healthQ' | 'health'>) {
   const bffBase = getBffBaseUrl();
-  const degradedReasons = Array.isArray(health?.degradedReasons) ? health.degradedReasons as string[] : [];
-  const serviceStatus = String(health?.status ?? 'unknown');
-  const mcpTransport = String(mcp.transportKind ?? mcp.source ?? '-');
-  const readiness = String((health?.probes as Record<string, unknown> | undefined)?.readiness ?? '-');
-  const notificationStatus = (health?.notifications as Record<string, unknown> | undefined) ?? {};
-  const auditStatus = (health?.audit as Record<string, unknown> | undefined) ?? {};
+  const snapshot = normalizeSystemHealthSnapshot(health);
+  const mcp = snapshot.dependencies.mcp.raw;
+  const db = snapshot.dependencies.db.raw;
+  const cache = snapshot.dependencies.cache.raw;
+  const vector = snapshot.dependencies.vector.raw;
+  const audit = snapshot.dependencies.audit.raw;
+  const notifications = snapshot.dependencies.notifications.raw;
 
   return (
-    <details className="mt-6">
-      <summary className="cursor-pointer text-text-secondary text-sm">BFF / MCP 健康状态</summary>
+    <details className="mt-6" data-testid="home-system-health-details">
+      <summary
+        className="cursor-pointer text-text-secondary text-sm"
+        data-testid="home-system-health-summary"
+      >
+        BFF / MCP 健康状态
+      </summary>
       <SectionCard className="mt-2">
         {healthQ.error ? <ErrorState text={String(healthQ.error)} onRetry={() => healthQ.refetch()} />
           : healthQ.isPending ? <Skeleton height={60} />
             : health ? (
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>服务: <Badge variant={serviceStatus === 'ok' ? 'success' : serviceStatus === 'degraded' ? 'warning' : 'danger'}>{serviceStatus}</Badge></div>
-                <div>MCP: <Badge variant={mcp.reachable ? 'success' : 'danger'}>{mcp.reachable ? '已连接' : '未连接'}</Badge></div>
-                <div>Readiness: <Badge variant={readiness === 'ready' ? 'success' : readiness === 'degraded' ? 'warning' : 'danger'}>{readiness}</Badge></div>
-                <div>Transport: <Badge variant={Boolean(mcp.degraded) ? 'warning' : 'success'}>{mcpTransport}</Badge></div>
-                <div>工具数: {String(mcp.toolCount ?? '-')} / {String(mcp.expectedTools ?? '-')}</div>
-                <div>匹配: <Badge variant={mcp.matched ? 'success' : 'warning'}>{String(mcp.matched ?? '-')}</Badge></div>
-                <div>审计后端: <Badge variant={Boolean(auditStatus.degraded) ? 'warning' : 'success'}>{String(auditStatus.activeBackend ?? '-')}</Badge></div>
-                <div>通知外送: <Badge variant={notificationStatus.configured ? (Number(notificationStatus.failed ?? 0) > 0 ? 'warning' : 'success') : 'warning'}>{notificationStatus.configured ? '已配置' : '未配置'}</Badge></div>
-                {degradedReasons.length > 0 ? (
-                  <div className="col-span-2">
-                    降级原因:
-                    <div className="mt-1 flex flex-wrap gap-2">
-                      {degradedReasons.slice(0, 6).map((reason) => <Badge key={reason} variant="warning">{reason}</Badge>)}
+              <div className="space-y-3">
+                <div className="rounded-[18px] border border-border bg-surface-alt/35 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-text-primary">系统总览</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={healthStatusVariant(snapshot.status)}>
+                        {formatHealthStatusLabel(snapshot.status)}
+                      </Badge>
+                      <Badge variant={snapshot.readiness === 'ready' ? 'success' : snapshot.readiness === 'degraded' ? 'warning' : 'danger'}>
+                        {detailText(snapshot.readiness)}
+                      </Badge>
                     </div>
                   </div>
-                ) : null}
+                  <div className="mt-2 text-sm text-text-primary">{snapshot.service}</div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    最近更新 {detailText(snapshot.timestamp ? new Date(snapshot.timestamp).toLocaleString('zh-CN') : '-')}
+                  </div>
+                  {snapshot.reasons.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {snapshot.reasons.slice(0, 6).map((reason) => (
+                        <Badge key={reason} variant={snapshot.status === 'untrusted' ? 'danger' : 'warning'}>
+                          {reason}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ComponentCard
+                    title="MCP"
+                    component={snapshot.dependencies.mcp}
+                    summary={`工具 ${detailText(mcp.toolCount)} / ${detailText(mcp.expectedTools)} · 传输 ${detailText(mcp.transportKind ?? mcp.source)}`}
+                    detail={`连接 ${detailText(mcp.activeConnections)} / ${detailText(mcp.poolSize)} · 匹配 ${detailText(mcp.matched)}`}
+                    lastError={typeof mcp.lastError === 'string' ? mcp.lastError : null}
+                  />
+                  <ComponentCard
+                    title="DB"
+                    component={snapshot.dependencies.db}
+                    summary={`模式 ${detailText(db.mode)} · 阶段 ${detailText(db.lastFailureStage ?? snapshot.dependencies.db.reasons[0])}`}
+                    detail={`healthy ${detailText(db.healthy)} · 最近延迟 ${detailText(db.lastLatencyMs)}ms · 最近检查 ${detailText(db.lastCheckedAt)}`}
+                    lastError={typeof db.lastError === 'string' ? db.lastError : null}
+                  />
+                  <ComponentCard
+                    title="Cache"
+                    component={snapshot.dependencies.cache}
+                    summary={`后端 ${detailText(cache.activeBackend)} · 阶段 ${detailText(cache.lastFailureStage ?? snapshot.dependencies.cache.reasons[0])}`}
+                    detail={`命中率 ${formatPercent(cache.hitRate)} · Redis ${detailText(cache.redisReady)} · 内存条目 ${detailText(cache.memorySize)} · 错误 ${detailText(cache.errors)}`}
+                    lastError={typeof cache.lastError === 'string' ? cache.lastError : null}
+                  />
+                  <ComponentCard
+                    title="Vector"
+                    component={snapshot.dependencies.vector}
+                    summary={`backend ${detailText(vector.backend)} · health ${detailText(vector.health_mode ?? vector.healthMode)}`}
+                    detail={`集合 ${detailText(vector.collection_count)} · 最新版本 ${detailText((vector.latest_snapshot as Record<string, unknown> | undefined)?.index_version)}`}
+                    lastError={typeof vector.lastError === 'string' ? vector.lastError : null}
+                  />
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ComponentCard
+                    title="Audit"
+                    component={snapshot.dependencies.audit}
+                    summary={`后端 ${detailText(audit.activeBackend)} / 配置 ${detailText(audit.configuredBackend)}`}
+                    detail={`内存条目 ${detailText(audit.memoryEntries)} · 最近读错 ${detailText(audit.lastReadError)}`}
+                    lastError={typeof audit.lastPersistError === 'string' ? audit.lastPersistError : null}
+                  />
+                  <ComponentCard
+                    title="Notifications"
+                    component={snapshot.dependencies.notifications}
+                    summary={`配置 ${detailText(notifications.configured)} · 来源 ${detailText(notifications.source)}`}
+                    detail={`attempted ${detailText(notifications.attempted)} / delivered ${detailText(notifications.delivered)} / failed ${detailText(notifications.failed)}`}
+                    lastError={typeof notifications.lastError === 'string' ? notifications.lastError : null}
+                  />
+                </div>
               </div>
             ) : <EmptyState text={`暂无健康数据：${bffBase}`} />}
       </SectionCard>
@@ -123,7 +243,7 @@ export function SystemStatus(props: SystemStatusProps) {
         dashboardVisibility={props.dashboardVisibility}
         toggleDashboardModule={props.toggleDashboardModule}
       />
-      <HealthDetails healthQ={props.healthQ} health={props.health} mcp={props.mcp} />
+      <HealthDetails healthQ={props.healthQ} health={props.health} />
     </>
   );
 }

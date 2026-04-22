@@ -9,7 +9,7 @@ from ..services.document_index import build_document_index
 from ..services.event_extraction import extract_events
 from ..services.sentiment import sentiment_analyzer
 from ..storage import get_db
-from ..utils import ok, fail, resolve_security_code
+from ..utils import ok, fail, resolve_existing_security_code_async
 
 
 def _to_float(value: Any) -> float | None:
@@ -121,9 +121,14 @@ def register(mcp):
     ):
         """分析个股市场情绪（三分量复合评分：价量动量+新闻情绪+资金流向）"""
         try:
-            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
-            if not code:
-                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            code, _, error = await resolve_existing_security_code_async(
+                code=code,
+                stock_code=stock_code,
+                symbol=symbol,
+                ticker=ticker,
+            )
+            if error:
+                return fail(error)
             db = get_db()
             klines = await db.get_klines(code, limit=100)
 

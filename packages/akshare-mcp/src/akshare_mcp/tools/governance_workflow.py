@@ -19,6 +19,7 @@ import time
 from typing import Any
 
 from ..services.governance_monitor import GovernanceMonitor
+from ..services.governance_persistence import persist_governance_report_snapshot
 from ..services.lineage_tracker import LineageContext
 from .manager_protocol import fail_with_meta, ok_with_meta
 from .pit_middleware import build_pit_meta_simple
@@ -103,12 +104,18 @@ async def governance_check_workflow(
             include_strategy_health=include_strategy_health,
             include_consistency=include_consistency,
         )
+        persisted = await persist_governance_report_snapshot(
+            report,
+            scope_type=resolved_type,
+            scope_id=target_id,
+        )
 
         return ok_with_meta(
             {
                 "workflow": "governance_check_workflow",
                 "target_type": resolved_type,
                 "target_id": target_id,
+                "snapshot_id": persisted.get("id"),
                 "report": report.to_dict(),
             },
             tool_name="governance_check_workflow",

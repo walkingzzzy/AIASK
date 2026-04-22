@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
@@ -8,6 +8,8 @@ import {
   RefreshRankingDto,
   CreateDto,
   SubscribeDto,
+  UpdateStrategyDto,
+  MyStrategiesQueryDto,
   ReviewDto,
   UpdateMetricsDto,
   SignalsQueryDto,
@@ -28,6 +30,10 @@ export class StrategyMarketController {
       throw new UnauthorizedException('登录状态无效');
     }
     return userId;
+  }
+
+  private currentUserRole(req: Req_): string {
+    return String(req.user?.role || 'user').trim() || 'user';
   }
 
   @Get('list')
@@ -65,9 +71,28 @@ export class StrategyMarketController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('my-favorites')
+  async myFavorites(@Req() req: Req_) {
+    const data = await this.svc.myFavorites(this.currentUserId(req));
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get('my-strategies')
+  async myStrategies(@Query() q: MyStrategiesQueryDto, @Req() req: Req_) {
+    const data = await this.svc.myStrategies(this.currentUserId(req), this.currentUserRole(req), {
+      include_archived: q.include_archived,
+      limit: q.limit,
+      offset: q.offset,
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Get('capabilities')
   async capabilities(@Req() req: Req_) {
-    const data = await this.svc.capabilities();
+    const data = await this.svc.capabilities({
+      userId: req.user?.id,
+      role: this.currentUserRole(req),
+    });
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -111,7 +136,10 @@ export class StrategyMarketController {
 
   @Get(':id')
   async detail(@Param('id') id: string, @Req() req: Req_) {
-    const data = await this.svc.detail(id);
+    const data = await this.svc.detail(id, {
+      userId: req.user?.id,
+      role: this.currentUserRole(req),
+    });
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -154,6 +182,72 @@ export class StrategyMarketController {
   @Delete(':id/subscribe')
   async unsubscribe(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.unsubscribe(id, this.currentUserId(req));
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/favorite')
+  async favorite(@Param('id') id: string, @Body() _body: SubscribeDto, @Req() req: Req_) {
+    const data = await this.svc.favorite(id, this.currentUserId(req));
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Delete(':id/favorite')
+  async unfavorite(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.unfavorite(id, this.currentUserId(req));
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/fork')
+  async fork(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.forkStrategy(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Patch(':id')
+  async updateStrategy(@Param('id') id: string, @Body() body: UpdateStrategyDto, @Req() req: Req_) {
+    const data = await this.svc.updateStrategy(id, body as Record<string, unknown>, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Delete(':id')
+  async deleteStrategy(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.deletePersonalStrategy(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/paper-session')
+  async paperSession(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.paperSession(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/paper-session')
+  async getOrCreatePaperSession(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.getOrCreatePaperSession(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/ai-optimize')
+  async aiOptimize(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.aiOptimizePersonalStrategy(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
     return { success: true, data, traceId: tid(req) };
   }
 

@@ -39,36 +39,11 @@ export class PaperTradingService {
   async summary(userId: string, accountId?: string) {
     const cacheKey = `paper-trading:summary:${userId}:${accountId?.trim() || 'default'}`;
     const ttlSeconds = this.cacheService.resolveTtl('paper-trading.summary', PaperTradingService.SUMMARY_TTL_SECONDS);
-
-    try {
-      const data = await this.call('summary', { user_id: userId, account_id: accountId });
-      if (data && typeof data === 'object') {
-        await this.cacheService.set(cacheKey, data, ttlSeconds);
-      }
-      return data;
-    } catch (error) {
-      const cached = await this.cacheService.get<Record<string, unknown>>(cacheKey);
-      if (cached) {
-        this.logger.warn(`paper-trading.summary 降级到缓存: ${this.errorMessage(error)}`);
-        return {
-          ...cached,
-          degraded: true,
-          message: '模拟盘概览暂时降级到缓存结果，请稍后刷新重试',
-        };
-      }
-
-      this.logger.warn(`paper-trading.summary 降级到空结果: ${this.errorMessage(error)}`);
-      return {
-        account_id: accountId?.trim() || null,
-        account: null,
-        positions_count: 0,
-        pending_orders_count: 0,
-        total_value: 0,
-        total_return_pct: 0,
-        degraded: true,
-        message: '模拟盘概览暂时不可用，已返回空结果',
-      };
+    const data = await this.call('summary', { user_id: userId, account_id: accountId });
+    if (data && typeof data === 'object') {
+      await this.cacheService.set(cacheKey, data, ttlSeconds);
     }
+    return data;
   }
 
   async positions(userId: string, accountId?: string) {

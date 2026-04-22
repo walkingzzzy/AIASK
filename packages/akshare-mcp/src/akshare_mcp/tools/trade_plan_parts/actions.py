@@ -346,6 +346,9 @@ def register(mcp):
             risk_per_trade: 单笔风险占比 (默认 0.02 即 2%)
             style: aggressive (激进) / balanced (均衡) / conservative (保守)
         """
+        normalized_code, _, error = await resolve_existing_security_code_async(code=code)
+        if error:
+            return fail(error)
         return await generate_plan(
-            code, capital=capital, risk_per_trade=risk_per_trade, style=style,
+            normalized_code, capital=capital, risk_per_trade=risk_per_trade, style=style,
         )

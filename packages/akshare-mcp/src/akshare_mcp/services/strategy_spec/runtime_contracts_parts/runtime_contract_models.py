@@ -5,10 +5,24 @@ from typing import Any
 
 from strategy_factory.application.research_protocol_contract import CANDIDATE_CONTRACT_V2
 
-from .constants import *  # noqa: F401,F403
-from .defaults import *  # noqa: F401,F403
-from .dsl_builder import *  # noqa: F401,F403
-from .normalizers import *  # noqa: F401,F403
+from . import constants as _constants
+from . import defaults as _defaults
+from . import dsl_builder as _dsl_builder
+from . import normalizers as _normalizers
+
+for _module in (
+    _constants,
+    _normalizers,
+    _defaults,
+    _dsl_builder,
+):
+    globals().update(
+        {
+            name: getattr(_module, name)
+            for name in dir(_module)
+            if not name.startswith("__")
+        }
+    )
 
 def _default_runtime_playbook(
     strategy_type: str,

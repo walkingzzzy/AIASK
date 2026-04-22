@@ -22,6 +22,11 @@ from akshare_mcp.env_loader import load_mcp_env
 from akshare_mcp.storage import get_db, run_with_db_cleanup
 
 
+ACCEPTANCE_REPORT_TYPE = "execution_audit_acceptance"
+ACCEPTANCE_REPORT_SCHEMA_VERSION = "execution_audit_acceptance.v2"
+SAMPLE_GAP_CATEGORY = "sample_gap"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -32,6 +37,33 @@ def _now_iso() -> str:
 
 def _normalize_csv(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _unique_tokens(values) -> list[str]:
+    tokens: list[str] = []
+    for item in list(values or []):
+        token = str(item or "").strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _normalize_detail_dimension(
+    *,
+    top_level_values,
+    blocker_details: list[dict[str, Any]],
+    detail_key: str,
+    field_name: str,
+    strategy_id: str,
+) -> list[str]:
+    direct = _unique_tokens(top_level_values)
+    derived = _unique_tokens(item.get(detail_key) for item in blocker_details)
+    if direct and derived and set(direct) != set(derived):
+        raise ValueError(
+            "execution_audit_acceptance contract mismatch for "
+            f"{strategy_id or '<unknown>'}: {field_name}={sorted(direct)} detail_{field_name}={sorted(derived)}"
+        )
+    return direct or derived
 
 
 async def _select_runtime_evidence_strategy_ids(
@@ -97,18 +129,20 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
     lines = [
         "# Execution Audit Acceptance",
         "",
-        f"- Generated at: {_now_iso()}",
+        f"- Generated at: {report.get('finished_at') or _now_iso()}",
         f"- Database URL source: {report.get('env_source') or 'unknown'}",
+        f"- Report schema: {report.get('schema_version') or ACCEPTANCE_REPORT_SCHEMA_VERSION}",
         f"- Global schema ready: {bool(global_schema.get('all_required_tables_present') and global_schema.get('all_required_columns_present'))}",
         f"- Global migration ready: {bool(global_migrations.get('all_required_keys_applied'))}",
         f"- Strategies checked: {summary.get('strategy_count', 0)}",
         f"- Strategies ready: {summary.get('ready_count', 0)}",
+        f"- Sample-gap strategies: {summary.get('sample_gap_strategy_count', 0)}",
         f"- Overall ready: {bool(summary.get('overall_ready'))}",
         "",
         "## Strategies",
         "",
-        "| Strategy | Status | Overall | Gap Categories | Blockers | TODO Count |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Strategy | Status | Overall | Sample Gap | Gap Categories | Blockers | TODO Count |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     for row in strategy_rows:
@@ -116,12 +150,13 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
         gap_categories = ", ".join(row.get("gap_categories") or []) or "-"
         lines.append(
             f"| {row.get('strategy_id') or '-'} | {row.get('status') or '-'} | "
-            f"{'ready' if row.get('overall_ready') else 'pending'} | {gap_categories} | "
+            f"{'ready' if row.get('overall_ready') else 'pending'} | "
+            f"{'yes' if row.get('has_sample_gap') else 'no'} | {gap_categories} | "
             f"{blockers} | {int(row.get('todo_count') or 0)} |"
         )
 
     if not strategy_rows:
-        lines.append("| - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - | - |")
 
     top_blockers = list(summary.get("top_blockers") or [])
     if top_blockers:
@@ -151,6 +186,7 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
 
 
 async def _async_main(args: argparse.Namespace) -> int:
+    started_at = _now_iso()
     env_path = load_mcp_env(override=False)
     db = get_db()
     report_dir = Path(args.report_dir).resolve()
@@ -187,23 +223,33 @@ async def _async_main(args: argparse.Namespace) -> int:
             strategy_id=strategy_id,
             backfill=bool(args.backfill),
         )
-        acceptance_matrix = dict(result.get("acceptance_matrix") or {})
-        blockers = [str(item) for item in list(result.get("blockers") or []) if str(item).strip()]
         blocker_details = [
             dict(item)
             for item in list(result.get("blocker_details") or [])
             if isinstance(item, dict)
         ]
-        gap_categories = [
-            str(item)
-            for item in list(result.get("gap_categories") or [])
-            if str(item).strip()
-        ]
-        actionable_todos = [
-            str(item)
-            for item in list(result.get("actionable_todos") or [])
-            if str(item).strip()
-        ]
+        acceptance_matrix = dict(result.get("acceptance_matrix") or {})
+        blockers = _normalize_detail_dimension(
+            top_level_values=result.get("blockers"),
+            blocker_details=blocker_details,
+            detail_key="blocker",
+            field_name="blockers",
+            strategy_id=strategy_id,
+        )
+        gap_categories = _normalize_detail_dimension(
+            top_level_values=result.get("gap_categories"),
+            blocker_details=blocker_details,
+            detail_key="category",
+            field_name="gap_categories",
+            strategy_id=strategy_id,
+        )
+        actionable_todos = _normalize_detail_dimension(
+            top_level_values=result.get("actionable_todos"),
+            blocker_details=blocker_details,
+            detail_key="todo",
+            field_name="actionable_todos",
+            strategy_id=strategy_id,
+        )
         blocker_counter.update(blockers)
         gap_category_counter.update(gap_categories)
         strategy_results.append(
@@ -211,6 +257,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                 "strategy_id": strategy_id,
                 "status": str(result.get("status") or ""),
                 "overall_ready": bool(acceptance_matrix.get("overall_ready")),
+                "has_sample_gap": SAMPLE_GAP_CATEGORY in gap_categories,
                 "acceptance_matrix": acceptance_matrix,
                 "blockers": blockers,
                 "blocker_details": blocker_details,
@@ -230,12 +277,15 @@ async def _async_main(args: argparse.Namespace) -> int:
         dict(global_verification.get("migrations") or {}).get("all_required_keys_applied")
     )
     ready_count = sum(1 for item in strategy_results if item.get("overall_ready"))
+    sample_gap_strategy_count = sum(1 for item in strategy_results if item.get("has_sample_gap"))
     overall_ready = global_schema_ready and global_migration_ready and (
         not strategy_results or ready_count == len(strategy_results)
     )
 
     report = {
-        "started_at": _now_iso(),
+        "report_type": ACCEPTANCE_REPORT_TYPE,
+        "schema_version": ACCEPTANCE_REPORT_SCHEMA_VERSION,
+        "started_at": started_at,
         "finished_at": _now_iso(),
         "version_tag": version_tag,
         "env_source": str(env_path) if env_path else None,
@@ -246,6 +296,7 @@ async def _async_main(args: argparse.Namespace) -> int:
             "strategy_count": len(strategy_results),
             "ready_count": ready_count,
             "pending_count": len(strategy_results) - ready_count,
+            "sample_gap_strategy_count": sample_gap_strategy_count,
             "global_schema_ready": global_schema_ready,
             "global_migration_ready": global_migration_ready,
             "overall_ready": overall_ready,

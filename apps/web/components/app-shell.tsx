@@ -2,15 +2,16 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import CopilotDock from '@/components/copilot-dock';
 import { NotificationBell } from '@/components/notification-bell';
-import { Onboarding } from '@/components/onboarding';
+import { Onboarding, OnboardingProvider } from '@/components/onboarding';
 import { useMobile } from '@/hooks/use-mobile';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useBffAvailability } from '@/lib/bff-availability';
+import { describeActionableElement, ensureBehaviorSessionId, flushBehaviorEvents, resolveBehaviorPageKey, trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { useTheme } from '@/hooks/use-theme';
 import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
 import { pageActionBus, type PageActionDefinition } from '@/lib/page-action-bus';
@@ -356,6 +357,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const dockOpen = useCopilotStore((state) => state.dockOpen);
   const setDockOpen = useCopilotStore((state) => state.setDockOpen);
   const setGlobalActions = useCopilotStore((state) => state.setGlobalActions);
+  const pageVisitRef = useRef<{ route: string; pageKey: string; enteredAt: number; label: string } | null>(null);
 
   const activeWorkspace = useMemo(
     () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
@@ -364,6 +366,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const bffAvailability = useBffAvailability({ probeOnMount: !isAuthPage });
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
   const currentStockCode = hydrated ? storeCode || activeWorkspace.context.stockCode || '' : '';
+  const isStrategyMarketPage = pathname === '/strategy-market' || pathname.startsWith('/strategy-market/');
+  const shellWorkspaceName = isStrategyMarketPage ? '策略工作区' : activeWorkspace.name;
+  const shellHeaderStockCode = isStrategyMarketPage ? '' : currentStockCode;
   const isAiCenterPage = pathname === '/assistant' || pathname.startsWith('/assistant/');
   const dockRequested = hydrated && !isAiCenterPage && (layout.dockVisible || dockOpen);
   const showPersistentDock = dockRequested && !useOverlayDock;
@@ -438,6 +443,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         description: '创建一个新的工作区',
         keywords: ['工作区', '新建'],
         scope: 'global',
+        exposeToCopilot: false,
         run: () => {
           createWorkspace();
           return { message: '已新建工作区' };
@@ -478,6 +484,124 @@ export default function AppShell({ children }: { children: ReactNode }) {
       setGlobalActions([]);
     };
   }, [globalActions, setGlobalActions]);
+
+  useEffect(() => {
+    ensureBehaviorSessionId();
+  }, []);
+
+  useEffect(() => {
+    if (isAuthPage) return;
+    const pageKey = resolveBehaviorPageKey(pathname);
+    const label = findNavLabel(pathname);
+    const now = Date.now();
+    const previous = pageVisitRef.current;
+
+    if (previous && previous.route !== pathname) {
+      trackBehaviorEvent({
+        pageKey: previous.pageKey,
+        route: previous.route,
+        eventType: 'page_leave',
+        targetType: 'page',
+        targetLabel: previous.label,
+        payload: { durationMs: now - previous.enteredAt },
+        source: 'app-shell.route',
+      });
+      trackBehaviorEvent({
+        pageKey,
+        route: pathname,
+        eventType: 'route_change',
+        targetType: 'page',
+        targetLabel: `${previous.route} -> ${pathname}`,
+        payload: { from: previous.route, to: pathname },
+        source: 'app-shell.route',
+      });
+      void flushBehaviorEvents();
+    }
+
+    trackBehaviorEvent({
+      pageKey,
+      route: pathname,
+      eventType: 'page_enter',
+      targetType: 'page',
+      targetLabel: label,
+      source: 'app-shell.route',
+    });
+    pageVisitRef.current = { route: pathname, pageKey, enteredAt: now, label };
+  }, [isAuthPage, pathname]);
+
+  useEffect(() => {
+    if (isAuthPage) return;
+
+    function handleClick(event: MouseEvent) {
+      const meta = describeActionableElement(event.target);
+      if (!meta) return;
+      trackBehaviorEvent({
+        pageKey: resolveBehaviorPageKey(pathname),
+        route: pathname,
+        eventType: meta.eventType,
+        targetType: meta.targetType,
+        targetLabel: meta.targetLabel,
+        targetId: meta.targetId,
+        targetTestId: meta.targetTestId,
+        payload: meta.payload,
+        source: 'app-shell.click',
+      });
+    }
+
+    function handleSubmit(event: Event) {
+      const form = event.target instanceof HTMLFormElement ? event.target : null;
+      if (!form) return;
+      const submitter = (event as SubmitEvent).submitter instanceof HTMLElement ? (event as SubmitEvent).submitter : null;
+      trackBehaviorEvent({
+        pageKey: resolveBehaviorPageKey(pathname),
+        route: pathname,
+        eventType: 'form_submit',
+        targetType: 'form',
+        targetLabel: submitter?.textContent?.trim() || form.getAttribute('aria-label') || 'form_submit',
+        targetId: form.id || undefined,
+        payload: {
+          action: form.getAttribute('action') || undefined,
+          method: form.getAttribute('method') || undefined,
+        },
+        source: 'app-shell.submit',
+      });
+    }
+
+    function handleChange(event: Event) {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement || target instanceof HTMLInputElement)) return;
+      if (target instanceof HTMLInputElement && !['checkbox', 'radio'].includes(target.type)) return;
+      trackBehaviorEvent({
+        pageKey: resolveBehaviorPageKey(pathname),
+        route: pathname,
+        eventType: target instanceof HTMLSelectElement ? 'filter_change' : 'view_toggle',
+        targetType: target.tagName.toLowerCase(),
+        targetLabel: target.getAttribute('aria-label') || target.id || target.name || undefined,
+        targetId: target.id || target.name || undefined,
+        payload: {
+          value: target instanceof HTMLSelectElement ? target.value : target.checked,
+        },
+        source: 'app-shell.change',
+      });
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        void flushBehaviorEvents();
+      }
+    }
+
+    document.addEventListener('click', handleClick, true);
+    document.addEventListener('submit', handleSubmit, true);
+    document.addEventListener('change', handleChange, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('click', handleClick, true);
+      document.removeEventListener('submit', handleSubmit, true);
+      document.removeEventListener('change', handleChange, true);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isAuthPage, pathname]);
 
   if (isAuthPage) {
     return <>{children}</>;
@@ -553,7 +677,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         )}
       </div>
       <div className="border-t border-sidebar-border px-4 py-4 text-xs text-text-secondary">
-        <div className="font-medium text-text-primary" suppressHydrationWarning>{activeWorkspace.name}</div>
+        <div className="font-medium text-text-primary" suppressHydrationWarning>{shellWorkspaceName}</div>
         <div className="mt-1" suppressHydrationWarning>{syncText}</div>
         {!navCollapsed ? (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -707,103 +831,105 @@ export default function AppShell({ children }: { children: ReactNode }) {
   ) : null;
 
   return (
-    <div className={`app-shell-root app-theme-${shellTheme}`}>
-      <div className="app-shell-ambient" aria-hidden="true">
-        <span className="app-shell-orb app-shell-orb-1" />
-        <span className="app-shell-orb app-shell-orb-2" />
-        <span className="app-shell-orb app-shell-orb-3" />
-      </div>
-      <Onboarding />
-      {mobileDrawer}
-      {mobileDock}
-      <div className="app-shell-frame">
-        {desktopNav}
-        <div className="app-shell-main-column flex flex-1 flex-col">
-          <header className="app-shell-header sticky top-4 z-30 flex items-center justify-between px-4 sm:px-6">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setDrawerOpen(true)}
-                className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm xl:hidden"
-                aria-label="打开导航"
-              >
-                ☰
-              </button>
-              <div className="min-w-0">
-                <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
-                  当前页面
-                </div>
-                <div className="truncate text-base font-semibold text-text-primary">{activePageLabel}</div>
-                <div className="truncate text-[11px] text-text-secondary" suppressHydrationWarning>
-                  {activeWorkspace.name}
-                  {currentStockCode ? <span className="ml-2 font-mono text-primary">{currentStockCode}</span> : null}
+    <OnboardingProvider>
+      <div className={`app-shell-root app-theme-${shellTheme}`}>
+        <div className="app-shell-ambient" aria-hidden="true">
+          <span className="app-shell-orb app-shell-orb-1" />
+          <span className="app-shell-orb app-shell-orb-2" />
+          <span className="app-shell-orb app-shell-orb-3" />
+        </div>
+        <Onboarding />
+        {mobileDrawer}
+        {mobileDock}
+        <div className="app-shell-frame">
+          {desktopNav}
+          <div className="app-shell-main-column flex flex-1 flex-col">
+            <header className="app-shell-header sticky top-4 z-30 flex items-center justify-between px-4 sm:px-6">
+              <div className="flex min-w-0 items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(true)}
+                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm xl:hidden"
+                  aria-label="打开导航"
+                >
+                  ☰
+                </button>
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
+                    当前页面
+                  </div>
+                  <div className="truncate text-base font-semibold text-text-primary">{activePageLabel}</div>
+                  <div className="truncate text-[11px] text-text-secondary" suppressHydrationWarning>
+                    {shellWorkspaceName}
+                    {shellHeaderStockCode ? <span className="ml-2 font-mono text-primary">{shellHeaderStockCode}</span> : null}
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {!isAiCenterPage ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (showPersistentDock || showOverlayDock) {
-                      updateLayout({ dockVisible: false });
-                      setDockOpen(false);
-                      return;
-                    }
-                    updateLayout({ dockVisible: true });
-                    setDockOpen(true);
-                  }}
-                  className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
-                >
-                  {showPersistentDock || showOverlayDock ? '收起 AI' : '打开 AI'}
-                </button>
-              ) : null}
-              <WsIndicator />
-              <NotificationBell />
-              <ThemeToggle />
-              {user ? (
-                <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
-                  {user.avatarUrl ? (
-                    <img
-                      src={user.avatarUrl}
-                      alt="用户头像"
-                      className="h-8 w-8 rounded-full border border-border object-cover"
-                    />
-                  ) : (
-                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-white shadow-sm">
-                      {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
-                    </span>
-                  )}
-                  <span className="hidden text-sm text-text-secondary xl:inline">{user.nickname || user.username}</span>
-                </Link>
-              ) : null}
-              {user ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    logout();
-                    window.location.href = '/login';
-                  }}
-                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm"
-                >
-                  退出
-                </button>
-              ) : null}
-            </div>
-          </header>
+              <div className="flex items-center gap-2">
+                {!isAiCenterPage ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (showPersistentDock || showOverlayDock) {
+                        updateLayout({ dockVisible: false });
+                        setDockOpen(false);
+                        return;
+                      }
+                      updateLayout({ dockVisible: true });
+                      setDockOpen(true);
+                    }}
+                    className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
+                  >
+                    {showPersistentDock || showOverlayDock ? '收起 AI' : '打开 AI'}
+                  </button>
+                ) : null}
+                <WsIndicator />
+                <NotificationBell />
+                <ThemeToggle />
+                {user ? (
+                  <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
+                    {user.avatarUrl ? (
+                      <img
+                        src={user.avatarUrl}
+                        alt="用户头像"
+                        className="h-8 w-8 rounded-full border border-border object-cover"
+                      />
+                    ) : (
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-white shadow-sm">
+                        {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
+                      </span>
+                    )}
+                    <span className="hidden text-sm text-text-secondary xl:inline">{user.nickname || user.username}</span>
+                  </Link>
+                ) : null}
+                {user ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      logout();
+                      window.location.href = '/login';
+                    }}
+                    className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm"
+                  >
+                    退出
+                  </button>
+                ) : null}
+              </div>
+            </header>
 
-          <div className="app-shell-main">
-            <main className="app-shell-content mobile-safe-bottom min-w-0 flex-1 overflow-auto">
-              <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>{children}</div>
-            </main>
-            {showPersistentDock ? (
-              <aside className="app-shell-dock hidden shrink-0 2xl:flex" style={{ width: desktopDockWidth }}>
-                <CopilotDock />
-              </aside>
-            ) : null}
+            <div className="app-shell-main">
+              <main className="app-shell-content mobile-safe-bottom min-w-0 flex-1 overflow-auto">
+                <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>{children}</div>
+              </main>
+              {showPersistentDock ? (
+                <aside className="app-shell-dock hidden shrink-0 2xl:flex" style={{ width: desktopDockWidth }}>
+                  <CopilotDock />
+                </aside>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </OnboardingProvider>
   );
 }

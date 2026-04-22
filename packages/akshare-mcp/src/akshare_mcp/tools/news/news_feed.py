@@ -6,7 +6,14 @@ from ...services.db_first_market_context import load_db_first_document_context
 from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
-from ...utils import fail, normalize_code, ok
+from ...utils import (
+    attach_argument_contract_meta,
+    fail,
+    ok,
+    resolve_canonical_arg,
+    resolve_existing_security_code_sync,
+    validate_int_range,
+)
 from ..fund_flow_common import _run_storage_call_sync
 from .helpers import (
     _map_news_rows,
@@ -20,7 +27,15 @@ from .research import get_research_reports, get_stock_research
 
 
 @cached(ttl=1800.0)
-def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) -> dict:
+def get_stock_news(
+    code: str = "",
+    limit: int = 20,
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+    prefer_db: bool = True,
+) -> dict:
     """
     获取个股新闻列表（优先使用 AkShare 内置接口，失败则回退公告/研报）
 
@@ -31,8 +46,38 @@ def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) 
     limiter.acquire()
 
     try:
-        code = normalize_code(stock_code)
-        limit = int(limit) if int(limit or 0) > 0 else 20
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code, _, error = resolve_existing_security_code_sync(code=raw_code)
+        if error:
+            return attach_argument_contract_meta(
+                fail(error),
+                canonical_tool="get_stock_news",
+                canonical_args={"code": raw_code, "limit": limit},
+                alias_hits=alias_hits,
+            )
+        limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1)
+        canonical_args = {"code": code, "limit": limit}
+        if limit_error:
+            return attach_argument_contract_meta(
+                fail(limit_error),
+                canonical_tool="get_stock_news",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+
+        def _respond(payload: dict) -> dict:
+            return attach_argument_contract_meta(
+                payload,
+                canonical_tool="get_stock_news",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
 
         # 0. Try Tushare announcements as news
         end_date = date.today()
@@ -52,17 +97,17 @@ def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) 
                 )
                 db_news = list((db_context or {}).get("news") or [])
                 if db_news:
-                    return ok(db_news[:limit])
+                    return _respond(ok(db_news[:limit]))
             except Exception:
                 pass
 
         items = _try_tushare_anns(start_date.isoformat(), end_date.isoformat(), code, limit)
         if items:
-            return ok(items[:limit])
+            return _respond(ok(items[:limit]))
 
         items = _try_akshare_news_functions(code, limit)
         if items:
-            return ok(items[:limit])
+            return _respond(ok(items[:limit]))
 
         # 回退1：使用公告数据充当新闻
         fallback = get_stock_notices(
@@ -76,7 +121,7 @@ def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) 
             events = fallback["data"].get("events", [])
             mapped = _map_news_rows(events)
             if mapped:
-                return ok(mapped[:limit])
+                return _respond(ok(mapped[:limit]))
 
         # 回退2：使用研报数据充当新闻
         research = get_stock_research(code, limit=max(limit, 10))
@@ -84,18 +129,23 @@ def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) 
             reports = research["data"].get("reports", [])
             mapped = _map_research_rows(reports)
             if mapped:
-                return ok(mapped[:limit])
+                return _respond(ok(mapped[:limit]))
 
         # 回退3：使用研报通用接口
         reports = get_research_reports(code, limit=max(limit, 10), prefer_db=prefer_db)
         if reports.get("success") and reports.get("data"):
             mapped = _map_research_rows(reports["data"] if isinstance(reports["data"], list) else [])
             if mapped:
-                return ok(mapped[:limit])
+                return _respond(ok(mapped[:limit]))
 
-        return fail(f"未获取到 {code} 的新闻数据")
+        return _respond(fail(f"未获取到 {code} 的新闻数据"))
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_stock_news",
+            canonical_args={"code": code, "limit": limit},
+            alias_hits=[],
+        )
 
 
 @cached(ttl=1800.0)
@@ -110,7 +160,9 @@ def get_market_news(limit: int = 20) -> dict:
     limiter.acquire()
 
     try:
-        limit = int(limit) if int(limit or 0) > 0 else 20
+        limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1)
+        if limit_error:
+            return fail(limit_error)
         end_date = date.today()
         start_date = end_date - timedelta(days=7)
 

@@ -47,6 +47,20 @@ export class CreateDto {
 export class SubscribeDto {
 }
 
+export class UpdateStrategyDto {
+  @IsOptional() @IsString() name?: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() params?: Record<string, unknown>;
+  @IsOptional() factor_weights?: Record<string, number>;
+  @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
+}
+
+export class MyStrategiesQueryDto {
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() include_archived?: boolean;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;
+}
+
 export class ReviewDto {
   @Type(() => Number) @IsInt() @Min(1) @Max(5) rating!: number;
   @IsOptional() @IsString() comment?: string;
@@ -298,7 +312,7 @@ export class TaskRunsQueryDto {
 export type Req_ = {
   traceId?: string;
   headers?: Record<string, string | undefined>;
-  user?: { id?: string };
+  user?: { id?: string; role?: string; username?: string };
 };
 
 export function tid(req: Req_) {

@@ -43,6 +43,7 @@ class _AcceptanceHarness(StrategyIncubationMixin):
     def __init__(self, *, verification: dict, backfill_result: dict):
         self._verification = dict(verification)
         self._backfill_result = dict(backfill_result)
+        self.snapshot_payload = None
 
     async def backfill_trade_position_links(self, strategy_id=None):
         return {"strategy_id": strategy_id, "position_count": 1, "fill_count": 2}
@@ -52,6 +53,10 @@ class _AcceptanceHarness(StrategyIncubationMixin):
 
     async def get_execution_audit_verification(self, strategy_id=None):
         return dict(self._verification)
+
+    async def upsert_execution_audit_snapshot(self, payload: dict):
+        self.snapshot_payload = dict(payload or {})
+        return dict(payload or {})
 
 
 def test_backfill_strategy_signal_evidence_native_prefers_compile_stable_records():
@@ -226,6 +231,8 @@ def test_run_execution_audit_acceptance_emits_gap_categories_and_actionable_todo
     assert result["acceptance_matrix"]["native_lineage_ready"] is True
     assert result["acceptance_matrix"]["trade_evidence_ready"] is True
     assert result["acceptance_matrix"]["hard_gate_ready"] is False
+    assert result["execution_audit_snapshot_id"] == result["snapshot"]["snapshot_id"]
+    assert result["execution_audit_gate_status"] == "insufficient_samples"
     assert "sample_gap" in result["gap_categories"]
     assert any(
         detail["blocker"] == "insufficient_samples"
@@ -234,3 +241,18 @@ def test_run_execution_audit_acceptance_emits_gap_categories_and_actionable_todo
     )
     assert any("production hard gate" in todo for todo in result["actionable_todos"])
     assert result["backfill_result"]["native_signal_evidence"]["saved_signal_count"] == 3
+
+
+def test_normalize_trade_audit_summary_counts_excludes_open_positions_from_incomplete_gate():
+    normalized = StrategyIncubationMixin()._normalize_trade_audit_summary_counts(
+        {
+            "mapped_position_count": 3,
+            "realized_trade_count": 1,
+            "incomplete_position_count": 3,
+            "open_position_count": 2,
+        }
+    )
+
+    assert normalized["raw_incomplete_position_count"] == 3
+    assert normalized["open_position_count"] == 2
+    assert normalized["incomplete_position_count"] == 1

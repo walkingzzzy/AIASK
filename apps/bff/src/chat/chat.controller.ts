@@ -1,20 +1,22 @@
-import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
 import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
 import { PreferencesService } from '../auth/preferences.service';
 import type { ChatMode } from './chat.protocol';
+import { probeCompatibleBaseUrl } from './llm-compat';
 
 class SaveLlmConfigDto {
-  @IsString() apiKey!: string;
+  @IsOptional() @IsString() apiKey?: string;
   @IsString() baseUrl!: string;
   @IsString() model!: string;
 }
 
 class ProbeModelsDto {
   @IsString() baseUrl!: string;
-  @IsString() apiKey!: string;
+  @IsOptional() @IsString() apiKey?: string;
+  @IsOptional() @IsString() model?: string;
 }
 
 class ChatMessageDto {
@@ -144,12 +146,36 @@ export class ChatController {
   @Post('config')
   async saveConfig(@Req() req: ChatRequest, @Body() body: SaveLlmConfigDto) {
     const userId = req.user?.sub ?? req.user?.id ?? '';
-    await this.preferencesService.setLlmConfig(String(userId), {
-      apiKey: body.apiKey,
-      baseUrl: body.baseUrl.replace(/\/+$/, ''),
+    const currentConfig = await this.preferencesService.getLlmConfig(String(userId));
+    const resolvedApiKey = String(body.apiKey ?? '').trim() || (currentConfig?.apiKey ?? '');
+    if (!resolvedApiKey) {
+      throw new BadRequestException('请填写 API Key');
+    }
+
+    const probe = await probeCompatibleBaseUrl({
+      baseUrl: body.baseUrl,
+      apiKey: resolvedApiKey,
       model: body.model,
     });
-    return { success: true, data: { saved: true } };
+    if (!probe.success) {
+      throw new BadRequestException(probe.error ?? 'Base URL 与当前模型不兼容');
+    }
+
+    await this.preferencesService.setLlmConfig(String(userId), {
+      apiKey: body.apiKey,
+      baseUrl: probe.normalizedBaseUrl,
+      model: body.model,
+    });
+    const config = await this.preferencesService.getMaskedLlmConfig(String(userId));
+    return {
+      success: true,
+      data: {
+        saved: true,
+        normalizedBaseUrl: probe.normalizedBaseUrl,
+        compatibility: probe.compatibility,
+        ...config,
+      },
+    };
   }
 
   @Get('models')
@@ -158,26 +184,27 @@ export class ChatController {
   }
 
   @Post('probe-models')
-  async probeModels(@Body() body: ProbeModelsDto) {
-    const url = `${body.baseUrl.replace(/\/+$/, '')}/models`;
-    try {
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${body.apiKey}` },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!resp.ok) {
-        return { success: false, error: `API 返回 ${resp.status}`, models: [] };
-      }
-      const json = (await resp.json()) as { data?: Array<{ id: string }> };
-      const models = (json.data ?? [])
-        .map((m) => m.id)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
-      return { success: true, models };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { success: false, error: message, models: [] };
+  async probeModels(@Req() req: ChatRequest, @Body() body: ProbeModelsDto) {
+    const userId = req.user?.sub ?? req.user?.id ?? '';
+    const currentConfig = await this.preferencesService.getLlmConfig(String(userId));
+    const resolvedApiKey = String(body.apiKey ?? '').trim() || (currentConfig?.apiKey ?? '');
+    if (!resolvedApiKey) {
+      return { success: false, error: '请先填写 API Key', models: [], normalizedBaseUrl: '' };
     }
+
+    const probe = await probeCompatibleBaseUrl({
+      baseUrl: body.baseUrl,
+      apiKey: resolvedApiKey,
+      model: body.model ?? currentConfig?.model ?? null,
+    });
+
+    return {
+      success: probe.success,
+      models: probe.models,
+      error: probe.error,
+      normalizedBaseUrl: probe.normalizedBaseUrl,
+      compatibility: probe.compatibility,
+    };
   }
 
   @Get('conversations')

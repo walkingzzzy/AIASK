@@ -2,9 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type OptionChainItem = {
     type?: string;
@@ -345,6 +349,123 @@ export default function OptionsPage() {
     const fmtPercent = (value: number | undefined) => (
         typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : '-'
     );
+    const optionsSummary = pairedRows.length > 0
+        ? `${querySymbol} 当前已加载 ${pairedRows.length} 个行权价层级，Greeks ${greekEntries.length} 项，Smirk 点位 ${smirkRows.length} 个。`
+        : `${querySymbol} 当前暂无完整期权链，建议先切到 510050 或 510300，确认是不是单标的覆盖不足。`;
+    const optionsActions = useMemo(
+        () => [
+            {
+                id: 'options.refresh-current',
+                label: `刷新 ${querySymbol}`,
+                description: '重新拉取当前标的的期权链、Greeks 和波动率偏斜',
+                keywords: ['期权', '刷新', querySymbol],
+                scope: 'page' as const,
+                pageKey: 'options',
+                run: async () => {
+                    await Promise.all([refetchChain(), refetchGreeks(), refetchSmirk()]);
+                    return { message: `已刷新 ${querySymbol} 的期权数据` };
+                },
+            },
+            {
+                id: 'options.use-510300',
+                label: '切到 510300',
+                description: '使用覆盖更稳定的 300ETF 期权样例',
+                keywords: ['510300', 'ETF'],
+                scope: 'page' as const,
+                pageKey: 'options',
+                run: () => {
+                    setSymbol('510300');
+                    setQuerySymbol('510300');
+                    return { message: '已切到 510300' };
+                },
+            },
+            {
+                id: 'options.use-510050',
+                label: '切到 510050',
+                description: '使用上证 50ETF 期权样例',
+                keywords: ['510050', 'ETF'],
+                scope: 'page' as const,
+                pageKey: 'options',
+                run: () => {
+                    setSymbol('510050');
+                    setQuerySymbol('510050');
+                    return { message: '已切到 510050' };
+                },
+            },
+        ],
+        [querySymbol, refetchChain, refetchGreeks, refetchSmirk],
+    );
+    usePageActions(optionsActions);
+    const optionsResult = buildLocalResultContract({
+        summary: optionsSummary,
+        availableViews: pairedRows.length > 1 || smirkRows.length > 0 ? ['compare', 'visual'] : [],
+        pageActions: optionsActions,
+        preferredActionIds: ['options.refresh-current', 'options.use-510300', 'options.use-510050'],
+        recommendedLinks: [
+            { id: 'options-link-market', label: '去行情页确认标的', href: `/market?code=${encodeURIComponent(querySymbol)}` },
+            { id: 'options-link-research', label: '去研究页补背景', href: `/research?code=${encodeURIComponent(querySymbol)}` },
+            { id: 'options-link-risk', label: '去风险页', href: `/risk?code=${encodeURIComponent(querySymbol)}` },
+        ],
+        evidence: [
+            { label: '标的代码', value: querySymbol },
+            { label: '期权链层级', value: String(pairedRows.length) },
+            { label: 'Greeks 项数', value: String(greekEntries.length) },
+            { label: 'Smirk 点位', value: String(smirkRows.length) },
+            { label: '标的现价', value: fmtPrice(chainData?.underlying?.price, 3) },
+            { label: '选中腿', value: selectedGreekLeg ? `${selectedGreekLeg.type}/${fmtPrice(selectedGreekLeg.strike, 3)}` : '-' },
+        ],
+        riskNotes: [
+            ...(chainError ? [chainError] : []),
+            ...(greeksError ? [greeksError] : []),
+            ...(smirkError ? [smirkError] : []),
+            ...(smirkData?.degraded ? ['隐含波动率偏斜结果来自降级链路，需谨慎解读。'] : []),
+            ...(pairedRows.length === 0 ? ['当前没有完整的期权链结果。'] : []),
+        ],
+        freshness: chainData?.underlying?.date || chainData?.underlying?.time
+            ? { asOf: `${chainData.underlying.date ?? ''} ${chainData.underlying.time ?? ''}`.trim(), label: '期权快照' }
+            : null,
+        platformMeta: {
+            sourceTool: 'options',
+            sourceChain: ['options-chain', 'options-greeks', 'options-smirk'],
+            degraded: Boolean(smirkData?.degraded || chainError || greeksError || smirkError),
+            fallbackReason: [smirkData?.message, chainError, greeksError, smirkError].filter((item): item is string => Boolean(item)),
+        },
+        workbenchTask: defaultWorkbenchTask('options', `复查期权 ${querySymbol}`, '/options', 'options-review', {
+            symbol: querySymbol,
+            chainLevels: pairedRows.length,
+            smirkPoints: smirkRows.length,
+        }),
+    });
+    usePageContext({
+        pageKey: 'options',
+        title: '期权全景分析',
+        summary: optionsSummary,
+        objectType: 'derivative',
+        objectId: querySymbol,
+        resultType: 'options-analysis',
+        tags: [
+            querySymbol,
+            pairedRows.length > 0 ? `${pairedRows.length} 个行权价层级` : '期权链待确认',
+            selectedGreekLeg ? `${selectedGreekLeg.type === 'call' ? '认购' : '认沽'}腿` : '等待选腿',
+        ],
+        suggestions: [
+            '总结当前期权链结构和最值得继续看的价位',
+            '解释当前 Greeks 和隐含波动率偏斜意味着什么',
+            '判断下一步应该回行情页、研究页还是风险页',
+        ],
+        recommendedActions: optionsResult.recommendedActions ?? [],
+        recommendedLinks: optionsResult.recommendedLinks ?? [],
+        evidenceSummary: evidenceToSummary(optionsResult.evidence),
+        riskNotes: optionsResult.riskNotes ?? [],
+        freshness: optionsResult.freshness ?? null,
+        raw: {
+            symbol: querySymbol,
+            pairedRows: pairedRows.length,
+            greekCount: greekEntries.length,
+            smirkPoints: smirkRows.length,
+            selectedGreekLeg,
+        },
+    });
 
     return (
         <PageContainer>
@@ -390,6 +511,8 @@ export default function OptionsPage() {
                     </div>
                 </form>
             </div>
+
+            <ResultWorkbench pageKey="options" title="期权结果工作台" result={optionsResult} />
 
             {(chainError || greeksError || smirkError) && (
                 <ErrorState text="数据获取失败" hint={chainError || greeksError || smirkError || '未知错误，此代码可能无期权标的'} />

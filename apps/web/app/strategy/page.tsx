@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import {
@@ -16,10 +17,13 @@ import {
 } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 type HoldingOp = { portfolioId: string; code: string; shares: string; costPrice: string };
@@ -432,6 +436,48 @@ export default function StrategyPage() {
     }),
     [artifactId, code, holdingOp.code, holdingOp.costPrice, holdingOp.portfolioId, holdingOp.shares, strategy, workspaceTab],
   );
+  const strategyPageActions = useMemo(
+    () => [
+      {
+        id: 'strategy.open-experiment',
+        label: '回到试验区',
+        description: '切回回测与 artifact 试验流程',
+        keywords: ['回测', '试验'],
+        scope: 'page' as const,
+        pageKey: 'strategy',
+        run: () => {
+          setWorkspaceTab('experiment');
+          return { message: '已切到试验区' };
+        },
+      },
+      {
+        id: 'strategy.load-portfolios',
+        label: '加载组合列表',
+        description: '拉取组合列表并切到落地区',
+        keywords: ['组合', '落地'],
+        scope: 'page' as const,
+        pageKey: 'strategy',
+        run: () => {
+          loadPortfolios();
+          return { message: '已加载组合列表' };
+        },
+      },
+      {
+        id: 'strategy.open-risk',
+        label: '切到风控区',
+        description: '切到优化、风险分析和压力测试视图',
+        keywords: ['风控', '优化', '压力测试'],
+        scope: 'page' as const,
+        pageKey: 'strategy',
+        run: () => {
+          setWorkspaceTab('risk');
+          return { message: '已切到风控区' };
+        },
+      },
+    ],
+    [],
+  );
+  usePageActions(strategyPageActions);
 
   const applyView = useCallback((snapshot: Record<string, unknown>) => {
     if (typeof snapshot.code === 'string') setCode(snapshot.code);
@@ -460,6 +506,79 @@ export default function StrategyPage() {
     'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
   const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
   const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
+  const strategySummary = `当前视图 ${activeWorkspaceLabel}，当前标的 ${trimmedCode || '-'}，策略 ${strategy}，Artifact ${artifactId || '-'}，当前组合 ${currentPortfolioId}。`;
+  const strategyResult = buildLocalResultContract({
+    summary: strategySummary,
+    availableViews: metrics || portfolioRows.length > 1 || stressScenarios.length > 0 ? ['compare', 'visual'] : [],
+    pageActions: strategyPageActions,
+    preferredActionIds: ['strategy.open-experiment', 'strategy.load-portfolios', 'strategy.open-risk'],
+    recommendedLinks: [
+      { id: 'strategy-link-portfolio', label: '去组合页', href: `/portfolio?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'strategy-link-backtest', label: '去回测页', href: `/backtest?code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'strategy-link-paper', label: '去模拟盘', href: `/paper-trading?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'strategy-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
+    ],
+    evidence: [
+      { label: '当前标的', value: trimmedCode || '-' },
+      { label: '策略标识', value: strategy },
+      { label: '当前视图', value: activeWorkspaceLabel },
+      { label: 'Artifact', value: artifactId || '-' },
+      { label: '组合数量', value: String(portfolioRows.length) },
+      { label: '压力场景', value: String(stressScenarios.length) },
+    ],
+    riskNotes: [
+      ...(error ? [error] : []),
+      ...(!artifactId ? ['当前还没有生成回测 Artifact。'] : []),
+      ...(!holdingOp.portfolioId ? ['当前还没有绑定组合 ID，后续落地与风险分析会受限。'] : []),
+      ...(riskData?.riskMetrics?.var95 != null && Number(riskData.riskMetrics.var95) < -0.1 ? ['组合 VaR(95%) 较高，进入执行前建议先复核风险暴露。'] : []),
+    ],
+    platformMeta: {
+      sourceTool: 'strategy-workspace',
+      sourceChain: ['backtest', 'portfolio', 'risk-analysis', 'stress-test'],
+      degraded: Boolean(error),
+      fallbackReason: [error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('strategy', `复查策略工作台 ${strategy}`, '/strategy', 'strategy-workspace-review', {
+      code: trimmedCode || '600519',
+      strategy,
+      artifactId,
+      portfolioId: holdingOp.portfolioId || null,
+      workspaceTab,
+    }),
+  });
+  usePageContext({
+    pageKey: 'strategy',
+    title: '策略工作台',
+    summary: strategySummary,
+    objectType: 'strategy',
+    objectId: strategy,
+    resultType: 'strategy-workspace',
+    tags: [
+      strategy,
+      trimmedCode || '未输入标的',
+      activeWorkspaceLabel,
+      artifactId ? '已生成 Artifact' : '待生成 Artifact',
+    ],
+    suggestions: [
+      '总结当前策略工作台离真正落地还差哪一步',
+      '如果要继续推进，先做回测、组合落地还是风险分析',
+      '解释当前 Artifact、组合和风控结果之间的衔接关系',
+    ],
+    recommendedActions: strategyResult.recommendedActions ?? [],
+    recommendedLinks: strategyResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(strategyResult.evidence),
+    riskNotes: strategyResult.riskNotes ?? [],
+    freshness: strategyResult.freshness ?? null,
+    raw: {
+      code: trimmedCode || null,
+      strategy,
+      artifactId,
+      portfolioId: holdingOp.portfolioId || null,
+      workspaceTab,
+      portfolioCount: portfolioRows.length,
+      stressScenarioCount: stressScenarios.length,
+    },
+  });
 
   const experimentContent = (
     <SectionCard tabAttached>
@@ -837,6 +956,8 @@ export default function StrategyPage() {
           </details>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="strategy" title="策略结果工作台" result={strategyResult} />
 
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}

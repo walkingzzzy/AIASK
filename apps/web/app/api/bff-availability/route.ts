@@ -9,7 +9,7 @@ export async function GET() {
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`${getBffOrigin()}/api/health/mcp`, {
+    const response = await fetch(`${getBffOrigin()}/api/health/live`, {
       method: 'GET',
       cache: 'no-store',
       signal: controller.signal,

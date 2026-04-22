@@ -14,7 +14,7 @@ from typing import Any
 
 from ..services.technical_analysis import TechnicalAnalysis as _TA
 from ..storage import get_db
-from ..utils import fail, ok
+from ..utils import fail, ok, resolve_existing_security_code_async
 from .key_levels import compute_key_levels
 
 
@@ -188,8 +188,14 @@ def register(mcp):
             capital: 总资金 (元)，填 0 则不计算仓位
             risk_per_trade: 单笔风险占比 (默认 0.02 即 2%)
         """
+        direction = str(direction or "long").strip().lower()
+        if direction not in {"long", "short"}:
+            return fail("direction 必须为 long 或 short")
+        normalized_code, _, error = await resolve_existing_security_code_async(code=code)
+        if error:
+            return fail(error)
         return await compute_stop_levels(
-            code,
+            normalized_code,
             entry_price,
             direction=direction,
             atr_multiplier=atr_multiplier,

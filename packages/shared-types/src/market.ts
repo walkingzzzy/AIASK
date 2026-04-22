@@ -1,4 +1,5 @@
 import type { ToolArgs, ToolMeta } from './common';
+import type { ResultContract, ResultContractMeta } from './result-contract';
 
 export type NormalizedQuote = {
     symbol: string;
@@ -58,6 +59,8 @@ export type MarketQuoteResponseDto = {
     argsTried: ToolArgs[];
     argsMatched: ToolArgs;
     meta: ToolMeta;
+    result_contract?: ResultContract | null;
+    contract_meta?: ResultContractMeta | null;
 };
 
 export type MarketKlineResponseDto = {
@@ -66,6 +69,8 @@ export type MarketKlineResponseDto = {
     argsTried: ToolArgs[];
     argsMatched: ToolArgs;
     meta: ToolMeta;
+    result_contract?: ResultContract | null;
+    contract_meta?: ResultContractMeta | null;
 };
 
 export type MarketOrderBookResponseDto = {
@@ -74,4 +79,6 @@ export type MarketOrderBookResponseDto = {
     argsTried: ToolArgs[];
     argsMatched: ToolArgs;
     meta: ToolMeta;
+    result_contract?: ResultContract | null;
+    contract_meta?: ResultContractMeta | null;
 };

@@ -18,14 +18,13 @@
         assumptions_kwargs = assumptions.to_backtest_kwargs()
         research_task = _normalize_research_task_contract(candidate.get("research_task"))
         has_explicit_research_task = _has_explicit_research_task(candidate)
-        required_sample_count = max(1, int(thresholds["min_samples"] or 1))
-        if _is_single_target_bulk_candidate_target_only(
+        required_sample_count = _resolve_required_sample_count(
             candidate,
+            thresholds=thresholds,
             research_task=research_task,
             validation_focus=validation_focus,
             target_codes=target_codes,
-        ):
-            required_sample_count = 1
+        )
         target_set = set(target_codes)
         layer_results: Dict[str, List[dict]] = {"target": [], "representative": []}
         layer_successful_codes: Dict[str, List[str]] = {"target": [], "representative": []}

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
@@ -14,6 +15,7 @@ import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -91,6 +93,7 @@ export default function RiskPage() {
   );
 
   const summaryQ = useApiQuery<RiskSummary>(submittedQs ? `/risk/summary?${submittedQs}` : null, {
+    critical: true,
     parse: (raw) => {
       const obj = ensureRecord(raw, '风险汇总');
       if ('moduleStatus' in obj && obj.moduleStatus != null && typeof obj.moduleStatus !== 'object') {
@@ -100,6 +103,7 @@ export default function RiskPage() {
     },
   });
   const varQ = useApiQuery<unknown>(submittedQs ? `/risk/var?${submittedQs}` : null, {
+    critical: true,
     parse: (raw) => ensureRecord(raw, '风险VaR'),
   });
 
@@ -251,25 +255,6 @@ export default function RiskPage() {
     setLastPrimaryRefreshAt(new Date().toLocaleString('zh-CN'));
   }, [submittedQs, summaryQ, varQ]);
 
-  usePageContext({
-    pageKey: 'risk',
-    title: '风险分析',
-    summary: `组合 ${portfolioId || String(summary?.portfolioId ?? '未选择')}，回看 ${lookbackDays} 天，降级状态 ${summary?.degraded ? '是' : '否'}。`,
-    tags: [`${lookbackDays} 天`, summary?.degraded ? '已降级' : '正常', allEmpty ? '空结果' : '有结果'],
-    suggestions: [
-      '总结当前 VaR、压力测试和暴露结果的核心风险',
-      '指出当前风险页最需要补的上下文或数据',
-      '把风险分析整理成执行层面的行动建议',
-    ],
-    raw: {
-      portfolioId: portfolioId || summary?.portfolioId || null,
-      lookbackDays,
-      degraded: summary?.degraded ?? false,
-      allEmpty,
-      partialDegraded,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -301,6 +286,82 @@ export default function RiskPage() {
   );
 
   usePageActions(pageActions);
+
+  const riskSummaryText = `组合 ${portfolioId || String(summary?.portfolioId ?? '未选择')}，回看 ${lookbackDays} 天，降级状态 ${summary?.degraded ? '是' : '否'}。`;
+  const riskEvidence = useMemo(
+    () => [
+      { label: '组合', value: displayPortfolio },
+      { label: '窗口', value: `${lookbackDays} 天` },
+      { label: '模块覆盖', value: `${availableModuleCount}/${moduleCards.length}` },
+      { label: '降级状态', value: summary?.degraded ? '已降级' : '正常' },
+      { label: '最近抓取', value: latestRiskRefreshText },
+    ],
+    [availableModuleCount, displayPortfolio, latestRiskRefreshText, lookbackDays, moduleCards.length, summary?.degraded],
+  );
+  const riskLinks = useMemo(
+    () => [
+      { id: 'risk-open-portfolio', label: '去组合页', href: '/portfolio' },
+      { id: 'risk-open-performance', label: '去绩效中心', href: '/performance' },
+      { id: 'risk-open-execution', label: '去执行中心', href: '/execution' },
+      { id: 'risk-open-data', label: '去数据中心', href: '/data?from=risk' },
+    ],
+    [],
+  );
+  const riskNotes = useMemo(() => {
+    const notes = [...(summary?.degradeReasons ?? [])];
+    if (allEmpty) notes.push('当前风险结果为空，建议先确认组合和窗口是否有效。');
+    if (partialDegraded) notes.push('部分模块结果不可用，建议先查看降级原因再解释图表。');
+    return notes;
+  }, [allEmpty, partialDegraded, summary?.degradeReasons]);
+  const riskResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: riskSummaryText,
+        pageActions,
+        preferredActionIds: ['risk.refresh', 'risk.set-lookback'],
+        recommendedLinks: riskLinks,
+        evidence: riskEvidence,
+        riskNotes,
+        freshness: summary?.meta?.fetchedAt ? { updatedAt: summary.meta.fetchedAt, label: '风险抓取时间' } : null,
+        platformMeta: {
+          sourceTool: 'risk-summary',
+          degraded: summary?.degraded ?? false,
+          fallbackReason: summary?.degradeReasons ?? [],
+        },
+        workbenchTask: defaultWorkbenchTask('risk', `风险复盘：${displayPortfolio}`, `/risk?lookbackDays=${encodeURIComponent(lookbackDays)}`, 'risk-review', {
+          portfolioId: portfolioId || summary?.portfolioId || null,
+          lookbackDays: Number(lookbackDays),
+        }),
+      }),
+    [displayPortfolio, lookbackDays, pageActions, portfolioId, riskEvidence, riskLinks, riskNotes, riskSummaryText, summary?.degradeReasons, summary?.degraded, summary?.meta?.fetchedAt, summary?.portfolioId],
+  );
+
+  usePageContext({
+    pageKey: 'risk',
+    title: '风险分析',
+    summary: riskSummaryText,
+    objectType: portfolioId || summary?.portfolioId ? 'portfolio' : 'workspace',
+    objectId: portfolioId || String(summary?.portfolioId ?? 'risk'),
+    resultType: 'risk-summary',
+    tags: [`${lookbackDays} 天`, summary?.degraded ? '已降级' : '正常', allEmpty ? '空结果' : '有结果'],
+    suggestions: [
+      '总结当前 VaR、压力测试和暴露结果的核心风险',
+      '指出当前风险页最需要补的上下文或数据',
+      '把风险分析整理成执行层面的行动建议',
+    ],
+    recommendedActions: riskResult.recommendedActions,
+    recommendedLinks: riskResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(riskResult.evidence),
+    riskNotes: riskResult.riskNotes ?? [],
+    freshness: riskResult.freshness ?? null,
+    raw: {
+      portfolioId: portfolioId || summary?.portfolioId || null,
+      lookbackDays,
+      degraded: summary?.degraded ?? false,
+      allEmpty,
+      partialDegraded,
+    },
+  });
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -439,6 +500,8 @@ export default function RiskPage() {
           </details>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="risk" title="风险结果工作台" result={riskResult} />
 
       {loading ? <LoadingState text="加载风险分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}

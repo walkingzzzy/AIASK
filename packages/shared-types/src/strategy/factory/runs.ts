@@ -233,6 +233,15 @@ export type CapabilityResponse = {
         feedback_v2_enabled?: boolean;
         spec_completeness_mode?: 'warn' | 'revise' | 'reject' | string;
     };
+    system_capabilities?: Record<string, unknown>;
+    actor_permissions?: {
+        can_run_factory?: boolean;
+        can_ai_generate?: boolean;
+        can_create_personal_strategy?: boolean;
+        can_edit_own_strategy?: boolean;
+        can_create_paper_session?: boolean;
+        can_view_operator_panels?: boolean;
+    };
 };
 
 export type DailySnapshotResponse = {

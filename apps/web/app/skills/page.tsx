@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import { Badge, DataTable, PageContainer, SectionCard } from '@/components/ui';
@@ -11,6 +12,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { SkillDescriptor, SkillExecutionMode, SkillStatus, WorkspaceSharedContext } from '@aiask/shared-types';
 
@@ -112,6 +114,9 @@ function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>
   if (typeof context.days === 'number' && context.days > 0) payload.days = context.days;
   if (typeof context.lookbackDays === 'number' && context.lookbackDays > 0)
     payload.lookback_days = context.lookbackDays;
+  if (context.sourcePage) payload.source_page = context.sourcePage;
+  if (context.taskType) payload.task_type = context.taskType;
+  if (context.resultType) payload.result_type = context.resultType;
   return payload;
 }
 
@@ -155,6 +160,15 @@ function inferWorkspacePatch(payload: Record<string, unknown>): WorkspaceContext
   const lookbackDays = Number(payload.lookbackDays ?? payload.lookback_days);
   if (Number.isFinite(lookbackDays) && lookbackDays > 0) patch.lookbackDays = Math.trunc(lookbackDays);
 
+  const sourcePage = payload.sourcePage ?? payload.source_page;
+  if (typeof sourcePage === 'string' && sourcePage.trim()) patch.sourcePage = sourcePage.trim();
+
+  const taskType = payload.taskType ?? payload.task_type;
+  if (typeof taskType === 'string' && taskType.trim()) patch.taskType = taskType.trim();
+
+  const resultType = payload.resultType ?? payload.result_type;
+  if (typeof resultType === 'string' && resultType.trim()) patch.resultType = resultType.trim();
+
   return patch;
 }
 
@@ -196,6 +210,8 @@ export default function SkillsPage() {
   const [lastSkillsRefreshAt, setLastSkillsRefreshAt] = useState<string | null>(null);
 
   const skills = useMemo(() => skillsQ.data ?? [], [skillsQ.data]);
+  const skillsBootstrapping = skillsQ.isPending && skills.length === 0;
+  const skillsUnavailable = skillsQ.serviceUnavailable && skills.length === 0;
   const categories = useMemo(
     () => [...new Set(skills.map((skill) => skill.category).filter((entry): entry is string => Boolean(entry)))].sort(),
     [skills],
@@ -329,30 +345,6 @@ export default function SkillsPage() {
     });
   }, [addWorkbenchTask, selectedSkill]);
 
-  usePageContext({
-    pageKey: 'skills',
-    title: '技能中心',
-    summary: `当前技能中心已加载 ${skills.length} 个技能，筛选后剩余 ${filteredSkills.length} 个，当前聚焦 ${selectedSkill ? shortSkillName(selectedSkill) : '未选择技能'}。`,
-    tags: [
-      `${filteredSkills.length} 个结果`,
-      statusFilter === 'all' ? '全部状态' : statusFilter,
-      categoryFilter === 'all' ? '全部分类' : categoryFilter,
-    ],
-    suggestions: [
-      selectedSkill ? `执行 ${shortSkillName(selectedSkill)}` : '先筛出可执行技能',
-      '把当前工作区上下文填入技能参数',
-      '总结当前技能最适合做什么',
-    ],
-    raw: {
-      keyword,
-      categoryFilter,
-      statusFilter,
-      selectedSkillId: activeSkillId,
-      filteredCount: filteredSkills.length,
-      totalCount: skills.length,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -405,6 +397,85 @@ export default function SkillsPage() {
   );
 
   usePageActions(pageActions);
+  const skillsSummary = `当前技能中心已加载 ${skills.length} 个技能，筛选后剩余 ${filteredSkills.length} 个，当前聚焦 ${selectedSkill ? shortSkillName(selectedSkill) : '未选择技能'}。`;
+  const skillsEvidence = [
+    { label: '技能总数', value: String(skills.length) },
+    { label: '筛选后结果', value: String(filteredSkills.length) },
+    { label: '状态筛选', value: statusFilter === 'all' ? '全部状态' : statusFilter },
+    { label: '分类筛选', value: categoryFilter === 'all' ? '全部分类' : categoryFilter },
+    { label: '当前技能', value: selectedSkill ? shortSkillName(selectedSkill) : '未选择技能' },
+  ];
+  const skillsLinks = [
+    { id: 'skills-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
+    { id: 'skills-open-strategy-market-link', label: '策略超市', href: '/strategy-market?from=skills' },
+    { id: 'skills-open-data-link', label: '数据中心', href: '/data' },
+    { id: 'skills-open-research-link', label: '研究中心', href: '/research' },
+  ];
+  const skillsRiskNotes = [
+    ...(skillsUnavailable ? ['当前技能注册表不可用，目录可能不完整。'] : []),
+    ...((selectedSkill && !selectedSkill.executable) ? [`当前技能 ${shortSkillName(selectedSkill)} 暂不可执行。`] : []),
+    ...(payloadError ? [`当前 payload 存在错误：${payloadError}`] : []),
+  ];
+  const skillsResult = buildLocalResultContract({
+    summary: skillsSummary,
+    availableViews: filteredSkills.length > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['skills.refresh', 'skills.fill-workspace-payload', 'skills.toggle-executable', 'skills.trigger-selected'],
+    recommendedLinks: skillsLinks,
+    evidence: skillsEvidence,
+    riskNotes: skillsRiskNotes,
+    freshness: lastSkillsRefreshAt ? { updatedAt: lastSkillsRefreshAt, label: '技能同步时间' } : null,
+    platformMeta: {
+      sourceTool: 'skills-registry',
+      sourceChain: ['skills', categoryFilter, statusFilter],
+      degraded: skillsUnavailable,
+      fallbackReason: skillsQ.error ? [skillsQ.error] : undefined,
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'skills',
+      `复查技能${selectedSkill ? ` ${shortSkillName(selectedSkill)}` : ''}`,
+      selectedSkill ? `/skills?skill=${encodeURIComponent(selectedSkill.id)}` : '/skills',
+      'skill-review',
+      {
+        selectedSkillId: selectedSkill?.id ?? null,
+        statusFilter,
+        categoryFilter,
+        keyword,
+      },
+    ),
+  });
+
+  usePageContext({
+    pageKey: 'skills',
+    title: '技能中心',
+    summary: skillsSummary,
+    objectType: 'tool-registry',
+    objectId: selectedSkill?.id ?? `${statusFilter}:${categoryFilter}:${keyword || 'all'}`,
+    resultType: 'skill-catalog',
+    tags: [
+      `${filteredSkills.length} 个结果`,
+      statusFilter === 'all' ? '全部状态' : statusFilter,
+      categoryFilter === 'all' ? '全部分类' : categoryFilter,
+    ],
+    suggestions: [
+      selectedSkill ? `执行 ${shortSkillName(selectedSkill)}` : '先筛出可执行技能',
+      '把当前工作区上下文填入技能参数',
+      '总结当前技能最适合做什么',
+    ],
+    recommendedActions: skillsResult.recommendedActions ?? [],
+    recommendedLinks: skillsResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(skillsResult.evidence),
+    riskNotes: skillsResult.riskNotes ?? [],
+    freshness: skillsResult.freshness ?? null,
+    raw: {
+      keyword,
+      categoryFilter,
+      statusFilter,
+      selectedSkillId: activeSkillId,
+      filteredCount: filteredSkills.length,
+      totalCount: skills.length,
+    },
+  });
 
   return (
     <PageContainer>
@@ -415,16 +486,26 @@ export default function SkillsPage() {
         </p>
       </div>
 
+      <ResultWorkbench pageKey="skills" title="技能结果工作台" result={skillsResult} />
+
       <WorkspaceToolbar pageKey="skills" currentView={currentView} onApplyView={applySkillsView} supportsPagePanels />
 
       <SectionCard className="p-4">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">总计 {skills.length}</Badge>
-              <Badge variant="success">可执行 {skills.filter((skill) => skill.status === 'executable').length}</Badge>
-              <Badge variant="warning">仅注册 {skills.filter((skill) => skill.status === 'registered').length}</Badge>
-              <Badge variant="danger">已废弃 {skills.filter((skill) => skill.status === 'deprecated').length}</Badge>
+              <Badge variant="info">
+                总计 {skillsBootstrapping ? '同步中' : skillsUnavailable ? '暂不可用' : skills.length}
+              </Badge>
+              <Badge variant="success">
+                可执行 {skillsBootstrapping || skillsUnavailable ? '--' : skills.filter((skill) => skill.status === 'executable').length}
+              </Badge>
+              <Badge variant="warning">
+                仅注册 {skillsBootstrapping || skillsUnavailable ? '--' : skills.filter((skill) => skill.status === 'registered').length}
+              </Badge>
+              <Badge variant="danger">
+                已废弃 {skillsBootstrapping || skillsUnavailable ? '--' : skills.filter((skill) => skill.status === 'deprecated').length}
+              </Badge>
             </div>
             <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
               技能中心不是新的对话入口，而是把后端已有的能力目录、可执行状态和触发结果显式化，便于用户理解“系统现在到底能做什么”。
@@ -454,11 +535,22 @@ export default function SkillsPage() {
               className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
             >
               <div className="font-medium text-text-primary">
-                当前技能 {selectedSkill ? shortSkillName(selectedSkill) : '未选择'} ｜ 筛选后 {filteredSkills.length} /{' '}
-                {skills.length}
+                当前技能
+                {' '}
+                {skillsBootstrapping ? '等待技能注册表' : selectedSkill ? shortSkillName(selectedSkill) : '未选择'}
+                {' '}
+                ｜ 筛选后
+                {' '}
+                {skillsBootstrapping || skillsUnavailable ? '--' : filteredSkills.length}
+                {' / '}
+                {skillsBootstrapping || skillsUnavailable ? '--' : skills.length}
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
-                {selectedSkill
+                {skillsBootstrapping
+                  ? '技能注册表正在同步，稍后会自动恢复。'
+                  : skillsUnavailable
+                    ? '技能注册表暂不可用，页面会在服务恢复后自动重试。'
+                    : selectedSkill
                   ? `状态 ${selectedSkill.status} ｜ 执行模式 ${selectedSkill.execution_mode ?? 'no_handler'} ｜ ${selectedSkill.executable ? '可触发' : '不可触发'}`
                   : '请先在右侧列表选择一个技能。'}
               </p>
@@ -483,7 +575,14 @@ export default function SkillsPage() {
         pageKey="skills"
         primary={
           <SectionCard className="h-full p-4">
-            {!selectedSkill ? (
+            {skillsBootstrapping ? (
+              <LoadingState text="正在同步技能注册表..." />
+            ) : skillsUnavailable ? (
+              <ErrorState
+                text="技能注册表暂不可用，页面会在服务恢复后自动重试。"
+                onRetry={() => void skillsQ.refetch()}
+              />
+            ) : !selectedSkill ? (
               <EmptyState
                 text="还没有选中的技能。"
                 hint="从左侧选择一个技能，查看它的执行状态、输入 schema 和触发结果。"
@@ -681,9 +780,9 @@ export default function SkillsPage() {
               </select>
             </div>
 
-            {skillsQ.isFetching && skills.length === 0 ? <LoadingState text="加载技能注册表中..." /> : null}
+            {skillsBootstrapping ? <LoadingState text="加载技能注册表中..." /> : null}
             {skillsQ.error ? <ErrorState text={skillsQ.error} onRetry={() => void skillsQ.refetch()} /> : null}
-            {!skillsQ.isFetching && !skillsQ.error && filteredSkills.length === 0 ? (
+            {!skillsBootstrapping && !skillsQ.error && filteredSkills.length === 0 ? (
               <EmptyState
                 text="当前筛选条件下没有匹配的技能。"
                 hint="可以先切回全部状态，再用工作区任务模板确认哪些能力最值得前端化。"

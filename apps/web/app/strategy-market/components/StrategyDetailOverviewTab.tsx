@@ -4,14 +4,22 @@ import { LineChart, BarChart } from '@/components/charts';
 import { Badge, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
 import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import {
+  resolveIncubationSurface,
+  resolveMarketStatusMeta,
+  resolveStrategyDisplayStatus,
+} from '@/app/strategy-market/lib/incubation-surface';
 import { formatMultipleTestingMode } from '@/app/strategy-market/lib/strategy-detail-view';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import type {
+  IncubationPipelineSnapshot,
   IncubationOverviewResponse,
   IncubationAccount,
   IncubationMetric,
   ReviewReportResponse,
   StrategyMetric,
+  StrategyOwnerState,
+  StrategyPaperSessionState,
   StrategyReview,
   VectorProfile,
 } from '../types';
@@ -29,14 +37,17 @@ type StrategyDetailOverviewTabProps = {
   navSeries: number[];
   navCategories: string[];
   factorBars: FactorBarItem[];
+  strategyStatus?: string | null;
   incubationOverview: IncubationOverviewResponse | null | undefined;
   latestQualityReport: ReviewReportResponse | null | undefined;
   incubationAccount: IncubationAccount | null | undefined;
   latestIncubationMetric: IncubationMetric | null | undefined;
+  latestIncubationPipelineSnapshot: IncubationPipelineSnapshot | null | undefined;
   openRiskEventsCount: number;
   vectorProfilesCount: number;
   highConfidenceQualityUiEnabled: boolean;
-  promotionReady: boolean;
+  ownerState?: StrategyOwnerState | null;
+  paperSessionState?: StrategyPaperSessionState | null;
   strategyAvgRating: number | null | undefined;
   sampleWindow: string;
   turnoverRate: number | null;
@@ -97,14 +108,17 @@ export function StrategyDetailOverviewTab({
   navSeries,
   navCategories,
   factorBars,
+  strategyStatus,
   incubationOverview,
   latestQualityReport,
   incubationAccount,
   latestIncubationMetric,
+  latestIncubationPipelineSnapshot,
   openRiskEventsCount,
   vectorProfilesCount,
   highConfidenceQualityUiEnabled,
-  promotionReady,
+  ownerState,
+  paperSessionState,
   strategyAvgRating,
   sampleWindow,
   turnoverRate,
@@ -124,6 +138,20 @@ export function StrategyDetailOverviewTab({
   onReview,
 }: StrategyDetailOverviewTabProps) {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const displayStatus = resolveStrategyDisplayStatus({
+    strategyStatus,
+    ownerState,
+    paperSessionState,
+  });
+  const marketStatus = resolveMarketStatusMeta(strategyStatus);
+  const incubationSurface = resolveIncubationSurface({
+    strategyStatus,
+    overview: incubationOverview,
+    account: incubationAccount,
+    latestMetric: latestIncubationMetric,
+    latestPipelineSnapshot: latestIncubationPipelineSnapshot,
+  });
+  const showIncubationStage = !ownerState?.personal_strategy || incubationSurface.enteredIncubator;
   const signalQuality = incubationOverview?.signal_quality;
   const executionQuality = incubationOverview?.execution_quality;
   const executionAudit = executionQuality?.audit;
@@ -211,19 +239,35 @@ export function StrategyDetailOverviewTab({
                 把孵化状态、风险信号与统计修正并列呈现，方便先判断是否值得继续跟踪，再决定要不要切到工厂审查。
               </p>
             </div>
-            <Badge variant={promotionReady ? 'success' : 'warning'}>
-              {promotionReady ? '达到上架条件' : '仍在孵化观察'}
-            </Badge>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
+              {displayStatus.label !== marketStatus.label ? (
+                <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
+              ) : null}
+              {showIncubationStage ? <Badge variant={incubationSurface.stage.variant}>{incubationSurface.stage.label}</Badge> : null}
+              <Badge variant={incubationSurface.promotionReady ? 'success' : 'warning'}>
+                {incubationSurface.promotionReady ? '可推进晋级' : '继续孵化观察'}
+              </Badge>
+            </div>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">孵化上下文</div>
               <div className="mt-3 space-y-2 text-sm text-text-secondary">
                 <div>
-                  孵化阶段：
-                  <span className="font-medium text-text-primary">
-                    {incubationAccount?.stage ?? latestIncubationMetric?.stage ?? '-'}
-                  </span>
+                  当前状态：<span className="font-medium text-text-primary">{displayStatus.label}</span>
+                </div>
+                <div>
+                  市场状态：<span className="font-medium text-text-primary">{marketStatus.label}</span>
+                </div>
+                <div>
+                  孵化阶段：<span className="font-medium text-text-primary">{showIncubationStage ? incubationSurface.stage.label : '未接入真实孵化'}</span>
+                </div>
+                <div>
+                  最新决策：<span className="font-medium text-text-primary">{incubationSurface.latestDecision.label}</span>
+                </div>
+                <div>
+                  执行审计：<span className="font-medium text-text-primary">{incubationSurface.executionAuditGate.label}</span>
                 </div>
                 <div>
                   账户状态：<span className="font-medium text-text-primary">{incubationAccount?.status ?? '-'}</span>
@@ -244,6 +288,14 @@ export function StrategyDetailOverviewTab({
                 <div>
                   <div className="text-2xl font-semibold text-text-primary">{vectorProfilesCount}</div>
                   <div className="mt-1 text-xs text-text-secondary">向量画像数</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-semibold text-text-primary">{incubationSurface.blockerCount}</div>
+                  <div className="mt-1 text-xs text-text-secondary">阻塞项</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-semibold text-text-primary">{incubationSurface.riskCount}</div>
+                  <div className="mt-1 text-xs text-text-secondary">风险标记</div>
                 </div>
               </div>
             </div>
@@ -293,24 +345,17 @@ export function StrategyDetailOverviewTab({
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
-            {latestIncubationMetric?.decision ? (
-              <Badge
-                variant={
-                  latestIncubationMetric.decision === 'promote'
-                    ? 'success'
-                    : latestIncubationMetric.decision === 'halt'
-                      ? 'danger'
-                      : 'warning'
-                }
-              >
-                最新决策: {latestIncubationMetric.decision}
-              </Badge>
-            ) : null}
-            {promotionReady ? (
-              <Badge variant="success">达到上架条件</Badge>
+            <Badge variant={incubationSurface.latestDecision.variant}>
+              最新决策: {incubationSurface.latestDecision.label}
+            </Badge>
+            {incubationSurface.promotionReady ? (
+              <Badge variant="success">可推进晋级</Badge>
             ) : (
-              <Badge variant="warning">仍在孵化观察</Badge>
+              <Badge variant="warning">继续孵化观察</Badge>
             )}
+            <Badge variant={incubationSurface.executionAuditGate.variant}>
+              执行审计: {incubationSurface.executionAuditGate.label}
+            </Badge>
             {openRiskEventsCount > 0 ? (
               <Badge variant="danger">存在实时风控告警</Badge>
             ) : (

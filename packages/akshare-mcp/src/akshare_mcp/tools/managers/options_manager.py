@@ -99,6 +99,7 @@ def register_options_manager(mcp):
         """
         try:
             kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = _normalize_kwargs(kwargs)
             if action == 'help':
                 return ok({
                     'supported_actions': {

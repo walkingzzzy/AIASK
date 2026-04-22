@@ -106,6 +106,82 @@ def _bootstrap_trade_floor(strategy_type: Optional[str]) -> int:
     return max(1, family_floor, provisional_floor)
 
 
+def _bootstrap_lineage_token(value: Any, *, default: str) -> str:
+    token = (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+    )
+    token = "".join(ch for ch in token if ch.isalnum() or ch == "_").strip("_")
+    return token or default
+
+
+def _build_bootstrap_lineage_fallback(
+    strategy: dict,
+    *,
+    code: str,
+    phase: str,
+    action_reason: Optional[str] = None,
+) -> dict[str, Any]:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    strategy_type = _bootstrap_lineage_token(
+        payload.get("strategy_type") or params.get("strategy_type"),
+        default="strategy",
+    )
+    code_token = _bootstrap_lineage_token(code, default="symbol")
+    phase_token = _bootstrap_lineage_token(phase, default="entry")
+    normalized_reason = _bootstrap_lineage_token(
+        action_reason or f"bootstrap_backtest_{phase_token}",
+        default=f"bootstrap_backtest_{phase_token}",
+    )
+    return {
+        "applied_claim_id": f"bootstrap_{phase_token}_{strategy_type}_{code_token}_claim",
+        "applied_trade_step_id": f"bootstrap_{phase_token}_{strategy_type}_{code_token}_step",
+        "runtime_action_reason": normalized_reason,
+        "runtime_action_source": "strategy_acceptance_remediation.synthetic_bootstrap_lineage",
+        "lineage_status": "synthetic_bootstrap_lineage",
+    }
+
+
+def _merge_bootstrap_lineage(
+    strategy: dict,
+    *,
+    code: str,
+    phase: str,
+    lineage: Optional[dict[str, Any]] = None,
+    action_reason: Optional[str] = None,
+) -> dict[str, Any]:
+    fallback = _build_bootstrap_lineage_fallback(
+        strategy,
+        code=code,
+        phase=phase,
+        action_reason=action_reason,
+    )
+    resolved = dict(lineage or {})
+    fallback_applied = False
+    for key in (
+        "applied_claim_id",
+        "applied_trade_step_id",
+        "runtime_action_reason",
+        "runtime_action_source",
+    ):
+        if not str(resolved.get(key) or "").strip():
+            resolved[key] = fallback[key]
+            fallback_applied = True
+    lineage_status = str(resolved.get("lineage_status") or "").strip().lower()
+    if not lineage_status or "unmapped" in lineage_status:
+        resolved["lineage_status"] = fallback["lineage_status"]
+        fallback_applied = True
+    resolved["fallback_applied"] = fallback_applied
+    if fallback_applied:
+        resolved["fallback"] = fallback
+    return resolved
+
+
 def _strategy_runtime_params(strategy: dict) -> dict[str, Any]:
     payload = dict(strategy or {})
     params = dict(payload.get("params") or {})
@@ -759,7 +835,7 @@ class StrategyAcceptanceRemediationService:
         history_limit: int = 1200,
     ) -> dict[str, list[dict[str, Any]]]:
         market_data: dict[str, list[dict[str, Any]]] = {}
-        for code in sorted(_resolve_strategy_target_codes(strategy)):
+        for code in await self._load_bootstrap_candidate_codes(db, strategy):
             try:
                 rows = await db.get_klines(code, limit=max(250, int(history_limit or 1200)))
             except TypeError:
@@ -768,6 +844,61 @@ class StrategyAcceptanceRemediationService:
             if normalized:
                 market_data[code] = normalized
         return market_data
+
+    async def _load_bootstrap_candidate_codes(
+        self,
+        db,
+        strategy: dict,
+        *,
+        limit: int = 20,
+    ) -> list[str]:
+        strategy_id = str(strategy.get("id") or "").strip()
+        codes = list(sorted(_resolve_strategy_target_codes(strategy)))
+        if not strategy_id:
+            return codes
+
+        async def _collect_rows(method_name: str):
+            method = getattr(db, method_name, None)
+            if not callable(method):
+                return []
+            try:
+                if method_name == "list_strategy_trade_positions":
+                    return list(
+                        await method(
+                            strategy_id=strategy_id,
+                            limit=max(1, int(limit or 20)),
+                        )
+                    )
+                if method_name == "list_strategy_paper_orders":
+                    return list(
+                        await method(
+                            strategy_id=strategy_id,
+                            limit=max(1, int(limit or 20)),
+                        )
+                    )
+                return list(await method(strategy_id, limit=max(1, int(limit or 20))))
+            except TypeError:
+                try:
+                    return list(await method(strategy_id))
+                except Exception:
+                    return []
+            except Exception:
+                return []
+
+        inferred_codes: list[str] = []
+        for method_name in (
+            "list_strategy_trade_positions",
+            "list_strategy_paper_trades",
+            "list_strategy_paper_orders",
+        ):
+            rows = await _collect_rows(method_name)
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("code") or row.get("stock_code") or "").strip()
+                if code:
+                    inferred_codes.append(code)
+        return _dedupe_strings([*codes, *inferred_codes])
 
     async def _find_existing_backtest_id(self, db, strategy: dict) -> Optional[str]:
         strategy_id = str(strategy.get("id") or "").strip()
@@ -1086,18 +1217,68 @@ class StrategyAcceptanceRemediationService:
         if not callable(save_method):
             return
         if source_type == "backtest_bootstrap_entry":
-            for evidence in build_signal_evidence_records(
-                strategy,
-                signal_id=signal_id,
-                position_id=position_id,
-                account_id=account_id,
-                signal_date=signal_date,
-                code=code,
-            ):
+            generated_evidences = list(
+                build_signal_evidence_records(
+                    strategy,
+                    signal_id=signal_id,
+                    position_id=position_id,
+                    account_id=account_id,
+                    signal_date=signal_date,
+                    code=code,
+                )
+            )
+            if not generated_evidences:
+                lineage = _merge_bootstrap_lineage(
+                    strategy,
+                    code=code,
+                    phase="entry",
+                    action_reason="bootstrap_backtest_entry",
+                )
+                await save_method(
+                    {
+                        "id": f"{signal_id}:backtest_bootstrap_entry",
+                        "signal_id": signal_id,
+                        "strategy_id": strategy.get("id"),
+                        "signal_date": signal_date,
+                        "signal_ts": _coerce_trade_ts(signal_date),
+                        "code": code,
+                        "evidence_id": "backtest_bootstrap_entry",
+                        "applied_claim_id": lineage.get("applied_claim_id"),
+                        "applied_trade_step_id": lineage.get("applied_trade_step_id"),
+                        "source_type": source_type,
+                        "direction": "up",
+                        "runtime_action_reason": lineage.get("runtime_action_reason"),
+                        "runtime_action_source": lineage.get("runtime_action_source"),
+                        "payload": {
+                            "bootstrap_source": "backtest_to_incubation_v1",
+                            "backtest_id": backtest_id,
+                            "trade_payload": dict(trade_payload or {}),
+                            "bootstrap_selection": dict(selection_payload or {}),
+                            "lineage": lineage,
+                            "synthetic_bootstrap_lineage": True,
+                        },
+                    }
+                )
+                return
+            for evidence in generated_evidences:
+                lineage = _merge_bootstrap_lineage(
+                    strategy,
+                    code=code,
+                    phase="entry",
+                    lineage={
+                        "applied_claim_id": evidence.get("applied_claim_id"),
+                        "applied_trade_step_id": evidence.get("applied_trade_step_id"),
+                    },
+                    action_reason="bootstrap_backtest_entry",
+                )
                 evidence_payload = dict(evidence.get("evidence_payload") or evidence)
                 evidence_payload["bootstrap_source"] = "backtest_to_incubation_v1"
                 evidence_payload["backtest_id"] = backtest_id
                 evidence_payload["trade_payload"] = dict(trade_payload or {})
+                evidence_payload["lineage"] = dict(lineage)
+                evidence_payload["synthetic_bootstrap_lineage"] = bool(
+                    lineage.get("fallback_applied")
+                )
                 if selection_payload:
                     evidence_payload["bootstrap_selection"] = dict(selection_payload)
                 await save_method(
@@ -1111,8 +1292,8 @@ class StrategyAcceptanceRemediationService:
                         "candidate_artifact_id": evidence.get("candidate_artifact_id"),
                         "experiment_id": evidence.get("experiment_id"),
                         "evidence_id": evidence.get("evidence_id"),
-                        "applied_claim_id": evidence.get("applied_claim_id"),
-                        "applied_trade_step_id": evidence.get("applied_trade_step_id"),
+                        "applied_claim_id": lineage.get("applied_claim_id"),
+                        "applied_trade_step_id": lineage.get("applied_trade_step_id"),
                         "source_type": evidence.get("source_type") or source_type,
                         "direction": evidence.get("direction"),
                         "horizon_days": evidence.get("horizon_days"),
@@ -1121,12 +1302,23 @@ class StrategyAcceptanceRemediationService:
                         "proxy_only": bool(evidence.get("proxy_only")),
                         "doc_uid": evidence.get("doc_uid"),
                         "headline_label_id": evidence.get("headline_label_id"),
+                        "runtime_action_reason": lineage.get("runtime_action_reason"),
+                        "runtime_action_source": lineage.get("runtime_action_source"),
                         "payload": evidence_payload,
                     }
                 )
             return
 
-        lineage = _runtime_action_lineage(strategy, action_reason or "bootstrap_backtest_exit")
+        lineage = _merge_bootstrap_lineage(
+            strategy,
+            code=code,
+            phase="exit",
+            lineage=_runtime_action_lineage(
+                strategy,
+                action_reason or "bootstrap_backtest_exit",
+            ),
+            action_reason=action_reason or "bootstrap_backtest_exit",
+        )
         await save_method(
             {
                 "id": f"{signal_id}:backtest_bootstrap_exit",
@@ -1149,6 +1341,7 @@ class StrategyAcceptanceRemediationService:
                     "bootstrap_selection": dict(selection_payload or {}),
                     "action_reason": action_reason,
                     "lineage": lineage,
+                    "synthetic_bootstrap_lineage": bool(lineage.get("fallback_applied")),
                 },
             }
         )

@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -10,6 +11,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { ExecutionArtifactResponse } from '@aiask/shared-types';
 import { buildExecutionArtifactDetailHref, isSurfacePlaceholderId } from '@/lib/surface-contracts';
@@ -137,42 +139,13 @@ export default function ExecutionArtifactDetailPage() {
     router.push(href);
   }
 
-  usePageContext({
-    pageKey: 'execution',
-    title: 'Artifact 详情',
-    summary: emptyDetailContract
-      ? '当前环境还没有可进入的 Artifact 详情数据，页面按空态契约渲染。'
-      : `当前 artifact 为 ${artifactId}，关联任务 ${artifactQ.data?.count ?? 0} 条，最新任务 ${executionId || '未找到'}。`,
-    stockCode: stockCode || undefined,
-    tags: [
-      emptyDetailContract ? '空态契约' : null,
-      accountId ? `账户 ${accountId}` : '未指定账户',
-      `${artifactQ.data?.count ?? 0} 条任务`,
-      `${warnings.length} 条告警`,
-    ].filter((item): item is string => Boolean(item)),
-    suggestions: [
-      executionId ? `回执行中心查看 ${executionId}` : '回执行中心继续查询任务',
-      '打开绩效中心复盘执行结果',
-      warnings.length > 0 ? '打开风险中心复核告警' : '打开个股详情继续查看标的',
-    ],
-    raw: {
-      artifactId,
-      emptyDetailContract,
-      accountId: accountId || null,
-      executionId: executionId || null,
-      stockCode: stockCode || null,
-      taskCount: artifactQ.data?.count ?? 0,
-      warningCount: warnings.length,
-    },
-  });
-
-  usePageActions(emptyDetailContract ? [
+  const artifactActions = emptyDetailContract ? [
     {
       id: 'artifact.open-execution',
       label: '回执行中心',
       description: '回执行中心继续查看执行上下文',
       keywords: ['执行中心', 'artifact'],
-      scope: 'page',
+      scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         openExecution();
@@ -185,7 +158,7 @@ export default function ExecutionArtifactDetailPage() {
       label: '刷新 artifact 详情',
       description: '重新加载当前 artifact 的任务与执行详情',
       keywords: ['artifact', '刷新'],
-      scope: 'page',
+      scope: 'page' as const,
       pageKey: 'execution',
       run: async () => {
         await artifactQ.refetch();
@@ -197,7 +170,7 @@ export default function ExecutionArtifactDetailPage() {
       label: '回执行中心',
       description: '带着当前 artifact 和 task 上下文回到执行中心',
       keywords: ['执行中心', 'artifact'],
-      scope: 'page',
+      scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         openExecution();
@@ -209,7 +182,7 @@ export default function ExecutionArtifactDetailPage() {
       label: '打开绩效中心',
       description: '进入绩效中心查看该 artifact 关联执行的收益表现',
       keywords: ['绩效', '复盘'],
-      scope: 'page',
+      scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         openPerformance();
@@ -221,14 +194,90 @@ export default function ExecutionArtifactDetailPage() {
       label: '打开风险中心',
       description: '进入风险中心复核当前 artifact 相关告警',
       keywords: ['风险', '告警'],
-      scope: 'page',
+      scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         openRisk();
         return { message: '已打开风险中心' };
       },
     },
-  ]);
+  ];
+  usePageActions(artifactActions);
+  const artifactSummary = emptyDetailContract
+    ? '当前环境还没有可进入的 Artifact 详情数据，页面按空态契约渲染。'
+    : `当前 artifact 为 ${artifactId}，关联任务 ${artifactQ.data?.count ?? 0} 条，最新任务 ${executionId || '未找到'}。`;
+  const artifactResult = buildLocalResultContract({
+    summary: artifactSummary,
+    availableViews: artifactQ.data?.count && artifactQ.data.count > 1 ? ['compare'] : [],
+    pageActions: artifactActions,
+    preferredActionIds: emptyDetailContract
+      ? ['artifact.open-execution']
+      : ['artifact.refresh', 'artifact.open-execution', 'artifact.open-performance', 'artifact.open-risk'],
+    recommendedLinks: [
+      { id: 'artifact-link-execution', label: '执行中心', href: executionHref },
+      { id: 'artifact-link-performance', label: '绩效中心', href: performanceHref },
+      { id: 'artifact-link-risk', label: '风险中心', href: riskHref },
+      ...(stockCode ? [{ id: 'artifact-link-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(stockCode)}` }] : []),
+    ],
+    evidence: [
+      { label: 'Artifact', value: artifactId || '-' },
+      { label: '关联任务', value: String(artifactQ.data?.count ?? 0) },
+      { label: '最新任务', value: executionId || '-' },
+      { label: '股票代码', value: stockCode || '-' },
+      { label: '执行告警', value: String(warnings.length), tone: warnings.length > 0 ? 'warning' : 'neutral' },
+    ],
+    riskNotes: [
+      ...(emptyDetailContract ? ['当前为详情空态契约，只能回执行中心补充真实 Artifact。'] : []),
+      ...(warnings.length > 0 ? [`当前存在 ${warnings.length} 条执行告警。`] : []),
+      ...(artifactQ.error ? [artifactQ.error] : []),
+    ],
+    platformMeta: {
+      sourceTool: 'execution/artifact',
+      sourceChain: ['execution', 'artifact-detail'],
+      degraded: emptyDetailContract || Boolean(artifactQ.error),
+      fallbackReason: [artifactQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('execution', `复查 Artifact ${artifactId}`, executionHref, 'artifact-review', {
+      artifactId,
+      accountId: accountId || null,
+      executionId: executionId || null,
+      warningCount: warnings.length,
+    }),
+  });
+  usePageContext({
+    pageKey: 'execution',
+    title: 'Artifact 详情',
+    summary: artifactSummary,
+    stockCode: stockCode || undefined,
+    objectType: 'execution-artifact',
+    objectId: artifactId || 'artifact',
+    resultType: 'execution-artifact-detail',
+    tags: [
+      emptyDetailContract ? '空态契约' : null,
+      accountId ? `账户 ${accountId}` : '未指定账户',
+      `${artifactQ.data?.count ?? 0} 条任务`,
+      `${warnings.length} 条告警`,
+    ].filter((item): item is string => Boolean(item)),
+    suggestions: [
+      executionId ? `回执行中心查看 ${executionId}` : '回执行中心继续查询任务',
+      '打开绩效中心复盘执行结果',
+      warnings.length > 0 ? '打开风险中心复核告警' : '打开个股详情继续查看标的',
+    ],
+    recommendedActions: artifactResult.recommendedActions ?? [],
+    recommendedLinks: artifactResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(artifactResult.evidence),
+    riskNotes: artifactResult.riskNotes ?? [],
+    freshness: artifactResult.freshness ?? null,
+    raw: {
+      artifactId,
+      emptyDetailContract,
+      accountId: accountId || null,
+      executionId: executionId || null,
+      stockCode: stockCode || null,
+      taskCount: artifactQ.data?.count ?? 0,
+      warningCount: warnings.length,
+    },
+  });
 
   if (emptyDetailContract) {
     return (
@@ -272,6 +321,8 @@ export default function ExecutionArtifactDetailPage() {
           {artifactId || '未指定 artifact'}
         </Badge>
       </div>
+
+      <ResultWorkbench pageKey="execution" title="Artifact 结果工作台" result={artifactResult} />
 
       <KpiGrid cols={4} className="mb-4">
         <KpiCard title="关联任务" value={artifactQ.data?.count ?? '-'} />

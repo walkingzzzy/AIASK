@@ -63,46 +63,11 @@ def _should_enrich_legacy_gate_0_candidate(candidate: dict) -> bool:
     payload = dict(candidate or {})
     if not payload:
         return False
-    normalized_task = _normalize_research_task_contract(payload.get("research_task") or {})
-    has_explicit_research_task = bool(candidate_contract_value(payload, "had_explicit_research_task", False))
-    synthetic_local_spawn_task = (
-        bool(normalized_task.get("synthetic_local_spawn"))
-        and not has_explicit_research_task
-        and str(normalized_task.get("task_source") or "").strip().lower() in {"", "snapshot"}
-        and not payload.get("event_context")
-        and not payload.get("source")
-    )
-    synthetic_snapshot_context_only = (
-        synthetic_local_spawn_task
-        or (
-            bool(normalized_task)
-            and not has_explicit_research_task
-            and str(normalized_task.get("task_source") or "").strip().lower() in {"", "snapshot"}
-            and not _extract_target_codes_from_payload(payload, limit=1)
-            and not _normalize_target_codes(dict(payload.get("stock_pool") or {}).get("symbols"), limit=1)
-            and not payload.get("event_context")
-            and not payload.get("source")
-        )
-    )
-    has_factory_context = any(
-        [
-            payload.get("research_task"),
-            payload.get("event_context"),
-            payload.get("target_symbols"),
-            payload.get("stock_pool"),
-            payload.get("generator_type"),
-            payload.get("generator_mode"),
-            payload.get("source"),
-            list(payload.get("tags") or []),
-        ]
-    )
-    if has_factory_context and not synthetic_snapshot_context_only:
-        return False
     missing_trade_fields = [
         key for key in sorted(_REQUIRED_TRADE_FIELDS)
         if candidate_contract_value(payload, key) in (None, "", [], {})
     ]
-    return all(field in missing_trade_fields for field in _LEGACY_TRADE_ENRICHMENT_REQUIRED_FIELDS)
+    return bool(missing_trade_fields)
 
 
 def _enrich_legacy_gate_0_candidate(candidate: dict) -> dict:
@@ -130,6 +95,7 @@ def _enrich_legacy_gate_0_candidate(candidate: dict) -> dict:
             "slippage_bps": assumptions.slippage_bps,
             "commission_rate": assumptions.commission_rate,
             "tradability_filter": assumptions.tradability_filter,
+            "slippage_model": assumptions.slippage_model or "fixed",
         },
         "validation_profile": dict(contract_snapshot.get("validation_profile") or {}),
     }

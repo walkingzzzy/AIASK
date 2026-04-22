@@ -20,6 +20,10 @@ from typing import Any
 
 from ..services.artifact_registry import get_artifact_async
 from ..services.governance_monitor import GovernanceMonitor
+from ..services.governance_persistence import (
+    get_latest_governance_report_snapshot,
+    persist_governance_report_snapshot,
+)
 from ..tools.manager_protocol import LINEAGE_REFERENCE_KEYS
 
 
@@ -175,20 +179,30 @@ async def build_dataset_profile_payload(dataset_id: str) -> dict[str, Any]:
 async def build_strategy_governance_payload(strategy_id: str) -> dict[str, Any]:
     """Build a strategy governance report."""
     resolved_id = str(strategy_id or "").strip()
-
-    report = _monitor.run_full_check(
-        target_type="strategy",
-        target_id=resolved_id,
-        include_factor_decay=False,
-        include_crowding=False,
-        include_model_drift=False,
-    )
+    persisted = await get_latest_governance_report_snapshot(scope_type="strategy", scope_id=resolved_id)
+    if persisted:
+        report_payload = dict(persisted.get("payload_jsonb") or {})
+    else:
+        report = _monitor.run_full_check(
+            target_type="strategy",
+            target_id=resolved_id,
+            include_factor_decay=False,
+            include_crowding=False,
+            include_model_drift=False,
+        )
+        persisted = await persist_governance_report_snapshot(
+            report,
+            scope_type="strategy",
+            scope_id=resolved_id,
+        )
+        report_payload = report.to_dict()
 
     return {
         "uri": f"resource://strategy/{resolved_id}/governance",
         "strategy_id": resolved_id,
         "found": True,
-        "governance_report": report.to_dict(),
+        "snapshot_id": persisted.get("id") if persisted else None,
+        "governance_report": report_payload,
         "lineage": {"strategy_id": resolved_id},
     }
 
@@ -231,11 +245,18 @@ async def build_experiment_summary_payload(experiment_id: str) -> dict[str, Any]
 
 async def build_system_governance_payload() -> dict[str, Any]:
     """Build a system-wide governance report."""
-    report = _monitor.run_full_check(target_type="system")
+    persisted = await get_latest_governance_report_snapshot(scope_type="system", scope_id=None)
+    if persisted:
+        report_payload = dict(persisted.get("payload_jsonb") or {})
+    else:
+        report = _monitor.run_full_check(target_type="system")
+        persisted = await persist_governance_report_snapshot(report, scope_type="system", scope_id=None)
+        report_payload = report.to_dict()
     return {
         "uri": "resource://governance/system/report",
         "found": True,
-        "governance_report": report.to_dict(),
+        "snapshot_id": persisted.get("id") if persisted else None,
+        "governance_report": report_payload,
     }
 
 

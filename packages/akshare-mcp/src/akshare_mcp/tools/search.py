@@ -304,6 +304,8 @@ def _tool_description(tool) -> str | None:
 def _infer_runtime_side_effect_level(name: str, category: str, description: str | None) -> str:
     lowered_name = str(name or "").strip().lower()
     lowered_desc = str(description or "").strip().lower()
+    if lowered_name in {"generate_trade_plan"}:
+        return "read_only"
 
     if category == "execution":
         return "trade_risk"

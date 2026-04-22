@@ -17,7 +17,15 @@ from ..core.rate_limiter import get_limiter
 from ..data_source import data_source
 from ..services.db_first_market_context import load_db_first_stock_fund_flow
 from ..storage import get_db
-from ..utils import fail, normalize_code, ok, parse_numeric
+from ..utils import (
+    attach_argument_contract_meta,
+    fail,
+    normalize_code,
+    ok,
+    parse_numeric,
+    resolve_canonical_arg,
+    resolve_existing_security_code_sync,
+)
 from .fund_flow_common import _run_storage_call_sync
 
 # -- Re-export public functions from sub-modules so existing
@@ -91,13 +99,43 @@ def _get_stock_fund_flow_from_tushare(code: str) -> dict | None:
     except Exception:
         return None
 
-def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
+def get_stock_fund_flow(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+    prefer_db: bool = True,
+) -> dict:
     """获取个股资金流向（主力/大单/中单/小单）"""
     try:
         limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
         limiter.acquire()
 
-        code = normalize_code(stock_code)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code, _, error = resolve_existing_security_code_sync(code=raw_code)
+        canonical_args = {"code": code or normalize_code(raw_code)}
+        if error:
+            return attach_argument_contract_meta(
+                fail(error),
+                canonical_tool="get_stock_fund_flow",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+
+        def _respond(payload: dict) -> dict:
+            return attach_argument_contract_meta(
+                payload,
+                canonical_tool="get_stock_fund_flow",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
 
         if prefer_db:
             try:
@@ -106,13 +144,13 @@ def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
                     timeout=8.0,
                 )
                 if db_payload:
-                    return ok(db_payload)
+                    return _respond(ok(db_payload))
             except Exception:
                 pass
 
         tushare_payload = _get_stock_fund_flow_from_tushare(code)
         if tushare_payload:
-            return ok(tushare_payload)
+            return _respond(ok(tushare_payload))
 
         market = "1" if code.startswith("6") else "0"
         secid = f"{market}.{code}"
@@ -132,7 +170,7 @@ def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
         data = resp.json().get("data", {}) if resp.status_code == 200 else {}
         klines = data.get("klines") or []
         if not klines:
-            return fail("未获取到资金流向数据")
+            return _respond(fail("未获取到资金流向数据"))
         parts = str(klines[-1]).split(",")
         main_inflow = parse_numeric(parts[1]) or 0
         small_inflow = parse_numeric(parts[2]) or 0
@@ -140,7 +178,7 @@ def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
         large_inflow = parse_numeric(parts[4]) or 0
         super_large_inflow = parse_numeric(parts[5]) or 0
 
-        return ok(
+        return _respond(ok(
             {
                 "code": code,
                 "name": str(data.get("name") or ""),
@@ -152,9 +190,14 @@ def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
                 "smallNetInflow": small_inflow,
                 "source": "eastmoney.push2.fflow",
             }
-        )
+        ))
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_stock_fund_flow",
+            canonical_args={"code": normalize_code(code) if code else ""},
+            alias_hits=[],
+        )
 
 
 # =====================

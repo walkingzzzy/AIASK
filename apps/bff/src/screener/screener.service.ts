@@ -1,6 +1,13 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import {
+    buildResultContract,
+    extractFreshness,
+    extractPlatformMeta,
+    toText,
+    uniqueStrings,
+} from '../common/result-contract';
 
 @Injectable()
 export class ScreenerService {
@@ -24,7 +31,7 @@ export class ScreenerService {
         }
 
         try {
-            const { payload, sourceTool, fallbackReason } = await this.callSemanticToolWithFallback(query, limit);
+            const payload = await this.callTool('semantic_stock_search', { query, limit });
             const items = this.extractItems(payload);
             const result = {
                 data: {
@@ -32,11 +39,16 @@ export class ScreenerService {
                     items,
                     count: items.length,
                     result: payload,
-                    sourceTool,
-                    ...(fallbackReason
-                        ? { fallback: { used: true, reason: fallbackReason } }
-                        : {}),
+                    sourceTool: 'semantic_stock_search',
                 },
+                result_contract: this.buildScreenerResultContract({
+                    payload,
+                    items,
+                    taskLabel: '语义选股',
+                    queryLabel: query,
+                    sourceTool: 'semantic_stock_search',
+                    mode: 'semantic',
+                }),
                 meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } }
             };
             await this.cacheService.set(cacheKey, result, ttlSeconds);
@@ -47,20 +59,6 @@ export class ScreenerService {
                 message: '调用 MCP semantic_stock_search 失败',
                 detail: error instanceof Error ? error.message : String(error),
             });
-        }
-    }
-
-    private async callSemanticToolWithFallback(query: string, limit: number) {
-        try {
-            const payload = await this.mcp.callTool('semantic_stock_search', { query, limit });
-            const toolError = this.extractToolError(payload);
-            if (!toolError) {
-                return { payload, sourceTool: 'semantic_stock_search' as const, fallbackReason: null };
-            }
-            return this.buildSemanticFallback(query, limit, toolError);
-        } catch (error) {
-            const detail = this.describeError(error);
-            return this.buildSemanticFallback(query, limit, detail);
         }
     }
 
@@ -95,7 +93,16 @@ export class ScreenerService {
                     conditions,
                     mode: mode.kind,
                     result: payload,
-                }
+                    sourceTool: 'screener_manager',
+                },
+                result_contract: this.buildScreenerResultContract({
+                    payload,
+                    items,
+                    taskLabel: mode.kind === 'technical' ? '技术条件选股' : mode.kind === 'combined' ? '组合条件选股' : '基本面条件选股',
+                    queryLabel: conditions.join('；'),
+                    sourceTool: 'screener_manager',
+                    mode: mode.kind,
+                }),
             };
         } catch (error) {
             throw new BadGatewayException({
@@ -113,7 +120,21 @@ export class ScreenerService {
                 top_n: limit,
                 similarity_type: 'both',
             });
-            return { data: payload };
+            const items = this.extractItems(payload);
+            return {
+                data: payload,
+                items,
+                count: items.length,
+                sourceTool: 'search_similar_stocks',
+                result_contract: this.buildScreenerResultContract({
+                    payload,
+                    items,
+                    taskLabel: '相似股票筛选',
+                    queryLabel: symbol,
+                    sourceTool: 'search_similar_stocks',
+                    mode: 'similar',
+                }),
+            };
         } catch (error) {
             throw new BadGatewayException({
                 success: false,
@@ -147,18 +168,6 @@ export class ScreenerService {
         }
     }
 
-    private async buildSemanticFallback(query: string, limit: number, reason: string) {
-        const payload = await this.callTool('search_stocks', {
-            keyword: query.trim(),
-            limit,
-        });
-        return {
-            payload,
-            sourceTool: 'search_stocks' as const,
-            fallbackReason: reason,
-        };
-    }
-
     private extractItems(payload: unknown) {
         const candidates = [
             this.readPath(payload, 'data.items'),
@@ -189,13 +198,6 @@ export class ScreenerService {
             market_cap: record.market_cap ?? record.marketCap ?? null,
             pe: record.pe ?? record.pe_ratio ?? record.peRatio ?? null,
         };
-    }
-
-    private describeError(error: unknown) {
-        if (error instanceof Error) {
-            return error.message;
-        }
-        return String(error);
     }
 
     private resolveConditionMode(conditions: string[]) {
@@ -303,6 +305,138 @@ export class ScreenerService {
             }
         }
         return null;
+    }
+
+    private buildScreenerResultContract(options: {
+        payload: unknown;
+        items: Array<Record<string, unknown>>;
+        taskLabel: string;
+        queryLabel: string;
+        sourceTool: string;
+        mode: 'semantic' | 'fundamental' | 'technical' | 'combined' | 'similar';
+    }) {
+        const primary = options.items[0] ?? {};
+        const primaryCode = toText(primary.code ?? primary.stock_code ?? primary.symbol);
+        const primaryName = toText(primary.name ?? primary.stock_name ?? primary.display_name);
+        const primaryIndustry = toText(primary.industry ?? primary.sector);
+        const followupQuery = primaryName || primaryCode || options.queryLabel;
+        const industries = uniqueStrings(
+            options.items.slice(0, 8).map((item) => toText(item.industry ?? item.sector)),
+        );
+
+        return buildResultContract({
+            summary: options.items.length > 0
+                ? `${options.taskLabel}“${options.queryLabel}”筛到 ${options.items.length} 只股票，优先结果 ${primaryName || primaryCode || '已命中候选标的'}。`
+                : `${options.taskLabel}“${options.queryLabel}”当前没有命中结果，建议调整条件后重试。`,
+            availableViews: [
+                'summary',
+                'next_step',
+                ...(options.items.length > 1 ? (['compare'] as const) : []),
+                ...(industries.length > 1 ? (['visual'] as const) : []),
+            ],
+            recommendedActions: [
+                {
+                    id: 'screener.open-copilot-followup',
+                    actionId: 'screener.open-copilot-followup',
+                    label: '打开 Copilot 解读筛选结果',
+                    description: '把当前筛选结果继续转成研究和排序动作。',
+                    payload: {
+                        query: options.queryLabel,
+                        primaryCode: primaryCode || null,
+                    },
+                },
+            ],
+            recommendedLinks: [
+                primaryCode
+                    ? {
+                        id: 'screener-open-stock',
+                        label: '个股详情',
+                        href: `/stock?code=${encodeURIComponent(primaryCode)}`,
+                    }
+                    : {
+                        id: 'screener-open-research',
+                        label: '继续研究页',
+                        href: '/research',
+                    },
+                {
+                    id: 'screener-open-skills',
+                    label: '去技能中心',
+                    href: `/skills?skill=${encodeURIComponent('akshare-fundamental')}`,
+                },
+                {
+                    id: 'screener-open-strategy-market',
+                    label: '去策略超市',
+                    href: `/strategy-market?from=screener&task=strategy_review&q=${encodeURIComponent(followupQuery)}${primaryIndustry ? `&category=${encodeURIComponent(primaryIndustry)}` : ''}`,
+                },
+                {
+                    id: 'screener-open-factory',
+                    label: '去工厂运行态',
+                    href: `/strategy-market?from=screener&task=factory_cycle&q=${encodeURIComponent(followupQuery)}${primaryIndustry ? `&category=${encodeURIComponent(primaryIndustry)}` : ''}`,
+                },
+            ],
+            evidence: [
+                { label: '结果数', value: String(options.items.length) },
+                { label: '模式', value: options.mode },
+                primaryCode ? { label: '优先代码', value: primaryCode } : null,
+                primaryName ? { label: '优先结果', value: primaryName } : null,
+                primaryIndustry ? { label: '所属行业', value: primaryIndustry } : null,
+            ].filter((item): item is NonNullable<typeof item> => item != null),
+            riskNotes: options.items.length > 0 ? [] : ['当前筛选结果为空，建议缩短条件、降低约束或切换到语义选股。'],
+            freshness: extractFreshness(options.payload, null, `${options.taskLabel}结果`),
+            platformMeta: extractPlatformMeta(options.payload, {
+                sourceTool: options.sourceTool,
+                referencePath: '/data/tool-catalog',
+            }),
+            skillSuggestions: [
+                {
+                    skillId: 'akshare-fundamental',
+                    label: '基本面快照',
+                    reason: '继续补齐当前候选股票的基本面证据。',
+                    supportedTask: 'fundamental_snapshot',
+                },
+                {
+                    skillId: 'akshare-portfolio-manager-core',
+                    label: '组合闭环评估',
+                    reason: '把筛选结果继续转成组合候选池。',
+                    supportedTask: 'closed_loop_plan',
+                },
+                {
+                    skillId: 'akshare-strategy-factory',
+                    label: '策略工厂联动',
+                    reason: '把筛选结果带到策略工厂继续评审与跟踪。',
+                    supportedTask: 'strategy_review',
+                },
+            ],
+            strategySuggestions: [
+                {
+                    id: `${options.sourceTool}-strategy-followup`,
+                    label: '去策略超市继续研究',
+                    description: '把当前选股结果转到策略页继续筛选与跟踪。',
+                    query: followupQuery,
+                    category: primaryIndustry || undefined,
+                    task: 'strategy_review',
+                },
+                {
+                    id: `${options.sourceTool}-factory-followup`,
+                    label: '去工厂看运行态',
+                    description: '把当前选股结果带到策略工厂运行态继续跟踪。',
+                    query: followupQuery,
+                    category: primaryIndustry || undefined,
+                    task: 'factory_cycle',
+                },
+            ],
+            workbenchTask: {
+                title: `${options.taskLabel}：${options.queryLabel}`,
+                href: '/screener',
+                kind: 'screener-result',
+                payload: {
+                    query: options.queryLabel,
+                    sourceTool: options.sourceTool,
+                    primaryCode: primaryCode || null,
+                    primaryIndustry: primaryIndustry || null,
+                },
+            },
+        });
     }
 
     private asRecord(value: unknown): Record<string, unknown> {

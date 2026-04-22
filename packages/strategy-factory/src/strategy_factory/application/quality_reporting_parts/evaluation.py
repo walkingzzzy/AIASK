@@ -93,6 +93,31 @@ def build_quality_report(
         if audit.get("runtime_playbook_present") is not None
         else None
     )
+    execution_audit_gate_status = (
+        audit.get("execution_audit_gate_status")
+        or normalized_gate.get("execution_audit_gate_status")
+    )
+    execution_audit_gate_reasons = list(
+        audit.get("execution_audit_gate_reasons")
+        or normalized_gate.get("execution_audit_gate_reasons")
+        or []
+    )
+    execution_hard_gate_passed = (
+        bool(audit.get("execution_hard_gate_passed"))
+        if audit.get("execution_hard_gate_passed") is not None
+        else (
+            bool(normalized_gate.get("execution_hard_gate_passed"))
+            if normalized_gate.get("execution_hard_gate_passed") is not None
+            else None
+        )
+    )
+    execution_audit_snapshot_id = audit.get("execution_audit_snapshot_id")
+    execution_audit_as_of = audit.get("execution_audit_as_of")
+    trace_id = audit.get("trace_id")
+    correlation_id = audit.get("correlation_id")
+    factory_run_id = audit.get("factory_run_id")
+    parent_task_run_id = audit.get("parent_task_run_id")
+    source_action = audit.get("source_action")
     submission_action = dict(audit.get("submission_action") or {})
     submission_action_type = audit.get("submission_action_type")
     submission_action_trigger = audit.get("submission_action_trigger")
@@ -241,6 +266,16 @@ def build_quality_report(
         "runtime_bootstrap_reason": runtime_bootstrap_reason,
         "runtime_bootstrap_budget_tier": runtime_bootstrap_budget_tier,
         "runtime_playbook_present": runtime_playbook_present,
+        "execution_audit_gate_status": execution_audit_gate_status,
+        "execution_audit_gate_reasons": execution_audit_gate_reasons,
+        "execution_hard_gate_passed": execution_hard_gate_passed,
+        "execution_audit_snapshot_id": execution_audit_snapshot_id,
+        "execution_audit_as_of": execution_audit_as_of,
+        "trace_id": trace_id,
+        "correlation_id": correlation_id,
+        "factory_run_id": factory_run_id,
+        "parent_task_run_id": parent_task_run_id,
+        "source_action": source_action,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,
@@ -334,6 +369,16 @@ def build_quality_report(
         "runtime_bootstrap_reason": runtime_bootstrap_reason,
         "runtime_bootstrap_budget_tier": runtime_bootstrap_budget_tier,
         "runtime_playbook_present": runtime_playbook_present,
+        "execution_audit_gate_status": execution_audit_gate_status,
+        "execution_audit_gate_reasons": execution_audit_gate_reasons,
+        "execution_hard_gate_passed": execution_hard_gate_passed,
+        "execution_audit_snapshot_id": execution_audit_snapshot_id,
+        "execution_audit_as_of": execution_audit_as_of,
+        "trace_id": trace_id,
+        "correlation_id": correlation_id,
+        "factory_run_id": factory_run_id,
+        "parent_task_run_id": parent_task_run_id,
+        "source_action": source_action,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,

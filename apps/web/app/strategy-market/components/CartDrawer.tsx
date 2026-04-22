@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useCartStore } from '@/store/cart-store';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -8,6 +9,7 @@ import { ConfirmDialog } from '@/components/ui';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 export function CartDrawer({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
   const { items, removeStrategy, setWeight, clear } = useCartStore();
   const createApi = useApiMutation();
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
@@ -43,13 +45,20 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
   }
 
   async function executeCreatePortfolio(payload: { name: string; description: string }) {
-    await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, {
+    const result = await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, {
       name: payload.name,
       description: payload.description,
       strategies: items.map((i) => ({ strategyId: i.strategyId, weight: i.weight / 100 })),
     });
+    const createdId =
+      result && typeof result === 'object' && 'portfolioId' in result
+        ? String((result as { portfolioId?: unknown }).portfolioId ?? '')
+        : '';
     clear();
     onClose();
+    if (createdId) {
+      router.push(`/portfolio?portfolio_id=${encodeURIComponent(createdId)}&from=strategy-cart`);
+    }
   }
 
   async function handleSubmit() {

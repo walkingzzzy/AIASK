@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import {
   PageContainer,
   TabBar,
@@ -13,12 +14,15 @@ import {
   Badge,
 } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { BarChart, COLORS } from '@/components/charts';
 import { extractArray, fmtAmount, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
@@ -244,8 +248,108 @@ export default function ValuationPage() {
       : tab === 'ddm'
         ? '高分红、公用事业、消费龙头等成熟公司'
         : tab === 'relative'
-          ? '需要快速比同行估值水平时优先使用'
+        ? '需要快速比同行估值水平时优先使用'
           : '高波动成长公司或行业假设分歧较大时更有价值';
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'valuation.run-recommended',
+        label: '运行推荐估值',
+        description: '按当前模型加载推荐参数并发起估值',
+        keywords: ['估值', '推荐'],
+        scope: 'page' as const,
+        pageKey: 'valuation',
+        run: () => {
+          runRecommendedValuation();
+          return { message: '已触发推荐估值' };
+        },
+      },
+      {
+        id: 'valuation.submit',
+        label: tab === 'relative' ? '查询相对估值' : '提交当前估值',
+        description: '按当前参数发起估值请求',
+        keywords: ['估值', '提交'],
+        scope: 'page' as const,
+        pageKey: 'valuation',
+        run: () => {
+          submit();
+          return { message: '已提交当前估值请求' };
+        },
+      },
+      {
+        id: 'valuation.open-stock',
+        label: '打开个股详情',
+        description: '跳到个股详情页继续核对价格与盘口',
+        keywords: ['个股详情', '跳转'],
+        scope: 'page' as const,
+        pageKey: 'valuation',
+        run: () => {
+          window.location.href = `/stock?code=${encodeURIComponent(focusCode || '600519')}`;
+          return { message: '已跳到个股详情' };
+        },
+      },
+    ],
+    [focusCode, tab],
+  );
+  usePageActions(pageActions);
+  const valuationSummary = `当前模型 ${activeTabLabel}，标的 ${focusCode || '未确认'}，假设 ${currentAssumptionSummary}，视图 ${viewTab === 'params' ? '参数' : '结果'}。`;
+  const valuationResult = buildLocalResultContract({
+    summary: valuationSummary,
+    availableViews: relativeRows.length > 1 || scenarioRows.length > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['valuation.run-recommended', 'valuation.submit', 'valuation.open-stock'],
+    recommendedLinks: [
+      { id: 'valuation-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode || '600519')}` },
+      { id: 'valuation-open-fundamental-link', label: '基本面', href: `/fundamental?code=${encodeURIComponent(focusCode || '600519')}` },
+      { id: 'valuation-open-research-link', label: '研究中心', href: `/research?code=${encodeURIComponent(focusCode || '600519')}` },
+      { id: 'valuation-open-risk-link', label: '风险中心', href: '/risk' },
+    ],
+    evidence: [
+      { label: '当前模型', value: activeTabLabel },
+      { label: '标的', value: focusCode || '未确认' },
+      { label: '假设摘要', value: currentAssumptionSummary },
+      { label: '当前视图', value: viewTab === 'params' ? '参数' : '结果' },
+      { label: '状态', value: isPending ? '加载中' : friendlyErr || error ? '需重试' : data ? '已返回' : '待估值' },
+    ],
+    riskNotes: [formError, friendlyErr, error].filter((item): item is string => Boolean(item)),
+    platformMeta: {
+      sourceTool: 'valuation',
+      sourceChain: ['valuation', tab],
+      degraded: Boolean(formError || friendlyErr || error),
+      fallbackReason: [formError, friendlyErr, error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask('valuation', `复查${activeTabLabel}`, focusCode ? `/valuation?code=${encodeURIComponent(focusCode)}` : '/valuation', 'valuation-review', {
+      code: focusCode || null,
+      tab,
+      viewTab,
+    }),
+  });
+  usePageContext({
+    pageKey: 'valuation',
+    title: '估值分析工作台',
+    summary: valuationSummary,
+    stockCode: focusCode || undefined,
+    objectType: 'stock',
+    objectId: focusCode || activeTabLabel,
+    resultType: `valuation-${tab}`,
+    tags: [activeTabLabel, focusCode || '未确认标的', viewTab === 'params' ? '参数视图' : '结果视图'],
+    suggestions: [
+      `解释 ${activeTabLabel} 结果最该关注的含义`,
+      '告诉我下一步该去基本面还是风险页',
+      '把当前估值整理成结论和风险提示',
+    ],
+    recommendedActions: valuationResult.recommendedActions ?? [],
+    recommendedLinks: valuationResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(valuationResult.evidence),
+    riskNotes: valuationResult.riskNotes ?? [],
+    freshness: valuationResult.freshness ?? null,
+    raw: {
+      code: focusCode || null,
+      tab,
+      viewTab,
+      hasData: Boolean(data),
+    },
+  });
 
   return (
     <PageContainer>
@@ -317,6 +421,8 @@ export default function ValuationPage() {
           </details>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="valuation" title="估值结果工作台" result={valuationResult} />
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

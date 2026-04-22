@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import ResultWorkbench from '@/components/result-workbench';
 import {
   PageContainer,
   TabBar,
@@ -14,10 +15,13 @@ import {
 } from '@/components/ui';
 import { PieChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtAmount, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 import {
   CHIP_BUTTON_CLS,
@@ -36,26 +40,32 @@ import { buildResourcePath, buildResourceSummaryRows, isRecord, normalizeOptionR
 export default function DataPage() {
   const [tab, setTab] = useState<Tab>('option');
   const { code, setCode, codeError, setCodeError, validate, trimmedCode } = useStockCode('');
-  const [underlying, setUnderlying] = useState('510050');
+  const [underlying, setUnderlying] = useState('');
+  const [underlyingError, setUnderlyingError] = useState<string | null>(null);
   const [resourceKind, setResourceKind] = useState<ResourceKey>('toolCatalog');
   const [resourceId, setResourceId] = useState('');
   const [resourceError, setResourceError] = useState<string | null>(null);
   const [queryPath, setQueryPath] = useState<string | null>(null);
-  const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath);
+  const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath, { critical: true });
   const activeResourcePreset = (RESOURCE_PRESETS.find((item) => item.key === resourceKind) ??
     RESOURCE_PRESETS[0]) as (typeof RESOURCE_PRESETS)[number];
   const resourceRequiresId = activeResourcePreset.requiresId === true;
   const resourceInputLabel = activeResourcePreset.inputLabel;
   const resourcePlaceholder = activeResourcePreset.placeholder;
-  const resourceExample = activeResourcePreset.example;
   const resourceDescription = activeResourcePreset.description;
 
   function submit() {
     let path: string;
+    setUnderlyingError(null);
     setResourceError(null);
 
     if (tab === 'option') {
-      path = `/data/option-chain?underlying=${encodeURIComponent(underlying.trim())}`;
+      const trimmedUnderlying = underlying.trim();
+      if (!trimmedUnderlying) {
+        setUnderlyingError('请输入真实的 ETF 期权标的代码');
+        return;
+      }
+      path = `/data/option-chain?underlying=${encodeURIComponent(trimmedUnderlying)}`;
     } else if (tab === 'calendar') {
       path = '/data/trading-dates?count=30';
     } else if (tab === 'ipo') {
@@ -67,13 +77,11 @@ export default function DataPage() {
       }
       path = `/data/cb?code=${encodeURIComponent(trimmedCode)}`;
     } else if (tab === 'resource') {
-      const fallbackId = resourceExample;
-      const resolvedId = resourceId.trim() || fallbackId;
+      const resolvedId = resourceId.trim();
       if (resourceRequiresId && !resolvedId) {
         setResourceError(`请输入${resourceInputLabel}`);
         return;
       }
-      if (!resourceId.trim() && resolvedId) setResourceId(resolvedId);
       path = buildResourcePath(resourceKind, resolvedId);
     } else {
       if (!validate()) return;
@@ -153,42 +161,175 @@ export default function DataPage() {
             : 0;
   const focusTarget =
     tab === 'option'
-      ? underlying.trim() || '510050'
+      ? underlying.trim() || '待输入 ETF 标的'
       : tab === 'calendar'
         ? '最近 30 个交易日'
       : tab === 'ipo'
         ? '最近 IPO 窗口'
         : tab === 'resource'
-          ? resourceId.trim() || resourceExample || activeResourcePreset.label
+          ? resourceId.trim() || activeResourcePreset.label
           : trimmedCode || '待输入';
   const tabDescription =
     tab === 'option'
       ? '适合观察 ETF 期权链的行权价、成交量、持仓量与隐含波动率。'
       : tab === 'calendar'
         ? '适合确认开市、休市与节假日节奏，给后续策略或提醒页做时间参照。'
-      : tab === 'ipo'
+        : tab === 'ipo'
         ? '适合快速查看最近新股与新债窗口，判断一级市场供给节奏。'
         : tab === 'resource'
           ? '适合直接查看 MCP 资源对象，把 workflow、run、dataset、model、strategy 的结构化摘要拉出来核对。'
           : tab === 'cb'
             ? '适合用单只转债快速看价格、转股价值和溢价率。'
             : '适合用股本结构确认流通盘、限售盘与总市值的关系。';
+  const latestDataRefreshAt = data ? Date.now() : null;
+  const dataSummary = `当前聚焦 ${activeTabLabel}，目标 ${focusTarget}，结果 ${resultCount} 条，状态 ${isPending ? '加载中' : data ? '已返回' : '待查询'}。`;
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'data.submit',
+        label: `查询${activeTabLabel}`,
+        description: '按当前类别和输入项发起查询',
+        keywords: ['查询', '数据'],
+        scope: 'page' as const,
+        pageKey: 'data',
+        run: async () => {
+          submit();
+          return { message: `已触发${activeTabLabel}查询` };
+        },
+      },
+      {
+        id: 'data.switch-market',
+        label: '跳到行情看板',
+        description: '带着当前查询目标切到行情页继续查看',
+        keywords: ['行情', '跳转'],
+        scope: 'page' as const,
+        pageKey: 'data',
+        run: () => {
+          window.location.href = '/market';
+          return { message: '已跳到行情看板' };
+        },
+      },
+      {
+        id: 'data.switch-technical',
+        label: '跳到技术分析',
+        description: '带着当前查询目标继续查看技术面',
+        keywords: ['技术分析', '跳转'],
+        scope: 'page' as const,
+        pageKey: 'data',
+        run: () => {
+          window.location.href = '/technical';
+          return { message: '已跳到技术分析' };
+        },
+      },
+      {
+        id: 'data.clear',
+        label: '清空当前输入',
+        description: '清空当前页的输入与查询上下文',
+        keywords: ['清空', '重置'],
+        scope: 'page' as const,
+        pageKey: 'data',
+        run: () => {
+          setUnderlying('');
+          setUnderlyingError(null);
+          setCode('');
+          setCodeError(null);
+          setResourceId('');
+          setResourceError(null);
+          setQueryPath(null);
+          return { message: '已清空当前输入' };
+        },
+      },
+    ],
+    [activeTabLabel, data, isPending, resultCount, setCode, setCodeError, tab],
+  );
+  usePageActions(pageActions);
+  const dataEvidence = useMemo(
+    () =>
+      [
+        { label: '当前类别', value: activeTabLabel },
+        { label: '当前目标', value: focusTarget },
+        { label: '结果条数', value: String(resultCount) },
+        { label: '状态', value: isPending ? '加载中' : data ? '已返回' : '待查询' },
+        ...(queryPath ? [{ label: '查询路径', value: queryPath }] : []),
+      ].slice(0, 5),
+    [activeTabLabel, data, focusTarget, isPending, queryPath, resultCount],
+  );
+  const dataRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (error) notes.push(`当前查询失败：${error}`);
+    if (!error && !isPending && data && resultCount === 0) notes.push('当前查询已返回，但结果为空，需要调整类别或输入。');
+    if (tab === 'resource' && resourceRequiresId && !resourceId.trim()) notes.push(`该资源类型需要先填写${resourceInputLabel}。`);
+    return notes;
+  }, [data, error, isPending, resourceId, resourceInputLabel, resourceRequiresId, resultCount, tab]);
+  const dataLinks = useMemo(
+    () => [
+      { id: 'data-open-copilot-link', label: '继续问 Copilot', href: '/assistant' },
+      { id: 'data-open-market-link', label: '跳到行情看板', href: '/market' },
+      { id: 'data-open-technical-link', label: '跳到技术分析', href: '/technical' },
+      { id: 'data-open-research-link', label: '跳到研究中心', href: '/research' },
+    ],
+    [],
+  );
+  const dataResult = buildLocalResultContract({
+    summary: dataSummary,
+    availableViews: resultCount > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['data.submit', 'data.switch-market', 'data.switch-technical', 'data.clear'],
+    recommendedLinks: dataLinks,
+    evidence: dataEvidence,
+    riskNotes: dataRiskNotes,
+    freshness: latestDataRefreshAt ? { label: '最近查询', asOf: new Date(latestDataRefreshAt).toISOString() } : null,
+    platformMeta: {
+      sourceTool: 'data-workspace',
+      sourceChain: ['data', tab],
+      degraded: Boolean(error),
+      fallbackReason: error ? [error] : undefined,
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'data',
+      `复查${activeTabLabel}`,
+      queryPath ? `/data?tab=${encodeURIComponent(tab)}` : '/data',
+      'data-review',
+      { tab, queryPath, focusTarget, resultCount },
+    ),
+  });
+  usePageContext({
+    pageKey: 'data',
+    title: '数据中心工作台',
+    summary: dataSummary,
+    stockCode: tab === 'cb' || tab === 'capital' ? trimmedCode || undefined : undefined,
+    objectType: tab === 'resource' ? 'tool-registry' : tab === 'option' ? 'option-chain' : 'stock-data',
+    objectId: focusTarget,
+    resultType: `data-${tab}`,
+    tags: [activeTabLabel, `${resultCount} 条结果`, isPending ? '加载中' : data ? '已返回' : '待查询'],
+    suggestions: [
+      `总结当前${activeTabLabel}最值得继续追问的点`,
+      '把当前数据整理成下一步动作',
+      '推荐我下一步该跳到哪个研究页',
+    ],
+    recommendedActions: dataResult.recommendedActions ?? [],
+    recommendedLinks: dataResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(dataResult.evidence),
+    riskNotes: dataResult.riskNotes ?? [],
+    freshness: dataResult.freshness ?? null,
+    raw: {
+      tab,
+      focusTarget,
+      resultCount,
+      queryPath,
+      resourceKind,
+      resourceId,
+      pending: isPending,
+      hasData: Boolean(data),
+    },
+  });
 
   function renderStarterState() {
     if (tab === 'option') {
       return (
         <EmptyState
-          text="先输入 ETF 期权标的，再加载期权链"
-          hint="常用示例是 510050 和 510300；如果你只是先熟悉页面，直接点一个示例即可。"
-          action={
-            <>
-              {['510050', '510300'].map((item) => (
-                <button key={item} type="button" onClick={() => setUnderlying(item)} className={CHIP_BUTTON_CLS}>
-                  使用 {item}
-                </button>
-              ))}
-            </>
-          }
+          text="先输入真实的 ETF 期权标的，再加载期权链"
+          hint="建议直接使用你当前关注的 ETF 标的代码发起查询，结果区会返回对应行权价、成交量和持仓量。"
         />
       );
     }
@@ -207,12 +348,7 @@ export default function DataPage() {
       return (
         <EmptyState
           text="请输入可转债代码后再查询"
-          hint="示例：123039"
-          action={
-            <button type="button" onClick={() => setCode('123039')} className={CHIP_BUTTON_CLS}>
-              填入示例 123039
-            </button>
-          }
+          hint="这里不再预填样例代码，直接输入你要核对的真实转债代码即可。"
         />
       );
     }
@@ -220,7 +356,7 @@ export default function DataPage() {
       return (
         <EmptyState
           text="先选择资源类型，再读取 MCP 资源对象"
-          hint="这里适合看 tool catalog、workflow guide、run snapshot 以及 dataset/model/factor/strategy 治理对象。"
+          hint="无 ID 资源可直接读取；需要 ID 的资源类型必须提供真实对象标识。"
           action={
             <>
               <button
@@ -232,16 +368,6 @@ export default function DataPage() {
                 className={CHIP_BUTTON_CLS}
               >
                 工具目录
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setResourceKind('workflowGuide');
-                  setResourceId('stock-analysis-guide');
-                }}
-                className={CHIP_BUTTON_CLS}
-              >
-                stock-analysis-guide
               </button>
               <button
                 type="button"
@@ -261,12 +387,7 @@ export default function DataPage() {
     return (
       <EmptyState
         text="请输入股票代码后查看股本结构"
-        hint="示例：600519"
-        action={
-          <button type="button" onClick={() => setCode('600519')} className={CHIP_BUTTON_CLS}>
-            填入示例 600519
-          </button>
-        }
+        hint="输入真实股票代码后，结果区会返回总股本、流通股和市值结构。"
       />
     );
   }
@@ -518,13 +639,17 @@ export default function DataPage() {
               <button
                 type="button"
                 onClick={() => {
-                  if (tab === 'option') setUnderlying('510050');
-                  if (tab === 'cb') setCode('123039');
-                  if (tab === 'capital') setCode('600519');
+                  setUnderlying('');
+                  setUnderlyingError(null);
+                  setCode('');
+                  setCodeError(null);
+                  setResourceId('');
+                  setResourceError(null);
+                  setQueryPath(null);
                 }}
                 className={HERO_SECONDARY_BUTTON_CLS}
               >
-                填入推荐示例
+                清空当前输入
               </button>
             </div>
 
@@ -609,6 +734,8 @@ export default function DataPage() {
         </div>
       </section>
 
+      <ResultWorkbench pageKey="data" title="数据结果工作台" result={dataResult} />
+
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -643,10 +770,14 @@ export default function DataPage() {
                 <input
                   id="data-option-underlying"
                   value={underlying}
-                  onChange={(e) => setUnderlying(e.target.value)}
-                  placeholder="标的代码，如 510050"
+                  onChange={(e) => {
+                    setUnderlying(e.target.value);
+                    setUnderlyingError(null);
+                  }}
+                  placeholder="输入真实 ETF 标的代码"
                   className={FIELD_CLS}
                 />
+                {underlyingError ? <span className="text-xs text-error">{underlyingError}</span> : null}
               </label>
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -658,11 +789,7 @@ export default function DataPage() {
                 >
                   查询期权链
                 </button>
-                {['510050', '510300'].map((item) => (
-                  <button key={item} type="button" onClick={() => setUnderlying(item)} className={CHIP_BUTTON_CLS}>
-                    {item}
-                  </button>
-                ))}
+                <div className="text-sm text-text-secondary">不会自动预填标的代码，查询结果只来自当前输入。</div>
               </div>
             </div>
           ) : null}
@@ -717,9 +844,7 @@ export default function DataPage() {
                 >
                   查询可转债
                 </button>
-                <button type="button" onClick={() => setCode('123039')} className={CHIP_BUTTON_CLS}>
-                  123039
-                </button>
+                <div className="text-sm text-text-secondary">使用真实转债代码后再进入价格、转股价值和溢价率核对。</div>
               </div>
             </div>
           ) : null}
@@ -733,9 +858,8 @@ export default function DataPage() {
                   value={resourceKind}
                   onChange={(e) => {
                     const nextKind = e.target.value as ResourceKey;
-                    const preset = RESOURCE_PRESETS.find((item) => item.key === nextKind) ?? RESOURCE_PRESETS[0];
                     setResourceKind(nextKind);
-                    setResourceId(preset.example);
+                    setResourceId('');
                     setResourceError(null);
                     setQueryPath(null);
                   }}
@@ -769,18 +893,6 @@ export default function DataPage() {
                   <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
                     读取资源对象
                   </button>
-                  {resourceExample ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setResourceId(resourceExample);
-                        setResourceError(null);
-                      }}
-                      className={CHIP_BUTTON_CLS}
-                    >
-                      使用示例 {resourceExample}
-                    </button>
-                  ) : null}
                 </div>
                 <div className="text-sm text-text-secondary">{resourceDescription}</div>
                 {resourceError ? <div className="text-xs text-error">{resourceError}</div> : null}
@@ -808,9 +920,7 @@ export default function DataPage() {
                 >
                   查询股本
                 </button>
-                <button type="button" onClick={() => setCode('600519')} className={CHIP_BUTTON_CLS}>
-                  600519
-                </button>
+                <div className="text-sm text-text-secondary">只在填写真实股票代码后返回股本和市值结构。</div>
               </div>
             </div>
           ) : null}

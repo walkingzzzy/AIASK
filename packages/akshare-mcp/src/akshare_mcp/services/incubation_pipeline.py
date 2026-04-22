@@ -77,12 +77,15 @@ class StrategyIncubationPipelineService:
 
     async def _derive_snapshot(self, db, strategy: dict, *, task_run_id: Optional[int], source: str, auto_apply_review: bool) -> dict:
         # Fix #10: 从 strategy_lifecycle_shared 导入，避免循环依赖
+        from .governance_monitor import GovernanceMonitor
+        from .governance_persistence import persist_governance_report_snapshot
         from .strategy_lifecycle_shared import (
             build_incubation_overview as _build_incubation_overview,
             resolve_incubation_pipeline_stage as _resolve_incubation_pipeline_stage,
         )
 
         sid = str(strategy['id'])
+        trace_metadata = dict(strategy.get('_closure_trace') or {})
         overview = await _build_incubation_overview(db, strategy)
         account = await db.get_strategy_incubation_account(sid) if hasattr(db, 'get_strategy_incubation_account') else None
         if not account and str(strategy.get('status') or '') in {'incubating', 'listed'}:
@@ -107,6 +110,36 @@ class StrategyIncubationPipelineService:
         is_control_blocking = control_mode not in {'active', 'throttled'}
         latest_decision = str((latest_metric or {}).get('decision') or 'observe')
         signal_quality = dict(overview.get('signal_quality') or {})
+        governance_monitor = GovernanceMonitor()
+        raw_drawdown = latest_metric.get('max_drawdown') if isinstance(latest_metric, dict) else None
+        max_drawdown_pct = None
+        try:
+            if raw_drawdown is not None:
+                max_drawdown_pct = float(raw_drawdown)
+                if max_drawdown_pct <= 1:
+                    max_drawdown_pct *= 100.0
+        except Exception:
+            max_drawdown_pct = None
+        governance_report = governance_monitor.run_full_check(
+            target_type="strategy",
+            target_id=sid,
+            include_factor_decay=False,
+            include_crowding=False,
+            include_model_drift=False,
+            posture_level=str(overview.get('posture_level') or 'safe'),
+            control_mode=control_mode,
+            open_alert_count=open_risk_count,
+            recovery_eligible=bool((runtime_control or {}).get('recovery_eligible')),
+            max_drawdown_pct=max_drawdown_pct,
+            days_since_last_trade=None,
+        )
+        governance_snapshot = await persist_governance_report_snapshot(
+            governance_report,
+            scope_type="strategy",
+            scope_id=sid,
+        )
+        governance_status = str(governance_report.overall_status or 'unknown')
+        governance_issues = list(governance_report.issues or [])
 
         if str(strategy.get('status') or '') == 'listed':
             pipeline_stage = 'promoted'
@@ -152,6 +185,16 @@ class StrategyIncubationPipelineService:
                 )
                 if item not in gate_reasons
             )
+        if governance_status == 'critical':
+            governance_blockers = [f"governance:{item}" for item in governance_issues] or ['governance:critical']
+            gate_reasons.extend(item for item in governance_blockers if item not in gate_reasons)
+            if pipeline_stage == 'graduation_ready':
+                pipeline_stage = 'candidate'
+                pipeline_status = 'candidate'
+                next_action = 'resolve_governance_critical'
+            elif pipeline_stage == 'promoted':
+                pipeline_status = 'blocked'
+                next_action = 'resolve_governance_critical'
         priority_score = self._readiness_score(
             latest_metric=latest_metric,
             overview=overview,
@@ -181,7 +224,8 @@ class StrategyIncubationPipelineService:
                 'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
                 'execution_hard_gate_passed': bool(overview.get('execution_hard_gate_passed')),
                 'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
-                'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'},
+                'governance_status': governance_status,
+                'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'} and governance_status != 'critical',
                 'reasons': list(gate_reasons),
             },
             'next_action': next_action,
@@ -208,11 +252,15 @@ class StrategyIncubationPipelineService:
                 'observe_streak': observe_streak,
                 'open_risk_count': open_risk_count,
                 'runtime_control_mode': control_mode,
+                'governance_report_id': governance_snapshot.get('id'),
+                'governance_status': governance_status,
+                'governance_issues': governance_issues,
                 'hard_gate_result': {
                     'pipeline_stage': pipeline_stage,
                     'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
                     'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
-                    'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'},
+                    'governance_status': governance_status,
+                    'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'} and governance_status != 'critical',
                     'reasons': list(gate_reasons),
                 },
             },
@@ -221,6 +269,11 @@ class StrategyIncubationPipelineService:
                 'overview': overview,
                 'runtime_control': runtime_control or {},
                 'open_risk_ids': [item.get('id') for item in open_risks if item.get('id') is not None],
+                'governance_report_id': governance_snapshot.get('id'),
+                'governance_status': governance_status,
+                'governance_issues': governance_issues,
+                'governance_report': governance_report.to_dict(),
+                'trace': trace_metadata,
             },
             'task_run_id': task_run_id,
             'source': source,
@@ -272,7 +325,8 @@ class StrategyIncubationPipelineService:
         auto_apply_review: bool = False,
         task_run_id: Optional[int] = None,
     ) -> dict:
-        correlation_id = uuid4().hex[:12]
+        trace_metadata = dict(strategy.get('_closure_trace') or {})
+        correlation_id = str(trace_metadata.get('correlation_id') or uuid4().hex[:12])
         owns_task_run = task_run_id is None and hasattr(db, 'save_strategy_task_run')
         task_run = {'id': task_run_id, 'trace_id': correlation_id}
         if owns_task_run:
@@ -286,6 +340,7 @@ class StrategyIncubationPipelineService:
                 'payload': {
                     'source': source,
                     'auto_apply_review': bool(auto_apply_review),
+                    **trace_metadata,
                 },
             })
 
@@ -339,6 +394,7 @@ class StrategyIncubationPipelineService:
                         'from_stage': latest_before.get('pipeline_stage'),
                         'to_stage': persisted.get('pipeline_stage'),
                         'pipeline_status': persisted.get('pipeline_status'),
+                        'trace': trace_metadata,
                     },
                     source=source,
                     correlation_id=task_run.get('trace_id'),
@@ -355,6 +411,7 @@ class StrategyIncubationPipelineService:
                     'next_action': persisted.get('next_action'),
                     'auto_review': persisted.get('auto_review'),
                     'auto_promoted': persisted.get('auto_promoted'),
+                    'trace': trace_metadata,
                 },
                 source=source,
                 correlation_id=task_run.get('trace_id'),

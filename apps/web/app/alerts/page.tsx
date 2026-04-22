@@ -2,9 +2,13 @@
 
 import { FormEvent, useMemo, useState } from 'react';
 import { ConfirmDialog, PageContainer, SectionCard, StockCodeInput, Badge } from '@/components/ui';
+import ResultWorkbench from '@/components/result-workbench';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { apiKeys } from '@/lib/query-keys';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { cacheText, fmt, type CacheMeta } from '@/lib/api';
@@ -145,6 +149,110 @@ export default function AlertsPage() {
     return '阈值会按照你选择的指标解释；价格单位为元，其它指标按各自量纲处理。';
   }, [indicatorKey]);
 
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'alerts.refresh',
+        label: '刷新告警列表',
+        description: '重新拉取当前状态下的告警规则',
+        keywords: ['刷新', '告警'],
+        scope: 'page' as const,
+        pageKey: 'alerts',
+        run: async () => {
+          await listQ.refetch();
+          return { message: '已刷新告警列表' };
+        },
+      },
+      {
+        id: 'alerts.apply-price-template',
+        label: '套用价格模板',
+        description: '快速把表单切到价格突破模板',
+        keywords: ['模板', '价格突破'],
+        scope: 'page' as const,
+        pageKey: 'alerts',
+        run: () => {
+          applyTemplate(ALERT_TEMPLATES[0]);
+          return { message: '已套用价格突破模板' };
+        },
+      },
+      {
+        id: 'alerts.toggle-status',
+        label: status === 'active' ? '切到全部规则' : '切到生效中',
+        description: '在生效中和全部规则之间切换',
+        keywords: ['状态', '规则'],
+        scope: 'page' as const,
+        pageKey: 'alerts',
+        run: () => {
+          setStatus((prev) => (prev === 'active' ? 'all' : 'active'));
+          return { message: status === 'active' ? '已切到全部规则' : '已切到生效中规则' };
+        },
+      },
+    ],
+    [listQ, status],
+  );
+
+  usePageActions(pageActions);
+
+  const alertsSummary = `当前告警状态 ${STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status}，共 ${items.length} 条规则，正在编辑 ${trimmedCode || '未填写'} 的 ${indicator} 条件。`;
+  const alertsResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: alertsSummary,
+        pageActions,
+        preferredActionIds: ['alerts.refresh', 'alerts.apply-price-template', 'alerts.toggle-status'],
+        recommendedLinks: [
+          trimmedCode ? { id: 'alerts-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'alerts-open-market', label: '行情看板', href: '/market?from=alerts' },
+          { id: 'alerts-open-watchlist', label: '自选股', href: '/watchlist' },
+          { id: 'alerts-open-risk', label: '风险中心', href: '/risk?from=alerts' },
+          { id: 'alerts-open-data', label: '数据中心', href: '/data?from=alerts' },
+        ],
+        evidence: [
+          { label: '状态', value: STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status },
+          { label: '规则数量', value: String(items.length) },
+          { label: '当前代码', value: trimmedCode || '-' },
+          { label: '当前指标', value: indicator },
+          { label: '抓取时间', value: freshness ? new Date(freshness).toLocaleString('zh-CN') : '-' },
+        ],
+        riskNotes: error ? [error] : items.length === 0 ? ['当前筛选状态下没有规则，建议先创建第一条告警。'] : [],
+        freshness: freshness ? { updatedAt: freshness, label: '告警抓取时间' } : null,
+        workbenchTask: defaultWorkbenchTask('alerts', `告警复查：${trimmedCode || '当前规则集'}`, '/alerts', 'alerts-review', {
+          code: trimmedCode || null,
+          indicator,
+          status,
+        }),
+      }),
+    [alertsSummary, error, freshness, indicator, items.length, pageActions, status, trimmedCode],
+  );
+
+  usePageContext({
+    pageKey: 'alerts',
+    title: '告警中心',
+    summary: alertsSummary,
+    stockCode: trimmedCode || undefined,
+    objectType: trimmedCode ? 'stock' : 'workspace',
+    objectId: trimmedCode || status,
+    resultType: 'alerts-summary',
+    tags: [STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status, `${items.length} 条规则`, indicator],
+    suggestions: [
+      '总结当前告警配置的主要风险点',
+      '判断还需要补哪些监控规则',
+      '把当前规则集整理成盘中巡检清单',
+    ],
+    recommendedActions: alertsResult.recommendedActions,
+    recommendedLinks: alertsResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(alertsResult.evidence),
+    riskNotes: alertsResult.riskNotes ?? [],
+    freshness: alertsResult.freshness ?? null,
+    raw: {
+      code: trimmedCode || null,
+      indicator,
+      condition,
+      value,
+      status,
+      items: items.length,
+    },
+  });
+
   function applyTemplate(template: (typeof ALERT_TEMPLATES)[number]) {
     setIndicator(template.indicator);
     setCondition(template.condition);
@@ -235,6 +343,8 @@ export default function AlertsPage() {
           </div>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="alerts" title="告警结果工作台" result={alertsResult} />
 
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
 

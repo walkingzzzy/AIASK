@@ -5,7 +5,7 @@ import type {
     FactoryGateStageResult,
     StrategyPredictionTraceLedgerView,
 } from './factory';
-import type { StrategyTrustedInfo } from './common';
+import type { StrategyIncubationSurface, StrategyTrustedInfo } from './common';
 import type {
     PaperTradingAccount,
     PaperTradingNavPoint,
@@ -168,10 +168,46 @@ export type StrategyCore = {
     subscriber_count?: number;
     avg_rating?: number;
     review_count?: number;
+    params?: Record<string, unknown>;
     factor_weights?: Record<string, number>;
+    tags?: string[];
     metrics?: StrategyMetric[];
     reviews?: StrategyReview[];
+    incubation_surface?: StrategyIncubationSurface;
 } & StrategyTrustedInfo;
+
+export type StrategyOwnerState = {
+    kind?: string;
+    owned?: boolean;
+    editable?: boolean;
+    author_id?: string | null;
+    personal_strategy?: boolean;
+    admin_override?: boolean;
+};
+
+export type StrategyFavoriteState = {
+    available?: boolean;
+    favorited?: boolean;
+    label?: string;
+};
+
+export type StrategyPaperSessionState = {
+    available?: boolean;
+    has_session?: boolean;
+    session_type?: string;
+    account_id?: string | null;
+    account_name?: string | null;
+    account_status?: string | null;
+    mode?: string;
+};
+
+export type StrategyPresentationDto = {
+    stage_label?: string;
+    stage_summary?: string;
+    why_watch?: string;
+    current_risks?: string[];
+    recommended_action?: string;
+};
 
 export type SignalStatsResponse = {
     hit_rate?: Record<string, number>;
@@ -870,5 +906,9 @@ export type StrategyDetailResponse = {
     similar_vector_profiles?: VectorProfile[];
     domain_events?: DomainEvent[];
     task_runs?: TaskRun[];
+    owner_state?: StrategyOwnerState;
+    favorite_state?: StrategyFavoriteState;
+    paper_session_state?: StrategyPaperSessionState;
+    presentation?: StrategyPresentationDto;
     view_model?: StrategyDetailViewModel;
 };

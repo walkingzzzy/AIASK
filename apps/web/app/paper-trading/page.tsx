@@ -6,6 +6,8 @@ import PaperTradingAnalytics from '@/app/paper-trading/components/paper-trading-
 import PaperTradingHero from '@/app/paper-trading/components/paper-trading-hero';
 import PaperTradingOrderWorkspace from '@/app/paper-trading/components/paper-trading-order-workspace';
 import PaperTradingSummarySidebar from '@/app/paper-trading/components/paper-trading-summary-sidebar';
+import ResultWorkbench from '@/components/result-workbench';
+import { LoadingState, UnavailableState } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, TabBar } from '@/components/ui';
@@ -16,7 +18,9 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { apiKeys } from '@/lib/query-keys';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
@@ -82,14 +86,46 @@ function readStatusProbeNote(probe: PaperTradingStatusProbe, fallback: string) {
   return typeof note === 'string' && note.trim() ? note : fallback;
 }
 
+function normalizePaperRiskRules(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function normalizeRiskPct(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+  return numeric <= 1 ? numeric * 100 : numeric;
+}
+
 export default function PaperTradingPage() {
   const { toast } = useToast();
+  const searchParams = useStableSearchParams();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const lastWorkspaceIdRef = useRef<string | null>(null);
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const queryAccountId = searchParams.get('account_id')?.trim() ?? '';
+  const queryStrategyId = searchParams.get('strategy_id')?.trim() ?? '';
+  const queryStrategyName = searchParams.get('strategy_name')?.trim() ?? '';
+  const queryMode = searchParams.get('mode')?.trim() ?? '';
+  const queryStockCode = searchParams.get('stock_code')?.trim() ?? '';
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
   const [price, setPrice] = useState('');
@@ -106,6 +142,10 @@ export default function PaperTradingPage() {
   const [perfDays, setPerfDays] = useState(30);
   const [mobilePrimaryTab, setMobilePrimaryTab] = useState<PaperTradingMobilePrimaryTab>('order');
   const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const strategyDetailQ = useApiQuery<Record<string, unknown>>(
+    queryStrategyId ? `/strategy-market/${encodeURIComponent(queryStrategyId)}` : null,
+    { enabled: Boolean(queryStrategyId), staleTime: 60_000 },
+  );
 
   // T-005: WS real-time trade order updates
   const handleTradeUpdate = useCallback((data: Partial<PaperTradingPendingOrder> & { stock_code?: string }) => {
@@ -121,17 +161,18 @@ export default function PaperTradingPage() {
   const qs = accountId ? `?account_id=${accountId}` : '';
 
   // 8 read queries — auto-fetch on mount, re-fetch when qs changes
-  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
-  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts');
-  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status');
-  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status');
-  const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary');
-  const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs);
-  const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs);
-  const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs);
-  const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs);
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
+  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts', { critical: true });
+  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status', { critical: true });
+  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status', { critical: true });
+  const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary', { critical: true });
+  const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs, { critical: true });
+  const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs, { critical: true });
+  const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs, { critical: true });
+  const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs, { critical: true });
   const performanceQ = useApiQuery<PaperTradingPerformanceResponse>(
     `/paper-trading/performance${qs ? `${qs}&days=${perfDays}` : `?days=${perfDays}`}`,
+    { critical: true },
   );
 
   // Subscribe to trade updates via WS
@@ -164,6 +205,26 @@ export default function PaperTradingPage() {
   const navStatus = useMemo(() => navStatusQ.data ?? {}, [navStatusQ.data]);
   const matchOk = matchStatus.status === 'running' || matchStatus.running === true || matchStatus.ok === true;
   const navOk = navStatus.status === 'running' || navStatus.running === true || navStatus.ok === true;
+  const linkedStrategyRecord = useMemo(() => {
+    if (!strategyDetailQ.data || typeof strategyDetailQ.data !== 'object') return null;
+    const root = strategyDetailQ.data as Record<string, unknown>;
+    const strategy = root.strategy;
+    return strategy && typeof strategy === 'object' ? strategy as Record<string, unknown> : null;
+  }, [strategyDetailQ.data]);
+  const linkedStrategyId = queryStrategyId || workbenchContext.linkedStrategyId || workbenchContext.strategyId || '';
+  const linkedStrategyName =
+    String(
+      linkedStrategyRecord?.name
+        ?? queryStrategyName
+        ?? workbenchContext.linkedStrategyName
+        ?? workbenchContext.strategyName
+        ?? '',
+    ).trim();
+  const linkedStrategyStatus = String(linkedStrategyRecord?.status ?? '').trim() || null;
+  const personalStrategyMode =
+    queryMode === 'personal-strategy'
+    || workbenchContext.mode === 'personal-strategy'
+    || workbenchContext.strategyTestMode === 'personal-strategy';
 
   const acct = summaryQ.data?.account ?? undefined;
   const totalValue = Number(summaryQ.data?.total_value ?? acct?.total_value ?? 0);
@@ -171,6 +232,17 @@ export default function PaperTradingPage() {
   const initial = Number(acct?.initial_capital ?? 100000);
   const marketValue = totalValue - cash;
   const returnPct = summaryQ.data?.total_return_pct ?? (initial > 0 ? ((totalValue - initial) / initial) * 100 : 0);
+  const accountRiskRules = useMemo(() => normalizePaperRiskRules(acct?.risk_rules), [acct?.risk_rules]);
+  const maxPositionPct = useMemo(
+    () => normalizeRiskPct(accountRiskRules.max_position_pct ?? accountRiskRules.maxPositionPct, 30),
+    [accountRiskRules],
+  );
+  const maxPositionAmount = useMemo(() => {
+    if (!Number.isFinite(totalValue) || totalValue <= 0) {
+      return null;
+    }
+    return totalValue * (maxPositionPct / 100);
+  }, [maxPositionPct, totalValue]);
 
   const positions = positionsQ.data?.positions ?? [];
   const trades = ordersQ.data?.orders ?? [];
@@ -199,10 +271,18 @@ export default function PaperTradingPage() {
     if (previewUnitPrice == null || !Number.isFinite(previewUnitPrice) || previewUnitPrice <= 0) return null;
     return quantityValue * previewUnitPrice;
   }, [previewUnitPrice, quantityValue]);
+  const exceedsPositionCap =
+    direction === 'buy' &&
+    estimatedAmount != null &&
+    maxPositionAmount != null &&
+    estimatedAmount > maxPositionAmount + 1e-6;
   const orderTypeLabel = orderType === 'market' ? '市价单' : orderType === 'limit' ? '限价单' : '止损单';
   const directionLabel = direction === 'buy' ? '买入' : '卖出';
   const riskHints = useMemo(() => {
     const hints: string[] = [];
+    if (maxPositionAmount != null) {
+      hints.push(`当前账户单股仓位上限约 ${fmtNum(maxPositionAmount)}（${fmtPct(maxPositionPct)}）。`);
+    }
     if (!trimmedCode) hints.push('请先输入有效股票代码，再进入提交确认。');
     if (!Number.isFinite(quantityValue) || quantityValue <= 0) hints.push('数量需为正整数。');
     if (direction === 'buy' && Number.isFinite(quantityValue) && quantityValue > 0 && quantityValue % 100 !== 0) {
@@ -217,13 +297,20 @@ export default function PaperTradingPage() {
     if (orderType === 'stop' && (stopPriceValue == null || !Number.isFinite(stopPriceValue) || stopPriceValue <= 0)) {
       hints.push('止损单需填写止损价，系统会先按止损触发价进行预览。');
     }
+    if (exceedsPositionCap && estimatedAmount != null && maxPositionAmount != null) {
+      hints.push(`当前委托预估金额 ${fmtNum(estimatedAmount)} 已超过单股仓位上限 ${fmtNum(maxPositionAmount)}。`);
+    }
     if (useComplianceCheck) hints.push('已开启下单前合规风控，提交时会先做额外检查。');
     if (urgentExecution) hints.push('已开启极速智能路由，提交成功文案会与普通委托不同。');
     if (!useComplianceCheck && !urgentExecution) hints.push('当前为标准提交流程：直接确认并提交委托。');
     return hints;
   }, [
     direction,
+    estimatedAmount,
+    exceedsPositionCap,
     limitPriceValue,
+    maxPositionAmount,
+    maxPositionPct,
     orderType,
     quantityValue,
     stopPriceValue,
@@ -249,7 +336,29 @@ export default function PaperTradingPage() {
     [performanceData],
   );
 
-  const error = summaryQ.error || positionsQ.error || refreshPricesApi.error;
+  const pageLoading =
+    profileQ.isPending ||
+    accountsQ.isPending ||
+    matchStatusQ.isPending ||
+    navStatusQ.isPending ||
+    summaryQ.isPending ||
+    positionsQ.isPending ||
+    ordersQ.isPending ||
+    pendingQ.isPending ||
+    navQ.isPending ||
+    performanceQ.isPending;
+  const pageError =
+    profileQ.error ||
+    accountsQ.error ||
+    matchStatusQ.error ||
+    navStatusQ.error ||
+    summaryQ.error ||
+    positionsQ.error ||
+    ordersQ.error ||
+    pendingQ.error ||
+    navQ.error ||
+    performanceQ.error;
+  const error = pageError || refreshPricesApi.error;
   const accountIdRef = useRef(accountId);
   const autoRefreshBusyRef = useRef(false);
   const manualRefreshPendingRef = useRef(refreshPricesApi.isPending);
@@ -388,6 +497,10 @@ export default function PaperTradingPage() {
       setFormError('价格必须大于0');
       return;
     }
+    if (direction === 'buy' && estimatedAmount != null && maxPositionAmount != null && estimatedAmount > maxPositionAmount + 1e-6) {
+      setFormError(`当前委托预估金额 ${fmtNum(estimatedAmount)} 超过单股仓位上限 ${fmtNum(maxPositionAmount)}（${fmtPct(maxPositionPct)}）`);
+      return;
+    }
 
     const body: PaperTradingPlaceOrderInput = {
       code: trimmedCode,
@@ -481,17 +594,6 @@ export default function PaperTradingPage() {
     setFormStatus(`已载入 ${String(position.stock_code ?? '')} 的快速卖出参数，请确认后提交。`);
   }
 
-  function loadExampleOrder(nextCode = '600519') {
-    setCode(nextCode);
-    setDirection('buy');
-    setQuantity('100');
-    setOrderType('market');
-    setPrice('');
-    setStopPrice('');
-    setFormError(null);
-    setFormStatus(`已载入 ${nextCode} 的示例下单参数，可直接调整后提交。`);
-  }
-
   const matchStatusLabel = matchOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
   const navStatusLabel = navOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
 
@@ -500,46 +602,49 @@ export default function PaperTradingPage() {
     const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
-    setCode(workbenchContext.stockCode ?? '600519');
-    setAccountId(workbenchContext.accountId ?? '');
-  }, [activeWorkspaceId, setCode, workbenchContext.accountId, workbenchContext.stockCode, workbenchHydrated]);
+    setCode(queryStockCode || (workbenchContext.stockCode ?? ''));
+    setAccountId(queryAccountId || (workbenchContext.accountId ?? ''));
+  }, [
+    activeWorkspaceId,
+    queryAccountId,
+    queryStockCode,
+    setCode,
+    workbenchContext.accountId,
+    workbenchContext.stockCode,
+    workbenchHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    if (queryStockCode) {
+      setCode(queryStockCode);
+    }
+    if (queryAccountId) {
+      setAccountId(queryAccountId);
+    }
+  }, [queryAccountId, queryStockCode, setCode, workbenchHydrated]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
     updateWorkbenchContext({
       stockCode: trimmedCode || null,
       accountId: accountId || null,
-      mode: 'account',
+      strategyId: linkedStrategyId || null,
+      strategyName: linkedStrategyName || null,
+      linkedStrategyId: linkedStrategyId || null,
+      linkedStrategyName: linkedStrategyName || null,
+      mode: personalStrategyMode ? 'personal-strategy' : 'account',
+      strategyTestMode: personalStrategyMode ? 'personal-strategy' : null,
     });
-  }, [accountId, trimmedCode, updateWorkbenchContext, workbenchHydrated]);
-
-  usePageContext({
-    pageKey: 'paper-trading',
-    title: '模拟交易',
-    summary: `账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。`,
-    stockCode: trimmedCode || undefined,
-    tags: [
-      `${positions.length} 条持仓`,
-      `${pending.length} 条挂单`,
-      `${trades.length} 条订单`,
-      useComplianceCheck ? '合规检查开启' : '标准提交流程',
-    ],
-    suggestions: [
-      trimmedCode ? `评估 ${trimmedCode} 当前下单参数是否合理` : '评估当前模拟盘状态',
-      '总结账户表现、持仓和待处理订单',
-      '把当前模拟盘整理成下一步操作清单',
-    ],
-    raw: {
-      accountId: accountId || 'default',
-      stockCode: trimmedCode || null,
-      positionCount: positions.length,
-      pendingCount: pending.length,
-      orderCount: trades.length,
-      totalValue,
-      urgentExecution,
-      useComplianceCheck,
-    },
-  });
+  }, [
+    accountId,
+    linkedStrategyId,
+    linkedStrategyName,
+    personalStrategyMode,
+    trimmedCode,
+    updateWorkbenchContext,
+    workbenchHydrated,
+  ]);
 
   const pageActions = useMemo(
     () => [
@@ -592,6 +697,82 @@ export default function PaperTradingPage() {
   );
 
   usePageActions(pageActions);
+  const paperSummary = `账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。${linkedStrategyName ? ` 当前策略 ${linkedStrategyName}。` : ''}`;
+  const paperResult = buildLocalResultContract({
+    summary: paperSummary,
+    availableViews: positions.length > 1 || pending.length > 1 || trades.length > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.toggle-compliance'],
+    recommendedLinks: [
+      { id: 'paper-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
+      { id: 'paper-open-performance-link', label: '绩效中心', href: '/performance' },
+      { id: 'paper-open-risk-link', label: '风险中心', href: '/risk' },
+      { id: 'paper-open-strategy-market-link', label: '策略超市', href: linkedStrategyId ? `/strategy-market/${encodeURIComponent(linkedStrategyId)}` : '/strategy-market' },
+    ],
+    evidence: [
+      { label: '账户', value: accountId || 'default' },
+      { label: '持仓数', value: String(positions.length) },
+      { label: '挂单数', value: String(pending.length) },
+      { label: '订单数', value: String(trades.length) },
+      { label: '总资产', value: fmtNum(totalValue, 2) },
+    ],
+    riskNotes: [...statusNotes, ...riskHints.slice(0, 3), ...(error ? [error] : [])],
+    freshness: summaryQ.dataUpdatedAt ? { updatedAt: new Date(summaryQ.dataUpdatedAt).toISOString(), label: '模拟盘快照' } : null,
+    platformMeta: {
+      sourceTool: 'paper-trading',
+      sourceChain: ['paper-trading', accountId || 'default'],
+      degraded: Boolean(error) || !matchOk || !navOk,
+      fallbackReason: [error, !matchOk ? '撮合状态未确认' : null, !navOk ? '净值状态未确认' : null].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'paper-trading',
+      `复查模拟盘${linkedStrategyName ? ` · ${linkedStrategyName}` : ''}`,
+      linkedStrategyId ? `/paper-trading?strategy_id=${encodeURIComponent(linkedStrategyId)}` : '/paper-trading',
+      'paper-trading-review',
+      { accountId: accountId || 'default', stockCode: trimmedCode || null, linkedStrategyId: linkedStrategyId || null },
+    ),
+  });
+
+  usePageContext({
+    pageKey: 'paper-trading',
+    title: personalStrategyMode && linkedStrategyName ? `模拟交易 · ${linkedStrategyName}` : '模拟交易',
+    summary: paperSummary,
+    stockCode: trimmedCode || undefined,
+    objectType: 'portfolio',
+    objectId: accountId || 'default',
+    resultType: 'paper-trading-dashboard',
+    tags: [
+      `${positions.length} 条持仓`,
+      `${pending.length} 条挂单`,
+      `${trades.length} 条订单`,
+      linkedStrategyName ? `策略 ${linkedStrategyName}` : null,
+      personalStrategyMode ? '个人模拟盘测试' : null,
+      useComplianceCheck ? '合规检查开启' : '标准提交流程',
+    ].filter((item): item is string => Boolean(item)),
+    suggestions: [
+      trimmedCode ? `评估 ${trimmedCode} 当前下单参数是否合理` : '评估当前模拟盘状态',
+      '总结账户表现、持仓和待处理订单',
+      '把当前模拟盘整理成下一步操作清单',
+    ],
+    recommendedActions: paperResult.recommendedActions ?? [],
+    recommendedLinks: paperResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(paperResult.evidence),
+    riskNotes: paperResult.riskNotes ?? [],
+    freshness: paperResult.freshness ?? null,
+    raw: {
+      accountId: accountId || 'default',
+      stockCode: trimmedCode || null,
+      positionCount: positions.length,
+      pendingCount: pending.length,
+      orderCount: trades.length,
+      totalValue,
+      linkedStrategyId: linkedStrategyId || null,
+      linkedStrategyName: linkedStrategyName || null,
+      personalStrategyMode,
+      urgentExecution,
+      useComplianceCheck,
+    },
+  });
 
   const currentView = useMemo<Record<string, unknown>>(
     () => ({
@@ -647,35 +828,42 @@ export default function PaperTradingPage() {
 
   const primaryContent = (
     <>
-      <PaperTradingHero
-        compactMobile={collapseToTabs}
-        showAccountBootstrap={showAccountBootstrap}
-        matchOk={matchOk}
-        navOk={navOk}
-        matchStatusLabel={matchStatusLabel}
-        navStatusLabel={navStatusLabel}
-        trimmedCode={trimmedCode}
-        directionLabel={directionLabel}
-        orderTypeLabel={orderTypeLabel}
-        estimatedAmount={estimatedAmount}
-        previewUnitPrice={previewUnitPrice}
-        accountId={accountId}
-        positionsCount={positions.length}
-        pendingCount={pending.length}
-        tradesCount={trades.length}
-        totalValue={totalValue}
-        todayPnl={todayPnl}
-        returnPct={Number(returnPct)}
-        quantityValue={quantityValue}
-        useComplianceCheck={useComplianceCheck}
-        urgentExecution={urgentExecution}
-        riskHints={riskHints}
-        tradeNotice={tradeNotice}
-        error={error}
-        onLoadExampleOrder={loadExampleOrder}
-        onRefreshPrices={() => void handleRefreshPrices()}
-        refreshPricesPending={refreshPricesApi.isPending}
-      />
+      <div>
+        <PaperTradingHero
+          compactMobile={collapseToTabs}
+          showAccountBootstrap={showAccountBootstrap}
+          matchOk={matchOk}
+          navOk={navOk}
+          matchStatusLabel={matchStatusLabel}
+          navStatusLabel={navStatusLabel}
+          trimmedCode={trimmedCode}
+          directionLabel={directionLabel}
+          orderTypeLabel={orderTypeLabel}
+          estimatedAmount={estimatedAmount}
+          previewUnitPrice={previewUnitPrice}
+          accountId={accountId}
+          positionsCount={positions.length}
+          pendingCount={pending.length}
+          tradesCount={trades.length}
+          totalValue={totalValue}
+          todayPnl={todayPnl}
+          returnPct={Number(returnPct)}
+          quantityValue={quantityValue}
+          useComplianceCheck={useComplianceCheck}
+          urgentExecution={urgentExecution}
+          riskHints={riskHints}
+          tradeNotice={tradeNotice}
+          error={error}
+          linkedStrategyId={linkedStrategyId || null}
+          linkedStrategyName={linkedStrategyName || null}
+          linkedStrategyStatus={linkedStrategyStatus}
+          personalStrategyMode={personalStrategyMode}
+          onRefreshPrices={() => void handleRefreshPrices()}
+          refreshPricesPending={refreshPricesApi.isPending}
+        />
+      </div>
+
+      <ResultWorkbench pageKey="paper-trading" title="模拟盘结果工作台" result={paperResult} />
 
       {collapseToTabs ? (
         <div className="mb-4">
@@ -684,42 +872,43 @@ export default function PaperTradingPage() {
       ) : null}
 
       {!collapseToTabs || mobilePrimaryTab === 'order' ? (
-        <PaperTradingOrderWorkspace
-          showAccountBootstrap={showAccountBootstrap}
-          handleOrder={handleOrder}
-          code={code}
-          setCode={setCode}
-          codeError={codeError}
-          direction={direction}
-          setDirection={setDirection}
-          quantity={quantity}
-          setQuantity={setQuantity}
-          orderType={orderType}
-          setOrderType={setOrderType}
-          price={price}
-          setPrice={setPrice}
-          stopPrice={stopPrice}
-          setStopPrice={setStopPrice}
-          useComplianceCheck={useComplianceCheck}
-          setUseComplianceCheck={setUseComplianceCheck}
-          urgentExecution={urgentExecution}
-          setUrgentExecution={setUrgentExecution}
-          placePending={placeApi.isPending}
-          routeExecutionPending={routeExecutionApi.isPending}
-          compliancePending={complianceApi.isPending}
-          directionLabel={directionLabel}
-          orderTypeLabel={orderTypeLabel}
-          trimmedCode={trimmedCode}
-          quantityValue={quantityValue}
-          accountId={accountId}
-          previewUnitPrice={previewUnitPrice}
-          estimatedAmount={estimatedAmount}
-          riskHints={riskHints}
-          formError={formError}
-          formStatus={formStatus}
-          lastActionResult={lastActionResult}
-          onLoadExampleOrder={loadExampleOrder}
-        />
+        <div>
+          <PaperTradingOrderWorkspace
+            showAccountBootstrap={showAccountBootstrap}
+            handleOrder={handleOrder}
+            code={code}
+            setCode={setCode}
+            codeError={codeError}
+            direction={direction}
+            setDirection={setDirection}
+            quantity={quantity}
+            setQuantity={setQuantity}
+            orderType={orderType}
+            setOrderType={setOrderType}
+            price={price}
+            setPrice={setPrice}
+            stopPrice={stopPrice}
+            setStopPrice={setStopPrice}
+            useComplianceCheck={useComplianceCheck}
+            setUseComplianceCheck={setUseComplianceCheck}
+            urgentExecution={urgentExecution}
+            setUrgentExecution={setUrgentExecution}
+            placePending={placeApi.isPending}
+            routeExecutionPending={routeExecutionApi.isPending}
+            compliancePending={complianceApi.isPending}
+            directionLabel={directionLabel}
+            orderTypeLabel={orderTypeLabel}
+            trimmedCode={trimmedCode}
+            quantityValue={quantityValue}
+            accountId={accountId}
+            previewUnitPrice={previewUnitPrice}
+            estimatedAmount={estimatedAmount}
+            riskHints={riskHints}
+            formError={formError}
+            formStatus={formStatus}
+            lastActionResult={lastActionResult}
+          />
+        </div>
       ) : null}
 
       {!collapseToTabs || mobilePrimaryTab === 'analytics' ? (
@@ -837,24 +1026,59 @@ export default function PaperTradingPage() {
   );
 
   const secondaryContent = (
-    <PaperTradingSummarySidebar
-      accountId={accountId}
-      trimmedCode={trimmedCode}
-      directionLabel={directionLabel}
-      orderTypeLabel={orderTypeLabel}
-      estimatedAmount={estimatedAmount}
-      positionsCount={positions.length}
-      pendingCount={pending.length}
-      tradesCount={trades.length}
-      matchStatusLabel={matchStatusLabel}
-      navStatusLabel={navStatusLabel}
-      totalValue={totalValue}
-      perfDays={perfDays}
-      todayPnl={todayPnl}
-      useComplianceCheck={useComplianceCheck}
-      urgentExecution={urgentExecution}
-    />
+    <div>
+      <PaperTradingSummarySidebar
+        accountId={accountId}
+        trimmedCode={trimmedCode}
+        directionLabel={directionLabel}
+        orderTypeLabel={orderTypeLabel}
+        estimatedAmount={estimatedAmount}
+        positionsCount={positions.length}
+        pendingCount={pending.length}
+        tradesCount={trades.length}
+        matchStatusLabel={matchStatusLabel}
+        navStatusLabel={navStatusLabel}
+        totalValue={totalValue}
+        perfDays={perfDays}
+        todayPnl={todayPnl}
+        useComplianceCheck={useComplianceCheck}
+        urgentExecution={urgentExecution}
+      />
+    </div>
   );
+
+  if (pageLoading && !pageError && !summaryQ.data) {
+    return (
+      <PageContainer>
+        <LoadingState text="正在加载模拟交易账户、持仓与绩效数据..." />
+      </PageContainer>
+    );
+  }
+
+  if (pageError) {
+    return (
+      <PageContainer>
+        <UnavailableState
+          text="模拟交易主链路暂不可用"
+          hint={pageError}
+          onRetry={() => {
+            void Promise.allSettled([
+              profileQ.refetch(),
+              accountsQ.refetch(),
+              matchStatusQ.refetch(),
+              navStatusQ.refetch(),
+              summaryQ.refetch(),
+              positionsQ.refetch(),
+              ordersQ.refetch(),
+              pendingQ.refetch(),
+              navQ.refetch(),
+              performanceQ.refetch(),
+            ]);
+          }}
+        />
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>

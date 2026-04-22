@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { ConfirmDialog, PageContainer, Badge, SectionCard, TabBar } from '@/components/ui';
@@ -9,11 +10,14 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { apiKeys } from '@/lib/query-keys';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
+import { useCartStore } from '@/store/cart-store';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import {
   PortfolioChartsSection,
@@ -37,16 +41,20 @@ import type {
 } from './portfolio-page.types';
 
 export default function PortfolioPage() {
+  const searchParams = useStableSearchParams();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const lastWorkspaceIdRef = useRef<string | null>(null);
+  const queryPortfolioId = searchParams.get('portfolio_id')?.trim() ?? '';
   const [portfolioId, setPortfolioId] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingPortfolioAction | null>(null);
   const [lastPrimaryRefreshAt, setLastPrimaryRefreshAt] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<'list' | 'compose' | 'detail' | 'ops'>('list');
+  const cartItems = useCartStore((state) => state.items);
+  const clearCart = useCartStore((state) => state.clear);
 
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
@@ -114,7 +122,18 @@ export default function PortfolioPage() {
     stressApi.trigger('/portfolio/stress-test', { method: 'POST' }, { portfolioId: portfolioId.trim() });
   }, [portfolioId, stressApi]);
 
-  async function executeCreatePortfolio(payload: { name: string; description: string; initialCapital: string }) {
+  const cartTotalWeight = useMemo(
+    () => cartItems.reduce((sum, item) => sum + Number(item.weight ?? 0), 0),
+    [cartItems],
+  );
+  const cartWeightValid = cartItems.length > 0 && Math.abs(cartTotalWeight - 100) < 0.01;
+
+  async function executeCreatePortfolio(payload: {
+    name: string;
+    description: string;
+    initialCapital: string;
+    strategies?: Array<{ strategyId: string; weight: number }>;
+  }) {
     const data = await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, payload);
     const createdId =
       data && typeof data === 'object' && 'portfolioId' in data
@@ -122,9 +141,13 @@ export default function PortfolioPage() {
         : '';
     if (createdId) {
       setPortfolioId(createdId);
+      setWorkspaceTab('detail');
     }
     setNewName('');
     setNewDesc('');
+    if (payload.strategies?.length) {
+      clearCart();
+    }
   }
 
   async function handleCreate() {
@@ -139,6 +162,39 @@ export default function PortfolioPage() {
         setPendingAction({
           type: 'create',
           summary: `${payload.name} · 初始资金 ${payload.initialCapital}`,
+          payload,
+        });
+        return;
+      }
+      await executeCreatePortfolio(payload);
+    } catch {
+      /* captured */
+    }
+  }
+
+  async function handleCreateFromCart() {
+    if (!cartItems.length) {
+      setFormError('购物车为空，无法创建策略组合');
+      return;
+    }
+    if (!cartWeightValid) {
+      setFormError('购物车权重合计必须等于 100%');
+      return;
+    }
+    const payload = {
+      name: newName.trim() || `策略组合 ${new Date().toLocaleDateString('zh-CN')}`,
+      description: newDesc.trim() || `来自购物车的策略组合：${cartItems.map((item) => `${item.name}(${item.weight}%)`).join('，')}`,
+      initialCapital: newCapital.trim() || '1000000',
+      strategies: cartItems.map((item) => ({
+        strategyId: item.strategyId,
+        weight: Number(item.weight) / 100,
+      })),
+    };
+    try {
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'create',
+          summary: `${payload.name} · 购物车 ${cartItems.length} 条策略`,
           payload,
         });
         return;
@@ -253,8 +309,11 @@ export default function PortfolioPage() {
       setWorkspaceTab((prev) => (prev === 'list' ? 'detail' : prev));
       return;
     }
-    setWorkspaceTab((prev) => (prev === 'detail' || prev === 'ops' ? 'list' : prev));
-  }, [activePortfolioId]);
+    setWorkspaceTab((prev) => {
+      if (cartItems.length > 0 && prev === 'list') return 'compose';
+      return prev === 'detail' || prev === 'ops' ? 'list' : prev;
+    });
+  }, [activePortfolioId, cartItems.length]);
 
   const refreshPortfolio = useCallback(async () => {
     const tasks = [listQ.refetch()];
@@ -271,11 +330,24 @@ export default function PortfolioPage() {
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
     const timer = window.setTimeout(() => {
-      setPortfolioId(workbenchContext.portfolioId ?? '');
+      setPortfolioId(queryPortfolioId || (workbenchContext.portfolioId ?? ''));
       setHoldCode(workbenchContext.stockCode ?? '');
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeWorkspaceId, setHoldCode, workbenchContext.portfolioId, workbenchContext.stockCode, workbenchHydrated]);
+  }, [
+    activeWorkspaceId,
+    queryPortfolioId,
+    setHoldCode,
+    workbenchContext.portfolioId,
+    workbenchContext.stockCode,
+    workbenchHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!workbenchHydrated || !queryPortfolioId) return;
+    setPortfolioId(queryPortfolioId);
+    setWorkspaceTab('detail');
+  }, [queryPortfolioId, workbenchHydrated]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -285,29 +357,6 @@ export default function PortfolioPage() {
       mode: activePortfolioId ? 'portfolio' : null,
     });
   }, [activePortfolioId, holdTrimmed, updateWorkbenchContext, workbenchHydrated]);
-
-  usePageContext({
-    pageKey: 'portfolio',
-    title: '组合管理',
-    summary: `当前选中组合 ${selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '未选择'}，组合总数 ${portfolioList.length}，持仓 ${detailHoldings.length} 条。`,
-    stockCode: holdTrimmed || undefined,
-    tags: [
-      `${portfolioList.length} 个组合`,
-      `${detailHoldings.length} 条持仓`,
-      activePortfolioId ? `组合 ${activePortfolioId}` : '未选择组合',
-    ],
-    suggestions: [
-      activePortfolioId ? `评估组合 ${activePortfolioId} 当前配置和风险` : '先选择一个组合，再评估配置和风险',
-      '总结当前组合列表里最值得继续跟进的标的',
-      '给出组合优化、风控和压力测试的下一步顺序',
-    ],
-    raw: {
-      portfolioId: activePortfolioId || null,
-      portfolioCount: portfolioList.length,
-      holdingCount: detailHoldings.length,
-      strategyCount: detailStrategies.length,
-    },
-  });
 
   const pageActions = useMemo(
     () => [
@@ -359,11 +408,102 @@ export default function PortfolioPage() {
           return { message: '已触发压力测试' };
         },
       },
+      ...(cartItems.length > 0
+        ? [{
+            id: 'portfolio.create-from-cart',
+            label: '用购物车创建策略组合',
+            description: '把当前策略购物车直接转换成策略组合',
+            keywords: ['购物车', '策略组合'],
+            scope: 'page' as const,
+            pageKey: 'portfolio',
+            run: async () => {
+              setWorkspaceTab('compose');
+              await handleCreateFromCart();
+              return { message: '已开始用购物车创建策略组合' };
+            },
+          }]
+        : []),
     ],
-    [analyzeRisk, optimize, refreshPortfolio, runStress],
+    [analyzeRisk, cartItems.length, handleCreateFromCart, optimize, refreshPortfolio, runStress],
   );
 
   usePageActions(pageActions);
+
+  const portfolioSummary = `当前选中组合 ${selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '未选择'}，组合总数 ${portfolioList.length}，持仓 ${detailHoldings.length} 条。`;
+  const portfolioEvidence = useMemo(
+    () => [
+      { label: '当前组合', value: portfolioDisplayName },
+      { label: '组合总数', value: String(portfolioList.length) },
+      { label: '持仓数量', value: String(detailHoldings.length) },
+      { label: '策略数量', value: String(detailStrategies.length) },
+      { label: '购物车策略', value: String(cartItems.length) },
+    ],
+    [cartItems.length, detailHoldings.length, detailStrategies.length, portfolioDisplayName, portfolioList.length],
+  );
+  const portfolioLinks = useMemo(
+    () => [
+      activePortfolioId ? { id: 'portfolio-open-risk', label: '去风险中心', href: `/risk?portfolioId=${encodeURIComponent(activePortfolioId)}` } : { id: 'portfolio-open-risk', label: '去风险中心', href: '/risk' },
+      activePortfolioId ? { id: 'portfolio-open-performance', label: '去绩效中心', href: `/performance?mode=portfolio&portfolio_id=${encodeURIComponent(activePortfolioId)}` } : { id: 'portfolio-open-performance', label: '去绩效中心', href: '/performance' },
+      { id: 'portfolio-open-strategy', label: '去策略超市', href: '/strategy-market?from=portfolio' },
+      { id: 'portfolio-open-skills', label: '去技能中心', href: '/skills?from=portfolio' },
+    ],
+    [activePortfolioId],
+  );
+  const portfolioRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (!activePortfolioId) notes.push('当前还没有选中组合，建议先锁定组合后再执行优化和风控动作。');
+    if (!detailHoldings.length) notes.push('当前组合没有持仓，后续风险和绩效结果可能为空。');
+    return notes;
+  }, [activePortfolioId, detailHoldings.length]);
+  const portfolioResult = useMemo(
+    () =>
+      buildLocalResultContract({
+        summary: portfolioSummary,
+        pageActions,
+        preferredActionIds: ['portfolio.refresh', 'portfolio.optimize', 'portfolio.risk', 'portfolio.stress'],
+        recommendedLinks: portfolioLinks,
+        evidence: portfolioEvidence,
+        riskNotes: portfolioRiskNotes,
+        workbenchTask: defaultWorkbenchTask('portfolio', `组合工作台：${portfolioDisplayName}`, activePortfolioId ? `/portfolio?portfolio_id=${encodeURIComponent(activePortfolioId)}` : '/portfolio', 'portfolio-review', {
+          portfolioId: activePortfolioId || null,
+          holdingCount: detailHoldings.length,
+        }),
+      }),
+    [activePortfolioId, detailHoldings.length, pageActions, portfolioDisplayName, portfolioEvidence, portfolioLinks, portfolioRiskNotes, portfolioSummary],
+  );
+
+  usePageContext({
+    pageKey: 'portfolio',
+    title: '组合管理',
+    summary: portfolioSummary,
+    stockCode: holdTrimmed || undefined,
+    objectType: activePortfolioId ? 'portfolio' : 'workspace',
+    objectId: activePortfolioId || 'portfolio',
+    resultType: 'portfolio-summary',
+    tags: [
+      `${portfolioList.length} 个组合`,
+      `${detailHoldings.length} 条持仓`,
+      activePortfolioId ? `组合 ${activePortfolioId}` : '未选择组合',
+      cartItems.length ? `${cartItems.length} 条购物车策略` : null,
+    ].filter((item): item is string => Boolean(item)),
+    suggestions: [
+      activePortfolioId ? `评估组合 ${activePortfolioId} 当前配置和风险` : '先选择一个组合，再评估配置和风险',
+      '总结当前组合列表里最值得继续跟进的标的',
+      '给出组合优化、风控和压力测试的下一步顺序',
+    ],
+    recommendedActions: portfolioResult.recommendedActions,
+    recommendedLinks: portfolioResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(portfolioResult.evidence),
+    riskNotes: portfolioResult.riskNotes ?? [],
+    freshness: portfolioResult.freshness ?? null,
+    raw: {
+      portfolioId: activePortfolioId || null,
+      portfolioCount: portfolioList.length,
+      holdingCount: detailHoldings.length,
+      strategyCount: detailStrategies.length,
+      cartItemCount: cartItems.length,
+    },
+  });
 
   const currentView = useMemo<Record<string, unknown>>(
     () => ({
@@ -463,6 +603,8 @@ export default function PortfolioPage() {
         </div>
       </section>
 
+      <ResultWorkbench pageKey="portfolio" title="组合结果工作台" result={portfolioResult} />
+
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
@@ -510,48 +652,85 @@ export default function PortfolioPage() {
           ) : null}
 
           {workspaceTab === 'compose' ? (
-            <PortfolioOperationWorkspaceSection
-              activePortfolioId={activePortfolioId}
-              portfolioDisplayName={portfolioDisplayName}
-              portfolioNextStep={portfolioNextStep}
-              portfolioCount={portfolioList.length}
-              currentAssetsDisplay={currentAssetsDisplay}
-              portfolioId={portfolioId}
-              onPortfolioIdChange={setPortfolioId}
-              setFormError={setFormError}
-              onRefetchList={() => {
-                void listQ.refetch();
-              }}
-              onRefetchDetail={() => {
-                void detailQ.refetch();
-              }}
-              onOptimize={optimize}
-              onAnalyzeRisk={analyzeRisk}
-              onRunStress={runStress}
-              newName={newName}
-              onNewNameChange={setNewName}
-              newDesc={newDesc}
-              onNewDescChange={setNewDesc}
-              newCapital={newCapital}
-              onNewCapitalChange={setNewCapital}
-              onCreate={() => {
-                void handleCreate();
-              }}
-              createPending={createApi.isPending}
-              createSuccess={createApi.data != null}
-              holdCode={holdCode}
-              onHoldCodeChange={setHoldCode}
-              holdCodeError={holdCodeError}
-              holdShares={holdShares}
-              onHoldSharesChange={setHoldShares}
-              holdCost={holdCost}
-              onHoldCostChange={setHoldCost}
-              onAddHolding={() => {
-                void handleAddHolding();
-              }}
-              addHoldingPending={addHoldingApi.isPending}
-              addHoldingSuccess={addHoldingApi.data != null}
-            />
+            <>
+              {cartItems.length > 0 ? (
+                <SectionCard className="mt-0 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="eyebrow">Strategy Cart</div>
+                      <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">待创建的策略分配</h3>
+                      <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
+                        当前购物车里有 {cartItems.length} 条策略，权重合计 {cartTotalWeight.toFixed(1)}%。这里才是把购物车落成真实策略组合的主入口。
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={cartWeightValid ? 'success' : 'warning'}>
+                        {cartWeightValid ? '权重已就绪' : '权重未满 100%'}
+                      </Badge>
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateFromCart()}
+                        disabled={!cartWeightValid || createApi.isPending}
+                        className="rounded-full bg-primary px-4 py-2 text-sm text-white disabled:opacity-50"
+                      >
+                        {createApi.isPending ? '创建中...' : '用购物车创建策略组合'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {cartItems.map((item) => (
+                      <div key={item.strategyId} className="metric-tile rounded-[22px] p-4 text-sm text-text-secondary">
+                        <div className="font-medium text-text-primary">{item.name}</div>
+                        <div className="mt-2">策略 ID：{item.strategyId}</div>
+                        <div className="mt-1">权重：{item.weight}%</div>
+                      </div>
+                    ))}
+                  </div>
+                </SectionCard>
+              ) : null}
+              <PortfolioOperationWorkspaceSection
+                activePortfolioId={activePortfolioId}
+                portfolioDisplayName={portfolioDisplayName}
+                portfolioNextStep={portfolioNextStep}
+                portfolioCount={portfolioList.length}
+                currentAssetsDisplay={currentAssetsDisplay}
+                portfolioId={portfolioId}
+                onPortfolioIdChange={setPortfolioId}
+                setFormError={setFormError}
+                onRefetchList={() => {
+                  void listQ.refetch();
+                }}
+                onRefetchDetail={() => {
+                  void detailQ.refetch();
+                }}
+                onOptimize={optimize}
+                onAnalyzeRisk={analyzeRisk}
+                onRunStress={runStress}
+                newName={newName}
+                onNewNameChange={setNewName}
+                newDesc={newDesc}
+                onNewDescChange={setNewDesc}
+                newCapital={newCapital}
+                onNewCapitalChange={setNewCapital}
+                onCreate={() => {
+                  void handleCreate();
+                }}
+                createPending={createApi.isPending}
+                createSuccess={createApi.data != null}
+                holdCode={holdCode}
+                onHoldCodeChange={setHoldCode}
+                holdCodeError={holdCodeError}
+                holdShares={holdShares}
+                onHoldSharesChange={setHoldShares}
+                holdCost={holdCost}
+                onHoldCostChange={setHoldCost}
+                onAddHolding={() => {
+                  void handleAddHolding();
+                }}
+                addHoldingPending={addHoldingApi.isPending}
+                addHoldingSuccess={addHoldingApi.data != null}
+              />
+            </>
           ) : null}
 
           {workspaceTab === 'detail' ? (

@@ -8,7 +8,7 @@
 
 ### 1.1 当前全量运行时注册面（2026-04-07 本地复核）
 
-- MCP tools：`155`
+- MCP tools：`161`
 - MCP resources：`3`
 - MCP prompts：`6`
 - 本地 skills：`19`
@@ -33,7 +33,7 @@
 
 说明：
 1. `skill_tool_coverage_runtime.json` 是 Skill 覆盖审计切片，不是全量 MCP 工具总表。
-2. 当前仓库里 “全量运行时工具数 155” 与 “Skill 覆盖审计工具数 113” 并不冲突，前者描述 MCP 注册面，后者描述 Skill 治理覆盖面。
+2. 当前仓库里 “全量运行时工具数 161” 与 “Skill 覆盖审计工具数 113” 并不冲突，前者描述 MCP 注册面，后者描述 Skill 治理覆盖面。
 3. `coverage` 代表 Skill 文档对这 113 个审计工具的引用覆盖率，不等价于“所有运行时工具都已纳入 Skill 路由”。
 4. `executors` 代表 Skill 执行器覆盖率；当前 19 个 Skill 都有执行器，但不代表每个业务场景都不需要 manager/tool 级补充。
 5. Windows-only 原生桌面集成能力当前不作为默认执行路径，任何流程都必须先以通用 MCP 工具链可用为前提。

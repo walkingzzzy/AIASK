@@ -13,9 +13,12 @@ import {
   SkeletonCard,
   Badge,
 } from '@/components/ui';
+import ResultWorkbench from '@/components/result-workbench';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useStockCode } from '@/hooks/use-stock-code';
@@ -23,11 +26,18 @@ import { EmptyState, ErrorState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { cacheText, type CacheMeta } from '@/lib/api';
+import {
+  buildLocalResultContract,
+  defaultWorkbenchTask,
+  evidenceToSummary,
+  resolveResultContract,
+} from '@/lib/result-workbench';
 
 import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import type { ResultContract } from '@aiask/shared-types';
 
 type OverviewData = {
   code?: string;
@@ -35,9 +45,10 @@ type OverviewData = {
   valuation?: { pe: number | null; pb: number | null; ps: number | null; marketCap: number | null };
   sourceTools?: Record<string, unknown>;
   meta?: CacheMeta;
+  result_contract?: ResultContract | null;
 };
 type HistoryPoint = { date: string; pe: number | null; pb: number | null; ps: number | null; close: number | null };
-type HistoryData = { code?: string; days?: number; points?: HistoryPoint[]; sourceTool?: string; meta?: CacheMeta };
+type HistoryData = { code?: string; days?: number; points?: HistoryPoint[]; sourceTool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
 type ExtraTab = 'info' | 'snapshot' | 'f10' | 'history';
 type CompactOverviewTab = 'valuation' | 'snapshot' | 'history';
 
@@ -247,6 +258,133 @@ export default function FundamentalPage() {
   const activeExtraRaw = extraTab === 'history' ? historyMut.data : extraQ.data;
   const activeExtraLoading = extraTab === 'history' ? historyMut.isPending : extraQ.isFetching;
   const activeExtraError = extraTab === 'history' ? historyMut.error : extraQ.error;
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'fundamental.refresh',
+        label: '刷新基本面数据',
+        description: '刷新概览、历史和当前扩展资料',
+        keywords: ['刷新', '基本面'],
+        scope: 'page' as const,
+        pageKey: 'fundamental',
+        run: async () => {
+          await Promise.allSettled([
+            overviewQ.refetch(),
+            historyQ.refetch(),
+            extraQ.refetch(),
+          ]);
+          return { message: '已刷新基本面数据' };
+        },
+      },
+      {
+        id: 'fundamental.window.90',
+        label: '切到 90 天窗口',
+        description: '切到常用 90 天观察窗口',
+        keywords: ['90天', '窗口'],
+        scope: 'page' as const,
+        pageKey: 'fundamental',
+        run: () => {
+          setDays(90);
+          return { message: '已切到 90 天窗口' };
+        },
+      },
+      {
+        id: 'fundamental.switch.snapshot',
+        label: '查看财务快照',
+        description: '切换到财务快照标签',
+        keywords: ['财务快照', 'snapshot'],
+        scope: 'page' as const,
+        pageKey: 'fundamental',
+        run: () => {
+          setExtraTab('snapshot');
+          return { message: '已切到财务快照' };
+        },
+      },
+      {
+        id: 'fundamental.switch.history',
+        label: '查看财务历史',
+        description: '切换到财务历史标签',
+        keywords: ['财务历史', 'history'],
+        scope: 'page' as const,
+        pageKey: 'fundamental',
+        run: () => {
+          setExtraTab('history');
+          fetchExtra('history');
+          return { message: '已切到财务历史' };
+        },
+      },
+    ],
+    [extraQ, historyQ, overviewQ],
+  );
+
+  usePageActions(pageActions);
+
+  const fundamentalSummary = `当前标的 ${focusCode || '未选择'}，${days} 天窗口，资料标签 ${activeExtraLabel}，关键缺口 ${missing.length} 项。`;
+  const fundamentalResult = useMemo(
+    () => {
+      const localFallback = buildLocalResultContract({
+        summary: fundamentalSummary,
+        pageActions,
+        preferredActionIds: ['fundamental.refresh', 'fundamental.window.90', 'fundamental.switch.snapshot', 'fundamental.switch.history'],
+        recommendedLinks: [
+          focusCode ? { id: 'fundamental-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode)}` } : { id: 'fundamental-open-market', label: '行情看板', href: '/market?from=fundamental' },
+          { id: 'fundamental-open-research', label: '研报公告', href: focusCode ? `/research?code=${encodeURIComponent(focusCode)}` : '/research' },
+          { id: 'fundamental-open-skills', label: '去技能中心', href: '/skills?skill=akshare-fundamental' },
+          { id: 'fundamental-open-data', label: '去数据中心', href: '/data?from=fundamental' },
+        ],
+        evidence: [
+          { label: '当前标的', value: focusCode || '-' },
+          { label: '标的名称', value: focusName || '-' },
+          { label: '资料标签', value: activeExtraLabel },
+          { label: '关键缺口', value: String(missing.length) },
+          { label: '最近更新', value: updatedAt || '-' },
+        ],
+        riskNotes: [
+          ...(missing.length ? [`关键字段仍有缺口：${missing.join('、')}`] : []),
+          ...(activeExtraError ? [activeExtraError] : []),
+        ],
+        freshness: freshness ? { updatedAt: freshness, label: '基本面抓取时间' } : null,
+        platformMeta: {
+          sourceTool: 'fundamental-workbench',
+          sourceChain: [activeExtraLabel, `${days}d`],
+        },
+        workbenchTask: defaultWorkbenchTask('fundamental', `基本面复盘：${focusCode || '当前标的'}`, focusCode ? `/fundamental?code=${encodeURIComponent(focusCode)}` : '/fundamental', 'fundamental-review', {
+          code: focusCode || null,
+          days,
+          extraTab,
+        }),
+      });
+      return resolveResultContract(overview?.result_contract ?? history?.result_contract, localFallback);
+    },
+    [activeExtraError, activeExtraLabel, days, extraTab, focusCode, focusName, freshness, fundamentalSummary, history?.result_contract, missing, overview?.result_contract, pageActions, updatedAt],
+  );
+
+  usePageContext({
+    pageKey: 'fundamental',
+    title: '基本面分析',
+    summary: fundamentalSummary,
+    stockCode: focusCode || undefined,
+    objectType: focusCode ? 'stock' : 'workspace',
+    objectId: focusCode || 'fundamental',
+    resultType: 'fundamental-summary',
+    tags: [`${days} 天窗口`, activeExtraLabel, missing.length ? `${missing.length} 项缺口` : '关键字段齐全'],
+    suggestions: [
+      focusCode ? `总结 ${focusCode} 当前估值和财务快照` : '先选择股票后总结基本面信号',
+      '指出当前缺口是否会影响结论可信度',
+      '把当前页整理成下一步研究清单',
+    ],
+    recommendedActions: fundamentalResult.recommendedActions,
+    recommendedLinks: fundamentalResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(fundamentalResult.evidence),
+    riskNotes: fundamentalResult.riskNotes ?? [],
+    freshness: fundamentalResult.freshness ?? null,
+    raw: {
+      code: focusCode || null,
+      days,
+      extraTab,
+      missing,
+    },
+  });
 
   return (
     <PageContainer narrow>
@@ -400,6 +538,8 @@ export default function FundamentalPage() {
           )}
         </div>
       </section>
+
+      <ResultWorkbench pageKey="fundamental" title="基本面结果工作台" result={fundamentalResult} />
 
       {error ? <ErrorState text={error} /> : null}
 

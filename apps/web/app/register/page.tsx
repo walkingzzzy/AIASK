@@ -7,6 +7,7 @@ import { setLoggedIn } from '@/lib/auth';
 import { useHydrated } from '@/hooks/use-hydrated';
 
 const REGISTER_ACTION = '/api/auth/register';
+const REGISTER_USERNAME_RE = /^[a-zA-Z0-9_\u4e00-\u9fa5]+$/;
 
 const REGISTER_STEPS = [
   {
@@ -29,8 +30,25 @@ export default function RegisterPage() {
 
   async function submitRegistration() {
     if (!hydrated || loading) return;
+    const normalizedUsername = username.trim();
     setError(null);
 
+    if (!normalizedUsername) {
+      setError('请输入用户名');
+      return;
+    }
+    if (normalizedUsername.length < 2) {
+      setError('用户名至少 2 个字符');
+      return;
+    }
+    if (normalizedUsername.length > 20) {
+      setError('用户名最多 20 个字符');
+      return;
+    }
+    if (!REGISTER_USERNAME_RE.test(normalizedUsername)) {
+      setError('用户名只能包含字母、数字、下划线或中文');
+      return;
+    }
     if (password !== confirmPassword) {
       setError('两次输入的密码不一致');
       return;
@@ -45,7 +63,7 @@ export default function RegisterPage() {
       const response = await fetch(REGISTER_ACTION, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: normalizedUsername, password }),
         credentials: 'include',
       });
 
@@ -73,13 +91,26 @@ export default function RegisterPage() {
     void submitRegistration();
   }
 
+  const trimmedUsername = username.trim();
+  const usernameValid =
+    trimmedUsername.length >= 2
+    && trimmedUsername.length <= 20
+    && REGISTER_USERNAME_RE.test(trimmedUsername);
+  const submitDisabled =
+    !hydrated
+    || loading
+    || !usernameValid
+    || password.length < 6
+    || !confirmPassword
+    || password !== confirmPassword;
+
   return (
-    <main className="mx-auto min-h-screen w-full max-w-[1180px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_460px]">
-        <section className="page-hero p-6 sm:p-8">
+    <main className="mx-auto min-h-screen w-full max-w-[clamp(20rem,94vw,86rem)] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.06fr)_minmax(0,0.94fr)] xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <section className="order-2 min-w-0 page-hero p-6 sm:p-8 lg:order-1">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Register Workspace</Badge>
-            <Badge variant="neutral">New Account</Badge>
+            <Badge variant="info">AIASK</Badge>
+            <Badge variant="neutral">新账号</Badge>
           </div>
           <h1 className="mt-3">创建你的 AI 股票研究工作台。</h1>
           <p className="page-lead mt-3 mb-0">注册后直接进入平台首页，再继续完善自选、组合和策略配置。</p>
@@ -112,18 +143,18 @@ export default function RegisterPage() {
               </Link>
             </div>
             <div className="mt-4 text-sm leading-6 text-text-secondary">
-              表单保持最少字段，提交前只做密码长度和确认密码校验。
+              只需用户名和密码即可创建账号，进入平台后再继续完善自选、组合和策略配置。
             </div>
           </div>
         </section>
 
-        <section className="panel-solid rounded-[30px] p-6 sm:p-8">
+        <section className="order-1 min-w-0 w-full panel-solid rounded-[30px] p-6 sm:p-8 lg:order-2 lg:justify-self-end lg:max-w-[clamp(22rem,36vw,34rem)]">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="warning">账户注册</Badge>
-            <Badge variant="neutral">Create Access</Badge>
+            <Badge variant="neutral">创建账号</Badge>
           </div>
           <h2 className="mt-2">创建账号</h2>
-          <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">提交后会直接创建账号并进入 `/market`。</p>
+          <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">提交后会直接创建账号，并进入行情看板开始使用。</p>
 
           <form onSubmit={onSubmit} noValidate className="mt-6 grid gap-4">
             <label htmlFor="reg-username" className="grid gap-1.5">
@@ -134,8 +165,14 @@ export default function RegisterPage() {
                 name="username"
                 placeholder="请输入用户名"
                 autoComplete="username"
+                required
+                minLength={2}
+                maxLength={20}
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm"
               />
             </label>
@@ -148,8 +185,13 @@ export default function RegisterPage() {
                 name="password"
                 placeholder="至少 6 位"
                 autoComplete="new-password"
+                required
+                minLength={6}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm"
               />
             </label>
@@ -162,8 +204,13 @@ export default function RegisterPage() {
                 name="confirmPassword"
                 placeholder="再次输入密码"
                 autoComplete="new-password"
+                required
+                minLength={6}
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                onChange={(e) => {
+                  setConfirmPassword(e.target.value);
+                  if (error) setError(null);
+                }}
                 className="px-3 py-2.5 text-sm"
               />
             </label>
@@ -178,9 +225,8 @@ export default function RegisterPage() {
             ) : null}
 
             <button
-              type="button"
-              onClick={() => void submitRegistration()}
-              disabled={!hydrated || loading}
+              type="submit"
+              disabled={submitDisabled}
               data-testid="register-submit-action"
               className="min-h-11 rounded-full bg-primary px-4 py-2.5 text-white shadow-sm disabled:opacity-50"
             >
@@ -189,7 +235,7 @@ export default function RegisterPage() {
           </form>
 
           <div className="panel-soft mt-4 rounded-[20px] px-4 py-3 text-xs leading-5 text-text-secondary">
-            提交前会先校验密码长度和确认密码一致性，避免错误请求先发出去再失败。
+            提交前会先校验用户名格式、密码长度和确认密码一致性，减少无效请求。
           </div>
 
           <p className="mb-0 mt-4 text-sm text-text-secondary">

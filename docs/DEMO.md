@@ -6,7 +6,7 @@
 
 ## 0. 当前演示基线（2026-04-07 复核）
 
-- MCP tools：`155`
+- MCP tools：`161`
 - MCP resources：`3`
 - MCP prompts：`6`
 - 本地 skills：`19`

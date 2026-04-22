@@ -1,3 +1,4 @@
+    @classmethod
     def _candidate_feedback(
         cls,
         candidate: dict[str, Any],

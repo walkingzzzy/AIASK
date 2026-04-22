@@ -21,6 +21,9 @@ const WORKSPACE_CONTEXT_KEYS: Array<keyof WorkspaceSharedContext> = [
   'eventCode',
   'strategyId',
   'strategyName',
+  'sourcePage',
+  'taskType',
+  'resultType',
 ];
 
 function normalizeWorkspaceContextValue(

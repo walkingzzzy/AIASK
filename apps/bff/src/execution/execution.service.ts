@@ -25,6 +25,12 @@ import type {
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PaperTradingService } from '../paper-trading/paper-trading.service';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+} from '../common/result-contract';
+import { buildResultContractMeta } from '../common/tool-contracts';
 
 @Injectable()
 export class ExecutionService {
@@ -160,6 +166,55 @@ export class ExecutionService {
         executionId: normalizedExecutionId || undefined,
         accountId: normalizedAccountId || undefined,
       },
+      result_contract: buildResultContract({
+        summary: this.buildMessage({
+          executionId: resolvedExecutionId,
+          accountId: resolvedAccountId,
+          warningCount,
+          hasHighSeverity,
+        }),
+        availableViews: ['summary', 'compare', 'next_step'],
+        evidence: [
+          { label: '执行单', value: resolvedExecutionId || '-' },
+          { label: '账户', value: resolvedAccountId || '-' },
+          { label: '告警数', value: String(warningCount) },
+          { label: '挂单数', value: String(orderContext?.pendingOrderCount ?? 0) },
+        ],
+        riskNotes: hasHighSeverity ? ['当前执行存在高严重级告警，建议先复核风险中心和执行闸门。'] : [],
+        freshness: extractFreshness(
+          {
+            execution: executionPayload,
+            summary: summaryPayload,
+            meta: { fetchedAt: new Date().toISOString() },
+          },
+          null,
+          '执行工作台抓取时间',
+        ),
+        platformMeta: extractPlatformMeta(
+          {
+            meta: {
+              fetchedAt: new Date().toISOString(),
+              source_chain: Object.values(sourceTools),
+            },
+          },
+          {
+            sourceTool: 'execution.workbench',
+            referencePath: '/execution/workbench',
+            freshnessLabel: '执行工作台抓取时间',
+          },
+        ),
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool: 'execution.workbench',
+        canonicalArgs: {
+          executionId: normalizedExecutionId || null,
+          accountId: normalizedAccountId || null,
+        },
+        argsMatched: {
+          executionId: normalizedExecutionId || undefined,
+          accountId: normalizedAccountId || undefined,
+        },
+      }),
       result: {
         execution: executionPayload,
         summary: summaryPayload,
@@ -592,7 +647,22 @@ export class ExecutionService {
       if (toolError) {
         throw new Error(toolError);
       }
-      return this.extractDataRecord(result);
+      const record = this.asRecord(result);
+      const data = this.extractDataRecord(result);
+      const meta = this.asRecord(record.meta);
+      const readOnly = this.toBoolean(data.read_only ?? meta.read_only);
+      const writeEnabled = this.toBoolean(data.write_enabled ?? meta.write_enabled);
+      const paper = this.toBoolean(data.paper ?? meta.paper);
+      const brokerEnv = this.toStringValue(data.broker_env ?? (paper ? 'paper' : 'live')) ?? undefined;
+      return {
+        ...data,
+        read_only: readOnly,
+        write_enabled: writeEnabled,
+        allow_write: writeEnabled,
+        paper,
+        broker_env: brokerEnv,
+        meta: Object.keys(meta).length > 0 ? meta : undefined,
+      };
     } catch (error) {
       throw new BadGatewayException({
         success: false,
@@ -653,6 +723,13 @@ export class ExecutionService {
     return data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : record;
   }
 
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
   private normalizeOrders(rows: Record<string, unknown>[]): ExecutionWorkbenchOrderItem[] {
     return rows.slice(0, 5).map((row, index) => ({
       id: this.toStringValue(row.id ?? row.order_id) ?? `order-${index + 1}`,
@@ -663,13 +740,6 @@ export class ExecutionService {
       status: this.toStringValue(row.status),
       createdAt: this.toStringValue(row.created_at ?? row.trade_time ?? row.updated_at),
     }));
-  }
-
-  private asRecord(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-    return value as Record<string, unknown>;
   }
 
   private asRecordArray(value: unknown): Record<string, unknown>[] {

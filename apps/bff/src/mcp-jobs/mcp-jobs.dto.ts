@@ -1,7 +1,19 @@
-import { Type } from 'class-transformer';
-import { IsInt, IsNotEmpty, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import type { CreateMcpToolJobInput } from '@aiask/shared-types';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsInt,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
-export class CreateMcpToolJobDto {
+export class CreateMcpToolJobDto implements CreateMcpToolJobInput {
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
   tool_name!: string;
@@ -18,7 +30,14 @@ export class CreateMcpToolJobDto {
   timeout_ms?: number;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
+  @MaxLength(256)
   idempotency_key?: string;
+}
+
+export class GetMcpJobDto {
+  @IsUUID()
+  jobId!: string;
 }

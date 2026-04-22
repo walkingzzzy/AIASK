@@ -4,7 +4,7 @@ import statistics
 
 from ..storage import get_db
 from ..services.factor_calculator import factor_calculator
-from ..utils import ok, fail
+from ..utils import ok, fail, resolve_existing_security_code_async
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -24,6 +24,9 @@ async def get_investment_analysis(code: str) -> dict:
     - 风险指标（波动率/最大回撤）
     """
     try:
+        code, _, error = await resolve_existing_security_code_async(code=code)
+        if error:
+            return fail(error)
         db = get_db()
         result = {}
         info = None

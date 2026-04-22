@@ -7,12 +7,25 @@
     "auth": "admin",
     "mutationRisk": "high",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["cache"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "cache"
+    ],
     "path": "/admin/cache",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "admin-cache",
+    "mutationMode": "destructive",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "admin-cache"
   },
   {
     "surfaceId": "admin-dead-letters",
@@ -22,12 +35,27 @@
     "auth": "admin",
     "mutationRisk": "high",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["dead-letters"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "dead-letters"
+    ],
     "path": "/admin/dead-letters",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "admin-dead-letters",
+    "mutationMode": "destructive",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "dead-letters"
+    ],
+    "seedStrategy": "api-seed",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "admin-dead-letters"
   },
   {
     "surfaceId": "admin",
@@ -37,12 +65,25 @@
     "auth": "admin",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["dead-letters", "cache"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "dead-letters",
+      "cache"
+    ],
     "path": "/admin",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "admin-overview",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "default-query",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "admin"
   },
   {
     "surfaceId": "admin-tools",
@@ -52,12 +93,22 @@
     "auth": "admin",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/admin/tools",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "page-primary-action",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "default-query",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "admin-tools"
   },
   {
     "surfaceId": "admin-users",
@@ -67,12 +118,22 @@
     "auth": "admin",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/admin/users",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "page-primary-action",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "default-query",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "admin-users"
   },
   {
     "surfaceId": "alerts",
@@ -82,12 +143,25 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["alerts"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "alerts"
+    ],
     "path": "/alerts",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "alerts",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "alerts"
   },
   {
     "surfaceId": "analysis-deep-stock",
@@ -97,12 +171,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/analysis/deep-stock",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "deep-stock",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "task-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "analysis-deep-stock"
   },
   {
     "surfaceId": "assistant",
@@ -112,12 +196,22 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/assistant",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "assistant-decision",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "assistant"
   },
   {
     "surfaceId": "backtest",
@@ -127,12 +221,23 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single", "workflow"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
     "seedDependencies": [],
     "path": "/backtest",
     "family": "strategy-quant",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "backtest-run",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "backtest"
   },
   {
     "surfaceId": "chat",
@@ -142,12 +247,22 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/chat",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "assistant-alias",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "none",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "chat"
   },
   {
     "surfaceId": "data",
@@ -157,12 +272,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/data",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "data-workspace",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "data"
   },
   {
     "surfaceId": "decision",
@@ -172,12 +297,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/decision",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "decision-run",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "decision"
   },
   {
     "surfaceId": "events",
@@ -187,12 +322,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/events",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "events-subscription",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "events"
   },
   {
     "surfaceId": "execution-artifact-detail",
@@ -202,13 +347,27 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "error-state-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["execution"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "execution"
+    ],
     "path": "/execution/artifacts/[artifactId]",
     "family": "trading-ops",
     "requiresAuth": true,
     "budgetClass": "overview",
-    "dynamicResolver": "execution-first-artifact"
+    "dynamicResolver": "execution-first-artifact",
+    "proofMode": "execution-artifact-detail",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [
+      "execution"
+    ],
+    "seedStrategy": "dynamic-resolver",
+    "cleanupStrategy": "none",
+    "artifactKey": "execution-artifact-detail"
   },
   {
     "surfaceId": "execution",
@@ -218,12 +377,27 @@
     "auth": "user",
     "mutationRisk": "high",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["execution"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "execution"
+    ],
     "path": "/execution",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "execution-route",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "paper-trading-account"
+    ],
+    "seedStrategy": "existing-account-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "execution"
   },
   {
     "surfaceId": "factor-analysis",
@@ -233,12 +407,22 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/factor-analysis",
     "family": "strategy-quant",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "factor-analysis",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "factor-analysis"
   },
   {
     "surfaceId": "factor",
@@ -248,12 +432,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/factor",
     "family": "strategy-quant",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "factor-workbench",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "factor"
   },
   {
     "surfaceId": "fund-flow",
@@ -263,12 +457,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/fund-flow",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "fund-flow",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "fund-flow"
   },
   {
     "surfaceId": "fundamental",
@@ -278,12 +482,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/fundamental",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "fundamental-overview",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "fundamental"
   },
   {
     "surfaceId": "login",
@@ -293,12 +507,23 @@
     "auth": "public",
     "mutationRisk": "high",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single", "workflow"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
     "seedDependencies": [],
     "path": "/login",
     "family": "auth-home-admin",
     "requiresAuth": false,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "route-read",
+    "mutationMode": "none",
+    "readProofRequired": false,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "none",
+    "cleanupStrategy": "none",
+    "artifactKey": "login"
   },
   {
     "surfaceId": "macro",
@@ -308,12 +533,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/macro",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "macro-indicator",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "default-query",
+    "cleanupStrategy": "none",
+    "artifactKey": "macro"
   },
   {
     "surfaceId": "market",
@@ -323,12 +558,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/market",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "market-index-query",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "market"
   },
   {
     "surfaceId": "notifications",
@@ -338,12 +583,25 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["notifications"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "notifications"
+    ],
     "path": "/notifications",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "notifications",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "notifications"
   },
   {
     "surfaceId": "options",
@@ -353,12 +611,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/options",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "options-chain",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "options"
   },
   {
     "surfaceId": "home",
@@ -368,12 +636,25 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["watchlist", "notifications"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "watchlist",
+      "notifications"
+    ],
     "path": "/",
     "family": "auth-home-admin",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "home-overview",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "none",
+    "cleanupStrategy": "none",
+    "artifactKey": "home"
   },
   {
     "surfaceId": "paper-trading",
@@ -383,12 +664,26 @@
     "auth": "user",
     "mutationRisk": "high",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["execution"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "execution"
+    ],
     "path": "/paper-trading",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "paper-trading",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "paper-trading-account"
+    ],
+    "seedStrategy": "existing-account-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "paper-trading"
   },
   {
     "surfaceId": "performance",
@@ -398,12 +693,27 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["portfolio", "execution"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "portfolio",
+      "execution"
+    ],
     "path": "/performance",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "performance-account",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [
+      "paper-trading-account"
+    ],
+    "seedStrategy": "existing-account-state",
+    "cleanupStrategy": "none",
+    "artifactKey": "performance"
   },
   {
     "surfaceId": "portfolio",
@@ -413,12 +723,27 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["portfolio", "strategy"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "portfolio",
+      "strategy"
+    ],
     "path": "/portfolio",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "portfolio",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "portfolio-service"
+    ],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "portfolio"
   },
   {
     "surfaceId": "register",
@@ -428,12 +753,23 @@
     "auth": "public",
     "mutationRisk": "high",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single", "workflow"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
     "seedDependencies": [],
     "path": "/register",
     "family": "auth-home-admin",
     "requiresAuth": false,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "route-read",
+    "mutationMode": "none",
+    "readProofRequired": false,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "none",
+    "cleanupStrategy": "none",
+    "artifactKey": "register"
   },
   {
     "surfaceId": "research",
@@ -443,12 +779,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/research",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "research-list",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "research"
   },
   {
     "surfaceId": "risk",
@@ -458,12 +804,26 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["portfolio"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "portfolio"
+    ],
     "path": "/risk",
     "family": "trading-ops",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "page-primary-action",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "paper-trading-account"
+    ],
+    "seedStrategy": "existing-account-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "risk"
   },
   {
     "surfaceId": "screener",
@@ -473,12 +833,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/screener",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "screener",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "screener"
   },
   {
     "surfaceId": "search",
@@ -488,12 +858,22 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/search",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "search-semantic",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "search"
   },
   {
     "surfaceId": "sentiment",
@@ -503,12 +883,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/sentiment",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "sentiment",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "sentiment"
   },
   {
     "surfaceId": "settings-audit-log",
@@ -518,12 +908,24 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/settings/audit-log",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "audit-log",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [
+      "audit-log-permission"
+    ],
+    "seedStrategy": "permissioned-query",
+    "cleanupStrategy": "none",
+    "artifactKey": "settings-audit-log"
   },
   {
     "surfaceId": "settings",
@@ -533,12 +935,22 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/settings",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "settings-profile",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "ephemeral-user",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "settings"
   },
   {
     "surfaceId": "settings-security",
@@ -548,12 +960,23 @@
     "auth": "user",
     "mutationRisk": "high",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single", "workflow"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
     "seedDependencies": [],
     "path": "/settings/security",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "settings-security",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "ephemeral-user",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "settings-security"
   },
   {
     "surfaceId": "skills",
@@ -563,12 +986,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/skills",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "page-primary-action",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "default-query",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "skills"
   },
   {
     "surfaceId": "stock",
@@ -578,12 +1011,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/stock",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "stock-detail",
+    "mutationMode": "none",
+    "readProofRequired": true,
+    "writeProofRequired": false,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "none",
+    "artifactKey": "stock"
   },
   {
     "surfaceId": "strategy-detail",
@@ -593,13 +1036,27 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "error-state-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["strategy"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "strategy"
+    ],
     "path": "/strategy-market/[id]",
     "family": "strategy-quant",
     "requiresAuth": true,
     "budgetClass": "workspace",
-    "dynamicResolver": "strategy-market-first-detail"
+    "dynamicResolver": "strategy-market-first-detail",
+    "proofMode": "strategy-detail",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [
+      "strategy-market"
+    ],
+    "seedStrategy": "dynamic-resolver",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "strategy-detail"
   },
   {
     "surfaceId": "strategy-market",
@@ -609,12 +1066,25 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single"],
-    "seedDependencies": ["strategy", "portfolio"],
+    "scenarioSet": [
+      "single"
+    ],
+    "seedDependencies": [
+      "strategy",
+      "portfolio"
+    ],
     "path": "/strategy-market",
     "family": "strategy-quant",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "strategy-market",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "strategy-market"
   },
   {
     "surfaceId": "strategy",
@@ -624,12 +1094,22 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/strategy",
     "family": "strategy-quant",
     "requiresAuth": true,
-    "budgetClass": "workspace"
+    "budgetClass": "workspace",
+    "proofMode": "strategy-workbench",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "strategy"
   },
   {
     "surfaceId": "technical",
@@ -639,12 +1119,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/technical",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "technical-analysis",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "technical"
   },
   {
     "surfaceId": "user",
@@ -654,12 +1144,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/user",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "user-profile",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "authenticated-profile",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "user"
   },
   {
     "surfaceId": "valuation",
@@ -669,12 +1169,22 @@
     "auth": "user",
     "mutationRisk": "none",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/valuation",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "valuation-analysis",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "request-run",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "valuation"
   },
   {
     "surfaceId": "watchlist",
@@ -684,12 +1194,25 @@
     "auth": "user",
     "mutationRisk": "medium",
     "emptyStatePolicy": "seed-required",
-    "scenarioSet": ["single", "workflow"],
-    "seedDependencies": ["watchlist"],
+    "scenarioSet": [
+      "single",
+      "workflow"
+    ],
+    "seedDependencies": [
+      "watchlist"
+    ],
     "path": "/watchlist",
     "family": "market-research",
     "requiresAuth": true,
-    "budgetClass": "table"
+    "budgetClass": "table",
+    "proofMode": "watchlist",
+    "mutationMode": "persistent",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "existing-runtime-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "watchlist"
   },
   {
     "surfaceId": "workspace-templates",
@@ -699,11 +1222,21 @@
     "auth": "user",
     "mutationRisk": "low",
     "emptyStatePolicy": "allow-empty",
-    "scenarioSet": ["single"],
+    "scenarioSet": [
+      "single"
+    ],
     "seedDependencies": [],
     "path": "/workspace-templates",
     "family": "utility",
     "requiresAuth": true,
-    "budgetClass": "overview"
+    "budgetClass": "overview",
+    "proofMode": "workspace-templates",
+    "mutationMode": "transient",
+    "readProofRequired": true,
+    "writeProofRequired": true,
+    "prerequisites": [],
+    "seedStrategy": "local-workbench-state",
+    "cleanupStrategy": "env-restore",
+    "artifactKey": "workspace-templates"
   }
 ]

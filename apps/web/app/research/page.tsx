@@ -3,6 +3,8 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AskAiButton } from '@/components/ask-ai-button';
+import { useOnboarding } from '@/components/onboarding';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import {
@@ -24,10 +26,17 @@ import { EmptyState, ErrorState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
+import {
+  buildLocalResultContract,
+  defaultWorkbenchTask,
+  evidenceToSummary,
+  resolveResultContract,
+} from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
+import type { ResultContract } from '@aiask/shared-types';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -36,6 +45,7 @@ type ResearchData = {
   query?: { startDate: string; endDate: string; keyword: string; limit: number };
   sourceTools?: Record<string, unknown>;
   meta?: CacheMeta;
+  result_contract?: ResultContract | null;
 };
 type Range = '7' | '30' | '90' | 'custom';
 type SavedResearchView = {
@@ -49,7 +59,7 @@ type SavedResearchView = {
 };
 
 const RESEARCH_VIEW_STORAGE_KEY = 'aiask.research.saved-view.v1';
-const DEFAULT_RESEARCH_CODE = '600519';
+const DEFAULT_RESEARCH_CODE = '';
 
 const NEWS_TABS = [
   { key: 'stock-news', label: '个股新闻' },
@@ -90,6 +100,7 @@ function highlight(text: string, kw: string): ReactNode {
 }
 
 export default function ResearchPage() {
+  const { completeStep } = useOnboarding();
   const mounted = useHydrated();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
@@ -109,10 +120,10 @@ export default function ResearchPage() {
   const [listPath, setListPath] = useState<string | null>(null);
   const effectiveListPath = listPath ?? autoListPath;
 
-  const listQ = useApiQuery<ResearchData>(effectiveListPath);
+  const listQ = useApiQuery<ResearchData>(effectiveListPath, { critical: true });
   const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
   const [newsPath, setNewsPath] = useState<string | null>(null);
-  const newsQ = useApiQuery<unknown>(newsPath);
+  const newsQ = useApiQuery<unknown>(newsPath, { critical: true });
 
   useEffect(() => {
     if (!mounted || typeof window === 'undefined') return;
@@ -242,32 +253,6 @@ export default function ResearchPage() {
   const updatedAtLabel = mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-';
   const fetchedAtLabel = mounted && freshness ? new Date(freshness).toLocaleString('zh-CN') : '-';
 
-  usePageContext({
-    pageKey: 'research',
-    title: '研报公告',
-    summary: `当前标的 ${resolvedCode || '未选择'}，研报 ${reports.length} 条，公告 ${notices.length} 条，资讯标签 ${newsTab}。`,
-    stockCode: resolvedCode || undefined,
-    tags: [
-      range === 'custom' ? '自定义区间' : `近 ${range} 天`,
-      newsTab,
-      `${reports.length} 条研报`,
-      `${notices.length} 条公告`,
-    ],
-    suggestions: [
-      resolvedCode ? `总结 ${resolvedCode} 近阶段研报和公告的核心变化` : '选择股票后总结近阶段研报公告变化',
-      '把当前资讯页整理成研究纪要',
-      '指出当前资讯里最值得继续核验的结论',
-    ],
-    raw: {
-      code: resolvedCode || null,
-      range,
-      keyword,
-      newsTab,
-      reports: reports.length,
-      notices: notices.length,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -313,6 +298,99 @@ export default function ResearchPage() {
   );
 
   usePageActions(pageActions);
+
+  const researchSummary = `当前标的 ${resolvedCode || '未选择'}，研报 ${reports.length} 条，公告 ${notices.length} 条，资讯标签 ${newsTab}。`;
+  const researchEvidence = useMemo(
+    () => [
+      { label: '当前标的', value: resolvedCode || '未选择' },
+      { label: '研报数量', value: String(reports.length) },
+      { label: '公告数量', value: String(notices.length) },
+      { label: '资讯分组', value: newsTabLabel },
+      { label: '抓取时间', value: fetchedAtLabel || '-' },
+    ],
+    [fetchedAtLabel, newsTabLabel, notices.length, reports.length, resolvedCode],
+  );
+  const researchLinks = useMemo(
+    () => [
+      resolvedCode
+        ? { id: 'research-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(resolvedCode)}` }
+        : { id: 'research-open-market', label: '行情看板', href: '/market?from=research' },
+      { id: 'research-open-skills', label: '去技能中心', href: '/skills?skill=akshare-fund-news' },
+      { id: 'research-open-data', label: '去数据中心', href: '/data?from=research' },
+      { id: 'research-open-strategy', label: '去策略超市', href: `/strategy-market?from=research&q=${encodeURIComponent(resolvedCode || keyword || newsTab)}` },
+    ],
+    [keyword, newsTab, resolvedCode],
+  );
+  const researchRiskNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (!resolvedCode) notes.push('当前还没有锁定研究标的，建议先确认股票代码。');
+    if (showPrimaryEmptyState) notes.push('当前窗口下没有命中研报或公告，建议扩大时间范围或切换资讯分组。');
+    return notes;
+  }, [resolvedCode, showPrimaryEmptyState]);
+  const researchResult = useMemo(
+    () => {
+      const localFallback = buildLocalResultContract({
+        summary: researchSummary,
+        pageActions,
+        preferredActionIds: ['research.refresh', 'research.open-market-news', 'research.expand-window'],
+        recommendedLinks: researchLinks,
+        evidence: researchEvidence,
+        riskNotes: researchRiskNotes,
+        freshness: freshness ? { updatedAt: freshness, label: '资讯抓取时间' } : null,
+        platformMeta: {
+          sourceTool: 'research-feed',
+          sourceChain: [newsTabLabel, rangeLabel],
+        },
+        workbenchTask: defaultWorkbenchTask('research', `研究纪要：${resolvedCode || keyword || '当前资讯页'}`, resolvedCode ? `/research?code=${encodeURIComponent(resolvedCode)}` : '/research', 'research-review', {
+          code: resolvedCode || null,
+          range,
+          newsTab,
+        }),
+      });
+      return resolveResultContract(listQ.data?.result_contract, localFallback);
+    },
+    [freshness, keyword, newsTab, newsTabLabel, pageActions, range, rangeLabel, researchEvidence, researchLinks, researchRiskNotes, researchSummary, resolvedCode],
+  );
+
+  usePageContext({
+    pageKey: 'research',
+    title: '研报公告',
+    summary: researchSummary,
+    stockCode: resolvedCode || undefined,
+    objectType: resolvedCode ? 'stock' : 'research-feed',
+    objectId: resolvedCode || keyword || newsTab,
+    resultType: 'research-feed',
+    tags: [
+      range === 'custom' ? '自定义区间' : `近 ${range} 天`,
+      newsTab,
+      `${reports.length} 条研报`,
+      `${notices.length} 条公告`,
+    ],
+    suggestions: [
+      resolvedCode ? `总结 ${resolvedCode} 近阶段研报和公告的核心变化` : '选择股票后总结近阶段研报公告变化',
+      '把当前资讯页整理成研究纪要',
+      '指出当前资讯里最值得继续核验的结论',
+    ],
+    recommendedActions: researchResult.recommendedActions,
+    recommendedLinks: researchResult.recommendedLinks,
+    evidenceSummary: evidenceToSummary(researchResult.evidence),
+    riskNotes: researchResult.riskNotes ?? [],
+    freshness: researchResult.freshness ?? null,
+    raw: {
+      code: resolvedCode || null,
+      range,
+      keyword,
+      newsTab,
+      reports: reports.length,
+      notices: notices.length,
+    },
+  });
+
+  useEffect(() => {
+    if (newsPath || newsTab !== 'stock-news' || keyword.trim() || range !== '30' || listPath !== null) {
+      completeStep('research');
+    }
+  }, [completeStep, keyword, listPath, newsPath, newsTab, range]);
 
   const heroPrimaryButtonCls =
     'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
@@ -490,6 +568,8 @@ export default function ResearchPage() {
           </div>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="research" title="研究结果工作台" result={researchResult} />
 
       <SectionCard className="mt-0 p-4 sm:p-5">
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
@@ -752,7 +832,9 @@ export default function ResearchPage() {
             资讯区保留多源视角，但用更统一的容器和操作入口来避免“表格块”和“图表块”割裂。
           </p>
         </div>
-        <TabBar tabs={NEWS_TABS} active={newsTab} onChange={setNewsTab} />
+        <div>
+          <TabBar tabs={NEWS_TABS} active={newsTab} onChange={setNewsTab} />
+        </div>
         <SectionCard tabAttached className="p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-text-secondary">当前分组：{newsTabLabel}</div>

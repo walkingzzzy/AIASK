@@ -229,7 +229,7 @@ export function PersonalSecondaryCards({
           {paperPositions.length === 0 ? (
             <EmptyState
               text="模拟盘还没有持仓"
-              hint="先创建账户或载入示例委托后，这里会显示持仓收益与盈亏变化。"
+              hint="先创建账户并完成一次真实的模拟下单后，这里会显示持仓收益与盈亏变化。"
               action={
                 <Link
                   href="/paper-trading"

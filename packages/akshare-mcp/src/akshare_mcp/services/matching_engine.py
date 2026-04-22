@@ -3,9 +3,11 @@
 import asyncio
 import json
 import logging
+import os
+import uuid
 from contextlib import suppress
 from .slippage import FixedSlippageModel
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,11 @@ class MatchingEngine:
 
     def __init__(self, scan_interval: int = SCAN_INTERVAL_SECONDS):
         self.scan_interval = scan_interval
+        self.worker_id = str(uuid.uuid4())
+        self.lease_seconds = max(
+            int(os.getenv("MATCHING_ENGINE_LEASE_SECONDS", str(scan_interval * 3))),
+            scan_interval,
+        )
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self.matched_count = 0
@@ -87,6 +94,8 @@ class MatchingEngine:
         return {
             "running": self._running,
             "scan_interval": self.scan_interval,
+            "worker_id": self.worker_id,
+            "lease_seconds": self.lease_seconds,
             "scan_count": self.scan_count,
             "matched_count": self.matched_count,
             "last_scan": str(self.last_scan) if self.last_scan else None,
@@ -111,8 +120,11 @@ class MatchingEngine:
     async def _scan_and_match(self):
         from ..storage import get_db
         db = get_db()
+        if not await self._acquire_scan_lease(db):
+            return
         self.scan_count += 1
         self.last_scan = datetime.now()
+        last_processed_order_id = None
 
         async with db.acquire() as conn:
             pending = await conn.fetch(
@@ -122,6 +134,7 @@ class MatchingEngine:
         for order in pending:
             try:
                 await self._try_match_order(db, dict(order))
+                last_processed_order_id = order.get('id')
             except Exception as e:
                 logger.warning("[MatchingEngine] match order %s error: %s", order.get('id'), e)
 
@@ -130,6 +143,7 @@ class MatchingEngine:
 
         # 风控自动处置
         await self._run_risk_executor(db)
+        await self._update_scan_state(db, last_processed_order_id=last_processed_order_id)
 
     async def _try_match_order(self, db, order: dict):
         code = order['code']
@@ -324,6 +338,47 @@ class MatchingEngine:
                     logger.warning("[MatchingEngine] risk_executor error for %s: %s", acct['id'], e, exc_info=True)
         except Exception as e:
             logger.warning("[MatchingEngine] risk_executor import/run error: %s", e)
+
+    async def _acquire_scan_lease(self, db) -> bool:
+        lease_until = datetime.now(timezone.utc) + timedelta(seconds=self.lease_seconds)
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO matching_engine_worker_state
+                    (engine_name, worker_id, lease_until, last_heartbeat_at, updated_at)
+                VALUES ('paper_matching_engine', $1, $2, NOW(), NOW())
+                ON CONFLICT (engine_name) DO UPDATE
+                    SET worker_id = EXCLUDED.worker_id,
+                        lease_until = EXCLUDED.lease_until,
+                        last_heartbeat_at = NOW(),
+                        updated_at = NOW()
+                WHERE matching_engine_worker_state.lease_until IS NULL
+                   OR matching_engine_worker_state.lease_until < NOW()
+                   OR matching_engine_worker_state.worker_id = EXCLUDED.worker_id
+                RETURNING worker_id
+                """,
+                self.worker_id,
+                lease_until,
+            )
+        return bool(row and str(row.get('worker_id') or '') == self.worker_id)
+
+    async def _update_scan_state(self, db, *, last_processed_order_id=None) -> None:
+        async with db.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE matching_engine_worker_state
+                   SET lease_until = $2,
+                       last_scan_at = NOW(),
+                       last_processed_order_id = COALESCE($3, last_processed_order_id),
+                       last_heartbeat_at = NOW(),
+                       updated_at = NOW()
+                 WHERE engine_name = 'paper_matching_engine'
+                   AND worker_id = $1
+                """,
+                self.worker_id,
+                datetime.now(timezone.utc) + timedelta(seconds=self.lease_seconds),
+                last_processed_order_id,
+            )
 
 
 # Singleton

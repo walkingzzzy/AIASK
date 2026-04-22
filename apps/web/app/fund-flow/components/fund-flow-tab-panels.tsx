@@ -167,16 +167,11 @@ export default function FundFlowTabPanels({
           ) : (
             <EmptyState
               text="输入股票代码后查看近期开盘资金流向"
-              hint="推荐先从 600519 或自选股里的活跃标的开始，快速确认主力与散户资金是否同向。"
+              hint="推荐先从自选股里的活跃标的开始，快速确认主力与散户资金是否同向。"
               action={
-                <>
-                  <button type="button" onClick={() => loadStockFlow('600519')} className={fundFlowPrimaryButtonCls}>
-                    示例：600519
-                  </button>
-                  <Link href="/watchlist" className={fundFlowLinkChipCls}>
-                    查看自选股
-                  </Link>
-                </>
+                <Link href="/watchlist" className={fundFlowLinkChipCls}>
+                  查看自选股
+                </Link>
               }
             />
           )}
@@ -599,9 +594,6 @@ export default function FundFlowTabPanels({
               hint="第一次使用建议先留空查询市场整体，再输入股票代码确认是否存在明显杠杆交易。"
               action={
                 <>
-                  <button type="button" onClick={() => loadMarginData('600519')} className={fundFlowPrimaryButtonCls}>
-                    示例：600519
-                  </button>
                   <button type="button" onClick={() => loadMarginData('')} className={fundFlowLinkChipCls}>
                     查看全市场
                   </button>
@@ -829,14 +821,9 @@ export default function FundFlowTabPanels({
               text="输入股票代码查询北向持仓明细"
               hint="这一步适合确认单只股票的外资持股比例，并与全市场热门持仓榜做对照。"
               action={
-                <>
-                  <button type="button" onClick={() => loadNorthDetail('600519')} className={fundFlowPrimaryButtonCls}>
-                    示例：600519
-                  </button>
-                  <Link href="/risk" className={fundFlowLinkChipCls}>
-                    联动风险页
-                  </Link>
-                </>
+                <Link href="/risk" className={fundFlowLinkChipCls}>
+                  联动风险页
+                </Link>
               }
             />
           )}

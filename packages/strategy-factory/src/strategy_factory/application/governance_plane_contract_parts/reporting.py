@@ -35,7 +35,13 @@ def build_gate_c_artifact(
                 if failure:
                     hard_failures.append(failure)
         execution_audit_gate_status = _normalized_text(item.get("execution_audit_gate_status"))
-        if execution_audit_gate_status in {"missing", "bootstrap_pending", "insufficient_samples", "insufficient_evidence"}:
+        if execution_audit_gate_status in {
+            "missing",
+            "bootstrap_pending",
+            "insufficient_samples",
+            "bootstrap_ready",
+            "insufficient_evidence",
+        }:
             evidence_gap_codes.append(f"execution_audit_gate:{execution_audit_gate_status}")
         for code in list(item.get("evidence_gap_codes") or []):
             token = _string(code)

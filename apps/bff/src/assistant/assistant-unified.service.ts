@@ -5,6 +5,12 @@ import {
   AssistantUnifiedAuditStore,
   type UnifiedDecisionDiffAuditQuery,
 } from './assistant-unified-audit.store';
+import {
+  buildResultContract,
+  extractFreshness,
+  extractPlatformMeta,
+  uniqueStrings,
+} from '../common/result-contract';
 
 export type UnifiedGateFlagDto = {
   name: string;
@@ -90,6 +96,11 @@ export class AssistantUnifiedService {
       raw: payload,
       detailsAvailable: Boolean(this.unwrapData(payload).details_available ?? true),
       request: { code: code.trim(), investmentStyle, legacyMode } satisfies UnifiedDecisionRequest,
+      result_contract: this.buildUnifiedResultContract(card, payload, {
+        code: code.trim(),
+        investmentStyle,
+        taskLabel: '统一决策摘要',
+      }),
       ...(legacyMode
         ? {
             legacyComparison: await this.buildLegacyComparison({
@@ -124,6 +135,11 @@ export class AssistantUnifiedService {
       details: data.details ?? data,
       raw: payload,
       request: { code: code.trim(), investmentStyle, legacyMode } satisfies UnifiedDecisionRequest,
+      result_contract: this.buildUnifiedResultContract(card, payload, {
+        code: code.trim(),
+        investmentStyle,
+        taskLabel: '统一决策详情',
+      }),
       ...(legacyMode
         ? {
             legacyComparison: await this.buildLegacyComparison({
@@ -290,6 +306,144 @@ export class AssistantUnifiedService {
     if (value.includes('hold')) return 'hold';
     if (value.includes('wait') || value.includes('watch')) return 'watch';
     return value || 'unknown';
+  }
+
+  private buildUnifiedResultContract(
+    card: UnifiedDecisionCardDto,
+    payload: unknown,
+    options: {
+      code: string;
+      investmentStyle: 'aggressive' | 'balanced' | 'conservative';
+      taskLabel: string;
+    },
+  ) {
+    const followupQuery = options.code;
+    const evidence = [
+      card.action ? { label: '建议动作', value: card.action, tone: 'positive' as const } : null,
+      card.finalScore != null ? { label: '综合评分', value: String(card.finalScore) } : null,
+      card.positionSignal?.label ? { label: '建议仓位', value: card.positionSignal.label } : null,
+      ...card.reasons.slice(0, 3).map((reason) => ({ label: '关键信号', value: reason })),
+    ].filter((item): item is NonNullable<typeof item> => item != null);
+    const gateWarnings = card.gateFlags
+      .filter((flag) => flag.blocking || flag.severity === 'high')
+      .map((flag) => `${flag.name || '门禁'}：${flag.message}`);
+
+    return buildResultContract({
+      summary: card.summary || `${options.taskLabel}已生成，请继续查看下一步建议。`,
+      availableViews: ['summary', 'next_step', 'visual'],
+      recommendedActions: [
+        {
+          id: 'assistant.open-copilot-followup',
+          actionId: 'assistant.open-copilot-followup',
+          label: '打开 Copilot 继续追问',
+          description: '把统一决策结果继续转成下一步研究与执行动作。',
+          payload: {
+            code: options.code,
+            investmentStyle: options.investmentStyle,
+          },
+        },
+        {
+          id: 'assistant.load-unified-details',
+          actionId: 'assistant.load-unified-details',
+          label: '展开统一决策详情',
+          description: '继续拉取统一决策详情和差异对比。',
+          payload: {
+            code: options.code,
+            investmentStyle: options.investmentStyle,
+          },
+        },
+      ],
+      recommendedLinks: [
+        {
+          id: 'unified-open-stock',
+          label: '个股详情',
+          href: `/stock?code=${encodeURIComponent(options.code)}`,
+        },
+        {
+          id: 'unified-open-skills',
+          label: '去技能中心',
+          href: `/skills?skill=${encodeURIComponent('akshare-stock-deep-analysis')}`,
+        },
+        {
+          id: 'unified-open-strategy-market',
+          label: '去策略超市',
+          href: `/strategy-market?from=assistant&task=strategy_review&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'unified-open-favorites',
+          label: '去我的收藏',
+          href: `/strategy-market?workspace=favorites&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'unified-open-mine',
+          label: '去我的策略',
+          href: `/strategy-market?workspace=mine&from=assistant&q=${encodeURIComponent(followupQuery)}`,
+        },
+        {
+          id: 'unified-open-factory',
+          label: '去工厂运行态',
+          href: `/strategy-market?from=assistant&task=factory_cycle&q=${encodeURIComponent(followupQuery)}`,
+        },
+      ],
+      evidence,
+      riskNotes: uniqueStrings([
+        ...card.risks,
+        ...gateWarnings,
+        card.vetoReason,
+        card.complianceNotice,
+      ]),
+      freshness: extractFreshness(payload, card.updatedAt || null, '统一决策结果'),
+      platformMeta: extractPlatformMeta(payload, {
+        sourceTool: 'get_unified_decision_summary',
+        referencePath: '/data/tool-catalog',
+      }),
+      skillSuggestions: [
+        {
+          skillId: 'akshare-stock-deep-analysis',
+          label: '个股深度分析',
+          reason: '补齐统一决策背后的详细证据。',
+          supportedTask: 'quick_scan',
+        },
+        {
+          skillId: 'akshare-trading-decision',
+          label: '交易决策计划',
+          reason: '把统一决策继续转成执行计划。',
+          supportedTask: 'trade_plan',
+        },
+        {
+          skillId: 'akshare-fundamental',
+          label: '基本面快照',
+          reason: '快速补齐当前标的基本面上下文。',
+          supportedTask: 'fundamental_snapshot',
+        },
+      ],
+      strategySuggestions: [
+        {
+          id: 'unified-decision-strategy-followup',
+          label: '去策略超市继续研究',
+          description: '基于统一决策结论继续看相关策略与工厂运行态。',
+          query: followupQuery,
+          task: 'strategy_review',
+        },
+        {
+          id: 'unified-decision-factory-followup',
+          label: '去工厂看运行态',
+          description: '基于统一决策结论继续看工厂运行与治理状态。',
+          query: followupQuery,
+          task: 'factory_cycle',
+        },
+      ],
+      workbenchTask: {
+        title: `${options.taskLabel}：${options.code}`,
+        href: `/assistant?code=${encodeURIComponent(options.code)}`,
+        kind: 'assistant-unified-decision',
+        payload: {
+          code: options.code,
+          investmentStyle: options.investmentStyle,
+          action: card.action || null,
+        },
+      },
+    });
   }
 
   private async buildLegacyComparison({

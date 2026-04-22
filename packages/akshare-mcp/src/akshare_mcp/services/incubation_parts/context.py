@@ -69,6 +69,7 @@
 
     async def ensure_account(self, db, strategy: dict, stage: str = 'warmup', source_run_id: Optional[str] = None) -> dict:
         strategy_id = strategy['id']
+        trace_metadata = dict(strategy.get('_closure_trace') or {})
         binding_method = _get_async_db_method(db, 'get_strategy_incubation_account')
         binding = await binding_method(strategy_id) if binding_method is not None else None
         account = None
@@ -103,6 +104,7 @@
             metadata={
                 'strategy_name': strategy.get('name'),
                 'strategy_type': strategy.get('strategy_type'),
+                **trace_metadata,
             },
         )
         await self._record_domain_event(
@@ -114,8 +116,9 @@
                 'stage': stage,
                 'created': created,
                 'source_run_id': source_run_id,
+                'trace': trace_metadata,
             },
-            correlation_id=source_run_id,
+            correlation_id=trace_metadata.get('correlation_id') or source_run_id,
         )
         return {'created': created, 'account': account, 'binding': bind}
 

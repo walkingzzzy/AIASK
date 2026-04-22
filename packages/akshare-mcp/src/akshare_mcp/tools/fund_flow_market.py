@@ -9,7 +9,7 @@ from typing import Any, Optional
 import akshare as ak
 import requests
 
-from ..utils import fail, normalize_code, ok, parse_numeric, safe_float
+from ..utils import fail, normalize_code, ok, parse_date_input, parse_numeric, resolve_existing_security_code_sync, safe_float, validate_int_range
 from ..core.rate_limiter import get_limiter
 from ..date_utils import get_latest_trading_date, format_date_dash
 from ..data_source import data_source
@@ -371,7 +371,9 @@ def get_margin_ranking(top_n: int = 20, sort_by: str = "balance") -> dict:
         limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
         limiter.acquire()
 
-        top_n = int(top_n) if int(top_n or 0) > 0 else 20
+        top_n, top_n_error = validate_int_range(top_n, field_name="top_n", minimum=1)
+        if top_n_error:
+            return fail(top_n_error)
         db_rows = _margin_ranking_from_db(top_n=top_n, sort_by=sort_by)
         if db_rows:
             return ok(db_rows)
@@ -570,13 +572,25 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
     try:
         limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
         limiter.acquire()
-        if int(limit or 0) <= 0:
+        limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1, maximum=1000)
+        if limit_error:
             response = fail("limit 必须为正整数")
+            response["source"] = "none"
+            return response
+        if date and parse_date_input(date) is None:
+            response = fail(f"date 无效: {date}")
             response["source"] = "none"
             return response
 
         target = date or datetime.now().strftime("%Y-%m-%d")
-        code = normalize_code(stock_code) if stock_code else ""
+        if stock_code:
+            code, _, code_error = resolve_existing_security_code_sync(stock_code=stock_code)
+            if code_error:
+                response = fail(code_error)
+                response["source"] = "none"
+                return response
+        else:
+            code = ""
         source_chain = ["eastmoney.block_trades"]
         fallback_reason: list[str] = []
 

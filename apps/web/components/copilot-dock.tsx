@@ -2,7 +2,10 @@
 
 import dynamic from 'next/dynamic';
 import { FormEvent, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import type { CopilotPageContext, CopilotPageContextPatch } from '@/lib/copilot-types';
 import { pageActionBus } from '@/lib/page-action-bus';
+import { sanitizeReasoningDelta } from '@/lib/chat-safety';
+import { trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { getLlmConfig, streamChat } from '@/lib/chat-api';
 import type { CopilotActionMeta } from '@/lib/copilot-types';
 import ChatMessage from '@/components/chat-message';
@@ -17,6 +20,56 @@ const DEFAULT_PROMPTS = [
   '给我一个下一步操作建议',
   '把当前页面数据整理成行动清单',
 ];
+const CLIENT_STREAM_IDLE_TIMEOUT_MS = 30_000;
+
+function mergePageContext(
+  pageContext: CopilotPageContext | null,
+  patch: CopilotPageContextPatch | null,
+): CopilotPageContext | null {
+  if (!patch) return pageContext;
+
+  if (!pageContext) {
+    return {
+      pageKey: 'ask-ai-injected',
+      title: '局部对象分析',
+      summary: patch.summary?.trim() || '已注入局部上下文，优先基于该对象回答。',
+      stockCode: patch.stockCode,
+      objectType: patch.objectType,
+      objectId: patch.objectId,
+      resultType: patch.resultType,
+      tags: patch.tags ?? [],
+      recommendedActions: patch.recommendedActions ?? [],
+      recommendedLinks: patch.recommendedLinks ?? [],
+      evidenceSummary: patch.evidenceSummary ?? [],
+      riskNotes: patch.riskNotes ?? [],
+      freshness: patch.freshness ?? null,
+      raw: patch.raw ?? {},
+      suggestions: [],
+      updatedAt: Date.now(),
+    };
+  }
+
+  const mergedTags = Array.from(new Set([...(pageContext.tags ?? []), ...(patch.tags ?? [])]));
+  return {
+    ...pageContext,
+    stockCode: patch.stockCode ?? pageContext.stockCode,
+    objectType: patch.objectType ?? pageContext.objectType,
+    objectId: patch.objectId ?? pageContext.objectId,
+    resultType: patch.resultType ?? pageContext.resultType,
+    summary: patch.summary?.trim() || pageContext.summary,
+    tags: mergedTags,
+    recommendedActions: patch.recommendedActions ?? pageContext.recommendedActions,
+    recommendedLinks: patch.recommendedLinks ?? pageContext.recommendedLinks,
+    evidenceSummary: patch.evidenceSummary ?? pageContext.evidenceSummary,
+    riskNotes: patch.riskNotes ?? pageContext.riskNotes,
+    freshness: patch.freshness ?? pageContext.freshness,
+    raw: {
+      ...(pageContext.raw ?? {}),
+      ...(patch.raw ?? {}),
+    },
+    updatedAt: Date.now(),
+  };
+}
 
 function summarizeActionResult(result: unknown): string {
   if (typeof result === 'string' && result.trim()) {
@@ -59,7 +112,7 @@ export default function CopilotDock({
   style,
 }: {
   className?: string;
-  variant?: 'dock' | 'page';
+  variant?: 'dock' | 'page' | 'assistant';
   style?: CSSProperties;
 }) {
   const {
@@ -91,7 +144,9 @@ export default function CopilotDock({
   const globalActions = useCopilotStore((state) => state.globalActions);
   const pageActions = useCopilotStore((state) => state.pageActions);
   const pendingInject = useCopilotStore((state) => state.pendingInject);
+  const nextContextPatch = useCopilotStore((state) => state.nextContextPatch);
   const setPendingInject = useCopilotStore((state) => state.setPendingInject);
+  const setNextContextPatch = useCopilotStore((state) => state.setNextContextPatch);
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workspaces = useWorkbenchStore((state) => state.workspaces);
@@ -112,10 +167,14 @@ export default function CopilotDock({
     () => conversations.find((conversation) => conversation.id === currentConversationId) ?? null,
     [conversations, currentConversationId],
   );
+  const effectivePageContext = useMemo(
+    () => mergePageContext(pageContext, nextContextPatch),
+    [nextContextPatch, pageContext],
+  );
   const workspaceConversationId = activeWorkspace.context.copilotConversationId ?? '';
   const quickPrompts = useMemo(
-    () => (pageContext?.suggestions?.length ? pageContext.suggestions : DEFAULT_PROMPTS),
-    [pageContext?.suggestions],
+    () => (effectivePageContext?.suggestions?.length ? effectivePageContext.suggestions : DEFAULT_PROMPTS),
+    [effectivePageContext?.suggestions],
   );
 
   useEffect(() => {
@@ -149,17 +208,18 @@ export default function CopilotDock({
     return () => el.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // 消费 AskAiButton 注入的 pendingInject：预填输入框
+  // AskAiButton 会注入一次性上下文 patch；真正发送后即清空。
   useEffect(() => {
     if (!pendingInject) return;
     const prompt = pendingInject.prompt;
     queueMicrotask(() => {
       startTransition(() => {
         setInput(prompt);
+        setNextContextPatch(pendingInject.contextPatch ?? null);
         setPendingInject(null);
       });
     });
-  }, [pendingInject, setPendingInject]);
+  }, [pendingInject, setNextContextPatch, setPendingInject]);
 
   useEffect(() => {
     if (!syncReady || !workbenchHydrated) return;
@@ -183,7 +243,21 @@ export default function CopilotDock({
     workspaceConversationId,
   ]);
 
-  async function executeAction(messageId: string, action: ChatActionBlock) {
+  async function executeAction(messageId: string, action: ChatActionBlock, actionSource = 'copilot.manual') {
+    const route = typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : '/';
+    trackBehaviorEvent({
+      pageKey: effectivePageContext?.pageKey ?? 'copilot',
+      route,
+      eventType: 'page_action_execute',
+      targetType: 'page-action',
+      targetLabel: action.label,
+      targetId: action.actionId,
+      payload: {
+        source: actionSource,
+        reason: action.reason ?? undefined,
+      },
+      source: actionSource,
+    });
     updateActionBlock(messageId, action.id, { status: 'running', resultMessage: '正在执行页面动作...' });
     try {
       const result = await pageActionBus.execute(action.actionId, action.payload);
@@ -215,7 +289,7 @@ export default function CopilotDock({
       label: action.label,
       description: action.description,
       status: 'pending',
-    });
+    }, 'copilot.quick-chip');
   }
 
   function handleConversationChange(nextConversationId: string) {
@@ -250,6 +324,14 @@ export default function CopilotDock({
     addUserMessage(text);
     const assistantId = addAssistantMessage();
     setStreaming(true);
+    trackBehaviorEvent({
+      pageKey: effectivePageContext?.pageKey ?? 'copilot',
+      route: typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : '/',
+      eventType: 'copilot_message_submit',
+      targetType: 'textarea',
+      targetLabel: text.slice(0, 120),
+      source: 'copilot.submit',
+    });
 
     const history = useChatStore.getState().messages.slice(0, -1).map((message) => ({
       role: message.role,
@@ -258,14 +340,40 @@ export default function CopilotDock({
 
     const abort = new AbortController();
     abortRef.current = abort;
+    let reasoningReplacementInserted = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimedOut = false;
+    const clearIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+    const resetIdleTimer = () => {
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        abort.abort();
+        appendAssistantDelta(assistantId, '\n⚠ 请求超时，请重试；如果你在要求页面联动，当前页面可能没有可执行动作。');
+        setStreaming(false);
+      }, CLIENT_STREAM_IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimer();
 
     try {
       await streamChat(
         history,
         (event) => {
+          resetIdleTimer();
           switch (event.type) {
             case 'delta':
-              appendAssistantDelta(assistantId, event.content);
+              {
+                const sanitized = sanitizeReasoningDelta(event.content, reasoningReplacementInserted);
+                reasoningReplacementInserted = sanitized.replaced;
+                if (sanitized.content) {
+                  appendAssistantDelta(assistantId, sanitized.content);
+                }
+              }
               break;
             case 'tool_call':
               addToolCall(assistantId, event.name, event.args);
@@ -296,7 +404,7 @@ export default function CopilotDock({
                   payload: event.payload,
                   status: 'running',
                   autoExecute: event.autoExecute,
-                });
+                }, 'copilot.ai-auto');
               }
               break;
             }
@@ -309,8 +417,8 @@ export default function CopilotDock({
         },
         abort.signal,
         {
-          mode: variant === 'page' ? 'chat' : 'copilot',
-          pageContext,
+          mode: variant === 'assistant' ? 'assistant' : variant === 'page' ? 'chat' : 'copilot',
+          pageContext: effectivePageContext,
           availableActions,
         },
       );
@@ -318,9 +426,15 @@ export default function CopilotDock({
       if ((error as Error).name !== 'AbortError') {
         appendAssistantDelta(assistantId, `\n⚠ ${(error as Error).message ?? '请求失败'}`);
       }
+      if (idleTimedOut) {
+        // idle timeout 已在定时器里给出用户可见错误
+      }
+    } finally {
+      clearIdleTimer();
+      abortRef.current = null;
+      setStreaming(false);
+      setNextContextPatch(null);
     }
-
-    setStreaming(false);
   }
 
   function stop() {
@@ -338,7 +452,7 @@ export default function CopilotDock({
     window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
   }
 
-  const shellClassName = variant === 'page'
+  const shellClassName = variant === 'page' || variant === 'assistant'
     ? 'panel-solid flex h-full min-h-0 flex-col rounded-[30px]'
     : 'flex h-full min-h-0 flex-col bg-transparent';
 
@@ -348,7 +462,7 @@ export default function CopilotDock({
         <div className="min-w-0">
           <div className="text-sm font-semibold text-text-primary">AI 工作台</div>
           <div className="mt-1 text-xs text-text-secondary">
-            {pageContext ? `正在联动 ${pageContext.title}` : '可直接对话，也可联动当前页面动作'}
+            {effectivePageContext ? `正在联动 ${effectivePageContext.title}` : '可直接对话，也可联动当前页面动作'}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -412,17 +526,17 @@ export default function CopilotDock({
           </div>
         </section>
 
-        {pageContext ? (
+        {effectivePageContext ? (
           <section className="mb-4 rounded-2xl border border-border bg-surface-alt/60 p-3">
             <div className="text-xs font-medium uppercase tracking-[0.16em] text-text-muted">页面上下文</div>
             <div className="mt-2 text-sm font-medium text-text-primary">
-              {pageContext.title}
-              {pageContext.stockCode ? <span className="ml-2 font-mono text-xs text-primary">{pageContext.stockCode}</span> : null}
+              {effectivePageContext.title}
+              {effectivePageContext.stockCode ? <span className="ml-2 font-mono text-xs text-primary">{effectivePageContext.stockCode}</span> : null}
             </div>
-            <div className="mt-2 text-xs leading-5 text-text-secondary">{pageContext.summary}</div>
-            {pageContext.tags?.length ? (
+            <div className="mt-2 text-xs leading-5 text-text-secondary">{effectivePageContext.summary}</div>
+            {effectivePageContext.tags?.length ? (
               <div className="mt-3 flex flex-wrap gap-2">
-                {pageContext.tags.map((tag) => (
+                {effectivePageContext.tags.map((tag) => (
                   <span key={tag} className="rounded-full bg-surface px-2.5 py-1 text-[11px] text-text-secondary">
                     {tag}
                   </span>
@@ -478,7 +592,7 @@ export default function CopilotDock({
             key={message.id}
             msg={message}
             onActionClick={(action, messageId) => {
-              void executeAction(messageId, action);
+              void executeAction(messageId, action, 'copilot.ai-manual');
             }}
           />
         ))}
@@ -519,7 +633,7 @@ export default function CopilotDock({
           )}
         </div>
         <div className="mt-2 truncate text-[11px] leading-5 text-text-muted">
-          {pageContext ? `${pageContext.title} · ${availableActions.length} 个联动` : '未挂载页面上下文'}
+          {effectivePageContext ? `${effectivePageContext.title} · ${availableActions.length} 个联动` : '未挂载页面上下文'}
         </div>
       </form>
 

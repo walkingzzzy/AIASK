@@ -1,10 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import FundFlowHero from '@/app/fund-flow/components/fund-flow-hero';
 import FundFlowTabPanels from '@/app/fund-flow/components/fund-flow-tab-panels';
 import FundFlowTabsShell from '@/app/fund-flow/components/fund-flow-tabs-shell';
@@ -120,6 +124,120 @@ export default function FundFlowPage() {
     else setBlockTradesPath('/fund-flow/block-trades');
   }
 
+  const pageActions = useMemo(
+    () => [
+      {
+        id: 'fund-flow.refresh-tab',
+        label: `刷新${activeTabLabel}`,
+        description: '按当前 Tab 重新拉取资金流数据',
+        keywords: ['刷新', '资金流'],
+        scope: 'page' as const,
+        pageKey: 'fund-flow',
+        run: () => {
+          if (tab === 'stock') loadStockFlow(activeCodeLabel);
+          else if (tab === 'sector') loadSectorFlow();
+          else if (tab === 'concept') loadConceptFlow();
+          else if (tab === 'north') loadNorthFlow();
+          else if (tab === 'dragon') loadDragonTiger();
+          else if (tab === 'margin') {
+            loadMarginData(activeCodeLabel);
+            loadMarginRanking();
+          } else if (tab === 'block-trades') loadBlockTrades();
+          else loadNorthDetail(activeCodeLabel);
+          return { message: `已触发${activeTabLabel}刷新` };
+        },
+      },
+      {
+        id: 'fund-flow.open-stock',
+        label: '切回个股资金流',
+        description: '聚焦当前股票代码的单股资金流',
+        keywords: ['个股', '资金流'],
+        scope: 'page' as const,
+        pageKey: 'fund-flow',
+        run: () => {
+          setTab('stock');
+          loadStockFlow(activeCodeLabel);
+          return { message: `已切到 ${activeCodeLabel} 的个股资金流` };
+        },
+      },
+      {
+        id: 'fund-flow.open-north',
+        label: '查看北向资金',
+        description: '切到北向资金总览',
+        keywords: ['北向', '资金'],
+        scope: 'page' as const,
+        pageKey: 'fund-flow',
+        run: () => {
+          setTab('north');
+          loadNorthFlow();
+          return { message: '已切到北向资金' };
+        },
+      },
+    ],
+    [activeCodeLabel, activeTabLabel, tab],
+  );
+  usePageActions(pageActions);
+
+  const fundFlowSummary = `当前查看 ${activeTabLabel}，聚焦 ${activeCodeLabel}，状态 ${tabStatusLabel}。`;
+  const fundFlowResult = buildLocalResultContract({
+    summary: fundFlowSummary,
+    pageActions,
+    preferredActionIds: ['fund-flow.refresh-tab', 'fund-flow.open-stock', 'fund-flow.open-north'],
+    recommendedLinks: [
+      { id: 'fund-flow-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
+      { id: 'fund-flow-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeCodeLabel)}` },
+      { id: 'fund-flow-open-technical-link', label: '技术分析', href: `/technical?code=${encodeURIComponent(activeCodeLabel)}` },
+      { id: 'fund-flow-open-risk-link', label: '风险中心', href: '/risk' },
+    ],
+    evidence: [
+      { label: '当前 Tab', value: activeTabLabel },
+      { label: '聚焦标的', value: activeCodeLabel },
+      { label: '状态', value: tabStatusLabel },
+      { label: '是否报错', value: error ? '是' : '否' },
+      { label: '自动标的', value: resolvedCode || '-' },
+    ],
+    riskNotes: error ? [error] : [],
+    platformMeta: {
+      sourceTool: 'fund-flow',
+      sourceChain: ['fund-flow', tab],
+      degraded: Boolean(error),
+      fallbackReason: error ? [error] : undefined,
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'fund-flow',
+      `复查${activeTabLabel}`,
+      `/fund-flow`,
+      'fund-flow-review',
+      { tab, code: activeCodeLabel },
+    ),
+  });
+  usePageContext({
+    pageKey: 'fund-flow',
+    title: '资金流向',
+    summary: fundFlowSummary,
+    stockCode: activeCodeLabel || undefined,
+    objectType: tab === 'stock' || tab === 'north-detail' ? 'stock' : 'stock-list',
+    objectId: activeCodeLabel,
+    resultType: `fund-flow-${tab}`,
+    tags: [activeTabLabel, tabStatusLabel, activeCodeLabel],
+    suggestions: [
+      `总结当前${activeTabLabel}最值得关注的信号`,
+      '告诉我下一步该看技术面还是风险面',
+      '把当前资金流整理成行动清单',
+    ],
+    recommendedActions: fundFlowResult.recommendedActions ?? [],
+    recommendedLinks: fundFlowResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(fundFlowResult.evidence),
+    riskNotes: fundFlowResult.riskNotes ?? [],
+    freshness: fundFlowResult.freshness ?? null,
+    raw: {
+      tab,
+      activeCodeLabel,
+      status: tabStatusLabel,
+      hasError: Boolean(error),
+    },
+  });
+
   return (
     <PageContainer className="app-theme-market">
       <FundFlowHero
@@ -139,6 +257,8 @@ export default function FundFlowPage() {
           loadNorthFlow();
         }}
       />
+
+      <ResultWorkbench pageKey="fund-flow" title="资金流结果工作台" result={fundFlowResult} />
 
       {loading ? <LoadingState text="加载中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}

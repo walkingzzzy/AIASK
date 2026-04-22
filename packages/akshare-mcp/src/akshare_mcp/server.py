@@ -396,6 +396,11 @@ def _register_full_only_tools(app: FastMCP) -> None:
 
 def _register_runtime_surface(app: FastMCP, *, startup_profile: str) -> None:
     _register_core_tools(app, startup_profile=startup_profile)
+    if startup_profile == "tool-only":
+        # Skills power the web workbench follow-up flows and do not require
+        # the full background-worker profile just to expose registry metadata.
+        _load_heavy_module("skills").register(app)
+        return
     if startup_profile in {"full", "worker"}:
         _register_full_only_tools(app)
 
@@ -583,6 +588,10 @@ async def _main_async(transport: str, mount_path: str | None) -> None:
     startup_profile = _resolve_startup_profile()
     logger = logging.getLogger(__name__)
     logger.info("[Server] startup profile=%s transport=%s", startup_profile, transport)
+    from .storage import get_db
+
+    await get_db().initialize()
+    logger.info("[Server] MCP schema bootstrap completed")
 
     if startup_profile == "tool-only":
         logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")

@@ -144,6 +144,23 @@
             "has_prediction_contract": bool(prediction_contract),
         }
 
+    def _normalize_trade_audit_summary_counts(
+        self,
+        payload: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        normalized = dict(payload or {})
+        raw_incomplete_position_count = int(
+            normalized.get("incomplete_position_count") or 0
+        )
+        open_position_count = int(normalized.get("open_position_count") or 0)
+        normalized["raw_incomplete_position_count"] = raw_incomplete_position_count
+        normalized["open_position_count"] = open_position_count
+        normalized["incomplete_position_count"] = max(
+            0,
+            raw_incomplete_position_count - open_position_count,
+        )
+        return normalized
+
     async def backfill_strategy_signal_evidence_native(
         self,
         strategy_id: Optional[str] = None,
@@ -735,6 +752,12 @@
                     evidence={
                         "realized_trade_count": realized_trade_count,
                         "incomplete_position_count": incomplete_position_count,
+                        "open_position_count": int(
+                            audit_summary.get("open_position_count") or 0
+                        ),
+                        "raw_incomplete_position_count": int(
+                            audit_summary.get("raw_incomplete_position_count") or 0
+                        ),
                     },
                 )
             )
@@ -754,7 +777,12 @@
                         "execution hard gate 仍处于 bootstrap 阶段，当前只有运行痕迹，没有足够的已实现交易审计样本。",
                         "继续累积第一批闭合交易，至少让 realized_trade_count > 0 后再重跑 acceptance。",
                         owner="operations",
-                        evidence={"realized_trade_count": realized_trade_count},
+                        evidence={
+                            "realized_trade_count": realized_trade_count,
+                            "open_position_count": int(
+                                audit_summary.get("open_position_count") or 0
+                            ),
+                        },
                     )
                 )
             elif gate_status == "insufficient_samples":
@@ -812,6 +840,12 @@
                 SELECT
                     COALESCE(COUNT(*), 0)::int AS mapped_position_count,
                     COALESCE(COUNT(*) FILTER (WHERE audit_eligible), 0)::int AS realized_trade_count,
+                    COALESCE(
+                        COUNT(*) FILTER (
+                            WHERE LOWER(COALESCE(status, '')) = 'open'
+                        ),
+                        0
+                    )::int AS open_position_count,
                     COALESCE(COUNT(*) FILTER (WHERE NOT audit_eligible), 0)::int AS incomplete_position_count,
                     COALESCE(AVG(realized_return) FILTER (WHERE audit_eligible), 0)::float AS trade_expectancy,
                     COALESCE(
@@ -838,7 +872,7 @@
                 """,
                 strategy_id,
             )
-        payload = dict(row or {})
+        payload = self._normalize_trade_audit_summary_counts(dict(row or {}))
         realized_trade_count = int(payload.get("realized_trade_count") or 0)
         trade_expectancy = float(payload.get("trade_expectancy") or 0.0)
         pnl_conversion_efficiency = float(payload.get("pnl_conversion_efficiency") or 0.0)
@@ -868,6 +902,10 @@
             "strategy_type": strategy_type,
             "realized_trade_count": realized_trade_count,
             "incomplete_position_count": int(payload.get("incomplete_position_count") or 0),
+            "raw_incomplete_position_count": int(
+                payload.get("raw_incomplete_position_count") or 0
+            ),
+            "open_position_count": int(payload.get("open_position_count") or 0),
             "trade_expectancy": round(trade_expectancy, 6),
             "pnl_conversion_efficiency": round(pnl_conversion_efficiency, 6),
             "execution_conversion_efficiency": round(execution_conversion_efficiency, 6),
@@ -1245,7 +1283,7 @@
                 return None
             return round(float(numerator) / float(denominator), 6)
 
-        return {
+        verification_result = {
             "status": status,
             "strategy_id": strategy_filter,
             "method": "execution_audit_verification_v1",
@@ -1325,6 +1363,283 @@
             },
             "recommendations": recommendations,
         }
+        if strategy_filter and hasattr(self, "get_latest_execution_audit_snapshot"):
+            snapshot = await self.get_latest_execution_audit_snapshot(strategy_filter)
+            if hasattr(self, "upsert_execution_audit_snapshot"):
+                try:
+                    from akshare_mcp.services.strategy_lifecycle_shared.execution_audit_snapshot import (
+                        build_execution_audit_snapshot_payload,
+                    )
+
+                    persisted_snapshot = await self.upsert_execution_audit_snapshot(
+                        build_execution_audit_snapshot_payload(
+                            strategy_id=strategy_filter,
+                            verification=verification_result,
+                            acceptance=dict((snapshot or {}).get("acceptance") or {}),
+                            audit_summary=audit_summary,
+                            verdict_status=_string(
+                                dict(audit_summary or {}).get("execution_audit_gate_status")
+                            ) or "missing",
+                            verdict_reasons=list(
+                                dict(audit_summary or {}).get("execution_audit_gate_reasons")
+                                or []
+                            ),
+                            execution_hard_gate_passed=bool(
+                                dict(audit_summary or {}).get("audit_ready_for_hard_gate")
+                            ),
+                            as_of=date.today().isoformat(),
+                            factory_run_id=_string((snapshot or {}).get("factory_run_id")) or None,
+                            correlation_id=_string((snapshot or {}).get("correlation_id"))
+                            or strategy_filter,
+                            trace_id=_string((snapshot or {}).get("trace_id")) or None,
+                            submission_lane=_string((snapshot or {}).get("submission_lane"))
+                            or None,
+                            parent_task_run_id=_string(
+                                (snapshot or {}).get("parent_task_run_id")
+                            ) or None,
+                            source_action="execution_audit_verification",
+                            metadata={
+                                "verification_status": status,
+                                "recommendation_count": len(recommendations),
+                                "lineage_status": lineage_status,
+                            },
+                        )
+                    )
+                    if persisted_snapshot:
+                        snapshot = persisted_snapshot
+                except Exception as exc:
+                    logger.warning(
+                        "execution audit verification snapshot persist failed for %s: %s",
+                        strategy_filter,
+                        exc,
+                    )
+            if snapshot:
+                verification_result["snapshot"] = snapshot
+                verification_result["as_of"] = snapshot.get("as_of")
+                verification_result["correlation_id"] = snapshot.get("correlation_id")
+                verification_result["factory_run_id"] = snapshot.get("factory_run_id")
+                verification_result["execution_audit_gate_status"] = (
+                    dict(snapshot.get("verdict") or {}).get("status")
+                    or snapshot.get("verdict_status")
+                )
+                verification_result["execution_audit_gate_reasons"] = list(
+                    dict(snapshot.get("verdict") or {}).get("reasons")
+                    or snapshot.get("verdict_reasons")
+                    or []
+                )
+                verification_result["execution_hard_gate_passed"] = bool(
+                    dict(snapshot.get("verdict") or {}).get("hard_gate_passed")
+                    if dict(snapshot.get("verdict") or {}).get("hard_gate_passed") is not None
+                    else snapshot.get("execution_hard_gate_passed")
+                )
+        return verification_result
+
+    def _decode_execution_audit_snapshot(self, row: dict) -> dict:
+        result = dict(row)
+        for key in (
+            "verdict_reasons",
+            "verification",
+            "acceptance",
+            "audit_summary",
+            "snapshot",
+            "metadata",
+        ):
+            default = [] if key == "verdict_reasons" else {}
+            result[key] = self._decode_json_field(result.get(key), default)
+        result["verdict"] = {
+            "status": _string(result.get("verdict_status")) or "missing",
+            "reasons": list(result.get("verdict_reasons") or []),
+            "hard_gate_passed": bool(result.get("execution_hard_gate_passed")),
+        }
+        result["as_of"] = (
+            result.get("as_of_date").isoformat()
+            if isinstance(result.get("as_of_date"), date)
+            else _string(result.get("as_of_date")) or None
+        )
+        return result
+
+    def _coerce_optional_date(self, value):
+        if isinstance(value, date):
+            return value
+        raw = _string(value)
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw[:10])
+        except Exception:
+            return None
+
+    async def get_latest_execution_audit_snapshot(self, strategy_id: str) -> Optional[dict]:
+        strategy_filter = _string(strategy_id)
+        if not strategy_filter:
+            return None
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM strategy_execution_audit_snapshots
+                WHERE strategy_id = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                strategy_filter,
+            )
+        if not row:
+            return None
+        return self._decode_execution_audit_snapshot(dict(row))
+
+    async def upsert_execution_audit_snapshot(self, snapshot: dict) -> Optional[dict]:
+        payload = dict(snapshot or {})
+        strategy_id = _string(payload.get("strategy_id"))
+        if not strategy_id:
+            return None
+        verdict = dict(payload.get("verdict") or {})
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO strategy_execution_audit_snapshots
+                    (strategy_id, snapshot_id, as_of_date, source_run_id, factory_run_id, correlation_id, trace_id,
+                     submission_lane, parent_task_run_id, source_action, verdict_status, verdict_reasons,
+                     execution_hard_gate_passed, verification, acceptance, audit_summary, snapshot, metadata,
+                     created_at, updated_at)
+                VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14::jsonb,
+                        $15::jsonb, $16::jsonb, $17::jsonb, $18::jsonb, NOW(), NOW())
+                ON CONFLICT (strategy_id) DO UPDATE SET
+                    snapshot_id = EXCLUDED.snapshot_id,
+                    as_of_date = EXCLUDED.as_of_date,
+                    source_run_id = EXCLUDED.source_run_id,
+                    factory_run_id = EXCLUDED.factory_run_id,
+                    correlation_id = EXCLUDED.correlation_id,
+                    trace_id = EXCLUDED.trace_id,
+                    submission_lane = EXCLUDED.submission_lane,
+                    parent_task_run_id = EXCLUDED.parent_task_run_id,
+                    source_action = EXCLUDED.source_action,
+                    verdict_status = EXCLUDED.verdict_status,
+                    verdict_reasons = EXCLUDED.verdict_reasons,
+                    execution_hard_gate_passed = EXCLUDED.execution_hard_gate_passed,
+                    verification = EXCLUDED.verification,
+                    acceptance = EXCLUDED.acceptance,
+                    audit_summary = EXCLUDED.audit_summary,
+                    snapshot = EXCLUDED.snapshot,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                strategy_id,
+                _string(payload.get("snapshot_id")) or f"eas_{strategy_id}",
+                self._coerce_optional_date(payload.get("as_of")),
+                payload.get("source_run_id"),
+                payload.get("factory_run_id"),
+                payload.get("correlation_id"),
+                payload.get("trace_id"),
+                payload.get("submission_lane"),
+                payload.get("parent_task_run_id"),
+                payload.get("source_action"),
+                _string(verdict.get("status") or payload.get("verdict_status")) or "missing",
+                json.dumps(
+                    list(verdict.get("reasons") or payload.get("verdict_reasons") or []),
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                bool(
+                    verdict.get("hard_gate_passed")
+                    if verdict.get("hard_gate_passed") is not None
+                    else payload.get("execution_hard_gate_passed")
+                ),
+                json.dumps(payload.get("verification") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("acceptance") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("audit_summary") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("snapshot") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+            )
+        if not row:
+            return None
+        return self._decode_execution_audit_snapshot(dict(row))
+
+    def _decode_strategy_closure_snapshot(self, row: dict) -> dict:
+        result = dict(row or {})
+        for key in ("snapshot", "metadata"):
+            result[key] = self._decode_json_field(result.get(key), {})
+        result["as_of"] = (
+            result.get("as_of_date").isoformat()
+            if isinstance(result.get("as_of_date"), date)
+            else _string(result.get("as_of_date")) or None
+        )
+        return result
+
+    async def get_latest_strategy_closure_snapshot(
+        self,
+        strategy_id: str,
+        snapshot_type: str = "incubation_overview",
+    ) -> Optional[dict]:
+        strategy_filter = _string(strategy_id)
+        snapshot_type_filter = _string(snapshot_type) or "incubation_overview"
+        if not strategy_filter:
+            return None
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM strategy_closure_snapshots
+                WHERE strategy_id = $1
+                  AND snapshot_type = $2
+                ORDER BY as_of_date DESC NULLS LAST, updated_at DESC
+                LIMIT 1
+                """,
+                strategy_filter,
+                snapshot_type_filter,
+            )
+        if not row:
+            return None
+        return self._decode_strategy_closure_snapshot(dict(row))
+
+    async def upsert_strategy_closure_snapshot(self, snapshot: dict) -> Optional[dict]:
+        payload = dict(snapshot or {})
+        strategy_id = _string(payload.get("strategy_id"))
+        snapshot_type = _string(payload.get("snapshot_type")) or "incubation_overview"
+        if not strategy_id:
+            return None
+        snapshot_id = _string(payload.get("snapshot_id")) or f"cls_{strategy_id}_{snapshot_type}"
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO strategy_closure_snapshots
+                    (strategy_id, snapshot_type, snapshot_id, as_of_date, source_run_id, factory_run_id,
+                     correlation_id, trace_id, submission_lane, parent_task_run_id, source_action,
+                     snapshot, metadata, created_at, updated_at)
+                VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, NOW(), NOW())
+                ON CONFLICT (strategy_id, snapshot_type) DO UPDATE SET
+                    snapshot_id = EXCLUDED.snapshot_id,
+                    as_of_date = EXCLUDED.as_of_date,
+                    source_run_id = EXCLUDED.source_run_id,
+                    factory_run_id = EXCLUDED.factory_run_id,
+                    correlation_id = EXCLUDED.correlation_id,
+                    trace_id = EXCLUDED.trace_id,
+                    submission_lane = EXCLUDED.submission_lane,
+                    parent_task_run_id = EXCLUDED.parent_task_run_id,
+                    source_action = EXCLUDED.source_action,
+                    snapshot = EXCLUDED.snapshot,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                strategy_id,
+                snapshot_type,
+                snapshot_id,
+                self._coerce_optional_date(payload.get("as_of")),
+                payload.get("source_run_id"),
+                payload.get("factory_run_id"),
+                payload.get("correlation_id"),
+                payload.get("trace_id"),
+                payload.get("submission_lane"),
+                payload.get("parent_task_run_id"),
+                payload.get("source_action"),
+                json.dumps(payload.get("snapshot") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+            )
+        if not row:
+            return None
+        return self._decode_strategy_closure_snapshot(dict(row))
 
     async def run_execution_audit_acceptance(
         self,
@@ -1443,8 +1758,7 @@
                 if _string(item.get("category"))
             }
         )
-
-        return {
+        result = {
             "status": status,
             "strategy_id": strategy_filter,
             "method": "execution_audit_acceptance_v1",
@@ -1458,7 +1772,62 @@
             "verification": verification,
             "trade_audit_summary": audit_summary or None,
             "recommendations": recommendations,
+            "execution_audit_gate_status": _string(
+                audit_summary.get("execution_audit_gate_status")
+            )
+            or None,
+            "execution_audit_gate_reasons": list(
+                audit_summary.get("execution_audit_gate_reasons") or []
+            ),
+            "execution_hard_gate_passed": bool(
+                audit_summary.get("audit_ready_for_hard_gate")
+            ),
         }
+        if strategy_filter and hasattr(self, "upsert_execution_audit_snapshot"):
+            try:
+                from akshare_mcp.services.strategy_lifecycle_shared.execution_audit_snapshot import (
+                    build_execution_audit_snapshot_payload,
+                    with_execution_audit_snapshot_metadata,
+                )
+
+                snapshot = await self.upsert_execution_audit_snapshot(
+                    build_execution_audit_snapshot_payload(
+                        strategy_id=strategy_filter,
+                        verification=verification,
+                        acceptance=result,
+                        audit_summary=audit_summary,
+                        verdict_status=_string(audit_summary.get("execution_audit_gate_status")) or "missing",
+                        verdict_reasons=list(audit_summary.get("execution_audit_gate_reasons") or []),
+                        execution_hard_gate_passed=bool(
+                            audit_summary.get("audit_ready_for_hard_gate")
+                        ),
+                        as_of=date.today().isoformat(),
+                        correlation_id=_string(strategy_filter),
+                        source_action="execution_audit_acceptance",
+                        metadata={
+                            "acceptance_status": status,
+                            "backfill_executed": bool(backfill),
+                            "gap_categories": list(gap_categories),
+                        },
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "execution audit acceptance snapshot persist failed for %s: %s",
+                    strategy_filter,
+                    exc,
+                )
+                snapshot = None
+            if snapshot:
+                result["snapshot"] = snapshot
+                result["as_of"] = snapshot.get("as_of")
+                result["correlation_id"] = snapshot.get("correlation_id")
+                result["factory_run_id"] = snapshot.get("factory_run_id")
+                result = with_execution_audit_snapshot_metadata(
+                    result,
+                    snapshot=snapshot,
+                )
+        return result
 
     async def list_strategy_incubation_metrics(
         self,

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ResultWorkbench from '@/components/result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
@@ -11,6 +12,7 @@ import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
   EventImportantResponse,
@@ -178,33 +180,6 @@ export default function EventsPage() {
     [activeCode, subscriptionApi, validate],
   );
 
-  usePageContext({
-    pageKey: 'events',
-    title: '事件日历',
-    summary: `当前事件窗口 ${days} 天，重点事件 ${importantItems.length} 条，订阅标的 ${subscriptions.length} 个，聚焦标的 ${activeCode || '未选择'}。`,
-    stockCode: activeCode || undefined,
-    tags: [
-      `${days} 天`,
-      `${subscriptions.length} 个订阅`,
-      `${importantItems.length} 条重点事件`,
-      EVENT_TYPES.find((item) => item.key === type)?.label ?? type,
-    ],
-    suggestions: [
-      isSubscribed ? '取消当前股票事件订阅' : '订阅当前股票事件',
-      activeCode ? `打开 ${activeCode} 个股详情` : '选择一个股票查看个股事件时间线',
-      '切到 14 天窗口看更长的事件排程',
-    ],
-    raw: {
-      code: activeCode || null,
-      days,
-      type,
-      subscriptions: subscriptions.length,
-      subscribed: isSubscribed,
-      important: importantItems.length,
-      timeline: timelineItems.length,
-    },
-  });
-
   const pageActions = useMemo(
     () => [
       {
@@ -311,6 +286,83 @@ export default function EventsPage() {
   );
 
   usePageActions(pageActions);
+  const eventsSummary = `当前事件窗口 ${days} 天，重点事件 ${importantItems.length} 条，订阅标的 ${subscriptions.length} 个，聚焦标的 ${activeCode || '未选择'}。`;
+  const eventsEvidence = [
+    { label: '观察窗口', value: `${days} 天` },
+    { label: '重点事件', value: String(importantItems.length) },
+    { label: '订阅标的', value: String(subscriptions.length) },
+    { label: '聚焦标的', value: activeCode || '未选择' },
+    { label: '事件类型', value: EVENT_TYPES.find((item) => item.key === type)?.label ?? type },
+  ];
+  const eventsLinks = [
+    { id: 'events-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
+    ...(activeCode ? [{ id: 'events-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeCode)}` }] : []),
+    ...(activeCode ? [{ id: 'events-open-research-link', label: '研究中心', href: `/research?code=${encodeURIComponent(activeCode)}` }] : []),
+    { id: 'events-open-execution-link', label: '执行中心', href: activeCode ? `/execution?code=${encodeURIComponent(activeCode)}` : '/execution' },
+  ];
+  const eventsRiskNotes = [
+    ...(importantQ.error ? [`重点事件拉取失败：${importantQ.error}`] : []),
+    ...(calendarQ.error ? [`事件日历拉取失败：${calendarQ.error}`] : []),
+    ...((activeCode && !timelineItems.length && !timelineQ.isPending) ? ['当前标的暂无事件时间线，可能需要扩大观察窗口或更换标的。'] : []),
+  ];
+  const eventsResult = buildLocalResultContract({
+    summary: eventsSummary,
+    availableViews: importantItems.length > 1 || timelineItems.length > 1 ? ['compare'] : [],
+    pageActions,
+    preferredActionIds: ['events.refresh', 'events.subscribe', 'events.open-stock', 'events.open-research'],
+    recommendedLinks: eventsLinks,
+    evidence: eventsEvidence,
+    riskNotes: eventsRiskNotes,
+    freshness: latestEventRefreshAt ? { updatedAt: new Date(latestEventRefreshAt).toISOString(), label: '事件更新时间' } : null,
+    platformMeta: {
+      sourceTool: 'event-workspace',
+      sourceChain: ['events', type, String(days)],
+      degraded: Boolean(importantQ.error || calendarQ.error || timelineQ.error),
+      fallbackReason: [importantQ.error, calendarQ.error, timelineQ.error].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'events',
+      `复查事件窗口 ${days} 天`,
+      activeCode ? `/events?code=${encodeURIComponent(activeCode)}&days=${days}&type=${encodeURIComponent(type)}` : `/events?days=${days}&type=${encodeURIComponent(type)}`,
+      'event-review',
+      { code: activeCode || null, days, type },
+    ),
+  });
+
+  usePageContext({
+    pageKey: 'events',
+    title: '事件日历',
+    summary: eventsSummary,
+    stockCode: activeCode || undefined,
+    objectType: activeCode ? 'event' : 'event-stream',
+    objectId: activeCode || `${days}:${type}`,
+    resultType: 'event-calendar',
+    tags: [
+      `${days} 天`,
+      `${subscriptions.length} 个订阅`,
+      `${importantItems.length} 条重点事件`,
+      EVENT_TYPES.find((item) => item.key === type)?.label ?? type,
+    ],
+    suggestions: [
+      isSubscribed ? '取消当前股票事件订阅' : '订阅当前股票事件',
+      activeCode ? `打开 ${activeCode} 个股详情` : '选择一个股票查看个股事件时间线',
+      '切到 14 天窗口看更长的事件排程',
+    ],
+    recommendedActions: eventsResult.recommendedActions ?? [],
+    recommendedLinks: eventsResult.recommendedLinks ?? [],
+    evidenceSummary: evidenceToSummary(eventsResult.evidence),
+    riskNotes: eventsResult.riskNotes ?? [],
+    freshness: eventsResult.freshness ?? null,
+    raw: {
+      code: activeCode || null,
+      days,
+      type,
+      subscriptions: subscriptions.length,
+      subscribed: isSubscribed,
+      important: importantItems.length,
+      timeline: timelineItems.length,
+    },
+  });
 
   return (
     <PageContainer>
@@ -446,6 +498,8 @@ export default function EventsPage() {
           </div>
         </div>
       </section>
+
+      <ResultWorkbench pageKey="events" title="事件结果工作台" result={eventsResult} />
 
       <WorkspaceToolbar
         pageKey="events"

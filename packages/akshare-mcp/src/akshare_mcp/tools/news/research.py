@@ -12,7 +12,19 @@ from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
-from ...utils import fail, format_period, normalize_code, ok, pick_value, safe_float
+from ...utils import (
+    attach_argument_contract_meta,
+    fail,
+    format_period,
+    normalize_code,
+    ok,
+    parse_date_input,
+    pick_value,
+    resolve_canonical_arg,
+    resolve_existing_security_code_sync,
+    safe_float,
+    validate_int_range,
+)
 from ..fund_flow_common import _run_storage_call_sync
 from .helpers import _dedup_reports, _fetch_eastmoney_research
 
@@ -31,6 +43,26 @@ def _research_candidate_match(text: str, keyword: str, match_fn) -> bool:
     if len(keyword or "") < 4:
         return False
     return any(token in text_lower for token in _iter_keyword_bigrams(keyword))
+
+
+def _filter_recent_reports(reports: list[dict], since: date, limit: int = 20) -> list[dict]:
+    filtered: list[dict] = []
+    for report in reports:
+        report_date = parse_date_input(report.get("date"))
+        if report_date is None or report_date < since:
+            continue
+        normalized = dict(report)
+        normalized["date"] = report_date.isoformat()
+        filtered.append(normalized)
+    filtered.sort(
+        key=lambda item: (
+            item.get("date", ""),
+            str(item.get("title", "")),
+            str(item.get("institution", "")),
+        ),
+        reverse=True,
+    )
+    return _dedup_reports(filtered)[:limit]
 
 
 def _search_research_candidate_codes(keyword: str, limit: int, match_fn) -> list[dict]:
@@ -79,7 +111,14 @@ def _search_research_candidate_codes(keyword: str, limit: int, match_fn) -> list
 
 
 @cached(ttl=3600.0)
-def get_stock_research(stock_code: str, limit: int = 10) -> dict:
+def get_stock_research(
+    code: str = "",
+    limit: int = 10,
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """
     获取个股研究报告列表
 
@@ -90,7 +129,31 @@ def get_stock_research(stock_code: str, limit: int = 10) -> dict:
     limiter.acquire()
 
     try:
-        code = normalize_code(stock_code)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        resolved_limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1, maximum=100)
+        canonical_args = {"code": normalize_code(raw_code) if raw_code else "", "limit": resolved_limit}
+        if not raw_code:
+            return attach_argument_contract_meta(
+                fail("需要提供股票代码（支持 code / stock_code / symbol / ticker）"),
+                canonical_tool="get_stock_research",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+        if limit_error:
+            return attach_argument_contract_meta(
+                fail(limit_error),
+                canonical_tool="get_stock_research",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+        code = normalize_code(raw_code)
+        canonical_args["code"] = code
 
         # 1. 主路径: Tushare report_rc
         try:
@@ -109,18 +172,28 @@ def get_stock_research(stock_code: str, limit: int = 10) -> dict:
                             "targetPrice": None,
                             "date": format_period(row.get('report_date')),
                         })
-                    reports = _dedup_reports(reports)[:limit]
+                    reports = _dedup_reports(reports)[:resolved_limit]
                     if reports:
-                        return ok({"stockCode": code, "reports": reports, "total": len(reports)})
+                        return attach_argument_contract_meta(
+                            ok({"stockCode": code, "reports": reports, "total": len(reports)}),
+                            canonical_tool="get_stock_research",
+                            canonical_args=canonical_args,
+                            alias_hits=alias_hits,
+                        )
         except Exception:
             pass
 
         # 2. 降级: 东财 datacenter 研报
         try:
-            items = _fetch_eastmoney_research(code, limit * 2)
+            items = _fetch_eastmoney_research(code, resolved_limit * 2)
             if items:
-                items = _dedup_reports(items)[:limit]
-                return ok({"stockCode": code, "reports": items, "total": len(items)})
+                items = _dedup_reports(items)[:resolved_limit]
+                return attach_argument_contract_meta(
+                    ok({"stockCode": code, "reports": items, "total": len(items)}),
+                    canonical_tool="get_stock_research",
+                    canonical_args=canonical_args,
+                    alias_hits=alias_hits,
+                )
         except Exception:
             pass
 
@@ -141,15 +214,30 @@ def get_stock_research(stock_code: str, limit: int = 10) -> dict:
                         }
                         if report["title"] or report["institution"]:
                             reports.append(report)
-                    reports = _dedup_reports(reports)[:limit]
+                    reports = _dedup_reports(reports)[:resolved_limit]
                     if reports:
-                        return ok({"stockCode": code, "reports": reports, "total": len(reports)})
+                        return attach_argument_contract_meta(
+                            ok({"stockCode": code, "reports": reports, "total": len(reports)}),
+                            canonical_tool="get_stock_research",
+                            canonical_args=canonical_args,
+                            alias_hits=alias_hits,
+                        )
             except Exception:
                 pass
 
-        return fail(f"暂无股票 {code} 的研报数据")
+        return attach_argument_contract_meta(
+            fail(f"暂无股票 {code} 的研报数据"),
+            canonical_tool="get_stock_research",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_stock_research",
+            canonical_args={"code": normalize_code(code) if code else "", "limit": limit},
+            alias_hits=[],
+        )
 
 
 @cached(ttl=3600.0)
@@ -178,7 +266,16 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
         return False
 
     try:
-        code = normalize_code(stock_code) if stock_code else ""
+        days, days_error = validate_int_range(days, field_name="days", minimum=1, maximum=3650)
+        if days_error:
+            return fail(days_error)
+        since = date.today() - timedelta(days=days)
+
+        code = ""
+        if stock_code:
+            code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+            if error:
+                return fail(error)
 
         # 1. 主路径: Tushare report_rc
         try:
@@ -224,7 +321,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                             )
                         ]
                     reports = []
-                    for _, row in df_ts.head(20).iterrows():
+                    for _, row in df_ts.iterrows():
                         ts_c = str(row.get("ts_code", "") or "").split(".")[0]
                         reports.append({
                             "stockCode": ts_c or code,
@@ -233,7 +330,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                             "rating": str(row.get("rating", "") or "").strip(),
                             "date": format_period(row.get("report_date")),
                         })
-                    reports = _dedup_reports(reports)
+                    reports = _filter_recent_reports(reports, since)
                     if reports:
                         return ok({"keyword": keyword, "stockCode": code, "reports": reports, "total": len(reports)})
         except Exception:
@@ -246,7 +343,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                 if items and keyword:
                     items = [i for i in items if _keyword_match(i.get("title", ""), keyword) or _keyword_match(i.get("institution", ""), keyword)]
                 if items:
-                    reports = _dedup_reports([{"stockCode": code, **i} for i in items])
+                    reports = _filter_recent_reports([{"stockCode": code, **i} for i in items], since)
                     return ok({"keyword": keyword, "stockCode": code, "reports": reports, "total": len(reports)})
             except Exception:
                 pass
@@ -265,7 +362,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                             )
                         ]
                     reports = []
-                    for _, row in df.head(20).iterrows():
+                    for _, row in df.iterrows():
                         reports.append({
                             "stockCode": code,
                             "title": str(pick_value(row, ["报告名称", "标题", "研报标题", "title"]) or "").strip(),
@@ -273,7 +370,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                             "rating": str(pick_value(row, ["最新评级", "评级", "投资评级", "rating"]) or "").strip(),
                             "date": format_period(pick_value(row, ["发布日期", "日期", "发布时间", "date"])),
                         })
-                    reports = _dedup_reports(reports)
+                    reports = _filter_recent_reports(reports, since)
                     if reports:
                         return ok({"keyword": keyword, "stockCode": code, "reports": reports, "total": len(reports)})
             except Exception:
@@ -318,15 +415,9 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                         )
 
                 if fallback_reports:
-                    fallback_reports.sort(
-                        key=lambda item: (
-                            item.get("_match_score", 0),
-                            item.get("date", ""),
-                        ),
-                        reverse=True,
-                    )
+                    fallback_reports.sort(key=lambda item: item.get("_match_score", 0), reverse=True)
                     reports = []
-                    for report in _dedup_reports(fallback_reports):
+                    for report in _filter_recent_reports(fallback_reports, since):
                         report.pop("_match_score", None)
                         reports.append(report)
                     if reports:
@@ -376,6 +467,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
                         "rating": str(r.get("rating") or "").strip(),
                         "date": format_period(r.get("publish_date")),
                     })
+                reports = _filter_recent_reports(reports, since)
                 if reports:
                     return ok({
                         "keyword": keyword, "stockCode": code,
@@ -467,7 +559,15 @@ def get_analyst_ranking(year: str = "") -> dict:
 
 
 @cached(ttl=3600.0)
-def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10, *, prefer_db: bool = True) -> dict:
+def get_research_reports(
+    code: str = "",
+    stock_code: str = "",
+    symbol: str = "",
+    limit: int = 10,
+    *,
+    ticker: str = "",
+    prefer_db: bool = True,
+) -> dict:
     """
     获取个股研报
 
@@ -483,9 +583,23 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
     limiter.acquire()
 
     try:
-        raw = symbol or stock_code
+        raw, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
         code = normalize_code(raw) if raw else ""
-        limit = int(limit)
+        resolved_limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1, maximum=100)
+        canonical_args = {"code": code, "limit": resolved_limit}
+        if limit_error:
+            return attach_argument_contract_meta(
+                fail(limit_error),
+                canonical_tool="get_research_reports",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
 
         if prefer_db and code:
             try:
@@ -493,19 +607,24 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
                     lambda: load_db_first_document_context(
                         get_db(),
                         code,
-                        research_limit=max(limit, 1),
+                        research_limit=max(resolved_limit, 1),
                     ),
                     timeout=8.0,
                 )
                 db_reports = list((db_context or {}).get("research") or [])
                 if db_reports:
-                    return ok(
-                        {
-                            "stockCode": code,
-                            "reports": _dedup_reports(db_reports)[:limit],
-                            "total": min(len(db_reports), limit),
-                            "source": ",".join(db_source_chain or ["db.research_reports"]),
-                        }
+                    return attach_argument_contract_meta(
+                        ok(
+                            {
+                                "stockCode": code,
+                                "reports": _dedup_reports(db_reports)[:resolved_limit],
+                                "total": min(len(db_reports), resolved_limit),
+                                "source": ",".join(db_source_chain or ["db.research_reports"]),
+                            }
+                        ),
+                        canonical_tool="get_research_reports",
+                        canonical_args=canonical_args,
+                        alias_hits=alias_hits,
                     )
             except Exception:
                 pass
@@ -516,7 +635,7 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
                 df = ak.stock_research_report_em(symbol=code)
                 if df is not None and not df.empty:
                     records = []
-                    for _, row in df.head(limit * 2).iterrows():
+                    for _, row in df.head(resolved_limit * 2).iterrows():
                         rec_code = str(row.get("股票代码", "") or "").strip()
                         if rec_code and normalize_code(rec_code) != code:
                             continue
@@ -528,9 +647,14 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
                             "targetPrice": None,
                             "date": format_period(row.get("日期")),
                         })
-                    records = _dedup_reports(records)[:limit]
+                    records = _dedup_reports(records)[:resolved_limit]
                     if records:
-                        return ok({"stockCode": code, "reports": records, "total": len(records)})
+                        return attach_argument_contract_meta(
+                            ok({"stockCode": code, "reports": records, "total": len(records)}),
+                            canonical_tool="get_research_reports",
+                            canonical_args=canonical_args,
+                            alias_hits=alias_hits,
+                        )
             except Exception:
                 pass
 
@@ -552,7 +676,7 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
                 df_ts = ts_pro.report_rc(**kwargs)
                 if df_ts is not None and not df_ts.empty:
                     records = []
-                    for _, row in df_ts.head(limit).iterrows():
+                    for _, row in df_ts.head(resolved_limit).iterrows():
                         records.append({
                             "title": str(row.get("report_title", "") or "").strip(),
                             "institution": str(row.get("org_name", "") or "").strip(),
@@ -560,25 +684,51 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
                             "rating": str(row.get("rating", "") or "").strip(),
                             "date": format_period(row.get("report_date")),
                         })
-                    records = _dedup_reports(records)[:limit]
+                    records = _dedup_reports(records)[:resolved_limit]
                     if records:
-                        return ok({"stockCode": code, "reports": records, "total": len(records)})
+                        return attach_argument_contract_meta(
+                            ok({"stockCode": code, "reports": records, "total": len(records)}),
+                            canonical_tool="get_research_reports",
+                            canonical_args=canonical_args,
+                            alias_hits=alias_hits,
+                        )
         except Exception:
             pass
 
         # 3. 东财 datacenter（RPT_RATINGCHANGE_DET）
         if code:
-            items = _fetch_eastmoney_research(code, limit * 2)
+            items = _fetch_eastmoney_research(code, resolved_limit * 2)
             if items:
-                return ok({"stockCode": code, "reports": _dedup_reports(items)[:limit], "total": len(items)})
+                return attach_argument_contract_meta(
+                    ok({"stockCode": code, "reports": _dedup_reports(items)[:resolved_limit], "total": len(items)}),
+                    canonical_tool="get_research_reports",
+                    canonical_args=canonical_args,
+                    alias_hits=alias_hits,
+                )
 
-        return fail(f"未找到股票 {code or raw} 的研报数据")
+        return attach_argument_contract_meta(
+            fail(f"未找到股票 {code or raw} 的研报数据"),
+            canonical_tool="get_research_reports",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_research_reports",
+            canonical_args={"code": normalize_code(code) if code else "", "limit": limit},
+            alias_hits=[],
+        )
 
 
 @cached(ttl=3600.0)
-def get_profit_forecast(symbol: str = "") -> dict:
+def get_profit_forecast(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """
     获取个股盈利预测（包含机构评级和目标价）
 
@@ -589,7 +739,22 @@ def get_profit_forecast(symbol: str = "") -> dict:
     limiter.acquire()
 
     try:
-        code = normalize_code(symbol)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code = normalize_code(raw_code)
+        canonical_args = {"code": code}
+        if not code:
+            return attach_argument_contract_meta(
+                fail("需要提供股票代码（支持 code / stock_code / symbol / ticker）"),
+                canonical_tool="get_profit_forecast",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
 
         # 1. 东财 datacenter 盈利预测
         try:
@@ -621,7 +786,12 @@ def get_profit_forecast(symbol: str = "") -> dict:
                             "income_forecast": safe_float(item.get("PREDICT_NEXT_TWO_INCOME")),
                             "netprofit_forecast": safe_float(item.get("PREDICT_NEXT_TWO_NETPROFIT")),
                         })
-                    return ok({"stockCode": code, "items": records, "total": len(records)})
+                    return attach_argument_contract_meta(
+                        ok({"stockCode": code, "items": records, "total": len(records)}),
+                        canonical_tool="get_profit_forecast",
+                        canonical_args=canonical_args,
+                        alias_hits=alias_hits,
+                    )
         except Exception:
             pass
 
@@ -633,7 +803,12 @@ def get_profit_forecast(symbol: str = "") -> dict:
                 df_ts = ts_pro.forecast(ts_code=ts_code)
                 if df_ts is not None and not df_ts.empty:
                     records = df_ts.head(20).fillna("").to_dict(orient="records")
-                    return ok({"stockCode": code, "items": records, "total": len(records)})
+                    return attach_argument_contract_meta(
+                        ok({"stockCode": code, "items": records, "total": len(records)}),
+                        canonical_tool="get_profit_forecast",
+                        canonical_args=canonical_args,
+                        alias_hits=alias_hits,
+                    )
         except Exception:
             pass
 
@@ -652,10 +827,25 @@ def get_profit_forecast(symbol: str = "") -> dict:
             if df is not None and not df.empty:
                 try:
                     records = df.fillna("").to_dict(orient="records")
-                    return ok({"stockCode": code, "items": records, "total": len(records)})
+                    return attach_argument_contract_meta(
+                        ok({"stockCode": code, "items": records, "total": len(records)}),
+                        canonical_tool="get_profit_forecast",
+                        canonical_args=canonical_args,
+                        alias_hits=alias_hits,
+                    )
                 except Exception:
                     pass
 
-        return fail(f"未获取到 {code} 的盈利预测数据")
+        return attach_argument_contract_meta(
+            fail(f"未获取到 {code} 的盈利预测数据"),
+            canonical_tool="get_profit_forecast",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     except Exception as e:
-        return fail(f"系统错误: {e}")
+        return attach_argument_contract_meta(
+            fail(f"系统错误: {e}"),
+            canonical_tool="get_profit_forecast",
+            canonical_args={"code": normalize_code(code) if code else ""},
+            alias_hits=[],
+        )

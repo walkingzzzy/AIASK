@@ -1,7 +1,7 @@
 import { KpiCard, KpiGrid, SectionCard } from '@/components/ui';
 import { EmptyState } from '@/components/status-state';
 import { fmtAmount, fmtNum, fmtPct } from '@/lib/data-utils';
-import { marketFieldCls, marketPrimaryButtonCls, marketSecondaryButtonCls } from '@/app/market/components/market-panel-styles';
+import { marketFieldCls, marketPrimaryButtonCls } from '@/app/market/components/market-panel-styles';
 
 type MarketIndexTabProps = {
   indexCode: string;
@@ -10,7 +10,6 @@ type MarketIndexTabProps = {
   indexObj: Record<string, unknown> | null;
   error: string | null;
   onQueryIndex: () => void;
-  onUseExampleCode: (code: string) => void;
 };
 
 export default function MarketIndexTab({
@@ -20,7 +19,6 @@ export default function MarketIndexTab({
   indexObj,
   error,
   onQueryIndex,
-  onUseExampleCode,
 }: MarketIndexTabProps) {
   return (
     <SectionCard tabAttached>
@@ -54,17 +52,7 @@ export default function MarketIndexTab({
       ) : !tabPending && !error ? (
         <EmptyState
           text="输入指数代码后查看指数行情"
-          hint="如果你只是想先判断大盘环境，可直接看 000001 上证指数或 000300 沪深300。"
-          action={
-            <>
-              <button type="button" onClick={() => onUseExampleCode('000001')} className={marketPrimaryButtonCls}>
-                示例：000001
-              </button>
-              <button type="button" onClick={() => onUseExampleCode('000300')} className={marketSecondaryButtonCls}>
-                示例：000300
-              </button>
-            </>
-          }
+          hint="请输入真实指数代码后再查询；如果你只想看整体环境，也可以先切回首页或板块视图。"
         />
       ) : null}
     </SectionCard>
