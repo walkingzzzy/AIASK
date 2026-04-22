@@ -4,11 +4,13 @@ import time
 import akshare as ak
 
 from ..utils import (
+    attach_argument_contract_meta,
     fail,
     format_period,
     normalize_code,
     ok,
     parse_numeric,
+    resolve_canonical_arg,
     resolve_existing_security_code_sync,
 )
 
@@ -314,7 +316,13 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
     }
 
 @cached(ttl=86400.0)  # 24h cache for financial data
-async def get_financials(stock_code: str) -> dict:
+async def get_financials(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """
     获取股票财务指标数据
 
@@ -324,22 +332,43 @@ async def get_financials(stock_code: str) -> dict:
     limiter = get_limiter("finance", max_calls=5, period=1.0)
     limiter.acquire()
 
-    code, _, error = resolve_existing_security_code_sync(stock_code=stock_code)
+    raw_code, alias_hits, _ = resolve_canonical_arg(
+        "code",
+        code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
+    code, _, error = resolve_existing_security_code_sync(code=raw_code)
+    canonical_args = {"code": code or raw_code}
     if error:
-        return fail(error)
+        return attach_argument_contract_meta(
+            fail(error),
+            canonical_tool="get_financials",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
     started_at = datetime.now().astimezone()
+
+    def _respond(payload: dict) -> dict:
+        return attach_argument_contract_meta(
+            payload,
+            canonical_tool="get_financials",
+            canonical_args=canonical_args,
+            alias_hits=alias_hits,
+        )
 
     # 0. Check Cache (TTL 24h)
     cached_entry = cache.get(f"financials_{code}", ttl_seconds=86400)
     cached_payload, cached_source_chain, cached_fallback_reason = _read_financial_cache_entry(cached_entry)
     if cached_payload and _financial_payload_is_complete(cached_payload) and not _financial_payload_needs_enrichment(cached_payload):
-        return _ok_financial(
+        return _respond(_ok_financial(
             cached_payload,
             source_chain=cached_source_chain or [cached_payload.get("source") or "cache.financials"],
             fallback_reason=cached_fallback_reason,
             started_at=started_at,
             cached_result=True,
-        )
+        ))
 
     # 0.5. DB 优先：查 TimescaleDB financials 表
     db_result = None
@@ -363,11 +392,11 @@ async def get_financials(stock_code: str) -> dict:
                     f"financials_{code}",
                     _build_financial_cache_entry(best_payload, source_chain=source_chain),
                 )
-                return _ok_financial(
+                return _respond(_ok_financial(
                     best_payload,
                     source_chain=source_chain,
                     started_at=started_at,
-                )
+                ))
     except Exception as e_db:
         import sys
         print(f"[Finance] TimescaleDB query failed for {code}: {e_db}", file=sys.stderr)
@@ -398,12 +427,12 @@ async def get_financials(stock_code: str) -> dict:
                         fallback_reason=fallback_reason,
                     ),
                 )
-                return _ok_financial(
+                return _respond(_ok_financial(
                     best_payload,
                     source_chain=source_chain,
                     fallback_reason=fallback_reason,
                     started_at=started_at,
-                )
+                ))
         else:
             fallback_reason.append("tushare_pro returned empty")
     except Exception as e:
@@ -434,12 +463,12 @@ async def get_financials(stock_code: str) -> dict:
                         fallback_reason=fallback_reason,
                     ),
                 )
-                return _ok_financial(
+                return _respond(_ok_financial(
                     best_payload,
                     source_chain=source_chain,
                     fallback_reason=fallback_reason,
                     started_at=started_at,
-                )
+                ))
         elif "akshare_financials failed:" not in " | ".join(fallback_reason):
             fallback_reason.append("akshare_financials returned empty")
 
@@ -503,12 +532,12 @@ async def get_financials(stock_code: str) -> dict:
                 fallback_reason=fallback_reason,
             ),
         )
-        return _ok_financial(
+        return _respond(_ok_financial(
             best_payload,
             source_chain=source_chain,
             fallback_reason=fallback_reason,
             started_at=started_at,
-        )
+        ))
 
     if db_result and _financial_payload_is_usable(db_result):
         best_payload = normalize_financial_payload(db_result, source_label="timescaledb") or db_result
@@ -522,20 +551,20 @@ async def get_financials(stock_code: str) -> dict:
                 fallback_reason=fallback_reason,
             ),
         )
-        return _ok_financial(
+        return _respond(_ok_financial(
             best_payload,
             source_chain=source_chain,
             fallback_reason=fallback_reason,
             started_at=started_at,
-        )
+        ))
 
     tried = " → ".join(source_chain) if source_chain else "无"
-    return _fail_financial(
+    return _respond(_fail_financial(
         f"所有数据源均无法获取 {code} 的财务数据（已尝试: {tried}）",
         source_chain=source_chain,
         fallback_reason=fallback_reason,
         started_at=started_at,
-    )
+    ))
 
 def _get_financials_akshare(code: str) -> Optional[dict]:
     try:
@@ -650,7 +679,13 @@ def _get_financials_akshare_indicator(code: str) -> Optional[dict]:
 
 
 @cached(ttl=86400.0)  # 24h cache for stock info
-def get_stock_info(stock_code: str) -> dict:
+def get_stock_info(
+    code: str = "",
+    *,
+    stock_code: str = "",
+    symbol: str = "",
+    ticker: str = "",
+) -> dict:
     """
     获取股票基本信息
 
@@ -662,8 +697,27 @@ def get_stock_info(stock_code: str) -> dict:
     limiter.acquire()
 
     try:
-        code = normalize_code(stock_code)
+        raw_code, alias_hits, _ = resolve_canonical_arg(
+            "code",
+            code,
+            stock_code=stock_code,
+            symbol=symbol,
+            ticker=ticker,
+        )
+        code = normalize_code(raw_code)
+        canonical_args = {"code": code}
         df = None
+
+        def _respond(payload: dict) -> dict:
+            return attach_argument_contract_meta(
+                payload,
+                canonical_tool="get_stock_info",
+                canonical_args=canonical_args,
+                alias_hits=alias_hits,
+            )
+
+        if not code:
+            return _respond(fail("需要提供股票代码（支持 code / stock_code / symbol / ticker）"))
 
         # 1. Try Tushare Pro
         try:
@@ -706,7 +760,7 @@ def get_stock_info(stock_code: str) -> dict:
                             break
             except Exception:
                 pass
-            return ok(
+            return _respond(ok(
                 {
                     "code": code,
                     "name": str(row.get("name") or ""),
@@ -718,7 +772,7 @@ def get_stock_info(stock_code: str) -> dict:
                     "floatMarketCap": float_market_cap,
                     "raw": {k: str(row.get(k, "")) for k in df.columns},
                 }
-            )
+            ))
 
         try:
             df = _call_with_retry(lambda: ak.stock_individual_info_em(symbol=code))
@@ -727,7 +781,7 @@ def get_stock_info(stock_code: str) -> dict:
         if df is None or df.empty:
             df = ak.stock_profile_cninfo(symbol=code)
             if df is None or df.empty:
-                return fail(f"未找到股票 {code} 的信息")
+                return _respond(fail(f"未找到股票 {code} 的信息"))
 
         info: dict[str, str] = {}
         if "item" in df.columns and "value" in df.columns:
@@ -741,7 +795,7 @@ def get_stock_info(stock_code: str) -> dict:
             row = df.iloc[0]
             info = {str(k): str(row.get(k, "")) for k in df.columns}
 
-        return ok(
+        return _respond(ok(
             {
                 "code": code,
                 "name": info.get("股票简称", info.get("A股简称", "")),
@@ -753,9 +807,14 @@ def get_stock_info(stock_code: str) -> dict:
                 "floatMarketCap": info.get("流通市值", ""),
                 "raw": info,
             }
-        )
+        ))
     except Exception as e:
-        return fail(e)
+        return attach_argument_contract_meta(
+            fail(e),
+            canonical_tool="get_stock_info",
+            canonical_args={"code": normalize_code(code) if code else ""},
+            alias_hits=[],
+        )
 
 def register(mcp):
     mcp.tool()(get_financials)

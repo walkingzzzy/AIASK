@@ -9,6 +9,11 @@ import {
   FACTORY_SECTION_TABS,
   shortText,
 } from '@/app/strategy-market/lib/factory-review-view-model';
+import {
+  resolveIncubationSurface,
+  resolveMarketStatusMeta,
+  resolveStrategyDisplayStatus,
+} from '@/app/strategy-market/lib/incubation-surface';
 import { qualityBadgeVariant, qualityLabelText } from './helpers';
 import {
   ExperimentsSection,
@@ -22,6 +27,9 @@ import type { FactoryReviewPanelProps } from './types';
 export function FactoryReviewPanel({
   highConfidenceQualityUiEnabled,
   canViewOperatorPanels,
+  strategyStatus,
+  ownerState,
+  paperSessionState,
   report,
   presentation,
   events,
@@ -174,6 +182,20 @@ export function FactoryReviewPanel({
     || traceEvidenceGapCodes.some((item) => traceBlockingCodes.has(item))
   );
   const promotionReadyBadge = Boolean(incubation?.promotion_ready) && !promotionBlockedBySnapshots;
+  const displayStatus = resolveStrategyDisplayStatus({
+    strategyStatus,
+    ownerState,
+    paperSessionState,
+  });
+  const marketStatus = resolveMarketStatusMeta(strategyStatus);
+  const incubationSurface = resolveIncubationSurface({
+    strategyStatus,
+    overview: incubation,
+    account: currentAccount,
+    latestMetric,
+    latestPipelineSnapshot: latestIncubationPipelineSnapshot,
+  });
+  const showIncubationStage = !ownerState?.personal_strategy || incubationSurface.enteredIncubator;
 
   return (
     <div className="mt-4 space-y-4" data-testid="strategy-detail-factory-review">
