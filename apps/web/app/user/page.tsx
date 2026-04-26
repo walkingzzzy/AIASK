@@ -6,7 +6,9 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/status-state'
 import { authedFetch, extractApiErrorMessage, fmt } from '@/lib/api';
 import { PageContainer, KpiCard, KpiGrid, DataTable, Badge, Skeleton } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useAuthStore } from '@/store/auth-store';
 
 type UserInfo = { username?: string; role?: string; riskLevel?: string };
@@ -32,6 +34,7 @@ export default function UserPage() {
   const [riskLevel, setRiskLevel] = useState('稳健');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   const authedUser = useAuthStore((state) => state.user);
   const isLoggingOut = useAuthStore((state) => state.isLoggingOut);
@@ -106,7 +109,7 @@ export default function UserPage() {
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               用户中心工作台
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+            <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
               这一页用来串起账号信息、风险偏好、模拟交易概览、策略订阅和组合资产。先确认风险等级与账户状态，再决定是回组合、回测还是模拟交易继续工作。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -120,7 +123,7 @@ export default function UserPage() {
               ) : null}
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="mt-5 hidden gap-3 md:grid md:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">用户</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{fmt(user?.username) || '-'}</div>
@@ -144,7 +147,7 @@ export default function UserPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
+          <div className="hidden gap-3 md:grid">
             <div className="panel-soft rounded-[28px] p-4 sm:p-5">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">工作区摘要</div>
               <div className="mt-4 space-y-3">
@@ -176,7 +179,7 @@ export default function UserPage() {
 
       {profileQ.error || saveError ? <ErrorState text={(profileQ.error || saveError)!} hint="请稍后重试" /> : null}
 
-      <KpiGrid cols={4} className="mb-4">
+      <KpiGrid cols={4} className={`${compactLayout ? 'hidden ' : ''}mb-4`}>
         <KpiCard title="总资产" value={fmtNum(totalValue)} />
         <KpiCard title="总收益率" value={fmtPct(returnPct)} change={returnPct} />
         <KpiCard title="持仓数" value={String(positionCount)} />
@@ -255,7 +258,35 @@ export default function UserPage() {
         </div>
       </div>
 
-      {tradingQ.data != null ? (
+      {compactLayout ? (
+        <details className="mt-4 rounded-[24px] border border-white/45 bg-white/24 px-4 py-3">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+            展开账户资产、策略订阅与组合摘要
+          </summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className={NOTE_CARD_CLS}>
+              总资产：<span className="font-medium text-text-primary">{fmtNum(totalValue)}</span>
+            </div>
+            <div className={NOTE_CARD_CLS}>
+              订阅策略：<span className="font-medium text-text-primary">{subs.length}</span>
+            </div>
+            <div className={NOTE_CARD_CLS}>
+              资产组合：<span className="font-medium text-text-primary">{portfolios.length}</span>
+            </div>
+            <Link href="/strategy-market" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+              去策略超市
+            </Link>
+            <Link href="/portfolio" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+              去组合管理
+            </Link>
+            <Link href="/paper-trading" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+              去模拟交易
+            </Link>
+          </div>
+        </details>
+      ) : null}
+
+      {!compactLayout && tradingQ.data != null ? (
         <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
           <div className="flex items-center gap-2">
             <div className="eyebrow">Trading Summary</div>
@@ -270,6 +301,7 @@ export default function UserPage() {
         </div>
       ) : null}
 
+      {!compactLayout ? (
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-center gap-2">
@@ -359,6 +391,7 @@ export default function UserPage() {
           ) : null}
         </div>
       </div>
+      ) : null}
     </PageContainer>
   );
 }

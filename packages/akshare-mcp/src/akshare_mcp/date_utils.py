@@ -1,6 +1,7 @@
 
 from datetime import datetime, timedelta, date
 import akshare as ak
+import pandas as pd
 
 _latest_trade_date_cache: date = None
 _latest_trade_date_ts: float = 0

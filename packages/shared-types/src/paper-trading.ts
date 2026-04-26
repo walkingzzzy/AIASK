@@ -190,3 +190,55 @@ export type PaperTradingReconcileResponse = {
     total_value_after?: number;
     positions?: PaperTradingPosition[];
 };
+
+export type PaperTradingTrustLevel = 'ready' | 'caution' | 'blocked';
+
+export type PaperTradingTrustState = 'ok' | 'warning' | 'blocked';
+
+export type PaperTradingTrustEnvironment = {
+    mode?: 'paper';
+    simulated_only?: boolean;
+    dry_run?: boolean;
+    live_trading?: boolean;
+    label?: string;
+};
+
+export type PaperTradingTrustTimestamp = {
+    at?: string | null;
+    age_seconds?: number | null;
+    fresh?: boolean;
+    status?: PaperTradingTrustState;
+    detail?: string | null;
+};
+
+export type PaperTradingTrustReconcileItem = {
+    reconciled?: boolean;
+    status?: PaperTradingTrustState;
+    detail?: string | null;
+    drift_detected?: boolean;
+    reference_at?: string | null;
+};
+
+export type PaperTradingTrustStatus = {
+    account_id?: string;
+    checked_at?: string;
+    market_phase?: 'trading' | 'offhours';
+    has_activity?: boolean;
+    latest?: boolean;
+    demo_ready?: boolean;
+    level?: PaperTradingTrustLevel;
+    headline?: string;
+    reasons?: string[];
+    environment?: PaperTradingTrustEnvironment | null;
+    timestamps?: {
+        matching?: PaperTradingTrustTimestamp | null;
+        prices?: PaperTradingTrustTimestamp | null;
+        nav?: PaperTradingTrustTimestamp | null;
+        orders?: PaperTradingTrustTimestamp | null;
+    } | null;
+    reconcile?: {
+        positions?: PaperTradingTrustReconcileItem | null;
+        orders?: PaperTradingTrustReconcileItem | null;
+        nav?: PaperTradingTrustReconcileItem | null;
+    } | null;
+};

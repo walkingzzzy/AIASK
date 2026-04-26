@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 import { DbService } from '../db/db.service';
@@ -12,6 +12,7 @@ import {
   getOverview,
   getPeers,
   getStockInfo,
+  type FundamentalServiceApiHost,
 } from './fundamental.service.api';
 import {
   FundamentalCapitalDto,
@@ -37,35 +38,35 @@ export class FundamentalService {
   ) { }
 
   async getOverview(code: string): Promise<FundamentalOverviewDto> {
-    return getOverview(this as any, code);
+    return getOverview(this as unknown as FundamentalServiceApiHost, code);
   }
 
   async getHistory(code: string, days = 90): Promise<FundamentalHistoryDto> {
-    return getHistory(this as any, code, days);
+    return getHistory(this as unknown as FundamentalServiceApiHost, code, days);
   }
 
   async getCapital(code: string): Promise<FundamentalCapitalDto> {
-    return getCapital(this as any, code);
+    return getCapital(this as unknown as FundamentalServiceApiHost, code);
   }
 
   async getPeers(code: string): Promise<FundamentalPeersDto> {
-    return getPeers(this as any, code);
+    return getPeers(this as unknown as FundamentalServiceApiHost, code);
   }
 
   async getStockInfo(code: string) {
-    return getStockInfo(this as any, code);
+    return getStockInfo(this as unknown as FundamentalServiceApiHost, code);
   }
 
   async getFinancialSnapshot(code: string) {
-    return getFinancialSnapshot(this as any, code);
+    return getFinancialSnapshot(this as unknown as FundamentalServiceApiHost, code);
   }
 
   async getFinancialHistory(codes: string[], fields: string[], date: string) {
-    return getFinancialHistory(this as any, codes, fields, date);
+    return getFinancialHistory(this as unknown as FundamentalServiceApiHost, codes, fields, date);
   }
 
   async getF10Info(code: string) {
-    return getF10Info(this as any, code);
+    return getF10Info(this as unknown as FundamentalServiceApiHost, code);
   }
 
   private async buildSyntheticHistory(code: string, days: number) {

@@ -99,6 +99,23 @@ async function saveScreenshot(page, outputDir, surface, breakpoint) {
   return filePath;
 }
 
+async function waitForSurfaceReady(page, surface) {
+  if (surface.surfaceId === 'strategy-detail' || surface.proofMode === 'strategy-detail') {
+    await page
+      .waitForFunction(
+        () => {
+          const bodyText = document.body?.innerText || '';
+          const loading = /加载策略详情/.test(bodyText);
+          const hasPrimaryStatus = Boolean(document.querySelector('[data-testid="page-primary-status"]'));
+          return !loading && hasPrimaryStatus;
+        },
+        { timeout: 15000 },
+      )
+      .catch(() => {});
+    await waitForSettledUi(page, 800);
+  }
+}
+
 function buildAssertions(signals, limit) {
   const noHorizontalOverflow = signals.scrollWidth <= signals.clientWidth + 1;
   const mainUsable =
@@ -173,6 +190,7 @@ async function runSurface(page, args, surface, breakpoint, outputDir) {
   try {
     await gotoStable(page, `${args.baseUrl}${dynamic.path}`);
     await dismissOnboarding(page);
+    await waitForSurfaceReady(page, surface);
     const signals = await collectPageSignals(page);
     const screenshotPath = await saveScreenshot(page, outputDir, surface, breakpoint);
     const limit = BUDGET_LIMITS[surface.budgetClass] || 3;

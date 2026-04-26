@@ -23,7 +23,7 @@ from ..services.decision_event_builder import build_event_context as _build_even
 from ..services.decision_rule_gate import build_rule_gates as _build_rule_gates
 from ..services.decision_fusion import fuse_unified_decision as _fuse_unified_decision
 from ..services.factor_calculator import factor_calculator
-from ..utils import ok, fail, resolve_existing_security_code_async
+from ..utils import ok, fail, resolve_existing_security_code_async, resolve_security_code
 import asyncio
 import statistics
 import time

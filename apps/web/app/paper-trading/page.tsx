@@ -7,6 +7,7 @@ import PaperTradingAnalytics from '@/app/paper-trading/components/paper-trading-
 import PaperTradingHero from '@/app/paper-trading/components/paper-trading-hero';
 import PaperTradingOrderWorkspace from '@/app/paper-trading/components/paper-trading-order-workspace';
 import PaperTradingSummarySidebar from '@/app/paper-trading/components/paper-trading-summary-sidebar';
+import PaperTradingTrustStatusCard from '@/app/paper-trading/components/paper-trading-trust-status';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { LoadingState, PageStatusCard } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
@@ -50,6 +51,8 @@ import type {
   PaperTradingStatusProbe,
   PaperTradingSummary,
   PaperTradingTrade,
+  PaperTradingTrustStatus,
+  StrategyPaperContextResponse,
 } from '@aiask/shared-types';
 
 type PendingOrderRequest = {
@@ -127,6 +130,11 @@ export default function PaperTradingPage() {
   const queryStrategyName = searchParams.get('strategy_name')?.trim() ?? '';
   const queryMode = searchParams.get('mode')?.trim() ?? '';
   const queryStockCode = searchParams.get('stock_code')?.trim() ?? '';
+  const linkedStrategyId = queryStrategyId || workbenchContext.linkedStrategyId || workbenchContext.strategyId || '';
+  const personalStrategyMode =
+    queryMode === 'personal-strategy'
+    || workbenchContext.mode === 'personal-strategy'
+    || workbenchContext.strategyTestMode === 'personal-strategy';
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
@@ -145,8 +153,16 @@ export default function PaperTradingPage() {
   const [mobilePrimaryTab, setMobilePrimaryTab] = useState<PaperTradingMobilePrimaryTab>('order');
   const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const strategyDetailQ = useApiQuery<Record<string, unknown>>(
-    queryStrategyId ? `/strategy-market/${encodeURIComponent(queryStrategyId)}` : null,
-    { enabled: Boolean(queryStrategyId), staleTime: 60_000 },
+    linkedStrategyId ? `/strategy-market/${encodeURIComponent(linkedStrategyId)}` : null,
+    { enabled: Boolean(linkedStrategyId), staleTime: 60_000 },
+  );
+  const strategyPaperContextQ = useApiQuery<StrategyPaperContextResponse>(
+    linkedStrategyId ? `/strategy-market/${encodeURIComponent(linkedStrategyId)}/paper-context` : null,
+    {
+      enabled: personalStrategyMode && Boolean(linkedStrategyId),
+      staleTime: 60_000,
+      nonFatal: true,
+    },
   );
 
   // T-005: WS real-time trade order updates
@@ -160,25 +176,55 @@ export default function PaperTradingPage() {
     setTimeout(() => setTradeNotice(null), 5000);
   }, []);
 
-  const qs = accountId ? `?account_id=${accountId}` : '';
+  const personalTrack = strategyPaperContextQ.data?.personal ?? null;
+  const resolvedPersonalAccountId = String(
+    personalTrack?.account_id
+      ?? personalTrack?.account?.id
+      ?? personalTrack?.account?.account_id
+      ?? '',
+  ).trim();
+  const requiresPersonalSession = personalStrategyMode && Boolean(linkedStrategyId);
+  const activeAccountId = queryAccountId || (requiresPersonalSession ? (accountId || resolvedPersonalAccountId) : accountId);
+  const canLoadAccountQueries = !requiresPersonalSession || Boolean(activeAccountId);
+  const qs = canLoadAccountQueries && activeAccountId ? `?account_id=${activeAccountId}` : '';
 
   // 8 read queries — auto-fetch on mount, re-fetch when qs changes
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
   const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts', { critical: true });
   const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status', { critical: true });
   const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status', { critical: true });
-  const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary', { critical: true });
-  const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs, { critical: true });
-  const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs, { critical: true });
-  const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs, { critical: true });
-  const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs, { critical: true });
+  const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary', {
+    critical: true,
+    enabled: canLoadAccountQueries,
+  });
+  const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs, {
+    critical: true,
+    enabled: canLoadAccountQueries,
+  });
+  const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs, {
+    critical: true,
+    enabled: canLoadAccountQueries,
+  });
+  const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs, {
+    critical: true,
+    enabled: canLoadAccountQueries,
+  });
+  const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs, {
+    critical: true,
+    enabled: canLoadAccountQueries,
+  });
   const performanceQ = useApiQuery<PaperTradingPerformanceResponse>(
     `/paper-trading/performance${qs ? `${qs}&days=${perfDays}` : `?days=${perfDays}`}`,
-    { critical: true },
+    { critical: true, enabled: canLoadAccountQueries },
   );
+  const trustStatusQ = useApiQuery<PaperTradingTrustStatus>('/paper-trading/trust-status' + qs, {
+    placeholderData: 'keepPrevious',
+    nonFatal: true,
+    enabled: canLoadAccountQueries,
+  });
 
   // Subscribe to trade updates via WS
-  useTradeSubscription({ accountId: accountId || 'default', onUpdate: handleTradeUpdate });
+  useTradeSubscription({ accountId: activeAccountId || 'default', onUpdate: handleTradeUpdate, enabled: canLoadAccountQueries });
 
   // Advanced MCP Managers (Compliance & Execution)
   const [useComplianceCheck, setUseComplianceCheck] = useState(false);
@@ -204,19 +250,28 @@ export default function PaperTradingPage() {
   const cancelApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
 
   const refreshPaperData = useCallback(async () => {
-    await Promise.allSettled([
+    const tasks = [
       profileQ.refetch(),
       accountsQ.refetch(),
       matchStatusQ.refetch(),
       navStatusQ.refetch(),
-      summaryQ.refetch(),
-      positionsQ.refetch(),
-      ordersQ.refetch(),
-      pendingQ.refetch(),
-      navQ.refetch(),
-      performanceQ.refetch(),
-    ]);
-  }, [accountsQ, matchStatusQ, navQ, navStatusQ, ordersQ, pendingQ, performanceQ, positionsQ, profileQ, summaryQ]);
+    ];
+    if (personalStrategyMode && linkedStrategyId) {
+      tasks.unshift(strategyPaperContextQ.refetch());
+    }
+    if (canLoadAccountQueries) {
+      tasks.push(
+        summaryQ.refetch(),
+        positionsQ.refetch(),
+        ordersQ.refetch(),
+        pendingQ.refetch(),
+        navQ.refetch(),
+        performanceQ.refetch(),
+        trustStatusQ.refetch(),
+      );
+    }
+    await Promise.allSettled(tasks);
+  }, [accountsQ, canLoadAccountQueries, linkedStrategyId, matchStatusQ, navQ, navStatusQ, ordersQ, pendingQ, performanceQ, personalStrategyMode, positionsQ, profileQ, strategyPaperContextQ, summaryQ, trustStatusQ]);
 
   const accounts = useMemo(
     () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as PaperTradingAccount[],
@@ -232,7 +287,6 @@ export default function PaperTradingPage() {
     const strategy = root.strategy;
     return strategy && typeof strategy === 'object' ? strategy as Record<string, unknown> : null;
   }, [strategyDetailQ.data]);
-  const linkedStrategyId = queryStrategyId || workbenchContext.linkedStrategyId || workbenchContext.strategyId || '';
   const linkedStrategyName =
     String(
       linkedStrategyRecord?.name
@@ -242,10 +296,6 @@ export default function PaperTradingPage() {
         ?? '',
     ).trim();
   const linkedStrategyStatus = String(linkedStrategyRecord?.status ?? '').trim() || null;
-  const personalStrategyMode =
-    queryMode === 'personal-strategy'
-    || workbenchContext.mode === 'personal-strategy'
-    || workbenchContext.strategyTestMode === 'personal-strategy';
 
   const acct = summaryQ.data?.account ?? undefined;
   const totalValue = Number(summaryQ.data?.total_value ?? acct?.total_value ?? 0);
@@ -272,6 +322,7 @@ export default function PaperTradingPage() {
     () => (summaryQ.data?.reconciliation ?? positionsQ.data?.reconciliation ?? null) as PaperTradingReconcileResponse | null,
     [positionsQ.data?.reconciliation, summaryQ.data?.reconciliation],
   );
+  const trustStatus = useMemo(() => trustStatusQ.data ?? null, [trustStatusQ.data]);
   const navData = useMemo(() => (navQ.data?.nav ?? []) as PaperTradingNavPoint[], [navQ.data?.nav]);
   const performanceData = useMemo(
     () => (performanceQ.data?.dailyReturns ?? []) as PaperTradingPerformancePoint[],
@@ -366,6 +417,7 @@ export default function PaperTradingPage() {
   );
 
   const pageLoading =
+    (requiresPersonalSession && !queryAccountId && strategyPaperContextQ.isPending) ||
     profileQ.isPending ||
     accountsQ.isPending ||
     matchStatusQ.isPending ||
@@ -388,14 +440,14 @@ export default function PaperTradingPage() {
     navQ.error ||
     performanceQ.error;
   const error = pageError || refreshPricesApi.error || reconcileApi.error;
-  const accountIdRef = useRef(accountId);
+  const accountIdRef = useRef(activeAccountId);
   const autoRefreshBusyRef = useRef(false);
   const manualRefreshPendingRef = useRef(refreshPricesApi.isPending);
   const autoRefreshTriggerRef = useRef(autoRefreshPricesApi.triggerAsync);
 
   useEffect(() => {
-    accountIdRef.current = accountId;
-  }, [accountId]);
+    accountIdRef.current = activeAccountId;
+  }, [activeAccountId]);
 
   useEffect(() => {
     manualRefreshPendingRef.current = refreshPricesApi.isPending;
@@ -406,6 +458,10 @@ export default function PaperTradingPage() {
   }, [autoRefreshPricesApi.triggerAsync]);
 
   const handleRefreshPrices = useCallback(async () => {
+    if (!canLoadAccountQueries) {
+      setFormError('尚未创建个人模拟盘测试，当前不会回退到默认账户。');
+      return;
+    }
     setFormError(null);
     setFormStatus('正在刷新持仓价格...');
     setLastActionResult(null);
@@ -413,7 +469,7 @@ export default function PaperTradingPage() {
       await refreshPricesApi.triggerAsync(
         '/paper-trading/update-prices',
         { method: 'POST' },
-        accountId ? { account_id: accountId } : {},
+        activeAccountId ? { account_id: activeAccountId } : {},
       );
       toast('持仓价格已刷新', 'success');
       setFormStatus(null);
@@ -422,9 +478,13 @@ export default function PaperTradingPage() {
       setFormStatus(null);
       setFormError(err instanceof Error ? err.message : String(err));
     }
-  }, [accountId, refreshPricesApi, toast]);
+  }, [activeAccountId, canLoadAccountQueries, refreshPricesApi, toast]);
 
   const handleReconcileLedger = useCallback(async () => {
+    if (!canLoadAccountQueries) {
+      setFormError('尚未创建个人模拟盘测试，当前不会回退到默认账户。');
+      return;
+    }
     setFormError(null);
     setFormStatus('正在校准账本与持仓快照...');
     setLastActionResult(null);
@@ -432,7 +492,7 @@ export default function PaperTradingPage() {
       await reconcileApi.triggerAsync(
         '/paper-trading/reconcile',
         { method: 'POST' },
-        accountId ? { account_id: accountId, refresh_prices: true } : { refresh_prices: true },
+        activeAccountId ? { account_id: activeAccountId, refresh_prices: true } : { refresh_prices: true },
       );
       toast('账本已完成校准', 'success');
       setFormStatus(null);
@@ -441,12 +501,13 @@ export default function PaperTradingPage() {
       setFormStatus(null);
       setFormError(err instanceof Error ? err.message : String(err));
     }
-  }, [accountId, reconcileApi, toast]);
+  }, [activeAccountId, canLoadAccountQueries, reconcileApi, toast]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const tick = async () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (!canLoadAccountQueries) return;
       if (!isTradingHours()) return;
       if (manualRefreshPendingRef.current || autoRefreshBusyRef.current) return;
       autoRefreshBusyRef.current = true;
@@ -467,7 +528,7 @@ export default function PaperTradingPage() {
       void tick();
     }, 15_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [canLoadAccountQueries]);
 
   async function submitOrder(request: PendingOrderRequest) {
     const { body, idempotencyKey } = request;
@@ -559,7 +620,7 @@ export default function PaperTradingPage() {
     if (orderType === 'limit' && price) body.price = parseFloat(price);
     if (orderType === 'stop' && stopPrice) body.stop_price = parseFloat(stopPrice);
     if (orderType === 'market' && price) body.price = parseFloat(price);
-    if (accountId) body.account_id = accountId;
+    if (activeAccountId) body.account_id = activeAccountId;
 
     const request = {
       body,
@@ -644,6 +705,12 @@ export default function PaperTradingPage() {
 
   const matchStatusLabel = matchOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
   const navStatusLabel = navOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
+  const missingPersonalSession =
+    requiresPersonalSession
+    && !queryAccountId
+    && !resolvedPersonalAccountId
+    && !strategyPaperContextQ.isPending;
+  const accountDisplayId = activeAccountId || (requiresPersonalSession ? '未创建个人盘' : 'default');
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -651,11 +718,21 @@ export default function PaperTradingPage() {
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
     setCode(queryStockCode || (workbenchContext.stockCode ?? ''));
-    setAccountId(queryAccountId || (workbenchContext.accountId ?? ''));
+    if (queryAccountId) {
+      setAccountId(queryAccountId);
+      return;
+    }
+    if (requiresPersonalSession) {
+      setAccountId(resolvedPersonalAccountId || '');
+      return;
+    }
+    setAccountId(workbenchContext.accountId ?? '');
   }, [
     activeWorkspaceId,
     queryAccountId,
     queryStockCode,
+    requiresPersonalSession,
+    resolvedPersonalAccountId,
     setCode,
     workbenchContext.accountId,
     workbenchContext.stockCode,
@@ -669,14 +746,18 @@ export default function PaperTradingPage() {
     }
     if (queryAccountId) {
       setAccountId(queryAccountId);
+      return;
     }
-  }, [queryAccountId, queryStockCode, setCode, workbenchHydrated]);
+    if (requiresPersonalSession) {
+      setAccountId(resolvedPersonalAccountId || '');
+    }
+  }, [queryAccountId, queryStockCode, requiresPersonalSession, resolvedPersonalAccountId, setCode, workbenchHydrated]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
     updateWorkbenchContext({
       stockCode: trimmedCode || null,
-      accountId: accountId || null,
+      accountId: activeAccountId || null,
       strategyId: linkedStrategyId || null,
       strategyName: linkedStrategyName || null,
       linkedStrategyId: linkedStrategyId || null,
@@ -685,7 +766,7 @@ export default function PaperTradingPage() {
       strategyTestMode: personalStrategyMode ? 'personal-strategy' : null,
     });
   }, [
-    accountId,
+    activeAccountId,
     linkedStrategyId,
     linkedStrategyName,
     personalStrategyMode,
@@ -749,7 +830,7 @@ export default function PaperTradingPage() {
   );
 
   usePageActions(pageActions);
-  const paperSummary = `账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。${linkedStrategyName ? ` 当前策略 ${linkedStrategyName}。` : ''}`;
+  const paperSummary = `账户 ${accountDisplayId}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。${linkedStrategyName ? ` 当前策略 ${linkedStrategyName}。` : ''}`;
   const paperResult = buildLocalResultContract({
     summary: paperSummary,
     status: showAccountBootstrap ? 'empty' : (!matchOk || !navOk ? 'degraded' : 'ready'),
@@ -767,7 +848,7 @@ export default function PaperTradingPage() {
       !matchOk || !navOk ? '撮合或净值未完全正常时，优先刷新价格或校准账本。' : '账户健康正常时，再进入绩效或风险闭环。',
     ],
     evidence: [
-      { label: '账户', value: accountId || 'default' },
+      { label: '账户', value: accountDisplayId },
       { label: '持仓数', value: String(positions.length) },
       { label: '挂单数', value: String(pending.length) },
       { label: '订单数', value: String(trades.length) },
@@ -790,7 +871,7 @@ export default function PaperTradingPage() {
     freshness: summaryQ.dataUpdatedAt ? { updatedAt: new Date(summaryQ.dataUpdatedAt).toISOString(), label: '模拟盘快照' } : null,
     platformMeta: {
       sourceTool: 'paper-trading',
-      sourceChain: ['paper-trading', accountId || 'default'],
+      sourceChain: ['paper-trading', accountDisplayId],
       degraded: Boolean(error) || !matchOk || !navOk,
       fallbackReason: [error, !matchOk ? '撮合状态未确认' : null, !navOk ? '净值状态未确认' : null].filter((item): item is string => Boolean(item)),
     },
@@ -799,7 +880,7 @@ export default function PaperTradingPage() {
       `复查模拟盘${linkedStrategyName ? ` · ${linkedStrategyName}` : ''}`,
       linkedStrategyId ? `/paper-trading?strategy_id=${encodeURIComponent(linkedStrategyId)}` : '/paper-trading',
       'paper-trading-review',
-      { accountId: accountId || 'default', stockCode: trimmedCode || null, linkedStrategyId: linkedStrategyId || null },
+      { accountId: accountDisplayId, stockCode: trimmedCode || null, linkedStrategyId: linkedStrategyId || null },
     ),
   });
 
@@ -811,7 +892,7 @@ export default function PaperTradingPage() {
     requiredInputs: ['accountId', 'stockCode', 'direction', 'quantity'],
     stockCode: trimmedCode || undefined,
     objectType: 'portfolio',
-    objectId: accountId || 'default',
+    objectId: accountDisplayId,
     resultType: 'paper-trading-dashboard',
     tags: [
       `${positions.length} 条持仓`,
@@ -835,7 +916,7 @@ export default function PaperTradingPage() {
     dataFreshness: paperResult.freshness?.updatedAt ?? null,
     degradedReason: paperResult.riskNotes ?? [],
     raw: {
-      accountId: accountId || 'default',
+      accountId: accountDisplayId,
       stockCode: trimmedCode || null,
       positionCount: positions.length,
       pendingCount: pending.length,
@@ -857,12 +938,12 @@ export default function PaperTradingPage() {
       price,
       orderType,
       stopPrice,
-      accountId,
+      accountId: activeAccountId,
       useComplianceCheck,
       urgentExecution,
       perfDays,
     }),
-    [accountId, code, direction, orderType, perfDays, price, quantity, stopPrice, urgentExecution, useComplianceCheck],
+    [activeAccountId, code, direction, orderType, perfDays, price, quantity, stopPrice, urgentExecution, useComplianceCheck],
   );
 
   const applyView = useCallback(
@@ -916,7 +997,7 @@ export default function PaperTradingPage() {
           orderTypeLabel={orderTypeLabel}
           estimatedAmount={estimatedAmount}
           previewUnitPrice={previewUnitPrice}
-          accountId={accountId}
+          accountId={activeAccountId}
           positionsCount={positions.length}
           pendingCount={pending.length}
           tradesCount={trades.length}
@@ -940,39 +1021,45 @@ export default function PaperTradingPage() {
         />
       </div>
 
-      <ProgressiveWorkbenchSection
-        pageKey="paper-trading"
-        title="模拟盘结果工作台"
-        result={paperResult}
-        summaryMode="strip"
-      />
+      {!collapseToTabs && trustStatus ? <PaperTradingTrustStatusCard status={trustStatus} /> : null}
+
+      {!collapseToTabs ? (
+        <ProgressiveWorkbenchSection
+          pageKey="paper-trading"
+          title="模拟盘结果工作台"
+          result={paperResult}
+          summaryMode="strip"
+        />
+      ) : null}
 
       {showAccountBootstrap || !matchOk || !navOk ? (
-        <PageStatusCard
-          status={showAccountBootstrap ? 'empty' : 'degraded'}
-          title={showAccountBootstrap ? '先完成第一笔模拟交易' : '交易链路当前未完全就绪'}
-          reason={
-            showAccountBootstrap
-              ? '当前还没有持仓、挂单、成交和净值轨迹，请先提交首笔真实模拟委托。'
-              : [
-                  matchOk ? null : readStatusProbeNote(matchStatus, '撮合服务尚未就绪'),
-                  navOk ? null : readStatusProbeNote(navStatus, '净值服务尚未就绪'),
-                ].filter((item): item is string => Boolean(item)).join('；')
-          }
-          freshness={summaryQ.dataUpdatedAt ? new Date(summaryQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
-          primaryAction={(
-            <button type="button" onClick={() => void handleRefreshPrices()} className="action-chip cursor-pointer text-sm text-text-primary">
-              刷新价格
-            </button>
-          )}
-          secondaryAction={(
-            <button type="button" onClick={() => void handleReconcileLedger()} className="action-chip cursor-pointer text-sm text-text-primary">
-              校准账本
-            </button>
-          )}
-          example="code=600519，direction=buy，quantity=100"
-          className="mb-4"
-        />
+        !collapseToTabs ? (
+          <PageStatusCard
+            status={showAccountBootstrap ? 'empty' : 'degraded'}
+            title={showAccountBootstrap ? '先完成第一笔模拟交易' : '交易链路当前未完全就绪'}
+            reason={
+              showAccountBootstrap
+                ? '当前还没有持仓、挂单、成交和净值轨迹，请先提交首笔真实模拟委托。'
+                : [
+                    matchOk ? null : readStatusProbeNote(matchStatus, '撮合服务尚未就绪'),
+                    navOk ? null : readStatusProbeNote(navStatus, '净值服务尚未就绪'),
+                  ].filter((item): item is string => Boolean(item)).join('；')
+            }
+            freshness={summaryQ.dataUpdatedAt ? new Date(summaryQ.dataUpdatedAt).toLocaleString('zh-CN') : null}
+            primaryAction={(
+              <button type="button" onClick={() => void handleRefreshPrices()} className="action-chip cursor-pointer text-sm text-text-primary">
+                刷新价格
+              </button>
+            )}
+            secondaryAction={(
+              <button type="button" onClick={() => void handleReconcileLedger()} className="action-chip cursor-pointer text-sm text-text-primary">
+                校准账本
+              </button>
+            )}
+            example="code=600519，direction=buy，quantity=100"
+            className="mb-4"
+          />
+        ) : null
       ) : null}
 
       {collapseToTabs ? (
@@ -1010,7 +1097,7 @@ export default function PaperTradingPage() {
             orderTypeLabel={orderTypeLabel}
             trimmedCode={trimmedCode}
             quantityValue={quantityValue}
-            accountId={accountId}
+            accountId={activeAccountId}
             previewUnitPrice={previewUnitPrice}
             estimatedAmount={estimatedAmount}
             riskHints={riskHints}
@@ -1033,7 +1120,7 @@ export default function PaperTradingPage() {
           onReconcileLedger={() => void handleReconcileLedger()}
           reconcilePending={reconcileApi.isPending}
           accounts={accounts}
-          accountId={accountId}
+          accountId={activeAccountId}
           onAccountChange={setAccountId}
           statusNotes={statusNotes}
           totalValue={totalValue}
@@ -1140,7 +1227,7 @@ export default function PaperTradingPage() {
   const secondaryContent = (
     <div>
       <PaperTradingSummarySidebar
-        accountId={accountId}
+        accountId={activeAccountId}
         trimmedCode={trimmedCode}
         directionLabel={directionLabel}
         orderTypeLabel={orderTypeLabel}
@@ -1158,6 +1245,34 @@ export default function PaperTradingPage() {
       />
     </div>
   );
+
+  if (missingPersonalSession) {
+    return (
+      <PageContainer>
+        <PageStatusCard
+          status="empty"
+          title="尚未创建个人模拟盘测试"
+          reason={`${String(personalTrack?.reason ?? '当前策略还没有 personal paper session').trim() || '当前策略还没有 personal paper session'}，不会回退到默认账户。`}
+          primaryAction={(
+            linkedStrategyId ? (
+              <Link
+                href={`/strategy-market/${encodeURIComponent(linkedStrategyId)}`}
+                className="action-chip text-sm no-underline text-inherit"
+              >
+                返回策略详情
+              </Link>
+            ) : undefined
+          )}
+          secondaryAction={(
+            <button type="button" onClick={() => void refreshPaperData()} className="action-chip cursor-pointer text-sm text-text-primary">
+              重新检查
+            </button>
+          )}
+          example={linkedStrategyName ? `从“${linkedStrategyName}”详情页点击“创建模拟盘测试”` : '从策略详情页点击“创建模拟盘测试”'}
+        />
+      </PageContainer>
+    );
+  }
 
   if (pageLoading && !pageError && !summaryQ.data) {
     return (

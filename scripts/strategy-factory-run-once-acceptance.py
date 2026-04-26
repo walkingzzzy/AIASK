@@ -7,7 +7,14 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+for relative in ("packages/akshare-mcp/src", "packages/strategy-factory/src"):
+    path = ROOT_DIR / relative
+    if path.exists():
+        sys.path.insert(0, str(path))
 
 from akshare_mcp.env_loader import load_mcp_env
 from akshare_mcp.storage import close_db, drain_cleanup_callbacks, get_db

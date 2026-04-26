@@ -5,7 +5,7 @@ import BacktestConfigWorkspace from '@/app/backtest/components/backtest-config-w
 import BacktestHero from '@/app/backtest/components/backtest-hero';
 import BacktestHistoryBatch from '@/app/backtest/components/backtest-history-batch';
 import { backtestChipButtonCls, backtestNavCardCls } from '@/app/backtest/components/backtest-panel-styles';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import {
   PageContainer,
   SectionCard,
@@ -562,34 +562,30 @@ export default function BacktestPage() {
   usePageActions(pageActions);
 
   const backtestSummary = `当前标的 ${trimmedCode || '未填写'}，策略 ${strategyLabel}，时间范围 ${dateRangeLabel}，运行状态 ${runStatusLabel}。`;
-  const backtestResult = useMemo(
-    () =>
-      buildLocalResultContract({
-        summary: backtestSummary,
-        pageActions,
-        preferredActionIds: ['backtest.focus-results', 'backtest.focus-research', 'backtest.focus-history'],
-        recommendedLinks: [
-          trimmedCode ? { id: 'backtest-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'backtest-open-market', label: '行情看板', href: '/market?from=backtest' },
-          { id: 'backtest-open-skills', label: '去技能中心', href: '/skills?skill=akshare-portfolio' },
-          { id: 'backtest-open-strategy', label: '去策略超市', href: `/strategy-market?from=backtest&q=${encodeURIComponent(trimmedCode || strategy)}` },
-          { id: 'backtest-open-data', label: '去数据中心', href: '/data?from=backtest' },
-        ],
-        evidence: [
-          { label: '当前标的', value: trimmedCode || '-' },
-          { label: '策略', value: strategyLabel },
-          { label: '时间范围', value: dateRangeLabel },
-          { label: '运行状态', value: runStatusLabel },
-          { label: '批量结果', value: String(batchResults.length) },
-        ],
-        riskNotes: formError ? [formError] : runFailure?.reason ? [runFailure.reason] : [],
-        workbenchTask: defaultWorkbenchTask('backtest', `回测复盘：${trimmedCode || strategyLabel}`, '/backtest', 'backtest-review', {
-          code: trimmedCode || null,
-          strategy,
-          surfaceTab,
-        }),
-      }),
-    [backtestSummary, batchResults.length, dateRangeLabel, formError, pageActions, runFailure?.reason, runStatusLabel, strategy, strategyLabel, surfaceTab, trimmedCode],
-  );
+  const backtestResult = buildLocalResultContract({
+    summary: backtestSummary,
+    pageActions,
+    preferredActionIds: ['backtest.focus-results', 'backtest.focus-research', 'backtest.focus-history'],
+    recommendedLinks: [
+      trimmedCode ? { id: 'backtest-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'backtest-open-market', label: '行情看板', href: '/market?from=backtest' },
+      { id: 'backtest-open-skills', label: '去技能中心', href: '/skills?skill=akshare-portfolio' },
+      { id: 'backtest-open-strategy', label: '去策略超市', href: `/strategy-market?from=backtest&q=${encodeURIComponent(trimmedCode || strategy)}` },
+      { id: 'backtest-open-data', label: '去数据中心', href: '/data?from=backtest' },
+    ],
+    evidence: [
+      { label: '当前标的', value: trimmedCode || '-' },
+      { label: '策略', value: strategyLabel },
+      { label: '时间范围', value: dateRangeLabel },
+      { label: '运行状态', value: runStatusLabel },
+      { label: '批量结果', value: String(batchResults.length) },
+    ],
+    riskNotes: formError ? [formError] : runFailure?.reason ? [runFailure.reason] : [],
+    workbenchTask: defaultWorkbenchTask('backtest', `回测复盘：${trimmedCode || strategyLabel}`, '/backtest', 'backtest-review', {
+      code: trimmedCode || null,
+      strategy,
+      surfaceTab,
+    }),
+  });
 
   usePageContext({
     pageKey: 'backtest',
@@ -665,7 +661,7 @@ export default function BacktestPage() {
         configurationSummary={configurationSummary}
       />
 
-      <ResultWorkbench pageKey="backtest" title="回测结果工作台" result={backtestResult} />
+      <ResponsiveResultWorkbench pageKey="backtest" title="回测结果工作台" result={backtestResult} />
 
       <KpiGrid cols={5} className="mb-4">
         <KpiCard title="策略" value={strategyLabel} />

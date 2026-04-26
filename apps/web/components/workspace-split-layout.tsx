@@ -70,22 +70,26 @@ export default function WorkspaceSplitLayout({
     ],
     [primary, primaryLabel, secondary, secondaryLabel, secondaryPanels],
   );
-  const [mobileTab, setMobileTab] = useState(defaultMobileTab);
+  const [mobileTabState, setMobileTabState] = useState({
+    defaultMobileTab,
+    pageKey,
+    selected: defaultMobileTab,
+  });
+  const mobileTabCandidate =
+    mobileTabState.pageKey === pageKey && mobileTabState.defaultMobileTab === defaultMobileTab
+      ? mobileTabState.selected
+      : defaultMobileTab;
+  const mobileTab = stackedPanels.some((panel) => panel.key === mobileTabCandidate)
+    ? mobileTabCandidate
+    : stackedPanels[0]?.key ?? 'primary';
+  const selectMobileTab = (selected: string) => {
+    setMobileTabState({ defaultMobileTab, pageKey, selected });
+  };
 
   useEffect(() => () => {
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
   }, []);
-
-  useEffect(() => {
-    if (!stackedPanels.some((panel) => panel.key === mobileTab)) {
-      setMobileTab(stackedPanels[0]?.key ?? 'primary');
-    }
-  }, [mobileTab, stackedPanels]);
-
-  useEffect(() => {
-    setMobileTab(defaultMobileTab);
-  }, [defaultMobileTab, pageKey]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (pagePanel.mode !== 'split') return;
@@ -148,7 +152,7 @@ export default function WorkspaceSplitLayout({
             <TabBar
               tabs={tabPanels.map((panel) => ({ key: panel.key, label: panel.label }))}
               active={activeTab?.key ?? tabPanels[0].key}
-              onChange={(key) => setMobileTab(key)}
+              onChange={(key) => selectMobileTab(key)}
             />
             <div>{activeTab?.content}</div>
           </div>

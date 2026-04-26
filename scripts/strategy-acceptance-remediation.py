@@ -257,6 +257,8 @@ async def _async_main(args: argparse.Namespace) -> int:
         failed_metric_ids = list(dict.fromkeys(_normalize_csv(args.failed_strategy_ids)))
     if args.bootstrap_strategy_ids:
         insufficient_sample_ids = list(dict.fromkeys(_normalize_csv(args.bootstrap_strategy_ids)))
+    if args.skip_bootstrap:
+        insufficient_sample_ids = []
 
     failed_results: list[dict[str, Any]] = []
     signal_rebuild_results: list[dict[str, Any]] = []
@@ -332,6 +334,7 @@ def main() -> int:
     parser.add_argument("--from-acceptance-report", required=True, help="Path to an existing execution audit acceptance JSON report.")
     parser.add_argument("--failed-strategy-ids", default="", help="Optional comma-separated strategy ids to override failed_metrics selection.")
     parser.add_argument("--bootstrap-strategy-ids", default="", help="Optional comma-separated strategy ids to override insufficient_samples selection.")
+    parser.add_argument("--skip-bootstrap", action="store_true", help="Do not import bootstrap evidence for insufficient-sample strategies.")
     parser.add_argument("--report-dir", default="", help="Directory to write remediation reports.")
     parser.add_argument("--version-tag", default="", help="Optional suffix for generated report files.")
     args = parser.parse_args()

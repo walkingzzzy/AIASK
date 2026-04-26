@@ -222,6 +222,119 @@ def test_reconcile_account_state_repairs_position_and_cash_drift():
     assert conn.positions[0]["current_price"] == 12.0
 
 
+def test_reconcile_account_state_keeps_consistent_snapshot_without_repair():
+    conn = _FakePaperConn(
+        account={
+            "id": "acc-1",
+            "initial_capital": 100000.0,
+            "current_capital": 99000.0,
+            "total_value": 100200.0,
+        },
+        positions=[
+            {
+                "account_id": "acc-1",
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "quantity": 100,
+                "cost_price": 10.0,
+                "current_price": 12.0,
+                "market_value": 1200.0,
+                "profit_rate": 0.2,
+            }
+        ],
+        trades=[
+            {
+                "id": "t-1",
+                "account_id": "acc-1",
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "trade_type": "buy",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1000.0,
+                "commission": 0.0,
+            }
+        ],
+    )
+    db = _FakePaperDb(conn)
+
+    result = asyncio.run(
+        support_module._reconcile_account_state(
+            db,
+            "acc-1",
+            refresh_prices=False,
+            force=False,
+        )
+    )
+
+    assert result["drift_detected"] is False
+    assert result["reconciled"] is False
+    assert result["reasons"] == []
+    assert conn.account["current_capital"] == 99000.0
+    assert conn.account["total_value"] == 100200.0
+    assert len(conn.positions) == 1
+    assert conn.positions[0]["quantity"] == 100
+
+
+def test_reconcile_account_state_refresh_prices_detects_valuation_drift(monkeypatch):
+    async def _fixed_price(_code: str, _db):
+        return 11.0
+
+    monkeypatch.setattr(support_module, "_get_price", _fixed_price)
+
+    conn = _FakePaperConn(
+        account={
+            "id": "acc-1",
+            "initial_capital": 100000.0,
+            "current_capital": 99000.0,
+            "total_value": 100000.0,
+        },
+        positions=[
+            {
+                "account_id": "acc-1",
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "quantity": 100,
+                "cost_price": 10.0,
+                "current_price": 10.0,
+                "market_value": 1000.0,
+                "profit_rate": 0.0,
+            }
+        ],
+        trades=[
+            {
+                "id": "t-1",
+                "account_id": "acc-1",
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "trade_type": "buy",
+                "price": 10.0,
+                "quantity": 100,
+                "amount": 1000.0,
+                "commission": 0.0,
+            }
+        ],
+    )
+    db = _FakePaperDb(conn)
+
+    result = asyncio.run(
+        support_module._reconcile_account_state(
+            db,
+            "acc-1",
+            refresh_prices=True,
+            force=False,
+        )
+    )
+
+    assert result["drift_detected"] is True
+    assert result["reconciled"] is True
+    assert "position_valuation_mismatch:600519" in result["reasons"]
+    assert conn.account["total_value"] == 100100.0
+    assert len(conn.positions) == 1
+    assert conn.positions[0]["current_price"] == 11.0
+    assert conn.positions[0]["market_value"] == 1100.0
+
+
 def test_fill_order_recomputes_cash_from_trade_ledger(monkeypatch):
     async def _noop_record_trade_position_fill(*_args, **_kwargs):
         return None

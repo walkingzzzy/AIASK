@@ -54,11 +54,12 @@ def _sort_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     frame = frame.copy()
     frame["_date_key"] = pd.to_datetime(frame["date"], errors="coerce")
     frame = frame.sort_values(by=["_date_key", "date"], ascending=[True, True]).drop(columns=["_date_key"])
+    frame["date"] = frame["date"].astype(str)
+    frame = frame.drop_duplicates(subset=["date"], keep="last")
     for column in ("open", "high", "low", "close", "volume", "amount", "turnover"):
         if column not in frame.columns:
             frame[column] = np.nan
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame["date"] = frame["date"].astype(str)
     return frame.reset_index(drop=True)
 
 async def _load_validation_frame(db, code: str, lookback_bars: int) -> tuple[pd.DataFrame, list[str], Optional[str]]:
@@ -413,8 +414,14 @@ def _build_long_short_return_series(
             series.append(np.nan)
             continue
 
-        factor_row = pd.to_numeric(factor_df.loc[date_key, candidate_columns], errors="coerce")
-        return_row = pd.to_numeric(return_df.loc[date_key, candidate_columns], errors="coerce")
+        raw_factor_row = factor_df.loc[date_key, candidate_columns]
+        raw_return_row = return_df.loc[date_key, candidate_columns]
+        if isinstance(raw_factor_row, pd.DataFrame):
+            raw_factor_row = raw_factor_row.iloc[-1]
+        if isinstance(raw_return_row, pd.DataFrame):
+            raw_return_row = raw_return_row.iloc[-1]
+        factor_row = pd.to_numeric(raw_factor_row, errors="coerce")
+        return_row = pd.to_numeric(raw_return_row, errors="coerce")
         mask = factor_row.notna() & return_row.notna()
         if int(mask.sum()) < 4:
             series.append(np.nan)
@@ -813,6 +820,10 @@ def _build_cost_capacity_report(
     for date_key in common_index:
         factor_row = factor_df.loc[date_key, common_columns]
         amount_row = amount_df.loc[date_key, common_columns]
+        if isinstance(factor_row, pd.DataFrame):
+            factor_row = factor_row.iloc[-1]
+        if isinstance(amount_row, pd.DataFrame):
+            amount_row = amount_row.iloc[-1]
         ranked_codes = factor_row.dropna().sort_values(ascending=False).head(top_n).index
         if len(ranked_codes) == 0:
             continue

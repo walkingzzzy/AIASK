@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useMemo } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, KpiGrid, KpiCard } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -67,6 +67,12 @@ export default function CachePage() {
   );
   const statsUpdatedAt = cacheQ.dataUpdatedAt ? new Date(cacheQ.dataUpdatedAt).toLocaleString('zh-CN') : null;
   const statsStatus = cacheQ.isFetching ? '刷新中' : cacheQ.data ? '统计可用' : '等待统计';
+  const refreshStats = useCallback(async () => {
+    setActionError(null);
+    await cacheQ.refetch();
+    setLastStatsRefreshAt(new Date().toLocaleString('zh-CN'));
+  }, [cacheQ]);
+
   const cachePageActions = useMemo(
     () => [
       {
@@ -94,7 +100,7 @@ export default function CachePage() {
         },
       },
     ],
-    [],
+    [refreshStats],
   );
   usePageActions(cachePageActions);
   const cacheSummary = `缓存统计当前为 ${statsStatus}，总键数 ${stats.totalKeys.toLocaleString()}，命中率 ${(stats.hitRate * 100).toFixed(1)}%，内存占用 ${stats.memoryUsed}。`;
@@ -186,12 +192,6 @@ export default function CachePage() {
     setConfirmTarget(null);
     setDangerAck(false);
     await handleClear(target);
-  };
-
-  const refreshStats = async () => {
-    setActionError(null);
-    await cacheQ.refetch();
-    setLastStatsRefreshAt(new Date().toLocaleString('zh-CN'));
   };
 
   if (cacheQ.error) {

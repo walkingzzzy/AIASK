@@ -9,6 +9,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { extractBearer } from './extract-bearer';
 import { Public } from '../rbac/public.decorator';
 
 class RevokeSessionDto {
@@ -88,7 +89,7 @@ export class AuthController {
 
   @Post('logout')
   async logout(@Req() req: Request, @Body() body: LogoutDto, @Headers('authorization') authorization: string | undefined, @Res({ passthrough: true }) res: Response) {
-    const accessToken = this.extractBearer(authorization) || req.cookies?.access_token;
+    const accessToken = extractBearer(authorization) || req.cookies?.access_token;
     const refreshToken = req.cookies?.refresh_token || body.refreshToken;
     await this.authService.logout({ accessToken, refreshToken });
     this.clearTokenCookies(res);
@@ -199,11 +200,6 @@ export class AuthController {
     delete rest.totpBackupCodes;
     await this.preferencesService.setUserPreferences(userId, rest);
     return { success: true };
-  }
-
-  private extractBearer(authorization?: string): string | undefined {
-    const { extractBearer } = require('./extract-bearer');
-    return extractBearer(authorization);
   }
 
   private currentUserId(req: { user?: { id?: string; sub?: string } }) {

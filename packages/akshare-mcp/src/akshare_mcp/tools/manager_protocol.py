@@ -51,6 +51,7 @@ _WRITE_ACTION_TOKENS = (
     "warmup",
     "ack",
     "retrain",
+    "optimize",
     "write",
     "reorder",
 )

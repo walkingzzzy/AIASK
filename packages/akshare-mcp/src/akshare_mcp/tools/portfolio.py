@@ -308,7 +308,7 @@ def register(mcp):
     async def analyze_portfolio_risk(
         holdings: Optional[List[Dict[str, Any]]] = None,
         lookback_days: int = 252,
-        portfolio_id: Optional[str] = None,
+        portfolio_id: Optional[int | str] = None,
         codes: Optional[List[str]] = None,
         weights: Optional[List[float]] = None,
     ):

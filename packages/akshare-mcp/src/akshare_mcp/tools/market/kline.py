@@ -10,6 +10,7 @@ from typing import Optional
 from ..market.helpers import (
     normalize_code, safe_float, safe_int, parse_date_input,
     run_with_retry as _run_with_retry,
+    _parse_timeout_list as _parse_timeout_list,
     KLINE_TIMEOUTS as _KLINE_TIMEOUTS,
     ok, fail
 )
@@ -36,6 +37,8 @@ except ImportError:
 import pandas as pd
 
 _KLINE_TOTAL_TIMEOUT = float(os.getenv("KLINE_TOTAL_TIMEOUT", "45"))
+_MINUTE_KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_MINUTE_KLINE_TIMEOUTS", [4.0, 8.0])
+_MINUTE_SINA_TIMEOUT = float(os.getenv("AKSHARE_MINUTE_SINA_TIMEOUT", "6"))
 
 
 _SOFT_KLINE_FIELDS = frozenset({"turnover", "change_pct"})
@@ -508,7 +511,7 @@ def _get_minute_kline_from_akshare(code: str, minutes: int, limit: int) -> list[
     try:
         df = _run_with_retry(
             lambda: ak.stock_zh_a_hist_min_em(symbol=code, period=str(minutes), adjust=""),
-            _KLINE_TIMEOUTS,
+            _MINUTE_KLINE_TIMEOUTS,
         )
     except Exception:
         return []
@@ -553,8 +556,25 @@ def _get_minute_kline_from_sina(code: str, minutes: int, limit: int) -> list[dic
                 "Referer": "https://finance.sina.com.cn",
                 "User-Agent": "Mozilla/5.0",
             },
-            timeout=15,
+            timeout=_MINUTE_SINA_TIMEOUT,
         )
+    except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(
+                url,
+                headers={
+                    "Referer": "https://finance.sina.com.cn",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                timeout=_MINUTE_SINA_TIMEOUT,
+            )
+        except Exception:
+            return []
+    except Exception:
+        return []
+    try:
         payload = resp.text or ""
         match = re.search(r"\(\[([\s\S]*?)\]\)", payload)
         if not match:
@@ -591,7 +611,7 @@ def get_minute_kline(
 ) -> dict:
     """获取分钟级K线数据（盘中实时）
 
-    数据源优先级: DataSource 分钟链路 → AkShare → Sina
+    数据源优先级: AkShare → Sina
     时效性: 仅交易时段（9:30-15:00）有效，盘后数据为当日最后快照
 
     Args:
@@ -639,25 +659,7 @@ def get_minute_kline(
             started_at=started_at,
         ))
     fallback_reason: list[str] = []
-    source_chain: list[str] = ["data_source.get_kline"]
-
-    # 1. 优先 DataSource 分钟K线
-    try:
-        ds_results = data_source.get_kline(code, period, limit)
-        if ds_results:
-            # 验证返回的确实是分钟数据（日期字段应包含时间部分）
-            sample_date = str(ds_results[0].get('date', ''))
-            if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
-                validated_results = _validated_kline_rows(ds_results)
-                if _has_validated_kline_rows(validated_results):
-                    return _respond(_ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at))
-            # 如果返回的是日线数据（仅日期），跳过
-            fallback_reason.append("data_source.get_kline returned non_intraday rows")
-    except Exception as e:
-        safe_stderr_print(f"DataSource minute kline fetch failed for {code}: {e}")
-        fallback_reason.append(f"data_source.get_kline failed: {e}")
-
-    _append_chain_step(source_chain, "akshare.stock_zh_a_hist_min_em")
+    source_chain: list[str] = ["akshare.stock_zh_a_hist_min_em"]
     results = _get_minute_kline_from_akshare(code, minutes, limit)
     if not results:
         fallback_reason.append("akshare.stock_zh_a_hist_min_em empty_or_failed")

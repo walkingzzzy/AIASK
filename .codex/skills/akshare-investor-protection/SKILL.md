@@ -1,6 +1,15 @@
 ---
 name: akshare-investor-protection
 description: 投资者保护与风险边界教育，明确托管与保护机制边界。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["investor_protection", "risk_disclosure"]
+role_tags: ["compliance", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于提供投资者保护、风险边界与信息披露核验的说明框架，不代表文中涉及的保护机制、监管边界与托管安排在所有地区、券商与账户类型下都可直接套用。

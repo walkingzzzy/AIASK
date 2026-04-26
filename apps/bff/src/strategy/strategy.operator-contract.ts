@@ -1,0 +1,392 @@
+import type {
+  StrategyActionCoverageItem,
+  StrategyActionCoverageKind,
+  StrategyFactoryReadinessRemediation,
+  StrategyManagerAction,
+  StrategyOperatorParityResponse,
+} from '@aiask/shared-types';
+import {
+  STRATEGY_MANAGER_ACTIONS,
+  STRATEGY_MANAGER_CONTRACT_VERSION,
+} from '@aiask/shared-types';
+
+type CoverageDraft = Omit<StrategyActionCoverageItem, 'action' | 'mcp_tool' | 'mapped'>;
+
+function cov(
+  category: StrategyActionCoverageKind,
+  bffEndpoint: string | null,
+  webSurface: string | null,
+  testCoverage: string | null,
+  options: {
+    core?: boolean;
+    requiresAdmin?: boolean;
+    jobAction?: boolean;
+    notes?: string | null;
+  } = {},
+): CoverageDraft {
+  return {
+    category,
+    bff_endpoint: bffEndpoint,
+    web_surface: webSurface,
+    test_coverage: testCoverage,
+    core: Boolean(options.core),
+    requires_admin: Boolean(options.requiresAdmin),
+    job_action: Boolean(options.jobAction),
+    notes: options.notes ?? null,
+  };
+}
+
+export const STRATEGY_OPERATOR_JOB_ACTIONS = [
+  'publish',
+  'archive',
+  'update_metrics',
+  'submit',
+  'lifecycle_scan',
+  'submission_replay',
+  'factory_run_once',
+  'factory_dispatch_run',
+  'execution_audit_acceptance',
+  'review_report_recheck',
+  'incubation_sync_run',
+  'incubation_pipeline_run',
+  'promotion_review_run',
+  'risk_scan_run',
+  'risk_recovery',
+  'runtime_control_set',
+  'runtime_cycle_run',
+  'vector_rebuild',
+  'vector_reconcile',
+  'vector_cleanup',
+  'domain_projection_rebuild',
+  'ai_generate',
+] as const satisfies readonly StrategyManagerAction[];
+
+const STRATEGY_OPERATOR_JOB_ACTION_SET = new Set<StrategyManagerAction>(STRATEGY_OPERATOR_JOB_ACTIONS);
+
+export function isStrategyOperatorJobAction(action: string): action is (typeof STRATEGY_OPERATOR_JOB_ACTIONS)[number] {
+  return STRATEGY_OPERATOR_JOB_ACTION_SET.has(action as StrategyManagerAction);
+}
+
+const strategyDetailSurface = '/strategy-market/:id';
+const strategyFactorySurface = '/strategy-market?workspace=factory';
+const operatorSurface = '/strategy-market?workspace=factory#operator';
+
+const STRATEGY_ACTION_COVERAGE: Record<StrategyManagerAction, CoverageDraft> = {
+  help: cov('internal_only', null, null, 'mcp-runtime-baseline', { notes: 'MCP help is covered by generated contract parity.' }),
+  create: cov('mutation_job', 'POST /api/strategy-market/create', '/strategy-market?workspace=mine', 'strategy.contracts'),
+  publish: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { requiresAdmin: true, jobAction: true }),
+  archive: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { requiresAdmin: true, jobAction: true }),
+  list: cov('read', 'GET /api/strategy-market/list', '/strategy-market', 'strategy.contracts'),
+  detail: cov('read', 'GET /api/strategy-market/:id', strategyDetailSurface, 'strategy.contracts'),
+  review_report: cov('read', 'GET /api/strategy-market/:id/review-report', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  events: cov('read', 'GET /api/strategy-market/:id/events', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  update_metrics: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { requiresAdmin: true, jobAction: true }),
+  review: cov('mutation_job', 'POST /api/strategy-market/:id/review', strategyDetailSurface, 'strategy.contracts'),
+  subscribe: cov('mutation_job', 'POST /api/strategy-market/:id/subscribe', strategyDetailSurface, 'strategy.contracts'),
+  unsubscribe: cov('mutation_job', 'DELETE /api/strategy-market/:id/subscribe', strategyDetailSurface, 'strategy.contracts'),
+  my_subscriptions: cov('read', 'GET /api/strategy-market/my-subscriptions', '/strategy-market?workspace=favorites', 'strategy.contracts'),
+  favorite: cov('mutation_job', 'POST /api/strategy-market/:id/favorite', strategyDetailSurface, 'strategy.contracts', { notes: 'Canonical app-facing alias for subscribe.' }),
+  unfavorite: cov('mutation_job', 'DELETE /api/strategy-market/:id/favorite', strategyDetailSurface, 'strategy.contracts', { notes: 'Canonical app-facing alias for unsubscribe.' }),
+  my_favorites: cov('read', 'GET /api/strategy-market/my-favorites', '/strategy-market?workspace=favorites', 'strategy.contracts', { notes: 'Canonical app-facing alias for my_subscriptions.' }),
+  my_strategies: cov('read', 'GET /api/strategy-market/my-strategies', '/strategy-market?workspace=mine', 'strategy.contracts'),
+  fork_strategy: cov('mutation_job', 'POST /api/strategy-market/:id/fork', strategyDetailSurface, 'strategy.contracts'),
+  personal_strategy_context: cov('read', 'GET /api/strategy-market/:id/personal-context', strategyDetailSurface, 'strategy.contracts'),
+  personal_strategy_suggestions: cov('mutation_job', 'POST /api/strategy-market/:id/ai-modification-suggestions', strategyDetailSurface, 'strategy.contracts'),
+  update_strategy: cov('mutation_job', 'PATCH /api/strategy-market/:id', strategyDetailSurface, 'strategy.contracts'),
+  delete_personal_strategy: cov('mutation_job', 'DELETE /api/strategy-market/:id', strategyDetailSurface, 'strategy.contracts'),
+  paper_session_get: cov('read', 'GET /api/strategy-market/:id/paper-session', strategyDetailSurface, 'strategy.paper-context'),
+  paper_session_get_or_create: cov('mutation_job', 'POST /api/strategy-market/:id/paper-session', strategyDetailSurface, 'strategy.paper-context'),
+  rank: cov('read', 'GET /api/strategy-market/ranking', '/strategy-market', 'strategy.contracts'),
+  capabilities: cov('read', 'GET /api/strategy-market/capabilities', '/strategy-market', 'strategy.contracts', { core: true }),
+  daily_snapshot: cov('read', 'GET /api/strategy-market/daily-snapshot', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  daily_snapshots: cov('read', 'GET /api/strategy-market/daily-snapshots', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  get_signals: cov('read', 'GET /api/strategy-market/:id/signals', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  get_forward_returns: cov('read', 'GET /api/strategy-market/:id/forward-returns', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  get_signal_stats: cov('read', 'GET /api/strategy-market/:id/signal-stats', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  review_report_recheck: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  submission_replay: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  submit: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  lifecycle_scan: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  incubation_overview: cov('read', 'GET /api/strategy-market/:id/incubation-overview', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  closure_review: cov('read', 'GET /api/strategy-market/:id/closure-review', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  factory_status: cov('read', 'GET /api/strategy-market/factory/status', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  factory_run_once: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  factory_dispatch_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  factory_dispatch_status: cov('read', 'GET /api/strategy-market/factory/dispatches/:dispatchId', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  factory_runs: cov('read', 'GET /api/strategy-market/factory/runs', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  factory_run_detail: cov('read', 'GET /api/strategy-market/factory/runs/:runId', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  factory_topn_latest: cov('read', 'GET /api/strategy-market/factory/topn/latest', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  factory_run_topn: cov('read', 'GET /api/strategy-market/factory/runs/:runId/topn', strategyFactorySurface, 'factory-market-view.contracts', { core: true }),
+  execution_audit_verification: cov('read', 'GET /api/strategy-market/execution-audit/verification', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true }),
+  execution_audit_acceptance: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  incubation_accounts: cov('read', 'GET /api/strategy-market/:id/incubation-accounts', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  incubation_metrics: cov('read', 'GET /api/strategy-market/:id/incubation-metrics', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  paper_account: cov('read', 'GET /api/strategy-market/:id/paper-account', strategyDetailSurface, 'strategy.paper-context', { core: true }),
+  paper_orders: cov('read', 'GET /api/strategy-market/:id/paper-orders', strategyDetailSurface, 'strategy.paper-context', { core: true }),
+  paper_nav: cov('read', 'GET /api/strategy-market/:id/paper-nav', strategyDetailSurface, 'strategy.paper-context', { core: true }),
+  incubation_sync_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  incubation_pipeline: cov('read', 'GET /api/strategy-market/:id/incubation-pipeline', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  incubation_pipeline_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  risk_events: cov('read', 'GET /api/strategy-market/:id/risk-events', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  risk_snapshots: cov('read', 'GET /api/strategy-market/:id/risk-snapshots', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  risk_scan_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  risk_recovery: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  resolve_risk_event: cov('admin_job', 'POST /api/strategy-market/risk-events/:eventId/resolve', operatorSurface, 'strategy.contracts', { core: true, requiresAdmin: true }),
+  runtime_alerts: cov('read', 'GET /api/strategy-market/:id/runtime-alerts', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  runtime_alert_dispatch_run: cov('admin_job', 'POST /api/strategy-market/:id/runtime-alerts/dispatch', operatorSurface, 'strategy.contracts', { core: true, requiresAdmin: true }),
+  runtime_alert_ack: cov('admin_job', 'POST /api/strategy-market/runtime-alerts/:alertId/ack', operatorSurface, 'strategy.contracts', { core: true, requiresAdmin: true }),
+  runtime_control: cov('read', 'GET /api/strategy-market/:id/runtime-control', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  runtime_control_set: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  promotion_reviews: cov('read', 'GET /api/strategy-market/:id/promotion-reviews', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  promotion_review_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  runtime_cycle_status: cov('read', 'GET /api/strategy-market/runtime-cycle/status', strategyFactorySurface, 'strategy.contracts', { core: true }),
+  runtime_cycle_run: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  domain_events: cov('read', 'GET /api/strategy-market/:id/domain-events', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  domain_projection: cov('read', 'GET /api/strategy-market/:id/domain-projection', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  domain_projection_snapshot: cov('read', 'GET /api/strategy-market/:id/domain-projection/snapshot', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  domain_projection_rebuild: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  vector_profiles: cov('read', 'GET /api/strategy-market/:id/vector-profiles', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  vector_indexes: cov('read', 'GET /api/strategy-market/vector-indexes', strategyFactorySurface, 'strategy.contracts', { core: true }),
+  vector_index_snapshots: cov('read', 'GET /api/strategy-market/vector-indexes/snapshots', strategyFactorySurface, 'strategy.contracts', { core: true }),
+  vector_ann_search: cov('read', 'GET /api/strategy-market/:id/vector-ann-search', strategyDetailSurface, 'strategy.contracts', { core: true }),
+  vector_reconcile: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  vector_rebuild: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  vector_health: cov('read', 'GET /api/strategy-market/vector-health', strategyFactorySurface, 'strategy.contracts', { core: true }),
+  vector_cleanup: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  ai_generate: cov('admin_job', 'POST /api/strategy-market/operator/jobs', operatorSurface, 'strategy.operator-contracts', { core: true, requiresAdmin: true, jobAction: true }),
+  ai_optimize_personal_strategy: cov('mutation_job', 'POST /api/strategy-market/:id/ai-optimize', strategyDetailSurface, 'strategy.contracts'),
+  ai_experiments: cov('read', 'GET /api/strategy-market/ai/experiments', strategyFactorySurface, 'strategy.contracts', { core: true }),
+  task_runs: cov('read', 'GET /api/strategy-market/task-runs', strategyFactorySurface, 'strategy.contracts', { core: true }),
+};
+
+export const STRATEGY_FACTORY_READINESS_REMEDIATIONS: StrategyFactoryReadinessRemediation[] = [
+  {
+    code: 'governed_candidate_pool_stale',
+    label: '刷新 governed registry',
+    description: 'governed pool 陈旧时必须刷新因子调度，并复核 quant_manager.factor_candidate_registry(active_pool) 的验证链 freshness。',
+    primary_action: 'factor_candidate_registry_refresh',
+    endpoint: '/api/mcp/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      tool_name: 'quant_manager',
+      arguments: {
+        action: 'scheduler_run_now',
+      },
+      follow_up: {
+        tool_name: 'quant_manager',
+        arguments: {
+          action: 'factor_candidate_registry',
+          params: { op: 'active_pool', market_codes_only: true, limit: 200 },
+        },
+      },
+      acceptance: { governed_freshness_days_max: 3 },
+    },
+  },
+  {
+    code: 'factor_research_stale',
+    label: '刷新因子研究窗口',
+    description: '因子研究历史陈旧会拖低工厂 readiness，需要先刷新因子调度。',
+    primary_action: 'factor_scheduler_run_now',
+    endpoint: '/api/mcp/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_zero_signal_backlog_high',
+    label: '同步孵化信号',
+    description: '孵化策略零信号积压偏高时，先运行 incubation sync 和 pipeline。',
+    primary_action: 'incubation_sync_run',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_forward_window_coverage_low',
+    label: '补 forward window',
+    description: 'forward window 覆盖不足时，运行孵化流水线并复查 execution audit。',
+    primary_action: 'incubation_pipeline_run',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_forward_window_coverage_elevated',
+    label: '复查 forward window',
+    description: 'forward window 覆盖偏低但未到最低档，先运行孵化流水线。',
+    primary_action: 'incubation_pipeline_run',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_promotion_ready_gap_high',
+    label: '运行晋级评审',
+    description: 'promotion-ready 比例过低时，运行 promotion review 并回看阻断原因。',
+    primary_action: 'promotion_review_run',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_promotion_review_gap_high',
+    label: '补推广评审',
+    description: 'promotion review 覆盖不足时，运行推广评审流水线。',
+    primary_action: 'promotion_review_run',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'incubating_evidence_debt_high',
+    label: '补 production samples',
+    description: '证据债过高时先跑 production sample top-up，只接受 paper/incubation replay 产生的 closed round-trips，再复验 execution audit。',
+    primary_action: 'production_sample_top_up',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      operator_job_action: 'incubation_sync_run',
+      replay_history: true,
+      max_dates: 3000,
+      include_market_days: true,
+      run_acceptance: true,
+      from_acceptance_report: true,
+      sample_gap_only: true,
+      target_realized_trades: 20,
+      force_close_open_positions: true,
+      auto_remediate_low_sample: true,
+    },
+  },
+  {
+    code: 'promotion_hard_gate_pending',
+    label: '补足晋级样本',
+    description: '晋级硬门禁缺 production samples 时，按 acceptance shortfall 补 replay；补不满的策略降级为 rejected/observe，避免继续拖累 active incubation feedback。',
+    primary_action: 'production_sample_top_up',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      operator_job_action: 'incubation_sync_run',
+      replay_history: true,
+      max_dates: 3000,
+      include_market_days: true,
+      run_acceptance: true,
+      target_realized_trades: 20,
+      top_up_rounds: 2,
+      degrade_unresolved: true,
+    },
+  },
+  {
+    code: 'insufficient_samples',
+    label: '修复低样本策略',
+    description: '低样本策略先重建 signal cache、扩大已有信号股票池并缩短 time stop；仍无法形成 20 笔 closed round-trips 时淘汰。',
+    primary_action: 'production_sample_top_up',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      operator_job_action: 'incubation_sync_run',
+      replay_history: true,
+      max_dates: 3000,
+      include_market_days: true,
+      run_acceptance: true,
+      target_realized_trades: 20,
+      auto_remediate_low_sample: true,
+      degrade_unresolved: true,
+    },
+  },
+  {
+    code: 'execution_audit_pending_after_top_up',
+    label: '复验执行审计',
+    description: 'production sample top-up 完成后，重新运行 execution audit acceptance，再运行 incubation pipeline 和 promotion review。',
+    primary_action: 'execution_audit_acceptance',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+  {
+    code: 'governed_candidate_pool_required',
+    label: '重建候选供给',
+    description: 'governed pool 不足是硬阻断，先刷新因子调度，再读取 factor_candidate_registry(active_pool) 验证候选供给。',
+    primary_action: 'factor_candidate_registry_refresh',
+    endpoint: '/api/mcp/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      tool_name: 'quant_manager',
+      arguments: { action: 'scheduler_run_now' },
+      follow_up: {
+        tool_name: 'quant_manager',
+        arguments: { action: 'factor_candidate_registry', params: { op: 'active_pool', limit: 200 } },
+      },
+    },
+  },
+  {
+    code: 'governed_candidate_pool_missing_after_scheduler_success',
+    label: '复查候选池生成',
+    description: '调度成功但 governed pool 仍缺失时，需要刷新因子调度并复核候选注册表。',
+    primary_action: 'factor_candidate_registry_refresh',
+    endpoint: '/api/mcp/jobs',
+    job_action: true,
+    requires_admin: true,
+    params_hint: {
+      tool_name: 'quant_manager',
+      arguments: { action: 'scheduler_run_now' },
+      follow_up: {
+        tool_name: 'quant_manager',
+        arguments: { action: 'factor_candidate_registry', params: { op: 'active_pool', limit: 200 } },
+      },
+    },
+  },
+  {
+    code: 'readiness_blocked',
+    label: '复验工厂运行',
+    description: '完成前置修复后，触发一次 factory_run_once，确认 submit stage 是否完成。',
+    primary_action: 'factory_run_once',
+    endpoint: '/api/strategy-market/operator/jobs',
+    job_action: true,
+    requires_admin: true,
+  },
+];
+
+export function buildStrategyOperatorParity(): StrategyOperatorParityResponse {
+  const coverage: StrategyActionCoverageItem[] = STRATEGY_MANAGER_ACTIONS.map((action) => {
+    const item = STRATEGY_ACTION_COVERAGE[action];
+    if (!item) {
+      return {
+        action,
+        category: 'internal_only',
+        mcp_tool: 'strategy_manager',
+        bff_endpoint: null,
+        web_surface: null,
+        test_coverage: null,
+        mapped: false,
+        core: false,
+        requires_admin: false,
+        job_action: false,
+        notes: 'No BFF/Web parity mapping found for this contract action.',
+      };
+    }
+    return {
+      action,
+      mcp_tool: 'strategy_manager',
+      mapped: true,
+      ...item,
+    };
+  });
+  const mappedActions = coverage.filter((item) => item.mapped).length;
+  const coreItems = coverage.filter((item) => item.core);
+  return {
+    contract_version: STRATEGY_MANAGER_CONTRACT_VERSION,
+    generated_at: new Date().toISOString(),
+    total_actions: coverage.length,
+    mapped_actions: mappedActions,
+    unmapped_actions: coverage.length - mappedActions,
+    core_actions: coreItems.length,
+    core_unmapped_actions: coreItems.filter((item) => !item.mapped).length,
+    job_actions: coverage.filter((item) => item.job_action).length,
+    coverage,
+    readiness_remediations: STRATEGY_FACTORY_READINESS_REMEDIATIONS,
+  };
+}

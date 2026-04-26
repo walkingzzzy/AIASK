@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useMemo } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, Badge, DataTable, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -121,9 +121,9 @@ export default function DeadLettersPage() {
             recent,
         };
     }, [letters]);
-    const refreshDeadLetters = async () => {
+    const refreshDeadLetters = useCallback(async () => {
         await dlQ.refetch();
-    };
+    }, [dlQ]);
     const deadLettersActions = useMemo(
         () => [
             {
@@ -151,7 +151,7 @@ export default function DeadLettersPage() {
                 },
             },
         ],
-        [],
+        [refreshDeadLetters],
     );
     usePageActions(deadLettersActions);
     const deadLettersSummary = summary.total > 0

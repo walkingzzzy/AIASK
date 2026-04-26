@@ -1,6 +1,15 @@
 ---
 name: akshare-portfolio-manager-core
 description: 顶级基金经理核心流程：目标与约束、组合构建、执行、风险与绩效闭环。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["portfolio_suitability", "risk_disclosure"]
+role_tags: ["buy_side_pm", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义组合构建、风险评估、合规检查与执行计划的推荐流程，不代表文中任一步骤在当前环境都已自动打通，亦不代表输出可被直接视为可执行交易指令。

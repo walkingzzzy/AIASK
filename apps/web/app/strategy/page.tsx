@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import {
@@ -436,47 +436,44 @@ export default function StrategyPage() {
     }),
     [artifactId, code, holdingOp.code, holdingOp.costPrice, holdingOp.portfolioId, holdingOp.shares, strategy, workspaceTab],
   );
-  const strategyPageActions = useMemo(
-    () => [
-      {
-        id: 'strategy.open-experiment',
-        label: '回到试验区',
-        description: '切回回测与 artifact 试验流程',
-        keywords: ['回测', '试验'],
-        scope: 'page' as const,
-        pageKey: 'strategy',
-        run: () => {
-          setWorkspaceTab('experiment');
-          return { message: '已切到试验区' };
-        },
+  const strategyPageActions = [
+    {
+      id: 'strategy.open-experiment',
+      label: '回到试验区',
+      description: '切回回测与 artifact 试验流程',
+      keywords: ['回测', '试验'],
+      scope: 'page' as const,
+      pageKey: 'strategy',
+      run: () => {
+        setWorkspaceTab('experiment');
+        return { message: '已切到试验区' };
       },
-      {
-        id: 'strategy.load-portfolios',
-        label: '加载组合列表',
-        description: '拉取组合列表并切到落地区',
-        keywords: ['组合', '落地'],
-        scope: 'page' as const,
-        pageKey: 'strategy',
-        run: () => {
-          loadPortfolios();
-          return { message: '已加载组合列表' };
-        },
+    },
+    {
+      id: 'strategy.load-portfolios',
+      label: '加载组合列表',
+      description: '拉取组合列表并切到落地区',
+      keywords: ['组合', '落地'],
+      scope: 'page' as const,
+      pageKey: 'strategy',
+      run: () => {
+        loadPortfolios();
+        return { message: '已加载组合列表' };
       },
-      {
-        id: 'strategy.open-risk',
-        label: '切到风控区',
-        description: '切到优化、风险分析和压力测试视图',
-        keywords: ['风控', '优化', '压力测试'],
-        scope: 'page' as const,
-        pageKey: 'strategy',
-        run: () => {
-          setWorkspaceTab('risk');
-          return { message: '已切到风控区' };
-        },
+    },
+    {
+      id: 'strategy.open-risk',
+      label: '切到风控区',
+      description: '切到优化、风险分析和压力测试视图',
+      keywords: ['风控', '优化', '压力测试'],
+      scope: 'page' as const,
+      pageKey: 'strategy',
+      run: () => {
+        setWorkspaceTab('risk');
+        return { message: '已切到风控区' };
       },
-    ],
-    [],
-  );
+    },
+  ];
   usePageActions(strategyPageActions);
 
   const applyView = useCallback((snapshot: Record<string, unknown>) => {
@@ -957,7 +954,7 @@ export default function StrategyPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="strategy" title="策略结果工作台" result={strategyResult} />
+      <ResponsiveResultWorkbench pageKey="strategy" title="策略结果工作台" result={strategyResult} />
 
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
@@ -1024,7 +1021,13 @@ export default function StrategyPage() {
 
   return (
     <PageContainer>
-      <WorkspaceToolbar pageKey="strategy" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceToolbar
+        pageKey="strategy"
+        currentView={currentView}
+        onApplyView={applyView}
+        supportsPagePanels
+        mobileSummaryMode="hidden"
+      />
       <WorkspaceSplitLayout
         pageKey="strategy"
         primary={primaryContent}

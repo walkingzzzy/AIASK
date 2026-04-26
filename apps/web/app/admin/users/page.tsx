@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import { PageContainer, SectionCard, DataTable, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
@@ -86,35 +86,32 @@ export default function UsersPage() {
     await usersQ.refetch();
     setLastManualRefreshAt(new Date().toLocaleString('zh-CN'));
   }
-  const usersPageActions = useMemo(
-    () => [
-      {
-        id: 'admin-users.refresh',
-        label: '刷新用户列表',
-        description: '重新拉取用户快照并更新统计',
-        keywords: ['用户', '刷新'],
-        scope: 'page' as const,
-        pageKey: 'admin-users',
-        run: async () => {
-          await refreshUsers();
-          return { message: '已刷新用户列表' };
-        },
+  const usersPageActions = [
+    {
+      id: 'admin-users.refresh',
+      label: '刷新用户列表',
+      description: '重新拉取用户快照并更新统计',
+      keywords: ['用户', '刷新'],
+      scope: 'page' as const,
+      pageKey: 'admin-users',
+      run: async () => {
+        await refreshUsers();
+        return { message: '已刷新用户列表' };
       },
-      {
-        id: 'admin-users.filter-admin',
-        label: '只看管理员',
-        description: '快速聚焦管理员账号',
-        keywords: ['管理员', '筛选'],
-        scope: 'page' as const,
-        pageKey: 'admin-users',
-        run: () => {
-          setRoleFilter('admin');
-          return { message: '已筛到管理员账号' };
-        },
+    },
+    {
+      id: 'admin-users.filter-admin',
+      label: '只看管理员',
+      description: '快速聚焦管理员账号',
+      keywords: ['管理员', '筛选'],
+      scope: 'page' as const,
+      pageKey: 'admin-users',
+      run: () => {
+        setRoleFilter('admin');
+        return { message: '已筛到管理员账号' };
       },
-    ],
-    [],
-  );
+    },
+  ];
   usePageActions(usersPageActions);
   const usersSummary = `当前展示 ${filteredUsers.length} / ${users.length} 位用户，活跃 ${stats.active}，管理员 ${stats.admins}，今日活跃 ${stats.today}。`;
   const usersResult = buildLocalResultContract({
@@ -204,7 +201,7 @@ export default function UsersPage() {
     <PageContainer>
       <h1 className="text-lg font-semibold mb-4">👥 用户管理</h1>
 
-      <ResultWorkbench pageKey="admin-users" title="用户管理结果工作台" result={usersResult} />
+      <ResponsiveResultWorkbench pageKey="admin-users" title="用户管理结果工作台" result={usersResult} />
 
       <SectionCard className="mb-4 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -321,8 +318,8 @@ export default function UsersPage() {
           </div>
           <DataTable
             rows={filteredUsers}
-            pageSize={10}
-            maxHeight={520}
+            pageSize={compactLayout ? 4 : 10}
+            maxHeight={compactLayout ? 360 : 520}
             rowKey="id"
             columns={[
               { key: 'username', label: '用户名' },

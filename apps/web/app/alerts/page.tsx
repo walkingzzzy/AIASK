@@ -1,8 +1,8 @@
 'use client';
 
 import { FormEvent, useMemo, useState } from 'react';
-import { ConfirmDialog, PageContainer, SectionCard, StockCodeInput, Badge } from '@/components/ui';
-import ResultWorkbench from '@/components/result-workbench';
+import { ConfirmDialog, PageContainer, StockCodeInput, Badge } from '@/components/ui';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -133,7 +133,7 @@ export default function AlertsPage() {
     await executeDelete(action.alertId);
   }
 
-  const items = useMemo(() => listQ.data?.items ?? [], [listQ.data]);
+  const items = listQ.data?.items ?? [];
   const freshness = listQ.data?.meta?.fetchedAt ?? '';
   const cache = listQ.data?.meta?.cache;
   const indicatorKey = indicator.trim().toLowerCase();
@@ -149,80 +149,73 @@ export default function AlertsPage() {
     return '阈值会按照你选择的指标解释；价格单位为元，其它指标按各自量纲处理。';
   }, [indicatorKey]);
 
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'alerts.refresh',
-        label: '刷新告警列表',
-        description: '重新拉取当前状态下的告警规则',
-        keywords: ['刷新', '告警'],
-        scope: 'page' as const,
-        pageKey: 'alerts',
-        run: async () => {
-          await listQ.refetch();
-          return { message: '已刷新告警列表' };
-        },
+  const pageActions = [
+    {
+      id: 'alerts.refresh',
+      label: '刷新告警列表',
+      description: '重新拉取当前状态下的告警规则',
+      keywords: ['刷新', '告警'],
+      scope: 'page' as const,
+      pageKey: 'alerts',
+      run: async () => {
+        await listQ.refetch();
+        return { message: '已刷新告警列表' };
       },
-      {
-        id: 'alerts.apply-price-template',
-        label: '套用价格模板',
-        description: '快速把表单切到价格突破模板',
-        keywords: ['模板', '价格突破'],
-        scope: 'page' as const,
-        pageKey: 'alerts',
-        run: () => {
-          applyTemplate(ALERT_TEMPLATES[0]);
-          return { message: '已套用价格突破模板' };
-        },
+    },
+    {
+      id: 'alerts.apply-price-template',
+      label: '套用价格模板',
+      description: '快速把表单切到价格突破模板',
+      keywords: ['模板', '价格突破'],
+      scope: 'page' as const,
+      pageKey: 'alerts',
+      run: () => {
+        applyTemplate(ALERT_TEMPLATES[0]);
+        return { message: '已套用价格突破模板' };
       },
-      {
-        id: 'alerts.toggle-status',
-        label: status === 'active' ? '切到全部规则' : '切到生效中',
-        description: '在生效中和全部规则之间切换',
-        keywords: ['状态', '规则'],
-        scope: 'page' as const,
-        pageKey: 'alerts',
-        run: () => {
-          setStatus((prev) => (prev === 'active' ? 'all' : 'active'));
-          return { message: status === 'active' ? '已切到全部规则' : '已切到生效中规则' };
-        },
+    },
+    {
+      id: 'alerts.toggle-status',
+      label: status === 'active' ? '切到全部规则' : '切到生效中',
+      description: '在生效中和全部规则之间切换',
+      keywords: ['状态', '规则'],
+      scope: 'page' as const,
+      pageKey: 'alerts',
+      run: () => {
+        setStatus((prev) => (prev === 'active' ? 'all' : 'active'));
+        return { message: status === 'active' ? '已切到全部规则' : '已切到生效中规则' };
       },
-    ],
-    [listQ, status],
-  );
+    },
+  ];
 
   usePageActions(pageActions);
 
   const alertsSummary = `当前告警状态 ${STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status}，共 ${items.length} 条规则，正在编辑 ${trimmedCode || '未填写'} 的 ${indicator} 条件。`;
-  const alertsResult = useMemo(
-    () =>
-      buildLocalResultContract({
-        summary: alertsSummary,
-        pageActions,
-        preferredActionIds: ['alerts.refresh', 'alerts.apply-price-template', 'alerts.toggle-status'],
-        recommendedLinks: [
-          trimmedCode ? { id: 'alerts-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'alerts-open-market', label: '行情看板', href: '/market?from=alerts' },
-          { id: 'alerts-open-watchlist', label: '自选股', href: '/watchlist' },
-          { id: 'alerts-open-risk', label: '风险中心', href: '/risk?from=alerts' },
-          { id: 'alerts-open-data', label: '数据中心', href: '/data?from=alerts' },
-        ],
-        evidence: [
-          { label: '状态', value: STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status },
-          { label: '规则数量', value: String(items.length) },
-          { label: '当前代码', value: trimmedCode || '-' },
-          { label: '当前指标', value: indicator },
-          { label: '抓取时间', value: freshness ? new Date(freshness).toLocaleString('zh-CN') : '-' },
-        ],
-        riskNotes: error ? [error] : items.length === 0 ? ['当前筛选状态下没有规则，建议先创建第一条告警。'] : [],
-        freshness: freshness ? { updatedAt: freshness, label: '告警抓取时间' } : null,
-        workbenchTask: defaultWorkbenchTask('alerts', `告警复查：${trimmedCode || '当前规则集'}`, '/alerts', 'alerts-review', {
-          code: trimmedCode || null,
-          indicator,
-          status,
-        }),
-      }),
-    [alertsSummary, error, freshness, indicator, items.length, pageActions, status, trimmedCode],
-  );
+  const alertsResult = buildLocalResultContract({
+    summary: alertsSummary,
+    pageActions,
+    preferredActionIds: ['alerts.refresh', 'alerts.apply-price-template', 'alerts.toggle-status'],
+    recommendedLinks: [
+      trimmedCode ? { id: 'alerts-open-stock', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode)}` } : { id: 'alerts-open-market', label: '行情看板', href: '/market?from=alerts' },
+      { id: 'alerts-open-watchlist', label: '自选股', href: '/watchlist' },
+      { id: 'alerts-open-risk', label: '风险中心', href: '/risk?from=alerts' },
+      { id: 'alerts-open-data', label: '数据中心', href: '/data?from=alerts' },
+    ],
+    evidence: [
+      { label: '状态', value: STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status },
+      { label: '规则数量', value: String(items.length) },
+      { label: '当前代码', value: trimmedCode || '-' },
+      { label: '当前指标', value: indicator },
+      { label: '抓取时间', value: freshness ? new Date(freshness).toLocaleString('zh-CN') : '-' },
+    ],
+    riskNotes: error ? [error] : items.length === 0 ? ['当前筛选状态下没有规则，建议先创建第一条告警。'] : [],
+    freshness: freshness ? { updatedAt: freshness, label: '告警抓取时间' } : null,
+    workbenchTask: defaultWorkbenchTask('alerts', `告警复查：${trimmedCode || '当前规则集'}`, '/alerts', 'alerts-review', {
+      code: trimmedCode || null,
+      indicator,
+      status,
+    }),
+  });
 
   usePageContext({
     pageKey: 'alerts',
@@ -274,7 +267,7 @@ export default function AlertsPage() {
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               告警中心工作台
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+            <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
               这一页把模板、创建、筛选和结果放进一条连续链路。先确定监控指标和阈值，再在右侧立即确认列表结果，不用在多个页面之间来回跳转。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -286,7 +279,7 @@ export default function AlertsPage() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="mt-5 hidden gap-3 md:grid md:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
@@ -313,7 +306,7 @@ export default function AlertsPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
+          <div className="hidden gap-3 md:grid">
             <div className="panel-soft rounded-[28px] p-4 sm:p-5">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">创建提示</div>
               <div className="mt-4 space-y-3">
@@ -344,7 +337,7 @@ export default function AlertsPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="alerts" title="告警结果工作台" result={alertsResult} />
+      <ResponsiveResultWorkbench pageKey="alerts" title="告警结果工作台" result={alertsResult} />
 
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
 
@@ -354,14 +347,14 @@ export default function AlertsPage() {
             <div>
               <div className="eyebrow">Create Alert</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">创建告警</h2>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+              <p className="mb-0 mt-2 hidden text-sm leading-7 text-text-secondary sm:block">
                 模板、创建结果和列表放在同一任务流中。创建成功后右侧会立即显示最新结果，避免“创建完不知道去哪看”。
               </p>
             </div>
             <Badge variant="info">步骤 1</Badge>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 hidden flex-wrap gap-2 sm:flex">
             {ALERT_TEMPLATES.map((template) => (
               <button
                 key={template.label}
@@ -427,7 +420,7 @@ export default function AlertsPage() {
                 {thresholdHint}
               </span>
             </label>
-            <div className="md:col-span-2 metric-tile rounded-[24px] p-4 text-xs text-text-secondary">
+            <div className="hidden md:col-span-2 md:block metric-tile rounded-[24px] p-4 text-xs text-text-secondary">
               <div className="font-medium text-text-primary">当前预览</div>
               <div className="mt-2">
                 {trimmedCode || '股票代码'} · {indicator.trim() || '指标'} {condition} {value.trim() || '阈值'}
@@ -451,7 +444,7 @@ export default function AlertsPage() {
                 告警列表
                 <Badge variant={items.length > 0 ? 'info' : 'neutral'}>{items.length}</Badge>
               </h2>
-              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+              <p className="mb-0 mt-2 hidden text-sm leading-7 text-text-secondary sm:block">
                 创建成功后，最新结果会在这里直接可见；也可以随时切换状态筛选查看当前生效中的规则。
               </p>
             </div>

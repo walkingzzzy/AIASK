@@ -312,7 +312,7 @@ export class ExecutionService {
     };
   }
 
-  async listArtifacts(userId: string, accountId?: string): Promise<{
+  async listArtifacts(userId: string, _accountId?: string): Promise<{
     artifacts: Array<{ artifactId: string; taskId: string; code?: string | null; algorithm?: string | null; status?: string | null; createdAt?: string | null; warningCount: number; hasHighSeverity: boolean }>;
     count: number;
   }> {

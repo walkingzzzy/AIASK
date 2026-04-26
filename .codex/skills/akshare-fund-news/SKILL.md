@@ -1,6 +1,15 @@
 ---
 name: akshare-fund-news
 description: 资金流、北向资金、龙虎榜、融资融券、大宗交易，以及公告/研报/新闻/分析师排名/盈利预测等资讯类请求时使用。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["news_source_lineage", "research_disclosure"]
+role_tags: ["research", "trader"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义资金流、公告、研报、新闻等资讯类请求的推荐调用路径，不代表文中列出的所有资讯接口在当前环境都具备一致的数据时效性、字段完整性与稳定返回。

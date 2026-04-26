@@ -24,6 +24,8 @@ class PageActionBus {
         keywords: action.keywords,
         scope: action.scope,
         pageKey: action.pageKey,
+        strategyActionKind: action.strategyActionKind,
+        mutationEffect: action.mutationEffect,
       },
       run: action.run,
     });

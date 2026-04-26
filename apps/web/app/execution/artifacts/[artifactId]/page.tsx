@@ -3,14 +3,18 @@
 import { useEffect, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
-import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard } from '@/components/ui';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { Badge, PageContainer, SectionCard } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { ExecutionArtifactResponse } from '@aiask/shared-types';
@@ -22,6 +26,7 @@ function warningBadgeVariant(count: number) {
 }
 
 export default function ExecutionArtifactDetailPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const params = useParams<{ artifactId: string }>();
   const router = useRouter();
   const searchParams = useStableSearchParams();
@@ -311,48 +316,83 @@ export default function ExecutionArtifactDetailPage() {
   }
 
   return (
-    <PageContainer>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h1 className="m-0 text-lg font-semibold">Artifact 详情</h1>
-          <p className="mb-0 mt-1 text-xs text-text-secondary">独立查看 artifact 关联的任务、执行摘要和后续复盘入口。</p>
-        </div>
-        <Badge variant={artifactQ.data?.count ? 'success' : 'neutral'}>
-          {artifactId || '未指定 artifact'}
-        </Badge>
-      </div>
-
-      <ResultWorkbench pageKey="execution" title="Artifact 结果工作台" result={artifactResult} />
-
-      <KpiGrid cols={4} className="mb-4">
-        <KpiCard title="关联任务" value={artifactQ.data?.count ?? '-'} />
-        <KpiCard title="最新任务" value={executionId || '-'} />
-        <KpiCard title="股票代码" value={stockCode || '-'} />
-        <KpiCard title="执行告警" value={warnings.length} />
-      </KpiGrid>
-
-      <SectionCard className="mb-4 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="m-0 font-medium">Artifact 摘要</h3>
-            <p className="mb-0 mt-1 text-xs text-text-secondary">
-              {artifactQ.data
-                ? `artifact ${artifactQ.data.artifactId} 当前关联 ${artifactQ.data.count} 条任务。`
-                : '等待 artifact 查询结果。'}
+    <PageContainer className="space-y-4">
+      <LightOverviewHero
+        eyebrow="Execution Artifact"
+        title="Artifact 详情"
+        summary="先确认 artifact 关联任务、当前告警和下一步跳转，原始详情与长文本默认折叠。"
+        badges={(
+          <>
+            <Badge variant={artifactQ.data?.count ? 'success' : 'neutral'}>{artifactId || '未指定 artifact'}</Badge>
+            <Badge variant={warningBadgeVariant(warnings.length)}>
+              {warnings.length > 0 ? `${warnings.length} 条告警` : '无显式告警'}
+            </Badge>
+          </>
+        )}
+        actions={(
+          <>
+            <button type="button" onClick={() => openExecution()} className="action-chip cursor-pointer text-sm text-text-primary">
+              执行中心
+            </button>
+            <button type="button" onClick={() => openPerformance()} className="action-chip cursor-pointer text-sm text-text-primary">
+              绩效中心
+            </button>
+            <button type="button" onClick={() => openRisk()} className="action-chip cursor-pointer text-sm text-text-primary">
+              风险中心
+            </button>
+          </>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              Artifact {artifactId || '-'} ｜ 关联任务 {artifactQ.data?.count ?? 0} ｜ 最新任务 {executionId || '-'}
+            </div>
+            <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
+              {stockCode ? `标的 ${stockCode}` : '当前还没有关联标的'} ｜ {warnings.length > 0 ? '建议先处理告警，再解释执行细节。' : '可以先看摘要，再决定是否下钻原始详情。'}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => openExecution()} className="rounded border border-glass-border px-3 py-1 text-xs">执行中心</button>
-            <button type="button" onClick={() => openPerformance()} className="rounded border border-glass-border px-3 py-1 text-xs">绩效中心</button>
-            <button type="button" onClick={() => openRisk()} className="rounded border border-glass-border px-3 py-1 text-xs">风险中心</button>
+        )}
+        metrics={[
+          { key: 'artifact-task-count', label: '关联任务', value: String(artifactQ.data?.count ?? 0) },
+          { key: 'artifact-latest-task', label: '最新任务', value: executionId || '-' },
+          { key: 'artifact-stock', label: '股票代码', value: stockCode || '-' },
+          { key: 'artifact-warning-count', label: '执行告警', value: String(warnings.length) },
+        ]}
+        compact
+        detailsTitle="展开上下文与更多入口"
+        detailsContent={(
+          <div className="space-y-3 text-sm text-text-secondary">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="metric-tile rounded-[20px] p-3 text-xs">
+                账户：<span className="font-medium text-text-primary">{accountId || detail?.accountId || '-'}</span>
+              </div>
+              <div className="metric-tile rounded-[20px] p-3 text-xs">
+                Artifact：<span className="font-medium text-text-primary">{artifactId || '-'}</span>
+              </div>
+            </div>
             {stockCode ? (
-              <button type="button" onClick={() => openStock()} className="rounded border border-glass-border px-3 py-1 text-xs">个股详情</button>
+              <button type="button" onClick={() => openStock()} className="action-chip cursor-pointer text-sm text-text-primary">
+                个股详情
+              </button>
             ) : null}
           </div>
-        </div>
+        )}
+      />
 
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection pageKey="execution" title="Artifact 结果工作台" result={artifactResult} summaryMode="strip" />
+      ) : null}
+
+      <CollapsibleSectionCard
+        title="Artifact 摘要"
+        summary={artifactQ.data ? `artifact ${artifactQ.data.artifactId} 当前关联 ${artifactQ.data.count} 条任务。` : '等待 artifact 查询结果。'}
+        defaultOpen={!compactLayout}
+      >
         {latestTask ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl border border-border bg-surface-alt/30 p-3 text-xs text-text-secondary">
               <div className="font-medium text-text-primary">最新任务</div>
               <div className="mt-2">任务 ID：{latestTask.taskId || '-'}</div>
@@ -379,23 +419,17 @@ export default function ExecutionArtifactDetailPage() {
             </div>
           </div>
         ) : (
-          <div className="mt-4 text-sm text-text-secondary">当前 artifact 未匹配到关联任务。</div>
+          <div className="text-sm text-text-secondary">当前 artifact 未匹配到关联任务。</div>
         )}
-      </SectionCard>
+      </CollapsibleSectionCard>
 
-      <SectionCard className="mb-4 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="m-0 font-medium">执行告警</h3>
-            <p className="mb-0 mt-1 text-xs text-text-secondary">直接展开最新任务对应的软闸门与预交易告警。</p>
-          </div>
-          <Badge variant={warningBadgeVariant(warnings.length)}>
-            {warnings.length > 0 ? `${warnings.length} 条告警` : '无显式告警'}
-          </Badge>
-        </div>
-
+      <CollapsibleSectionCard
+        title="执行告警"
+        summary="默认收起最新任务对应的软闸门与预交易告警，只有需要排障时再展开。"
+        badge={<Badge variant={warningBadgeVariant(warnings.length)}>{warnings.length > 0 ? `${warnings.length} 条告警` : '无显式告警'}</Badge>}
+      >
         {warnings.length > 0 ? (
-          <div className="mt-4 space-y-3">
+          <div className="space-y-3">
             {warnings.map((warning) => (
               <div key={warning.id} className="rounded-xl border border-border bg-surface-alt/30 p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -409,20 +443,19 @@ export default function ExecutionArtifactDetailPage() {
             ))}
           </div>
         ) : (
-          <div className="mt-4 text-sm text-text-secondary">当前 artifact 暂无可展示告警。</div>
+          <div className="text-sm text-text-secondary">当前 artifact 暂无可展示告警。</div>
         )}
-      </SectionCard>
+      </CollapsibleSectionCard>
 
       {detail ? (
-        <SectionCard className="p-4">
-          <div>
-            <h3 className="m-0 font-medium">原始详情</h3>
-            <p className="mb-0 mt-1 text-xs text-text-secondary">保留任务详情原始数据，便于继续排查链路问题。</p>
-          </div>
-          <pre className="mb-0 mt-4 max-h-[480px] overflow-auto rounded-xl border border-border bg-surface-alt/30 p-3 text-[11px] leading-5 text-text-secondary">
+        <CollapsibleSectionCard
+          title="原始详情"
+          summary="保留任务详情原始数据，便于继续排查链路问题。"
+        >
+          <pre className="mb-0 max-h-[480px] overflow-auto rounded-xl border border-border bg-surface-alt/30 p-3 text-[11px] leading-5 text-text-secondary">
             {JSON.stringify(detail, null, 2)}
           </pre>
-        </SectionCard>
+        </CollapsibleSectionCard>
       ) : null}
     </PageContainer>
   );

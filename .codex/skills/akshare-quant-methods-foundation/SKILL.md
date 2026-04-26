@@ -1,6 +1,15 @@
 ---
 name: akshare-quant-methods-foundation
 description: 量化方法基础能力：时间序列、相关性、协方差与风险度量的落地流程。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["model_governance", "risk_disclosure"]
+role_tags: ["quant", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 # 目标

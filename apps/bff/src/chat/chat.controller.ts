@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
-import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject, IsBoolean } from 'class-validator';
+import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject, IsBoolean, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
@@ -51,9 +51,20 @@ class ChatPageContextDto {
   @IsString() pageKey!: string;
   @IsString() title!: string;
   @IsString() summary!: string;
+  @IsOptional() @IsString() primaryGoal?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) requiredInputs?: string[];
   @IsOptional() @IsString() stockCode?: string;
+  @IsOptional() @IsString() objectType?: string;
+  @IsOptional() @IsString() objectId?: string;
+  @IsOptional() @IsString() resultType?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) suggestions?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) recommendedNextActions?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) evidenceSummary?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) riskNotes?: string[];
+  @IsOptional() @IsString() dataFreshness?: string | null;
+  @IsOptional() @IsArray() @IsString({ each: true }) degradedReason?: string[];
+  @IsOptional() @IsObject() freshness?: Record<string, unknown> | null;
   @IsOptional() @IsObject() raw?: Record<string, unknown>;
 }
 
@@ -64,6 +75,52 @@ class ClientActionDescriptorDto {
   @IsOptional() @IsArray() @IsString({ each: true }) keywords?: string[];
   @IsOptional() @IsIn(['global', 'page']) scope?: 'global' | 'page';
   @IsOptional() @IsString() pageKey?: string;
+  @IsOptional() @IsIn(['view', 'optimize', 'generate_update_suggestion', 'persist_update']) strategyActionKind?: 'view' | 'optimize' | 'generate_update_suggestion' | 'persist_update';
+  @IsOptional() @IsIn(['readonly', 'advisory', 'stateful']) mutationEffect?: 'readonly' | 'advisory' | 'stateful';
+}
+
+class ChatToolTraceScopeDto {
+  @IsOptional() @IsString() @MaxLength(80) mode?: string;
+  @IsOptional() @IsString() @MaxLength(120) pageKey?: string;
+  @IsOptional() @IsString() @MaxLength(120) objectType?: string;
+  @IsOptional() @IsString() @MaxLength(160) objectId?: string;
+  @IsOptional() @IsString() @MaxLength(32) stockCode?: string;
+}
+
+class ChatToolTraceItemDto {
+  @IsString() @MaxLength(120) id!: string;
+  @IsString() @MaxLength(16) referenceLabel!: string;
+  @IsIn(['mcp', 'local_context', 'client_action']) kind!: 'mcp' | 'local_context' | 'client_action';
+  @IsString() @MaxLength(160) toolName!: string;
+  @IsIn(['pending', 'success', 'error']) status!: 'pending' | 'success' | 'error';
+  @IsString() startedAt!: string;
+  @IsOptional() @IsString() finishedAt?: string;
+  @IsOptional() @IsNumber() durationMs?: number;
+  @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) @MaxLength(240, { each: true }) inputSummary!: string[];
+  @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) @MaxLength(320, { each: true }) outputSummary!: string[];
+  @IsOptional() @IsString() @MaxLength(320) errorMessage?: string;
+  @IsOptional() @IsBoolean() citedInAnswer?: boolean;
+}
+
+class ChatToolTraceAnswerReferenceDto {
+  @IsString() @MaxLength(120) itemId!: string;
+  @IsString() @MaxLength(16) referenceLabel!: string;
+  @IsString() @MaxLength(160) toolName!: string;
+  @IsString() @MaxLength(320) evidenceSummary!: string;
+}
+
+class ChatToolTraceDto {
+  @IsIn(['tool_trace.v1']) schemaVersion!: 'tool_trace.v1';
+  @IsString() @MaxLength(120) id!: string;
+  @IsIn(['owner_only']) visibility!: 'owner_only';
+  @IsString() generatedAt!: string;
+  @IsIn(['empty', 'running', 'completed', 'partial_error']) status!: 'empty' | 'running' | 'completed' | 'partial_error';
+  @ValidateNested() @Type(() => ChatToolTraceScopeDto) scope!: ChatToolTraceScopeDto;
+  @IsArray() @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => ChatToolTraceItemDto) items!: ChatToolTraceItemDto[];
+  @IsArray() @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => ChatToolTraceAnswerReferenceDto) answerReferences!: ChatToolTraceAnswerReferenceDto[];
+  @IsIn(['mcp_supported', 'tool_supported', 'page_context_supported', 'advisory_only']) evidenceMode!: 'mcp_supported' | 'tool_supported' | 'page_context_supported' | 'advisory_only';
+  @IsBoolean() advisoryOnly!: boolean;
+  @IsOptional() @IsString() @MaxLength(320) advisoryReason?: string;
 }
 
 class ChatConversationMessageDto {
@@ -81,6 +138,11 @@ class ChatConversationMessageDto {
   @ValidateNested({ each: true })
   @Type(() => ChatConversationActionDto)
   actions?: ChatConversationActionDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ChatToolTraceDto)
+  toolTrace?: ChatToolTraceDto;
 }
 
 class ChatConversationToolCallDto {

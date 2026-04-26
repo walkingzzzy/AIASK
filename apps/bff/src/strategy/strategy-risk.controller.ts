@@ -51,12 +51,14 @@ export class StrategyRiskController {
   }
 
   @Post(':id/risk-recovery')
+  @Roles('admin')
   async riskRecovery(@Param('id') id: string, @Body() body: RiskRecoveryDto, @Req() req: Req_) {
     const data = await this.svc.riskRecovery(id, { source: body.source });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Post('risk-events/:eventId/resolve')
+  @Roles('admin')
   async resolveRiskEvent(@Param('eventId') eventId: string, @Body() body: ResolveRiskEventDto, @Req() req: Req_) {
     const data = await this.svc.resolveRiskEvent(Number(eventId), body.resolution);
     return { success: true, data, traceId: tid(req) };
@@ -75,12 +77,14 @@ export class StrategyRiskController {
   }
 
   @Post(':id/runtime-alerts/dispatch')
+  @Roles('admin')
   async dispatchRuntimeAlerts(@Param('id') id: string, @Body() body: RuntimeAlertDispatchDto, @Req() req: Req_) {
     const data = await this.svc.runRuntimeAlertDispatch(id, { source: body.source });
     return { success: true, data, traceId: tid(req) };
   }
 
   @Post('runtime-alerts/:alertId/ack')
+  @Roles('admin')
   async acknowledgeRuntimeAlert(@Param('alertId') alertId: string, @Body() body: RuntimeAlertAckDto, @Req() req: Req_) {
     const data = await this.svc.acknowledgeRuntimeAlert(Number(alertId), {
       acknowledged_by: body.acknowledged_by,
@@ -116,6 +120,7 @@ export class StrategyRiskController {
   }
 
   @Post('runtime-cycle/run')
+  @Roles('admin')
   async runtimeCycleRun(@Req() req: Req_) {
     const data = await this.svc.runtimeCycleRun();
     return { success: true, data, traceId: tid(req) };

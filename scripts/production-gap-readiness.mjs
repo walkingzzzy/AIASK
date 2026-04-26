@@ -25,16 +25,6 @@ const monitoringFiles = [
 
 const advisoryGaps = [
   {
-    area: 'mcp-jobs/mcp-gateway transport',
-    title: 'No dedicated web page for MCP job submission/polling',
-    detail: 'Transport state is visible on the home/admin surfaces, but /api/mcp/jobs is still API-only and has no dedicated UI workflow.',
-  },
-  {
-    area: 'observability/health',
-    title: 'No targeted browser smoke for health/admin pages',
-    detail: 'Home and admin pages consume the health snapshot, but there is no page-level Playwright smoke tied to these exact states yet.',
-  },
-  {
     area: 'execution-audit acceptance -> replay -> acceptance',
     title: 'Real replay is intentionally excluded from default smoke',
     detail: 'The replay script mutates incubation and paper-trading runtime state, so the readiness script only verifies contracts and CLI entrypoints by default.',
@@ -217,20 +207,35 @@ buildStaticResult({
 });
 
 buildStaticResult({
+  area: 'observability/health',
+  title: 'State smoke covers health, admin tools, and strategy factory operator surfaces',
+  paths: [
+    'scripts/playwright-mcp-audit/run-state-smoke.mjs',
+    'apps/web/app/admin/tools/page.tsx',
+    'apps/web/app/strategy-market/components/StrategyMarketOperatorPanel.tsx',
+  ],
+  note: 'verify:state-smoke now checks admin health, admin MCP jobs, and the strategy factory operator panel.',
+});
+
+buildStaticResult({
   area: 'mcp-jobs/mcp-gateway transport',
-  title: 'Gateway transport, degraded error contract, and admin transport surfaces are wired',
+  title: 'Gateway transport, degraded error contract, operator jobs, and admin transport surfaces are wired',
   paths: [
     'apps/bff/src/mcp-gateway/mcp-gateway.service.ts',
     'apps/bff/src/mcp-gateway/mcp-transport.contract.ts',
     'apps/bff/src/mcp-jobs/mcp-jobs.service.ts',
     'apps/bff/src/mcp-jobs/mcp-jobs.controller.ts',
+    'apps/bff/src/strategy/strategy-operator.controller.ts',
+    'apps/bff/src/strategy/strategy-operator.service.ts',
+    'apps/bff/src/strategy/strategy.operator-contract.ts',
     'apps/bff/src/common/degrade.interceptor.ts',
     'apps/bff/src/common/acceptance.ts',
     'apps/web/components/home/SystemStatus.tsx',
     'apps/web/app/admin/page.tsx',
     'apps/web/app/admin/tools/page.tsx',
+    'apps/web/app/strategy-market/components/StrategyMarketOperatorPanel.tsx',
   ],
-  note: 'Transport state is surfaced through health/admin pages and admin tool metrics.',
+  note: 'Transport state and MCP job submission/polling are surfaced through admin tools and the strategy factory operator panel.',
 });
 
 buildStaticResult({
@@ -283,6 +288,7 @@ if (options.withTests) {
         '--test',
         'apps/bff/test/mcp-jobs.service.test.mjs',
         'apps/bff/test/mcp-transport.contracts.test.mjs',
+        'apps/bff/test/strategy.operator-contracts.test.mjs',
       ],
     },
     {

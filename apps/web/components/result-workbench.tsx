@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { Badge, SectionCard, TabBar, useToast } from '@/components/ui';
 import { FreshnessTag } from '@/components/ui/freshness-tag';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -154,7 +154,7 @@ export default function ResultWorkbench({
   const router = useRouter();
   const { toast } = useToast();
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
-  const skillSuggestions = result?.skillSuggestions ?? [];
+  const skillSuggestions = useMemo(() => result?.skillSuggestions ?? [], [result?.skillSuggestions]);
   const skillsQ = useApiQuery<SkillRegistryEntry[]>('/v1/skills', {
     enabled: skillSuggestions.length > 0,
     parse: normalizeSkillRegistry,
@@ -162,16 +162,12 @@ export default function ResultWorkbench({
     nonFatal: true,
   });
 
-  const mergedActions = useMemo(
-    () =>
-      uniqueActions([
-        ...(result?.primaryAction ? [result.primaryAction] : []),
-        ...(result?.secondaryActions ?? []),
-        ...(result?.recommendedActions ?? []),
-        ...extraActions,
-      ]),
-    [extraActions, result?.primaryAction, result?.recommendedActions, result?.secondaryActions],
-  );
+  const mergedActions = uniqueActions([
+    ...(result?.primaryAction ? [result.primaryAction] : []),
+    ...(result?.secondaryActions ?? []),
+    ...(result?.recommendedActions ?? []),
+    ...extraActions,
+  ]);
   const mergedLinks = useMemo(
     () => uniqueLinks([...(result?.recommendedLinks ?? []), ...extraLinks]),
     [extraLinks, result?.recommendedLinks],
@@ -189,12 +185,7 @@ export default function ResultWorkbench({
     [compareContent, result, visualContent],
   );
   const [activeView, setActiveView] = useState<ResultView>('summary');
-
-  useEffect(() => {
-    if (!views.includes(activeView)) {
-      setActiveView(views[0] ?? 'summary');
-    }
-  }, [activeView, views]);
+  const resolvedActiveView = views.includes(activeView) ? activeView : views[0] ?? 'summary';
 
   const resolvedResult = result;
   if (!resolvedResult) return null;
@@ -270,12 +261,12 @@ export default function ResultWorkbench({
                       ? '可视化'
                       : '下一步',
             }))}
-            active={activeView}
+            active={resolvedActiveView}
             onChange={setActiveView}
           />
         ) : null}
 
-        {activeView === 'summary' ? (
+        {resolvedActiveView === 'summary' ? (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)]">
             <div className="space-y-4">
               {activeResult.evidence?.length ? (
@@ -354,10 +345,10 @@ export default function ResultWorkbench({
           </div>
         ) : null}
 
-        {activeView === 'compare' ? <div>{compareContent}</div> : null}
-        {activeView === 'visual' ? <div>{visualContent}</div> : null}
+        {resolvedActiveView === 'compare' ? <div>{compareContent}</div> : null}
+        {resolvedActiveView === 'visual' ? <div>{visualContent}</div> : null}
 
-        {activeView === 'next_step' ? (
+        {resolvedActiveView === 'next_step' ? (
           <div className="grid gap-4 xl:grid-cols-2">
             <div className="space-y-3">
               <div className="text-sm font-semibold text-text-primary">可执行动作</div>

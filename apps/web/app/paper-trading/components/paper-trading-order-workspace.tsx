@@ -1,6 +1,5 @@
 import type { FormEvent } from 'react';
 import { Badge, SectionCard, StockCodeInput } from '@/components/ui';
-import { paperTradingNoteCardCls } from '@/app/paper-trading/components/paper-trading-panel-styles';
 import { fmtNum } from '@/lib/data-utils';
 
 type PaperTradingOrderWorkspaceProps = {

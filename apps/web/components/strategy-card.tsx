@@ -7,7 +7,8 @@ import { resolveStrategyStatusMeta } from '@/app/strategy-market/components/stra
 import { resolveIncubationSurface } from '@/app/strategy-market/lib/incubation-surface';
 import { fmtPct, fmtNum } from '@/lib/data-utils';
 import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
-import type { Strategy } from '@aiask/shared-types';
+import type { Strategy, StrategyRuntimeActionContractItem } from '@aiask/shared-types';
+import { StrategyRuntimeActionBar } from '@/app/strategy-market/components/StrategyRuntimeActionBar';
 
 const TYPE_LABELS: Record<string, { label: string; variant: 'info' | 'success' | 'warning' | 'danger' | 'neutral' }> = {
   momentum: { label: '动量', variant: 'info' },
@@ -30,7 +31,15 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
-export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) => void }) {
+export function StrategyCard({
+  s,
+  onAdd,
+  onRuntimeAction,
+}: {
+  s: Strategy;
+  onAdd?: (s: Strategy) => void;
+  onRuntimeAction?: (action: StrategyRuntimeActionContractItem, strategy: Strategy) => void | Promise<void>;
+}) {
   const t = TYPE_LABELS[s.strategy_type || ''] ?? { label: s.strategy_type || '其他', variant: 'neutral' as const };
   const statusMeta = resolveStrategyStatusMeta(s.status);
   const incubation = resolveIncubationSurface({
@@ -47,12 +56,11 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
   ].filter(Boolean);
 
   return (
-    <Link
-      href={`/strategy-market/${s.id}`}
-      className="panel-solid glass-hover flex flex-col gap-4 rounded-[28px] p-5 no-underline text-inherit"
-    >
+    <article className="panel-solid glass-hover flex flex-col gap-4 rounded-[28px] p-5">
       <div className="flex items-center justify-between">
-        <span className="truncate text-sm font-semibold text-text-primary">{s.name}</span>
+        <Link href={`/strategy-market/${s.id}`} className="truncate text-sm font-semibold text-text-primary no-underline">
+          {s.name}
+        </Link>
         <div className="ml-3 flex shrink-0 flex-wrap items-center justify-end gap-2">
           <Badge variant={t.variant}>{t.label}</Badge>
           <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
@@ -68,7 +76,7 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
 
       <div className="grid grid-cols-3 gap-2 text-xs text-text-secondary">
         <div>
-          <div className="metric-label">年化收益</div>
+          <div className="metric-label">回测年化</div>
           <div className={`mt-2 text-sm font-semibold ${(metrics.totalReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
             {fmtPct(metrics.totalReturn ?? 0)}
           </div>
@@ -96,7 +104,7 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
       </div>
 
       <div className="rounded-[16px] border border-border-light bg-surface-alt/50 px-3 py-2 text-[11px] leading-5 text-text-secondary">
-        收藏、复制个人策略和创建模拟盘测试需进入详情页执行。
+        当前收益为回测口径；真实模拟盘表现、收藏、复制个人策略和创建模拟盘测试需进入详情页执行。
       </div>
 
       <div className="flex items-center justify-between border-t border-border pt-2 text-xs text-text-secondary">
@@ -106,14 +114,20 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
         </div>
         {onAdd && (
           <button
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onAdd(s); }}
+            onClick={() => onAdd(s)}
             className="rounded-full bg-primary px-3 py-1 text-xs text-white shadow-sm"
           >
             + 加入组合
           </button>
         )}
       </div>
-    </Link>
+
+      <StrategyRuntimeActionBar
+        contract={s.runtime_action_contract}
+        compact
+        onAction={(action) => onRuntimeAction?.(action, s)}
+      />
+    </article>
   );
 }
 

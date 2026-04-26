@@ -1,12 +1,18 @@
+import type { StrategyManagerCallOptions } from './strategy.service.shared';
+
 type ObservabilitySection = {
   data: Record<string, unknown>;
   error: string | null;
 };
 
 export type StrategyServiceFactoryObservabilityDeps = {
-  factoryStatus: () => Promise<unknown>;
-  factoryRuns: (limit?: number) => Promise<unknown>;
-  callQuantManager: (action: string, params?: Record<string, unknown>) => Promise<unknown>;
+  factoryStatus: (options?: StrategyManagerCallOptions) => Promise<unknown>;
+  factoryRuns: (limit?: number, options?: StrategyManagerCallOptions) => Promise<unknown>;
+  callQuantManager: (
+    action: string,
+    params?: Record<string, unknown>,
+    options?: StrategyManagerCallOptions,
+  ) => Promise<unknown>;
   flattenMcpResult: (payload: unknown) => Record<string, unknown>;
   unwrapSettledObject: (result: PromiseSettledResult<unknown>, section: string) => ObservabilitySection;
   asRecord: (value: unknown) => Record<string, unknown>;
@@ -16,24 +22,25 @@ export type StrategyServiceFactoryObservabilityDeps = {
 
 export async function loadFactoryObservability(
   deps: StrategyServiceFactoryObservabilityDeps,
+  options: StrategyManagerCallOptions = {},
 ) {
   const sections = await Promise.allSettled([
-    deps.factoryStatus(),
-    deps.factoryRuns(5),
-    deps.callQuantManager('scheduler_status').then((payload) => deps.flattenMcpResult(payload)),
-    deps.callQuantManager('factor_candidate_registry', { op: 'summary', limit: 200 }).then((payload) =>
+    deps.factoryStatus(options),
+    deps.factoryRuns(5, options),
+    deps.callQuantManager('scheduler_status', {}, options).then((payload) => deps.flattenMcpResult(payload)),
+    deps.callQuantManager('factor_candidate_registry', { op: 'summary', limit: 200 }, options).then((payload) =>
       deps.flattenMcpResult(payload),
     ),
-    deps.callQuantManager('factor_candidate_registry', { op: 'active_pool', limit: 20 }).then((payload) =>
+    deps.callQuantManager('factor_candidate_registry', { op: 'active_pool', limit: 20 }, options).then((payload) =>
       deps.flattenMcpResult(payload),
     ),
-    deps.callQuantManager('model_registry', { op: 'summary', limit: 200 }).then((payload) =>
+    deps.callQuantManager('model_registry', { op: 'summary', limit: 200 }, options).then((payload) =>
       deps.flattenMcpResult(payload),
     ),
-    deps.callQuantManager('model_registry', { op: 'retrain_summary', limit: 200 }).then((payload) =>
+    deps.callQuantManager('model_registry', { op: 'retrain_summary', limit: 200 }, options).then((payload) =>
       deps.flattenMcpResult(payload),
     ),
-    deps.callQuantManager('model_registry', { op: 'retrain_list', limit: 5 }).then((payload) =>
+    deps.callQuantManager('model_registry', { op: 'retrain_list', limit: 5 }, options).then((payload) =>
       deps.flattenMcpResult(payload),
     ),
   ]);

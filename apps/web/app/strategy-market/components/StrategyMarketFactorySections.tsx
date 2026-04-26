@@ -4,8 +4,14 @@ import Link from 'next/link';
 import { Badge, DataTable, SectionCard } from '@/components/ui';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import type { FactoryMarketVisibleOutput } from '@/app/strategy-market/types';
 import { buildStrategyDetailPlaceholderHref } from '@/lib/surface-contracts';
-import { primaryRoundButtonCls, secondaryRoundButtonCls, secondaryRoundLinkCls, summaryChipCls } from './strategy-market-panel-styles';
+import {
+  primaryRoundButtonCls,
+  secondaryRoundButtonCls,
+  secondaryRoundLinkCls,
+  summaryChipCls,
+} from './strategy-market-panel-styles';
 
 type FactoryOverviewItem = {
   label: string;
@@ -19,6 +25,7 @@ type StrategyMarketFactoryOverviewSectionProps = {
   snapshotCompletionRatio: number | null | undefined;
   snapshotFailureCount: number;
   failedRunsCount: number;
+  visibleOutputs: FactoryMarketVisibleOutput[];
 };
 
 export function StrategyMarketFactoryOverviewSection({
@@ -28,7 +35,25 @@ export function StrategyMarketFactoryOverviewSection({
   snapshotCompletionRatio,
   snapshotFailureCount,
   failedRunsCount,
+  visibleOutputs,
 }: StrategyMarketFactoryOverviewSectionProps) {
+  const resolveOutputVariant = (status?: string | null) => {
+    switch (
+      String(status ?? '')
+        .trim()
+        .toLowerCase()
+    ) {
+      case 'available':
+        return 'success' as const;
+      case 'degraded':
+        return 'warning' as const;
+      case 'empty':
+        return 'neutral' as const;
+      default:
+        return 'info' as const;
+    }
+  };
+
   return (
     <SectionCard className="mt-0" data-testid="strategy-market-factory-overview">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -55,6 +80,44 @@ export function StrategyMarketFactoryOverviewSection({
         <span className={summaryChipCls}>失败原因 {snapshotFailureCount}</span>
         <span className={summaryChipCls}>最近失败运行 {failedRunsCount}</span>
       </div>
+      {visibleOutputs.length > 0 ? (
+        <div className="mt-4">
+          <div className="eyebrow">可见产物</div>
+          <h3 className="mt-2">当前策略超市能直接看到的工厂产物</h3>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {visibleOutputs.map((item) => {
+              const content = (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-text-primary">{item.title ?? '-'}</div>
+                      <div className="mt-2 text-sm leading-6 text-text-secondary">{item.summary ?? '-'}</div>
+                    </div>
+                    <Badge variant={resolveOutputVariant(item.status)}>{item.status ?? 'available'}</Badge>
+                  </div>
+                  {item.evidence ? <div className="mt-3 text-xs text-text-secondary">{item.evidence}</div> : null}
+                </>
+              );
+              return item.href ? (
+                <Link
+                  key={item.key ?? item.title}
+                  href={item.href}
+                  className="no-underline rounded-[20px] border border-border bg-surface-alt px-4 py-4 text-inherit"
+                >
+                  {content}
+                </Link>
+              ) : (
+                <div
+                  key={item.key ?? item.title}
+                  className="rounded-[20px] border border-border bg-surface-alt px-4 py-4"
+                >
+                  {content}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </SectionCard>
   );
 }
@@ -129,7 +192,8 @@ export function StrategyMarketObservabilitySection({
           <div className="eyebrow">联动观测</div>
           <h2 className="mt-2">工厂运行与因子治理是否真正接通</h2>
           <p className="mb-0 mt-2 text-sm text-text-secondary">
-            这里把 factory 状态和 factor governed pool 放在一起看，避免出现“工厂看起来正常，但 active_pool 其实是空的或陈旧的”假阳性。
+            这里把 factory 状态和 factor governed pool 放在一起看，避免出现“工厂看起来正常，但 active_pool
+            其实是空的或陈旧的”假阳性。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -139,9 +203,7 @@ export function StrategyMarketObservabilitySection({
           <Badge variant={activeFactorCount > 0 ? 'success' : 'warning'}>
             {activeFactorCount > 0 ? 'governed pool 已就绪' : 'governed pool 为空'}
           </Badge>
-          <Badge variant={degraded ? 'warning' : 'info'}>
-            {degraded ? '聚合存在降级' : '聚合链路完整'}
-          </Badge>
+          <Badge variant={degraded ? 'warning' : 'info'}>{degraded ? '聚合存在降级' : '聚合链路完整'}</Badge>
         </div>
       </div>
 
@@ -258,7 +320,8 @@ export function StrategyMarketObservabilitySection({
               <div className="eyebrow">Recent Auto Run</div>
               <h3 className="mt-2">最近一次自动挖掘</h3>
               <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
-                生成 {recentRunGeneratedCount} 个候选，验证通过 {recentRunValidatedCount} 个，运行后 governed active {recentRunGovernedCount} 个。
+                生成 {recentRunGeneratedCount} 个候选，验证通过 {recentRunValidatedCount} 个，运行后 governed active{' '}
+                {recentRunGovernedCount} 个。
               </p>
             </div>
 
@@ -324,12 +387,7 @@ export function StrategyMarketEmptyStateSection({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onRunFactory}
-            disabled={runFactoryPending}
-            className={primaryRoundButtonCls}
-          >
+          <button type="button" onClick={onRunFactory} disabled={runFactoryPending} className={primaryRoundButtonCls}>
             {runFactoryPending ? '运行中...' : '立即运行一轮工厂'}
           </button>
           <button type="button" onClick={onShowFactoryDetails} className={secondaryRoundButtonCls}>

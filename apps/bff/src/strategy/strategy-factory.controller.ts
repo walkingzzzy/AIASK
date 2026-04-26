@@ -22,10 +22,35 @@ export class StrategyFactoryController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('factory/market-view')
+  @Public()
+  async factoryMarketView(
+    @Query('run_id') runId: string,
+    @Query('include_details') includeDetails: string,
+    @Req() req: Req_,
+  ) {
+    const data = await this.svc.factoryMarketView({
+      runId,
+      includeDetails: includeDetails === 'true' || includeDetails === '1',
+      actor: {
+        userId: req.user?.id,
+        role: req.user?.role,
+      },
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Post('factory/run-once')
   @Roles('admin')
   async factoryRunOnce(@Req() req: Req_) {
     const data = await this.svc.factoryRunOnce();
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post('factory/dispatch/run')
+  @Roles('admin')
+  async factoryDispatchRun(@Req() req: Req_) {
+    const data = await this.svc.factoryDispatchRun();
     return { success: true, data, traceId: tid(req) };
   }
 

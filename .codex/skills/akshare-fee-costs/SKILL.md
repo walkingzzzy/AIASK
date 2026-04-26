@@ -1,6 +1,15 @@
 ---
 name: akshare-fee-costs
 description: 费用与成本识别、长期影响评估与敏感性分析。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["cost_disclosure", "research_disclosure"]
+role_tags: ["buy_side_pm", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义费用与交易成本分析的推荐流程，不代表文中涉及的费率参数、滑点假设、回测执行路径与结果口径在当前环境都已默认统一。

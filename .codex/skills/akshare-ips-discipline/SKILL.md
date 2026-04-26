@@ -1,6 +1,15 @@
 ---
 name: akshare-ips-discipline
 description: 投资政策声明（IPS）与行为纪律制定流程。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["portfolio_suitability", "risk_disclosure"]
+role_tags: ["buy_side_pm", "compliance", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义投资政策声明（IPS）与行为纪律的模板化流程，不代表文中列出的目标、约束、再平衡规则与执行纪律在当前系统中都已自动落地、持续校验或强制执行。

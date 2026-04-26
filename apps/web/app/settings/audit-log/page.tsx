@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -31,8 +33,6 @@ type BehaviorEntry = {
   pageKey?: string;
   route?: string;
 };
-
-type CombinedEntry = AuditEntry | BehaviorEntry;
 
 type RawAuditEntry = {
   id?: string;
@@ -202,6 +202,18 @@ export default function AuditLogPage() {
     () => (logsQ.error ? parseAuditError(logsQ.error) : behaviorQ.error ? parseAuditError(behaviorQ.error) : null),
     [behaviorQ.error, logsQ.error],
   );
+  const formatTimestamp = (value: string) => {
+    if (!value) return '-';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString('zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  };
 
   const pageActions = useMemo(
     () => [
@@ -311,64 +323,111 @@ export default function AuditLogPage() {
       hasError: Boolean(combinedError),
     },
   });
-
-  const formatTimestamp = (value: string) => {
-    if (!value) return '-';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return value;
-    return parsed.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  };
+  const latestLogText = combinedLogs[0]?.timestamp ? formatTimestamp(combinedLogs[0].timestamp) : '暂无记录';
 
   return (
     <PageContainer>
-      <ResultWorkbench pageKey="settings-audit-log" title="审计结果工作台" result={auditResult} />
-
-      <div className="mb-4">
-        <h1 className="text-lg font-semibold m-0">📋 操作审计日志</h1>
-        <p className="mt-1 mb-0 text-sm text-text-secondary">
-          同时展示后端请求审计和前端行为轨迹，方便核对 UI 证据与 AI 可见证据是否一致。
-        </p>
-      </div>
-
-      <div className="mb-3 flex flex-wrap gap-2">
-        {[
-          { key: 'all', label: `全部 (${combinedLogs.length})` },
-          { key: 'audit', label: `后端审计 (${auditLogs.length})` },
-          { key: 'behavior', label: `前端行为 (${behaviorLogs.length})` },
-        ].map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setSourceFilter(item.key as 'all' | 'audit' | 'behavior')}
-            className={`text-xs px-3 py-1 rounded-full cursor-pointer ${sourceFilter === item.key ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
+      <LightOverviewHero
+        eyebrow="Audit Workspace"
+        title="操作审计日志"
+        summary="默认先看摘要和筛选，再决定是否下钻到整张流水表。长表格改为固定高度滚动，不再把整页直接拉长。"
+        badges={(
+          <>
+            <Badge variant="info">{sourceFilter === 'all' ? '全部来源' : sourceFilter === 'audit' ? '后端审计' : '前端行为'}</Badge>
+            <Badge variant={combinedError ? 'warning' : 'success'}>
+              {combinedError ? '读取异常' : '读取正常'}
+            </Badge>
+          </>
+        )}
+        actions={(
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                void Promise.allSettled([logsQ.refetch(), behaviorQ.refetch()]);
+              }}
+              className="action-chip cursor-pointer text-sm text-text-primary"
+            >
+              刷新日志
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/settings?tab=security')}
+              className="action-chip cursor-pointer text-sm text-text-primary"
+            >
+              返回设置页
+            </button>
+          </>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
           >
-            {item.label}
-          </button>
-        ))}
-      </div>
+            <div className="font-medium text-text-primary">
+              当前过滤来源 {sourceFilter === 'all' ? '全部' : sourceFilter === 'audit' ? '后端审计' : '前端行为'} ｜ 动作 {actionFilter === 'all' ? '全部' : actionFilter}
+            </div>
+            <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
+              可见 {filteredLogs.length} 条 ｜ 最近日志 {latestLogText}
+            </p>
+          </div>
+        )}
+        metrics={[
+          { key: 'audit-visible', label: '可见记录', value: String(filteredLogs.length) },
+          { key: 'audit-backend', label: '后端审计', value: String(auditLogs.length) },
+          { key: 'audit-behavior', label: '前端行为', value: String(behaviorLogs.length) },
+          { key: 'audit-actions', label: '动作筛选', value: actionFilter === 'all' ? '全部动作' : actionFilter },
+        ]}
+        compact
+      />
 
-      <div className="mb-4 flex gap-2 flex-wrap">
-        <button
-          type="button"
-          onClick={() => setActionFilter('all')}
-          className={`text-xs px-3 py-1 rounded-full cursor-pointer ${actionFilter === 'all' ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
-        >
-          全部动作
-        </button>
-        {actionTypes.map((t) => (
+      <ProgressiveWorkbenchSection pageKey="settings-audit-log" title="审计结果工作台" result={auditResult} summaryMode="strip" />
+
+      <CollapsibleSectionCard
+        title="筛选器"
+        summary="先收窄来源和动作类型，再进入日志流水。"
+        defaultOpen
+      >
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'all', label: `全部 (${combinedLogs.length})` },
+            { key: 'audit', label: `后端审计 (${auditLogs.length})` },
+            { key: 'behavior', label: `前端行为 (${behaviorLogs.length})` },
+          ].map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setSourceFilter(item.key as 'all' | 'audit' | 'behavior')}
+              className={`text-xs px-3 py-1 rounded-full cursor-pointer ${sourceFilter === item.key ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3 flex gap-2 flex-wrap">
           <button
-            key={t}
             type="button"
-            onClick={() => setActionFilter(t)}
-            className={`text-xs px-3 py-1 rounded-full cursor-pointer ${actionFilter === t ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
+            onClick={() => setActionFilter('all')}
+            className={`text-xs px-3 py-1 rounded-full cursor-pointer ${actionFilter === 'all' ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
           >
-            {t}
+            全部动作
           </button>
-        ))}
-      </div>
+          {actionTypes.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setActionFilter(t)}
+              className={`text-xs px-3 py-1 rounded-full cursor-pointer ${actionFilter === t ? 'bg-primary/20 text-primary border border-primary/40' : 'bg-surface border border-glass-border text-text-secondary'}`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </CollapsibleSectionCard>
 
       {combinedError ? (
-        <>
+        <CollapsibleSectionCard title="读取异常" summary={combinedError.message} defaultOpen badge={<Badge variant="warning">需要恢复</Badge>}>
           <ErrorState
             text={combinedError.message}
             hint={combinedError.hint}
@@ -376,19 +435,16 @@ export default function AuditLogPage() {
               void Promise.allSettled([logsQ.refetch(), behaviorQ.refetch()]);
             }}
           />
-          <SectionCard className="mt-3 p-4">
+          <div className="mt-3 rounded-xl border border-glass-border bg-surface-alt/40 p-4">
             <h3 className="mt-0 text-sm font-medium">技术详情</h3>
             <p className="mt-1 mb-2 text-xs text-text-secondary">下面的信息主要用于排查权限或接口问题，普通使用时可以忽略。</p>
-            <details>
-              <summary className="cursor-pointer text-sm text-text-secondary">展开查看原始错误</summary>
-              <ul className="mt-2 mb-0 list-disc pl-5 text-xs text-text-secondary space-y-1">
-                {combinedError.details.map((detail) => (
-                  <li key={detail}>{detail}</li>
-                ))}
-              </ul>
-            </details>
-          </SectionCard>
-        </>
+            <ul className="mb-0 list-disc pl-5 text-xs text-text-secondary space-y-1">
+              {combinedError.details.map((detail) => (
+                <li key={detail}>{detail}</li>
+              ))}
+            </ul>
+          </div>
+        </CollapsibleSectionCard>
       ) : null}
 
       {!combinedError && filteredLogs.length === 0 ? (
@@ -398,8 +454,13 @@ export default function AuditLogPage() {
           </div>
         </SectionCard>
       ) : (
-        <SectionCard>
-          <div className="overflow-x-auto">
+        <CollapsibleSectionCard
+          title="日志流水"
+          summary="固定高度滚动查看时间线，避免整页被大表格撑长。"
+          defaultOpen
+          badge={<Badge variant="neutral">{filteredLogs.length} 条</Badge>}
+        >
+          <div className="max-h-[560px] overflow-auto overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-glass-border text-text-secondary text-xs">
@@ -431,7 +492,7 @@ export default function AuditLogPage() {
               </tbody>
             </table>
           </div>
-        </SectionCard>
+        </CollapsibleSectionCard>
       )}
     </PageContainer>
   );

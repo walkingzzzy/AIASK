@@ -923,6 +923,7 @@ export default function PerformancePage() {
       </div>
 
       <PerformanceHero
+        compactMobile={collapseToTabs}
         isAccountMode={isAccountMode}
         activeModeLabel={activeModeLabel}
         outperformance={outperformance}
@@ -944,12 +945,14 @@ export default function PerformancePage() {
         portfolioNarrative={portfolioNarrative}
       />
 
-      <ProgressiveWorkbenchSection
-        pageKey="performance"
-        title="绩效结果工作台"
-        result={performanceResult}
-        summaryMode="strip"
-      />
+      {!collapseToTabs ? (
+        <ProgressiveWorkbenchSection
+          pageKey="performance"
+          title="绩效结果工作台"
+          result={performanceResult}
+          summaryMode="strip"
+        />
+      ) : null}
 
 
       <WorkspaceToolbar
@@ -967,6 +970,13 @@ export default function PerformancePage() {
         primaryLabel="绩效主区"
         secondaryLabel="绩效摘要"
         defaultMobileTab="primary"
+        mobileSummary={
+          collapseToTabs ? (
+            <div className="panel-soft rounded-[20px] px-3 py-2 text-xs text-text-secondary">
+              {activeModeLabel} ｜ {isAccountMode ? `${days} 天` : `${portfolioLookbackDays} 天`} ｜ {focusStockCode || '未聚焦标的'}
+            </div>
+          ) : undefined
+        }
         primary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
             {collapseToTabs ? (

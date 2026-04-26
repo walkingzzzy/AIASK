@@ -209,7 +209,11 @@ class StrategyPromotionPipelineService:
         )
 
         trace_metadata = dict(metadata or {})
-        overview = await _build_incubation_overview(db, strategy)
+        overview = await _build_incubation_overview(
+            db,
+            strategy,
+            force_recompute=bool(trace_metadata.get("force_recompute")),
+        )
         sid = strategy['id']
         metric = await db.get_latest_strategy_incubation_metric(sid) if hasattr(db, 'get_latest_strategy_incubation_metric') else None
         account = await db.get_strategy_incubation_account(sid) if hasattr(db, 'get_strategy_incubation_account') else None

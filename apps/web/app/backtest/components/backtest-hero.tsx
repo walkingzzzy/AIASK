@@ -6,7 +6,7 @@ import {
   backtestSecondaryButtonCls,
   backtestSidePanelCls,
 } from '@/app/backtest/components/backtest-panel-styles';
-import { fmtAmount, fmtNum, fmtPct } from '@/lib/data-utils';
+import { fmtPct } from '@/lib/data-utils';
 
 type BacktestHeroProps = {
   loading: boolean;

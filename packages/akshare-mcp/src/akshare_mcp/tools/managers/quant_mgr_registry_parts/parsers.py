@@ -112,6 +112,27 @@ def _normalize_validation_params(payload: dict[str, Any]) -> dict[str, int]:
     return normalized
 
 
+def _candidate_registry_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+    expression = str(candidate.get("expression_dsl") or "").strip().lower()
+    name = str(candidate.get("name") or "").strip().lower()
+    codes = ",".join(sorted(_as_code_list(item.get("codes"))))
+    if expression:
+        return ("expression", expression, codes)
+    return ("name", name, codes)
+
+
+def _candidate_registry_recency_key(item: dict[str, Any]) -> tuple[str, str]:
+    timestamp = str(
+        item.get("latest_validation_at")
+        or item.get("updated_at")
+        or item.get("created_at")
+        or ""
+    ).strip()
+    artifact_id = str(item.get("artifact_id") or "").strip()
+    return (timestamp, artifact_id)
+
+
 async def _load_model_registry_stage_index(summary_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     stage_index: dict[str, dict[str, Any]] = {}
     for row in list(summary_rows or []):
@@ -440,6 +461,14 @@ async def _list_factor_candidate_registry_items(
             continue
 
         items.append(normalized)
+
+    deduped_items: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in items:
+        key = _candidate_registry_dedupe_key(item)
+        existing = deduped_items.get(key)
+        if existing is None or _candidate_registry_recency_key(item) > _candidate_registry_recency_key(existing):
+            deduped_items[key] = item
+    items = list(deduped_items.values())
 
     items.sort(
         key=lambda item: (

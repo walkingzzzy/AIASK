@@ -4,7 +4,14 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { Reflector } from '@nestjs/core';
+import {
+  InjectThrottlerOptions,
+  InjectThrottlerStorage,
+  ThrottlerGuard,
+  ThrottlerModuleOptions,
+  ThrottlerStorage,
+} from '@nestjs/throttler';
 import { CommonCacheService } from './cache.service';
 
 /**
@@ -19,28 +26,18 @@ import { CommonCacheService } from './cache.service';
 @Injectable()
 export class TradingThrottleGuard extends ThrottlerGuard {
   private readonly logger = new Logger(TradingThrottleGuard.name);
-  private cache: CommonCacheService | null = null;
 
   // 默认限流阈值（可通过 Redis config key 动态调整）
   private readonly PER_SECOND_LIMIT = 10;
   private readonly PER_DAY_LIMIT = 500;
 
-  /**
-   * 注入 CommonCacheService（已有 Redis 连接）。
-   * 由于 Guard 通过 APP_GUARD 注册，无法直接构造注入，
-   * 这里在首次调用时从 context 的 moduleRef 懒加载。
-   */
-  private async ensureCache(context: ExecutionContext): Promise<CommonCacheService | null> {
-    if (this.cache) return this.cache;
-    try {
-      const app = context.switchToHttp().getRequest()?.app;
-      if (app?.get) {
-        this.cache = app.get(CommonCacheService);
-      }
-    } catch {
-      // 无法获取，回退内存限流
-    }
-    return this.cache;
+  constructor(
+    @InjectThrottlerOptions() options: ThrottlerModuleOptions,
+    @InjectThrottlerStorage() storageService: ThrottlerStorage,
+    reflector: Reflector,
+    private readonly cache: CommonCacheService,
+  ) {
+    super(options, storageService, reflector);
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -55,14 +52,8 @@ export class TradingThrottleGuard extends ThrottlerGuard {
     const userId: string =
       request?.user?.id || request?.headers?.['x-user-id'] || 'anonymous';
 
-    const cache = await this.ensureCache(context);
-    if (!cache) {
-      // Redis 不可用，回退内存限流
-      return super.canActivate(context);
-    }
-
     try {
-      const passed = await this.checkRedisThrottle(cache, userId);
+      const passed = await this.checkRedisThrottle(this.cache, userId);
       if (!passed) {
         this.logger.warn(`Trading throttle exceeded for user ${userId}`);
         throw new HttpException(

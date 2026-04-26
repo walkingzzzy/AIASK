@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
@@ -379,7 +379,7 @@ export default function EventsPage() {
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               事件日历工作台
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+            <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
               把市场事件、重点订阅和单一标的时间线收进同一块工作台。你可以先压缩观察窗口，再沿着研究页、执行中心和个股详情形成一条连续动作链。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -411,14 +411,14 @@ export default function EventsPage() {
                 当前焦点 {activeCode || '未选择'}，订阅状态 {isSubscribed ? '已订阅' : '未订阅'}，重点事件{' '}
                 {importantItems.length} 条
               </div>
-              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              <p className="mt-1 mb-0 hidden text-xs leading-6 text-text-secondary sm:block">
                 个股时间线 {timelineItems.length} 条 ｜ 最新事件{' '}
                 {latestTimelineItem?.title || nextImportantItem?.title || '当前窗口暂无高优先级事件'}
               </p>
-              <p className="mt-2 mb-0 text-xs text-text-secondary">最近更新时间：{latestEventRefreshText}</p>
+              <p className="mt-2 mb-0 hidden text-xs text-text-secondary sm:block">最近更新时间：{latestEventRefreshText}</p>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <div className="mt-5 hidden gap-3 sm:grid sm:grid-cols-3">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">聚焦标的</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{activeCode || '未选择'}</div>
@@ -443,7 +443,7 @@ export default function EventsPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
+          <div className="hidden gap-3 xl:grid">
             <div className="rounded-[28px] border border-white/45 bg-white/34 p-4 shadow-[0_22px_50px_-36px_rgba(36,74,144,0.42)] backdrop-blur-xl">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前焦点</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
@@ -499,7 +499,7 @@ export default function EventsPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="events" title="事件结果工作台" result={eventsResult} />
+      <ResponsiveResultWorkbench pageKey="events" title="事件结果工作台" result={eventsResult} />
 
       <WorkspaceToolbar
         pageKey="events"
@@ -511,6 +511,7 @@ export default function EventsPage() {
           if (typeof payload.type === 'string' && payload.type) setType(payload.type);
         }}
         supportsPagePanels
+        mobileSummaryMode="hidden"
       />
 
       <WorkspaceSplitLayout
@@ -584,12 +585,14 @@ export default function EventsPage() {
               </div>
             </SectionCard>
 
-            <KpiGrid cols={4}>
-              <KpiCard title="订阅标的" value={subscriptions.length} />
-              <KpiCard title="重点事件" value={importantItems.length} />
-              <KpiCard title="日历事件" value={calendarQ.data?.count ?? 0} />
-              <KpiCard title="个股时间线" value={timelineItems.length} />
-            </KpiGrid>
+            <div className="hidden md:block">
+              <KpiGrid cols={4}>
+                <KpiCard title="订阅标的" value={subscriptions.length} />
+                <KpiCard title="重点事件" value={importantItems.length} />
+                <KpiCard title="日历事件" value={calendarQ.data?.count ?? 0} />
+                <KpiCard title="个股时间线" value={timelineItems.length} />
+              </KpiGrid>
+            </div>
 
             <SectionCard>
               <div className="flex items-center justify-between gap-3 flex-wrap">

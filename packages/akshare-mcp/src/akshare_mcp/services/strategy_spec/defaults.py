@@ -483,7 +483,8 @@ def _default_constraint_check(
                 expansion_applied = True
                 expansion_reason = "fallback_research_symbols"
                 expansion_source = "research_task.target_symbols"
-                constraint_violation = "strict_intersection_empty"
+                if candidate_before:
+                    constraint_violation = "strict_intersection_empty"
         elif not resolved:
             resolved = list(research_symbols[:resolved_limit])
             expansion_applied = True

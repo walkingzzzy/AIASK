@@ -1,6 +1,15 @@
 ---
 name: akshare-quant-research-process
 description: 量化研究流程编排：数据→信号→组合→回测→执行与复盘。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["model_governance", "research_lineage"]
+role_tags: ["quant", "research"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 定义量化研究的推荐门禁与阶段顺序，不代表每个阶段在当前环境都已有完全自动化、同口径且稳定通过的执行链路。

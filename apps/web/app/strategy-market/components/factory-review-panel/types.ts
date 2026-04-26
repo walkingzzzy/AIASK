@@ -3,7 +3,9 @@
 import type { buildFactoryReviewViewModel } from '@/app/strategy-market/lib/factory-review-view-model';
 import type {
   ReviewReportResponse,
+  StrategyIncubationSurface,
   StrategyPresentationDto,
+  StrategyPaperContextResponse,
   StrategyEventsResponse,
   IncubationOverviewResponse,
   IncubationAccount,
@@ -45,6 +47,8 @@ export type FactoryReviewPanelProps = {
   highConfidenceQualityUiEnabled: boolean;
   canViewOperatorPanels: boolean;
   strategyStatus?: string | null;
+  strategyIncubationSurface?: StrategyIncubationSurface | null;
+  paperContext?: StrategyPaperContextResponse | null;
   ownerState?: StrategyOwnerState | null;
   paperSessionState?: StrategyPaperSessionState | null;
   report: ReviewReportResponse | null | undefined;
@@ -100,5 +104,13 @@ export type FactoryReviewPanelProps = {
   ackRuntimeAlertPending: boolean;
   onRiskRecovery: () => void;
   riskRecoveryPending: boolean;
+  onSetRuntimeControl: (controlMode: string) => void;
+  setRuntimeControlPending: boolean;
+  onResolveRiskEvent: (eventId: number) => void;
+  resolveRiskEventPending: boolean;
+  onRunRuntimeCycle: () => void;
+  runRuntimeCyclePending: boolean;
+  onAiGenerateCandidate: () => void;
+  aiGenerateCandidatePending: boolean;
   loading: boolean;
 };

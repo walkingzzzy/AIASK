@@ -3,7 +3,6 @@ import type {
   AiExperiment,
   DomainEvent,
   DomainProjection,
-  EventFilters,
   FactoryReviewSection,
   IncubationAccount,
   IncubationMetric,
@@ -419,6 +418,7 @@ export function buildFactoryReviewViewModel({
 
   const runtimeState = {
     riskRows: riskEvents.map((item) => ({
+      event_id: item.id ?? null,
       detected_at: formatDateTime(item.detected_at),
       severity: item.severity ?? '-',
       event_type: item.event_type ?? '-',

@@ -14,7 +14,6 @@ import {
 } from '@/app/strategy-market/lib/factory-dashboard-helpers';
 import type {
   CapabilityBadge,
-  DailySnapshotResponse,
   FactoryGenerationLaneQualityItem,
   FactoryQualityBaseline,
   FactoryQualitySummarySnapshot,
@@ -63,6 +62,7 @@ import {
   toObjectArray,
 } from './formatters';
 import { FactoryResearchPlanePanel } from './research-plane';
+import type { FactoryMarketViewModel } from '../../lib/factory-market-view-model';
 
 /* ---------- small building blocks ---------- */
 
@@ -640,24 +640,17 @@ function FactoryRunDetailPanel({
 /* ---------- main export ---------- */
 
 export type FactoryDashboardProps = {
-  factoryStatus: FactoryStatusResponse | null | undefined;
-  latestSnapshot: DailySnapshotResponse | null;
+  viewModel: FactoryMarketViewModel;
   capabilityBadges: CapabilityBadge[];
   capabilitiesError: string | null;
   dailySnapshotError: string | null;
-  factorySummary: NonNullable<FactoryStatusResponse['last_summary']>;
-  snapshotCompletionRatio?: number | null;
-  snapshotDegraded: boolean;
-  snapshotFailureCount: number;
   /* run factory */
   onRunFactory: () => void;
   runFactoryPending: boolean;
   runFactoryError: string | null;
   /* runs */
   factoryRunsLoading: boolean;
-  factoryRuns: FactoryRunItem[];
   filteredRuns: FactoryRunItem[];
-  failedRuns: FactoryRunItem[];
   comparableRuns: FactoryRunItem[];
   trendRuns: FactoryRunItem[];
   /* filters / expand */
@@ -667,28 +660,20 @@ export type FactoryDashboardProps = {
   onTrendMetricKeyChange: (value: TrendMetricKey) => void;
   expandedRunId: string | null;
   onExpandedRunIdChange: (id: string | null) => void;
-  expandedRun: FactoryRunDetailResponse | null;
   expandedRunLoading: boolean;
   expandedRunError: string | null;
 };
 
 export function FactoryDashboard({
-  factoryStatus,
-  latestSnapshot,
+  viewModel,
   capabilityBadges,
   capabilitiesError,
   dailySnapshotError,
-  factorySummary,
-  snapshotCompletionRatio,
-  snapshotDegraded,
-  snapshotFailureCount,
   onRunFactory,
   runFactoryPending,
   runFactoryError,
   factoryRunsLoading,
-  factoryRuns,
   filteredRuns,
-  failedRuns,
   comparableRuns,
   trendRuns,
   runStatusFilter,
@@ -697,10 +682,18 @@ export function FactoryDashboard({
   onTrendMetricKeyChange,
   expandedRunId,
   onExpandedRunIdChange,
-  expandedRun,
   expandedRunLoading,
   expandedRunError,
 }: FactoryDashboardProps) {
+  const factoryStatus = viewModel.status;
+  const latestSnapshot = viewModel.latestSnapshot;
+  const factorySummary = viewModel.summary;
+  const snapshotCompletionRatio = viewModel.snapshotCompletionRatio;
+  const snapshotDegraded = viewModel.snapshotDegraded;
+  const snapshotFailureCount = viewModel.snapshotFailureCount;
+  const factoryRuns = viewModel.factoryRuns;
+  const failedRuns = viewModel.failedRuns;
+  const expandedRun = viewModel.expandedRun;
   const researchWindow = factoryStatus?.research_window ?? factorySummary.research_window ?? null;
   const fullMarketTopn = factoryStatus?.full_market_topn ?? factorySummary.full_market_topn ?? null;
   return (

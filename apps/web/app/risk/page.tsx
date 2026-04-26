@@ -5,7 +5,7 @@ import { AskAiButton } from '@/components/ask-ai-button';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, Badge, TabBar } from '@/components/ui';
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
@@ -82,7 +82,7 @@ export default function RiskPage() {
   const [portfolioId, setPortfolioId] = useState(() => searchParams.get('portfolioId') ?? '');
   const [lookbackDays, setLookbackDays] = useState(() => searchParams.get('lookbackDays') ?? '252');
   const [formError, setFormError] = useState<string | null>(null);
-  const [lastPrimaryRefreshAt, setLastPrimaryRefreshAt] = useState<string | null>(null);
+  const [, setLastPrimaryRefreshAt] = useState<string | null>(null);
   const [resultTab, setResultTab] = useState<RiskResultTab>('overview');
   const applyingWorkspaceDefaultsRef = useRef(false);
   const task = searchParams.get('task');
@@ -313,44 +313,40 @@ export default function RiskPage() {
     if (partialDegraded) notes.push('部分模块结果不可用，建议先查看降级原因再解释图表。');
     return notes;
   }, [allEmpty, partialDegraded, summary?.degradeReasons]);
-  const riskResult = useMemo(
-    () =>
-      buildLocalResultContract({
-        summary: riskSummaryText,
-        status: error ? 'unavailable' : showInitialEmptyState || allEmpty ? 'empty' : summary?.degraded ? 'degraded' : 'ready',
-        pageActions,
-        preferredActionIds: ['risk.refresh', 'risk.set-lookback'],
-        recommendedLinks: riskLinks,
-        recommendedNextActions: [
-          '先确认组合和回看窗口，再解释 VaR、压力和暴露结果。',
-          summary?.degraded ? '当前存在降级模块，先看原因再解释图表。' : '只有在总览异常时再钻到单模块图表。',
-          '需要执行动作时再跳绩效、组合或执行中心。',
-        ],
-        evidence: riskEvidence,
-        riskNotes,
-        emptyState: {
-          title: '还没有形成风险分析结果',
-          description: '先选择组合和窗口，再触发一次风险汇总。',
-          example: 'portfolioId=1，lookbackDays=252',
-        },
-        degradedState: summary?.degraded ? {
-          title: '风险页当前处于降级态',
-          description: '请先处理模块降级原因，再继续解释风险结论。',
-          reason: summary.degradeReasons?.join('；') || '部分模块结果暂不可用',
-        } : null,
-        freshness: summary?.meta?.fetchedAt ? { updatedAt: summary.meta.fetchedAt, label: '风险抓取时间' } : null,
-        platformMeta: {
-          sourceTool: 'risk-summary',
-          degraded: summary?.degraded ?? false,
-          fallbackReason: summary?.degradeReasons ?? [],
-        },
-        workbenchTask: defaultWorkbenchTask('risk', `风险复盘：${displayPortfolio}`, `/risk?lookbackDays=${encodeURIComponent(lookbackDays)}`, 'risk-review', {
-          portfolioId: portfolioId || summary?.portfolioId || null,
-          lookbackDays: Number(lookbackDays),
-        }),
-      }),
-    [displayPortfolio, lookbackDays, pageActions, portfolioId, riskEvidence, riskLinks, riskNotes, riskSummaryText, summary?.degradeReasons, summary?.degraded, summary?.meta?.fetchedAt, summary?.portfolioId],
-  );
+  const riskResult = buildLocalResultContract({
+    summary: riskSummaryText,
+    status: error ? 'unavailable' : showInitialEmptyState || allEmpty ? 'empty' : summary?.degraded ? 'degraded' : 'ready',
+    pageActions,
+    preferredActionIds: ['risk.refresh', 'risk.set-lookback'],
+    recommendedLinks: riskLinks,
+    recommendedNextActions: [
+      '先确认组合和回看窗口，再解释 VaR、压力和暴露结果。',
+      summary?.degraded ? '当前存在降级模块，先看原因再解释图表。' : '只有在总览异常时再钻到单模块图表。',
+      '需要执行动作时再跳绩效、组合或执行中心。',
+    ],
+    evidence: riskEvidence,
+    riskNotes,
+    emptyState: {
+      title: '还没有形成风险分析结果',
+      description: '先选择组合和窗口，再触发一次风险汇总。',
+      example: 'portfolioId=1，lookbackDays=252',
+    },
+    degradedState: summary?.degraded ? {
+      title: '风险页当前处于降级态',
+      description: '请先处理模块降级原因，再继续解释风险结论。',
+      reason: summary.degradeReasons?.join('；') || '部分模块结果暂不可用',
+    } : null,
+    freshness: summary?.meta?.fetchedAt ? { updatedAt: summary.meta.fetchedAt, label: '风险抓取时间' } : null,
+    platformMeta: {
+      sourceTool: 'risk-summary',
+      degraded: summary?.degraded ?? false,
+      fallbackReason: summary?.degradeReasons ?? [],
+    },
+    workbenchTask: defaultWorkbenchTask('risk', `风险复盘：${displayPortfolio}`, `/risk?lookbackDays=${encodeURIComponent(lookbackDays)}`, 'risk-review', {
+      portfolioId: portfolioId || summary?.portfolioId || null,
+      lookbackDays: Number(lookbackDays),
+    }),
+  });
 
   usePageContext({
     pageKey: 'risk',
@@ -451,8 +447,8 @@ export default function RiskPage() {
           {task ? ` · 任务：${task}` : ''}
         </div>
       ) : null}
-      <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <section className="page-hero mb-4 p-4 sm:p-5">
+        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Risk Workspace</Badge>
@@ -460,17 +456,16 @@ export default function RiskPage() {
                 {displayPortfolio !== '未选择' ? `组合 ${displayPortfolio}` : '等待选择组合'}
               </Badge>
               <Badge variant={summary?.degraded ? 'warning' : 'neutral'}>
-                {summary?.degraded ? '部分模块降级' : '工作台状态稳定'}
+                {summary?.degraded ? '部分模块降级' : '工作台稳定'}
               </Badge>
-              <Badge variant="neutral">{lookbackDays} 天窗口</Badge>
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
+            <h1 className="mb-0 mt-3 text-[1.75rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
               风险分析工作台
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              先锁定组合和回看窗口，再在一个活动视图里看总览、VaR、压力和暴露，不再把图表和排障信息同时摊开。
+            <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
+              先确认组合和窗口，再直接进入参数与结果区。排障、阅读建议和原始响应已下沉。
             </p>
-            <div className="mt-5 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -496,33 +491,43 @@ export default function RiskPage() {
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 模块覆盖 {availableModuleCount}/{moduleCards.length} ｜ 降级 {summary?.degraded ? '是' : '否'} ｜ 缓存 {summary?.meta?.cache?.hit ? '命中' : '待刷新'}
               </p>
-              <p className="mt-2 mb-0 text-xs text-text-secondary">
-                最近抓取：{latestRiskRefreshText}
-                {lastPrimaryRefreshAt ? ` ｜ 手动动作：${lastPrimaryRefreshAt}` : ''}
-              </p>
             </div>
+            {compactLayout ? (
+              <details className="mt-3 rounded-[22px] border border-white/45 bg-white/24 px-4 py-3">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开建议顺序与下一步</summary>
+                <div className="mt-3 space-y-3">
+                  <div className={NOTE_CARD_CLS}>1. 先确认组合与窗口，再看 VaR 是否已经形成可比基线。</div>
+                  <div className={NOTE_CARD_CLS}>2. 如果压力测试与暴露结论冲突，优先检查模块状态与降级原因。</div>
+                  <div className={NOTE_CARD_CLS}>3. 只有在结果异常或缺失时，再去排障面板看原始响应。</div>
+                </div>
+              </details>
+            ) : null}
           </div>
 
-          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
-            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-              建议顺序与下一步
-            </summary>
-            <div className="mt-4 space-y-3">
-              <div className={NOTE_CARD_CLS}>1. 先确认组合与窗口，再看 VaR 是否已经形成可比基线。</div>
-              <div className={NOTE_CARD_CLS}>2. 如果压力测试与暴露结论冲突，优先检查模块状态与降级原因。</div>
-              <div className={NOTE_CARD_CLS}>3. 只有在结果异常或缺失时，再去排障面板看原始响应。</div>
-              <div className="mt-4">
-                <AskAiButton
-                  summary={`组合 ${displayPortfolio}，回看 ${lookbackDays} 天，模块完成 ${availableModuleCount}/${moduleCards.length}`}
-                  prompt="请总结当前风险分析结果，并指出最需要处理的风险点"
-                />
+          {!compactLayout ? (
+            <details className={SIDE_PANEL_CLS} open>
+              <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                建议顺序与下一步
+              </summary>
+              <div className="mt-4 space-y-3">
+                <div className={NOTE_CARD_CLS}>1. 先确认组合与窗口，再看 VaR 是否已经形成可比基线。</div>
+                <div className={NOTE_CARD_CLS}>2. 如果压力测试与暴露结论冲突，优先检查模块状态与降级原因。</div>
+                <div className={NOTE_CARD_CLS}>3. 只有在结果异常或缺失时，再去排障面板看原始响应。</div>
+                <div className="mt-4">
+                  <AskAiButton
+                    summary={`组合 ${displayPortfolio}，回看 ${lookbackDays} 天，模块完成 ${availableModuleCount}/${moduleCards.length}`}
+                    prompt="请总结当前风险分析结果，并指出最需要处理的风险点"
+                  />
+                </div>
               </div>
-            </div>
-          </details>
+            </details>
+          ) : null}
         </div>
       </section>
 
-      <ProgressiveWorkbenchSection pageKey="risk" title="风险结果工作台" result={riskResult} summaryMode="strip" />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection pageKey="risk" title="风险结果工作台" result={riskResult} summaryMode="strip" />
+      ) : null}
 
       {!loading && !error && (showInitialEmptyState || allEmpty || partialDegraded) ? (
         <PageStatusCard

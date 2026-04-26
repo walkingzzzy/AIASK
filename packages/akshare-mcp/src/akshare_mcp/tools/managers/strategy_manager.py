@@ -29,14 +29,18 @@ from .strategy_mgr_crud import (
     handle_delete_personal_strategy,
     handle_detail,
     handle_events,
+    handle_favorite,
     handle_fork_strategy,
     handle_get_forward_returns,
     handle_get_signal_stats,
     handle_get_signals,
     handle_help,
     handle_list,
+    handle_my_favorites,
     handle_my_strategies,
     handle_my_subscriptions,
+    handle_personal_strategy_context,
+    handle_personal_strategy_suggestions,
     handle_paper_session_get,
     handle_paper_session_get_or_create,
     handle_publish,
@@ -44,6 +48,7 @@ from .strategy_mgr_crud import (
     handle_review,
     handle_review_report,
     handle_subscribe,
+    handle_unfavorite,
     handle_unsubscribe,
     handle_update_strategy,
     handle_update_metrics,
@@ -178,8 +183,13 @@ ACTION_HANDLERS: dict[str, ...] = {
     "subscribe": handle_subscribe,
     "unsubscribe": handle_unsubscribe,
     "my_subscriptions": handle_my_subscriptions,
+    "favorite": handle_favorite,
+    "unfavorite": handle_unfavorite,
+    "my_favorites": handle_my_favorites,
     "my_strategies": handle_my_strategies,
     "fork_strategy": handle_fork_strategy,
+    "personal_strategy_context": handle_personal_strategy_context,
+    "personal_strategy_suggestions": handle_personal_strategy_suggestions,
     "update_strategy": handle_update_strategy,
     "delete_personal_strategy": handle_delete_personal_strategy,
     "paper_session_get": handle_paper_session_get,
@@ -658,7 +668,7 @@ def register_strategy_manager(mcp):
         """策略超市管理器 — 创建/发布/排名/评价/订阅/生命周期管理。
 
         Supports legacy ``kwargs`` JSON strings and structured ``params`` / dict kwargs.
-        Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, execution_audit_verification, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, help
+        Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, favorite, unfavorite, my_favorites, my_strategies, fork_strategy, personal_strategy_context, personal_strategy_suggestions, update_strategy, delete_personal_strategy, paper_session_get, paper_session_get_or_create, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, execution_audit_verification, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, ai_optimize_personal_strategy, help
         """
         started_at = time.perf_counter()
         params = _normalize_strategy_manager_params(kwargs=kwargs, params=params)

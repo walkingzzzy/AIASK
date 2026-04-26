@@ -17,8 +17,11 @@ import type {
   IncubationAccount,
   IncubationMetric,
   ReviewReportResponse,
+  StrategyIncubationSurface,
   StrategyMetric,
   StrategyOwnerState,
+  StrategyPaperContextResponse,
+  StrategyPaperTrackSnapshot,
   StrategyPaperSessionState,
   StrategyReview,
 } from '../types';
@@ -37,6 +40,8 @@ type StrategyDetailOverviewTabProps = {
   navCategories: string[];
   factorBars: FactorBarItem[];
   strategyStatus?: string | null;
+  strategyIncubationSurface?: StrategyIncubationSurface | null;
+  paperContext?: StrategyPaperContextResponse | null;
   incubationOverview: IncubationOverviewResponse | null | undefined;
   latestQualityReport: ReviewReportResponse | null | undefined;
   incubationAccount: IncubationAccount | null | undefined;
@@ -100,6 +105,37 @@ function executionLineageStatusText(value: unknown) {
   return normalized || '-';
 }
 
+function resolveTrackReturnPct(track?: StrategyPaperTrackSnapshot | null) {
+  const summaryReturnPct = Number(track?.summary?.total_return_pct ?? Number.NaN);
+  if (Number.isFinite(summaryReturnPct)) return summaryReturnPct;
+  const performanceReturn = Number(track?.performance?.metrics?.totalReturn ?? Number.NaN);
+  if (Number.isFinite(performanceReturn)) return performanceReturn * 100;
+  return null;
+}
+
+function resolveTrackTotalValue(track?: StrategyPaperTrackSnapshot | null) {
+  const latestNavValue = Number(track?.latest_nav?.total_value ?? Number.NaN);
+  if (Number.isFinite(latestNavValue)) return latestNavValue;
+  const summaryValue = Number(track?.summary?.total_value ?? Number.NaN);
+  if (Number.isFinite(summaryValue)) return summaryValue;
+  return null;
+}
+
+function resolveTrackUpdatedAt(track?: StrategyPaperTrackSnapshot | null) {
+  return String(
+    track?.trust_status?.checked_at
+    ?? track?.latest_nav?.created_at
+    ?? track?.latest_nav?.nav_date
+    ?? '',
+  ).trim() || null;
+}
+
+function resolveTrackReason(track?: StrategyPaperTrackSnapshot | null) {
+  if (!track) return '上下文尚未加载';
+  if (track.available === false) return String(track.reason ?? '当前无可展示数据');
+  return String(track.trust_status?.headline ?? track.reason ?? '已接入真实模拟盘表现').trim() || '已接入真实模拟盘表现';
+}
+
 export function StrategyDetailOverviewTab({
   allMetrics,
   metrics,
@@ -108,6 +144,8 @@ export function StrategyDetailOverviewTab({
   navCategories,
   factorBars,
   strategyStatus,
+  strategyIncubationSurface,
+  paperContext,
   incubationOverview,
   latestQualityReport,
   incubationAccount,
@@ -145,11 +183,26 @@ export function StrategyDetailOverviewTab({
   const marketStatus = resolveMarketStatusMeta(strategyStatus);
   const incubationSurface = resolveIncubationSurface({
     strategyStatus,
+    incubationSurface: strategyIncubationSurface,
     overview: incubationOverview,
     account: incubationAccount,
     latestMetric: latestIncubationMetric,
     latestPipelineSnapshot: latestIncubationPipelineSnapshot,
   });
+  const personalTrack = paperContext?.personal ?? {
+    kind: 'personal',
+    source: 'strategy_paper_session',
+    label: '个人模拟盘测试',
+    available: false,
+    reason: userId ? '个人模拟盘测试尚未加载' : '登录后可查看个人模拟盘测试',
+  };
+  const incubationTrack = paperContext?.incubation ?? {
+    kind: 'incubation',
+    source: 'strategy_binding',
+    label: '孵化模拟盘',
+    available: false,
+    reason: '孵化模拟盘上下文尚未加载',
+  };
   const showIncubationStage = !ownerState?.personal_strategy || incubationSurface.enteredIncubator;
   const signalQuality = incubationOverview?.signal_quality;
   const executionQuality = incubationOverview?.execution_quality;
@@ -205,13 +258,185 @@ export function StrategyDetailOverviewTab({
     confidenceContractStatus,
     qualityDiagnosis,
   ].some(Boolean);
+  const navChartHeight = compactLayout ? 220 : 280;
+  const paperTrackCards = [
+    {
+      key: 'personal',
+      title: personalTrack.label ?? '个人模拟盘测试',
+      badge: '非孵化盘',
+      track: personalTrack,
+    },
+    {
+      key: 'incubation',
+      title: incubationTrack.label ?? '孵化模拟盘',
+      badge: incubationTrack.stage ? `阶段 ${incubationTrack.stage}` : '策略绑定盘',
+      track: incubationTrack,
+    },
+  ] as const;
+  const runtimeSummarySection = (
+    <SectionCard className="mt-0 p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="mt-0">运行摘要</h3>
+          <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+            把孵化状态、风险信号与统计修正并列呈现，方便先判断是否值得继续跟踪，再决定要不要切到工厂审查。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
+          {displayStatus.label !== marketStatus.label ? (
+            <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
+          ) : null}
+          {showIncubationStage ? <Badge variant={incubationSurface.stage.variant}>{incubationSurface.stage.label}</Badge> : null}
+          <Badge variant={incubationSurface.promotionReady ? 'success' : 'warning'}>
+            {incubationSurface.promotionReady ? '可推进晋级' : '继续孵化观察'}
+          </Badge>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="metric-tile rounded-[24px] p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">孵化上下文</div>
+          <div className="mt-3 space-y-2 text-sm text-text-secondary">
+            <div>
+              当前状态：<span className="font-medium text-text-primary">{displayStatus.label}</span>
+            </div>
+            <div>
+              市场状态：<span className="font-medium text-text-primary">{marketStatus.label}</span>
+            </div>
+            <div>
+              孵化阶段：<span className="font-medium text-text-primary">{showIncubationStage ? incubationSurface.stage.label : '未接入真实孵化'}</span>
+            </div>
+            <div>
+              最新决策：<span className="font-medium text-text-primary">{incubationSurface.latestDecision.label}</span>
+            </div>
+            <div>
+              执行审计：<span className="font-medium text-text-primary">{incubationSurface.executionAuditGate.label}</span>
+            </div>
+            <div>
+              账户状态：<span className="font-medium text-text-primary">{incubationAccount?.status ?? '-'}</span>
+            </div>
+            <div>
+              最新 NAV：
+              <span className="font-medium text-text-primary">{fmtNum(latestIncubationMetric?.nav ?? 0, 4)}</span>
+            </div>
+          </div>
+        </div>
+        <div className="metric-tile rounded-[24px] p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险与画像</div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <div className="text-2xl font-semibold text-text-primary">{openRiskEventsCount}</div>
+              <div className="mt-1 text-xs text-text-secondary">开放风险事件</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold text-text-primary">{vectorProfilesCount}</div>
+              <div className="mt-1 text-xs text-text-secondary">向量画像数</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold text-text-primary">{incubationSurface.blockerCount}</div>
+              <div className="mt-1 text-xs text-text-secondary">阻塞项</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold text-text-primary">{incubationSurface.riskCount}</div>
+              <div className="mt-1 text-xs text-text-secondary">风险标记</div>
+            </div>
+          </div>
+        </div>
+        <div className="metric-tile rounded-[24px] p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">质量门</div>
+          <div className="mt-3 space-y-2 text-sm text-text-secondary">
+            <div>
+              质量评级：
+              <span className="font-medium text-text-primary">
+                {latestQualityReport?.summary?.validation_grade ?? '-'}
+              </span>
+            </div>
+            <div>
+              DSR：
+              <span className="font-medium text-text-primary">
+                {deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}
+              </span>
+            </div>
+            <div>
+              PBO：
+              <span className="font-medium text-text-primary">{pboValue == null ? '-' : fmtNum(pboValue, 4)}</span>
+            </div>
+          </div>
+        </div>
+        <div className="metric-tile rounded-[24px] p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">统计修正</div>
+          <div className="mt-3 space-y-2 text-sm text-text-secondary">
+            <div>
+              SPA p-value：
+              <span className="font-medium text-text-primary">
+                {hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)}
+              </span>
+            </div>
+            <div>
+              White RC：
+              <span className="font-medium text-text-primary">
+                {whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)}
+              </span>
+            </div>
+            <div>
+              多重检验：
+              <span className="font-medium text-text-primary">
+                {formatMultipleTestingMode(multipleTestingMode)}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-sm">
+        <Badge variant={incubationSurface.latestDecision.variant}>
+          最新决策: {incubationSurface.latestDecision.label}
+        </Badge>
+        {incubationSurface.promotionReady ? (
+          <Badge variant="success">可推进晋级</Badge>
+        ) : (
+          <Badge variant="warning">继续孵化观察</Badge>
+        )}
+        <Badge variant={incubationSurface.executionAuditGate.variant}>
+          执行审计: {incubationSurface.executionAuditGate.label}
+        </Badge>
+        {openRiskEventsCount > 0 ? (
+          <Badge variant="danger">存在实时风控告警</Badge>
+        ) : (
+          <Badge variant="neutral">无实时风控告警</Badge>
+        )}
+        {multipleTestingMode ? (
+          <Badge variant={multipleTestingMode === 'formal_runtime' ? 'success' : 'warning'}>
+            多重检验: {formatMultipleTestingMode(multipleTestingMode)}
+          </Badge>
+        ) : null}
+        {pboValue != null ? (
+          <Badge variant={pboValue > 0.55 ? 'danger' : 'info'}>PBO {fmtNum(pboValue, 4)}</Badge>
+        ) : null}
+        {hansenSpaPvalue != null ? (
+          <Badge variant={hansenSpaPvalue > 0.2 ? 'warning' : 'success'}>SPA p {fmtNum(hansenSpaPvalue, 4)}</Badge>
+        ) : null}
+      </div>
+    </SectionCard>
+  );
 
   return (
     <>
+      <SectionCard className="mt-0 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="mt-0">回测表现 / 历史样本</h3>
+            <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+              当前这组收益、Sharpe 和样本净值来自策略 `metrics / nav_series`，用于回测与历史样本说明，不代表实时模拟盘实际收益。
+            </p>
+          </div>
+          <Badge variant="info">Backtest Metrics</Badge>
+        </div>
+      </SectionCard>
+
       {allMetrics ? (
         <KpiGrid cols={6}>
-          <KpiCard title="总收益" value={fmtPct(allMetrics.total_return ?? 0)} change={allMetrics.total_return} />
-          <KpiCard title="年化收益" value={fmtPct(allMetrics.annual_return ?? 0)} />
+          <KpiCard title="回测总收益" value={fmtPct(allMetrics.total_return ?? 0)} change={allMetrics.total_return} />
+          <KpiCard title="回测年化" value={fmtPct(allMetrics.annual_return ?? 0)} />
           <KpiCard title="Sharpe" value={fmtNum(allMetrics.sharpe_ratio ?? 0, 2)} />
           <KpiCard title="最大回撤" value={fmtPct(allMetrics.max_drawdown ?? 0)} />
           <KpiCard title="胜率" value={fmtPct(allMetrics.win_rate ?? 0)} />
@@ -219,160 +444,130 @@ export function StrategyDetailOverviewTab({
         </KpiGrid>
       ) : null}
 
+      {compactLayout ? (
+        <details className="rounded-[24px] border border-white/45 bg-white/24 px-4 py-3">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+            展开模拟盘实际表现
+          </summary>
+          <div className="mt-4 grid gap-3">
+            {paperTrackCards.map(({ key, title, badge, track }) => {
+              const totalValue = resolveTrackTotalValue(track);
+              const returnPct = resolveTrackReturnPct(track);
+              return (
+                <div key={key} className="metric-tile rounded-[20px] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-medium text-text-primary">{title}</div>
+                    <Badge variant={track?.available === false ? 'warning' : 'success'}>
+                      {track?.available === false ? '未接入' : badge}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 text-xs leading-6 text-text-secondary">
+                    NAV {totalValue == null ? '-' : fmtNum(totalValue, 2)} ｜ 实际收益 {returnPct == null ? '-' : fmtPct(returnPct)}
+                  </div>
+                  <div className="mt-1 text-xs leading-6 text-text-secondary">{resolveTrackReason(track)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
+
+      <SectionCard className={`${compactLayout ? 'hidden ' : ''}p-4 sm:p-5`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="mt-0">模拟盘实际表现</h3>
+            <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+              个人模拟盘测试和孵化模拟盘并列展示，便于区分当前用户自己的测试收益与策略绑定孵化账户的真实表现。
+            </p>
+          </div>
+          <Badge variant="info">Dual Track</Badge>
+        </div>
+        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+          {paperTrackCards.map(({ key, title, badge, track }) => {
+            const accountLabel = String(track?.account_id ?? track?.account?.id ?? '-').trim() || '-';
+            const accountStatus = String(track?.account_status ?? track?.account?.status ?? '-').trim() || '-';
+            const totalValue = resolveTrackTotalValue(track);
+            const returnPct = resolveTrackReturnPct(track);
+            const updatedAt = resolveTrackUpdatedAt(track);
+            const trustHeadline = resolveTrackReason(track);
+            return (
+              <div key={key} className="metric-tile rounded-[24px] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{title}</div>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant={track?.available === false ? 'warning' : 'success'}>
+                      {track?.available === false ? '未接入' : '已接入'}
+                    </Badge>
+                    <Badge variant="neutral">{badge}</Badge>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="text-xs text-text-secondary">账户 ID</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">{accountLabel}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">账户状态</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">{accountStatus}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">最新 NAV</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">
+                      {totalValue == null ? '-' : fmtNum(totalValue, 2)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">实际收益</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">
+                      {returnPct == null ? '-' : fmtPct(returnPct)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">{key === 'incubation' ? '孵化阶段' : '来源'}</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">
+                      {key === 'incubation'
+                        ? (track?.stage ?? '未入孵化')
+                        : (track?.source === 'strategy_paper_session' ? 'strategy_paper_session' : '-')}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">{key === 'incubation' ? '最近 metric' : '最近更新时间'}</div>
+                    <div className="mt-1 text-base font-semibold text-text-primary">
+                      {key === 'incubation'
+                        ? (track?.latest_metric?.metric_date ?? updatedAt ?? '-')
+                        : (updatedAt ?? '-')}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 rounded-[18px] border border-border bg-surface-alt/60 px-3 py-3 text-sm text-text-secondary">
+                  {trustHeadline}
+                  {key === 'incubation' && track?.latest_metric?.decision ? ` · 最近决策 ${track.latest_metric.decision}` : ''}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </SectionCard>
+
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.4fr_1fr]">
         {navSeries.length > 1 ? (
           <SectionCard className="mt-0 p-3">
-            <h3 className="mt-0">净值轨迹</h3>
+            <h3 className="mt-0">历史样本净值</h3>
             <LineChart
               categories={navCategories}
               series={[{ name: 'NAV', data: navSeries, color: '#1a73e8' }]}
-              height={280}
+              height={navChartHeight}
             />
           </SectionCard>
         ) : null}
-        <SectionCard className="mt-0 p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="mt-0">运行摘要</h3>
-              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
-                把孵化状态、风险信号与统计修正并列呈现，方便先判断是否值得继续跟踪，再决定要不要切到工厂审查。
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
-              {displayStatus.label !== marketStatus.label ? (
-                <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>
-              ) : null}
-              {showIncubationStage ? <Badge variant={incubationSurface.stage.variant}>{incubationSurface.stage.label}</Badge> : null}
-              <Badge variant={incubationSurface.promotionReady ? 'success' : 'warning'}>
-                {incubationSurface.promotionReady ? '可推进晋级' : '继续孵化观察'}
-              </Badge>
-            </div>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div className="metric-tile rounded-[24px] p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">孵化上下文</div>
-              <div className="mt-3 space-y-2 text-sm text-text-secondary">
-                <div>
-                  当前状态：<span className="font-medium text-text-primary">{displayStatus.label}</span>
-                </div>
-                <div>
-                  市场状态：<span className="font-medium text-text-primary">{marketStatus.label}</span>
-                </div>
-                <div>
-                  孵化阶段：<span className="font-medium text-text-primary">{showIncubationStage ? incubationSurface.stage.label : '未接入真实孵化'}</span>
-                </div>
-                <div>
-                  最新决策：<span className="font-medium text-text-primary">{incubationSurface.latestDecision.label}</span>
-                </div>
-                <div>
-                  执行审计：<span className="font-medium text-text-primary">{incubationSurface.executionAuditGate.label}</span>
-                </div>
-                <div>
-                  账户状态：<span className="font-medium text-text-primary">{incubationAccount?.status ?? '-'}</span>
-                </div>
-                <div>
-                  最新 NAV：
-                  <span className="font-medium text-text-primary">{fmtNum(latestIncubationMetric?.nav ?? 0, 4)}</span>
-                </div>
-              </div>
-            </div>
-            <div className="metric-tile rounded-[24px] p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险与画像</div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <div className="text-2xl font-semibold text-text-primary">{openRiskEventsCount}</div>
-                  <div className="mt-1 text-xs text-text-secondary">开放风险事件</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-semibold text-text-primary">{vectorProfilesCount}</div>
-                  <div className="mt-1 text-xs text-text-secondary">向量画像数</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-semibold text-text-primary">{incubationSurface.blockerCount}</div>
-                  <div className="mt-1 text-xs text-text-secondary">阻塞项</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-semibold text-text-primary">{incubationSurface.riskCount}</div>
-                  <div className="mt-1 text-xs text-text-secondary">风险标记</div>
-                </div>
-              </div>
-            </div>
-            <div className="metric-tile rounded-[24px] p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">质量门</div>
-              <div className="mt-3 space-y-2 text-sm text-text-secondary">
-                <div>
-                  质量评级：
-                  <span className="font-medium text-text-primary">
-                    {latestQualityReport?.summary?.validation_grade ?? '-'}
-                  </span>
-                </div>
-                <div>
-                  DSR：
-                  <span className="font-medium text-text-primary">
-                    {deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}
-                  </span>
-                </div>
-                <div>
-                  PBO：
-                  <span className="font-medium text-text-primary">{pboValue == null ? '-' : fmtNum(pboValue, 4)}</span>
-                </div>
-              </div>
-            </div>
-            <div className="metric-tile rounded-[24px] p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">统计修正</div>
-              <div className="mt-3 space-y-2 text-sm text-text-secondary">
-                <div>
-                  SPA p-value：
-                  <span className="font-medium text-text-primary">
-                    {hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)}
-                  </span>
-                </div>
-                <div>
-                  White RC：
-                  <span className="font-medium text-text-primary">
-                    {whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)}
-                  </span>
-                </div>
-                <div>
-                  多重检验：
-                  <span className="font-medium text-text-primary">
-                    {formatMultipleTestingMode(multipleTestingMode)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2 text-sm">
-            <Badge variant={incubationSurface.latestDecision.variant}>
-              最新决策: {incubationSurface.latestDecision.label}
-            </Badge>
-            {incubationSurface.promotionReady ? (
-              <Badge variant="success">可推进晋级</Badge>
-            ) : (
-              <Badge variant="warning">继续孵化观察</Badge>
-            )}
-            <Badge variant={incubationSurface.executionAuditGate.variant}>
-              执行审计: {incubationSurface.executionAuditGate.label}
-            </Badge>
-            {openRiskEventsCount > 0 ? (
-              <Badge variant="danger">存在实时风控告警</Badge>
-            ) : (
-              <Badge variant="neutral">无实时风控告警</Badge>
-            )}
-            {multipleTestingMode ? (
-              <Badge variant={multipleTestingMode === 'formal_runtime' ? 'success' : 'warning'}>
-                多重检验: {formatMultipleTestingMode(multipleTestingMode)}
-              </Badge>
-            ) : null}
-            {pboValue != null ? (
-              <Badge variant={pboValue > 0.55 ? 'danger' : 'info'}>PBO {fmtNum(pboValue, 4)}</Badge>
-            ) : null}
-            {hansenSpaPvalue != null ? (
-              <Badge variant={hansenSpaPvalue > 0.2 ? 'warning' : 'success'}>SPA p {fmtNum(hansenSpaPvalue, 4)}</Badge>
-            ) : null}
-          </div>
-        </SectionCard>
+        {compactLayout ? (
+          <details className="rounded-[24px] border border-white/45 bg-white/24 px-4 py-3">
+            <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开运行摘要</summary>
+            <div className="mt-4">{runtimeSummarySection}</div>
+          </details>
+        ) : (
+          runtimeSummarySection
+        )}
       </div>
 
       {compactLayout ? (
@@ -445,7 +640,7 @@ export function StrategyDetailOverviewTab({
           </div>
         </div>
         <div className="mt-3 text-xs leading-6 text-text-secondary">
-          样本期优先取策略合同字段，缺失时回退到孵化账户 NAV 区间；容量优先展示合同声明，缺失时回退到模拟盘当前总资产。
+          样本期优先取策略合同字段，缺失时回退到孵化账户 NAV 区间；容量优先展示合同声明，缺失时回退到孵化模拟盘当前总资产。
         </div>
       </SectionCard>
 

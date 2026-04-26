@@ -1,6 +1,15 @@
 ---
 name: akshare-fundamental
 description: 基本面、财务指标、估值模型、情绪指数，以及智能诊断/自然语言选股解析等需求时使用；适用于“财报/估值/综合诊断/情绪”场景。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["research_disclosure", "financial_data_lineage"]
+role_tags: ["research", "buy_side_pm"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义基本面、估值、情绪与诊断类工具的推荐调用路径，不代表文中列出的所有财务字段、估值模型、情绪计算与诊断结果在当前环境都已完成统一口径验证。

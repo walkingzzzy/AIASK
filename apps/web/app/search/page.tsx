@@ -15,7 +15,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { useMobile } from '@/hooks/use-mobile';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
-import { extractArray, fmtNum } from '@/lib/data-utils';
+import { fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -185,15 +185,19 @@ export default function SearchPage() {
   const primaryResult = (rows[0] ?? null) as Record<string, unknown> | null;
   const primaryCode = String(primaryResult?.code ?? '').trim();
   const primaryName = String(primaryResult?.name ?? primaryCode).trim();
-  const resultLinks = primaryCode
-    ? [
-        { label: '个股详情', href: `/stock?code=${encodeURIComponent(primaryCode)}` },
-        { label: '技术分析', href: `/technical?code=${encodeURIComponent(primaryCode)}` },
-        { label: '资金流', href: `/fund-flow?code=${encodeURIComponent(primaryCode)}` },
-        { label: '情绪分析', href: `/sentiment?code=${encodeURIComponent(primaryCode)}` },
-        { label: '基本面', href: `/fundamental?code=${encodeURIComponent(primaryCode)}` },
-      ]
-    : [];
+  const resultLinks = useMemo(
+    () =>
+      primaryCode
+        ? [
+            { label: '个股详情', href: `/stock?code=${encodeURIComponent(primaryCode)}` },
+            { label: '技术分析', href: `/technical?code=${encodeURIComponent(primaryCode)}` },
+            { label: '资金流', href: `/fund-flow?code=${encodeURIComponent(primaryCode)}` },
+            { label: '情绪分析', href: `/sentiment?code=${encodeURIComponent(primaryCode)}` },
+            { label: '基本面', href: `/fundamental?code=${encodeURIComponent(primaryCode)}` },
+          ]
+        : [],
+    [primaryCode],
+  );
   const activeTabLabel = TABS.find((item) => item.key === tab)?.label ?? '智能搜索';
   const activePrompt = tab === 'semantic' ? query.trim() || '等待输入主题词' : trimmedCode || '等待输入股票代码';
   const tabDescription =
@@ -217,13 +221,17 @@ export default function SearchPage() {
           '第一次使用建议先跑你熟悉的真实标的或当前自选股，便于判断结果是否合理。',
           '结果出来后优先看首条命中，再决定是否把其加入自选或转去研究页。',
         ];
-  const quickJumpLinks = primaryCode
-    ? resultLinks
-    : [
-        { label: '去行情看板', href: '/market' },
-        { label: '查看自选股', href: '/watchlist' },
-        { label: '继续研究页', href: '/research' },
-      ];
+  const quickJumpLinks = useMemo(
+    () =>
+      primaryCode
+        ? resultLinks
+        : [
+            { label: '去行情看板', href: '/market' },
+            { label: '查看自选股', href: '/watchlist' },
+            { label: '继续研究页', href: '/research' },
+          ],
+    [primaryCode, resultLinks],
+  );
   const searchResultLinks = useMemo<ResultLink[]>(
     () =>
       (primaryCode ? resultLinks : quickJumpLinks).map((link, index) => ({

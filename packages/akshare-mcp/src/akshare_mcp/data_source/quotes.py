@@ -43,6 +43,24 @@ def _to_tushare_ts_code(code: str) -> str:
     return f"{normalized}.SZ"
 
 
+def _previous_business_day(current: datetime.date) -> datetime.date:
+    value = current - datetime.timedelta(days=1)
+    while value.weekday() >= 5:
+        value -= datetime.timedelta(days=1)
+    return value
+
+
+def _expected_daily_kline_date(now: datetime.datetime | None = None) -> str:
+    current = now or datetime.datetime.now()
+    latest_trade_date = format_date_dash(get_latest_trading_date())
+    if not latest_trade_date:
+        return ""
+    # 日线在交易时段通常仍停留在上一交易日收盘价，盘中不应视为陈旧。
+    if current.strftime("%Y-%m-%d") == latest_trade_date and (current.hour, current.minute) < (16, 0):
+        return _previous_business_day(current.date()).strftime("%Y-%m-%d")
+    return latest_trade_date
+
+
 class QuotesMixin:
     """行情与K线数据 Mixin"""
 
@@ -211,7 +229,7 @@ class QuotesMixin:
                             "change_pct": safe_float(row.get('pct_chg')),
                             "source": "tushare_pro"
                         })
-                    latest_expected_date = format_date_dash(get_latest_trading_date())
+                    latest_expected_date = _expected_daily_kline_date()
                     latest_result_date = str(results[-1].get("date") or "")
                     if latest_expected_date and latest_result_date and latest_result_date < latest_expected_date:
                         safe_stderr_print(

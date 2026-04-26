@@ -66,6 +66,7 @@ export class StrategyVectorController {
   }
 
   @Post('vector-indexes/reconcile')
+  @Roles('admin')
   async vectorReconcile(@Body() body: VectorReconcileDto, @Req() req: Req_) {
     const data = await this.svc.vectorReconcile({
       index_name: body.index_name,

@@ -1,6 +1,15 @@
 ---
 name: akshare-strategy-factory
 description: 策略工厂、策略超市、工厂运行、孵化、评审、运行时风控、向量治理与生命周期扫描等场景使用；适用于 strategy-market 分域能力的编排与核验。
+capability_tier: live_orchestrated
+runtime_status: executable
+product_surfaces: ["mcp", "bff", "web", "artifact"]
+artifacts: ["strategy_review", "factory_run", "incubation_pipeline", "runtime_governance"]
+backing_tools: ["run_skill", "strategy_manager", "strategy_review_workflow"]
+backing_managers: ["strategy_manager"]
+regulatory_scope: ["strategy_governance", "model_governance"]
+role_tags: ["quant", "research", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 只定义“策略工厂”相关能力的推荐入口、证据门禁与显式触发规则，不代表仓库里存在单一、一键式且全自动的工厂总控链路。
@@ -21,6 +30,9 @@ description: 策略工厂、策略超市、工厂运行、孵化、评审、运�
 - 需要核查某个策略的工厂运行记录、提交门禁、孵化管线、运行时风险、向量索引、领域事件或 AI 生成实验。
 
 # 入口优先级
+- 治理检查：
+  - 跨工厂治理检查使用 `governance_check_workflow`
+  - 不在 Web/BFF 侧自行复刻治理规则
 - 策略只读审查：
   - 优先 `strategy_review_workflow(strategy_id=...)`
   - 同时可读 `resource://strategy/{id}/review`

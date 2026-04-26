@@ -1,4 +1,5 @@
 import { BadGatewayException, HttpException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
+import type { PaperTradingTrustLevel, PaperTradingTrustState, PaperTradingTrustStatus } from '@aiask/shared-types';
 import { CommonCacheService } from '../common/cache.service';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PaperTradingIdempotencyService } from './paper-trading-idempotency.service';
@@ -173,6 +174,242 @@ export class PaperTradingService {
     return this.call('nav_status');
   }
 
+  async trustStatus(userId: string, accountId?: string): Promise<PaperTradingTrustStatus> {
+    const [
+      summary,
+      positionsPayload,
+      ordersPayload,
+      pendingPayload,
+      navPayload,
+      matchingStatusPayload,
+      navStatusPayload,
+    ] = await Promise.all([
+      this.summary(userId, accountId),
+      this.positions(userId, accountId),
+      this.orders(userId, accountId),
+      this.pendingOrders(userId, accountId),
+      this.navHistory(userId, accountId, 2),
+      this.matchingStatus(),
+      this.navStatus(),
+    ]);
+
+    const now = new Date();
+    const summaryRecord = this.asRecord(summary) ?? {};
+    const positionsRecord = this.asRecord(positionsPayload) ?? {};
+    const ordersRecord = this.asRecord(ordersPayload) ?? {};
+    const pendingRecord = this.asRecord(pendingPayload) ?? {};
+    const navRecord = this.asRecord(navPayload) ?? {};
+    const matchingStatus = this.asRecord(matchingStatusPayload) ?? {};
+    const navStatus = this.asRecord(navStatusPayload) ?? {};
+    const accountRecord = this.asRecord(summaryRecord.account) ?? {};
+    const reconciliation = this.asRecord(summaryRecord.reconciliation ?? positionsRecord.reconciliation);
+
+    const positions = this.asRecordArray(positionsRecord.positions);
+    const orders = this.asRecordArray(ordersRecord.orders);
+    const pendingOrders = this.asRecordArray(pendingRecord.orders);
+    const nav = this.asRecordArray(navRecord.nav);
+    const latestNav = nav.length > 0 ? nav[nav.length - 1] : null;
+
+    const resolvedAccountId = String(
+      summaryRecord.account_id
+      ?? positionsRecord.account_id
+      ?? ordersRecord.account_id
+      ?? pendingRecord.account_id
+      ?? accountId
+      ?? '',
+    ).trim() || undefined;
+
+    const marketPhase = this.isTradingHoursShanghai(now) ? 'trading' : 'offhours';
+    const matchingRunning = this.isProbeRunning(matchingStatus);
+    const navRunning = this.isProbeRunning(navStatus);
+    const scanIntervalSeconds = this.toPositiveNumber(matchingStatus.scan_interval) ?? 30;
+
+    const matchingAt = this.latestTimestamp([matchingStatus.last_scan]);
+    const priceRefreshAt = this.latestTimestamp([
+      accountRecord.updated_at,
+      ...positions.flatMap((item) => [item.updated_at, item.created_at]),
+    ]);
+    const latestPendingOrderAt = this.latestTimestamp(
+      pendingOrders.flatMap((item) => [item.updated_at, item.created_at]),
+    );
+    const latestOrderAt = this.latestTimestamp([
+      ...pendingOrders.flatMap((item) => [item.updated_at, item.created_at]),
+      ...orders.flatMap((item) => [item.filled_at, item.trade_time, item.updated_at, item.created_at]),
+    ]);
+    const navSnapshotAt = latestNav
+      ? this.normalizeNavSnapshotTimestamp(latestNav)
+      : this.latestTimestamp([navStatus.last_run]);
+
+    const matchingAgeSeconds = this.ageSeconds(matchingAt, now);
+    const priceAgeSeconds = this.ageSeconds(priceRefreshAt, now);
+    const navAgeSeconds = this.ageSeconds(navSnapshotAt, now);
+    const orderAgeSeconds = this.ageSeconds(latestOrderAt, now);
+
+    const matchingFresh = pendingOrders.length === 0
+      ? true
+      : matchingRunning
+        && matchingAgeSeconds != null
+        && matchingAgeSeconds <= Math.max(scanIntervalSeconds * 3, 90);
+    const pricesFresh = positions.length === 0
+      ? true
+      : priceAgeSeconds != null
+        && priceAgeSeconds <= (marketPhase === 'trading' ? 90 : 24 * 60 * 60);
+
+    const latestNavDate = String(latestNav?.nav_date ?? '').trim() || null;
+    const expectedNavDate = this.expectedNavDate(now);
+    const navFresh = latestNavDate != null && latestNavDate >= expectedNavDate;
+
+    const positionsReconciled = reconciliation != null;
+    const positionsDriftDetected = reconciliation?.drift_detected === true;
+
+    const matchingMs = this.parseTimestamp(matchingAt);
+    const latestPendingMs = this.parseTimestamp(latestPendingOrderAt);
+    const ordersReconciled = pendingOrders.length === 0
+      ? true
+      : matchingMs != null && latestPendingMs != null && matchingMs >= latestPendingMs;
+
+    const hasActivity = positions.length > 0 || pendingOrders.length > 0 || orders.length > 0 || nav.length > 0;
+    const latest = hasActivity && positionsReconciled && ordersReconciled && pricesFresh && matchingFresh;
+
+    let level: PaperTradingTrustLevel = 'blocked';
+    let headline = '数据待刷新，先别用于演示';
+    if (!hasActivity) {
+      headline = '账户还没有交易轨迹，先做首笔模拟委托';
+    } else if (latest && navFresh) {
+      level = 'ready';
+      headline = '交易链路最新，可直接演示';
+    } else if (latest) {
+      level = 'caution';
+      headline = '交易链路已最新，但 NAV 快照待补齐';
+    }
+
+    const reasons: string[] = [];
+    if (!hasActivity) {
+      reasons.push('账户还没有持仓、挂单、成交或 NAV 轨迹');
+    }
+    if (!pricesFresh && positions.length > 0) {
+      reasons.push('持仓价格刷新时间偏旧');
+    }
+    if (!matchingFresh && pendingOrders.length > 0) {
+      reasons.push(matchingRunning ? '最近一次撮合扫描偏旧，挂单状态可能不是最新' : '撮合引擎未运行');
+    }
+    if (!ordersReconciled && pendingOrders.length > 0) {
+      reasons.push('存在挂单尚未被最近一次撮合扫描覆盖');
+    }
+    if (!positionsReconciled) {
+      reasons.push('持仓账本状态未返回 reconcile 结果');
+    } else if (positionsDriftDetected) {
+      reasons.push('最近一次检查检测到持仓漂移，系统已自动修正');
+    }
+    if (!navFresh) {
+      reasons.push(`NAV 快照停留在 ${latestNavDate ?? '暂无快照'}，当前预期日期为 ${expectedNavDate}`);
+    } else if (!navRunning && latestNavDate == null) {
+      reasons.push('NAV 引擎未运行且暂无可用快照');
+    }
+
+    return {
+      account_id: resolvedAccountId,
+      checked_at: now.toISOString(),
+      market_phase: marketPhase,
+      has_activity: hasActivity,
+      latest,
+      demo_ready: level !== 'blocked',
+      level,
+      headline,
+      reasons,
+      environment: {
+        mode: 'paper',
+        simulated_only: true,
+        dry_run: false,
+        live_trading: false,
+        label: '仅模拟环境 · 非 dry-run',
+      },
+      timestamps: {
+        matching: {
+          at: matchingAt,
+          age_seconds: matchingAgeSeconds,
+          fresh: matchingFresh,
+          status: this.resolveTimestampState(matchingFresh, pendingOrders.length > 0),
+          detail: pendingOrders.length === 0
+            ? '当前无挂单待撮合'
+            : matchingFresh
+              ? '最近一次撮合扫描已覆盖当前挂单'
+              : matchingRunning
+                ? '最近一次撮合扫描偏旧'
+                : '撮合引擎未运行',
+        },
+        prices: {
+          at: priceRefreshAt,
+          age_seconds: priceAgeSeconds,
+          fresh: pricesFresh,
+          status: this.resolveTimestampState(pricesFresh, positions.length > 0),
+          detail: positions.length === 0
+            ? '当前无持仓，不需要刷新价格'
+            : pricesFresh
+              ? '持仓价格仍在新鲜窗口内'
+              : '持仓价格刷新时间偏旧',
+        },
+        nav: {
+          at: navSnapshotAt,
+          age_seconds: navAgeSeconds,
+          fresh: navFresh,
+          status: latestNavDate == null ? 'blocked' : navFresh ? 'ok' : 'warning',
+          detail: latestNavDate == null
+            ? '暂无 NAV 快照'
+            : navFresh
+              ? `最新 NAV 日期 ${latestNavDate}，符合当前时段预期`
+              : `最新 NAV 日期 ${latestNavDate}，尚未追上预期日期 ${expectedNavDate}`,
+        },
+        orders: {
+          at: latestOrderAt,
+          age_seconds: orderAgeSeconds,
+          fresh: ordersReconciled,
+          status: pendingOrders.length === 0 ? 'ok' : ordersReconciled ? 'ok' : matchingRunning ? 'warning' : 'blocked',
+          detail: pendingOrders.length === 0
+            ? '当前无挂单待撮合'
+            : ordersReconciled
+              ? '挂单已被最近一次撮合扫描覆盖'
+              : '挂单更新时间晚于最近一次撮合扫描',
+        },
+      },
+      reconcile: {
+        positions: {
+          reconciled: positionsReconciled,
+          status: positionsReconciled ? (positionsDriftDetected ? 'warning' : 'ok') : 'blocked',
+          detail: !positionsReconciled
+            ? '未收到持仓 reconcile 结果'
+            : positionsDriftDetected
+              ? '检测到持仓/账户漂移，但本次已自动校准'
+              : '账本与持仓一致',
+          drift_detected: positionsDriftDetected,
+          reference_at: priceRefreshAt,
+        },
+        orders: {
+          reconciled: ordersReconciled,
+          status: pendingOrders.length === 0 ? 'ok' : ordersReconciled ? 'ok' : matchingRunning ? 'warning' : 'blocked',
+          detail: pendingOrders.length === 0
+            ? '当前无挂单，订单账本稳定'
+            : ordersReconciled
+              ? '订单状态与最近一次撮合扫描一致'
+              : '请等待下一次撮合扫描或手动刷新状态',
+          drift_detected: false,
+          reference_at: latestPendingOrderAt ?? latestOrderAt,
+        },
+        nav: {
+          reconciled: navFresh,
+          status: latestNavDate == null ? 'blocked' : navFresh ? 'ok' : 'warning',
+          detail: latestNavDate == null
+            ? '暂无 NAV 快照'
+            : navFresh
+              ? 'NAV 快照已对齐到当前预期交易日'
+              : `NAV 快照仍停留在 ${latestNavDate}`,
+          drift_detected: false,
+          reference_at: navSnapshotAt,
+        },
+      },
+    };
+  }
+
   async realtimeSnapshot(userId: string, accountId?: string) {
     const [summary, positions, pendingOrders] = await Promise.all([
       this.summary(userId, accountId),
@@ -294,6 +531,156 @@ export class PaperTradingService {
         detail: String(error instanceof Error ? error.message : error),
       });
     }
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    return Array.isArray(value)
+      ? value.filter((item): item is Record<string, unknown> => Boolean(this.asRecord(item)))
+      : [];
+  }
+
+  private toPositiveNumber(value: unknown) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+
+  private parseTimestamp(value: unknown) {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return null;
+    }
+    const raw = value.trim();
+    const direct = Date.parse(raw);
+    if (Number.isFinite(direct)) {
+      return direct;
+    }
+    const normalized = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
+    const fallback = Date.parse(normalized);
+    return Number.isFinite(fallback) ? fallback : null;
+  }
+
+  private normalizeTimestamp(value: unknown) {
+    const parsed = this.parseTimestamp(value);
+    return parsed == null ? null : new Date(parsed).toISOString();
+  }
+
+  private latestTimestamp(values: unknown[]) {
+    let bestMs: number | null = null;
+    let bestValue: string | null = null;
+    values.forEach((candidate) => {
+      const normalized = this.normalizeTimestamp(candidate);
+      const parsed = normalized == null ? null : this.parseTimestamp(normalized);
+      if (normalized == null || parsed == null) {
+        return;
+      }
+      if (bestMs == null || parsed > bestMs) {
+        bestMs = parsed;
+        bestValue = normalized;
+      }
+    });
+    return bestValue;
+  }
+
+  private ageSeconds(value: string | null, reference = new Date()) {
+    const parsed = value == null ? null : this.parseTimestamp(value);
+    if (parsed == null) {
+      return null;
+    }
+    return Math.max(0, Math.round((reference.getTime() - parsed) / 1000));
+  }
+
+  private isProbeRunning(payload: Record<string, unknown> | null) {
+    if (!payload) {
+      return false;
+    }
+    if (payload.running === true || payload.ok === true) {
+      return true;
+    }
+    return String(payload.status ?? '').trim().toLowerCase() === 'running';
+  }
+
+  private resolveTimestampState(fresh: boolean, expected: boolean): PaperTradingTrustState {
+    if (!expected) {
+      return 'ok';
+    }
+    return fresh ? 'ok' : 'warning';
+  }
+
+  private getShanghaiParts(reference = new Date()) {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = formatter.formatToParts(reference);
+    const lookup = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+    return {
+      weekday: lookup('weekday'),
+      date: `${lookup('year')}-${lookup('month')}-${lookup('day')}`,
+      hour: Number(lookup('hour') || 0),
+      minute: Number(lookup('minute') || 0),
+      second: Number(lookup('second') || 0),
+    };
+  }
+
+  private formatShanghaiDate(reference: Date) {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(reference);
+    const lookup = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+    return `${lookup('year')}-${lookup('month')}-${lookup('day')}`;
+  }
+
+  private isTradingHoursShanghai(reference = new Date()) {
+    const parts = this.getShanghaiParts(reference);
+    if (parts.weekday === 'Sat' || parts.weekday === 'Sun') {
+      return false;
+    }
+    const hhmm = parts.hour * 100 + parts.minute;
+    return (hhmm >= 925 && hhmm <= 1131) || (hhmm >= 1255 && hhmm <= 1501);
+  }
+
+  private expectedNavDate(reference = new Date()) {
+    const parts = this.getShanghaiParts(reference);
+    let probe = new Date(`${parts.date}T12:00:00+08:00`);
+    if (parts.weekday === 'Sat' || parts.weekday === 'Sun' || (parts.hour * 100 + parts.minute) < 1530) {
+      probe.setUTCDate(probe.getUTCDate() - 1);
+    }
+    while (true) {
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(probe);
+      if (weekday !== 'Sat' && weekday !== 'Sun') {
+        break;
+      }
+      probe.setUTCDate(probe.getUTCDate() - 1);
+    }
+    return this.formatShanghaiDate(probe);
+  }
+
+  private normalizeNavSnapshotTimestamp(payload: Record<string, unknown>) {
+    const createdAt = this.normalizeTimestamp(payload.created_at);
+    if (createdAt) {
+      return createdAt;
+    }
+    const navDate = String(payload.nav_date ?? '').trim();
+    if (!navDate) {
+      return null;
+    }
+    return this.normalizeTimestamp(`${navDate}T15:30:00+08:00`);
   }
 
   private unwrapManagerResult(action: string, result: unknown) {

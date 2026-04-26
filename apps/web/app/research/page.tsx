@@ -148,29 +148,32 @@ export default function ResearchPage() {
     const savedView = readSavedResearchView();
     if (!savedView) return;
 
-    if (typeof savedView.code === 'string' && savedView.code.trim()) {
-      setCode(savedView.code.trim());
-    }
-    if (isValidRange(savedView.range)) {
-      setRange(savedView.range);
-    }
-    if (typeof savedView.startDate === 'string') {
-      setStartDate(savedView.startDate);
-    }
-    if (typeof savedView.endDate === 'string') {
-      setEndDate(savedView.endDate);
-    }
-    if (typeof savedView.keyword === 'string') {
-      setKeyword(savedView.keyword);
-    }
-    if (isValidNewsTab(savedView.newsTab)) {
-      setNewsTab(savedView.newsTab);
-    }
-    if (typeof savedView.listPath === 'string') {
-      setListPath(savedView.listPath);
-    } else if (savedView.listPath === null) {
-      setListPath(null);
-    }
+    const timer = window.setTimeout(() => {
+      if (typeof savedView.code === 'string' && savedView.code.trim()) {
+        setCode(savedView.code.trim());
+      }
+      if (isValidRange(savedView.range)) {
+        setRange(savedView.range);
+      }
+      if (typeof savedView.startDate === 'string') {
+        setStartDate(savedView.startDate);
+      }
+      if (typeof savedView.endDate === 'string') {
+        setEndDate(savedView.endDate);
+      }
+      if (typeof savedView.keyword === 'string') {
+        setKeyword(savedView.keyword);
+      }
+      if (isValidNewsTab(savedView.newsTab)) {
+        setNewsTab(savedView.newsTab);
+      }
+      if (typeof savedView.listPath === 'string') {
+        setListPath(savedView.listPath);
+      } else if (savedView.listPath === null) {
+        setListPath(null);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [mounted, setCode]);
 
   useEffect(() => {
@@ -179,7 +182,8 @@ export default function ResearchPage() {
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
     const nextCode = workbenchContext.stockCode || workbenchContext.eventCode || DEFAULT_RESEARCH_CODE;
-    setCode(nextCode);
+    const timer = window.setTimeout(() => setCode(nextCode), 0);
+    return () => window.clearTimeout(timer);
   }, [
     activeWorkspaceId,
     setCode,
@@ -256,49 +260,46 @@ export default function ResearchPage() {
   const updatedAtLabel = mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-';
   const fetchedAtLabel = mounted && freshness ? new Date(freshness).toLocaleString('zh-CN') : '-';
 
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'research.refresh',
-        label: '刷新研报公告',
-        description: '刷新当前研报列表与资讯标签',
-        keywords: ['刷新', '研报', '公告'],
-        scope: 'page' as const,
-        pageKey: 'research',
-        run: async () => {
-          await Promise.allSettled([listQ.refetch(), newsPath ? newsQ.refetch() : Promise.resolve(null)]);
-          return { message: '已刷新研报公告数据' };
-        },
+  const pageActions = [
+    {
+      id: 'research.refresh',
+      label: '刷新研报公告',
+      description: '刷新当前研报列表与资讯标签',
+      keywords: ['刷新', '研报', '公告'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: async () => {
+        await Promise.allSettled([listQ.refetch(), newsPath ? newsQ.refetch() : Promise.resolve(null)]);
+        return { message: '已刷新研报公告数据' };
       },
-      {
-        id: 'research.open-market-news',
-        label: '切到市场新闻',
-        description: '切换资讯标签到市场新闻并立即拉取',
-        keywords: ['市场新闻', '资讯'],
-        scope: 'page' as const,
-        pageKey: 'research',
-        run: () => {
-          setNewsTab('market-news');
-          fetchNews('market-news');
-          return { message: '已切到市场新闻' };
-        },
+    },
+    {
+      id: 'research.open-market-news',
+      label: '切到市场新闻',
+      description: '切换资讯标签到市场新闻并立即拉取',
+      keywords: ['市场新闻', '资讯'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: () => {
+        setNewsTab('market-news');
+        fetchNews('market-news');
+        return { message: '已切到市场新闻' };
       },
-      {
-        id: 'research.expand-window',
-        label: '扩到近 90 天',
-        description: '把时间范围切换到近 90 天并重查',
-        keywords: ['90天', '时间范围'],
-        scope: 'page' as const,
-        pageKey: 'research',
-        run: () => {
-          setRange('90');
-          submitListQuery('90', startDate, endDate, keyword);
-          return { message: '已扩展到近 90 天' };
-        },
+    },
+    {
+      id: 'research.expand-window',
+      label: '扩到近 90 天',
+      description: '把时间范围切换到近 90 天并重查',
+      keywords: ['90天', '时间范围'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: () => {
+        setRange('90');
+        submitListQuery('90', startDate, endDate, keyword);
+        return { message: '已扩展到近 90 天' };
       },
-    ],
-    [endDate, fetchNews, keyword, listQ, newsPath, newsQ, startDate, submitListQuery],
-  );
+    },
+  ];
 
   usePageActions(pageActions);
 
@@ -330,41 +331,36 @@ export default function ResearchPage() {
     if (showPrimaryEmptyState) notes.push('当前窗口下没有命中研报或公告，建议扩大时间范围或切换资讯分组。');
     return notes;
   }, [resolvedCode, showPrimaryEmptyState]);
-  const researchResult = useMemo(
-    () => {
-      const localFallback = buildLocalResultContract({
-        summary: researchSummary,
-        status: error ? 'unavailable' : showPrimaryEmptyState ? 'empty' : 'ready',
-        pageActions,
-        preferredActionIds: ['research.refresh', 'research.open-market-news', 'research.expand-window'],
-        recommendedLinks: researchLinks,
-        recommendedNextActions: [
-          resolvedCode ? '先锁定标的，再决定看研报、公告还是市场新闻。' : '先输入股票代码，避免研究页变成空列表。',
-          showPrimaryEmptyState ? '当前窗口没有结果，优先扩大时间范围或切换资讯分组。' : '只有在当前窗口证据不足时再扩大时间范围。',
-          '需要更强结论时再把当前结果送去 AI 或策略页。',
-        ],
-        evidence: researchEvidence,
-        riskNotes: researchRiskNotes,
-        emptyState: {
-          title: '当前窗口没有命中研究内容',
-          description: '先确认标的和时间范围，再决定是否扩大窗口或切到市场新闻。',
-          example: 'code=600519，days=90',
-        },
-        freshness: freshness ? { updatedAt: freshness, label: '资讯抓取时间' } : null,
-        platformMeta: {
-          sourceTool: 'research-feed',
-          sourceChain: [newsTabLabel, rangeLabel],
-        },
-        workbenchTask: defaultWorkbenchTask('research', `研究纪要：${resolvedCode || keyword || '当前资讯页'}`, resolvedCode ? `/research?code=${encodeURIComponent(resolvedCode)}` : '/research', 'research-review', {
-          code: resolvedCode || null,
-          range,
-          newsTab,
-        }),
-      });
-      return resolveResultContract(listQ.data?.result_contract, localFallback);
+  const researchFallbackResult = buildLocalResultContract({
+    summary: researchSummary,
+    status: error ? 'unavailable' : showPrimaryEmptyState ? 'empty' : 'ready',
+    pageActions,
+    preferredActionIds: ['research.refresh', 'research.open-market-news', 'research.expand-window'],
+    recommendedLinks: researchLinks,
+    recommendedNextActions: [
+      resolvedCode ? '先锁定标的，再决定看研报、公告还是市场新闻。' : '先输入股票代码，避免研究页变成空列表。',
+      showPrimaryEmptyState ? '当前窗口没有结果，优先扩大时间范围或切换资讯分组。' : '只有在当前窗口证据不足时再扩大时间范围。',
+      '需要更强结论时再把当前结果送去 AI 或策略页。',
+    ],
+    evidence: researchEvidence,
+    riskNotes: researchRiskNotes,
+    emptyState: {
+      title: '当前窗口没有命中研究内容',
+      description: '先确认标的和时间范围，再决定是否扩大窗口或切到市场新闻。',
+      example: 'code=600519，days=90',
     },
-    [freshness, keyword, newsTab, newsTabLabel, pageActions, range, rangeLabel, researchEvidence, researchLinks, researchRiskNotes, researchSummary, resolvedCode],
-  );
+    freshness: freshness ? { updatedAt: freshness, label: '资讯抓取时间' } : null,
+    platformMeta: {
+      sourceTool: 'research-feed',
+      sourceChain: [newsTabLabel, rangeLabel],
+    },
+    workbenchTask: defaultWorkbenchTask('research', `研究纪要：${resolvedCode || keyword || '当前资讯页'}`, resolvedCode ? `/research?code=${encodeURIComponent(resolvedCode)}` : '/research', 'research-review', {
+      code: resolvedCode || null,
+      range,
+      newsTab,
+    }),
+  });
+  const researchResult = resolveResultContract(listQ.data?.result_contract, researchFallbackResult);
 
   usePageContext({
     pageKey: 'research',

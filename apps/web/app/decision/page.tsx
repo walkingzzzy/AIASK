@@ -62,35 +62,32 @@ export default function DecisionPage() {
     updateWorkbenchContext({ stockCode: trimmedCode || null });
   }, [trimmedCode, updateWorkbenchContext, workbenchHydrated]);
 
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'decision.run',
-        label: '运行统一决策',
-        description: '按当前股票和风格运行 unified decision',
-        keywords: ['决策', '运行'],
-        scope: 'page' as const,
-        pageKey: 'decision',
-        run: () => {
-          runDecision();
-          return { message: '已触发统一决策' };
-        },
+  const pageActions = [
+    {
+      id: 'decision.run',
+      label: '运行统一决策',
+      description: '按当前股票和风格运行 unified decision',
+      keywords: ['决策', '运行'],
+      scope: 'page' as const,
+      pageKey: 'decision',
+      run: () => {
+        runDecision();
+        return { message: '已触发统一决策' };
       },
-      {
-        id: 'decision.load-details',
-        label: '加载决策详情',
-        description: '加载统一决策的完整证据链详情',
-        keywords: ['详情', '证据链'],
-        scope: 'page' as const,
-        pageKey: 'decision',
-        run: () => {
-          loadDetails();
-          return { message: '已触发决策详情加载' };
-        },
+    },
+    {
+      id: 'decision.load-details',
+      label: '加载决策详情',
+      description: '加载统一决策的完整证据链详情',
+      keywords: ['详情', '证据链'],
+      scope: 'page' as const,
+      pageKey: 'decision',
+      run: () => {
+        loadDetails();
+        return { message: '已触发决策详情加载' };
       },
-    ],
-    [details, investmentStyle, legacyMode, trimmedCode],
-  );
+    },
+  ];
   usePageActions(pageActions);
   const decisionSummary = `${trimmedCode || '未选择股票'}，风格 ${investmentStyle}，legacy diff ${legacyMode ? '开启' : '关闭'}。`;
   const decisionResult = buildLocalResultContract({

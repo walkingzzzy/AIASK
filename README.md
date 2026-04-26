@@ -12,12 +12,12 @@ AIASK 是一个面向 A 股研究与策略场景的 monorepo，当前主线是�
 
 以下数字按当前仓库代码在本地重新核对：
 
-- Web 页面路由：`46`
-- BFF 模块：`38`
-- 本地 skills：`19`
+- Web 页面路由：`48`
+- BFF 模块：`42`
+- 本地 skills：`21`
 - MCP runtime tools：`161`
 - MCP resources：`3`
-- MCP prompts：`6`
+- MCP prompts：`7`
 
 说明：
 

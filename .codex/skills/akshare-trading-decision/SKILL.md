@@ -1,6 +1,15 @@
 ---
 name: akshare-trading-decision
 description: 个股交易决策的端到端流程：从行情获取到关键价位识别、信号融合、场景化交易计划生成、止损止盈计算；适用于"给我 XX 的交易策略/买卖建议"类请求。
+capability_tier: live_orchestrated
+runtime_status: executable
+product_surfaces: ["mcp", "bff", "web", "artifact"]
+artifacts: ["analysis_report_bundle", "trade_plan"]
+backing_tools: ["run_skill", "analyze_stock_product_workflow"]
+backing_managers: ["decision_manager", "market_insight_manager"]
+regulatory_scope: ["research_disclosure", "trade_risk_disclosure"]
+role_tags: ["trader", "research", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 提供交易决策的推荐调用路径与信号简化规则，不代表文中涉及的所有工具在任意行情环境下都能给出正确预测。

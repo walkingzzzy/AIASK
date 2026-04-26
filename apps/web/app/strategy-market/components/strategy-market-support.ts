@@ -139,8 +139,8 @@ export function filterAndSortStrategies(
     let leftValue: number;
     let rightValue: number;
     if (sortBy === 'subscriber_count') {
-      leftValue = Number(left.subscriber_count ?? 0);
-      rightValue = Number(right.subscriber_count ?? 0);
+      leftValue = Number(left.favorite_count ?? left.subscriber_count ?? 0);
+      rightValue = Number(right.favorite_count ?? right.subscriber_count ?? 0);
     } else {
       leftValue = Number(leftMetrics[sortBy] ?? Number.NEGATIVE_INFINITY);
       rightValue = Number(rightMetrics[sortBy] ?? Number.NEGATIVE_INFINITY);

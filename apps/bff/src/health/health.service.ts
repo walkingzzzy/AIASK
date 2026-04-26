@@ -37,14 +37,23 @@ type HealthCacheEntry = {
   value: HealthSnapshot;
   expiresAt: number;
 };
+type ComponentCacheEntry = {
+  value: ComponentSnapshot;
+  expiresAt: number;
+  staleUntil: number;
+};
 
 @Injectable()
 export class HealthService implements OnModuleInit {
   private static readonly HEALTH_CACHE_TTL_MS = 10_000;
+  private static readonly VECTOR_HEALTH_CACHE_TTL_MS = 60_000;
+  private static readonly VECTOR_HEALTH_STALE_IF_ERROR_MS = 5 * 60_000;
   private startedAt = new Date().toISOString();
   private startupCompleted = false;
   private healthCache: HealthCacheEntry | null = null;
   private healthInFlight: Promise<HealthSnapshot> | null = null;
+  private vectorHealthCache: ComponentCacheEntry | null = null;
+  private vectorHealthInFlight: Promise<ComponentSnapshot> | null = null;
 
   constructor(
     private readonly db: DbService,
@@ -267,6 +276,22 @@ export class HealthService implements OnModuleInit {
       };
     }
 
+    const cached = this.getCachedVectorSnapshot();
+    if (cached) {
+      return cached;
+    }
+
+    if (this.vectorHealthInFlight) {
+      return this.vectorHealthInFlight;
+    }
+
+    this.vectorHealthInFlight = this.probeVectorSnapshot().finally(() => {
+      this.vectorHealthInFlight = null;
+    });
+    return this.vectorHealthInFlight;
+  }
+
+  private async probeVectorSnapshot(): Promise<ComponentSnapshot> {
     let payload: Record<string, unknown> | null = null;
     let lastError: string | null = null;
 
@@ -290,6 +315,10 @@ export class HealthService implements OnModuleInit {
     }
 
     if (!payload) {
+      const stale = this.getStaleVectorSnapshot(lastError);
+      if (stale) {
+        return stale;
+      }
       return {
         status: 'untrusted',
         signal: 'operational',
@@ -308,12 +337,46 @@ export class HealthService implements OnModuleInit {
       this.hasDegradedVectorStatus(payload) ? ['vector_snapshot_degraded'] : [],
     );
 
-    return {
+    return this.cacheVectorSnapshot({
       ...payload,
       status: reasons.length > 0 ? 'degraded' : 'normal',
       signal: 'operational',
       reasons,
       lastError,
+      stale: false,
+      checkedAt: new Date().toISOString(),
+    });
+  }
+
+  private cacheVectorSnapshot(value: ComponentSnapshot): ComponentSnapshot {
+    const now = Date.now();
+    this.vectorHealthCache = {
+      value,
+      expiresAt: now + HealthService.VECTOR_HEALTH_CACHE_TTL_MS,
+      staleUntil: now + HealthService.VECTOR_HEALTH_STALE_IF_ERROR_MS,
+    };
+    return value;
+  }
+
+  private getCachedVectorSnapshot(): ComponentSnapshot | null {
+    if (!this.vectorHealthCache || Date.now() > this.vectorHealthCache.expiresAt) {
+      return null;
+    }
+    return this.vectorHealthCache.value;
+  }
+
+  private getStaleVectorSnapshot(lastError: string | null): ComponentSnapshot | null {
+    if (!this.vectorHealthCache || Date.now() > this.vectorHealthCache.staleUntil) {
+      return null;
+    }
+    if (this.vectorHealthCache.value.status === 'untrusted') {
+      return null;
+    }
+    return {
+      ...this.vectorHealthCache.value,
+      stale: true,
+      lastProbeError: lastError,
+      staleReason: lastError ? 'vector_health_probe_failed' : 'vector_health_probe_empty',
     };
   }
 

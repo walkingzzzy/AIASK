@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { buildMcpTransportFailureDetail } from '../mcp-gateway/mcp-transport.contract';
 import { CommonCacheService } from '../common/cache.service';

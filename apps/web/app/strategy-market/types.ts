@@ -24,6 +24,8 @@ import type {
   StrategyPaperSessionState,
   StrategyPresentationDto,
   StrategyEventsResponse,
+  StrategyRuntimeActionContract,
+  StrategyRuntimeActionContractItem,
   TopNSnapshot,
   TaskRun,
   VectorIndexSnapshot,
@@ -39,6 +41,9 @@ export type {
   FactoryStatusResponse,
   CapabilityResponse,
   DailySnapshotResponse,
+  FactoryMarketViewResponse,
+  FactoryMarketVisibleOutput,
+  FactoryObservabilityResponse,
   FactoryRunsResponse,
   FactoryRunDetailResponse,
   FactoryGovernancePlaneArtifact,
@@ -78,6 +83,8 @@ export type {
   StrategyMetric,
   StrategyReview,
   StrategyCore,
+  StrategyPaperContextResponse,
+  StrategyPaperTrackSnapshot,
   TopNSnapshot,
   SignalStatsResponse,
   Signal,
@@ -88,6 +95,9 @@ export type {
   StrategyPaperSessionState,
   StrategyPresentationDto,
   StrategyEventsResponse,
+  StrategyCoreChainAcceptanceResponse,
+  StrategyCoreChainStep,
+  StrategyCoreChainStepStatus,
   IncubationOverviewResponse,
   IncubationAccount,
   IncubationMetric,
@@ -113,18 +123,26 @@ export type {
   ListResponse,
   StrategyDetailResponse,
   EventFilters,
+  StrategyActionCoverageItem,
+  StrategyFactoryReadinessRemediation,
+  StrategyOperatorJobRecord,
+  StrategyOperatorJobRequest,
+  StrategyOperatorParityResponse,
+  StrategyRuntimeActionContract,
+  StrategyRuntimeActionContractItem,
+  StrategyRuntimeActionId,
+  StrategyRuntimeActionStatus,
+  StrategyCapabilityDiagnosticsResponse,
+  StrategyCapabilityGapIssue,
+  StrategyCapabilityGapIssueKind,
+  StrategyCapabilityMatchRow,
 } from '@aiask/shared-types';
 
 export type FactoryRunItem = NonNullable<FactoryRunsResponse['items']>[number];
 
 export type RunStatusFilter = 'all' | 'success' | 'partial' | 'skipped' | 'failed';
 
-export type FactoryReviewSection =
-  | 'summary'
-  | 'incubation'
-  | 'runtime'
-  | 'vectors'
-  | 'experiments';
+export type FactoryReviewSection = 'summary' | 'incubation' | 'runtime' | 'vectors' | 'experiments';
 
 export type TrendMetricKey =
   | 'candidates_spawned'
@@ -154,6 +172,8 @@ export type StrategyClosureReviewResponse = {
   favorite_state?: StrategyFavoriteState;
   paper_session_state?: StrategyPaperSessionState;
   presentation?: StrategyPresentationDto;
+  runtime_action_contract?: StrategyRuntimeActionContract | null;
+  runtime_actions?: StrategyRuntimeActionContractItem[];
   data_freshness?: Record<string, unknown>;
   report?: ReviewReportResponse | null;
   events?: StrategyEventsResponse | null;

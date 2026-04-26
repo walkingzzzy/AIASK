@@ -40,6 +40,7 @@ export function normalizeStrategyDetailResponse(payload: unknown): StrategyDetai
   const rawRuntime = asRecord(rawViewModel.runtime);
   const rawVectors = asRecord(rawViewModel.vectors);
   const rawDomain = asRecord(rawViewModel.domain);
+  const rawActions = asRecord(rawViewModel.actions);
 
   const latestQualityReport =
     asRecord(raw.latest_quality_report).report_type || asRecord(raw.latest_quality_report).summary
@@ -60,6 +61,22 @@ export function normalizeStrategyDetailResponse(payload: unknown): StrategyDetai
   const domainEvents = asRecordArray(raw.domain_events ?? rawDomain.events);
   const taskRuns = asRecordArray(raw.task_runs ?? rawDomain.task_runs);
   const latestProjectionSnapshot = raw.latest_projection_snapshot ?? rawDomain.latest_projection_snapshot ?? null;
+  const runtimeActionContract =
+    raw.runtime_action_contract ??
+    rawStrategy.runtime_action_contract ??
+    rawActions.runtime_action_contract ??
+    null;
+  const runtimeActions = asRecordArray(
+    raw.runtime_actions ??
+    rawStrategy.runtime_actions ??
+    rawActions.items ??
+    (asRecord(runtimeActionContract).actions),
+  );
+  const favoriteCount = Number(rawStrategy.favorite_count ?? rawStrategy.subscriber_count ?? 0);
+  const strategy = {
+    ...rawStrategy,
+    favorite_count: Number.isFinite(favoriteCount) ? favoriteCount : 0,
+  };
 
   const viewModel: StrategyDetailViewModel = {
     ...rawViewModel,
@@ -97,12 +114,18 @@ export function normalizeStrategyDetailResponse(payload: unknown): StrategyDetai
       latest_projection_snapshot:
         latestProjectionSnapshot as NonNullable<StrategyDetailViewModel['domain']>['latest_projection_snapshot'],
     },
+    actions: {
+      ...rawActions,
+      runtime_action_contract:
+        runtimeActionContract as NonNullable<StrategyDetailViewModel['actions']>['runtime_action_contract'],
+      items: runtimeActions as NonNullable<StrategyDetailViewModel['actions']>['items'],
+    },
   };
 
   return {
     ...raw,
     dto_version: 'strategy_market.detail.v2',
-    strategy: rawStrategy as StrategyDetailResponse['strategy'],
+    strategy: strategy as StrategyDetailResponse['strategy'],
     metrics: asRecordArray(raw.metrics),
     reviews: asRecordArray(raw.reviews),
     nav_series: asNumberArray(raw.nav_series),
@@ -124,6 +147,8 @@ export function normalizeStrategyDetailResponse(payload: unknown): StrategyDetai
     similar_vector_profiles: similarVectorProfiles as StrategyDetailResponse['similar_vector_profiles'],
     domain_events: domainEvents as StrategyDetailResponse['domain_events'],
     task_runs: taskRuns as StrategyDetailResponse['task_runs'],
+    runtime_action_contract: runtimeActionContract as StrategyDetailResponse['runtime_action_contract'],
+    runtime_actions: runtimeActions as StrategyDetailResponse['runtime_actions'],
     view_model: viewModel,
   };
 }

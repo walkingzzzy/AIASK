@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, PageContainer } from '@/components/ui';
-import ResultWorkbench from '@/components/result-workbench';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import { ErrorState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -389,28 +389,24 @@ export default function StockPage() {
     if (!hasQuoteData) notes.push('当前报价尚未加载，建议先刷新行情后再解读信号。');
     return notes;
   }, [actionCard?.reasons, hasQuoteData]);
-  const stockResult = useMemo(
-    () =>
-      buildLocalResultContract({
-        summary: stockSummary,
-        pageActions,
-        preferredActionIds: ['stock.refresh', 'stock.open-research', 'stock.switch-tab'],
-        recommendedLinks: stockLinks,
-        evidence: stockEvidence,
-        riskNotes: stockRiskNotes,
-        freshness: quote?.timestamp ? { updatedAt: quote.timestamp, label: '行情抓取时间' } : null,
-        platformMeta: {
-          sourceTool: 'stock-detail',
-          sourceChain: [activeTabLabel, submittedPeriod],
-        },
-        workbenchTask: defaultWorkbenchTask('stock', `个股复盘：${currentFocusCode}`, currentFocusCode ? `/stock?code=${encodeURIComponent(currentFocusCode)}` : '/stock', 'stock-review', {
-          code: currentFocusCode,
-          tab: infoTab,
-          period: submittedPeriod,
-        }),
-      }),
-    [activeTabLabel, currentFocusCode, infoTab, pageActions, quote?.timestamp, stockEvidence, stockLinks, stockRiskNotes, stockSummary, submittedPeriod],
-  );
+  const stockResult = buildLocalResultContract({
+    summary: stockSummary,
+    pageActions,
+    preferredActionIds: ['stock.refresh', 'stock.open-research', 'stock.switch-tab'],
+    recommendedLinks: stockLinks,
+    evidence: stockEvidence,
+    riskNotes: stockRiskNotes,
+    freshness: quote?.timestamp ? { updatedAt: quote.timestamp, label: '行情抓取时间' } : null,
+    platformMeta: {
+      sourceTool: 'stock-detail',
+      sourceChain: [activeTabLabel, submittedPeriod],
+    },
+    workbenchTask: defaultWorkbenchTask('stock', `个股复盘：${currentFocusCode}`, currentFocusCode ? `/stock?code=${encodeURIComponent(currentFocusCode)}` : '/stock', 'stock-review', {
+      code: currentFocusCode,
+      tab: infoTab,
+      period: submittedPeriod,
+    }),
+  });
 
   usePageContext({
     pageKey: 'stock',
@@ -533,7 +529,9 @@ export default function StockPage() {
         />
       )}
 
-      <ResultWorkbench pageKey="stock" title="个股研究工作台" result={stockResult} />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection pageKey="stock" title="个股研究工作台" result={stockResult} summaryMode="strip" />
+      ) : null}
 
       <StockQueryShell
         code={code}

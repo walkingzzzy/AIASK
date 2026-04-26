@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { ConfirmDialog, PageContainer, Badge, SectionCard, TabBar } from '@/components/ui';
@@ -128,12 +128,12 @@ export default function PortfolioPage() {
   );
   const cartWeightValid = cartItems.length > 0 && Math.abs(cartTotalWeight - 100) < 0.01;
 
-  async function executeCreatePortfolio(payload: {
+  const executeCreatePortfolio = useCallback(async (payload: {
     name: string;
     description: string;
     initialCapital: string;
     strategies?: Array<{ strategyId: string; weight: number }>;
-  }) {
+  }) => {
     const data = await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, payload);
     const createdId =
       data && typeof data === 'object' && 'portfolioId' in data
@@ -148,7 +148,7 @@ export default function PortfolioPage() {
     if (payload.strategies?.length) {
       clearCart();
     }
-  }
+  }, [clearCart, createApi]);
 
   async function handleCreate() {
     if (!newName.trim()) return setFormError('请输入组合名称');
@@ -172,7 +172,7 @@ export default function PortfolioPage() {
     }
   }
 
-  async function handleCreateFromCart() {
+  const handleCreateFromCart = useCallback(async () => {
     if (!cartItems.length) {
       setFormError('购物车为空，无法创建策略组合');
       return;
@@ -203,7 +203,15 @@ export default function PortfolioPage() {
     } catch {
       /* captured */
     }
-  }
+  }, [
+    cartItems,
+    cartWeightValid,
+    confirmPrefs.portfolioRebalance,
+    executeCreatePortfolio,
+    newCapital,
+    newDesc,
+    newName,
+  ]);
 
   async function executeAddHolding(payload: { portfolioId: string; code: string; shares: string; costPrice?: string }) {
     await addHoldingApi.triggerAsync('/portfolio/add-holding', { method: 'POST' }, payload);
@@ -305,6 +313,7 @@ export default function PortfolioPage() {
     : '等待首个组合快照';
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
     if (activePortfolioId) {
       setWorkspaceTab((prev) => (prev === 'list' ? 'detail' : prev));
       return;
@@ -313,6 +322,8 @@ export default function PortfolioPage() {
       if (cartItems.length > 0 && prev === 'list') return 'compose';
       return prev === 'detail' || prev === 'ops' ? 'list' : prev;
     });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [activePortfolioId, cartItems.length]);
 
   const refreshPortfolio = useCallback(async () => {
@@ -345,8 +356,11 @@ export default function PortfolioPage() {
 
   useEffect(() => {
     if (!workbenchHydrated || !queryPortfolioId) return;
-    setPortfolioId(queryPortfolioId);
-    setWorkspaceTab('detail');
+    const timer = window.setTimeout(() => {
+      setPortfolioId(queryPortfolioId);
+      setWorkspaceTab('detail');
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [queryPortfolioId, workbenchHydrated]);
 
   useEffect(() => {
@@ -603,7 +617,7 @@ export default function PortfolioPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="portfolio" title="组合结果工作台" result={portfolioResult} />
+      <ResponsiveResultWorkbench pageKey="portfolio" title="组合结果工作台" result={portfolioResult} />
 
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
@@ -796,7 +810,13 @@ export default function PortfolioPage() {
 
   return (
     <PageContainer>
-      <WorkspaceToolbar pageKey="portfolio" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceToolbar
+        pageKey="portfolio"
+        currentView={currentView}
+        onApplyView={applyView}
+        supportsPagePanels
+        mobileSummaryMode="hidden"
+      />
       <WorkspaceSplitLayout
         pageKey="portfolio"
         primary={primaryContent}

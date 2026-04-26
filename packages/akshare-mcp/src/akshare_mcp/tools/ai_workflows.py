@@ -377,3 +377,183 @@ _exec_block(
     ['parsers.py', 'payloads.py', 'formatters.py'],
     future_annotations=True,
 )
+
+
+class _WorkflowFunctionCaptureMcp:
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def tool(self, *args: Any, **kwargs: Any) -> Any:
+        def decorator(func: Any) -> Any:
+            name = str(getattr(func, "__name__", "") or "").strip()
+            if name:
+                self.tools[name] = func
+            return func
+
+        return decorator
+
+
+_CAPTURED_WORKFLOW_FUNCTIONS: dict[str, Any] | None = None
+
+
+def _captured_workflow_functions() -> dict[str, Any]:
+    global _CAPTURED_WORKFLOW_FUNCTIONS
+    if _CAPTURED_WORKFLOW_FUNCTIONS is None:
+        capture = _WorkflowFunctionCaptureMcp()
+        register(capture)
+        _CAPTURED_WORKFLOW_FUNCTIONS = dict(capture.tools)
+    return _CAPTURED_WORKFLOW_FUNCTIONS
+
+
+async def _invoke_captured_workflow(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+    func = _captured_workflow_functions().get(tool_name)
+    if func is None:
+        raise RuntimeError(f"workflow function not registered: {tool_name}")
+    return await func(**kwargs)
+
+
+async def analyze_stock_workflow(
+    code: str,
+    investment_style: str = "balanced",
+    include_kline: bool = True,
+    include_financials: bool = True,
+    include_decision: bool = True,
+    kline_limit: int = 90,
+    as_of: str | None = None,
+) -> dict[str, Any]:
+    return await _invoke_captured_workflow(
+        "analyze_stock_workflow",
+        code=code,
+        investment_style=investment_style,
+        include_kline=include_kline,
+        include_financials=include_financials,
+        include_decision=include_decision,
+        kline_limit=kline_limit,
+        as_of=as_of,
+    )
+
+
+async def factor_candidate_workflow(
+    task: str = "pipeline",
+    code: str | None = None,
+    codes: list[str] | None = None,
+    artifact_id: str | None = None,
+    candidate_index: int = 0,
+    candidate_count: int = 6,
+    lookback_bars: int | None = None,
+    horizon_days: int | None = None,
+    max_dates: int | None = None,
+    allow_fallback: bool = True,
+    persist_artifact: bool = True,
+    write_memory: bool = True,
+    run_scheduler_now: bool = False,
+    idempotency_key: str | None = None,
+    as_of: str | None = None,
+) -> dict[str, Any]:
+    return await _invoke_captured_workflow(
+        "factor_candidate_workflow",
+        task=task,
+        code=code,
+        codes=codes,
+        artifact_id=artifact_id,
+        candidate_index=candidate_index,
+        candidate_count=candidate_count,
+        lookback_bars=lookback_bars,
+        horizon_days=horizon_days,
+        max_dates=max_dates,
+        allow_fallback=allow_fallback,
+        persist_artifact=persist_artifact,
+        write_memory=write_memory,
+        run_scheduler_now=run_scheduler_now,
+        idempotency_key=idempotency_key,
+        as_of=as_of,
+    )
+
+
+async def strategy_review_workflow(
+    strategy_id: str,
+    include_factory_status: bool = True,
+    include_review_report: bool = True,
+    include_runtime_alerts: bool = True,
+    run_factory_once: bool = False,
+    run_runtime_cycle: bool = False,
+    idempotency_key: str | None = None,
+    as_of: str | None = None,
+    actor_id: str | None = None,
+    actor_roles: list[str] | None = None,
+) -> dict[str, Any]:
+    return await _invoke_captured_workflow(
+        "strategy_review_workflow",
+        strategy_id=strategy_id,
+        include_factory_status=include_factory_status,
+        include_review_report=include_review_report,
+        include_runtime_alerts=include_runtime_alerts,
+        run_factory_once=run_factory_once,
+        run_runtime_cycle=run_runtime_cycle,
+        idempotency_key=idempotency_key,
+        as_of=as_of,
+        actor_id=actor_id,
+        actor_roles=actor_roles,
+    )
+
+
+async def prediction_diagnosis_workflow(
+    probabilities: list[float],
+    labels: list[Any] | None = None,
+    outcomes: list[Any] | None = None,
+    raw_scores: list[float] | None = None,
+    method: str = "raw",
+    platt_a: float = 1.0,
+    platt_b: float = 0.0,
+    coverage_target: float = 0.9,
+    dataset_id: str | None = None,
+    run_id: str | None = None,
+    persist_artifact: bool = False,
+    output_artifact_id: str | None = None,
+    as_of: str | None = None,
+) -> dict[str, Any]:
+    return await _invoke_captured_workflow(
+        "prediction_diagnosis_workflow",
+        probabilities=probabilities,
+        labels=labels,
+        outcomes=outcomes,
+        raw_scores=raw_scores,
+        method=method,
+        platt_a=platt_a,
+        platt_b=platt_b,
+        coverage_target=coverage_target,
+        dataset_id=dataset_id,
+        run_id=run_id,
+        persist_artifact=persist_artifact,
+        output_artifact_id=output_artifact_id,
+        as_of=as_of,
+    )
+
+
+async def data_quality_workflow(
+    dataset_id: str | None = None,
+    records: list[dict[str, Any]] | None = None,
+    required_fields: list[str] | None = None,
+    as_of_field: str | None = None,
+    as_of_value: str | None = None,
+    source: str = "workflow.input",
+    source_chain: list[str] | None = None,
+    minimum_quality_threshold: float = 0.95,
+    persist_artifact: bool = False,
+    output_artifact_id: str | None = None,
+    as_of: str | None = None,
+) -> dict[str, Any]:
+    return await _invoke_captured_workflow(
+        "data_quality_workflow",
+        dataset_id=dataset_id,
+        records=records,
+        required_fields=required_fields,
+        as_of_field=as_of_field,
+        as_of_value=as_of_value,
+        source=source,
+        source_chain=source_chain,
+        minimum_quality_threshold=minimum_quality_threshold,
+        persist_artifact=persist_artifact,
+        output_artifact_id=output_artifact_id,
+        as_of=as_of,
+    )

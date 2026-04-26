@@ -3,14 +3,59 @@ import assert from 'node:assert/strict';
 
 const { PaperTradingService } = await import('../dist/paper-trading/paper-trading.service.js');
 
-function createCacheStub() {
+function createCacheStub(overrides = {}) {
   return {
     resolveTtl: () => 30,
     getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
     set: async () => {
       throw new Error('cache.set should not be called on failed summary');
     },
+    del: async () => {},
+    ...overrides,
   };
+}
+
+function createServiceWithActions(actions, options = {}) {
+  const calls = [];
+  const service = new PaperTradingService(
+    {
+      callTool: async (tool, args) => {
+        calls.push({ tool, args });
+        if (!(args.action in actions)) {
+          throw new Error(`unexpected action: ${args.action}`);
+        }
+        return { success: true, data: actions[args.action] };
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('idempotency.execute should not be called');
+      },
+    },
+    createCacheStub({
+      set: async () => {},
+      ...options.cache,
+    }),
+  );
+  return { service, calls };
+}
+
+async function withFixedDate(iso, run) {
+  const RealDate = globalThis.Date;
+  class MockDate extends RealDate {
+    constructor(value) {
+      super(value ?? iso);
+    }
+    static now() {
+      return new RealDate(iso).getTime();
+    }
+  }
+  globalThis.Date = MockDate;
+  try {
+    return await run();
+  } finally {
+    globalThis.Date = RealDate;
+  }
 }
 
 test('PaperTradingService.summary propagates upstream failure instead of returning an empty snapshot', async () => {
@@ -45,4 +90,131 @@ test('PaperTradingService.summary propagates upstream failure instead of returni
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tool, 'paper_trading_manager');
   assert.equal(calls[0].args.action, 'summary');
+});
+
+test('PaperTradingService.trustStatus marks latest paper account as ready for demo when scan, prices, and NAV are current', async () => {
+  await withFixedDate('2026-04-22T02:00:00.000Z', async () => {
+    const { service } = createServiceWithActions({
+      summary: {
+        account_id: 'acct-1',
+        total_value: 101200,
+        account: { updated_at: '2026-04-22T01:59:40.000Z' },
+        reconciliation: { drift_detected: false, reconciled: false },
+      },
+      positions: {
+        positions: [
+          {
+            stock_code: '600519',
+            quantity: 100,
+            updated_at: '2026-04-22T01:59:50.000Z',
+          },
+        ],
+        reconciliation: { drift_detected: false, reconciled: false },
+      },
+      orders: {
+        orders: [
+          {
+            id: 't-1',
+            trade_time: '2026-04-22T01:58:00.000Z',
+          },
+        ],
+      },
+      pending_orders: {
+        orders: [],
+      },
+      nav_history: {
+        nav: [
+          {
+            nav_date: '2026-04-21',
+            created_at: '2026-04-21T07:30:00.000Z',
+            total_value: 100800,
+          },
+        ],
+      },
+      matching_status: {
+        running: true,
+        scan_interval: 30,
+        last_scan: '2026-04-22T01:59:45.000Z',
+      },
+      nav_status: {
+        running: true,
+        last_run: '2026-04-21T07:30:00.000Z',
+      },
+    });
+
+    const result = await service.trustStatus('u_demo', 'acct-1');
+
+    assert.equal(result.account_id, 'acct-1');
+    assert.equal(result.latest, true);
+    assert.equal(result.demo_ready, true);
+    assert.equal(result.level, 'ready');
+    assert.equal(result.environment.simulated_only, true);
+    assert.equal(result.environment.dry_run, false);
+    assert.equal(result.reconcile.positions.reconciled, true);
+    assert.equal(result.reconcile.orders.reconciled, true);
+    assert.equal(result.reconcile.nav.reconciled, true);
+  });
+});
+
+test('PaperTradingService.trustStatus blocks demo when pending orders are newer than the latest matching scan', async () => {
+  await withFixedDate('2026-04-22T02:00:00.000Z', async () => {
+    const { service } = createServiceWithActions({
+      summary: {
+        account_id: 'acct-1',
+        total_value: 101200,
+        account: { updated_at: '2026-04-22T01:59:20.000Z' },
+        reconciliation: { drift_detected: true, reconciled: true },
+      },
+      positions: {
+        positions: [
+          {
+            stock_code: '600519',
+            quantity: 100,
+            updated_at: '2026-04-22T01:59:20.000Z',
+          },
+        ],
+        reconciliation: { drift_detected: true, reconciled: true },
+      },
+      orders: {
+        orders: [],
+      },
+      pending_orders: {
+        orders: [
+          {
+            id: 12,
+            created_at: '2026-04-22T01:59:50.000Z',
+            updated_at: '2026-04-22T01:59:55.000Z',
+          },
+        ],
+      },
+      nav_history: {
+        nav: [
+          {
+            nav_date: '2026-04-20',
+            created_at: '2026-04-20T07:30:00.000Z',
+            total_value: 100500,
+          },
+        ],
+      },
+      matching_status: {
+        running: true,
+        scan_interval: 30,
+        last_scan: '2026-04-22T01:59:00.000Z',
+      },
+      nav_status: {
+        running: true,
+        last_run: '2026-04-20T07:30:00.000Z',
+      },
+    });
+
+    const result = await service.trustStatus('u_demo', 'acct-1');
+
+    assert.equal(result.latest, false);
+    assert.equal(result.demo_ready, false);
+    assert.equal(result.level, 'blocked');
+    assert.equal(result.reconcile.orders.reconciled, false);
+    assert.equal(result.reconcile.positions.reconciled, true);
+    assert.equal(result.reasons.some((item) => /挂单/.test(String(item))), true);
+    assert.equal(result.reasons.some((item) => /NAV 快照/.test(String(item))), true);
+  });
 });

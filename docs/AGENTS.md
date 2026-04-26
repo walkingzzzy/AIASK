@@ -6,14 +6,14 @@
 
 ## 1. 项目事实基线
 
-### 1.1 当前全量运行时注册面（2026-04-07 本地复核）
+### 1.1 当前全量运行时注册面（2026-04-26 本地复核）
 
 - MCP tools：`161`
 - MCP resources：`3`
-- MCP prompts：`6`
-- 本地 skills：`19`
-- Web 页面路由：`46`
-- BFF 一级模块目录：`38`
+- MCP prompts：`7`
+- 本地 skills：`21`
+- Web 页面路由：`48`
+- BFF 一级模块目录：`42`
 
 上述统计分别通过以下路径复核：
 
@@ -22,32 +22,32 @@
 3. `find apps/web/app -name 'page.tsx' | wc -l`
 4. `find apps/bff/src -mindepth 1 -maxdepth 1 -type d | wc -l`
 
-### 1.2 当前 Skill 覆盖审计切片（`skill_tool_coverage_runtime.json`）
+### 1.2 当前 Skill 覆盖审计切片（`.codex/skills/_meta/coverage_baseline.json`）
 
-- 审计时间：`2026-04-06T17:01:46+00:00`
-- 审计工具数：`113`
-- Skills 总数：`19`
-- Skill 工具引用覆盖率：`95.58%`
+- 审计时间：`2026-04-26`
+- 审计工具数：`161`
+- Skills 总数：`21`
+- Skill 工具引用覆盖率：`100%`
 - Skill 执行器覆盖率：`100%`
-- 当前缺口：`ai_workflow_artifact`、`analyze_research_report`、`get_research_summary`、`get_tool_contract`、`search_research_db`
+- 当前缺口：无
 
 说明：
-1. `skill_tool_coverage_runtime.json` 是 Skill 覆盖审计切片，不是全量 MCP 工具总表。
-2. 当前仓库里 “全量运行时工具数 161” 与 “Skill 覆盖审计工具数 113” 并不冲突，前者描述 MCP 注册面，后者描述 Skill 治理覆盖面。
-3. `coverage` 代表 Skill 文档对这 113 个审计工具的引用覆盖率，不等价于“所有运行时工具都已纳入 Skill 路由”。
-4. `executors` 代表 Skill 执行器覆盖率；当前 19 个 Skill 都有执行器，但不代表每个业务场景都不需要 manager/tool 级补充。
+1. `.codex/skills/_meta/coverage_baseline.json` 是当前 Skill 覆盖质量门基线。
+2. 当前仓库里 “全量运行时工具数 161” 与 “Skill 覆盖审计工具数 161” 已对齐。
+3. `coverage` 代表 Skill 文档对当前审计工具的引用覆盖率，不等价于每个业务场景都不需要 manager/tool 级补充。
+4. `executors` 代表 Skill 执行器覆盖率；当前 21 个 Skill 都有执行器。
 5. Windows-only 原生桌面集成能力当前不作为默认执行路径，任何流程都必须先以通用 MCP 工具链可用为前提。
 
 技能/工具注册变更时的预检命令：
 1. `PYTHONPATH=packages/akshare-mcp/src:packages/strategy-factory/src python3 -c "import akshare_mcp.server as s; m=s.mcp; print('tools', len(m._tool_manager.list_tools())); print('resources', len(m._resource_manager.list_resources())); print('prompts', len(m._prompt_manager.list_prompts()))"`
-2. `python scripts/skill_coverage_audit.py --output-json skill_tool_coverage_runtime.json --output-gap skill_tool_gap_list.txt`
+2. `python scripts/skill_coverage_audit.py --output-json .codex/skills/_meta/skill_capability_audit.json`
 3. `python scripts/skill_coverage_audit.py --check-thresholds`
 
 说明：
 1. 第 1 条用于复核“全量注册面”，第 2/3 条用于复核“Skill 审计切片”。
 2. 这组检查主要用于 skills/tool registry 变更、覆盖率治理和 CI 门禁，不应机械套用到所有业务功能任务。
-3. 当前阈值基线文件 `.codex/skills/_meta/coverage_baseline.json` 仍记录旧基线；若运行时工具数继续扩容，应先重校准基线，再把 `--check-thresholds` 结果当作硬门禁。
-4. 日常业务开发至少应重新生成 `skill_tool_coverage_runtime.json` 与 `skill_tool_gap_list.txt`，避免引用过期统计。
+3. 若运行时工具数继续扩容，应先重校准 `.codex/skills/_meta/coverage_baseline.json`，再把 `--check-thresholds` 结果当作硬门禁。
+4. 日常业务开发至少应重新生成 `.codex/skills/_meta/skill_capability_audit.json`，避免引用过期统计。
 
 ## 2. 总体执行原则（必须遵守）
 1. 工具优先：能通过 MCP 工具获取结果时，不做主观臆测。

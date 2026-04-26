@@ -1,10 +1,8 @@
 import type { WorkspaceSharedContext, WorkspaceTask } from '@aiask/shared-types';
 import {
   applyDefaultsStrategy,
-  applyContextPatch,
   missingRequiredContext,
   normalizeWorkspaceContextOverrides,
-  pickWorkspaceContextOverrides,
   renderWorkflowStepOverrides,
   resolveTemplateContext,
   resolveWorkspaceTemplateContext,

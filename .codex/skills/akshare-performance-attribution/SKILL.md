@@ -1,6 +1,15 @@
 ---
 name: akshare-performance-attribution
 description: 绩效衡量与归因流程，包含收益拆解与风险来源说明。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["performance_lineage", "research_disclosure"]
+role_tags: ["buy_side_pm", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义绩效衡量与归因的推荐流程，不代表文中涉及的绩效指标、基准评分、风险拆解与归因维度在当前环境都已具备统一口径和完整数据支撑。

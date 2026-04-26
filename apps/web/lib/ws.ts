@@ -132,7 +132,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   useEffect(() => {
     if (!canConnect) {
-      setConnected(false);
       if (bffAvailability.unavailable) notifyStatus('disconnected');
       return;
     }

@@ -5,19 +5,98 @@ import {
   extractPlatformMeta,
 } from '../common/result-contract';
 import { buildResultContractMeta } from '../common/tool-contracts';
+import type { ToolContractCallResult } from '../common/tool-contracts';
 import type {
   FundamentalCapitalDto,
   FundamentalHistoryDto,
   FundamentalOverviewDto,
   FundamentalPeersDto,
+  NormalizedFinancials,
+  NormalizedValuation,
 } from './fundamental.types';
 import { LEGACY_FIELD_ALIASES } from './fundamental.types';
 
-export async function getOverview(service: any, code: string): Promise<FundamentalOverviewDto> {
+type CacheBackend = 'redis' | 'memory' | 'none';
+
+type CachedValue<T> = {
+  value: T | null;
+  meta: {
+    backend: CacheBackend;
+  };
+};
+
+type FundamentalServiceCtor = {
+  OVERVIEW_TTL_SECONDS: number;
+  HISTORY_TTL_SECONDS: number;
+  CAPITAL_TTL_SECONDS: number;
+  PEERS_TTL_SECONDS: number;
+};
+
+type StockInfoDto = {
+  code: string;
+  name: string;
+  industry: string;
+  listDate: string;
+  totalShares: number | null;
+  floatShares: number | null;
+  totalMarketCap: number | null;
+  floatMarketCap: number | null;
+};
+
+type PeerFallbackDto = {
+  name: string;
+  industry: string;
+  targetMetrics: Record<string, unknown>;
+  peers: Array<Record<string, unknown>>;
+  comparison: Record<string, unknown>;
+  industryStats: Record<string, unknown>;
+  fallbackSource: string;
+};
+
+export type FundamentalServiceApiHost = {
+  readonly constructor: FundamentalServiceCtor;
+  readonly logger: { warn(message: string): void };
+  readonly cacheService: {
+    resolveTtl(key: string, fallbackSeconds: number): number;
+    getWithMeta<T>(key: string): Promise<CachedValue<T>>;
+    set(key: string, value: unknown, ttlSeconds: number): Promise<void>;
+  };
+  readonly dbService: {
+    readonly enabled: boolean;
+    query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  };
+  buildFinancialFallback(
+    code: string,
+    fields?: string[],
+  ): Promise<Record<string, Record<string, unknown>> | null>;
+  buildFinancialRecord(code: string): Promise<Record<string, unknown>>;
+  buildPeerFallbackFromDb(code: string): Promise<PeerFallbackDto | null>;
+  buildSyntheticHistory(code: string, days: number): Promise<FundamentalHistoryDto['points']>;
+  callWithArgs(
+    tool: string,
+    attempts: Array<Record<string, unknown>>,
+    altTool?: string,
+  ): Promise<Pick<ToolContractCallResult, 'payload' | 'argsMatched' | 'canonicalArgs' | 'aliasHits' | 'canonicalTool'>>;
+  dbFallbackValuation(code: string): Promise<NormalizedValuation>;
+  getStockInfo(code: string): Promise<StockInfoDto>;
+  isStalePeersCache(value: FundamentalPeersDto): boolean;
+  normalizeCapitalData(payload: unknown): FundamentalCapitalDto['capitalData'];
+  normalizeFinancials(payload: unknown): NormalizedFinancials;
+  normalizeHistory(payload: unknown): FundamentalHistoryDto['points'];
+  normalizePeerEntry(value: unknown): Record<string, unknown>;
+  normalizePeerMetrics(value: unknown): Record<string, unknown>;
+  normalizeValuation(payload: unknown): NormalizedValuation;
+  readRecord(value: unknown): Record<string, unknown>;
+  readRecordArray(value: unknown): Record<string, unknown>[];
+  toNum(value: unknown): number | null;
+  unwrapRoot(payload: unknown): unknown;
+};
+
+export async function getOverview(service: FundamentalServiceApiHost, code: string): Promise<FundamentalOverviewDto> {
     const normalized = code.trim();
     const cacheKey = `fundamental:overview:${normalized}`;
     const ttlSeconds = service.cacheService.resolveTtl('fundamental.overview', service.constructor.OVERVIEW_TTL_SECONDS);
-    const cached = await service.cacheService.getWithMeta(cacheKey);
+    const cached = await service.cacheService.getWithMeta<FundamentalOverviewDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -115,12 +194,16 @@ export async function getOverview(service: any, code: string): Promise<Fundament
     return result;
   }
 
-export async function getHistory(service: any, code: string, days = 90): Promise<FundamentalHistoryDto> {
+export async function getHistory(
+  service: FundamentalServiceApiHost,
+  code: string,
+  days = 90,
+): Promise<FundamentalHistoryDto> {
     const normalized = code.trim();
     const safeDays = Number.isFinite(days) ? Math.min(Math.max(days, 7), 365) : 90;
     const cacheKey = `fundamental:history:${normalized}:${safeDays}`;
     const ttlSeconds = service.cacheService.resolveTtl('fundamental.history', service.constructor.HISTORY_TTL_SECONDS);
-    const cached = await service.cacheService.getWithMeta(cacheKey);
+    const cached = await service.cacheService.getWithMeta<FundamentalHistoryDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -206,11 +289,11 @@ export async function getHistory(service: any, code: string, days = 90): Promise
     return result;
   }
 
-export async function getCapital(service: any, code: string): Promise<FundamentalCapitalDto> {
+export async function getCapital(service: FundamentalServiceApiHost, code: string): Promise<FundamentalCapitalDto> {
     const normalized = code.trim();
     const cacheKey = `fundamental:capital:${normalized}`;
     const ttlSeconds = service.cacheService.resolveTtl('fundamental.capital', service.constructor.CAPITAL_TTL_SECONDS);
-    const cached = await service.cacheService.getWithMeta(cacheKey);
+    const cached = await service.cacheService.getWithMeta<FundamentalCapitalDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -264,11 +347,11 @@ export async function getCapital(service: any, code: string): Promise<Fundamenta
     return result;
   }
 
-export async function getPeers(service: any, code: string): Promise<FundamentalPeersDto> {
+export async function getPeers(service: FundamentalServiceApiHost, code: string): Promise<FundamentalPeersDto> {
     const normalized = code.trim();
     const cacheKey = `fundamental:peers:${normalized}`;
     const ttlSeconds = service.cacheService.resolveTtl('fundamental.peers', service.constructor.PEERS_TTL_SECONDS);
-    const cached = await service.cacheService.getWithMeta(cacheKey);
+    const cached = await service.cacheService.getWithMeta<FundamentalPeersDto>(cacheKey);
     if (cached.value && !service.isStalePeersCache(cached.value)) {
       return {
         ...cached.value,
@@ -383,17 +466,12 @@ export async function getPeers(service: any, code: string): Promise<FundamentalP
 
     if (result.peers.length > 0) {
       await service.cacheService.set(cacheKey, result, ttlSeconds);
-}
-
-function resultValue(value: unknown): string {
-  if (value == null || value === '') return '-';
-  return String(value);
-}
+    }
 
     return result;
   }
 
-export async function getStockInfo(service: any, code: string) {
+export async function getStockInfo(service: FundamentalServiceApiHost, code: string): Promise<StockInfoDto> {
     const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim() }, { code: code.trim() }];
     const { payload } = await service.callWithArgs('get_stock_info', attempts);
     const data = service.readRecord(service.unwrapRoot(payload));
@@ -409,12 +487,20 @@ export async function getStockInfo(service: any, code: string) {
     };
   }
 
-export async function getFinancialSnapshot(service: any, code: string) {
+export async function getFinancialSnapshot(
+  service: FundamentalServiceApiHost,
+  code: string,
+): Promise<{ code: string; snapshot: Record<string, unknown> }> {
     const normalized = code.trim();
     return { code: normalized, snapshot: await service.buildFinancialRecord(normalized) };
   }
 
-export async function getFinancialHistory(service: any, codes: string[], fields: string[], date: string) {
+export async function getFinancialHistory(
+  service: FundamentalServiceApiHost,
+  codes: string[],
+  fields: string[],
+  date: string,
+) {
     const normalizedFields = fields.map((field) => LEGACY_FIELD_ALIASES[field] ?? field);
     const trimDate = date.trim();
     const data: Record<string, Record<string, unknown>> = {};
@@ -437,7 +523,7 @@ export async function getFinancialHistory(service: any, codes: string[], fields:
     };
   }
 
-export async function getF10Info(service: any, code: string) {
+export async function getF10Info(service: FundamentalServiceApiHost, code: string) {
     const normalized = code.trim();
     const attempts: Array<Record<string, unknown>> = [{ stock_code: normalized }, { code: normalized }];
 

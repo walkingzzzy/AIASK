@@ -1,15 +1,19 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
 import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
-import { PageContainer, SectionCard, DataTable, Badge, KpiCard, KpiGrid } from '@/components/ui';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { PageContainer, DataTable, Badge, KpiCard, KpiGrid } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { extractObject } from '@/lib/data-utils';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type MacroRecord = {
@@ -32,6 +36,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export default function MacroPage() {
+    const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
     const [indicator, setIndicator] = useState('gdp');
 
     const indicators = [
@@ -75,9 +80,12 @@ export default function MacroPage() {
 
     const qualityMeta = isRecord(toolMeta?.quality) ? (toolMeta.quality as Record<string, unknown>) : null;
     const cacheInfo = isRecord(cacheMeta?.cache) ? (cacheMeta.cache as Record<string, unknown>) : null;
-    const sourceChain = Array.isArray(toolMeta?.source_chain)
-        ? toolMeta.source_chain.map((item) => String(item))
-        : [];
+    const sourceChain = useMemo(
+        () => (Array.isArray(toolMeta?.source_chain)
+            ? toolMeta.source_chain.map((item) => String(item))
+            : []),
+        [toolMeta],
+    );
     const qualityStatus = String(qualityMeta?.status ?? (macroRows.length ? 'available' : 'empty'));
     const backendUsed = String(qualityMeta?.backend_used ?? sourceChain[sourceChain.length - 1] ?? '-');
     const cacheHit = Boolean(cacheInfo?.hit);
@@ -213,21 +221,18 @@ export default function MacroPage() {
 
     return (
         <PageContainer>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                        <span>🌍</span>
-                        宏观经济数据分析 (Macro Economics)
-                    </h1>
-                    <p className="text-muted-foreground mt-1 text-sm text-text-muted">全面追踪中国核心宏观经济指标及其长期趋势</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
+            <LightOverviewHero
+                eyebrow="Macro Economics"
+                title="宏观经济数据分析"
+                summary="全面追踪中国核心宏观经济指标及其长期趋势，默认先看当前指标摘要，再决定是否下钻到图表和数据流水表。"
+                badges={(
+                    <>
                         <Badge variant="info">{qualityStatus}</Badge>
                         <Badge variant={degraded ? 'warning' : 'success'}>{degraded ? '存在降级链路' : '链路正常'}</Badge>
                         <Badge variant={cacheHit ? 'success' : 'neutral'}>{cacheHit ? '缓存命中' : '实时拉取'}</Badge>
-                    </div>
-                </div>
-
-                <div className="flex gap-2 w-full md:w-auto">
+                    </>
+                )}
+                actions={(
                     <label htmlFor="macro-indicator-select" className="grid gap-1 text-xs text-text-secondary w-full md:w-auto">
                         <span>宏观指标</span>
                         <select
@@ -241,52 +246,85 @@ export default function MacroPage() {
                             ))}
                         </select>
                     </label>
+                )}
+                status={(
+                    <div
+                        data-testid="page-primary-status"
+                        className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+                    >
+                        <div className="font-medium text-text-primary">
+                            当前指标 {indicatorLabel} ｜ 记录 {macroRows.length} 条 ｜ 后端 {backendUsed}
+                        </div>
+                        <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
+                            {sourceChain.length ? `来源链路：${sourceChain.join(' -> ')}` : '当前还没有来源链路信息'}
+                        </p>
+                    </div>
+                )}
+                metrics={[
+                    { key: 'macro-records', label: '记录条数', value: String(macroRows.length) },
+                    { key: 'macro-backend', label: '后端来源', value: backendUsed },
+                    { key: 'macro-cache', label: '缓存状态', value: cacheHit ? '命中' : '未命中' },
+                    { key: 'macro-chain', label: '链路节点', value: String(sourceChain.length) },
+                ]}
+                compact
+            />
+
+            {!compactLayout ? (
+                <ProgressiveWorkbenchSection pageKey="macro" title="宏观结果工作台" result={macroResult} summaryMode="strip" />
+            ) : null}
+
+            <CollapsibleSectionCard
+                title="常用入口与链路摘要"
+                summary="首屏只保留当前指标选择。高频切换入口、缓存状态和来源链路下沉到这一层，避免和主图表争抢首屏。"
+                badge={<Badge variant="neutral">{macroRows.length} 条记录</Badge>}
+            >
+                <div className="space-y-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h3 className="mt-0 mb-1 text-base font-semibold">常用宏观入口</h3>
+                            <p className="m-0 text-sm text-text-secondary">当某个指标暂时为空时，先切到 CPI、PMI 或 M2 确认是不是单一数据缺口，再决定是否去数据中心排查。</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            {['gdp', 'cpi', 'pmi', 'm2'].map((value) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    onClick={() => setIndicator(value)}
+                                    className={`px-3 py-1.5 rounded-full border text-sm cursor-pointer ${indicator === value ? 'border-primary text-primary' : 'border-border text-text-secondary hover:bg-surface'}`}
+                                >
+                                    {value.toUpperCase()}
+                                </button>
+                            ))}
+                            <Link href="/data" className="px-3 py-1.5 rounded-full border border-border text-sm no-underline text-inherit hover:bg-surface">去数据中心</Link>
+                        </div>
+                    </div>
+
+                    <div className="rounded-[20px] border border-border bg-white/55 p-4">
+                        <KpiGrid cols={4}>
+                            <KpiCard title="记录条数" value={String(macroRows.length)} />
+                            <KpiCard title="后端来源" value={backendUsed} />
+                            <KpiCard title="缓存状态" value={cacheHit ? '命中' : '未命中'} />
+                            <KpiCard title="链路节点" value={String(sourceChain.length)} />
+                        </KpiGrid>
+                        {sourceChain.length ? (
+                            <div className="mt-4 rounded-[20px] border border-border bg-surface-alt/60 p-3 text-xs leading-6 text-text-secondary">
+                                来源链路：{sourceChain.join(' -> ')}
+                            </div>
+                        ) : null}
+                    </div>
                 </div>
-            </div>
-
-            <SectionCard className="mb-6 p-4">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                        <h2 className="mt-0 mb-1 text-base font-semibold">常用宏观入口</h2>
-                        <p className="m-0 text-sm text-text-secondary">当某个指标暂时为空时，先切到 CPI、PMI 或 M2 确认是不是单一数据缺口，再决定是否去数据中心排查。</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                        {['gdp', 'cpi', 'pmi', 'm2'].map((value) => (
-                            <button
-                                key={value}
-                                type="button"
-                                onClick={() => setIndicator(value)}
-                                className={`px-3 py-1.5 rounded-full border text-sm cursor-pointer ${indicator === value ? 'border-primary text-primary' : 'border-border text-text-secondary hover:bg-surface'}`}
-                            >
-                                {value.toUpperCase()}
-                            </button>
-                        ))}
-                        <Link href="/data" className="px-3 py-1.5 rounded-full border border-border text-sm no-underline text-inherit hover:bg-surface">去数据中心</Link>
-                    </div>
-                </div>
-            </SectionCard>
-
-            <ResultWorkbench pageKey="macro" title="宏观结果工作台" result={macroResult} />
-
-            <SectionCard className="mb-6 p-4">
-                <KpiGrid cols={4}>
-                    <KpiCard title="记录条数" value={String(macroRows.length)} />
-                    <KpiCard title="后端来源" value={backendUsed} />
-                    <KpiCard title="缓存状态" value={cacheHit ? '命中' : '未命中'} />
-                    <KpiCard title="链路节点" value={String(sourceChain.length)} />
-                </KpiGrid>
-                {sourceChain.length ? (
-                    <div className="mt-4 rounded-[20px] border border-border bg-surface-alt/60 p-3 text-xs leading-6 text-text-secondary">
-                        来源链路：{sourceChain.join(' -> ')}
-                    </div>
-                ) : null}
-            </SectionCard>
+            </CollapsibleSectionCard>
 
             {error ? (
                 <ErrorState text="数据获取失败" hint={error || '未知错误'} />
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <SectionCard className="col-span-1 md:col-span-2">
+                <div className="space-y-4">
+                    <CollapsibleSectionCard
+                        title={`${indicatorLabel} 历史趋势`}
+                        summary="默认先看一块主图表，确认趋势和变动方向。明细流水表单独折叠，避免首屏同时出现图表和长表。"
+                        defaultOpen
+                        badge={<Badge variant="info">主结果</Badge>}
+                    >
                         <div className="flex flex-row items-center justify-between mb-4">
                             <h3 className="text-lg font-bold">
                                 {indicators.find(i => i.value === indicator)?.label} - 历史趋势
@@ -330,9 +368,13 @@ export default function MacroPage() {
                                 />
                             )}
                         </div>
-                    </SectionCard>
+                    </CollapsibleSectionCard>
 
-                    <SectionCard className="col-span-1 md:col-span-2">
+                    <CollapsibleSectionCard
+                        title="历史数据流水表"
+                        summary="长表只在需要核对结构化记录时再展开，不再默认和图表并排占满首屏。"
+                        badge={<Badge variant="neutral">{macroRows.length} 条</Badge>}
+                    >
                         <h3 className="flex items-center gap-2 text-md font-bold mb-4">
                             <span>📈</span>
                             历史数据流水表
@@ -376,7 +418,7 @@ export default function MacroPage() {
                                 />
                             )}
                         </div>
-                    </SectionCard>
+                    </CollapsibleSectionCard>
                 </div>
             )}
         </PageContainer>

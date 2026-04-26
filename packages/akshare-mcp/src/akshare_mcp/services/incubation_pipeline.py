@@ -489,7 +489,39 @@ class StrategyIncubationPipelineService:
                 'count': len(items),
                 'auto_promoted': auto_promoted,
                 'stage_counts': stage_counts,
-                'items': items,
+                'items': [
+                    {
+                        'strategy_id': item.get('strategy_id'),
+                        'auto_promoted': bool(item.get('auto_promoted')),
+                        'snapshot': {
+                            key: value
+                            for key, value in dict(item.get('snapshot') or {}).items()
+                            if key in {
+                                'snapshot_id',
+                                'strategy_id',
+                                'pipeline_stage',
+                                'pipeline_status',
+                                'promotion_ready',
+                                'review_status',
+                                'score',
+                                'created_at',
+                            }
+                        },
+                        'review': {
+                            key: value
+                            for key, value in dict(item.get('review') or {}).items()
+                            if key in {
+                                'review_id',
+                                'status',
+                                'decision',
+                                'promotion_ready',
+                                'score',
+                                'created_at',
+                            }
+                        },
+                    }
+                    for item in items
+                ],
             }
             if batch_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
                 await db.update_strategy_task_run(batch_run['id'], status='completed', result=result, completed_at=datetime.now(timezone.utc).isoformat())

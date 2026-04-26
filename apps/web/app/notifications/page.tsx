@@ -2,8 +2,10 @@
 
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
-import { PageContainer, SectionCard, Badge } from '@/components/ui';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { PageContainer, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { usePageActions } from '@/hooks/use-page-actions';
@@ -87,8 +89,8 @@ const HERO_SECONDARY_BUTTON_CLS =
 const CHIP_BUTTON_CLS =
   'action-chip cursor-pointer text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50';
 const LINK_CHIP_CLS = 'action-chip text-sm no-underline text-inherit';
-const PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
+const NOTIFICATION_INITIAL_VISIBLE = 8;
 
 function readRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -139,6 +141,8 @@ export default function NotificationsPage() {
   const latestNotification = rawItems[0]?.createdAt
     ? new Date(rawItems[0].createdAt).toLocaleString('zh-CN')
     : '暂无记录';
+  const visibleItems = items.slice(0, NOTIFICATION_INITIAL_VISIBLE);
+  const hiddenItems = items.slice(NOTIFICATION_INITIAL_VISIBLE);
   const heroNotes = [
     '先用分类筛掉噪音，再做批量已读或删除，通知中心应该先帮助你降噪，而不是继续堆积信息。',
     '交易类和告警类消息更适合优先处理，系统类与资讯类则更适合作为回看资料。',
@@ -196,47 +200,44 @@ export default function NotificationsPage() {
     await handleDelete(targetIds);
     setSelectedIds((prev) => prev.filter((id) => !targetIds.includes(id)));
   };
-  const notificationsActions = useMemo(
-    () => [
-      {
-        id: 'notifications.mark-all-read',
-        label: '全部标记已读',
-        description: '把所有未读通知统一收口到已读队列',
-        keywords: ['通知', '已读'],
-        scope: 'page' as const,
-        pageKey: 'notifications',
-        run: async () => {
-          await handleMarkAllRead();
-          return { message: '已处理全部未读通知' };
-        },
+  const notificationsActions = [
+    {
+      id: 'notifications.mark-all-read',
+      label: '全部标记已读',
+      description: '把所有未读通知统一收口到已读队列',
+      keywords: ['通知', '已读'],
+      scope: 'page' as const,
+      pageKey: 'notifications',
+      run: async () => {
+        await handleMarkAllRead();
+        return { message: '已处理全部未读通知' };
       },
-      {
-        id: 'notifications.refresh',
-        label: '刷新通知',
-        description: '重新拉取最新通知流',
-        keywords: ['通知', '刷新'],
-        scope: 'page' as const,
-        pageKey: 'notifications',
-        run: async () => {
-          await listQ.refetch();
-          return { message: '已刷新通知列表' };
-        },
+    },
+    {
+      id: 'notifications.refresh',
+      label: '刷新通知',
+      description: '重新拉取最新通知流',
+      keywords: ['通知', '刷新'],
+      scope: 'page' as const,
+      pageKey: 'notifications',
+      run: async () => {
+        await listQ.refetch();
+        return { message: '已刷新通知列表' };
       },
-      {
-        id: 'notifications.filter-alerts',
-        label: '只看告警',
-        description: '优先聚焦告警类消息',
-        keywords: ['告警', '筛选'],
-        scope: 'page' as const,
-        pageKey: 'notifications',
-        run: () => {
-          setActiveType('alert');
-          return { message: '已切到告警通知' };
-        },
+    },
+    {
+      id: 'notifications.filter-alerts',
+      label: '只看告警',
+      description: '优先聚焦告警类消息',
+      keywords: ['告警', '筛选'],
+      scope: 'page' as const,
+      pageKey: 'notifications',
+      run: () => {
+        setActiveType('alert');
+        return { message: '已切到告警通知' };
       },
-    ],
-    [listQ],
-  );
+    },
+  ];
   usePageActions(notificationsActions);
   const notificationsSummary = `当前筛选 ${currentTypeLabel}，总通知 ${rawItems.length} 条，未读 ${unreadCount} 条，可见未读 ${visibleUnreadCount} 条，已选 ${selectedCount} 条。`;
   const notificationsResult = buildLocalResultContract({
@@ -302,119 +303,174 @@ export default function NotificationsPage() {
     },
   });
 
-  return (
-    <PageContainer className="app-theme-market space-y-4">
-      <section className="page-hero p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Notification Workspace</Badge>
-              <Badge variant={activeType === 'all' ? 'neutral' : 'warning'}>{currentTypeLabel}</Badge>
-              <Badge variant={unreadCount > 0 ? 'warning' : 'success'}>
-                {unreadCount > 0 ? `${unreadCount} 条未读` : '全部已处理'}
-              </Badge>
+  const renderNotificationCard = (item: NotificationItem) => {
+    const selected = selectedIds.includes(item.id);
+    const sourceHref = SOURCE_LINKS[item.type];
+    return (
+      <article
+        key={item.id}
+        className={`rounded-[28px] border p-4 shadow-[0_24px_50px_-34px_rgba(15,23,42,0.35)] backdrop-blur-2xl transition hover:-translate-y-0.5 hover:border-primary/28 ${
+          selected
+            ? 'border-primary/28 bg-[linear-gradient(160deg,rgba(47,140,255,0.16),rgba(255,255,255,0.26))] ring-1 ring-primary/30'
+            : !item.read
+              ? 'border-primary/20 bg-[linear-gradient(160deg,rgba(255,255,255,0.44),rgba(238,247,255,0.34))]'
+              : 'border-white/50 bg-[linear-gradient(160deg,rgba(255,255,255,0.38),rgba(255,255,255,0.16))]'
+        }`}
+      >
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 gap-3">
+            <label className="mt-1 flex items-center">
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={() => toggleSelect(item.id)}
+                aria-label={`选择通知 ${item.title}`}
+              />
+            </label>
+            <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[18px] border border-white/55 bg-white/42 text-sm font-semibold text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+              {TYPE_ICONS[item.type] || '总'}
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              通知中心工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这次重构把通知页从后台消息列表改造成连续工作流。你可以先用分类筛选做降噪，再批量处理，再跳回告警、策略、交易或研究页面继续动作，而不是把消息停留在“已看到”这一步。
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleMarkAllRead}
-                disabled={!canMarkAllRead || markAllReadApi.isPending}
-                data-testid="page-primary-action"
-                data-action-testid="notifications-mark-all-read-action"
-                className={HERO_PRIMARY_BUTTON_CLS}
-              >
-                {markAllReadApi.isPending ? '处理中...' : '全部标记已读'}
-              </button>
-              <button
-                type="button"
-                onClick={() => listQ.refetch()}
-                disabled={listQ.isFetching}
-                className={HERO_SECONDARY_BUTTON_CLS}
-              >
-                {listQ.isFetching ? '刷新中...' : '刷新通知'}
-              </button>
-              <Link href="/alerts" className={LINK_CHIP_CLS}>
-                去告警中心
-              </Link>
-            </div>
-            <div
-              data-testid="page-primary-status"
-              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
-            >
-              <div className="font-medium text-text-primary">
-                当前筛选 {currentTypeLabel}，未读 {visibleUnreadCount} 条，已选 {selectedCount} 条
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="info">{TYPE_LABELS[item.type]}</Badge>
+                <Badge variant={item.level === 'error' ? 'danger' : item.level === 'warn' ? 'warning' : 'neutral'}>
+                  {item.level}
+                </Badge>
+                {!item.read ? <Badge variant="warning">未读</Badge> : <Badge variant="success">已处理</Badge>}
               </div>
-              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
-                {canMarkAllRead
-                  ? '主动作会把所有未读消息统一收口到已读队列。'
-                  : '当前没有未读消息，主动作保持禁用但位置固定。'}
-              </p>
-              <p className="mt-2 mb-0 text-xs text-text-secondary">最近消息时间：{latestNotification}</p>
-            </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">通知总数</div>
-                <div className="mt-3 text-xl font-semibold text-text-primary">{rawItems.length}</div>
-                <div className="mt-1 text-xs text-text-secondary">所有通知统一回收到一个工作台</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前筛选</div>
-                <div className="mt-3 text-xl font-semibold text-text-primary">{currentTypeLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">{items.length} 条可见通知</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">待处理</div>
-                <div className="mt-3 text-xl font-semibold text-text-primary">{visibleUnreadCount}</div>
-                <div className="mt-1 text-xs text-text-secondary">当前筛选内尚未处理的消息数量</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近更新</div>
-                <div className="mt-3 text-base font-semibold text-text-primary">{latestNotification}</div>
-                <div className="mt-1 text-xs text-text-secondary">帮助判断消息流是否仍在持续进入</div>
+              <h3 className={`mb-0 mt-3 text-base font-semibold ${item.read ? 'text-text-primary/80' : 'text-text-primary'}`}>
+                {item.title}
+              </h3>
+              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">{item.body}</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
+                <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1">
+                  {new Date(item.createdAt).toLocaleString('zh-CN')}
+                </span>
+                <span className="rounded-full border border-white/55 bg-white/28 px-3 py-1">
+                  {item.read ? '已进入回看队列' : '等待你决定下一步动作'}
+                </span>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">处理建议</div>
-              <div className="mt-4 space-y-3">
-                {heroNotes.map((note) => (
-                  <div key={note} className={NOTE_CARD_CLS}>
-                    {note}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className={PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">上游入口</div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href="/paper-trading" className={LINK_CHIP_CLS}>
-                  模拟交易
-                </Link>
-                <Link href="/research" className={LINK_CHIP_CLS}>
-                  研究页
-                </Link>
-                <Link href="/settings" className={LINK_CHIP_CLS}>
-                  系统设置
-                </Link>
-                <Link href="/notifications" className={LINK_CHIP_CLS}>
-                  当前消息流
-                </Link>
-              </div>
-            </div>
+          <div className="flex flex-wrap gap-2 lg:w-[240px] lg:justify-end">
+            <Link href={sourceHref} className={LINK_CHIP_CLS}>
+              查看来源页
+            </Link>
+            {!item.read ? (
+              <button
+                type="button"
+                onClick={() => handleMarkRead([item.id])}
+                disabled={markReadApi.isPending}
+                className={CHIP_BUTTON_CLS}
+              >
+                标记已读
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => handleDelete([item.id])}
+              disabled={deleteApi.isPending}
+              className={CHIP_BUTTON_CLS}
+            >
+              删除
+            </button>
           </div>
         </div>
-      </section>
+      </article>
+    );
+  };
 
-      <ResultWorkbench pageKey="notifications" title="通知结果工作台" result={notificationsResult} />
+  return (
+    <PageContainer className="app-theme-market space-y-4">
+      <LightOverviewHero
+        eyebrow="Notification Workspace"
+        title="通知中心工作台"
+        summary="先筛选降噪，再做批量处理，最后跳回告警、策略、交易或研究页面继续动作。默认只展示摘要、筛选和部分消息流。"
+        badges={(
+          <>
+            <Badge variant="info">{currentTypeLabel}</Badge>
+            <Badge variant={unreadCount > 0 ? 'warning' : 'success'}>
+              {unreadCount > 0 ? `${unreadCount} 条未读` : '全部已处理'}
+            </Badge>
+          </>
+        )}
+        actions={(
+          <>
+            <button
+              type="button"
+              onClick={handleMarkAllRead}
+              disabled={!canMarkAllRead || markAllReadApi.isPending}
+              data-testid="page-primary-action"
+              data-action-testid="notifications-mark-all-read-action"
+              className={HERO_PRIMARY_BUTTON_CLS}
+            >
+              {markAllReadApi.isPending ? '处理中...' : '全部标记已读'}
+            </button>
+            <button
+              type="button"
+              onClick={() => listQ.refetch()}
+              disabled={listQ.isFetching}
+              className={HERO_SECONDARY_BUTTON_CLS}
+            >
+              {listQ.isFetching ? '刷新中...' : '刷新通知'}
+            </button>
+            <Link href="/alerts" className={LINK_CHIP_CLS}>
+              去告警中心
+            </Link>
+          </>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前筛选 {currentTypeLabel} ｜ 未读 {visibleUnreadCount} 条 ｜ 已选 {selectedCount} 条
+            </div>
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              {canMarkAllRead
+                ? '主动作会把所有未读消息统一收口到已读队列。'
+                : '当前没有未读消息，主动作保持禁用但位置固定。'}
+            </p>
+          </div>
+        )}
+        metrics={[
+          { key: 'notifications-total', label: '通知总数', value: String(rawItems.length) },
+          { key: 'notifications-filter', label: '当前筛选', value: currentTypeLabel, hint: `${items.length} 条可见通知` },
+          { key: 'notifications-unread', label: '待处理', value: String(visibleUnreadCount) },
+          { key: 'notifications-latest', label: '最近更新', value: latestNotification },
+        ]}
+        compact
+        detailsTitle="展开处理建议与上游入口"
+        detailsContent={(
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {heroNotes.map((note) => (
+                <div key={note} className={NOTE_CARD_CLS}>
+                  {note}
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+                模拟交易
+              </Link>
+              <Link href="/research" className={LINK_CHIP_CLS}>
+                研究页
+              </Link>
+              <Link href="/settings" className={LINK_CHIP_CLS}>
+                系统设置
+              </Link>
+              <Link href="/notifications" className={LINK_CHIP_CLS}>
+                当前消息流
+              </Link>
+            </div>
+          </div>
+        )}
+      />
+
+      <ProgressiveWorkbenchSection pageKey="notifications" title="通知结果工作台" result={notificationsResult} summaryMode="strip" />
 
       {actionError ? (
         <div className="rounded-[22px] border border-danger/20 bg-[linear-gradient(180deg,rgba(217,45,32,0.12),rgba(255,255,255,0.52))] p-4 text-sm text-danger shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-xl">
@@ -422,7 +478,12 @@ export default function NotificationsPage() {
         </div>
       ) : null}
 
-      <div className={PANEL_CLS}>
+      <CollapsibleSectionCard
+        title="筛选区"
+        summary="通知筛选现在被抬升为主控制区。先收窄类别，再决定是否批量已读、删除。"
+        defaultOpen
+        badge={<Badge variant="neutral">{selectedCount > 0 ? `已选 ${selectedCount} 条` : '未选中消息'}</Badge>}
+      >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="eyebrow">Filter Deck</div>
@@ -459,9 +520,12 @@ export default function NotificationsPage() {
             );
           })}
         </div>
-      </div>
+      </CollapsibleSectionCard>
 
-      <SectionCard className="mt-0 p-4 sm:p-5">
+      <CollapsibleSectionCard
+        title="通知模板与批量处理"
+        summary="模板区负责决定消息从哪里来，批量按钮负责清理当前视野。默认按需展开。"
+      >
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -519,9 +583,14 @@ export default function NotificationsPage() {
             ))}
           </div>
         </div>
-      </SectionCard>
+      </CollapsibleSectionCard>
 
-      <section className="panel-soft rounded-[32px] p-4 sm:p-5">
+      <CollapsibleSectionCard
+        title="通知流与逐条处理区"
+        summary={`默认先展示前 ${visibleItems.length} 条消息，其余消息折叠到附加区。`}
+        defaultOpen
+        badge={<Badge variant={visibleUnreadCount > 0 ? 'warning' : 'success'}>{visibleUnreadCount > 0 ? `${visibleUnreadCount} 条待处理` : '当前筛选已清空'}</Badge>}
+      >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="eyebrow">Message Stream</div>
@@ -563,90 +632,20 @@ export default function NotificationsPage() {
           </div>
         ) : (
           <div className="mt-5 space-y-3">
-            {items.map((item) => {
-              const selected = selectedIds.includes(item.id);
-              const sourceHref = SOURCE_LINKS[item.type];
-              return (
-                <article
-                  key={item.id}
-                  className={`rounded-[28px] border p-4 shadow-[0_24px_50px_-34px_rgba(15,23,42,0.35)] backdrop-blur-2xl transition hover:-translate-y-0.5 hover:border-primary/28 ${
-                    selected
-                      ? 'border-primary/28 bg-[linear-gradient(160deg,rgba(47,140,255,0.16),rgba(255,255,255,0.26))] ring-1 ring-primary/30'
-                      : !item.read
-                        ? 'border-primary/20 bg-[linear-gradient(160deg,rgba(255,255,255,0.44),rgba(238,247,255,0.34))]'
-                        : 'border-white/50 bg-[linear-gradient(160deg,rgba(255,255,255,0.38),rgba(255,255,255,0.16))]'
-                  }`}
-                >
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex min-w-0 gap-3">
-                      <label className="mt-1 flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={() => toggleSelect(item.id)}
-                          aria-label={`选择通知 ${item.title}`}
-                        />
-                      </label>
-                      <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[18px] border border-white/55 bg-white/42 text-sm font-semibold text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
-                        {TYPE_ICONS[item.type] || '总'}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="info">{TYPE_LABELS[item.type]}</Badge>
-                          <Badge
-                            variant={item.level === 'error' ? 'danger' : item.level === 'warn' ? 'warning' : 'neutral'}
-                          >
-                            {item.level}
-                          </Badge>
-                          {!item.read ? <Badge variant="warning">未读</Badge> : <Badge variant="success">已处理</Badge>}
-                        </div>
-                        <h3
-                          className={`mb-0 mt-3 text-base font-semibold ${item.read ? 'text-text-primary/80' : 'text-text-primary'}`}
-                        >
-                          {item.title}
-                        </h3>
-                        <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">{item.body}</p>
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
-                          <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1">
-                            {new Date(item.createdAt).toLocaleString('zh-CN')}
-                          </span>
-                          <span className="rounded-full border border-white/55 bg-white/28 px-3 py-1">
-                            {item.read ? '已进入回看队列' : '等待你决定下一步动作'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2 lg:w-[240px] lg:justify-end">
-                      <Link href={sourceHref} className={LINK_CHIP_CLS}>
-                        查看来源页
-                      </Link>
-                      {!item.read ? (
-                        <button
-                          type="button"
-                          onClick={() => handleMarkRead([item.id])}
-                          disabled={markReadApi.isPending}
-                          className={CHIP_BUTTON_CLS}
-                        >
-                          标记已读
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => handleDelete([item.id])}
-                        disabled={deleteApi.isPending}
-                        className={CHIP_BUTTON_CLS}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
+            {visibleItems.map((item) => renderNotificationCard(item))}
+            {hiddenItems.length > 0 ? (
+              <details className="rounded-[24px] border border-white/45 bg-white/20 p-4">
+                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">
+                  展开剩余 {hiddenItems.length} 条通知
+                </summary>
+                <div className="mt-4 space-y-3">
+                  {hiddenItems.map((item) => renderNotificationCard(item))}
+                </div>
+              </details>
+            ) : null}
           </div>
         )}
-      </section>
+      </CollapsibleSectionCard>
     </PageContainer>
   );
 }

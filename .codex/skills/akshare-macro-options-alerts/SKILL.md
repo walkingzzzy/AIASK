@@ -1,6 +1,15 @@
 ---
 name: akshare-macro-options-alerts
 description: 宏观指标、期权链、预警与情绪的组合编排流程。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["market_data_lineage", "risk_disclosure"]
+role_tags: ["research", "trader", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义宏观、期权、情绪与预警的组合查询路径；当前代码层存在对应原子工具，但 BFF/Web 仍以 `/macro`、`/data`、`/options`、`/alerts`、`/sentiment` 分域入口为主，尚无统一的“宏观-期权-预警联动”单页工作台。

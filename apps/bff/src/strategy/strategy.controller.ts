@@ -10,6 +10,8 @@ import {
   CreateDto,
   SubscribeDto,
   UpdateStrategyDto,
+  PersonalStrategySuggestionDto,
+  AiOptimizePersonalStrategyDto,
   MyStrategiesQueryDto,
   ReviewDto,
   UpdateMetricsDto,
@@ -17,6 +19,7 @@ import {
   EventsQueryDto,
   DailySnapshotsQueryDto,
   TaskRunsQueryDto,
+  CoreChainAcceptanceQueryDto,
   Req_,
   tid,
 } from './dto';
@@ -40,20 +43,26 @@ export class StrategyMarketController {
   @Get('list')
   @Public()
   async list(@Query() q: ListDto, @Req() req: Req_) {
-    const data = await this.svc.list({ status: q.status, strategy_type: q.strategy_type, limit: q.limit, offset: q.offset });
+    const data = await this.svc.list(
+      { status: q.status, strategy_type: q.strategy_type, limit: q.limit, offset: q.offset },
+      { userId: req.user?.id, role: this.currentUserRole(req) },
+    );
     return { success: true, data, traceId: tid(req) };
   }
 
   @Get('ranking')
   @Public()
   async ranking(@Query() q: RankDto, @Req() req: Req_) {
-    const data = await this.svc.rank({
-      status: q.status,
-      strategy_type: q.strategy_type,
-      limit: q.limit,
-      offset: q.offset,
-      rank_keys: q.rank_keys,
-    });
+    const data = await this.svc.rank(
+      {
+        status: q.status,
+        strategy_type: q.strategy_type,
+        limit: q.limit,
+        offset: q.offset,
+        rank_keys: q.rank_keys,
+      },
+      { userId: req.user?.id, role: this.currentUserRole(req) },
+    );
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -76,7 +85,7 @@ export class StrategyMarketController {
 
   @Get('my-favorites')
   async myFavorites(@Req() req: Req_) {
-    const data = await this.svc.myFavorites(this.currentUserId(req));
+    const data = await this.svc.myFavorites(this.currentUserId(req), this.currentUserRole(req));
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -97,6 +106,13 @@ export class StrategyMarketController {
       userId: req.user?.id,
       role: this.currentUserRole(req),
     });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get('diagnostics/gaps')
+  @Public()
+  async capabilityDiagnostics(@Req() req: Req_) {
+    const data = await this.svc.capabilityDiagnostics();
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -127,6 +143,23 @@ export class StrategyMarketController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('diagnostics/core-chain')
+  @Public()
+  async coreChainAcceptance(@Query() q: CoreChainAcceptanceQueryDto, @Req() req: Req_) {
+    const data = await this.svc.coreChainAcceptance(
+      {
+        actorId: req.user?.id?.trim() || null,
+        role: this.currentUserRole(req),
+      },
+      {
+        strategy_id: q.strategy_id,
+        personal_strategy_id: q.personal_strategy_id,
+        include_raw: q.include_raw,
+      },
+    );
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Get(':id/events')
   @Public()
   async events(@Param('id') id: string, @Query() q: EventsQueryDto, @Req() req: Req_) {
@@ -138,6 +171,25 @@ export class StrategyMarketController {
       start_time: q.start_time,
       end_time: q.end_time,
       limit: q.limit,
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/paper-context')
+  async paperContext(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.paperContext(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/runtime-actions')
+  @Public()
+  async runtimeActions(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.runtimeActions(id, {
+      userId: req.user?.id,
+      role: this.currentUserRole(req),
     });
     return { success: true, data, traceId: tid(req) };
   }
@@ -224,6 +276,28 @@ export class StrategyMarketController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get(':id/personal-context')
+  async personalStrategyContext(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.personalStrategyContext(id, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Post(':id/ai-modification-suggestions')
+  async personalStrategySuggestions(
+    @Param('id') id: string,
+    @Body() body: PersonalStrategySuggestionDto,
+    @Req() req: Req_,
+  ) {
+    const data = await this.svc.personalStrategySuggestions(id, body, {
+      actorId: this.currentUserId(req),
+      role: this.currentUserRole(req),
+    });
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Delete(':id')
   async deleteStrategy(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.deletePersonalStrategy(id, {
@@ -252,11 +326,11 @@ export class StrategyMarketController {
   }
 
   @Post(':id/ai-optimize')
-  async aiOptimize(@Param('id') id: string, @Req() req: Req_) {
+  async aiOptimize(@Param('id') id: string, @Body() body: AiOptimizePersonalStrategyDto, @Req() req: Req_) {
     const data = await this.svc.aiOptimizePersonalStrategy(id, {
       actorId: this.currentUserId(req),
       role: this.currentUserRole(req),
-    });
+    }, body);
     return { success: true, data, traceId: tid(req) };
   }
 

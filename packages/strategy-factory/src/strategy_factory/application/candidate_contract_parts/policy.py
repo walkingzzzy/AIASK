@@ -420,6 +420,21 @@ def _refresh_constraint_check_from_targets(
             target_alignment_contract,
         )
         alignment_ok = alignment_violation is None
+    stale_alignment_violations = {
+        "strict_intersection_empty",
+        "empty_target_symbols_after_alignment",
+        "coverage_ratio_below_contract",
+        "intersection_ratio_below_contract",
+        "target_overlap_count_below_contract",
+    }
+    existing_violation = existing.get("constraint_violation")
+    existing_violation_code = _string(existing_violation).lower()
+    if alignment_violation:
+        constraint_violation = alignment_violation
+    elif existing_violation_code in stale_alignment_violations:
+        constraint_violation = None
+    else:
+        constraint_violation = existing_violation
     return {
         **existing,
         "target_symbols_before_normalize": list(existing.get("target_symbols_before_normalize") or target_symbols),
@@ -432,7 +447,7 @@ def _refresh_constraint_check_from_targets(
         "expansion_applied": bool(existing.get("expansion_applied")),
         "expansion_reason": existing.get("expansion_reason"),
         "expansion_source": existing.get("expansion_source"),
-        "constraint_violation": existing.get("constraint_violation"),
+        "constraint_violation": constraint_violation,
         "expansion_blocked_reason": existing.get("expansion_blocked_reason"),
         "coverage_ratio": coverage_ratio,
         "intersection_ratio": intersection_ratio,

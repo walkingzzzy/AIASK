@@ -2,16 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import { Badge, DataTable, PageContainer, SectionCard } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useMobile } from '@/hooks/use-mobile';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type { SkillDescriptor, SkillExecutionMode, SkillStatus, WorkspaceSharedContext } from '@aiask/shared-types';
@@ -188,6 +190,7 @@ function shortSkillName(skill: SkillDescriptor) {
 
 export default function SkillsPage() {
   const router = useRouter();
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const searchParams = useStableSearchParams();
   const requestedSkillId = searchParams.get('skill') ?? '';
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
@@ -481,16 +484,36 @@ export default function SkillsPage() {
     <PageContainer>
       <div className="mb-3">
         <h1 className="m-0 text-lg font-semibold">技能中心</h1>
+        {!compactLayout ? (
         <p className="mb-0 mt-1 text-xs text-text-secondary">
           这里直接消费 MCP 技能注册表，负责浏览能力边界、校验可执行性，并把技能触发接进工作区与 Copilot。
         </p>
+        ) : null}
       </div>
 
-      <ResultWorkbench pageKey="skills" title="技能结果工作台" result={skillsResult} />
+      {!compactLayout ? (
+      <details className="panel-soft mt-4 rounded-[24px] p-4">
+        <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开视图工具</summary>
+        <div className="mt-4">
+          <WorkspaceToolbar
+            pageKey="skills"
+            currentView={currentView}
+            onApplyView={applySkillsView}
+            supportsPagePanels
+            mobileSummaryMode="hidden"
+          />
+        </div>
+      </details>
+      ) : null}
 
-      <WorkspaceToolbar pageKey="skills" currentView={currentView} onApplyView={applySkillsView} supportsPagePanels />
-
-      <SectionCard className="p-4">
+      {!compactLayout ? (
+      <CollapsibleSectionCard
+        title="技能总览与筛选策略"
+        summary="技能目录、可执行状态和推荐使用方式统一下沉到这一层。默认直接进入技能工作区，只有需要重新理解能力边界时再展开。"
+        className="mt-4"
+        badge={<Badge variant="neutral">{filteredSkills.length} / {skills.length || 0}</Badge>}
+      >
+      <SectionCard className="border-0 bg-transparent p-0 shadow-none">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -570,6 +593,8 @@ export default function SkillsPage() {
           </div>
         </div>
       </SectionCard>
+      </CollapsibleSectionCard>
+      ) : null}
 
       <WorkspaceSplitLayout
         pageKey="skills"

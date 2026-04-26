@@ -9,7 +9,7 @@ from ..services.document_index import build_document_index
 from ..services.event_extraction import extract_events
 from ..services.sentiment import sentiment_analyzer
 from ..storage import get_db
-from ..utils import ok, fail, resolve_existing_security_code_async
+from ..utils import ok, fail, resolve_existing_security_code_async, resolve_security_code
 
 
 def _to_float(value: Any) -> float | None:

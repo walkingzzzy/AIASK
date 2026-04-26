@@ -1,8 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import {
   PageContainer,
   TabBar,
@@ -61,7 +61,6 @@ const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
 const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
@@ -250,47 +249,44 @@ export default function ValuationPage() {
         : tab === 'relative'
         ? '需要快速比同行估值水平时优先使用'
           : '高波动成长公司或行业假设分歧较大时更有价值';
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'valuation.run-recommended',
-        label: '运行推荐估值',
-        description: '按当前模型加载推荐参数并发起估值',
-        keywords: ['估值', '推荐'],
-        scope: 'page' as const,
-        pageKey: 'valuation',
-        run: () => {
-          runRecommendedValuation();
-          return { message: '已触发推荐估值' };
-        },
+  const pageActions = [
+    {
+      id: 'valuation.run-recommended',
+      label: '运行推荐估值',
+      description: '按当前模型加载推荐参数并发起估值',
+      keywords: ['估值', '推荐'],
+      scope: 'page' as const,
+      pageKey: 'valuation',
+      run: () => {
+        runRecommendedValuation();
+        return { message: '已触发推荐估值' };
       },
-      {
-        id: 'valuation.submit',
-        label: tab === 'relative' ? '查询相对估值' : '提交当前估值',
-        description: '按当前参数发起估值请求',
-        keywords: ['估值', '提交'],
-        scope: 'page' as const,
-        pageKey: 'valuation',
-        run: () => {
-          submit();
-          return { message: '已提交当前估值请求' };
-        },
+    },
+    {
+      id: 'valuation.submit',
+      label: tab === 'relative' ? '查询相对估值' : '提交当前估值',
+      description: '按当前参数发起估值请求',
+      keywords: ['估值', '提交'],
+      scope: 'page' as const,
+      pageKey: 'valuation',
+      run: () => {
+        submit();
+        return { message: '已提交当前估值请求' };
       },
-      {
-        id: 'valuation.open-stock',
-        label: '打开个股详情',
-        description: '跳到个股详情页继续核对价格与盘口',
-        keywords: ['个股详情', '跳转'],
-        scope: 'page' as const,
-        pageKey: 'valuation',
-        run: () => {
-          window.location.href = `/stock?code=${encodeURIComponent(focusCode || '600519')}`;
-          return { message: '已跳到个股详情' };
-        },
+    },
+    {
+      id: 'valuation.open-stock',
+      label: '打开个股详情',
+      description: '跳到个股详情页继续核对价格与盘口',
+      keywords: ['个股详情', '跳转'],
+      scope: 'page' as const,
+      pageKey: 'valuation',
+      run: () => {
+        window.location.href = `/stock?code=${encodeURIComponent(focusCode || '600519')}`;
+        return { message: '已跳到个股详情' };
       },
-    ],
-    [focusCode, tab],
-  );
+    },
+  ];
   usePageActions(pageActions);
   const valuationSummary = `当前模型 ${activeTabLabel}，标的 ${focusCode || '未确认'}，假设 ${currentAssumptionSummary}，视图 ${viewTab === 'params' ? '参数' : '结果'}。`;
   const valuationResult = buildLocalResultContract({
@@ -353,76 +349,77 @@ export default function ValuationPage() {
 
   return (
     <PageContainer>
-      <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Valuation Workbench</Badge>
-              <Badge variant={focusCode ? 'success' : 'warning'}>
-                {focusCode ? `当前标的 ${focusCode}` : '等待确认标的'}
-              </Badge>
-              <Badge variant="neutral">{activeTabLabel}</Badge>
+      <LightOverviewHero
+        eyebrow="Valuation Workbench"
+        title="估值分析工作台"
+        summary={compactLayout ? '先选模型，再在参数和结果之间切换。' : '先选模型，再决定是继续调参数还是直接看结果。默认不再把说明、预设、配置和结果同时摊开。'}
+        badges={(
+          <>
+            <Badge variant="info">Valuation Workbench</Badge>
+            <Badge variant={focusCode ? 'success' : 'warning'}>
+              {focusCode ? `当前标的 ${focusCode}` : '等待确认标的'}
+            </Badge>
+            <Badge variant="neutral">{activeTabLabel}</Badge>
+          </>
+        )}
+        actions={(
+          <>
+            <button type="button" onClick={runRecommendedValuation} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
+              运行推荐估值
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('relative');
+                reset();
+                setFormError(null);
+                setViewTab('params');
+              }}
+              className={HERO_SECONDARY_BUTTON_CLS}
+            >
+              快速看同行估值
+            </button>
+          </>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前模型：{activeTabLabel} ｜ 标的：{focusCode || '-'} ｜ 当前视图：{viewTab === 'params' ? '参数' : '结果'}
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              估值分析工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              {compactLayout ? '先选模型，再在参数和结果之间切换。' : '先选模型，再决定是继续调参数还是直接看结果。默认不再把说明、预设、配置和结果同时摊开。'}
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={runRecommendedValuation} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
-                运行推荐估值
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTab('relative');
-                  reset();
-                  setFormError(null);
-                  setViewTab('params');
-                }}
-                className={HERO_SECONDARY_BUTTON_CLS}
-              >
-                快速看同行估值
-              </button>
-            </div>
-            {compactLayout ? (
-              <div className="mt-4 text-sm text-text-secondary">
-                当前模型 {activeTabLabel} ｜ 标的 {focusCode || '-'} ｜ {viewTab === 'params' ? '参数视图' : '结果视图'}
-              </div>
-            ) : (
-              <div
-                data-testid="page-primary-status"
-                className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
-              >
-                <div className="font-medium text-text-primary">
-                  当前模型：{activeTabLabel} ｜ 标的：{focusCode || '-'} ｜ 当前视图：{viewTab === 'params' ? '参数' : '结果'}
-                </div>
-                <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">假设摘要：{currentAssumptionSummary}</p>
-              </div>
-            )}
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">假设摘要：{currentAssumptionSummary}</p>
           </div>
-
-          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
-            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-              模型假设与适用场景
-            </summary>
-            <div className="mt-4 space-y-3">
+        )}
+        metrics={[
+          { key: 'valuation-model', label: '当前模型', value: activeTabLabel },
+          { key: 'valuation-stock', label: '当前标的', value: focusCode || '-' },
+          { key: 'valuation-view', label: '当前视图', value: viewTab === 'params' ? '参数' : '结果' },
+          { key: 'valuation-assumption', label: '假设摘要', value: currentAssumptionSummary },
+        ]}
+        compact={compactLayout}
+        detailsTitle="展开模型假设与适用场景"
+        detailsContent={(
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className={NOTE_CARD_CLS}>当前模型：{activeTabLabel}</div>
               <div className={NOTE_CARD_CLS}>适用场景：{recommendedAudience}</div>
               <div className={NOTE_CARD_CLS}>{tabDescription}</div>
-              {resolvedCode ? (
-                <div className="flex items-center gap-2">
-                  <StockLink code={resolvedCode} name={resolvedCode} />
-                  <WatchlistButton code={resolvedCode} name="" />
-                </div>
-              ) : null}
             </div>
-          </details>
-        </div>
-      </section>
+            {resolvedCode ? (
+              <div className="flex items-center gap-2">
+                <StockLink code={resolvedCode} name={resolvedCode} />
+                <WatchlistButton code={resolvedCode} name="" />
+              </div>
+            ) : null}
+          </div>
+        )}
+      />
 
-      <ResultWorkbench pageKey="valuation" title="估值结果工作台" result={valuationResult} />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection pageKey="valuation" title="估值结果工作台" result={valuationResult} summaryMode="strip" />
+      ) : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

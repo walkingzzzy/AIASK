@@ -1,6 +1,15 @@
 ---
 name: akshare-fund-manager-pro
 description: 顶级基金经理专业流程：投研、组合、执行、风控与日报/周报/月报模板输出的一体化闭环。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: ["daily_report", "weekly_report", "monthly_report"]
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["research_disclosure", "portfolio_suitability"]
+role_tags: ["buy_side_pm", "research", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义推荐编排流程与门禁顺序，不代表其中引用的所有工具、模板与外部依赖在任意运行环境下都已自动可用。

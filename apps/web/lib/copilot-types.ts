@@ -4,6 +4,14 @@ export type CopilotActionScope = 'global' | 'page';
 
 export type CopilotActionPayload = Record<string, unknown>;
 
+export type CopilotStrategyActionKind =
+  | 'view'
+  | 'optimize'
+  | 'generate_update_suggestion'
+  | 'persist_update';
+
+export type CopilotActionEffect = 'readonly' | 'advisory' | 'stateful';
+
 export type CopilotActionMeta = {
   id: string;
   label: string;
@@ -11,6 +19,8 @@ export type CopilotActionMeta = {
   keywords?: string[];
   scope: CopilotActionScope;
   pageKey?: string;
+  strategyActionKind?: CopilotStrategyActionKind;
+  mutationEffect?: CopilotActionEffect;
 };
 
 export type CopilotPageContext = {

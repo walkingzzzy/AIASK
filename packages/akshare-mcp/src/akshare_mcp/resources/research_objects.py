@@ -16,6 +16,7 @@ scattered API return values into first-class research objects.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..services.artifact_registry import get_artifact_async
@@ -44,7 +45,46 @@ def _extract_lineage(payload: dict[str, Any] | None) -> dict[str, Any]:
     return lineage
 
 
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
 _monitor = GovernanceMonitor()
+
+
+async def _latest_governance_snapshot_safe(
+    *,
+    scope_type: str,
+    scope_id: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        return await get_latest_governance_report_snapshot(scope_type=scope_type, scope_id=scope_id), None
+    except Exception as error:
+        return None, str(error)
+
+
+async def _persist_governance_snapshot_safe(
+    report: Any,
+    *,
+    scope_type: str,
+    scope_id: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        return await persist_governance_report_snapshot(
+            report,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        ), None
+    except Exception as error:
+        return None, str(error)
 
 
 # ── 1. Factor Profile ────────────────────────────────────────────────────────
@@ -181,7 +221,7 @@ async def build_strategy_governance_payload(strategy_id: str) -> dict[str, Any]:
     resolved_id = str(strategy_id or "").strip()
     persisted = await get_latest_governance_report_snapshot(scope_type="strategy", scope_id=resolved_id)
     if persisted:
-        report_payload = dict(persisted.get("payload_jsonb") or {})
+        report_payload = _coerce_mapping(persisted.get("payload_jsonb"))
     else:
         report = _monitor.run_full_check(
             target_type="strategy",
@@ -245,18 +285,26 @@ async def build_experiment_summary_payload(experiment_id: str) -> dict[str, Any]
 
 async def build_system_governance_payload() -> dict[str, Any]:
     """Build a system-wide governance report."""
-    persisted = await get_latest_governance_report_snapshot(scope_type="system", scope_id=None)
+    persisted, load_error = await _latest_governance_snapshot_safe(scope_type="system", scope_id=None)
     if persisted:
-        report_payload = dict(persisted.get("payload_jsonb") or {})
+        report_payload = _coerce_mapping(persisted.get("payload_jsonb"))
+        persist_error = None
     else:
         report = _monitor.run_full_check(target_type="system")
-        persisted = await persist_governance_report_snapshot(report, scope_type="system", scope_id=None)
+        persisted, persist_error = await _persist_governance_snapshot_safe(
+            report,
+            scope_type="system",
+            scope_id=None,
+        )
         report_payload = report.to_dict()
+    degraded_reasons = [item for item in [load_error, persist_error] if item]
     return {
         "uri": "resource://governance/system/report",
         "found": True,
         "snapshot_id": persisted.get("id") if persisted else None,
         "governance_report": report_payload,
+        "degraded": bool(degraded_reasons),
+        "fallback_reason": degraded_reasons,
     }
 
 

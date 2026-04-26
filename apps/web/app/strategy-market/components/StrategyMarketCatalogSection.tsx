@@ -5,7 +5,8 @@ import { Badge, DataTable, SectionCard, TabBar } from '@/components/ui';
 import { StrategyCard } from '@/components/strategy-card';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
-import type { Strategy } from '../types';
+import type { Strategy, StrategyRuntimeActionContractItem } from '../types';
+import { StrategyRuntimeActionBar } from './StrategyRuntimeActionBar';
 import {
   INCUBATION_STAGE_FILTER_OPTIONS,
   resolveIncubationSurface,
@@ -45,9 +46,21 @@ type StrategyMarketCatalogSectionProps = {
   catalogTotalCount?: number;
   featuredStrategies: Strategy[];
   onAddToCart: (strategy: Strategy) => void;
+  onRuntimeAction: (action: StrategyRuntimeActionContractItem, strategy: Strategy) => void | Promise<void>;
+  showPersonalTestingBadge?: boolean;
   showResults?: boolean;
   emptyText?: string;
 };
+
+function hasPersonalTestingSession(row: Record<string, unknown>) {
+  const paperSessionState = row.paper_session_state;
+  return Boolean(
+    paperSessionState
+    && typeof paperSessionState === 'object'
+    && !Array.isArray(paperSessionState)
+    && (paperSessionState as Record<string, unknown>).has_session === true,
+  );
+}
 
 export function StrategyMarketCatalogSection({
   category,
@@ -73,6 +86,8 @@ export function StrategyMarketCatalogSection({
   catalogTotalCount = strategies.length,
   featuredStrategies,
   onAddToCart,
+  onRuntimeAction,
+  showPersonalTestingBadge = false,
   showResults = true,
   emptyText = '暂无可展示策略',
 }: StrategyMarketCatalogSectionProps) {
@@ -91,10 +106,14 @@ export function StrategyMarketCatalogSection({
       label: '策略',
       render: (_: unknown, row: Record<string, unknown>) => {
         const strategy = row as Strategy;
+        const showTesting = showPersonalTestingBadge && hasPersonalTestingSession(row);
         return (
           <div className="min-w-[200px]">
             <Link href={`/strategy-market/${strategy.id}`} className="no-underline text-inherit">
-              <div className="font-semibold text-text-primary">{strategy.name}</div>
+              <div className="flex flex-wrap items-center gap-2 font-semibold text-text-primary">
+                <span>{strategy.name}</span>
+                {showTesting ? <Badge variant="info">个人测试中</Badge> : null}
+              </div>
               <div className="mt-1 text-xs text-text-secondary">
                 {strategy.description || strategy.strategy_type || '暂无描述'}
               </div>
@@ -154,7 +173,7 @@ export function StrategyMarketCatalogSection({
     },
     {
       key: 'annual_return',
-      label: '年化收益',
+      label: '回测年化',
       align: 'right' as const,
       render: (_: unknown, row: Record<string, unknown>) => {
         const value = Number(getStrategyMetricSnapshot(row as Strategy).totalReturn ?? 0);
@@ -188,20 +207,18 @@ export function StrategyMarketCatalogSection({
       render: (_: unknown, row: Record<string, unknown>) => {
         const strategy = row as Strategy;
         return (
-          <div className="flex justify-end gap-2">
+          <div className="flex min-w-[280px] flex-col items-end gap-2">
             <Link
               href={`/strategy-market/${strategy.id}`}
               className="rounded-full border border-border bg-surface px-3 py-1 text-xs no-underline text-text-secondary"
             >
               详情
             </Link>
-            <button
-              type="button"
-              onClick={() => onAddToCart(strategy)}
-              className="rounded-full bg-primary px-3 py-1 text-xs text-white shadow-sm"
-            >
-              加入组合
-            </button>
+            <StrategyRuntimeActionBar
+              contract={strategy.runtime_action_contract}
+              compact
+              onAction={(action) => onRuntimeAction(action, strategy)}
+            />
           </div>
         );
       },
@@ -228,7 +245,7 @@ export function StrategyMarketCatalogSection({
                 aria-label="排序字段"
                 className="w-28 px-2 py-2 text-xs"
               >
-                <option value="totalReturn">按年化</option>
+                <option value="totalReturn">按回测年化</option>
                 <option value="sharpe">按 Sharpe</option>
                 <option value="maxDrawdown">按最大回撤</option>
                 <option value="subscriber_count">按收藏数</option>
@@ -265,7 +282,7 @@ export function StrategyMarketCatalogSection({
             </div>
           </div>
           <div className="rounded-[18px] border border-white/45 bg-white/24 px-4 py-3 text-xs leading-6 text-text-secondary">
-            列表页当前只负责筛选、查看详情和加入组合。市场状态和孵化阶段会并列展示，帮助区分“是否处于市场生命周期可见态”和“在孵化器内部走到哪一步”；收藏策略、复制为个人策略与创建模拟盘测试请进入策略详情页执行。
+            列表页当前只负责筛选、查看详情和加入组合。这里的收益字段统一是回测口径，真实模拟盘表现请进入详情页查看“个人模拟盘测试 / 孵化模拟盘”双卡；市场状态和孵化阶段会并列展示，帮助区分“是否处于市场生命周期可见态”和“在孵化器内部走到哪一步”。
           </div>
           {showStatusFilters ? (
             <div className="rounded-[20px] border border-white/45 bg-white/28 px-4 py-3">
@@ -332,7 +349,12 @@ export function StrategyMarketCatalogSection({
               {featuredStrategies.length ? (
                 <div className="mt-4 grid gap-4 lg:grid-cols-3">
                   {featuredStrategies.map((strategy) => (
-                    <StrategyCard key={strategy.id} s={strategy} onAdd={(item) => onAddToCart(item)} />
+                    <StrategyCard
+                      key={strategy.id}
+                      s={strategy}
+                      onAdd={(item) => onAddToCart(item)}
+                      onRuntimeAction={onRuntimeAction}
+                    />
                   ))}
                 </div>
               ) : (
@@ -361,7 +383,7 @@ export function StrategyMarketCatalogSection({
                 · 孵化阶段 <b className="text-text-primary">{resolveIncubationStageFilterLabel(incubationStageFilter)}</b> ·{' '}
                 <b className="text-text-primary">
                   {sortBy === 'totalReturn'
-                    ? '年化'
+                    ? '回测年化'
                     : sortBy === 'sharpe'
                       ? 'Sharpe'
                       : sortBy === 'maxDrawdown'
@@ -381,6 +403,7 @@ export function StrategyMarketCatalogSection({
                 const strategy = row as Strategy;
                 const metrics = getStrategyMetricSnapshot(strategy);
                 const statusMeta = resolveStrategyStatusMeta(strategy.status);
+                const showTesting = showPersonalTestingBadge && hasPersonalTestingSession(row);
                 const incubation = resolveIncubationSurface({
                   strategyStatus: strategy.status,
                   incubationSurface: strategy.incubation_surface,
@@ -390,7 +413,10 @@ export function StrategyMarketCatalogSection({
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <Link href={`/strategy-market/${strategy.id}`} className="no-underline text-inherit">
-                          <div className="text-sm font-semibold text-text-primary">{strategy.name}</div>
+                          <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                            <span>{strategy.name}</span>
+                            {showTesting ? <Badge variant="info">个人测试中</Badge> : null}
+                          </div>
                         </Link>
                         <div className="mt-1 text-xs text-text-secondary">
                           {strategy.description || strategy.strategy_type || '暂无描述'}
@@ -407,7 +433,7 @@ export function StrategyMarketCatalogSection({
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-xs text-text-secondary">
                       <div>
-                        <div className="metric-label">年化</div>
+                        <div className="metric-label">回测年化</div>
                         <div className={`mt-2 text-sm font-semibold ${(metrics.totalReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
                           {fmtPct(metrics.totalReturn ?? 0)}
                         </div>
@@ -421,15 +447,22 @@ export function StrategyMarketCatalogSection({
                         <div className="mt-2 text-sm font-semibold text-danger">{fmtPct(metrics.maxDrawdown ?? 0)}</div>
                       </div>
                     </div>
-                    <div className="flex items-center justify-between gap-2 border-t border-border pt-3 text-xs text-text-secondary">
-                      <span>{strategy.subscriber_count ?? 0} 人收藏 · 详情页可继续收藏 / 模拟盘</span>
-                      <button
-                        type="button"
-                        onClick={() => onAddToCart(strategy)}
-                        className="rounded-full bg-primary px-3 py-1.5 text-xs text-white shadow-sm"
-                      >
-                        加入组合
-                      </button>
+                    <div className="space-y-2 border-t border-border pt-3 text-xs text-text-secondary">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>{strategy.favorite_count ?? strategy.subscriber_count ?? 0} 人收藏 · 回测收益见此处，真实模拟盘看详情页</span>
+                        <button
+                          type="button"
+                          onClick={() => onAddToCart(strategy)}
+                          className="rounded-full bg-primary px-3 py-1.5 text-xs text-white shadow-sm"
+                        >
+                          加入组合
+                        </button>
+                      </div>
+                      <StrategyRuntimeActionBar
+                        contract={strategy.runtime_action_contract}
+                        compact
+                        onAction={(action) => onRuntimeAction(action, strategy)}
+                      />
                     </div>
                   </div>
                 );

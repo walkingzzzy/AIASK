@@ -7,6 +7,17 @@ import { CHAT_TOOLS, buildSystemPrompt } from './chat.tools';
 import { BehaviorService } from '../behavior/behavior.service';
 import { LOCAL_CONTEXT_TOOL_NAMES, LOCAL_CONTEXT_TOOLS } from './tools/local-context';
 import { sanitizeReasoningDelta } from './chat-safety';
+import {
+  addToolTraceItem,
+  cloneToolTrace,
+  createChatToolTrace,
+  finalizeToolTrace,
+  finishToolTraceItem,
+  recordCompletedToolTraceItem,
+  type ChatToolTraceDto,
+  type ChatToolTraceItemDto,
+  type ChatToolTraceItemKind,
+} from './tool-trace';
 import type {
   ChatEvent,
   ChatMessageInput,
@@ -15,7 +26,19 @@ import type {
   ClientActionDescriptor,
 } from './chat.protocol';
 
-type ToolCallRecord = { name: string; args: Record<string, unknown>; result: unknown };
+type ToolCallRecord = {
+  name: string;
+  args: Record<string, unknown>;
+  result: unknown;
+  startedAt: Date;
+  finishedAt: Date;
+};
+type ClientActionExecutionIntent = {
+  latestUserMessage: string;
+  explicitPersonalStrategyWrite: boolean;
+  explicitSuggestionOnly: boolean;
+  hasWritablePersonalStrategyActions: boolean;
+};
 
 const MAX_TOOL_ROUNDS = 10;
 const CLIENT_ACTION_TOOL_NAME = 'request_client_action';
@@ -37,6 +60,14 @@ export class ChatService {
     const messages = payload.messages ?? [];
     const pageContext = payload.pageContext ?? null;
     const availableActions = payload.availableActions ?? [];
+    const clientActionIntent = this.analyzeClientActionIntent(messages, pageContext, availableActions);
+    const toolTrace = createChatToolTrace({
+      mode: payload.mode,
+      pageKey: pageContext?.pageKey,
+      objectType: pageContext?.objectType,
+      objectId: pageContext?.objectId,
+      stockCode: pageContext?.stockCode,
+    });
 
     const config = await this.preferencesService.getLlmConfig(userId);
     if (!config) throw new BadRequestException('请先在设置中配置 LLM API Key');
@@ -55,7 +86,7 @@ export class ChatService {
 
     const conversationMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...this.buildCopilotContextMessages(payload.mode, pageContext, availableActions),
+      ...this.buildCopilotContextMessages(payload.mode, pageContext, availableActions, clientActionIntent),
       ...messages.map((message) => ({
         role: message.role,
         content: message.content,
@@ -80,6 +111,10 @@ export class ChatService {
       } catch (error) {
         timeoutGuard.dispose();
         if (this.isAbortLikeError(error)) {
+          finalizeToolTrace(toolTrace, '', {
+            hasPageContextEvidence: this.hasPageContextEvidence(pageContext),
+          });
+          yield this.buildToolTraceEvent(toolTrace);
           yield { type: 'error', message: timeoutGuard.message };
           yield { type: 'done' };
           return;
@@ -132,6 +167,10 @@ export class ChatService {
       } catch (error) {
         timeoutGuard.dispose();
         if (this.isAbortLikeError(error)) {
+          finalizeToolTrace(toolTrace, assistantContent, {
+            hasPageContextEvidence: this.hasPageContextEvidence(pageContext),
+          });
+          yield this.buildToolTraceEvent(toolTrace);
           yield { type: 'error', message: timeoutGuard.message };
           yield { type: 'done' };
           return;
@@ -151,9 +190,22 @@ export class ChatService {
           lastProfileArgs,
         );
         for (const enforced of enforcedCalls) {
-          yield { type: 'tool_call', name: enforced.name, args: enforced.args };
-          yield { type: 'tool_result', name: enforced.name, result: enforced.result };
+          recordCompletedToolTraceItem(
+            toolTrace,
+            {
+              kind: 'mcp',
+              toolName: enforced.name,
+              args: enforced.args,
+              startedAt: enforced.startedAt,
+            },
+            enforced.result,
+            enforced.finishedAt,
+          );
         }
+        finalizeToolTrace(toolTrace, assistantContent, {
+          hasPageContextEvidence: this.hasPageContextEvidence(pageContext),
+        });
+        yield this.buildToolTraceEvent(toolTrace);
         yield { type: 'done' };
         return;
       }
@@ -185,10 +237,14 @@ export class ChatService {
         }
 
         if (toolCall.function.name === CLIENT_ACTION_TOOL_NAME) {
-          const actionEvent = this.buildClientActionEvent(args, availableActions);
+          const traceItem = this.startTraceItem(toolTrace, 'client_action', toolCall.function.name, args);
+          yield this.buildToolTraceEvent(toolTrace);
+          const actionEvent = this.buildClientActionEvent(args, availableActions, clientActionIntent);
           const result = actionEvent
             ? { scheduled: true, actionId: actionEvent.actionId }
             : { scheduled: false, error: 'invalid action request' };
+          finishToolTraceItem(toolTrace, traceItem.id, result);
+          yield this.buildToolTraceEvent(toolTrace);
 
           if (actionEvent) {
             yield actionEvent;
@@ -197,25 +253,28 @@ export class ChatService {
           conversationMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify(result),
+            content: this.buildToolResponseContent(toolCall.function.name, traceItem, result),
           } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
           continue;
         }
 
         if (this.isLocalToolName(toolCall.function.name)) {
-          yield { type: 'tool_call', name: toolCall.function.name, args };
+          const traceItem = this.startTraceItem(toolTrace, 'local_context', toolCall.function.name, args);
+          yield this.buildToolTraceEvent(toolTrace);
           const result = await this.callLocalTool(userId, toolCall.function.name, args);
-          yield { type: 'tool_result', name: toolCall.function.name, result };
+          finishToolTraceItem(toolTrace, traceItem.id, result);
+          yield this.buildToolTraceEvent(toolTrace);
           conversationMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify(result),
+            content: this.buildToolResponseContent(toolCall.function.name, traceItem, result),
           } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
           continue;
         }
 
         args = this.bindComplianceToolArgs(userId, toolCall.function.name, args);
-        yield { type: 'tool_call', name: toolCall.function.name, args };
+        const traceItem = this.startTraceItem(toolTrace, 'mcp', toolCall.function.name, args);
+        yield this.buildToolTraceEvent(toolTrace);
 
         let result: unknown;
         try {
@@ -230,17 +289,59 @@ export class ChatService {
           this.recordEmotionFromProfile(userId, args);
         }
 
-        yield { type: 'tool_result', name: toolCall.function.name, result };
+        finishToolTraceItem(toolTrace, traceItem.id, result);
+        yield this.buildToolTraceEvent(toolTrace);
         conversationMessages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: typeof result === 'string' ? result : JSON.stringify(result),
+          content: this.buildToolResponseContent(toolCall.function.name, traceItem, result),
         } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
       }
     }
 
+    finalizeToolTrace(toolTrace, '', {
+      hasPageContextEvidence: this.hasPageContextEvidence(pageContext),
+    });
+    yield this.buildToolTraceEvent(toolTrace);
     yield { type: 'error', message: '工具调用轮次超限' };
     yield { type: 'done' };
+  }
+
+  private startTraceItem(
+    trace: ChatToolTraceDto,
+    kind: ChatToolTraceItemKind,
+    toolName: string,
+    args: Record<string, unknown>,
+  ) {
+    return addToolTraceItem(trace, {
+      kind,
+      toolName,
+      args,
+      startedAt: new Date(),
+    });
+  }
+
+  private buildToolTraceEvent(trace: ChatToolTraceDto): Extract<ChatEvent, { type: 'tool_trace' }> {
+    return { type: 'tool_trace', trace: cloneToolTrace(trace) };
+  }
+
+  private buildToolResponseContent(toolName: string, traceItem: ChatToolTraceItemDto, result: unknown) {
+    return JSON.stringify({
+      tool_trace_reference: traceItem.referenceLabel,
+      tool_name: toolName,
+      result,
+    });
+  }
+
+  private hasPageContextEvidence(pageContext: ChatPageContext | null) {
+    if (!pageContext) return false;
+    return Boolean(
+      pageContext.summary?.trim()
+      || pageContext.evidenceSummary?.length
+      || pageContext.riskNotes?.length
+      || pageContext.dataFreshness
+      || pageContext.raw,
+    );
   }
 
   private async enforceRequiredToolCalls(
@@ -256,11 +357,13 @@ export class ChatService {
 
     if (!calledTools.has('update_user_profile')) {
       profileArgs = this.buildFallbackUserProfileArgs(userId, userContext, messages);
+      const startedAt = new Date();
       const result = await this.callToolSafely('update_user_profile', profileArgs);
+      const finishedAt = new Date();
       this.logger.warn(`chat compliance enforced update_user_profile for user=${userId}`);
       this.recordEmotionFromProfile(userId, profileArgs);
       calledTools.add('update_user_profile');
-      enforced.push({ name: 'update_user_profile', args: profileArgs, result });
+      enforced.push({ name: 'update_user_profile', args: profileArgs, result, startedAt, finishedAt });
     }
 
     if (this.shouldAuditRecommendation(assistantContent) && !calledTools.has('log_recommendation_audit')) {
@@ -271,10 +374,12 @@ export class ChatService {
         assistantContent,
         profileArgs,
       );
+      const startedAt = new Date();
       const result = await this.callToolSafely('log_recommendation_audit', auditArgs);
+      const finishedAt = new Date();
       this.logger.warn(`chat compliance enforced log_recommendation_audit for user=${userId}`);
       calledTools.add('log_recommendation_audit');
-      enforced.push({ name: 'log_recommendation_audit', args: auditArgs, result });
+      enforced.push({ name: 'log_recommendation_audit', args: auditArgs, result, startedAt, finishedAt });
     }
 
     return enforced;
@@ -431,6 +536,7 @@ export class ChatService {
     mode: ChatRequestPayload['mode'],
     pageContext: ChatPageContext | null,
     availableActions: ClientActionDescriptor[],
+    clientActionIntent: ClientActionExecutionIntent,
   ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
     if (!pageContext && availableActions.length === 0 && mode !== 'copilot') {
       return [];
@@ -444,9 +550,33 @@ export class ChatService {
       lines.push('页面上下文:');
       lines.push(`- 页面: ${pageContext.pageKey} / ${pageContext.title}`);
       lines.push(`- 摘要: ${pageContext.summary}`);
+      if (pageContext.primaryGoal) lines.push(`- 主要目标: ${pageContext.primaryGoal}`);
+      if (pageContext.requiredInputs?.length) lines.push(`- 关键输入: ${pageContext.requiredInputs.join(' / ')}`);
       if (pageContext.stockCode) lines.push(`- 股票代码: ${pageContext.stockCode}`);
+      if (pageContext.objectType) lines.push(`- 对象类型: ${pageContext.objectType}`);
+      if (pageContext.objectId) lines.push(`- 对象 ID: ${pageContext.objectId}`);
+      if (pageContext.resultType) lines.push(`- 结果类型: ${pageContext.resultType}`);
       if (pageContext.tags?.length) lines.push(`- 标签: ${pageContext.tags.join(' / ')}`);
       if (pageContext.suggestions?.length) lines.push(`- 建议问题: ${pageContext.suggestions.join('；')}`);
+      if (pageContext.recommendedNextActions?.length) lines.push(`- 推荐下一步: ${pageContext.recommendedNextActions.join('；')}`);
+      if (pageContext.evidenceSummary?.length) lines.push(`- 证据摘要: ${pageContext.evidenceSummary.join('；')}`);
+      if (pageContext.riskNotes?.length) lines.push(`- 风险提示: ${pageContext.riskNotes.join('；')}`);
+      if (pageContext.dataFreshness) lines.push(`- 数据时效: ${pageContext.dataFreshness}`);
+      const personalStrategyContext = pageContext.raw && typeof pageContext.raw === 'object'
+        ? (pageContext.raw as Record<string, unknown>).personalStrategyContext
+        : null;
+      if (personalStrategyContext && typeof personalStrategyContext === 'object' && !Array.isArray(personalStrategyContext)) {
+        const ctx = personalStrategyContext as Record<string, unknown>;
+        const strategyName = typeof ctx.strategy_name === 'string' ? ctx.strategy_name : '';
+        const editable = Boolean(ctx.editable);
+        const allowed = ctx.mutation_guard && typeof ctx.mutation_guard === 'object'
+          ? Boolean((ctx.mutation_guard as Record<string, unknown>).allowed)
+          : false;
+        const reason = ctx.mutation_guard && typeof ctx.mutation_guard === 'object'
+          ? String((ctx.mutation_guard as Record<string, unknown>).reason ?? '').trim()
+          : '';
+        lines.push(`- 个人策略上下文: ${strategyName || String(ctx.strategy_id ?? '')}，${editable ? '可编辑' : '只读'}，${allowed ? '允许 AI 建议与修改' : `禁止写入${reason ? `（${reason}）` : ''}`}`);
+      }
       if (pageContext.raw) lines.push(`- 原始上下文: ${JSON.stringify(pageContext.raw)}`);
     }
     if (pageContext || availableActions.length) {
@@ -454,11 +584,24 @@ export class ChatService {
       lines.push(`- 用户明确要求打开、跳转、刷新、切换页面动作时，优先调用 ${CLIENT_ACTION_TOOL_NAME}。`);
       lines.push('- 没有合适动作时，必须明确说明当前页没有可执行动作，不能挂起或转去调用无关工具。');
       lines.push('- 回答当前页问题时，至少引用页面上下文中的具体事实，不要退化成泛 Copilot 话术。');
+      lines.push('- `generate_update_suggestion` / `advisory` 只代表生成修改建议，不代表已经写库。');
+      lines.push('- `optimize` 或 `persist_update` / `stateful` 会写入当前用户个人策略。');
+      if (clientActionIntent.hasWritablePersonalStrategyActions) {
+        lines.push(`- 服务端判定的最新用户写入意图: ${clientActionIntent.explicitPersonalStrategyWrite ? '明确要求修改/保存/优化，可自动执行 stateful 动作。' : '未明确要求写入；stateful 动作只能挂起等待人工点击。'}`);
+      }
+      if (clientActionIntent.explicitSuggestionOnly) {
+        lines.push('- 最新用户意图更接近“先给建议不要落库”，优先选择 `generate_update_suggestion`，不要直接调用写入动作。');
+      }
     }
     if (availableActions.length) {
       lines.push('客户端可执行动作:');
       availableActions.slice(0, 20).forEach((action) => {
-        lines.push(`- ${action.id}: ${action.label}${action.description ? `，${action.description}` : ''}`);
+        const tags = [
+          action.strategyActionKind ? `kind=${action.strategyActionKind}` : '',
+          action.mutationEffect ? `effect=${action.mutationEffect}` : '',
+        ].filter(Boolean);
+        const metaSuffix = tags.length ? ` [${tags.join(', ')}]` : '';
+        lines.push(`- ${action.id}: ${action.label}${metaSuffix}${action.description ? `，${action.description}` : ''}`);
       });
       lines.push(`如果需要前端执行动作，请调用 ${CLIENT_ACTION_TOOL_NAME}。`);
     } else if (pageContext) {
@@ -510,12 +653,19 @@ export class ChatService {
   private buildClientActionEvent(
     args: Record<string, unknown>,
     availableActions: ClientActionDescriptor[],
+    clientActionIntent: ClientActionExecutionIntent,
   ): Extract<ChatEvent, { type: 'action' }> | null {
     const actionId = typeof args.actionId === 'string' ? args.actionId.trim() : '';
     if (!actionId) return null;
 
     const meta = availableActions.find((action) => action.id === actionId);
     if (!meta) return null;
+    const requestedAutoExecute = args.autoExecute === false ? false : undefined;
+    const isStatefulPersonalStrategyAction = meta.mutationEffect === 'stateful'
+      && (meta.strategyActionKind === 'persist_update' || meta.strategyActionKind === 'optimize');
+    const resolvedAutoExecute = isStatefulPersonalStrategyAction
+      ? clientActionIntent.explicitPersonalStrategyWrite && requestedAutoExecute !== false
+      : args.autoExecute !== false;
 
     return {
       type: 'action',
@@ -526,7 +676,42 @@ export class ChatService {
       payload: args.payload && typeof args.payload === 'object' && !Array.isArray(args.payload)
         ? args.payload as Record<string, unknown>
         : undefined,
-      autoExecute: args.autoExecute === true,
+      autoExecute: resolvedAutoExecute,
+    };
+  }
+
+  private analyzeClientActionIntent(
+    messages: ChatMessageInput[],
+    pageContext: ChatPageContext | null,
+    availableActions: ClientActionDescriptor[],
+  ): ClientActionExecutionIntent {
+    const latestUserMessage = [...messages]
+      .reverse()
+      .find((message) => message.role === 'user')?.content?.trim() ?? '';
+    const hasWritablePersonalStrategyActions = availableActions.some((action) => (
+      action.mutationEffect === 'stateful'
+      && (action.strategyActionKind === 'persist_update' || action.strategyActionKind === 'optimize')
+    ));
+    const hasPersonalStrategyContext = Boolean(
+      pageContext?.raw
+      && typeof pageContext.raw === 'object'
+      && (
+        (pageContext.raw as Record<string, unknown>).personalStrategyContext
+        || pageContext.objectType === 'personal_strategy'
+      ),
+    );
+    const writeVerbPattern = /(修改|改一下|更新|保存|落库|写入|应用|套用|提交|覆盖|替换|优化|执行优化|直接改|直接保存|帮我改|帮我更新|帮我保存|patch|update|save|apply|persist|optimi[sz]e|edit|change|rewrite)/i;
+    const suggestionOnlyPattern = /(只给建议|先给建议|先出建议|不要保存|先不要保存|不要落库|不落库|不要写入|只看建议|suggest only|advisory only|do not save|don't save|just suggest)/i;
+    const explicitPersonalStrategyWrite = hasWritablePersonalStrategyActions
+      && hasPersonalStrategyContext
+      && !suggestionOnlyPattern.test(latestUserMessage)
+      && writeVerbPattern.test(latestUserMessage);
+
+    return {
+      latestUserMessage,
+      explicitPersonalStrategyWrite,
+      explicitSuggestionOnly: suggestionOnlyPattern.test(latestUserMessage),
+      hasWritablePersonalStrategyActions,
     };
   }
 

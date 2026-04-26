@@ -1,6 +1,15 @@
 ---
 name: akshare-factor-mining
 description: AI 因子挖掘、候选因子生成、候选验证、研究记忆、候选池治理与调度巡检等场景使用；适用于 llm_factor_mining 与因子研究流水线编排。
+capability_tier: live_orchestrated
+runtime_status: executable
+product_surfaces: ["mcp", "artifact"]
+artifacts: ["factor_candidate", "factor_validation_report", "factor_research_memory"]
+backing_tools: ["run_skill", "quant_manager", "factor_candidate_workflow"]
+backing_managers: ["quant_manager"]
+regulatory_scope: ["research_lineage", "model_governance"]
+role_tags: ["quant", "research"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 面向“候选因子生成与治理”，不是普通因子计算页的别名。
@@ -21,6 +30,8 @@ description: AI 因子挖掘、候选因子生成、候选验证、研究记忆�
 - 阶段 0（归类）：
   - 普通因子分析优先走 `akshare-quant` 或 `akshare-quant-research-process`
   - 只有涉及候选生成、治理、artifact 留痕时才用本 skill
+- 工作流入口：
+  - 完整候选流水线优先使用 `factor_candidate_workflow`
 - 阶段 1（准备）：
   - 用 `check_db_freshness` 先看候选样本窗口是否明显过期
   - 用 `get_factor_library`、`list_factors` 看已有因子族

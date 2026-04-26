@@ -1,6 +1,15 @@
 ---
 name: akshare-market
 description: A股行情、K线、分钟线、盘口、成交明细、涨停、指数、板块及成分股等市场数据请求时使用；适用于股票搜索/代码确认、单只或批量行情、K线与分钟线查询场景。
+capability_tier: live_orchestrated
+runtime_status: executable
+product_surfaces: ["mcp", "bff", "web"]
+artifacts: []
+backing_tools: ["run_skill", "get_realtime_quote", "get_batch_quotes", "get_kline", "get_kline_data", "get_minute_kline"]
+backing_managers: ["market_data_tools"]
+regulatory_scope: ["market_data_lineage"]
+role_tags: ["trader", "research", "quant"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 提供市场数据查询的推荐路由与失败兜底，不代表文中列出的所有行情、盘口、板块与异动工具在任意时间窗口、任意数据源状态下都可无差异返回。

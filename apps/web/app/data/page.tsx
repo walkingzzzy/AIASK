@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import {
   PageContainer,
   TabBar,
@@ -15,12 +15,14 @@ import {
 } from '@/components/ui';
 import { PieChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtAmount, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 import {
@@ -38,6 +40,7 @@ import {
 import { buildResourcePath, buildResourceSummaryRows, isRecord, normalizeOptionRow } from './data-page/helpers';
 
 export default function DataPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('option');
   const { code, setCode, codeError, setCodeError, validate, trimmedCode } = useStockCode('');
   const [underlying, setUnderlying] = useState('');
@@ -46,7 +49,7 @@ export default function DataPage() {
   const [resourceId, setResourceId] = useState('');
   const [resourceError, setResourceError] = useState<string | null>(null);
   const [queryPath, setQueryPath] = useState<string | null>(null);
-  const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath, { critical: true });
+  const { data, isFetching: isPending, error, refetch, dataUpdatedAt } = useApiQuery<unknown>(queryPath, { critical: true });
   const activeResourcePreset = (RESOURCE_PRESETS.find((item) => item.key === resourceKind) ??
     RESOURCE_PRESETS[0]) as (typeof RESOURCE_PRESETS)[number];
   const resourceRequiresId = activeResourcePreset.requiresId === true;
@@ -181,67 +184,64 @@ export default function DataPage() {
           : tab === 'cb'
             ? '适合用单只转债快速看价格、转股价值和溢价率。'
             : '适合用股本结构确认流通盘、限售盘与总市值的关系。';
-  const latestDataRefreshAt = data ? Date.now() : null;
+  const latestDataRefreshAt = data && dataUpdatedAt ? dataUpdatedAt : null;
   const dataSummary = `当前聚焦 ${activeTabLabel}，目标 ${focusTarget}，结果 ${resultCount} 条，状态 ${isPending ? '加载中' : data ? '已返回' : '待查询'}。`;
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'data.submit',
-        label: `查询${activeTabLabel}`,
-        description: '按当前类别和输入项发起查询',
-        keywords: ['查询', '数据'],
-        scope: 'page' as const,
-        pageKey: 'data',
-        run: async () => {
-          submit();
-          return { message: `已触发${activeTabLabel}查询` };
-        },
+  const pageActions = [
+    {
+      id: 'data.submit',
+      label: `查询${activeTabLabel}`,
+      description: '按当前类别和输入项发起查询',
+      keywords: ['查询', '数据'],
+      scope: 'page' as const,
+      pageKey: 'data',
+      run: async () => {
+        submit();
+        return { message: `已触发${activeTabLabel}查询` };
       },
-      {
-        id: 'data.switch-market',
-        label: '跳到行情看板',
-        description: '带着当前查询目标切到行情页继续查看',
-        keywords: ['行情', '跳转'],
-        scope: 'page' as const,
-        pageKey: 'data',
-        run: () => {
-          window.location.href = '/market';
-          return { message: '已跳到行情看板' };
-        },
+    },
+    {
+      id: 'data.switch-market',
+      label: '跳到行情看板',
+      description: '带着当前查询目标切到行情页继续查看',
+      keywords: ['行情', '跳转'],
+      scope: 'page' as const,
+      pageKey: 'data',
+      run: () => {
+        window.location.href = '/market';
+        return { message: '已跳到行情看板' };
       },
-      {
-        id: 'data.switch-technical',
-        label: '跳到技术分析',
-        description: '带着当前查询目标继续查看技术面',
-        keywords: ['技术分析', '跳转'],
-        scope: 'page' as const,
-        pageKey: 'data',
-        run: () => {
-          window.location.href = '/technical';
-          return { message: '已跳到技术分析' };
-        },
+    },
+    {
+      id: 'data.switch-technical',
+      label: '跳到技术分析',
+      description: '带着当前查询目标继续查看技术面',
+      keywords: ['技术分析', '跳转'],
+      scope: 'page' as const,
+      pageKey: 'data',
+      run: () => {
+        window.location.href = '/technical';
+        return { message: '已跳到技术分析' };
       },
-      {
-        id: 'data.clear',
-        label: '清空当前输入',
-        description: '清空当前页的输入与查询上下文',
-        keywords: ['清空', '重置'],
-        scope: 'page' as const,
-        pageKey: 'data',
-        run: () => {
-          setUnderlying('');
-          setUnderlyingError(null);
-          setCode('');
-          setCodeError(null);
-          setResourceId('');
-          setResourceError(null);
-          setQueryPath(null);
-          return { message: '已清空当前输入' };
-        },
+    },
+    {
+      id: 'data.clear',
+      label: '清空当前输入',
+      description: '清空当前页的输入与查询上下文',
+      keywords: ['清空', '重置'],
+      scope: 'page' as const,
+      pageKey: 'data',
+      run: () => {
+        setUnderlying('');
+        setUnderlyingError(null);
+        setCode('');
+        setCodeError(null);
+        setResourceId('');
+        setResourceError(null);
+        setQueryPath(null);
+        return { message: '已清空当前输入' };
       },
-    ],
-    [activeTabLabel, data, isPending, resultCount, setCode, setCodeError, tab],
-  );
+    },
+  ];
   usePageActions(pageActions);
   const dataEvidence = useMemo(
     () =>
@@ -293,6 +293,7 @@ export default function DataPage() {
       { tab, queryPath, focusTarget, resultCount },
     ),
   });
+  const showResultPanel = !compactLayout || isPending || Boolean(data) || Boolean(error);
   usePageContext({
     pageKey: 'data',
     title: '数据中心工作台',
@@ -611,7 +612,7 @@ export default function DataPage() {
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               数据中心工作台
             </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+            <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
               这一页负责补齐交易链路中最常被临时查找的数据块。先决定是查期权、日历、IPO、可转债还是股本结构，再在结果区完成对比和导出。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -653,7 +654,7 @@ export default function DataPage() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="mt-5 hidden gap-3 xl:grid xl:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前类别</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{activeTabLabel}</div>
@@ -677,7 +678,7 @@ export default function DataPage() {
             </div>
           </div>
 
-          <div className="grid gap-3">
+          <div className="hidden gap-3 xl:grid">
             <div className={SIDE_PANEL_CLS}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前查询焦点</div>
               <div className="mt-3 text-base font-semibold text-text-primary">{focusTarget}</div>
@@ -734,14 +735,14 @@ export default function DataPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="data" title="数据结果工作台" result={dataResult} />
+      <ResponsiveResultWorkbench pageKey="data" title="数据结果工作台" result={dataResult} />
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="eyebrow">Data Setup</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询工作台</h2>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+            <p className="mb-0 mt-2 hidden text-sm leading-7 text-text-secondary sm:block">
               先切换数据类别，再填写对应输入项。查询区只负责决定目标，不把结果阅读和筛选动作揉在一起。
             </p>
           </div>
@@ -927,6 +928,7 @@ export default function DataPage() {
         </SectionCard>
       </div>
 
+      {showResultPanel ? (
       <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -946,6 +948,7 @@ export default function DataPage() {
         {!isPending && !data && !error ? renderStarterState() : null}
         {renderData()}
       </div>
+      ) : null}
     </PageContainer>
   );
 }

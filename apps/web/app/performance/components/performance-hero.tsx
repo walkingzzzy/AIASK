@@ -7,6 +7,7 @@ import {
 } from '@/app/performance/components/performance-panel-styles';
 
 type PerformanceHeroProps = {
+  compactMobile?: boolean;
   isAccountMode: boolean;
   activeModeLabel: string;
   outperformance: boolean;
@@ -29,6 +30,7 @@ type PerformanceHeroProps = {
 };
 
 export default function PerformanceHero({
+  compactMobile = false,
   isAccountMode,
   activeModeLabel,
   outperformance,
@@ -49,6 +51,79 @@ export default function PerformanceHero({
   benchmarkLabel,
   portfolioNarrative,
 }: PerformanceHeroProps) {
+  if (compactMobile) {
+    return (
+      <section className="page-hero p-4 sm:p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="info">Performance Workspace</Badge>
+          <Badge variant={isAccountMode ? 'neutral' : 'warning'}>{activeModeLabel}</Badge>
+          {!isAccountMode ? (
+            <Badge variant={outperformance ? 'success' : 'warning'}>
+              {outperformance ? '当前跑赢基准' : '当前未跑赢基准'}
+            </Badge>
+          ) : null}
+        </div>
+        <h1 className="mb-0 mt-3 text-[1.75rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
+          绩效复盘工作台
+        </h1>
+        <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
+          先选账户或组合，再直接进入筛选与结果区。长说明、归因建议和次级跳转已下沉，不再占首屏。
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" onClick={onRefresh} className={performancePrimaryButtonCls}>
+            刷新当前数据
+          </button>
+          <button type="button" onClick={onOpenRisk} className={performanceSecondaryButtonCls}>
+            打开风险中心
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="metric-tile rounded-[24px] p-4">
+            <div className="metric-label">当前视角</div>
+            <div className="mt-2 text-lg font-semibold text-text-primary">{activeModeLabel}</div>
+            <div className="mt-1 text-xs text-text-secondary">{currentEntityLabel}</div>
+          </div>
+          <div className="metric-tile rounded-[24px] p-4">
+            <div className="metric-label">观察窗口</div>
+            <div className="mt-2 text-lg font-semibold text-text-primary">{windowLabel}</div>
+            <div className="mt-1 text-xs text-text-secondary">{windowHint}</div>
+          </div>
+        </div>
+        <div
+          data-testid="page-primary-status"
+          className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+        >
+          <div className="font-medium text-text-primary">
+            {primaryMetricLabel} {primaryMetricValue} ｜ 重点标的 {focusStockCode || '-'}
+          </div>
+          <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">{pageSummary}</p>
+        </div>
+        <details className="mt-3 rounded-[22px] border border-white/45 bg-white/24 px-4 py-3">
+          <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开归因解释与下一步</summary>
+          <div className="mt-3 space-y-3">
+            <div className={performanceNoteCardCls}>{portfolioNarrative}</div>
+            <div className={performanceNoteCardCls}>{focusMetricHint}</div>
+            {!isAccountMode ? (
+              <div className={performanceNoteCardCls}>
+                基准口径：<span className="font-medium text-text-primary">{benchmarkLabel}</span>
+              </div>
+            ) : null}
+            {focusStockCode && onOpenStock ? (
+              <button type="button" onClick={onOpenStock} className={performanceSecondaryButtonCls}>
+                查看重点股票
+              </button>
+            ) : null}
+            {focusStockCode && onOpenResearch ? (
+              <button type="button" onClick={onOpenResearch} className={performanceSecondaryButtonCls}>
+                查看研究页
+              </button>
+            ) : null}
+          </div>
+        </details>
+      </section>
+    );
+  }
+
   return (
     <section className="page-hero p-5 sm:p-6">
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">

@@ -14,6 +14,8 @@ function buildMetaSignature(actions: PageActionDefinition[]) {
         action.scope,
         action.pageKey ?? '',
         (action.keywords ?? []).join('|'),
+        action.strategyActionKind ?? '',
+        action.mutationEffect ?? '',
       ].join('::'),
     )
     .join('||');
@@ -27,18 +29,7 @@ export function usePageActions(actions: PageActionDefinition[]) {
     [actions],
   );
 
-  const metas = useMemo(
-    () =>
-      copilotActions.map((action) => ({
-        id: action.id,
-        label: action.label,
-        description: action.description,
-        keywords: action.keywords,
-        scope: action.scope,
-        pageKey: action.pageKey,
-      })),
-    [copilotActions],
-  );
+  const metas = useMemo(() => buildPageActionMetas(copilotActions), [copilotActions]);
   const metaSignature = useMemo(() => buildMetaSignature(copilotActions), [copilotActions]);
 
   useEffect(() => {
@@ -65,4 +56,17 @@ export function usePageActions(actions: PageActionDefinition[]) {
       setPageActions([]);
     };
   }, [metaSignature, metas, setPageActions]);
+}
+
+function buildPageActionMetas(actions: PageActionDefinition[]) {
+  return actions.map((action) => ({
+    id: action.id,
+    label: action.label,
+    description: action.description,
+    keywords: action.keywords,
+    scope: action.scope,
+    pageKey: action.pageKey,
+    strategyActionKind: action.strategyActionKind,
+    mutationEffect: action.mutationEffect,
+  }));
 }

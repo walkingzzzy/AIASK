@@ -46,6 +46,9 @@ CACHE_TTL = {
     "gb_info": 86400,          # 股本数据 24小时
     "financial": 86400,        # 财务数据 24小时
 }
+API_FETCH_TIMEOUT_SECONDS = float(os.getenv("DATA_SYNC_API_FETCH_TIMEOUT_SECONDS", "10"))
+BATCH_SYNC_CONCURRENCY = max(1, int(os.getenv("DATA_SYNC_BATCH_CONCURRENCY", "4")))
+BATCH_SYNC_PER_CODE_TIMEOUT_SECONDS = float(os.getenv("DATA_SYNC_BATCH_PER_CODE_TIMEOUT_SECONDS", "12"))
 
 
 class DataSyncService:
@@ -415,8 +418,27 @@ class DataSyncService:
                     extra={"code": stock_code, "error": str(e)},
                 )
 
-        # 3. 调用 API 获取数据
-        api_data = data_source.get_kline(stock_code, period, limit)
+        # 3. 调用 API 获取数据（放到线程中执行，避免阻塞事件循环）
+        api_error: Optional[str] = None
+        try:
+            api_data = await asyncio.wait_for(
+                asyncio.to_thread(data_source.get_kline, stock_code, period, limit),
+                timeout=API_FETCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            api_data = []
+            api_error = f"获取K线数据超时（>{API_FETCH_TIMEOUT_SECONDS}s）"
+            logger.warning(
+                "[DataSync] API kline fetch timed out",
+                extra={"code": stock_code, "period": period, "limit": limit, "timeout": API_FETCH_TIMEOUT_SECONDS},
+            )
+        except Exception as e:
+            api_data = []
+            api_error = str(e)
+            logger.warning(
+                "[DataSync] API kline fetch failed",
+                extra={"code": stock_code, "period": period, "limit": limit, "error": api_error},
+            )
 
         if api_data:
             # 4. 日期过滤 + 补充 change_pct
@@ -430,7 +452,12 @@ class DataSyncService:
 
             return {"success": True, "data": data, "source": "api"}
 
-        return {"success": False, "data": [], "source": "none", "message": "获取K线数据失败"}
+        return {
+            "success": False,
+            "data": [],
+            "source": "api_timeout" if api_error and "超时" in api_error else "none",
+            "message": api_error or "获取K线数据失败",
+        }
     
     def _filter_and_enrich_klines(self, klines: list, start_date: str, end_date: str, limit: int) -> list:
         """过滤日期范围 + 补充 change_pct 字段"""
@@ -528,24 +555,44 @@ class DataSyncService:
         """
         async with self._get_sync_lock():
             results = {"success": 0, "failed": 0, "errors": []}
-            
-            for code in codes:
-                try:
-                    result = await self.get_kline_with_cache(
-                        stock_code=code,
-                        period=period,
-                        start_date=start_date,
-                        end_date=end_date,
-                        use_cache=False  # 强制从 API 获取
-                    )
+            semaphore = asyncio.Semaphore(BATCH_SYNC_CONCURRENCY)
+
+            async def _sync_one(code: str) -> dict:
+                async with semaphore:
+                    try:
+                        result = await asyncio.wait_for(
+                            self.get_kline_with_cache(
+                                stock_code=code,
+                                period=period,
+                                start_date=start_date,
+                                end_date=end_date,
+                                use_cache=False,  # 强制从 API 获取
+                            ),
+                            timeout=BATCH_SYNC_PER_CODE_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        return {
+                            "code": code,
+                            "success": False,
+                            "error": f"批量同步单标的超时（>{BATCH_SYNC_PER_CODE_TIMEOUT_SECONDS}s）",
+                        }
+                    except Exception as e:
+                        return {"code": code, "success": False, "error": str(e)}
                     if result.get("success"):
-                        results["success"] += 1
-                    else:
-                        results["failed"] += 1
-                        results["errors"].append({"code": code, "error": result.get("message")})
-                except Exception as e:
+                        return {"code": code, "success": True}
+                    return {
+                        "code": code,
+                        "success": False,
+                        "error": result.get("message") or result.get("error") or "获取K线数据失败",
+                    }
+
+            outcomes = await asyncio.gather(*[_sync_one(code) for code in codes])
+            for outcome in outcomes:
+                if outcome.get("success"):
+                    results["success"] += 1
+                else:
                     results["failed"] += 1
-                    results["errors"].append({"code": code, "error": str(e)})
+                    results["errors"].append({"code": outcome.get("code"), "error": outcome.get("error")})
             
             return {
                 "success": True,

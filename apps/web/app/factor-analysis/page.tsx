@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import { PageContainer, SectionCard, StockCodeInput, Badge, TabBar } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -137,50 +137,47 @@ export default function FactorAnalysisPage() {
     factors.length > 0 ? factors : [{ name: factor, description: '当前默认研究因子', category: 'default' }];
   const activeFactorMeta = factorOptions.find((item) => item.name === factor);
   const activeTabLabel = RESULT_TABS.find((item) => item.key === resultTab)?.label ?? '配置';
-  const factorAnalysisActions = useMemo(
-    () => [
-      {
-        id: 'factor-analysis.load-library',
-        label: libraryLoaded ? '刷新因子库' : '加载因子库',
-        description: '加载或刷新可选因子列表',
-        keywords: ['因子库', '刷新'],
-        scope: 'page' as const,
-        pageKey: 'factor-analysis',
-        run: () => {
-          loadLibrary();
-          if (libraryLoaded) {
-            void libraryQ.refetch();
-          }
-          return { message: libraryLoaded ? '已刷新因子库' : '已加载因子库' };
-        },
+  const factorAnalysisActions = [
+    {
+      id: 'factor-analysis.load-library',
+      label: libraryLoaded ? '刷新因子库' : '加载因子库',
+      description: '加载或刷新可选因子列表',
+      keywords: ['因子库', '刷新'],
+      scope: 'page' as const,
+      pageKey: 'factor-analysis',
+      run: () => {
+        loadLibrary();
+        if (libraryLoaded) {
+          void libraryQ.refetch();
+        }
+        return { message: libraryLoaded ? '已刷新因子库' : '已加载因子库' };
       },
-      {
-        id: 'factor-analysis.run',
-        label: '运行分析',
-        description: '同时发起 IC、分组收益和衰减分析',
-        keywords: ['因子', '分析'],
-        scope: 'page' as const,
-        pageKey: 'factor-analysis',
-        run: () => {
-          runAnalysis();
-          return { message: `已发起 ${factor} 的单因子分析` };
-        },
+    },
+    {
+      id: 'factor-analysis.run',
+      label: '运行分析',
+      description: '同时发起 IC、分组收益和衰减分析',
+      keywords: ['因子', '分析'],
+      scope: 'page' as const,
+      pageKey: 'factor-analysis',
+      run: () => {
+        runAnalysis();
+        return { message: `已发起 ${factor} 的单因子分析` };
       },
-      {
-        id: 'factor-analysis.view-ic',
-        label: '切到 IC',
-        description: '把视图切到 IC 时序与快判指标',
-        keywords: ['IC', '切换视图'],
-        scope: 'page' as const,
-        pageKey: 'factor-analysis',
-        run: () => {
-          setResultTab('ic');
-          return { message: '已切到 IC 视图' };
-        },
+    },
+    {
+      id: 'factor-analysis.view-ic',
+      label: '切到 IC',
+      description: '把视图切到 IC 时序与快判指标',
+      keywords: ['IC', '切换视图'],
+      scope: 'page' as const,
+      pageKey: 'factor-analysis',
+      run: () => {
+        setResultTab('ic');
+        return { message: '已切到 IC 视图' };
       },
-    ],
-    [factor, libraryLoaded, libraryQ],
-  );
+    },
+  ];
   usePageActions(factorAnalysisActions);
   const factorAnalysisSummary = analysisReady
     ? `当前因子 ${factor} 已生成单因子分析，样本 ${sampleUniverse.length} 只，IC ${fmtNum(ic?.ic ?? null, 4)}，当前视图 ${activeTabLabel}。`
@@ -320,7 +317,7 @@ export default function FactorAnalysisPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="factor-analysis" title="因子洞察结果工作台" result={factorAnalysisResult} />
+      <ResponsiveResultWorkbench pageKey="factor-analysis" title="因子洞察结果工作台" result={factorAnalysisResult} />
 
       {loading ? <LoadingState text="因子分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}

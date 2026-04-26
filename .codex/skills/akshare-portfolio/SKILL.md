@@ -1,6 +1,15 @@
 ---
 name: akshare-portfolio
 description: 回测、组合优化、风险分析、压力测试以及组合/回测结果管理等场景使用。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["portfolio_suitability", "backtest_lineage"]
+role_tags: ["buy_side_pm", "quant", "risk"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 用于定义回测、组合优化、风险分析、压力测试与结果管理的推荐流程，不代表文中列出的回测链路、风险模型、持久化能力与历史结果管理在当前环境都已完成统一口径验证。

@@ -36,6 +36,7 @@ test('health/admin and execution-audit frontend consumers remain present', () =>
     'apps/web/components/home/SystemStatus.tsx',
     'apps/web/app/admin/page.tsx',
     'apps/web/app/admin/tools/page.tsx',
+    'apps/web/app/strategy-market/components/StrategyMarketOperatorPanel.tsx',
     'apps/web/app/strategy-market/hooks/use-strategy-detail-page.ts',
     'apps/web/app/strategy-market/components/factory-review-panel/summary-section.tsx',
   ];

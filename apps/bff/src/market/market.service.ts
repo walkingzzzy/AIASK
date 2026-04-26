@@ -7,7 +7,6 @@ import type {
   NormalizedKlinePoint,
   NormalizedOrderBook,
   NormalizedQuote,
-  ResultContractMeta,
   ToolArgs,
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';

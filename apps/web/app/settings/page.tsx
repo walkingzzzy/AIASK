@@ -82,7 +82,8 @@ export default function SettingsPage() {
   useEffect(() => {
     const requestedTab = parseTabKey(searchParams.get('tab'));
     if (requestedTab && requestedTab !== tab) {
-      setTab(requestedTab);
+      const timer = window.setTimeout(() => setTab(requestedTab), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [searchParams, tab]);
 
@@ -103,8 +104,11 @@ export default function SettingsPage() {
   useEffect(() => {
     if (profileDirty) return;
     if (profileQ.data == null && profileQ.error == null && profileQ.isPending) return;
-    setProfileForm(buildProfileForm(profileQ.data));
-    setProfileReady(true);
+    const timer = window.setTimeout(() => {
+      setProfileForm(buildProfileForm(profileQ.data));
+      setProfileReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [profileDirty, profileQ.data, profileQ.error, profileQ.isPending]);
 
   const riskLevelValue = profileForm.riskLevel;

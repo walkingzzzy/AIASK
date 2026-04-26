@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
@@ -21,6 +21,7 @@ export type WatchlistGroup = {
 @Injectable()
 export class WatchlistService {
     private static readonly CACHE_TTL = 60;
+    private readonly logger = new Logger(WatchlistService.name);
 
     constructor(
         private readonly mcpGatewayService: McpGatewayService,
@@ -32,11 +33,19 @@ export class WatchlistService {
         const cached = await this.cacheService.getWithMeta<WatchlistGroup[]>(cacheKey);
         if (cached.value) return cached.value;
 
-        const payload = await this.callManager('list', { user_id: userId });
-
-        const groups = this.extractGroups(payload);
-        await this.cacheService.set(cacheKey, groups, WatchlistService.CACHE_TTL);
-        return groups;
+        try {
+            const payload = await this.callManager('list', { user_id: userId });
+            const groups = this.extractGroups(payload);
+            await this.cacheService.set(cacheKey, groups, WatchlistService.CACHE_TTL);
+            return groups;
+        } catch (error) {
+            this.logger.warn(
+                `自选分组读取降级为空列表 user=${userId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            const fallback: WatchlistGroup[] = [];
+            await this.cacheService.set(cacheKey, fallback, 10);
+            return fallback;
+        }
     }
 
     async createGroup(userId: string, groupId: string | undefined, name: string, color = '#6366f1') {

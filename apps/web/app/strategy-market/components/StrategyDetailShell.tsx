@@ -6,11 +6,16 @@ import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum } from '@/lib/data-utils';
 import { formatMultipleTestingMode } from '@/app/strategy-market/lib/strategy-detail-view';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
-import type { FactoryReviewSection, StrategyCore } from '../types';
+import type {
+  FactoryReviewSection,
+  StrategyCore,
+  StrategyRuntimeActionContract,
+  StrategyRuntimeActionContractItem,
+  StrategyRuntimeActionId,
+} from '../types';
+import { StrategyRuntimeActionBar } from './StrategyRuntimeActionBar';
 import {
   chipButtonCls,
-  heroPrimaryButtonCls,
-  heroSecondaryButtonCls,
   sideMetricCls,
   sidePanelCls,
 } from './strategy-detail-panel-styles';
@@ -39,13 +44,9 @@ type StrategyDetailHeroSectionProps = {
   blockerCount: number;
   riskCount: number;
   multipleTestingMode: string | null;
-  isSubscribed: boolean;
-  subscribePending: boolean;
-  userId: string | null;
-  onAddToCart: () => void;
-  onSubscribe: () => void;
-  onOpenPortfolio: () => void;
-  onOpenPaperSession: () => void;
+  runtimeActionContract?: StrategyRuntimeActionContract | null;
+  pendingActionId?: StrategyRuntimeActionId | null;
+  onRuntimeAction: (action: StrategyRuntimeActionContractItem) => void | Promise<void>;
 };
 
 export function StrategyDetailHeroSection({
@@ -69,13 +70,9 @@ export function StrategyDetailHeroSection({
   blockerCount,
   riskCount,
   multipleTestingMode,
-  isSubscribed,
-  subscribePending,
-  userId,
-  onAddToCart,
-  onSubscribe,
-  onOpenPortfolio,
-  onOpenPaperSession,
+  runtimeActionContract,
+  pendingActionId,
+  onRuntimeAction,
 }: StrategyDetailHeroSectionProps) {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const compactSummary =
@@ -103,37 +100,13 @@ export function StrategyDetailHeroSection({
             {strategy.name}
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">{compactSummary}</p>
-          <div className="mt-5 flex flex-wrap gap-2">
-            <button onClick={onAddToCart} data-testid="page-primary-action" className={heroPrimaryButtonCls}>
-              加入组合
-            </button>
-            <button
-              onClick={onSubscribe}
-              disabled={subscribePending || !userId}
-              data-testid="strategy-subscribe-action"
-              aria-label={
-                subscribePending
-                  ? '策略头图收藏操作处理中'
-                  : !userId
-                    ? '策略头图登录后收藏'
-                    : isSubscribed
-                      ? '策略头图取消收藏'
-                      : '策略头图收藏策略'
-              }
-              className={`${heroSecondaryButtonCls} ${isSubscribed ? 'border-primary/35 bg-primary/12 text-primary' : ''}`}
-            >
-              {subscribePending ? '处理中...' : !userId ? '登录后收藏' : isSubscribed ? '取消收藏' : '收藏策略'}
-            </button>
-            {!compactLayout ? (
-              <>
-                <button type="button" onClick={onOpenPortfolio} className={heroSecondaryButtonCls}>
-                  去组合页配置
-                </button>
-                <button type="button" onClick={onOpenPaperSession} className={heroSecondaryButtonCls}>
-                  打开我的模拟盘测试
-                </button>
-              </>
-            ) : null}
+          <div className="mt-5" data-testid="strategy-detail-action-bar">
+            <StrategyRuntimeActionBar
+              contract={runtimeActionContract}
+              pendingActionId={pendingActionId}
+              onAction={onRuntimeAction}
+              compact={compactLayout}
+            />
           </div>
           <div
             data-testid="page-primary-status"
@@ -142,7 +115,7 @@ export function StrategyDetailHeroSection({
             <div className="font-medium text-text-primary">
               当前处于 {activeTabLabel}，策略状态 {String(strategy.status ?? '-')}（{displayStatus.label}）
               {showIncubationStage ? `，孵化阶段 ${incubationStage.label}` : '，尚未进入真实孵化链路'}
-              ，订阅 {strategy.subscriber_count ?? 0}
+              ，收藏 {strategy.favorite_count ?? strategy.subscriber_count ?? 0}
             </div>
             <p className={`mt-1 mb-0 text-xs text-text-secondary ${compactLayout ? 'leading-5' : 'leading-6'}`}>
               质量评级 {latestQualityGrade ?? '-'} ｜ 最新决策 {latestIncubationDecision} ｜ 执行审计 {executionAuditGate}
@@ -193,7 +166,7 @@ export function StrategyDetailHeroSection({
                 </div>
                 <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">收藏与评分</div>
-                  <div className="mt-3 text-2xl font-semibold text-text-primary">{strategy.subscriber_count ?? 0}</div>
+                  <div className="mt-3 text-2xl font-semibold text-text-primary">{strategy.favorite_count ?? strategy.subscriber_count ?? 0}</div>
                   <div className="mt-1 text-xs text-text-secondary">
                     {strategy.avg_rating != null ? `平均评分 ${strategy.avg_rating.toFixed(1)}` : '暂无公开评分'}
                   </div>
@@ -253,17 +226,12 @@ export function StrategyDetailHeroSection({
                     ? '当前策略已接近上架条件，适合继续联动组合页做配置模拟。'
                     : '当前策略仍处孵化观察阶段，建议不要直接跳到配置，先补完工厂审查。'}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={onSubscribe} disabled={subscribePending || !userId} className={chipButtonCls}>
-                    {isSubscribed ? '取消收藏' : '立即收藏'}
-                  </button>
-                  <button type="button" onClick={onOpenPortfolio} className={chipButtonCls}>
-                    去组合页配置
-                  </button>
-                  <button type="button" onClick={onOpenPaperSession} className={chipButtonCls}>
-                    打开我的模拟盘测试
-                  </button>
-                </div>
+                <StrategyRuntimeActionBar
+                  contract={runtimeActionContract}
+                  pendingActionId={pendingActionId}
+                  onAction={onRuntimeAction}
+                  compact
+                />
               </div>
             </details>
           ) : (
@@ -316,33 +284,16 @@ export function StrategyDetailHeroSection({
                   : '当前策略仍处孵化观察阶段，建议不要直接跳到配置，先补完工厂审查。'}
               </div>
               <div className={sideMetricCls}>
-                {isSubscribed
-                  ? '你已收藏该策略，可继续留在当前页做深度复盘。'
-                  : '若准备持续跟踪，建议先收藏，再把它加入组合购物车。'}
+                行动栏由 BFF 运行时动作合同返回，当前页只按合同状态渲染可点击、需确认和不可用原因。
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={onSubscribe}
-                disabled={subscribePending || !userId}
-                data-testid="strategy-subscribe-secondary-action"
-                aria-label={
-                  subscribePending
-                    ? '策略建议区收藏操作处理中'
-                    : !userId
-                      ? '策略建议区登录后收藏'
-                      : isSubscribed
-                        ? '策略建议区取消收藏'
-                        : '策略建议区立即收藏'
-                }
-                className={chipButtonCls}
-              >
-                {isSubscribed ? '取消收藏' : '立即收藏'}
-              </button>
-              <button type="button" onClick={onOpenPaperSession} className={chipButtonCls}>
-                打开我的模拟盘测试
-              </button>
+            <div className="mt-4">
+              <StrategyRuntimeActionBar
+                contract={runtimeActionContract}
+                pendingActionId={pendingActionId}
+                onAction={onRuntimeAction}
+                compact
+              />
             </div>
           </div>
             </>

@@ -5,12 +5,21 @@ import type {
     FactoryGateStageResult,
     StrategyPredictionTraceLedgerView,
 } from './factory';
-import type { StrategyIncubationSurface, StrategyTrustedInfo } from './common';
 import type {
+    StrategyIncubationSurface,
+    StrategyRuntimeActionContract,
+    StrategyRuntimeActionContractItem,
+    StrategySourceStageExplanation,
+    StrategyTrustedInfo,
+} from './common';
+import type {
+    PaperTradingPerformanceResponse,
     PaperTradingAccount,
     PaperTradingNavPoint,
     PaperTradingPendingOrder,
     PaperTradingPosition,
+    PaperTradingSummary,
+    PaperTradingTrustStatus,
 } from '../paper-trading';
 
 export type StrategyMetric = {
@@ -166,6 +175,7 @@ export type StrategyCore = {
     status?: string;
     author_id?: string;
     subscriber_count?: number;
+    favorite_count?: number;
     avg_rating?: number;
     review_count?: number;
     params?: Record<string, unknown>;
@@ -174,6 +184,9 @@ export type StrategyCore = {
     metrics?: StrategyMetric[];
     reviews?: StrategyReview[];
     incubation_surface?: StrategyIncubationSurface;
+    source_stage_explanation?: StrategySourceStageExplanation;
+    runtime_action_contract?: StrategyRuntimeActionContract | null;
+    runtime_actions?: StrategyRuntimeActionContractItem[];
 } & StrategyTrustedInfo;
 
 export type StrategyOwnerState = {
@@ -542,6 +555,36 @@ export type PaperAccountResponse = {
     };
 };
 
+export type StrategyPaperTrackKind = 'personal' | 'incubation';
+
+export type StrategyPaperTrackSource = 'strategy_paper_session' | 'strategy_binding';
+
+export type StrategyPaperTrackSnapshot = {
+    kind?: StrategyPaperTrackKind;
+    source?: StrategyPaperTrackSource;
+    label?: string;
+    available?: boolean;
+    reason?: string | null;
+    account_id?: string | null;
+    account?: PaperAccount | null;
+    summary?: PaperTradingSummary | null;
+    performance?: PaperTradingPerformanceResponse | null;
+    trust_status?: PaperTradingTrustStatus | null;
+    latest_nav?: PaperNav | null;
+    order_summary?: PaperAccountResponse['order_summary'] | null;
+    latest_metric?: IncubationMetric | null;
+    session?: StrategyPaperSessionState | null;
+    stage?: string | null;
+    account_status?: string | null;
+};
+
+export type StrategyPaperContextResponse = {
+    strategy_id?: string;
+    strategy_name?: string;
+    personal?: StrategyPaperTrackSnapshot | null;
+    incubation?: StrategyPaperTrackSnapshot | null;
+};
+
 export type IncubationPipelineSnapshot = {
     id?: number;
     strategy_id?: string;
@@ -882,6 +925,10 @@ export type StrategyDetailViewModel = {
         task_runs?: TaskRun[];
         latest_projection_snapshot?: ProjectionSnapshot | null;
     };
+    actions?: {
+        runtime_action_contract?: StrategyRuntimeActionContract | null;
+        items?: StrategyRuntimeActionContractItem[];
+    };
 };
 
 export type StrategyDetailResponse = {
@@ -910,5 +957,9 @@ export type StrategyDetailResponse = {
     favorite_state?: StrategyFavoriteState;
     paper_session_state?: StrategyPaperSessionState;
     presentation?: StrategyPresentationDto;
+    personal_strategy_context?: Record<string, unknown> | null;
+    runtime_action_contract?: StrategyRuntimeActionContract | null;
+    runtime_actions?: StrategyRuntimeActionContractItem[];
+    source_stage_explanation?: StrategySourceStageExplanation | null;
     view_model?: StrategyDetailViewModel;
 };

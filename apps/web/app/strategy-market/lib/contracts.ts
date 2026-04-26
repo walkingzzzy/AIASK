@@ -1,13 +1,18 @@
 'use client';
 
-import { normalizeStrategyDetailResponse } from '@aiask/shared-types';
+import { normalizeFactoryMarketViewResponse, normalizeStrategyDetailResponse } from '@aiask/shared-types';
 import type {
+  FactoryMarketViewResponse,
   IncubationOverviewResponse,
   FactoryRunDetailResponse,
   FactoryRunsResponse,
   FactoryStatusResponse,
   ReviewReportResponse,
+  StrategyCoreChainAcceptanceResponse,
   StrategyDetailResponse,
+  StrategyRuntimeActionContract,
+  StrategyPaperContextResponse,
+  StrategyCapabilityDiagnosticsResponse,
 } from '../types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -41,7 +46,27 @@ export function parseStrategyDetailResponse(raw: unknown): StrategyDetailRespons
   assertArrayIfPresent(detail.reviews, '策略详情.reviews');
   assertArrayIfPresent(detail.nav_series, '策略详情.nav_series');
   assertRecordIfPresent(detail.view_model, '策略详情.view_model');
+  if (detail.runtime_action_contract != null) {
+    parseStrategyRuntimeActionContract(detail.runtime_action_contract);
+  }
   return detail;
+}
+
+export function parseStrategyRuntimeActionContract(raw: unknown): StrategyRuntimeActionContract {
+  const contract = assertRecord(raw, '策略运行时动作合同');
+  assertArrayIfPresent(contract.actions, '策略运行时动作合同.actions');
+  assertArrayIfPresent(contract.default_order, '策略运行时动作合同.default_order');
+  assertRecordIfPresent(contract.actor, '策略运行时动作合同.actor');
+  assertRecordIfPresent(contract.state, '策略运行时动作合同.state');
+  assertRecordIfPresent(contract.summary, '策略运行时动作合同.summary');
+  return contract as StrategyRuntimeActionContract;
+}
+
+export function parseStrategyPaperContextResponse(raw: unknown): StrategyPaperContextResponse {
+  const context = assertRecord(raw, '策略模拟盘上下文');
+  assertRecordIfPresent(context.personal, '策略模拟盘上下文.personal');
+  assertRecordIfPresent(context.incubation, '策略模拟盘上下文.incubation');
+  return context as StrategyPaperContextResponse;
 }
 
 export function parseReviewReportResponse(raw: unknown): ReviewReportResponse {
@@ -96,4 +121,45 @@ export function parseFactoryRunDetailResponse(raw: unknown): FactoryRunDetailRes
   assertRecordIfPresent(detail.research_window, '策略工厂运行详情.research_window');
   assertRecordIfPresent(detail.full_market_topn, '策略工厂运行详情.full_market_topn');
   return detail as FactoryRunDetailResponse;
+}
+
+export function parseFactoryMarketViewResponse(raw: unknown): FactoryMarketViewResponse {
+  const view = normalizeFactoryMarketViewResponse(raw);
+  assertRecordIfPresent(view.capabilities, '策略超市工厂视图.capabilities');
+  if (view.status != null) {
+    parseFactoryStatusResponse(view.status);
+  }
+  if (view.runs != null) {
+    parseFactoryRunsResponse(view.runs);
+  }
+  if (view.expanded_run != null) {
+    parseFactoryRunDetailResponse(view.expanded_run);
+  }
+  assertRecordIfPresent(view.observability, '策略超市工厂视图.observability');
+  assertArrayIfPresent(view.errors, '策略超市工厂视图.errors');
+  assertRecordIfPresent(view.section_errors, '策略超市工厂视图.section_errors');
+  assertRecordIfPresent(view.surface, '策略超市工厂视图.surface');
+  assertArrayIfPresent(view.surface?.overview_cards, '策略超市工厂视图.surface.overview_cards');
+  assertArrayIfPresent(view.surface?.hero_cards, '策略超市工厂视图.surface.hero_cards');
+  assertArrayIfPresent(view.surface?.observability_cards, '策略超市工厂视图.surface.observability_cards');
+  assertArrayIfPresent(view.surface?.visible_outputs, '策略超市工厂视图.surface.visible_outputs');
+  return view;
+}
+
+export function parseStrategyCapabilityDiagnosticsResponse(raw: unknown): StrategyCapabilityDiagnosticsResponse {
+  const diagnostics = assertRecord(raw, '策略能力缺口诊断');
+  assertRecordIfPresent(diagnostics.summary, '策略能力缺口诊断.summary');
+  assertArrayIfPresent(diagnostics.items, '策略能力缺口诊断.items');
+  assertArrayIfPresent(diagnostics.critical_unmatched, '策略能力缺口诊断.critical_unmatched');
+  return diagnostics as StrategyCapabilityDiagnosticsResponse;
+}
+
+export function parseCoreChainAcceptanceResponse(raw: unknown): StrategyCoreChainAcceptanceResponse {
+  const payload = assertRecord(raw, '核心链路验收');
+  assertRecordIfPresent(payload.actor, '核心链路验收.actor');
+  assertRecordIfPresent(payload.environment, '核心链路验收.environment');
+  assertRecordIfPresent(payload.target, '核心链路验收.target');
+  assertRecordIfPresent(payload.summary, '核心链路验收.summary');
+  assertArrayIfPresent(payload.steps, '核心链路验收.steps');
+  return payload as StrategyCoreChainAcceptanceResponse;
 }

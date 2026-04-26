@@ -2,7 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import ExecutionHero from '@/app/execution/components/execution-hero';
@@ -912,25 +913,35 @@ export default function ExecutionPage() {
         onRefreshLiveGateway={liveGatewayPanelProps.onRefresh}
       />
 
-      <ResultWorkbench pageKey="execution" title="执行结果工作台" result={executionResult} />
+      <ResponsiveResultWorkbench pageKey="execution" title="执行结果工作台" result={executionResult} />
 
-      <WorkspaceToolbar
-        pageKey="execution"
-        currentView={currentView}
-        onApplyView={(snapshot) => {
-          applyExecutionPayload(snapshot);
-        }}
-        supportsPagePanels
-        mobileSummaryMode="hidden"
-      />
+      {!collapseToTabs ? (
+        <CollapsibleSectionCard
+          title="工作区工具"
+          summary="执行页的保存视图、布局和任务同步下沉到工具层，不再默认撑高首屏。"
+          className="mb-4"
+        >
+          <WorkspaceToolbar
+            pageKey="execution"
+            currentView={currentView}
+            onApplyView={(snapshot) => {
+              applyExecutionPayload(snapshot);
+            }}
+            supportsPagePanels
+            mobileSummaryMode="hidden"
+          />
+        </CollapsibleSectionCard>
+      ) : null}
 
-      <KpiGrid cols={5} className="mb-4">
-        <KpiCard title="当前标的" value={trimmedCode || '-'} />
-        <KpiCard title="执行模式" value={urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'} />
-        <KpiCard title="挂单数量" value={pendingOrders.length} />
-        <KpiCard title="执行单号" value={currentExecutionId || '-'} />
-        <KpiCard title="Artifact" value={currentArtifactId || '-'} />
-      </KpiGrid>
+      {!collapseToTabs ? (
+        <KpiGrid cols={5} className="mb-4">
+          <KpiCard title="当前标的" value={trimmedCode || '-'} />
+          <KpiCard title="执行模式" value={urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'} />
+          <KpiCard title="挂单数量" value={pendingOrders.length} />
+          <KpiCard title="执行单号" value={currentExecutionId || '-'} />
+          <KpiCard title="Artifact" value={currentArtifactId || '-'} />
+        </KpiGrid>
+      ) : null}
 
       <WorkspaceSplitLayout
         pageKey="execution"

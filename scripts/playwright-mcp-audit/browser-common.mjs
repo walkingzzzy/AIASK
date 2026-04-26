@@ -249,11 +249,42 @@ async function ensureStrategyMarketSample(page, baseUrl) {
     return null;
   }
 
-  await fetchJson(page, resolveAuditApiUrl(baseUrl, `/api/strategy-market/${encodeURIComponent(strategyId)}/publish`), {
-    method: 'POST',
-  });
-
   return strategyId;
+}
+
+async function readLatestAuditStrategyId() {
+  const artifactsDir = path.join(process.cwd(), 'artifacts');
+  let entries = [];
+  try {
+    entries = await fs.readdir(artifactsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const stateSmokeDirs = entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('state-smoke-'))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  for (const dirName of stateSmokeDirs) {
+    const resultPath = path.join(artifactsDir, dirName, 'state-smoke-results.json');
+    try {
+      const payload = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+      const strategyId = String(
+        payload?.snapshots?.strategyDetail?.strategy?.id
+          ?? payload?.snapshots?.strategyMarket?.firstStrategy?.id
+          ?? '',
+      ).trim();
+      if (strategyId) {
+        return strategyId;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 export async function resolveDynamicPath(page, baseUrl, surface) {
@@ -281,7 +312,13 @@ export async function resolveDynamicPath(page, baseUrl, surface) {
         return values[0] || null;
       })
       .catch(() => null);
-    if (!href) return { path: null, reason: 'strategy-detail-unavailable' };
+    if (!href) {
+      const artifactStrategyId = await readLatestAuditStrategyId();
+      if (artifactStrategyId) {
+        return { path: `/strategy-market/${encodeURIComponent(artifactStrategyId)}`, reason: null };
+      }
+      return { path: null, reason: 'strategy-detail-unavailable' };
+    }
     return { path: href, reason: null };
   }
 

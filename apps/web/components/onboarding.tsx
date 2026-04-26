@@ -269,14 +269,16 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       userIdRef.current = null;
       lastPersistedRef.current = null;
       dirtyRef.current = false;
-      setSnapshot(null);
-      setReady(true);
-      return;
+      const timer = window.setTimeout(() => {
+        setSnapshot(null);
+        setReady(true);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
 
     if (userIdRef.current === user.id && snapshot) {
-      setReady(true);
-      return;
+      const timer = window.setTimeout(() => setReady(true), 0);
+      return () => window.clearTimeout(timer);
     }
 
     const serverSnapshot = parseOnboardingSnapshot(readRecord(user.preferences).onboarding);
@@ -288,9 +290,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     userIdRef.current = user.id;
     lastPersistedRef.current = serverSerialized ?? (localSnapshot ? null : mergedSerialized);
     dirtyRef.current = Boolean(localSnapshot) && mergedSerialized !== serverSerialized;
-    setSnapshot(mergedSnapshot);
-    setReady(true);
+    const timer = window.setTimeout(() => {
+      setSnapshot(mergedSnapshot);
+      setReady(true);
+    }, 0);
     void refreshAiConfig();
+    return () => window.clearTimeout(timer);
   }, [hydrated, refreshAiConfig, snapshot, storageKey, user]);
 
   useEffect(() => {
@@ -481,24 +486,61 @@ function StepStatusBadge({ status }: { status: OnboardingStepStatus }) {
 
 export function Onboarding({ className = '' }: { className?: string }) {
   const compactOnboarding = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
+  const pathname = useStablePathname() ?? '/';
   const { ready, overlayMode, progress, currentStep, matchedStep, nextStep, expand, minimize } =
     useOnboarding();
-  const effectiveOverlayMode = compactOnboarding ? 'minimized' : overlayMode;
+  const hideForDesktopNonGuideRoute =
+    !compactOnboarding
+    && !matchedStep
+    && (
+      pathname.startsWith('/analysis')
+      || pathname.startsWith('/fundamental')
+      || pathname.startsWith('/macro')
+      || pathname.startsWith('/technical')
+      || pathname.startsWith('/valuation')
+      || pathname.startsWith('/fund-flow')
+      || pathname.startsWith('/skills')
+    );
+  const hideForDetailRoute = /^\/strategy-market\/[^/]+(?:\/.*)?$/.test(pathname);
+  const hideForDenseCompactRoute =
+    compactOnboarding
+    && (
+      pathname.startsWith('/strategy-market')
+      || pathname.startsWith('/paper-trading')
+      || pathname.startsWith('/risk')
+      || pathname.startsWith('/performance')
+      || pathname.startsWith('/workspace-templates')
+    );
+  const hideForCompactNonGuideRoute = compactOnboarding && !matchedStep;
+  const forceMinimizedRoute =
+    pathname.startsWith('/workspace-templates')
+    || pathname.startsWith('/analysis')
+    || pathname.startsWith('/fundamental');
+  const stepMismatchResolved = Boolean(
+    matchedStep
+    && matchedStep.id !== currentStep?.id
+    && isStepResolved(matchedStep.state.status),
+  );
+  const effectiveOverlayMode = compactOnboarding || stepMismatchResolved || forceMinimizedRoute ? 'minimized' : overlayMode;
   const sectionClassName =
     effectiveOverlayMode === 'minimized'
       ? 'panel-soft rounded-[20px] px-3 py-2.5 sm:px-4 sm:py-3'
       : 'panel-soft rounded-[24px] p-4 sm:p-5';
 
-  if (!ready || !currentStep || progress.completed || overlayMode === 'hidden') {
+  if (
+    !ready
+    || !currentStep
+    || progress.completed
+    || overlayMode === 'hidden'
+    || hideForDetailRoute
+    || hideForDesktopNonGuideRoute
+    || hideForDenseCompactRoute
+    || hideForCompactNonGuideRoute
+  ) {
     return null;
   }
 
-  if (
-    effectiveOverlayMode === 'minimized'
-    && matchedStep
-    && matchedStep.id !== currentStep.id
-    && isStepResolved(matchedStep.state.status)
-  ) {
+  if (effectiveOverlayMode === 'minimized' && stepMismatchResolved) {
     return null;
   }
 

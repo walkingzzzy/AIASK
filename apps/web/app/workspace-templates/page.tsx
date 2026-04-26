@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { Badge, PageContainer, SectionCard, TabBar, useToast } from '@/components/ui';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -308,89 +308,67 @@ export default function WorkspaceTemplatesPage() {
 
   usePageActions(pageActions);
   const templatesSummary = `当前模板中心聚焦工作区 ${activeWorkspace.name}，已选工作流 ${selectedWorkflow.label}、工作区模板 ${selectedBlueprint.label}、任务模板 ${selectedTemplate.label}，支持跨模板串行编排、依赖条件、默认值策略与执行记录回滚。`;
-  const templateCenterResult = useMemo(
-    () =>
-      buildLocalResultContract({
-        summary: templatesSummary,
-        pageActions,
-        preferredActionIds: [
-          'workspace-templates.run-workflow',
-          'workspace-templates.create-selected',
-          'workspace-templates.apply-selected',
-        ],
-        recommendedLinks: [
-          { id: 'workspace-templates-link-assistant', label: '打开 Copilot', href: '/assistant?from=workspace-templates' },
-          {
-            id: 'workspace-templates-link-strategy',
-            label: '策略超市',
-            href: `/strategy-market?from=workspace-templates&task=workflow_design&q=${encodeURIComponent(selectedWorkflow.label)}`,
-          },
-          {
-            id: 'workspace-templates-link-skills',
-            label: '技能中心',
-            href: `/skills?from=workspace-templates&skill=akshare-strategy-factory`,
-          },
-        ],
-        evidence: [
-          { label: '当前工作区', value: activeWorkspace.name },
-          { label: '工作流', value: selectedWorkflow.label },
-          { label: '蓝图', value: selectedBlueprint.label },
-          { label: '任务模板', value: selectedTemplate.label },
-          { label: '可执行步骤', value: String(selectedWorkflowPreview.executableStepCount) },
-          { label: '运行记录', value: String(templateRuns.length) },
-        ],
-        riskNotes: [
-          ...(hasWorkflowErrors ? ['当前工作流参数尚未满足执行要求。'] : []),
-          ...(hasBlueprintErrors ? ['当前蓝图参数存在必填缺口。'] : []),
-          ...(hasTemplateErrors ? ['当前任务模板参数存在必填缺口。'] : []),
-          ...(latestTemplateRun?.summary ? [`最近一次运行：${latestTemplateRun.summary}`] : ['当前还没有模板执行记录。']),
-        ],
-        freshness: latestTemplateRun?.createdAt
-          ? { updatedAt: String(latestTemplateRun.createdAt), label: '最近模板执行' }
-          : null,
-        platformMeta: {
-          sourceTool: 'workspace-templates',
-          sourceChain: ['workbench-store', 'workspace-templates'],
-          degraded: hasWorkflowErrors || hasBlueprintErrors || hasTemplateErrors,
-          fallbackReason: [
-            hasWorkflowErrors ? 'workflow-parameter-error' : null,
-            hasBlueprintErrors ? 'blueprint-parameter-error' : null,
-            hasTemplateErrors ? 'task-template-parameter-error' : null,
-          ].filter((item): item is string => Boolean(item)),
-        },
-        workbenchTask: defaultWorkbenchTask(
-          'workspace-templates',
-          `复查模板中心 · ${selectedWorkflow.label}`,
-          '/workspace-templates',
-          'workspace-template-review',
-          {
-            workspaceId: activeWorkspace.id,
-            selectedWorkflowId,
-            selectedBlueprintId,
-            selectedTemplateId,
-          },
-        ),
-      }),
-    [
-      activeWorkspace.id,
-      activeWorkspace.name,
-      hasBlueprintErrors,
-      hasTemplateErrors,
-      hasWorkflowErrors,
-      latestTemplateRun?.createdAt,
-      latestTemplateRun?.summary,
-      pageActions,
-      selectedBlueprint.label,
-      selectedBlueprintId,
-      selectedTemplate.label,
-      selectedTemplateId,
-      selectedWorkflow.label,
-      selectedWorkflow.id,
-      selectedWorkflowPreview.executableStepCount,
-      templateRuns.length,
-      templatesSummary,
+  const templateCenterResult = buildLocalResultContract({
+    summary: templatesSummary,
+    pageActions,
+    preferredActionIds: [
+      'workspace-templates.run-workflow',
+      'workspace-templates.create-selected',
+      'workspace-templates.apply-selected',
     ],
-  );
+    recommendedLinks: [
+      { id: 'workspace-templates-link-assistant', label: '打开 Copilot', href: '/assistant?from=workspace-templates' },
+      {
+        id: 'workspace-templates-link-strategy',
+        label: '策略超市',
+        href: `/strategy-market?from=workspace-templates&task=workflow_design&q=${encodeURIComponent(selectedWorkflow.label)}`,
+      },
+      {
+        id: 'workspace-templates-link-skills',
+        label: '技能中心',
+        href: `/skills?from=workspace-templates&skill=akshare-strategy-factory`,
+      },
+    ],
+    evidence: [
+      { label: '当前工作区', value: activeWorkspace.name },
+      { label: '工作流', value: selectedWorkflow.label },
+      { label: '蓝图', value: selectedBlueprint.label },
+      { label: '任务模板', value: selectedTemplate.label },
+      { label: '可执行步骤', value: String(selectedWorkflowPreview.executableStepCount) },
+      { label: '运行记录', value: String(templateRuns.length) },
+    ],
+    riskNotes: [
+      ...(hasWorkflowErrors ? ['当前工作流参数尚未满足执行要求。'] : []),
+      ...(hasBlueprintErrors ? ['当前蓝图参数存在必填缺口。'] : []),
+      ...(hasTemplateErrors ? ['当前任务模板参数存在必填缺口。'] : []),
+      ...(latestTemplateRun?.summary ? [`最近一次运行：${latestTemplateRun.summary}`] : ['当前还没有模板执行记录。']),
+    ],
+    freshness: latestTemplateRun?.createdAt
+      ? { updatedAt: String(latestTemplateRun.createdAt), label: '最近模板执行' }
+      : null,
+    platformMeta: {
+      sourceTool: 'workspace-templates',
+      sourceChain: ['workbench-store', 'workspace-templates'],
+      degraded: hasWorkflowErrors || hasBlueprintErrors || hasTemplateErrors,
+      fallbackReason: [
+        hasWorkflowErrors ? 'workflow-parameter-error' : null,
+        hasBlueprintErrors ? 'blueprint-parameter-error' : null,
+        hasTemplateErrors ? 'task-template-parameter-error' : null,
+      ].filter((item): item is string => Boolean(item)),
+    },
+    workbenchTask: defaultWorkbenchTask(
+      'workspace-templates',
+      `复查模板中心 · ${selectedWorkflow.label}`,
+      '/workspace-templates',
+      'workspace-template-review',
+      {
+        workspaceId: activeWorkspace.id,
+        selectedWorkflowId,
+        selectedBlueprintId,
+        selectedTemplateId,
+      },
+    ),
+  });
 
   usePageContext({
     pageKey: 'workspace-templates',
@@ -468,6 +446,19 @@ export default function WorkspaceTemplatesPage() {
                 />
               </div>
             ) : null}
+            {!compactLayout ? (
+              <div className="mt-4">
+                <TabBar
+                  tabs={[
+                    { key: 'workflow', label: '工作流执行' },
+                    { key: 'blueprint', label: '蓝图创建' },
+                    { key: 'task', label: '任务模板' },
+                  ]}
+                  active={activeSection}
+                  onChange={setActiveSection}
+                />
+              </div>
+            ) : null}
             <div className="mt-4 flex flex-wrap gap-2">
               {activeSection === 'workflow' ? (
                 <button
@@ -523,37 +514,6 @@ export default function WorkspaceTemplatesPage() {
               ) : null}
             </div>
             {compactLayout ? (
-              <details className="mt-3 rounded-[22px] border border-white/50 bg-white/24 px-4 py-3 text-sm text-text-secondary">
-                <summary className="cursor-pointer list-none font-medium text-text-primary">展开次要操作</summary>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleApplyWorkflow(selectedWorkflow.id)}
-                    disabled={hasWorkflowErrors || selectedWorkflowPreview.executableStepCount === 0}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    执行 {selectedWorkflow.label}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCreateBlueprint(selectedBlueprint.id)}
-                    disabled={hasBlueprintErrors}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    创建 {selectedBlueprint.label}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleApplyTemplate(selectedTemplate.id)}
-                    disabled={hasTemplateErrors}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    注入 {selectedTemplate.label}
-                  </button>
-                </div>
-              </details>
-            ) : null}
-            {compactLayout ? (
               <div data-testid="page-primary-status" className="mt-3 text-xs text-text-secondary">
                 当前聚焦
                 <span className="font-medium text-text-primary">
@@ -601,44 +561,21 @@ export default function WorkspaceTemplatesPage() {
         </div>
       </SectionCard>
 
-      <ResultWorkbench
-        pageKey="workspace-templates"
-        title="模板中心结果工作台"
-        result={templateCenterResult}
-      />
-
       {!compactLayout ? (
-        <WorkspaceToolbar
-          pageKey="workspace-templates"
-          currentView={currentView}
-          onApplyView={applyView}
-          supportsPagePanels
-        />
+        <CollapsibleSectionCard
+          title="视图工具"
+          summary="保存/恢复模板中心视图属于次级动作，不再默认占据首屏。"
+          className="mt-4"
+        >
+          <WorkspaceToolbar
+            pageKey="workspace-templates"
+            currentView={currentView}
+            onApplyView={applyView}
+            supportsPagePanels
+          />
+        </CollapsibleSectionCard>
       ) : null}
       <div className="mt-4 space-y-4">
-        {!compactLayout ? (
-          <SectionCard className="p-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="eyebrow">Main Sections</div>
-              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">按主任务切换模板中心</h2>
-              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
-                默认只展开一个主区域，先完成当前编排动作，再决定是否进入蓝图创建或任务注入，避免把整页堆成多层管理台。
-              </p>
-            </div>
-            <TabBar
-              tabs={[
-                { key: 'workflow', label: '工作流执行' },
-                { key: 'blueprint', label: '蓝图创建' },
-                { key: 'task', label: '任务模板' },
-              ]}
-              active={activeSection}
-              onChange={setActiveSection}
-            />
-          </div>
-          </SectionCard>
-        ) : null}
-
         {activeSection === 'workflow' && compactLayout ? (
           <SectionCard className="p-4">
             <div className="flex flex-col gap-4">

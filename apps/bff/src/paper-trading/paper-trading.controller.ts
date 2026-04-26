@@ -70,6 +70,10 @@ class PerformanceQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) days?: number;
 }
 
+class TrustStatusQueryDto {
+  @IsOptional() @IsString() account_id?: string;
+}
+
 type Req_ = { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } };
 
 function traceId(req: Req_): string {
@@ -171,6 +175,12 @@ export class PaperTradingController {
   @Get('performance')
   async performance(@Query() query: PerformanceQueryDto, @Req() req: Req_) {
     const data = await this.svc.performance(userId(req), query.account_id, query.days ?? 30);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Get('trust-status')
+  async trustStatus(@Query() query: TrustStatusQueryDto, @Req() req: Req_) {
+    const data = await this.svc.trustStatus(userId(req), query.account_id);
     return { success: true, data, traceId: traceId(req) };
   }
 

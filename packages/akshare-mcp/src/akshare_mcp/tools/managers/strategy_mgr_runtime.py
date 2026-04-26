@@ -186,6 +186,7 @@ async def handle_promotion_review_run(db, params: dict) -> dict:
         strategy,
         source=str(params.get("source") or "strategy_manager"),
         auto_apply=bool(params.get("auto_apply")),
+        metadata={"force_recompute": bool(params.get("force_recompute"))},
     )
     return ok(result)
 

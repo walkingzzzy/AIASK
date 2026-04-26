@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge, TabBar } from '@/components/ui';
 import { BarChart, LineChart } from '@/components/charts';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -19,8 +19,6 @@ import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-const HERO_SECONDARY_BUTTON_CLS =
-  'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_LINK_CLS = 'action-chip cursor-pointer border-0 bg-transparent text-xs no-underline text-inherit';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
 const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
@@ -553,7 +551,7 @@ export default function FactorPage() {
         </div>
       </section>
 
-      <ResultWorkbench pageKey="factor" title="因子研究结果工作台" result={factorResult} />
+      <ResponsiveResultWorkbench pageKey="factor" title="因子研究结果工作台" result={factorResult} />
 
       {anyLoading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} hint="请先确认因子名称与股票池输入" /> : null}

@@ -1,12 +1,15 @@
 'use client';
 
 import { FormEvent, useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import LightOverviewHero from '@/components/light-overview-hero';
 import { Badge, PageContainer, SectionCard } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { ensureRecord } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import type {
@@ -51,6 +54,7 @@ function gapItems(run: DeepAnalysisRunResponse | null): AnalysisGapItem[] {
 }
 
 export default function DeepStockAnalysisPage() {
+  const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const [code, setCode] = useState('600519');
   const [task, setTask] = useState<DeepAnalysisTask>('deep_analysis');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -85,7 +89,7 @@ export default function DeepStockAnalysisPage() {
   const report = reportQuery.data?.found === false ? null : reportQuery.data;
   const synthesis = (run?.analysis_synthesis ?? null) as AnalysisSynthesis | null;
   const gaps = gapItems(run);
-  const stages = (run?.steps ?? []) as AnalysisStage[];
+  const stages = useMemo(() => (run?.steps ?? []) as AnalysisStage[], [run?.steps]);
   const summary = run?.summary ?? null;
   const activeTaskOption = TASK_OPTIONS.find((item) => item.value === task);
 
@@ -113,36 +117,33 @@ export default function DeepStockAnalysisPage() {
     if (!activeRunId) return;
     await startAnalysis('rebuild_report', activeRunId);
   }
-  const deepStockActions = useMemo(
-    () => [
-      {
-        id: 'deep-stock.start-analysis',
-        label: '启动分析',
-        description: '按当前代码与任务模式启动或刷新一轮深度分析',
-        keywords: ['深度分析', '启动', code.trim()],
-        scope: 'page' as const,
-        pageKey: 'analysis-deep-stock',
-        run: async () => {
-          await startAnalysis(task);
-          return { message: `已发起 ${code.trim() || '当前标的'} 的 ${task}` };
-        },
+  const deepStockActions = [
+    {
+      id: 'deep-stock.start-analysis',
+      label: '启动分析',
+      description: '按当前代码与任务模式启动或刷新一轮深度分析',
+      keywords: ['深度分析', '启动', code.trim()],
+      scope: 'page' as const,
+      pageKey: 'analysis-deep-stock',
+      run: async () => {
+        await startAnalysis(task);
+        return { message: `已发起 ${code.trim() || '当前标的'} 的 ${task}` };
       },
-      {
-        id: 'deep-stock.rebuild-report',
-        label: '重建报告',
-        description: '针对当前 run 重新生成 standalone 报告工件',
-        keywords: ['报告', '重建'],
-        scope: 'page' as const,
-        pageKey: 'analysis-deep-stock',
-        run: async () => {
-          if (!activeRunId) throw new Error('当前还没有可重建的 run');
-          await rebuildReport();
-          return { message: '已触发报告重建' };
-        },
+    },
+    {
+      id: 'deep-stock.rebuild-report',
+      label: '重建报告',
+      description: '针对当前 run 重新生成 standalone 报告工件',
+      keywords: ['报告', '重建'],
+      scope: 'page' as const,
+      pageKey: 'analysis-deep-stock',
+      run: async () => {
+        if (!activeRunId) throw new Error('当前还没有可重建的 run');
+        await rebuildReport();
+        return { message: '已触发报告重建' };
       },
-    ],
-    [activeRunId, code, task],
-  );
+    },
+  ];
   usePageActions(deepStockActions);
   const deepStockSummary = run
     ? `${code.trim() || summary?.code || '当前标的'} 当前状态 ${run.status ?? 'unknown'}，已完成 ${stageStats.success}/${stageStats.total} 个阶段，缺口 ${gaps.length} 个，报告 ${summary?.report_ready ? '已就绪' : '待生成'}。`
@@ -220,25 +221,87 @@ export default function DeepStockAnalysisPage() {
 
   return (
     <PageContainer className="px-4 py-6 sm:px-6 lg:px-8" narrow>
-      <section className="rounded-[32px] border border-border bg-[linear-gradient(135deg,rgba(254,247,237,0.92),rgba(239,246,255,0.92))] p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl">
-            <div className="text-xs uppercase tracking-[0.28em] text-text-secondary">Stock Deep Analysis</div>
-            <h1 className="mt-2 text-3xl font-semibold text-text-primary sm:text-4xl">个股深度分析工作台</h1>
-            <p className="mt-3 text-sm leading-6 text-text-secondary">
-              统一走 `workflow / skill / resource / BFF / Web` 同一条运行链。当前阶段会展示 target 解析、完整性门禁、AI review、synthesis 与报告工件。
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <LightOverviewHero
+        eyebrow="Stock Deep Analysis"
+        title="个股深度分析工作台"
+        summary={
+          compactLayout
+            ? '先确认标的和任务模式，再决定是否启动或重建分析。'
+            : '统一走 workflow / skill / resource / BFF / Web 同一条运行链。首屏先收口到状态、主动作和当前运行摘要。'
+        }
+        badges={compactLayout ? (
+          <>
+            <Badge variant={summary?.report_ready ? 'success' : 'warning'}>
+              {summary?.report_ready ? '报告已就绪' : '等待报告'}
+            </Badge>
+            <Badge variant={badgeVariant(run?.status ?? '')}>{run?.status ?? 'idle'}</Badge>
+          </>
+        ) : (
+          <>
             <Badge variant={summary?.report_ready ? 'success' : 'warning'}>
               {summary?.report_ready ? '报告已就绪' : '等待报告'}
             </Badge>
             <Badge variant={badgeVariant(run?.status ?? '')}>{run?.status ?? 'idle'}</Badge>
             {activeRunId ? <Badge variant="info">Run {activeRunId}</Badge> : null}
+          </>
+        )}
+        actions={(
+          compactLayout ? (
+            <button
+              type="button"
+              onClick={() => void startAnalysis(task)}
+              className="inline-flex h-11 items-center justify-center rounded-2xl bg-text-primary px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={createRun.isPending}
+            >
+              {createRun.isPending ? '运行中...' : '启动分析'}
+            </button>
+          ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => void startAnalysis(task)}
+              className="inline-flex h-11 items-center justify-center rounded-2xl bg-text-primary px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={createRun.isPending}
+            >
+              {createRun.isPending ? '运行中...' : '启动分析'}
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-11 items-center justify-center rounded-2xl border border-border bg-white/80 px-5 text-sm font-medium text-text-primary transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={rebuildReport}
+              disabled={!activeRunId || createRun.isPending}
+            >
+              重建报告
+            </button>
+          </>
+          )
+        )}
+        status={compactLayout ? null : (
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前代码 {code.trim() || summary?.code || '-'} ｜ 任务 {task} ｜ 阶段 {stageStats.success}/{stageStats.total}
+            </div>
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              当前任务说明：{activeTaskOption?.hint ?? '无'} ｜ 缺口 {gaps.length} 个
+            </p>
           </div>
-        </div>
+        )}
+        metrics={compactLayout ? [] : [
+          { key: 'deep-stock-code', label: '当前代码', value: code.trim() || summary?.code || '-' },
+          { key: 'deep-stock-task', label: '任务模式', value: task },
+          { key: 'deep-stock-stages', label: '阶段进度', value: `${stageStats.success}/${stageStats.total}` },
+          { key: 'deep-stock-gaps', label: '结构化缺口', value: String(gaps.length) },
+        ]}
+        compact
+        detailsTitle="展开运行说明"
+        detailsContent={!compactLayout && createRun.error ? <div className="text-sm text-danger">{createRun.error}</div> : null}
+      />
 
-        <form className="mt-6 grid gap-4 lg:grid-cols-[1.5fr_1fr_auto_auto]" onSubmit={handleSubmit}>
+      <SectionCard className="p-4">
+        <form className="grid gap-4 lg:grid-cols-[1.5fr_1fr_auto_auto]" onSubmit={handleSubmit}>
           <label className="flex flex-col gap-2">
             <span className="text-sm font-medium text-text-secondary">股票代码或名称</span>
             <input
@@ -269,26 +332,68 @@ export default function DeepStockAnalysisPage() {
           >
             {createRun.isPending ? '运行中...' : '启动分析'}
           </button>
-          <button
-            type="button"
-            className="h-12 rounded-2xl border border-border bg-white/80 px-5 text-sm font-medium text-text-primary transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={rebuildReport}
-            disabled={!activeRunId || createRun.isPending}
-          >
-            重建报告
-          </button>
+          {!compactLayout ? (
+            <button
+              type="button"
+              className="h-12 rounded-2xl border border-border bg-white/80 px-5 text-sm font-medium text-text-primary transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={rebuildReport}
+              disabled={!activeRunId || createRun.isPending}
+            >
+              重建报告
+            </button>
+          ) : null}
         </form>
+      </SectionCard>
 
-        <div className="mt-3 text-sm text-text-secondary">
-          当前任务说明: {activeTaskOption?.hint ?? '无'}
-        </div>
-        {createRun.error ? <div className="mt-4 text-sm text-danger">{createRun.error}</div> : null}
-      </section>
+      <div className="mt-6 space-y-4">
+        <CollapsibleSectionCard
+          title="运行摘要"
+          summary={
+            compactLayout
+              ? '移动端先收起长摘要，避免结果区压住输入动作。'
+              : '默认只展开对外摘要和关键视角卡。阶段进度、缺口恢复和最终报告改成按需下钻。'
+          }
+          defaultOpen={!compactLayout}
+          badge={summary?.gap_count ? <Badge variant="warning">{summary.gap_count} 个缺口</Badge> : <Badge variant="info">主结果</Badge>}
+        >
+          <div className="rounded-[24px] border border-border bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(246,250,255,0.92))] p-5">
+            <div className="text-xs uppercase tracking-[0.22em] text-text-secondary">Summary Card</div>
+            <div className="mt-3 text-2xl font-semibold text-text-primary">
+              {report?.summary_card?.title ?? run?.name ?? summary?.code ?? '等待运行'}
+            </div>
+            <p className="mt-3 text-sm leading-6 text-text-secondary">
+              {report?.summary_card?.subtitle ?? summary?.digest ?? '运行完成后，这里会显示 one-paragraph digest。'}
+            </p>
+            {!compactLayout ? (
+              <div className="mt-4 grid gap-2">
+                {(report?.summary_card?.bullets ?? []).map((bullet) => (
+                  <div key={bullet} className="rounded-2xl border border-border bg-white/80 px-3 py-2 text-sm text-text-primary">
+                    {bullet}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
 
-      <ResultWorkbench pageKey="analysis-deep-stock" title="深度分析结果工作台" result={deepStockResult} />
+          {!compactLayout ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {(report?.perspective_cards ?? []).map((card) => (
+                <div key={card.key} className="rounded-2xl border border-border bg-white/70 px-4 py-4">
+                  <div className="text-xs uppercase tracking-[0.18em] text-text-secondary">{card.title}</div>
+                  <div className="mt-2 text-xl font-semibold text-text-primary">{String(card.value ?? '-')}</div>
+                  <div className="mt-1 text-sm text-text-secondary">{card.note ?? ''}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </CollapsibleSectionCard>
 
-      <div className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <SectionCard className="mt-0">
+        <CollapsibleSectionCard
+          title="阶段进度"
+          summary={`当前已完成 ${stageStats.success}/${stageStats.total} 个阶段。阶段详情默认收起，避免首屏先被运行流水占满。`}
+          badge={summary?.current_stage ? <Badge variant={badgeVariant(summary.current_stage)}>{summary.current_stage}</Badge> : null}
+        >
+          <SectionCard className="mt-0 border-0 bg-transparent p-0 shadow-none">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-text-primary">阶段进度</h2>
@@ -325,47 +430,15 @@ export default function DeepStockAnalysisPage() {
               ))
             )}
           </div>
-        </SectionCard>
+          </SectionCard>
+        </CollapsibleSectionCard>
 
-        <SectionCard className="mt-0">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-text-primary">运行摘要</h2>
-              <p className="mt-1 text-sm text-text-secondary">对外展示用 summary card / digest / run manifest</p>
-            </div>
-            {summary?.gap_count ? <Badge variant="warning">{summary.gap_count} 个缺口</Badge> : null}
-          </div>
-          <div className="mt-5 rounded-[24px] border border-border bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(246,250,255,0.92))] p-5">
-            <div className="text-xs uppercase tracking-[0.22em] text-text-secondary">Summary Card</div>
-            <div className="mt-3 text-2xl font-semibold text-text-primary">
-              {report?.summary_card?.title ?? run?.name ?? summary?.code ?? '等待运行'}
-            </div>
-            <p className="mt-3 text-sm leading-6 text-text-secondary">
-              {report?.summary_card?.subtitle ?? summary?.digest ?? '运行完成后，这里会显示 one-paragraph digest。'}
-            </p>
-            <div className="mt-4 grid gap-2">
-              {(report?.summary_card?.bullets ?? []).map((bullet) => (
-                <div key={bullet} className="rounded-2xl border border-border bg-white/80 px-3 py-2 text-sm text-text-primary">
-                  {bullet}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {(report?.perspective_cards ?? []).map((card) => (
-              <div key={card.key} className="rounded-2xl border border-border bg-white/70 px-4 py-4">
-                <div className="text-xs uppercase tracking-[0.18em] text-text-secondary">{card.title}</div>
-                <div className="mt-2 text-xl font-semibold text-text-primary">{String(card.value ?? '-')}</div>
-                <div className="mt-1 text-sm text-text-secondary">{card.note ?? ''}</div>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      </div>
-
-      <div className="mt-6 grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-        <SectionCard className="mt-0">
+        <CollapsibleSectionCard
+          title="缺口与恢复"
+          summary="integrity gate、恢复动作和 AI review 冲突统一下沉到这一层，只在需要排障时展开。"
+          badge={run?.analysis_gap_report?.status ? <Badge variant={badgeVariant(run.analysis_gap_report.status)}>{run.analysis_gap_report.status}</Badge> : null}
+        >
+          <SectionCard className="mt-0 border-0 bg-transparent p-0 shadow-none">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-text-primary">缺口与恢复</h2>
@@ -418,9 +491,15 @@ export default function DeepStockAnalysisPage() {
               </ul>
             </div>
           ) : null}
-        </SectionCard>
+          </SectionCard>
+        </CollapsibleSectionCard>
 
-        <SectionCard className="mt-0">
+        <CollapsibleSectionCard
+          title="最终报告"
+          summary="报告 HTML、章节 narrative 和引用默认折叠。先确认运行摘要成立，再决定是否进入长报告。"
+          badge={reportQuery.isFetching ? <Badge variant="info">刷新中</Badge> : <Badge variant="neutral">长报告</Badge>}
+        >
+          <SectionCard className="mt-0 border-0 bg-transparent p-0 shadow-none">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-text-primary">最终报告</h2>
@@ -457,7 +536,8 @@ export default function DeepStockAnalysisPage() {
               报告尚未生成，或者当前 run 被完整性门禁阻断。
             </div>
           )}
-        </SectionCard>
+          </SectionCard>
+        </CollapsibleSectionCard>
       </div>
     </PageContainer>
   );

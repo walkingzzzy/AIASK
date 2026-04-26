@@ -34,11 +34,13 @@ import type {
   EventFilters,
   FactoryReviewSection,
   StrategyClosureReviewResponse,
+  StrategyPaperContextResponse,
 } from '../types';
 import {
   parseIncubationOverviewResponse,
   parseReviewReportResponse,
   parseStrategyDetailResponse,
+  parseStrategyPaperContextResponse,
 } from '../lib/contracts';
 
 export type StrategyDetailTab = 'overview' | 'tracking' | 'factory';
@@ -51,6 +53,15 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const detailQ = useApiQuery<StrategyDetailResponse>(
     id ? `/strategy-market/${id}` : null,
     { parse: parseStrategyDetailResponse },
+  );
+  const paperContextQ = useApiQuery<StrategyPaperContextResponse>(
+    id && userId ? `/strategy-market/${id}/paper-context` : null,
+    {
+      enabled: Boolean(id && userId),
+      nonFatal: true,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+      parse: parseStrategyPaperContextResponse,
+    },
   );
   const capabilitiesQ = useApiQuery<CapabilityResponse>(
     id ? '/strategy-market/capabilities' : null,
@@ -73,6 +84,10 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const riskRecoveryApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已发起恢复尝试' });
   const runRuntimeAlertDispatchApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行告警已重新分发' });
   const ackRuntimeAlertApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '告警已确认' });
+  const setRuntimeControlApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行控制已更新' });
+  const resolveRiskEventApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风险事件已解决' });
+  const runRuntimeCycleApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行闭环已触发' });
+  const aiGenerateCandidateApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: 'AI 候选生成任务已提交' });
 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
@@ -258,6 +273,12 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const favoriteState = closureReview?.favorite_state ?? detail?.favorite_state ?? null;
   const paperSessionState = closureReview?.paper_session_state ?? detail?.paper_session_state ?? null;
   const presentation = closureReview?.presentation ?? detail?.presentation ?? null;
+  const runtimeActionContract =
+    closureReview?.runtime_action_contract ??
+    detail?.runtime_action_contract ??
+    strategy?.runtime_action_contract ??
+    detail?.view_model?.actions?.runtime_action_contract ??
+    null;
   const metrics = useMemo(
     () => detail?.metrics ?? strategy?.metrics ?? [],
     [detail?.metrics, strategy?.metrics],
@@ -422,6 +443,57 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     );
   }
 
+  async function handleSetRuntimeControl(controlMode: string) {
+    if (!id) return;
+    const confirmed = window.confirm(`确认将运行控制模式设置为 ${controlMode}？`);
+    if (!confirmed) return;
+    await setRuntimeControlApi.triggerAsync(
+      `/strategy-market/${id}/runtime-control`,
+      { method: 'POST' },
+      {
+        control_mode: controlMode,
+        reason: 'web_detail_runtime_governance',
+        source: 'web_detail',
+        trigger_event_type: 'manual_operator_control',
+      },
+    );
+  }
+
+  async function handleResolveRiskEvent(eventId: number) {
+    if (!eventId) return;
+    const confirmed = window.confirm(`确认解决风险事件 ${eventId}？`);
+    if (!confirmed) return;
+    await resolveRiskEventApi.triggerAsync(
+      `/strategy-market/risk-events/${eventId}/resolve`,
+      { method: 'POST' },
+      { resolution: 'resolved_from_web_detail' },
+    );
+  }
+
+  async function handleRunRuntimeCycle() {
+    const confirmed = window.confirm('确认触发运行态闭环？');
+    if (!confirmed) return;
+    await runRuntimeCycleApi.triggerAsync('/strategy-market/runtime-cycle/run', { method: 'POST' }, {});
+  }
+
+  async function handleAiGenerateCandidate() {
+    if (!id) return;
+    const confirmed = window.confirm('确认围绕当前策略提交 AI 候选生成任务？');
+    if (!confirmed) return;
+    await aiGenerateCandidateApi.triggerAsync(
+      '/strategy-market/operator/jobs',
+      { method: 'POST' },
+      {
+        action: 'ai_generate',
+        params: { limit: 3, parent_strategy_id: id, auto_submit: false },
+        confirmed: true,
+        confirmation_text: 'ai_generate',
+        reason: 'strategy_detail_experiment_section',
+        timeout_ms: 120000,
+      },
+    );
+  }
+
   const factorySectionLoading: Record<FactoryReviewSection, boolean> = {
     summary: closureReviewQ.isPending || (
       reviewReportQ.isPending ||
@@ -489,7 +561,9 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       ownerState,
       favoriteState,
       paperSessionState,
+      paperContext: paperContextQ.data,
       presentation,
+      runtimeActionContract,
       rating,
       setRating,
       comment,
@@ -509,6 +583,8 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     factoryPanelProps: {
       highConfidenceQualityUiEnabled,
       canViewOperatorPanels: Boolean(capabilitiesQ.data?.actor_permissions?.can_view_operator_panels),
+      strategyIncubationSurface: strategy?.incubation_surface ?? null,
+      paperContext: paperContextQ.data,
       report: latestQualityReport,
       events: closureReview?.events ?? eventsQ.data,
       incubation: incubationOverview,
@@ -571,6 +647,14 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       ackRuntimeAlertPending: ackRuntimeAlertApi.isPending,
       onRiskRecovery: handleRiskRecovery,
       riskRecoveryPending: riskRecoveryApi.isPending,
+      onSetRuntimeControl: handleSetRuntimeControl,
+      setRuntimeControlPending: setRuntimeControlApi.isPending,
+      onResolveRiskEvent: handleResolveRiskEvent,
+      resolveRiskEventPending: resolveRiskEventApi.isPending,
+      onRunRuntimeCycle: handleRunRuntimeCycle,
+      runRuntimeCyclePending: runRuntimeCycleApi.isPending,
+      onAiGenerateCandidate: handleAiGenerateCandidate,
+      aiGenerateCandidatePending: aiGenerateCandidateApi.isPending,
       loading: factoryLoading,
     },
   };

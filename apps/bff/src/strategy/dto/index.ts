@@ -1,5 +1,6 @@
-import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
+import { STRATEGY_MANAGER_ACTIONS, type StrategyManagerAction, type StrategyOperatorJobRequest } from '@aiask/shared-types';
 
 export class ListDto {
   @IsOptional() @IsString() status?: string;
@@ -54,6 +55,19 @@ export class UpdateStrategyDto {
   @IsOptional() factor_weights?: Record<string, number>;
   @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
 }
+
+export class PersonalStrategySuggestionDto {
+  @IsOptional() @IsString() objective?: string;
+  @IsOptional() @IsString() instructions?: string;
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.split(',') : value))
+  @IsArray() @IsString({ each: true })
+  focus_fields?: string[];
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() persist?: boolean;
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() run_post_update_pipeline?: boolean;
+}
+
+export class AiOptimizePersonalStrategyDto extends PersonalStrategySuggestionDto {}
 
 export class MyStrategiesQueryDto {
   @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() include_archived?: boolean;
@@ -307,6 +321,44 @@ export class TaskRunsQueryDto {
   @IsOptional() @IsString() task_scope?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
+}
+
+export class CoreChainAcceptanceQueryDto {
+  @IsOptional() @IsString()
+  strategy_id?: string;
+
+  @IsOptional() @IsString()
+  personal_strategy_id?: string;
+
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean()
+  include_raw?: boolean;
+}
+
+export class StrategyOperatorJobDto implements StrategyOperatorJobRequest {
+  @IsString() @IsIn(STRATEGY_MANAGER_ACTIONS)
+  action!: StrategyManagerAction;
+
+  @IsOptional() @IsString()
+  strategy_id?: string;
+
+  @IsOptional() @IsObject()
+  params?: Record<string, unknown>;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1000) @Max(300000)
+  timeout_ms?: number;
+
+  @IsOptional() @IsString()
+  idempotency_key?: string;
+
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  confirmed!: boolean;
+
+  @IsOptional() @IsString()
+  confirmation_text?: string;
+
+  @IsOptional() @IsString()
+  reason?: string;
 }
 
 export type Req_ = {

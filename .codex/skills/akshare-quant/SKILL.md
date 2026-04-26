@@ -1,6 +1,15 @@
 ---
 name: akshare-quant
 description: 技术指标计算、K线形态识别、因子计算与IC/分组回测、相似K线/相似股票检索等量化分析场景使用。
+capability_tier: hybrid
+runtime_status: executable
+product_surfaces: ["mcp"]
+artifacts: []
+backing_tools: ["run_skill"]
+backing_managers: ["skills_executor"]
+regulatory_scope: ["model_governance", "research_disclosure"]
+role_tags: ["quant", "research"]
+last_runtime_verified_at: "2026-04-19"
 ---
 
 > 校准说明：本 skill 主要提供量化分析工具的推荐调用路径与分流顺序，不代表文中涉及的所有指标、因子、相似检索与管理器路径在当前环境都已完成同口径验证。

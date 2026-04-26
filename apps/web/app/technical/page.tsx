@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import {
   PageContainer,
   TabBar,
@@ -20,7 +21,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { LineChart, COLORS } from '@/components/charts';
-import { extractArray, fmtNum } from '@/lib/data-utils';
+import { extractArray } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
@@ -52,7 +53,6 @@ const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
 const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
@@ -122,12 +122,13 @@ export default function TechnicalPage() {
   useEffect(() => {
     if (!autoFetched.current && resolvedCode) {
       autoFetched.current = true;
-      setIndicatorBody({
+      const timer = window.setTimeout(() => setIndicatorBody({
         code: resolvedCode,
         indicators: selectedIndicators,
         period,
         limit: Number(limit),
-      });
+      }), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [limit, period, resolvedCode, selectedIndicators]);
 
@@ -275,47 +276,44 @@ export default function TechnicalPage() {
   const activeTabLabel = TABS.find((item) => item.key === tab)?.label ?? '技术分析';
   const focusCode = trimmedCode || resolvedCode || '600519';
   const periodLabel = period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线';
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'technical.run-recommended',
-        label: '运行推荐分析',
-        description: '用推荐参数直接发起技术分析',
-        keywords: ['推荐分析', '技术'],
-        scope: 'page' as const,
-        pageKey: 'technical',
-        run: () => {
-          runRecommendedAnalysis();
-          return { message: '已触发推荐技术分析' };
-        },
+  const pageActions = [
+    {
+      id: 'technical.run-recommended',
+      label: '运行推荐分析',
+      description: '用推荐参数直接发起技术分析',
+      keywords: ['推荐分析', '技术'],
+      scope: 'page' as const,
+      pageKey: 'technical',
+      run: () => {
+        runRecommendedAnalysis();
+        return { message: '已触发推荐技术分析' };
       },
-      {
-        id: 'technical.submit',
-        label: tab === 'available' ? '刷新可用形态' : tab === 'indicators' ? '计算指标' : '识别形态',
-        description: '按当前参数提交技术分析请求',
-        keywords: ['技术分析', '提交'],
-        scope: 'page' as const,
-        pageKey: 'technical',
-        run: () => {
-          submit();
-          return { message: '已提交当前技术分析请求' };
-        },
+    },
+    {
+      id: 'technical.submit',
+      label: tab === 'available' ? '刷新可用形态' : tab === 'indicators' ? '计算指标' : '识别形态',
+      description: '按当前参数提交技术分析请求',
+      keywords: ['技术分析', '提交'],
+      scope: 'page' as const,
+      pageKey: 'technical',
+      run: () => {
+        submit();
+        return { message: '已提交当前技术分析请求' };
       },
-      {
-        id: 'technical.open-stock',
-        label: '打开个股详情',
-        description: '跳到个股详情页继续看行情和盘口',
-        keywords: ['个股详情', '跳转'],
-        scope: 'page' as const,
-        pageKey: 'technical',
-        run: () => {
-          window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
-          return { message: '已跳到个股详情' };
-        },
+    },
+    {
+      id: 'technical.open-stock',
+      label: '打开个股详情',
+      description: '跳到个股详情页继续看行情和盘口',
+      keywords: ['个股详情', '跳转'],
+      scope: 'page' as const,
+      pageKey: 'technical',
+      run: () => {
+        window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
+        return { message: '已跳到个股详情' };
       },
-    ],
-    [focusCode, tab],
-  );
+    },
+  ];
   usePageActions(pageActions);
   const technicalSummary = `当前技术页聚焦 ${focusCode}，Tab 为 ${activeTabLabel}，周期 ${periodLabel}，状态 ${isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析'}。`;
   const technicalViews = [
@@ -385,67 +383,69 @@ export default function TechnicalPage() {
 
   return (
     <PageContainer>
-      <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Technical Workspace</Badge>
-              <Badge variant="neutral">{activeTabLabel}</Badge>
-              <Badge variant={tab === 'available' ? 'info' : 'success'}>
-                {tab === 'available' ? '形态库视图' : `${focusCode} · ${periodLabel}`}
-              </Badge>
+      <LightOverviewHero
+        eyebrow="Technical Workspace"
+        title="技术分析工作台"
+        summary="先确定股票与周期，再看一个主结果块。参数矩阵、推荐预设和联动跳转都收进按需展开区。"
+        badges={(
+          <>
+            <Badge variant="info">Technical Workspace</Badge>
+            <Badge variant="neutral">{activeTabLabel}</Badge>
+            <Badge variant={tab === 'available' ? 'info' : 'success'}>
+              {tab === 'available' ? '形态库视图' : `${focusCode} · ${periodLabel}`}
+            </Badge>
+          </>
+        )}
+        actions={(
+          <button type="button" onClick={runRecommendedAnalysis} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
+            运行推荐分析
+          </button>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前焦点：{tab === 'available' ? '可用形态库' : `${focusCode} · ${periodLabel}`}
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              技术分析工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              先确定股票与周期，再看一个主结果块。参数矩阵、推荐预设和联动跳转都收进按需展开区。
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={runRecommendedAnalysis} data-testid="page-primary-action" className={HERO_PRIMARY_BUTTON_CLS}>
-                运行推荐分析
-              </button>
-            </div>
-            <div
-              data-testid="page-primary-status"
-              className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
-            >
-              <div className="font-medium text-text-primary">
-                当前焦点：{tab === 'available' ? '可用形态库' : `${focusCode} · ${periodLabel}`}
-              </div>
-              <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">{requestSummary}</p>
-            </div>
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">{requestSummary}</p>
           </div>
-
-          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
-            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-              解读与下一步
-            </summary>
-            <div className="mt-4 space-y-3">
+        )}
+        metrics={[
+          { key: 'technical-focus', label: '当前焦点', value: tab === 'available' ? '可用形态库' : focusCode },
+          { key: 'technical-period', label: '观察周期', value: tab === 'available' ? '形态库' : periodLabel },
+          { key: 'technical-updated', label: '最近更新', value: lastUpdatedText || '尚未更新' },
+          { key: 'technical-result', label: '当前结论', value: explanation?.title ?? '等待结果返回' },
+        ]}
+        compact={compactLayout}
+        detailsTitle="展开解读与联动入口"
+        detailsContent={(
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className={NOTE_CARD_CLS}>当前结论：{explanation?.title ?? '等待结果返回'}</div>
               <div className={NOTE_CARD_CLS}>最近更新：{lastUpdatedText || '尚未更新'}</div>
-              {resolvedCode && tab !== 'available' ? (
-                <div className="flex items-center gap-2">
-                  <StockLink code={resolvedCode} name={resolvedCode} />
-                  <WatchlistButton code={resolvedCode} name="" />
-                </div>
-              ) : null}
-              <details>
-                <summary className="cursor-pointer text-sm text-text-primary">展开联动入口</summary>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {actionLinks.map((link) => (
-                    <Link key={link.href} href={link.href} className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
-                      {link.label}
-                    </Link>
-                  ))}
-                </div>
-              </details>
             </div>
-          </details>
-        </div>
-      </section>
+            {resolvedCode && tab !== 'available' ? (
+              <div className="flex items-center gap-2">
+                <StockLink code={resolvedCode} name={resolvedCode} />
+                <WatchlistButton code={resolvedCode} name="" />
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              {actionLinks.map((link) => (
+                <Link key={link.href} href={link.href} className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+      />
 
-      <ResultWorkbench pageKey="technical" title="技术结果工作台" result={technicalResult} />
+      {!compactLayout ? (
+        <ProgressiveWorkbenchSection pageKey="technical" title="技术结果工作台" result={technicalResult} summaryMode="strip" />
+      ) : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

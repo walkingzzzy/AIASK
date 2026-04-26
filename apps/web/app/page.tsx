@@ -755,7 +755,7 @@ export default function HomePage() {
           watchlistCount,
         }),
       }),
-    [activeAlertCount, homeEvidence, homeLinks, homeRiskNotes, homeSummary, pageActions, primaryStockCode, watchlistCount],
+    [activeAlertCount, homeEvidence, homeLinks, homeRiskNotes, homeSummary, operationsChainUnavailable, pageActions, personalChainUnavailable, primaryStockCode, watchlistCount],
   );
 
   usePageContext({

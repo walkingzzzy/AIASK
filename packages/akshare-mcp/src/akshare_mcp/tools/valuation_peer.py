@@ -6,11 +6,21 @@
 """
 
 from typing import Optional, List
+import asyncio
+import os
 import statistics
 
 from ..storage import get_db
 from ..utils import ok, fail
 from .finance import normalize_financial_payload
+
+
+_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "pe_ratio": ("pe_ratio", "pe", "peRatio", "ttm_pe", "pe_ttm"),
+    "pb_ratio": ("pb_ratio", "pb", "pbRatio", "ttm_pb"),
+    "ps_ratio": ("ps_ratio", "ps", "psRatio", "ttm_ps"),
+    "market_cap": ("market_cap", "marketCap", "mkt_cap", "total_market_cap", "totalMarketCap", "total_mv"),
+}
 
 
 def _safe_float(value):
@@ -78,6 +88,77 @@ def _record_peer_invalid_metric(
         sample_codes.append(code)
 
 
+def _canonicalize_metric_name(metric: str) -> str:
+    raw = str(metric or "").strip()
+    for canonical_name, aliases in _METRIC_ALIASES.items():
+        if raw == canonical_name or raw in aliases:
+            return canonical_name
+    return raw
+
+
+def _canonicalize_metric_list(metrics: Optional[List[str]]) -> list[str]:
+    normalized: list[str] = []
+    for metric in list(metrics or []):
+        canonical_name = _canonicalize_metric_name(metric)
+        if canonical_name and canonical_name not in normalized:
+            normalized.append(canonical_name)
+    return normalized
+
+
+def _pick_metric_value(metric: str, *rows: object):
+    aliases = _METRIC_ALIASES.get(metric, (metric,))
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in aliases:
+            value = row.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _has_positive_metric(metric: str, *rows: object) -> bool:
+    return _sanitize_positive_metric(
+        _pick_metric_value(metric, *rows),
+        metric=metric,
+    ) is not None
+
+
+def _has_all_requested_metrics(metrics: list[str], *rows: object) -> bool:
+    return all(_has_positive_metric(metric, *rows) for metric in metrics)
+
+
+def _has_any_requested_metric(metrics: list[str], *rows: object) -> bool:
+    return any(_has_positive_metric(metric, *rows) for metric in metrics)
+
+
+def _external_financial_timeout_seconds() -> float:
+    try:
+        return max(
+            0.5,
+            float(os.getenv("VALUATION_EXTERNAL_FINANCIAL_TIMEOUT_SECONDS", os.getenv("TUSHARE_TIMEOUT", "8"))),
+        )
+    except Exception:
+        return 8.0
+
+
+async def _fetch_external_financial_row(code: str):
+    """Best-effort financial fallback kept off the event loop with a hard caller timeout."""
+    timeout = _external_financial_timeout_seconds()
+
+    def _run():
+        from .finance import get_financials as _api_get_financials
+        return asyncio.run(_api_get_financials(code))
+
+    try:
+        fin_res = await asyncio.wait_for(asyncio.to_thread(_run), timeout=timeout)
+        if fin_res and fin_res.get('success') and fin_res.get('data'):
+            return [fin_res['data']]
+    except Exception:
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 相对估值（4-stage peer selection）
 # ---------------------------------------------------------------------------
@@ -100,6 +181,7 @@ async def _relative_valuation_impl(
     # 默认估值指标
     if not metrics:
         metrics = ['pe_ratio', 'pb_ratio']
+    metrics = _canonicalize_metric_list(metrics) or ['pe_ratio', 'pb_ratio']
 
     # 获取目标股票信息
     target_info = await db.get_stock_info(code)
@@ -113,14 +195,8 @@ async def _relative_valuation_impl(
         target_financial = await db.get_financials(code, limit=1)
     except Exception:
         target_financial = None
-    if not target_financial:
-        try:
-            from .finance import get_financials as _api_get_financials
-            fin_res = await _api_get_financials(code)
-            if fin_res and fin_res.get('success') and fin_res.get('data'):
-                target_financial = [fin_res['data']]
-        except Exception:
-            pass
+    if not target_financial and not _has_all_requested_metrics(metrics, target_info):
+        target_financial = await _fetch_external_financial_row(code)
 
     def _latest_row(rows):
         if isinstance(rows, list) and rows:
@@ -180,7 +256,7 @@ async def _relative_valuation_impl(
     invalid_target_metrics: dict[str, dict[str, object]] = {}
     for metric in metrics:
         value = _sanitize_positive_metric(
-            target_info.get(metric) if isinstance(target_info, dict) else None,
+            _pick_metric_value(metric, target_info, target_fin_row),
             metric=metric,
             invalid_bucket=invalid_target_metrics,
         )
@@ -246,9 +322,17 @@ async def _relative_valuation_impl(
             continue
 
         peer_metrics = {'code': peer_code, 'name': peer_info.get('name', '')}
+        peer_financial = None
+        try:
+            peer_financial = await db.get_financials(peer_code, limit=1)
+        except Exception:
+            peer_financial = None
+        if not peer_financial and not _has_any_requested_metric(metrics, peer_info):
+            peer_financial = await _fetch_external_financial_row(peer_code)
+        peer_fin_row = normalize_financial_payload(_latest_row(peer_financial) or {}, include_aliases=False) or {}
         valid = False
         for metric in metrics:
-            value = _safe_float(peer_info.get(metric))
+            value = _safe_float(_pick_metric_value(metric, peer_info, peer_fin_row))
             if value is None:
                 _record_peer_invalid_metric(invalid_peer_metrics, metric=metric, code=peer_code, reason='missing')
                 continue
@@ -260,23 +344,9 @@ async def _relative_valuation_impl(
 
         if valid:
             peer_metrics['_market_cap'] = _sanitize_positive_metric(
-                peer_info.get('market_cap'),
+                _pick_metric_value('market_cap', peer_info, peer_fin_row),
                 metric='market_cap',
             ) or 0.0
-            peer_financial = None
-            try:
-                peer_financial = await db.get_financials(peer_code, limit=1)
-            except Exception:
-                peer_financial = None
-            if not peer_financial:
-                try:
-                    from .finance import get_financials as _api_get_financials
-                    fin_res = await _api_get_financials(peer_code)
-                    if fin_res and fin_res.get('success') and fin_res.get('data'):
-                        peer_financial = [fin_res['data']]
-                except Exception:
-                    pass
-            peer_fin_row = normalize_financial_payload(_latest_row(peer_financial) or {}, include_aliases=False) or {}
             peer_metrics['_roe'] = _safe_float(peer_fin_row.get('roe'))
             peer_metrics['_debt_ratio'] = _safe_float(peer_fin_row.get('debtRatio'))
             peer_metrics['_growth'] = _derive_growth(peer_fin_row)

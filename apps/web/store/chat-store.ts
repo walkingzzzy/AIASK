@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { authedFetch } from '@/lib/api';
+import type { ChatToolTrace } from '@/lib/tool-trace-types';
 
 export type ChatToolCall = {
   id: string;
@@ -30,6 +31,7 @@ export type ChatMsg = {
   role: 'user' | 'assistant';
   content: string;
   toolCalls?: ChatToolCall[];
+  toolTrace?: ChatToolTrace;
   actions?: ChatActionBlock[];
 };
 
@@ -60,6 +62,7 @@ type ChatState = {
   addAssistantMessage: () => string;
   addToolCall: (msgId: string, name: string, args: Record<string, unknown>) => void;
   resolveToolCall: (msgId: string, name: string, result: unknown) => void;
+  setToolTrace: (msgId: string, trace: ChatToolTrace) => void;
   addActionBlock: (msgId: string, action: Omit<ChatActionBlock, 'id' | 'kind'>) => string;
   updateActionBlock: (msgId: string, actionId: string, patch: Partial<Omit<ChatActionBlock, 'id' | 'kind'>>) => void;
   switchConversation: (conversationId: string) => void;
@@ -121,6 +124,90 @@ function normalizeToolCall(input: unknown): ChatToolCall | null {
   };
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+}
+
+function normalizeToolTrace(input: unknown): ChatToolTrace | undefined {
+  const record = asObject(input);
+  if (record.schemaVersion !== 'tool_trace.v1') return undefined;
+
+  const scope = asObject(record.scope) ?? {};
+  const items: ChatToolTrace['items'] = Array.isArray(record.items)
+    ? record.items.map((item): ChatToolTrace['items'][number] | null => {
+        const source = asObject(item);
+        const kind = String(source.kind ?? '');
+        const status = String(source.status ?? '');
+        if (!['mcp', 'local_context', 'client_action'].includes(kind)) return null;
+        if (!['pending', 'success', 'error'].includes(status)) return null;
+        const id = String(source.id ?? uid('trace_item')).trim();
+        const toolName = String(source.toolName ?? '').trim();
+        if (!id || !toolName) return null;
+        const normalizedItem: ChatToolTrace['items'][number] = {
+          id,
+          referenceLabel: String(source.referenceLabel ?? '').trim() || 'T?',
+          kind: kind as ChatToolTrace['items'][number]['kind'],
+          toolName,
+          status: status as ChatToolTrace['items'][number]['status'],
+          startedAt: String(source.startedAt ?? '').trim(),
+          inputSummary: normalizeStringArray(source.inputSummary),
+          outputSummary: normalizeStringArray(source.outputSummary),
+          citedInAnswer: source.citedInAnswer === true,
+        };
+        if (typeof source.finishedAt === 'string') normalizedItem.finishedAt = source.finishedAt;
+        if (typeof source.durationMs === 'number') normalizedItem.durationMs = source.durationMs;
+        if (typeof source.errorMessage === 'string') normalizedItem.errorMessage = source.errorMessage;
+        return normalizedItem;
+      }).filter((item): item is ChatToolTrace['items'][number] => item != null)
+    : [];
+
+  const answerReferences = Array.isArray(record.answerReferences)
+    ? record.answerReferences.map((item) => {
+        const source = asObject(item);
+        const itemId = String(source.itemId ?? '').trim();
+        const toolName = String(source.toolName ?? '').trim();
+        if (!itemId || !toolName) return null;
+        return {
+          itemId,
+          referenceLabel: String(source.referenceLabel ?? '').trim() || 'T?',
+          toolName,
+          evidenceSummary: String(source.evidenceSummary ?? '').trim(),
+        };
+      }).filter((item): item is ChatToolTrace['answerReferences'][number] => item != null)
+    : [];
+
+  const status = String(record.status ?? '');
+  const evidenceMode = String(record.evidenceMode ?? '');
+  return {
+    schemaVersion: 'tool_trace.v1',
+    id: String(record.id ?? uid('trace')).trim() || uid('trace'),
+    visibility: 'owner_only',
+    generatedAt: String(record.generatedAt ?? '').trim(),
+    status: ['empty', 'running', 'completed', 'partial_error'].includes(status)
+      ? status as ChatToolTrace['status']
+      : 'empty',
+    scope: {
+      mode: typeof scope.mode === 'string' ? scope.mode : undefined,
+      pageKey: typeof scope.pageKey === 'string' ? scope.pageKey : undefined,
+      objectType: typeof scope.objectType === 'string' ? scope.objectType : undefined,
+      objectId: typeof scope.objectId === 'string' ? scope.objectId : undefined,
+      stockCode: typeof scope.stockCode === 'string' ? scope.stockCode : undefined,
+    },
+    items,
+    answerReferences,
+    evidenceMode: ['mcp_supported', 'tool_supported', 'page_context_supported', 'advisory_only'].includes(evidenceMode)
+      ? evidenceMode as ChatToolTrace['evidenceMode']
+      : 'advisory_only',
+    advisoryOnly: record.advisoryOnly === true,
+    advisoryReason: typeof record.advisoryReason === 'string' ? record.advisoryReason : undefined,
+  };
+}
+
 function normalizeActionBlock(input: unknown): ChatActionBlock | null {
   const record = asObject(input);
   const id = String(record.id ?? uid('action')).trim();
@@ -162,12 +249,14 @@ function normalizeMessage(input: unknown): ChatMsg | null {
   const actions = Array.isArray(record.actions)
     ? record.actions.map((item) => normalizeActionBlock(item)).filter((item): item is ChatActionBlock => item != null)
     : undefined;
+  const toolTrace = normalizeToolTrace(record.toolTrace);
 
   return {
     id: String(record.id ?? uid()).trim() || uid(),
     role: role as 'user' | 'assistant',
     content: typeof record.content === 'string' ? record.content : '',
     ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+    ...(toolTrace ? { toolTrace } : {}),
     ...(actions && actions.length > 0 ? { actions } : {}),
   };
 }
@@ -318,6 +407,7 @@ export const useChatStore = create<ChatState>()(
                   role: message.role,
                   content: message.content,
                   toolCalls: message.toolCalls,
+                  toolTrace: message.toolTrace,
                   actions: message.actions,
                 })),
               })),
@@ -406,6 +496,22 @@ export const useChatStore = create<ChatState>()(
                   ),
                 }
               : message,
+          );
+          const current = conversationOf(state, messages);
+          return {
+            messages,
+            conversations: upsertConversation(state.conversations, current),
+          };
+        });
+        scheduleSync();
+      },
+
+      setToolTrace: (msgId, trace) => {
+        const normalized = normalizeToolTrace(trace);
+        if (!normalized) return;
+        set((state) => {
+          const messages = state.messages.map((message) =>
+            message.id === msgId ? { ...message, toolTrace: normalized } : message,
           );
           const current = conversationOf(state, messages);
           return {

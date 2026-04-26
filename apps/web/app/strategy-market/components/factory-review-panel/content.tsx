@@ -28,6 +28,7 @@ export function FactoryReviewPanel({
   highConfidenceQualityUiEnabled,
   canViewOperatorPanels,
   strategyStatus,
+  strategyIncubationSurface,
   ownerState,
   paperSessionState,
   report,
@@ -83,6 +84,14 @@ export function FactoryReviewPanel({
   ackRuntimeAlertPending,
   onRiskRecovery,
   riskRecoveryPending,
+  onSetRuntimeControl,
+  setRuntimeControlPending,
+  onResolveRiskEvent,
+  resolveRiskEventPending,
+  onRunRuntimeCycle,
+  runRuntimeCyclePending,
+  onAiGenerateCandidate,
+  aiGenerateCandidatePending,
   loading,
 }: FactoryReviewPanelProps) {
   const { review, summaryState, incubationState, runtimeState, vectorState, experimentState, reviewAuditRows } = useMemo(
@@ -190,6 +199,7 @@ export function FactoryReviewPanel({
   const marketStatus = resolveMarketStatusMeta(strategyStatus);
   const incubationSurface = resolveIncubationSurface({
     strategyStatus,
+    incubationSurface: strategyIncubationSurface,
     overview: incubation,
     account: currentAccount,
     latestMetric,
@@ -416,6 +426,12 @@ export function FactoryReviewPanel({
           runRiskScanPending={runRiskScanPending}
           onRiskRecovery={onRiskRecovery}
           riskRecoveryPending={riskRecoveryPending}
+          onSetRuntimeControl={onSetRuntimeControl}
+          setRuntimeControlPending={setRuntimeControlPending}
+          onResolveRiskEvent={onResolveRiskEvent}
+          resolveRiskEventPending={resolveRiskEventPending}
+          onRunRuntimeCycle={onRunRuntimeCycle}
+          runRuntimeCyclePending={runRuntimeCyclePending}
           onRunRuntimeAlertDispatch={onRunRuntimeAlertDispatch}
           runRuntimeAlertDispatchPending={runRuntimeAlertDispatchPending}
           onAckRuntimeAlert={onAckRuntimeAlert}
@@ -428,7 +444,12 @@ export function FactoryReviewPanel({
       ) : null}
 
       {!activeSectionLoading && resolvedSection === 'experiments' ? (
-        <ExperimentsSection experimentState={experimentState} />
+        <ExperimentsSection
+          experimentState={experimentState}
+          canViewOperatorPanels={canViewOperatorPanels}
+          onAiGenerateCandidate={onAiGenerateCandidate}
+          aiGenerateCandidatePending={aiGenerateCandidatePending}
+        />
       ) : null}
     </div>
   );

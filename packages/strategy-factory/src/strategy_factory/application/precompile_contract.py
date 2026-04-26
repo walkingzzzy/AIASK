@@ -206,6 +206,21 @@ def validate_precompile_candidate_contract(
             alignment_reject_reasons.append("target_overlap_count_below_contract")
     alignment_reject_reasons = _dedup_reasons(alignment_reject_reasons)
     target_alignment_ok = len(alignment_reject_reasons) == 0
+    stale_alignment_violations = {
+        "strict_intersection_empty",
+        "empty_target_symbols_after_alignment",
+        "coverage_ratio_below_contract",
+        "intersection_ratio_below_contract",
+        "target_overlap_count_below_contract",
+    }
+    existing_violation = constraint_check.get("constraint_violation")
+    existing_violation_code = str(existing_violation or "").strip().lower()
+    if alignment_reject_reasons:
+        constraint_violation = alignment_reject_reasons[0]
+    elif existing_violation_code in stale_alignment_violations:
+        constraint_violation = None
+    else:
+        constraint_violation = existing_violation
 
     constraint_check = {
         **constraint_check,
@@ -213,6 +228,7 @@ def validate_precompile_candidate_contract(
         "coverage_ratio": coverage_ratio,
         "intersection_ratio": intersection_ratio,
         "target_overlap_count": int(overlap_count),
+        "constraint_violation": constraint_violation,
         "alignment_contract_ok": bool(target_alignment_ok),
         "alignment_contract_violation": alignment_reject_reasons[0] if alignment_reject_reasons else None,
         "alignment_contract_reject_reasons": list(alignment_reject_reasons),

@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import ResultWorkbench from '@/components/result-workbench';
+import LightOverviewHero from '@/components/light-overview-hero';
+import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
 import {
   PageContainer,
   SectionCard,
@@ -32,8 +33,6 @@ const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
-
 type SentimentTab = 'stock' | 'market';
 
 function objToItems(obj: unknown): { label: string; value: number }[] {
@@ -112,48 +111,45 @@ export default function SentimentPage() {
         : stockScore <= 30
         ? '优先核对基本面'
         : '优先核对技术与资金流';
-  const sentimentPageActions = useMemo(
-    () => [
-      {
-        id: 'sentiment.fetch-stock',
-        label: '查询个股情绪',
-        description: '对当前股票代码重新计算个股情绪分数',
-        keywords: ['情绪', '个股', focusCode],
-        scope: 'page' as const,
-        pageKey: 'sentiment',
-        run: () => {
-          fetchStockSentiment();
-          return { message: `已发起 ${focusCode} 的情绪查询` };
-        },
+  const sentimentPageActions = [
+    {
+      id: 'sentiment.fetch-stock',
+      label: '查询个股情绪',
+      description: '对当前股票代码重新计算个股情绪分数',
+      keywords: ['情绪', '个股', focusCode],
+      scope: 'page' as const,
+      pageKey: 'sentiment',
+      run: () => {
+        fetchStockSentiment();
+        return { message: `已发起 ${focusCode} 的情绪查询` };
       },
-      {
-        id: 'sentiment.refresh-market',
-        label: '刷新市场温度',
-        description: '刷新恐贪指数与市场情绪组件',
-        keywords: ['恐贪指数', '市场情绪'],
-        scope: 'page' as const,
-        pageKey: 'sentiment',
-        run: async () => {
-          await fearGreedQ.refetch();
-          setResultTab('market');
-          return { message: '已刷新市场温度' };
-        },
+    },
+    {
+      id: 'sentiment.refresh-market',
+      label: '刷新市场温度',
+      description: '刷新恐贪指数与市场情绪组件',
+      keywords: ['恐贪指数', '市场情绪'],
+      scope: 'page' as const,
+      pageKey: 'sentiment',
+      run: async () => {
+        await fearGreedQ.refetch();
+        setResultTab('market');
+        return { message: '已刷新市场温度' };
       },
-      {
-        id: 'sentiment.switch-stock',
-        label: '切回个股情绪',
-        description: '把主视图切回个股情绪结果',
-        keywords: ['个股情绪'],
-        scope: 'page' as const,
-        pageKey: 'sentiment',
-        run: () => {
-          setResultTab('stock');
-          return { message: '已切到个股情绪' };
-        },
+    },
+    {
+      id: 'sentiment.switch-stock',
+      label: '切回个股情绪',
+      description: '把主视图切回个股情绪结果',
+      keywords: ['个股情绪'],
+      scope: 'page' as const,
+      pageKey: 'sentiment',
+      run: () => {
+        setResultTab('stock');
+        return { message: '已切到个股情绪' };
       },
-    ],
-    [fearGreedQ, focusCode],
-  );
+    },
+  ];
   usePageActions(sentimentPageActions);
   const sentimentSummaryText = stockScore != null
     ? `${focusCode} 当前情绪分数 ${fmtNum(stockScore, 1)}，市场温度 ${fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}，下一步建议 ${nextStepLabel}。`
@@ -228,71 +224,69 @@ export default function SentimentPage() {
 
   return (
     <PageContainer>
-      <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Sentiment Workspace</Badge>
-              <Badge variant={stockCode ? 'success' : 'warning'}>
-                {stockCode ? `当前标的 ${stockCode}` : '等待选择标的'}
-              </Badge>
-              <Badge variant="neutral">{resultTab === 'stock' ? '个股情绪' : '市场温度'}</Badge>
+      <LightOverviewHero
+        eyebrow="Sentiment Workspace"
+        title="情绪分析工作台"
+        summary={compactLayout ? '先看个股，再切市场温度。' : '先看当前标的的讨论温度，再切到市场温度，判断是个股独立偏热还是整体环境在升温。'}
+        badges={(
+          <>
+            <Badge variant="info">Sentiment Workspace</Badge>
+            <Badge variant={stockCode ? 'success' : 'warning'}>
+              {stockCode ? `当前标的 ${stockCode}` : '等待选择标的'}
+            </Badge>
+            <Badge variant="neutral">{resultTab === 'stock' ? '个股情绪' : '市场温度'}</Badge>
+          </>
+        )}
+        actions={(
+          <>
+            <button type="button" onClick={fetchStockSentiment} disabled={isPending} className={HERO_PRIMARY_BUTTON_CLS}>
+              {isPending ? '分析中...' : '查询个股情绪'}
+            </button>
+            <Link href="/watchlist" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
+              从自选股开始
+            </Link>
+          </>
+        )}
+        status={(
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              当前标的 {focusCode} ｜ 个股分数 {stockScore != null ? fmtNum(stockScore, 1) : '-'} ｜ 市场温度 {fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}
             </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              情绪分析工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              {compactLayout
-                ? '先看个股，再切市场温度。'
-                : '先看当前标的的讨论温度，再切到市场温度，判断是个股独立偏热还是整体环境在升温。'}
+            <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
+              {sentimentSummary?.title ?? '先完成查询'} ｜ 下一步：{nextStepLabel}
             </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={fetchStockSentiment} disabled={isPending} className={HERO_PRIMARY_BUTTON_CLS}>
-                {isPending ? '分析中...' : '查询个股情绪'}
-              </button>
-              <Link href="/watchlist" className={`${HERO_SECONDARY_BUTTON_CLS} no-underline text-inherit`}>
-                从自选股开始
-              </Link>
-            </div>
-            {compactLayout ? (
-              <div className="mt-4 text-sm text-text-secondary">
-                当前标的 {focusCode} ｜ 个股 {stockScore != null ? fmtNum(stockScore, 1) : '-'} ｜ 市场 {fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}
-              </div>
-            ) : (
-              <div
-                data-testid="page-primary-status"
-                className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
-              >
-                <div className="font-medium text-text-primary">
-                  当前标的 {focusCode} ｜ 个股分数 {stockScore != null ? fmtNum(stockScore, 1) : '-'} ｜ 市场温度 {fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}
-                </div>
-                <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
-                  {sentimentSummary?.title ?? '先完成查询'} ｜ 下一步：{nextStepLabel}
-                </p>
-              </div>
-            )}
           </div>
-
-          <details className={SIDE_PANEL_CLS} open={!compactLayout}>
-            <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-              下一步与联动
-            </summary>
-            <div className="mt-4 space-y-3">
+        )}
+        metrics={[
+          { key: 'sentiment-focus', label: '当前标的', value: focusCode },
+          { key: 'sentiment-stock-score', label: '个股情绪', value: stockScore != null ? fmtNum(stockScore, 1) : '-', hint: stockSentiment || '待查询' },
+          { key: 'sentiment-market', label: '市场温度', value: fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-', hint: fearGreedLevel || '待刷新' },
+          { key: 'sentiment-view', label: '当前视图', value: resultTab === 'stock' ? '个股情绪' : '市场温度' },
+        ]}
+        compact={compactLayout}
+        detailsTitle="展开联动与下一步"
+        detailsContent={(
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className={NOTE_CARD_CLS}>当前标的：{focusCode}</div>
               <div className={NOTE_CARD_CLS}>当前结论：{sentimentSummary?.title ?? '等待返回情绪结果'}</div>
               <div className={NOTE_CARD_CLS}>市场状态：{fearGreedLevel || '等待刷新'}</div>
-              {stockCode && stockSentimentQ.data ? (
-                <div className="flex items-center gap-2">
-                  <StockLink code={stockCode} name={stockCode} />
-                  <WatchlistButton code={stockCode} name="" />
-                </div>
-              ) : null}
+              <div className={NOTE_CARD_CLS}>下一步：{nextStepLabel}</div>
             </div>
-          </details>
-        </div>
-      </section>
+            {stockCode && stockSentimentQ.data ? (
+              <div className="flex items-center gap-2">
+                <StockLink code={stockCode} name={stockCode} />
+                <WatchlistButton code={stockCode} name="" />
+              </div>
+            ) : null}
+          </div>
+        )}
+      />
 
-      <ResultWorkbench pageKey="sentiment" title="情绪结果工作台" result={sentimentResult} />
+      <ProgressiveWorkbenchSection pageKey="sentiment" title="情绪结果工作台" result={sentimentResult} summaryMode="strip" />
 
       {stockSentimentQ.error || fearGreedQ.error ? <ErrorState text={stockSentimentQ.error || fearGreedQ.error!} /> : null}
 

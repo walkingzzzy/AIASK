@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import { PageContainer, SectionCard } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -236,7 +237,7 @@ export default function OptionsPage() {
         { staleTime: 60 * 1000, parse: normalizeOptionChainData },
     );
 
-    const greekQueryString = useMemo(() => {
+    const greekQueryString = (() => {
         if (!selectedGreekLeg) {
             return '';
         }
@@ -250,7 +251,7 @@ export default function OptionsPage() {
             params.set('volatility', String(selectedGreekLeg.iv));
         }
         return params.toString();
-    }, [chainData?.underlying?.price, selectedGreekLeg]);
+    })();
 
     const { data: greeksData, isPending: greeksLoading, error: greeksError, refetch: refetchGreeks } = useApiQuery<GreeksData>(
         `/v1/options/greeks/${querySymbol}${greekQueryString ? `?${greekQueryString}` : ''}`,
@@ -281,10 +282,12 @@ export default function OptionsPage() {
     }, [chainData]);
 
     useEffect(() => {
-        setSelectedGreekLeg(null);
+        const timer = window.setTimeout(() => setSelectedGreekLeg(null), 0);
+        return () => window.clearTimeout(timer);
     }, [querySymbol]);
 
     useEffect(() => {
+        const timer = window.setTimeout(() => {
         if (pairedRows.length === 0) {
             setSelectedGreekLeg(null);
             return;
@@ -305,6 +308,8 @@ export default function OptionsPage() {
             const nextSelection = buildGreekSelection(current.type, selectedRow);
             return nextSelection ?? fallback;
         });
+        }, 0);
+        return () => window.clearTimeout(timer);
     }, [chainData?.underlying?.price, pairedRows]);
 
     const greekEntries = useMemo(() => {
@@ -352,49 +357,46 @@ export default function OptionsPage() {
     const optionsSummary = pairedRows.length > 0
         ? `${querySymbol} 当前已加载 ${pairedRows.length} 个行权价层级，Greeks ${greekEntries.length} 项，Smirk 点位 ${smirkRows.length} 个。`
         : `${querySymbol} 当前暂无完整期权链，建议先切到 510050 或 510300，确认是不是单标的覆盖不足。`;
-    const optionsActions = useMemo(
-        () => [
-            {
-                id: 'options.refresh-current',
-                label: `刷新 ${querySymbol}`,
-                description: '重新拉取当前标的的期权链、Greeks 和波动率偏斜',
-                keywords: ['期权', '刷新', querySymbol],
-                scope: 'page' as const,
-                pageKey: 'options',
-                run: async () => {
-                    await Promise.all([refetchChain(), refetchGreeks(), refetchSmirk()]);
-                    return { message: `已刷新 ${querySymbol} 的期权数据` };
-                },
+    const optionsActions = [
+        {
+            id: 'options.refresh-current',
+            label: `刷新 ${querySymbol}`,
+            description: '重新拉取当前标的的期权链、Greeks 和波动率偏斜',
+            keywords: ['期权', '刷新', querySymbol],
+            scope: 'page' as const,
+            pageKey: 'options',
+            run: async () => {
+                await Promise.all([refetchChain(), refetchGreeks(), refetchSmirk()]);
+                return { message: `已刷新 ${querySymbol} 的期权数据` };
             },
-            {
-                id: 'options.use-510300',
-                label: '切到 510300',
-                description: '使用覆盖更稳定的 300ETF 期权样例',
-                keywords: ['510300', 'ETF'],
-                scope: 'page' as const,
-                pageKey: 'options',
-                run: () => {
-                    setSymbol('510300');
-                    setQuerySymbol('510300');
-                    return { message: '已切到 510300' };
-                },
+        },
+        {
+            id: 'options.use-510300',
+            label: '切到 510300',
+            description: '使用覆盖更稳定的 300ETF 期权样例',
+            keywords: ['510300', 'ETF'],
+            scope: 'page' as const,
+            pageKey: 'options',
+            run: () => {
+                setSymbol('510300');
+                setQuerySymbol('510300');
+                return { message: '已切到 510300' };
             },
-            {
-                id: 'options.use-510050',
-                label: '切到 510050',
-                description: '使用上证 50ETF 期权样例',
-                keywords: ['510050', 'ETF'],
-                scope: 'page' as const,
-                pageKey: 'options',
-                run: () => {
-                    setSymbol('510050');
-                    setQuerySymbol('510050');
-                    return { message: '已切到 510050' };
-                },
+        },
+        {
+            id: 'options.use-510050',
+            label: '切到 510050',
+            description: '使用上证 50ETF 期权样例',
+            keywords: ['510050', 'ETF'],
+            scope: 'page' as const,
+            pageKey: 'options',
+            run: () => {
+                setSymbol('510050');
+                setQuerySymbol('510050');
+                return { message: '已切到 510050' };
             },
-        ],
-        [querySymbol, refetchChain, refetchGreeks, refetchSmirk],
-    );
+        },
+    ];
     usePageActions(optionsActions);
     const optionsResult = buildLocalResultContract({
         summary: optionsSummary,
@@ -512,20 +514,20 @@ export default function OptionsPage() {
                 </form>
             </div>
 
-            <ResultWorkbench pageKey="options" title="期权结果工作台" result={optionsResult} />
+            <ResponsiveResultWorkbench pageKey="options" title="期权结果工作台" result={optionsResult} />
 
             {(chainError || greeksError || smirkError) && (
                 <ErrorState text="数据获取失败" hint={chainError || greeksError || smirkError || '未知错误，此代码可能无期权标的'} />
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <SectionCard className="col-span-1 md:col-span-3">
-                    <h3 className="font-bold text-lg mb-4">T型报价牌 (T-Quote) - {querySymbol}</h3>
-                    <div className="mb-3 text-xs text-text-muted">
+                <SectionCard className="col-span-1 md:col-span-3 p-4 sm:p-5">
+                    <h3 className="font-bold text-lg mb-2">T型报价牌 (T-Quote) - {querySymbol}</h3>
+                    <div className="mb-2 text-xs text-text-muted">
                         点击认购或认沽“最新”报价，可将下方 Greeks 计算切换到对应期权腿。
                     </div>
                     {chainData?.underlying ? (
-                        <div className="mb-3 text-sm text-text-muted flex flex-wrap gap-x-4 gap-y-1">
+                        <div className="mb-2 text-sm text-text-muted flex flex-wrap gap-x-4 gap-y-1">
                             <span>{chainData.underlying.name ?? chainData.underlying.code ?? querySymbol}</span>
                             <span>现价 {fmtPrice(chainData.underlying.price, 3)}</span>
                             <span>到期月 {(chainData.selectedExpiry ?? []).join(', ') || '-'}</span>
@@ -537,25 +539,25 @@ export default function OptionsPage() {
                             <LoadingState text="加载期权链中..." />
                         ) : pairedRows.length > 0 ? (
                             <div className="border border-glass-border rounded-md overflow-x-auto">
-                                <table className="w-full text-sm text-left">
+                                <table className="w-full text-left text-[13px]">
                                     <thead className="bg-surface-alt">
                                         <tr>
-                                            <th className="text-center py-2 border-b border-glass-border" colSpan={4}>认购 (Call)</th>
+                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认购 (Call)</th>
                                             <th className="text-center bg-muted/80 border-x border-b border-glass-border font-bold text-primary">行权价 (Strike)</th>
-                                            <th className="text-center py-2 border-b border-glass-border" colSpan={4}>认沽 (Put)</th>
+                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认沽 (Put)</th>
                                         </tr>
                                         <tr className="text-xs text-text-muted border-b border-glass-border">
-                                            <th className="text-right py-2 px-2">最新</th>
-                                            <th className="text-right py-2 px-2">涨跌幅</th>
-                                            <th className="text-right py-2 px-2">持仓</th>
-                                            <th className="text-right py-2 px-2">IV</th>
+                                            <th className="text-right py-1.5 px-2">最新</th>
+                                            <th className="text-right py-1.5 px-2">涨跌幅</th>
+                                            <th className="text-right py-1.5 px-2">持仓</th>
+                                            <th className="text-right py-1.5 px-2">IV</th>
 
                                             <th className="border-x border-glass-border"></th>
 
-                                            <th className="text-left py-2 px-2">最新</th>
-                                            <th className="text-left py-2 px-2">涨跌幅</th>
-                                            <th className="text-left py-2 px-2">持仓</th>
-                                            <th className="text-left py-2 px-2">IV</th>
+                                            <th className="text-left py-1.5 px-2">最新</th>
+                                            <th className="text-left py-1.5 px-2">涨跌幅</th>
+                                            <th className="text-left py-1.5 px-2">持仓</th>
+                                            <th className="text-left py-1.5 px-2">IV</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -571,8 +573,8 @@ export default function OptionsPage() {
                                             const rowSelected = selectedGreekLeg?.strike === row.strike;
 
                                             return (
-                                                <tr key={i} className={`text-sm border-b border-glass-border/50 ${rowSelected ? 'bg-primary/5' : 'hover:bg-surface-alt'}`}>
-                                                    <td className="text-right py-2 px-2 text-red-500 font-mono">
+                                                <tr key={i} className={`border-b border-glass-border/50 ${rowSelected ? 'bg-primary/5' : 'hover:bg-surface-alt'}`}>
+                                                    <td className="text-right py-1.5 px-2 text-red-500 font-mono">
                                                         {typeof callLast === 'number' ? (
                                                             <button
                                                                 type="button"
@@ -583,13 +585,13 @@ export default function OptionsPage() {
                                                             </button>
                                                         ) : '-'}
                                                     </td>
-                                                    <td className="text-right py-2 px-2 text-red-500">{fmtPercent(call.changePercent)}</td>
-                                                    <td className="text-right py-2 px-2 text-text-muted">{call.openInterest ?? '-'}</td>
-                                                    <td className="text-right py-2 px-2 font-mono text-blue-500/80">{typeof callIv === 'number' ? `${(callIv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="text-right py-1.5 px-2 text-red-500">{fmtPercent(call.changePercent)}</td>
+                                                    <td className="text-right py-1.5 px-2 text-text-muted">{call.openInterest ?? '-'}</td>
+                                                    <td className="text-right py-1.5 px-2 font-mono text-blue-500/80">{typeof callIv === 'number' ? `${(callIv * 100).toFixed(2)}%` : '-'}</td>
 
-                                                    <td className={`text-center border-x border-glass-border font-bold py-2 px-2 ${rowSelected ? 'bg-primary/10 text-primary' : 'bg-surface-alt'}`}>{fmtPrice(row.strike, 3)}</td>
+                                                    <td className={`text-center border-x border-glass-border font-bold py-1.5 px-2 ${rowSelected ? 'bg-primary/10 text-primary' : 'bg-surface-alt'}`}>{fmtPrice(row.strike, 3)}</td>
 
-                                                    <td className="text-left py-2 px-2 text-green-500 font-mono">
+                                                    <td className="text-left py-1.5 px-2 text-green-500 font-mono">
                                                         {typeof putLast === 'number' ? (
                                                             <button
                                                                 type="button"
@@ -600,9 +602,9 @@ export default function OptionsPage() {
                                                             </button>
                                                         ) : '-'}
                                                     </td>
-                                                    <td className="text-left py-2 px-2 text-green-500">{fmtPercent(put.changePercent)}</td>
-                                                    <td className="text-left py-2 px-2 text-text-muted">{put.openInterest ?? '-'}</td>
-                                                    <td className="text-left py-2 px-2 font-mono text-blue-500/80">{typeof putIv === 'number' ? `${(putIv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="text-left py-1.5 px-2 text-green-500">{fmtPercent(put.changePercent)}</td>
+                                                    <td className="text-left py-1.5 px-2 text-text-muted">{put.openInterest ?? '-'}</td>
+                                                    <td className="text-left py-1.5 px-2 font-mono text-blue-500/80">{typeof putIv === 'number' ? `${(putIv * 100).toFixed(2)}%` : '-'}</td>
                                                 </tr>
                                             );
                                         })}
@@ -641,8 +643,12 @@ export default function OptionsPage() {
                     </div>
                 </SectionCard>
 
-                <SectionCard className="col-span-1 md:col-span-3">
-                    <h3 className="font-bold text-lg mb-4">希腊字母与波动率 (Greeks & IV)</h3>
+                <CollapsibleSectionCard
+                    className="col-span-1 md:col-span-3"
+                    eyebrow="Greeks & IV"
+                    title="希腊字母与波动率"
+                    summary="按需展开查看当前选中腿的 Greeks、理论价格和解读，避免期权报价首屏被二级分析块拉长。"
+                >
                     <div>
                         <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
                             <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
@@ -734,10 +740,14 @@ export default function OptionsPage() {
                             />
                         ) : null}
                     </div>
-                </SectionCard>
+                </CollapsibleSectionCard>
 
-                <SectionCard className="col-span-1 md:col-span-3">
-                    <h3 className="font-bold text-lg mb-4">隐含波动率偏斜 (Smirk)</h3>
+                <CollapsibleSectionCard
+                    className="col-span-1 md:col-span-3"
+                    eyebrow="Smirk"
+                    title="隐含波动率偏斜"
+                    summary="曲线点位和 skew 表格默认折叠，主任务先聚焦 T 型报价与选腿。"
+                >
                     <div>
                         {showSmirkLoading ? (
                             <LoadingState text="加载隐含波动率曲线中..." />
@@ -844,7 +854,7 @@ export default function OptionsPage() {
                             />
                         ) : null}
                     </div>
-                </SectionCard>
+                </CollapsibleSectionCard>
             </div>
         </PageContainer>
     );

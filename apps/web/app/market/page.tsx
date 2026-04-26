@@ -402,18 +402,22 @@ function MarketPageInner({
         ? `${minutePeriod} 分时`
         : activeTaskLabel;
   const freshnessLabel = formatStableDateTime(quoteQ.dataUpdatedAt);
-  const quickJumpLinks = activeDisplayCode
-    ? [
-        { label: '个股详情', href: `/stock?code=${encodeURIComponent(activeDisplayCode)}` },
-        { label: '技术分析', href: `/technical?code=${encodeURIComponent(activeDisplayCode)}` },
-        { label: '研究页', href: `/research?code=${encodeURIComponent(activeDisplayCode)}` },
-        { label: '模拟交易', href: `/paper-trading?code=${encodeURIComponent(activeDisplayCode)}&from=market` },
-      ]
-    : [
-        { label: '去行情总览', href: '/market' },
-        { label: '去自选股', href: '/watchlist' },
-        { label: '去策略超市', href: '/strategy-market' },
-      ];
+  const quickJumpLinks = useMemo(
+    () =>
+      activeDisplayCode
+        ? [
+            { label: '个股详情', href: `/stock?code=${encodeURIComponent(activeDisplayCode)}` },
+            { label: '技术分析', href: `/technical?code=${encodeURIComponent(activeDisplayCode)}` },
+            { label: '研究页', href: `/research?code=${encodeURIComponent(activeDisplayCode)}` },
+            { label: '模拟交易', href: `/paper-trading?code=${encodeURIComponent(activeDisplayCode)}&from=market` },
+          ]
+        : [
+            { label: '去行情总览', href: '/market' },
+            { label: '去自选股', href: '/watchlist' },
+            { label: '去策略超市', href: '/strategy-market' },
+          ],
+    [activeDisplayCode],
+  );
   const heroNotes =
     activeTab === 'blocks'
       ? [
@@ -645,7 +649,7 @@ function MarketPageInner({
       });
       return resolveResultContract(quote?.result_contract ?? kline?.result_contract ?? ob?.result_contract, localFallback);
     },
-    [activeDisplayCode, activePeriodLabel, activeTab, activeTaskLabel, freshness, freshnessLabel, indexCode, kline?.result_contract, marketEvidence, marketRiskNotes, ob?.result_contract, pageActions, quickJumpLinks, quote?.result_contract, workspaceSummary],
+    [activeDisplayCode, activePeriodLabel, activeTab, activeTaskLabel, freshness, freshnessLabel, indexCode, kline?.result_contract, marketEvidence, marketRiskNotes, ob?.result_contract, pageActions, pageOffline, quickJumpLinks, quote?.result_contract, quoteErrorMessage, tabErrorMessage, workspaceSummary],
   );
 
   usePageContext({

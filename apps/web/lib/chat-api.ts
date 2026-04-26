@@ -1,10 +1,12 @@
 import { authedFetch, authedStreamFetch, buildApiError, rejectFallbackPayload } from './api';
 import type { CopilotActionMeta, CopilotPageContext } from './copilot-types';
+import type { ChatToolTrace } from './tool-trace-types';
 
 export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'tool_call'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: unknown }
+  | { type: 'tool_trace'; trace: ChatToolTrace }
   | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
   | { type: 'error'; message: string }
   | { type: 'done' };

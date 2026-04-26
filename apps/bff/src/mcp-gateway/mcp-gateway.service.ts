@@ -31,6 +31,8 @@ type McpHealth = {
   sourceChain?: string[];
   endpoint?: string | null;
   lastError?: string | null;
+  stale?: boolean;
+  staleReason?: string | null;
 };
 
 type McpStartupProfile = 'full' | 'worker' | 'tool-only';
@@ -57,6 +59,7 @@ interface PooledConnection {
 type HealthCacheEntry = {
   value: McpHealth;
   expiresAt: number;
+  staleUntil: number;
 };
 
 type Waiter = {
@@ -104,6 +107,7 @@ export class McpGatewayService implements OnModuleDestroy {
   private readonly poolAcquireTimeoutMs: number;
   private readonly toolCallTimeoutMs: number;
   private readonly healthCacheTtlMs: number;
+  private readonly healthStaleIfErrorMs: number;
   private readonly transportMode: McpTransportMode;
   private readonly streamableHttpUrl: string;
   private readonly allowSseFallback: boolean;
@@ -113,6 +117,8 @@ export class McpGatewayService implements OnModuleDestroy {
   private waitQueue: Waiter[] = [];
   private dedicatedConnections = new Map<string, PooledConnection>();
   private dedicatedWaitQueues = new Map<string, Waiter[]>();
+  private initPromise: Promise<void> | null = null;
+  private poolCreationInFlight: Promise<PooledConnection> | null = null;
   private healthCache: HealthCacheEntry | null = null;
   private healthInFlight: Promise<McpHealth> | null = null;
   private initialized = false;
@@ -129,7 +135,7 @@ export class McpGatewayService implements OnModuleDestroy {
   ) {
     this.poolSize = Math.max(
       1,
-      Number(this.configService.get<string>('MCP_POOL_SIZE', '8')),
+      Number(this.configService.get<string>('MCP_POOL_SIZE', '4')),
     );
     this.fullProfilePoolSlots = this.resolveConfiguredFullProfilePoolSlots();
     this.poolAcquireTimeoutMs = Math.max(
@@ -143,6 +149,10 @@ export class McpGatewayService implements OnModuleDestroy {
     this.healthCacheTtlMs = Math.max(
       1000,
       Number(this.configService.get<string>('MCP_HEALTH_CACHE_TTL_MS', '10000')),
+    );
+    this.healthStaleIfErrorMs = Math.max(
+      this.healthCacheTtlMs,
+      Number(this.configService.get<string>('MCP_HEALTH_STALE_IF_ERROR_MS', '120000')),
     );
     this.transportMode = this.resolveTransportMode();
     this.streamableHttpUrl = this.configService.get<string>('MCP_STREAMABLE_HTTP_URL', '').trim();
@@ -171,8 +181,9 @@ export class McpGatewayService implements OnModuleDestroy {
       return this.healthInFlight;
     }
 
-    if (this.shouldServeStaleHealth() && this.healthCache) {
-      return this.healthCache.value;
+    const stale = this.getStaleHealth('pool_busy_or_waiting');
+    if (this.shouldServeStaleHealth() && stale) {
+      return stale;
     }
 
     this.healthInFlight = this.fetchAvailableTools().finally(() => {
@@ -190,7 +201,9 @@ export class McpGatewayService implements OnModuleDestroy {
     try {
       const conn = await this.acquire();
       try {
-        const tools = await conn.client.listTools();
+        const tools = await conn.client.listTools(undefined, {
+          timeout: Math.min(this.toolCallTimeoutMs, 30_000),
+        });
         const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
         if (count !== null) {
           const resolvedExpectedTools = expectedTools ?? count;
@@ -215,8 +228,11 @@ export class McpGatewayService implements OnModuleDestroy {
       } finally {
         this.release(conn);
       }
-    } catch {
-      // ignore and fallthrough
+    } catch (error) {
+      const stale = this.getStaleHealth(this.formatError(error));
+      if (stale) {
+        return stale;
+      }
     }
 
     const transport = this.getTransportSnapshot();
@@ -250,7 +266,15 @@ export class McpGatewayService implements OnModuleDestroy {
     const timeoutMs = this.resolveToolTimeoutMs(options?.timeoutMs);
     try {
       const result = await this.withTimeout(
-        conn.client.callTool({ name, arguments: args }),
+        conn.client.callTool(
+          { name, arguments: args },
+          undefined,
+          {
+            timeout: timeoutMs,
+            resetTimeoutOnProgress: true,
+            maxTotalTimeout: timeoutMs,
+          },
+        ),
         timeoutMs,
         `MCP tool ${name} timed out after ${timeoutMs}ms`,
         'tool_call',
@@ -275,7 +299,14 @@ export class McpGatewayService implements OnModuleDestroy {
     const startedAt = performance.now();
     try {
       const result = await this.withTimeout(
-        conn.client.readResource({ uri }),
+        conn.client.readResource(
+          { uri },
+          {
+            timeout: this.toolCallTimeoutMs,
+            resetTimeoutOnProgress: true,
+            maxTotalTimeout: this.toolCallTimeoutMs,
+          },
+        ),
         this.toolCallTimeoutMs,
         `MCP resource ${uri} timed out after ${this.toolCallTimeoutMs}ms`,
         'resource_read',
@@ -363,23 +394,25 @@ export class McpGatewayService implements OnModuleDestroy {
       await this.initPool();
     }
 
-    const idle = this.pool.find((c) => !c.busy);
-    if (idle) {
-      idle.busy = true;
-      return idle;
-    }
+    while (true) {
+      const idle = this.pool.find((c) => !c.busy);
+      if (idle) {
+        idle.busy = true;
+        return idle;
+      }
 
-    if (this.pool.length < this.poolSize) {
-      const conn = await this.createConnection(this.pool.length);
-      conn.busy = true;
-      this.pool.push(conn);
-      return conn;
-    }
+      if (this.pool.length < this.poolSize) {
+        const conn = await this.createPoolConnection();
+        if (!conn) continue;
+        conn.busy = true;
+        return conn;
+      }
 
-    return this.waitForConnection(
-      this.waitQueue,
-      `Timed out waiting ${this.poolAcquireTimeoutMs}ms for an available MCP pool connection`,
-    );
+      return this.waitForConnection(
+        this.waitQueue,
+        `Timed out waiting ${this.poolAcquireTimeoutMs}ms for an available MCP pool connection`,
+      );
+    }
   }
 
   private release(conn: PooledConnection): void {
@@ -444,13 +477,45 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private async initPool(): Promise<void> {
     if (this.initialized) return;
-    this.initialized = true;
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
 
-    const first = await this.createConnection(0);
-    this.pool.push(first);
-    this.logger.log(
-      `MCP pool initialized (1/${this.poolSize} connections, heavy-worker slots=${this.fullProfilePoolSlots})`,
-    );
+    this.initPromise = (async () => {
+      const first = await this.createConnection(0);
+      this.pool.push(first);
+      this.initialized = true;
+      this.logger.log(
+        `MCP pool initialized (1/${this.poolSize} connections, heavy-worker slots=${this.fullProfilePoolSlots})`,
+      );
+    })();
+
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  private async createPoolConnection(): Promise<PooledConnection | null> {
+    if (this.poolCreationInFlight) {
+      await this.poolCreationInFlight.catch(() => null);
+      return null;
+    }
+
+    const connectionId = this.pool.length;
+    const creation = this.createConnection(connectionId);
+    this.poolCreationInFlight = creation;
+    try {
+      const conn = await creation;
+      this.pool.push(conn);
+      return conn;
+    } finally {
+      if (this.poolCreationInFlight === creation) {
+        this.poolCreationInFlight = null;
+      }
+    }
   }
 
   private async createConnection(id: number): Promise<PooledConnection> {
@@ -514,6 +579,8 @@ export class McpGatewayService implements OnModuleDestroy {
           this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
         AKSHARE_MCP_STARTUP_PROFILE: startupProfile,
         AKSHARE_MCP_CONNECTION_SLOT: String(id),
+        AKSHARE_MCP_DB_POOL_MIN: this.configService.get<string>('AKSHARE_MCP_DB_POOL_MIN', '1'),
+        AKSHARE_MCP_DB_POOL_MAX: this.configService.get<string>('AKSHARE_MCP_DB_POOL_MAX', '2'),
       };
       const transport = new StdioClientTransport({
         command,
@@ -671,6 +738,8 @@ export class McpGatewayService implements OnModuleDestroy {
     this.dedicatedWaitQueues.clear();
     this.healthCache = null;
     this.healthInFlight = null;
+    this.initPromise = null;
+    this.poolCreationInFlight = null;
     this.initialized = false;
   }
 
@@ -781,6 +850,7 @@ export class McpGatewayService implements OnModuleDestroy {
     this.healthCache = {
       value,
       expiresAt: Date.now() + this.healthCacheTtlMs,
+      staleUntil: Date.now() + this.healthStaleIfErrorMs,
     };
     return value;
   }
@@ -793,8 +863,19 @@ export class McpGatewayService implements OnModuleDestroy {
     return this.healthCache.value;
   }
 
+  private getStaleHealth(reason: string): McpHealth | null {
+    if (!this.healthCache || Date.now() > this.healthCache.staleUntil) return null;
+    if (!this.healthCache.value.reachable) return null;
+    return {
+      ...this.healthCache.value,
+      stale: true,
+      staleReason: reason || 'health_probe_failed',
+    };
+  }
+
   private shouldServeStaleHealth(): boolean {
     if (!this.healthCache) return false;
+    if (Date.now() > this.healthCache.staleUntil) return false;
     const poolBusy = this.pool.length >= this.poolSize && this.pool.every((conn) => conn.busy);
     return poolBusy || this.waitQueue.length > 0;
   }

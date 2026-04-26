@@ -1,7 +1,7 @@
 import { PieChart, BarChart } from '@/components/charts';
 import { EmptyState } from '@/components/status-state';
 import { DataTable, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
-import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
+import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import type { OptData, PortfolioDetailRecord, RiskData } from '../portfolio-page.types';
 

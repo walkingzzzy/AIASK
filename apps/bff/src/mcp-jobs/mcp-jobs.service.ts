@@ -175,7 +175,7 @@ export class McpJobsService {
     }
 
     const message = String(error instanceof Error ? error.message : error).toLowerCase();
-    if (message.includes('timed out after')) {
+    if (message.includes('timed out after') || message.includes('request timed out')) {
       return 'MCP_JOB_TIMEOUT';
     }
 

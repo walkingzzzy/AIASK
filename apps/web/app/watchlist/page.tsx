@@ -155,7 +155,8 @@ export default function WatchlistPage() {
   ];
 
   useEffect(() => {
-    setShowAllActiveItems(false);
+    const timer = window.setTimeout(() => setShowAllActiveItems(false), 0);
+    return () => window.clearTimeout(timer);
   }, [compactBoard, activeGroup?.id, viewMode]);
 
   const handleCreateGroup = async () => {
@@ -581,6 +582,15 @@ export default function WatchlistPage() {
           <button type="button" onClick={handleOpenGroupComposer} className={HERO_PRIMARY_BUTTON_CLS}>
             新建分组
           </button>
+          {activeGroup && activeGroup.id !== 'default' ? (
+            <button
+              type="button"
+              onClick={() => handleDeleteGroup(activeGroup.id, activeGroup.name)}
+              className={HERO_SECONDARY_BUTTON_CLS}
+            >
+              删除当前分组
+            </button>
+          ) : null}
         </div>
       </div>
 

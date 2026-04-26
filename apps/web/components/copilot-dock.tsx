@@ -137,8 +137,7 @@ export default function CopilotDock({
     addUserMessage,
     addAssistantMessage,
     appendAssistantDelta,
-    addToolCall,
-    resolveToolCall,
+    setToolTrace,
     addActionBlock,
     updateActionBlock,
     setStreaming,
@@ -386,10 +385,11 @@ export default function CopilotDock({
               }
               break;
             case 'tool_call':
-              addToolCall(assistantId, event.name, event.args);
               break;
             case 'tool_result':
-              resolveToolCall(assistantId, event.name, event.result);
+              break;
+            case 'tool_trace':
+              setToolTrace(assistantId, event.trace);
               break;
             case 'action': {
               const actionBlockId = addActionBlock(assistantId, {

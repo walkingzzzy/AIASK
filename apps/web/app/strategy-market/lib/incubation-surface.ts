@@ -203,8 +203,10 @@ export function resolveIncubationSurface({
 }: ResolveIncubationSurfaceArgs): ResolvedIncubationSurface {
   const marketStatus = normalizeStatusCode(strategyStatus);
   const surface = incubationSurface ?? null;
+  const stageSource = normalizeText(surface?.stage_source).toLowerCase();
   const stageCode = normalizeStageCode(
-    surface?.pipeline_stage
+    surface?.account_stage
+      ?? surface?.pipeline_stage
       ?? latestPipelineSnapshot?.pipeline_stage
       ?? overview?.pipeline_stage
       ?? account?.stage
@@ -245,6 +247,10 @@ export function resolveIncubationSurface({
   );
 
   const summaryParts = [
+    stageSource.startsWith('paper_account')
+      ? `账户态 ${INCUBATION_STAGE_META[stageCode].label}`
+      : null,
+    surface?.account_status ? `账户 ${formatFallbackLabel(String(surface.account_status))}` : null,
     latestDecision.label !== '暂无决策' ? latestDecision.label : null,
     `${blockerCount} 个阻塞`,
     `${riskCount} 个风险`,

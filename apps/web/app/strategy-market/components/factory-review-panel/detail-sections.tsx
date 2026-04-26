@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Badge, DataTable, SectionCard } from '@/components/ui';
 import type {
   FactoryReviewExperimentState,
@@ -95,7 +96,7 @@ export function IncubationSection({
 
       <SectionCard className="p-3">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 className="m-0">模拟盘账户 / NAV 闭环</h3>
+          <h3 className="m-0">孵化模拟盘账户 / NAV 闭环</h3>
           <button
             type="button"
             onClick={onRunIncubationSync}
@@ -125,7 +126,7 @@ export function IncubationSection({
             pageSize={8}
           />
         ) : (
-          <p className="text-sm text-text-secondary">暂无模拟盘 NAV 快照</p>
+          <p className="text-sm text-text-secondary">暂无孵化模拟盘 NAV 快照</p>
         )}
         {incubationState.paperPositionRows.length ? (
           <DataTable
@@ -158,7 +159,7 @@ export function IncubationSection({
             pageSize={8}
           />
         ) : (
-          <p className="text-sm text-text-secondary">暂无模拟盘订单记录</p>
+          <p className="text-sm text-text-secondary">暂无孵化模拟盘订单记录</p>
         )}
       </SectionCard>
 
@@ -198,6 +199,12 @@ type RuntimeSectionProps = {
   runRuntimeAlertDispatchPending: boolean;
   onAckRuntimeAlert: FactoryReviewPanelProps['onAckRuntimeAlert'];
   ackRuntimeAlertPending: boolean;
+  onSetRuntimeControl: FactoryReviewPanelProps['onSetRuntimeControl'];
+  setRuntimeControlPending: boolean;
+  onResolveRiskEvent: FactoryReviewPanelProps['onResolveRiskEvent'];
+  resolveRiskEventPending: boolean;
+  onRunRuntimeCycle: FactoryReviewPanelProps['onRunRuntimeCycle'];
+  runRuntimeCyclePending: boolean;
 };
 
 export function RuntimeSection({
@@ -210,13 +217,29 @@ export function RuntimeSection({
   runRuntimeAlertDispatchPending,
   onAckRuntimeAlert,
   ackRuntimeAlertPending,
+  onSetRuntimeControl,
+  setRuntimeControlPending,
+  onResolveRiskEvent,
+  resolveRiskEventPending,
+  onRunRuntimeCycle,
+  runRuntimeCyclePending,
 }: RuntimeSectionProps) {
+  const [controlMode, setControlMode] = useState('active');
+
   return (
     <>
       <SectionCard className="p-3">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="m-0">运行时风险姿态</h3>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onRunRuntimeCycle}
+              disabled={runRuntimeCyclePending}
+              className="px-3 py-1.5 text-sm rounded border border-primary text-primary cursor-pointer disabled:opacity-50"
+            >
+              {runRuntimeCyclePending ? '运行中...' : '运行闭环'}
+            </button>
             <button
               type="button"
               onClick={onRunRiskScan}
@@ -242,6 +265,27 @@ export function RuntimeSection({
           ]}
           rows={runtimeState.runtimeRiskOverviewRows}
         />
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded border border-border bg-surface-alt px-3 py-3">
+          <span className="text-xs font-medium text-text-primary">控制模式</span>
+          <select
+            value={controlMode}
+            onChange={(event) => setControlMode(event.target.value)}
+            className="rounded border border-border bg-surface px-2 py-1.5 text-xs text-text-primary"
+          >
+            <option value="active">active</option>
+            <option value="guarded">guarded</option>
+            <option value="manual_stop">manual_stop</option>
+            <option value="halt_new_orders">halt_new_orders</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => onSetRuntimeControl(controlMode)}
+            disabled={setRuntimeControlPending}
+            className="px-3 py-1.5 text-xs rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+          >
+            {setRuntimeControlPending ? '提交中...' : '应用控制'}
+          </button>
+        </div>
         {runtimeState.runtimeRiskSnapshotRows.length ? (
           <DataTable
             columns={[
@@ -328,6 +372,7 @@ export function RuntimeSection({
         {runtimeState.riskRows.length ? (
           <DataTable
             columns={[
+              { key: 'event_id', label: '事件ID' },
               { key: 'detected_at', label: '发现时间' },
               { key: 'severity', label: '级别', render: (value) => <Badge variant={value === 'critical' ? 'danger' : value === 'high' ? 'warning' : 'info'}>{String(value ?? '-')}</Badge> },
               { key: 'event_type', label: '事件类型' },
@@ -335,6 +380,25 @@ export function RuntimeSection({
               { key: 'status', label: '状态' },
               { key: 'title', label: '标题' },
               { key: 'reason', label: '原因' },
+              {
+                key: 'resolve_action',
+                label: '处置',
+                render: (_value, row) => {
+                  const eventId = Number(row.event_id ?? 0);
+                  const status = String(row.status ?? '');
+                  if (!eventId || status === 'resolved') return '-';
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => onResolveRiskEvent(eventId)}
+                      disabled={resolveRiskEventPending}
+                      className="px-2 py-1 text-xs rounded border border-primary text-primary cursor-pointer disabled:opacity-50"
+                    >
+                      {resolveRiskEventPending ? '处理中...' : '解决'}
+                    </button>
+                  );
+                },
+              },
             ]}
             rows={runtimeState.riskRows}
             pageSize={8}
@@ -432,11 +496,33 @@ export function VectorsSection({ vectorState }: { vectorState: FactoryReviewVect
   );
 }
 
-export function ExperimentsSection({ experimentState }: { experimentState: FactoryReviewExperimentState }) {
+export function ExperimentsSection({
+  experimentState,
+  canViewOperatorPanels,
+  onAiGenerateCandidate,
+  aiGenerateCandidatePending,
+}: {
+  experimentState: FactoryReviewExperimentState;
+  canViewOperatorPanels: boolean;
+  onAiGenerateCandidate: FactoryReviewPanelProps['onAiGenerateCandidate'];
+  aiGenerateCandidatePending: boolean;
+}) {
   return (
     <>
       <SectionCard className="p-3">
-        <h3 className="mt-0">任务运行记录</h3>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="m-0">任务运行记录</h3>
+          {canViewOperatorPanels ? (
+            <button
+              type="button"
+              onClick={onAiGenerateCandidate}
+              disabled={aiGenerateCandidatePending}
+              className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+            >
+              {aiGenerateCandidatePending ? '提交中...' : 'AI 生成候选'}
+            </button>
+          ) : null}
+        </div>
         {experimentState.taskRunRows.length ? (
           <DataTable
             columns={[

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useOnboarding } from '@/components/onboarding';
 import { Badge, PageContainer, StockCodeInput, DataTable } from '@/components/ui';
@@ -9,7 +9,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
+import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
@@ -22,10 +22,6 @@ import { useCopilotStore } from '@/store/copilot-store';
 import { useWorkbenchStore } from '@/store/workbench-store';
 import type { ResultAction, ResultContract, ResultLink } from '@aiask/shared-types';
 
-const HERO_PRIMARY_BUTTON_CLS =
-  'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-const HERO_SECONDARY_BUTTON_CLS =
-  'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
 const PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
@@ -220,7 +216,7 @@ export default function AssistantPage() {
     '扩展任务更适合补充产业链线索或盘后总结，不建议替代主诊断流程。',
   ];
 
-  function callAssistant(endpoint: string, label: string) {
+  const callAssistant = useCallback((endpoint: string, label: string) => {
     setFormError(null);
     reset();
     resetDetails();
@@ -276,12 +272,24 @@ export default function AssistantPage() {
 
     setLastRequestBody(body);
     trigger(endpoint, { method: 'POST' }, body);
-  }
+  }, [
+    dailyReportDate,
+    industryKeyword,
+    investmentStyle,
+    legacyMode,
+    reset,
+    resetDetails,
+    sellBuyPrice,
+    sellHoldingDays,
+    trigger,
+    trimmedCode,
+    validate,
+  ]);
 
-  function loadUnifiedDetails() {
+  const loadUnifiedDetails = useCallback(() => {
     if (!lastRequestBody) return;
     triggerDetails('/assistant/unified-decision/details', { method: 'POST' }, lastRequestBody);
-  }
+  }, [lastRequestBody, triggerDetails]);
 
   const advancedInputsContent = (
     <div className="grid gap-4 xl:grid-cols-2">

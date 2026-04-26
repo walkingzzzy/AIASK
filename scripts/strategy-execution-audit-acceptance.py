@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -114,7 +114,7 @@ def _json_safe(value: Any) -> Any:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
-    if isinstance(value, datetime):
+    if isinstance(value, (date, datetime)):
         return value.isoformat()
     return value
 
@@ -134,15 +134,17 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
         f"- Report schema: {report.get('schema_version') or ACCEPTANCE_REPORT_SCHEMA_VERSION}",
         f"- Global schema ready: {bool(global_schema.get('all_required_tables_present') and global_schema.get('all_required_columns_present'))}",
         f"- Global migration ready: {bool(global_migrations.get('all_required_keys_applied'))}",
-        f"- Strategies checked: {summary.get('strategy_count', 0)}",
+        f"- Strategies included: {summary.get('strategy_count', 0)}",
+        f"- Strategies checked: {summary.get('checked_strategy_count', summary.get('strategy_count', 0))}",
+        f"- Strategies excluded: {summary.get('excluded_strategy_count', 0)}",
         f"- Strategies ready: {summary.get('ready_count', 0)}",
         f"- Sample-gap strategies: {summary.get('sample_gap_strategy_count', 0)}",
         f"- Overall ready: {bool(summary.get('overall_ready'))}",
         "",
         "## Strategies",
         "",
-        "| Strategy | Status | Overall | Sample Gap | Gap Categories | Blockers | TODO Count |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Strategy | Status | Strategy Status | Included | Overall | Sample Gap | Gap Categories | Blockers | TODO Count |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     for row in strategy_rows:
@@ -150,13 +152,15 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
         gap_categories = ", ".join(row.get("gap_categories") or []) or "-"
         lines.append(
             f"| {row.get('strategy_id') or '-'} | {row.get('status') or '-'} | "
+            f"{row.get('strategy_status') or '-'} | "
+            f"{'no' if row.get('excluded_from_acceptance') else 'yes'} | "
             f"{'ready' if row.get('overall_ready') else 'pending'} | "
             f"{'yes' if row.get('has_sample_gap') else 'no'} | {gap_categories} | "
             f"{blockers} | {int(row.get('todo_count') or 0)} |"
         )
 
     if not strategy_rows:
-        lines.append("| - | - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - | - | - | - |")
 
     top_blockers = list(summary.get("top_blockers") or [])
     if top_blockers:
@@ -217,8 +221,19 @@ async def _async_main(args: argparse.Namespace) -> int:
     strategy_results: list[dict[str, Any]] = []
     blocker_counter: Counter[str] = Counter()
     gap_category_counter: Counter[str] = Counter()
+    excluded_statuses = {
+        item.strip().lower()
+        for item in _normalize_csv(args.exclude_statuses)
+        if item.strip()
+    }
 
     for strategy_id in strategy_ids:
+        actual_strategy_status = ""
+        try:
+            strategy_row = await db.get_strategy(strategy_id)
+            actual_strategy_status = str((strategy_row or {}).get("status") or "").strip().lower()
+        except Exception:
+            actual_strategy_status = ""
         result = await db.run_execution_audit_acceptance(
             strategy_id=strategy_id,
             backfill=bool(args.backfill),
@@ -250,12 +265,23 @@ async def _async_main(args: argparse.Namespace) -> int:
             field_name="actionable_todos",
             strategy_id=strategy_id,
         )
-        blocker_counter.update(blockers)
-        gap_category_counter.update(gap_categories)
+        excluded_from_acceptance = bool(
+            actual_strategy_status and actual_strategy_status in excluded_statuses
+        )
+        if not excluded_from_acceptance:
+            blocker_counter.update(blockers)
+            gap_category_counter.update(gap_categories)
         strategy_results.append(
             {
                 "strategy_id": strategy_id,
                 "status": str(result.get("status") or ""),
+                "strategy_status": actual_strategy_status or None,
+                "excluded_from_acceptance": excluded_from_acceptance,
+                "exclusion_reason": (
+                    f"strategy_status:{actual_strategy_status}"
+                    if excluded_from_acceptance
+                    else None
+                ),
                 "overall_ready": bool(acceptance_matrix.get("overall_ready")),
                 "has_sample_gap": SAMPLE_GAP_CATEGORY in gap_categories,
                 "acceptance_matrix": acceptance_matrix,
@@ -276,10 +302,13 @@ async def _async_main(args: argparse.Namespace) -> int:
     global_migration_ready = bool(
         dict(global_verification.get("migrations") or {}).get("all_required_keys_applied")
     )
-    ready_count = sum(1 for item in strategy_results if item.get("overall_ready"))
-    sample_gap_strategy_count = sum(1 for item in strategy_results if item.get("has_sample_gap"))
+    included_strategy_results = [
+        item for item in strategy_results if not item.get("excluded_from_acceptance")
+    ]
+    ready_count = sum(1 for item in included_strategy_results if item.get("overall_ready"))
+    sample_gap_strategy_count = sum(1 for item in included_strategy_results if item.get("has_sample_gap"))
     overall_ready = global_schema_ready and global_migration_ready and (
-        not strategy_results or ready_count == len(strategy_results)
+        not included_strategy_results or ready_count == len(included_strategy_results)
     )
 
     report = {
@@ -293,9 +322,12 @@ async def _async_main(args: argparse.Namespace) -> int:
         "global_verification": _json_safe(global_verification),
         "strategy_results": strategy_results,
         "summary": {
-            "strategy_count": len(strategy_results),
+            "strategy_count": len(included_strategy_results),
+            "checked_strategy_count": len(strategy_results),
+            "excluded_strategy_count": len(strategy_results) - len(included_strategy_results),
+            "excluded_statuses": sorted(excluded_statuses),
             "ready_count": ready_count,
-            "pending_count": len(strategy_results) - ready_count,
+            "pending_count": len(included_strategy_results) - ready_count,
             "sample_gap_strategy_count": sample_gap_strategy_count,
             "global_schema_ready": global_schema_ready,
             "global_migration_ready": global_migration_ready,
@@ -345,6 +377,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How to auto-select strategies when --strategy-ids is omitted.",
     )
     parser.add_argument("--backfill", action="store_true", help="Run linkage/fill backfill before acceptance.")
+    parser.add_argument(
+        "--exclude-statuses",
+        default="rejected,archived,deprecated",
+        help="Comma-separated strategy statuses to report but exclude from the overall acceptance denominator.",
+    )
     parser.add_argument("--fail-on-blockers", action="store_true", help="Exit non-zero unless all selected strategies are ready.")
     parser.add_argument(
         "--report-dir",

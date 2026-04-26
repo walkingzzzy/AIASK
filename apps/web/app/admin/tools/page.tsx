@@ -1,9 +1,11 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import type { StrategyOperatorJobRecord, StrategyOperatorParityResponse } from '@aiask/shared-types';
 import ResultWorkbench from '@/components/result-workbench';
 import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
 import { BarChart } from '@/components/charts';
+import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
@@ -16,9 +18,29 @@ import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } fro
  */
 export default function ToolsDashboardPage() {
   const [lastManualRefreshAt, setLastManualRefreshAt] = useState<string | null>(null);
+  const [operatorAction, setOperatorAction] = useState('factory_dispatch_run');
+  const [operatorStrategyId, setOperatorStrategyId] = useState('');
+  const [operatorJobId, setOperatorJobId] = useState<string | null>(null);
   const statsQ = useApiQuery<unknown>('/admin/mcp-stats', {
     refetchInterval: 15000,
     parse: (raw) => raw,
+  });
+  const parityQ = useApiQuery<StrategyOperatorParityResponse>('/strategy-market/operator/parity', {
+    refetchInterval: 60000,
+    nonFatal: true,
+  });
+  const operatorJobQ = useApiQuery<StrategyOperatorJobRecord>(
+    operatorJobId ? `/strategy-market/operator/jobs/${encodeURIComponent(operatorJobId)}` : null,
+    {
+      enabled: Boolean(operatorJobId),
+      refetchInterval: 3000,
+      nonFatal: true,
+    },
+  );
+  const operatorJobApi = useApiMutation<StrategyOperatorJobRecord>({
+    critical: true,
+    successToast: 'MCP 运营任务已提交',
+    onSuccess: (record) => setOperatorJobId(record.job.job_id),
   });
 
   const data = useMemo(() => {
@@ -63,6 +85,11 @@ export default function ToolsDashboardPage() {
       }),
     [data.tools],
   );
+  const operatorActions = useMemo(
+    () => (parityQ.data?.coverage ?? []).filter((item) => item.job_action).map((item) => item.action),
+    [parityQ.data],
+  );
+  const activeOperatorJob = operatorJobQ.data ?? operatorJobApi.data;
 
   const STATUS_COLORS: Record<string, 'success' | 'warning' | 'danger'> = {
     healthy: 'success',
@@ -87,35 +114,44 @@ export default function ToolsDashboardPage() {
     setLastManualRefreshAt(new Date().toLocaleString('zh-CN'));
   }
 
-  const pageActions = useMemo(
-    () => [
-      {
-        id: 'admin-tools.refresh',
-        label: '刷新工具统计',
-        description: '重新拉取 MCP 统计与健康快照',
-        keywords: ['刷新', '统计'],
-        scope: 'page' as const,
-        pageKey: 'admin-tools',
-        run: async () => {
-          await refreshToolStats();
-          return { message: '已刷新工具统计' };
-        },
+  const pageActions = [
+    {
+      id: 'admin-tools.refresh',
+      label: '刷新工具统计',
+      description: '重新拉取 MCP 统计与健康快照',
+      keywords: ['刷新', '统计'],
+      scope: 'page' as const,
+      pageKey: 'admin-tools',
+      run: async () => {
+        await refreshToolStats();
+        return { message: '已刷新工具统计' };
       },
-      {
-        id: 'admin-tools.focus-abnormal',
-        label: '聚焦异常工具区域',
-        description: '滚动到异常工具列表，优先处理风险项',
-        keywords: ['异常', '工具'],
-        scope: 'page' as const,
-        pageKey: 'admin-tools',
-        run: () => {
-          document.getElementById('admin-tools-abnormal-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          return { message: '已聚焦异常工具区域' };
-        },
+    },
+    {
+      id: 'admin-tools.focus-abnormal',
+      label: '聚焦异常工具区域',
+      description: '滚动到异常工具列表，优先处理风险项',
+      keywords: ['异常', '工具'],
+      scope: 'page' as const,
+      pageKey: 'admin-tools',
+      run: () => {
+        document.getElementById('admin-tools-abnormal-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return { message: '已聚焦异常工具区域' };
       },
-    ],
-    [statsQ],
-  );
+    },
+    {
+      id: 'admin-tools.focus-mcp-jobs',
+      label: '聚焦 MCP Job 队列',
+      description: '滚动到 MCP 运营任务提交与轮询区域',
+      keywords: ['MCP Job', '任务'],
+      scope: 'page' as const,
+      pageKey: 'admin-tools',
+      run: () => {
+        document.getElementById('admin-tools-mcp-job-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return { message: '已聚焦 MCP Job 队列' };
+      },
+    },
+  ];
 
   usePageActions(pageActions);
   const toolsSummary = `当前状态 ${mcpHealthLabel}，总调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，异常工具 ${abnormalTools.length} 个，传输方式 ${data.transportKind}。`;
@@ -246,6 +282,80 @@ export default function ToolsDashboardPage() {
             {lastManualRefreshAt ? ` ｜ 手动刷新：${lastManualRefreshAt}` : ''}
           </p>
         </div>
+      </SectionCard>
+
+      <SectionCard id="admin-tools-mcp-job-section" className="mb-4 p-4" data-testid="admin-tools-mcp-jobs">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="mt-0 mb-1 text-base font-semibold">MCP Job 管理</h2>
+            <p className="m-0 text-sm text-text-secondary">
+              高权限策略工厂动作通过后台任务提交，返回 job id 后在这里轮询状态。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={parityQ.data?.unmapped_actions === 0 ? 'success' : 'warning'}>
+              action parity {parityQ.data ? `${parityQ.data.mapped_actions}/${parityQ.data.total_actions}` : '-'}
+            </Badge>
+            <Badge variant="info">job actions {operatorActions.length}</Badge>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+          <select
+            value={operatorAction}
+            onChange={(event) => setOperatorAction(event.target.value)}
+            className="rounded border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none"
+          >
+            {(operatorActions.length ? operatorActions : ['factory_dispatch_run']).map((action) => (
+              <option key={action} value={action}>
+                {action}
+              </option>
+            ))}
+          </select>
+          <input
+            value={operatorStrategyId}
+            onChange={(event) => setOperatorStrategyId(event.target.value)}
+            placeholder="strategy_id，可留空"
+            className="rounded border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none"
+          />
+          <button
+            type="button"
+            disabled={operatorJobApi.isPending}
+            onClick={() => {
+              if (!window.confirm(`确认提交 MCP 运营任务 ${operatorAction}？`)) return;
+              operatorJobApi.trigger(
+                '/strategy-market/operator/jobs',
+                { method: 'POST' },
+                {
+                  action: operatorAction,
+                  strategy_id: operatorStrategyId.trim() || undefined,
+                  params: {},
+                  confirmed: true,
+                  confirmation_text: operatorAction,
+                  reason: 'admin_tools_mcp_job_panel',
+                  timeout_ms: operatorAction === 'factory_run_once' ? 300000 : 120000,
+                },
+              );
+            }}
+            className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {operatorJobApi.isPending ? '提交中...' : '提交 Job'}
+          </button>
+        </div>
+        {operatorJobApi.error ? <p className="mt-3 mb-0 text-xs text-danger">{operatorJobApi.error}</p> : null}
+        {activeOperatorJob ? (
+          <div className="mt-4 rounded-xl border border-border bg-surface-alt/35 px-3 py-3 text-sm">
+            <div className="font-medium text-text-primary">
+              {activeOperatorJob.action} · {activeOperatorJob.job.status}
+            </div>
+            <p className="mt-1 mb-0 text-xs text-text-secondary">
+              job {activeOperatorJob.job.job_id} ｜ poll {activeOperatorJob.poll_path}
+              {activeOperatorJob.strategy_id ? ` ｜ strategy ${activeOperatorJob.strategy_id}` : ''}
+            </p>
+            {activeOperatorJob.job.error ? (
+              <p className="mt-2 mb-0 text-xs text-danger">{activeOperatorJob.job.error}</p>
+            ) : null}
+          </div>
+        ) : null}
       </SectionCard>
 
       <KpiGrid cols={4}>

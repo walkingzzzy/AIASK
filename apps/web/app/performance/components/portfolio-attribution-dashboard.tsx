@@ -10,7 +10,6 @@ import {
 import type {
   PerformanceAttributionResponse,
   PerformanceBenchmarkComparisonResponse,
-  PerformanceSectorPerformanceItem,
   PerformanceAttributionStockItem,
 } from '@aiask/shared-types';
 

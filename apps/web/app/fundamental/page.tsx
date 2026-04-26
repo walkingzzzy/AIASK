@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PageContainer,
   SectionCard,
@@ -13,7 +13,8 @@ import {
   SkeletonCard,
   Badge,
 } from '@/components/ui';
-import ResultWorkbench from '@/components/result-workbench';
+import CollapsibleSectionCard from '@/components/collapsible-section-card';
+import LightOverviewHero from '@/components/light-overview-hero';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -101,8 +102,6 @@ const HERO_SECONDARY_BUTTON_CLS =
   'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
 const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
 const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
-
 /** Recursively flatten nested object for display */
 function flattenObj(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -136,8 +135,10 @@ export default function FundamentalPage() {
   useEffect(() => {
     if (!autoFetched.current && resolvedCode) {
       autoFetched.current = true;
-      setSubmittedCode(resolvedCode);
+      const id = window.setTimeout(() => setSubmittedCode(resolvedCode), 0);
+      return () => window.clearTimeout(id);
     }
+    return undefined;
   }, [resolvedCode]);
 
   const overviewQ = useApiQuery<OverviewData>(submittedCode ? `/fundamental/overview?code=${submittedCode}` : null, {
@@ -158,25 +159,7 @@ export default function FundamentalPage() {
   const loading = overviewQ.isFetching || historyQ.isFetching;
   const error = overviewQ.error || historyQ.error;
 
-  // Auto-load extra tab data when switching tabs
-  useEffect(() => {
-    if (submittedCode) fetchExtra(extraTab, submittedCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extraTab, submittedCode]);
-
-  function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!validate()) return;
-    if (trimmedCode === submittedCode && days === submittedDays) {
-      overviewQ.refetch();
-      historyQ.refetch();
-      fetchExtra(extraTab, submittedCode);
-    } else {
-      setSubmittedCode(trimmedCode);
-      setSubmittedDays(days);
-    }
-  }
-  function fetchExtra(type: string, code: string | null = submittedCode) {
+  const fetchExtra = useCallback((type: string, code: string | null = submittedCode) => {
     if (!code) return;
     if (type === 'history') {
       historyMut.trigger(
@@ -198,8 +181,27 @@ export default function FundamentalPage() {
       if (endpoint === extraPath) extraQ.refetch();
       else setExtraPath(endpoint);
     }
-  }
+  }, [extraPath, extraQ, historyMut, submittedCode]);
 
+  // Auto-load extra tab data when switching tabs
+  useEffect(() => {
+    if (!submittedCode) return undefined;
+    const id = window.setTimeout(() => fetchExtra(extraTab, submittedCode), 0);
+    return () => window.clearTimeout(id);
+  }, [extraTab, fetchExtra, submittedCode]);
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!validate()) return;
+    if (trimmedCode === submittedCode && days === submittedDays) {
+      overviewQ.refetch();
+      historyQ.refetch();
+      fetchExtra(extraTab, submittedCode);
+    } else {
+      setSubmittedCode(trimmedCode);
+      setSubmittedDays(days);
+    }
+  }
   const overview = overviewQ.data;
   const history = historyQ.data;
   const extraDataEnvelope =
@@ -213,7 +215,6 @@ export default function FundamentalPage() {
   const stockName = String(
     extraDataRoot.name ?? extraDataF10.name ?? extraDataSnapshot.name ?? extraDataNested.name ?? '',
   );
-  const [resolvedStockName, setResolvedStockName] = useState('');
   const valuation = overview?.valuation;
   const financials = overview?.financials;
   const points = history?.points ?? [];
@@ -227,22 +228,18 @@ export default function FundamentalPage() {
   const pbDelta = latest?.pb != null && first?.pb != null ? (latest.pb - first.pb).toFixed(2) : '-';
   const activeExtraLabel = extraTabs.find((tab) => tab.key === extraTab)?.label ?? '扩展';
   const focusCode = submittedCode ?? resolvedCode ?? trimmedCode;
-  const focusName = resolvedStockName || stockName || focusCode;
+  const focusName = stockName || focusCode;
 
   useEffect(() => {
-    if (stockName) setResolvedStockName(stockName);
-  }, [stockName]);
-
-  useEffect(() => {
-    if (resolvedStockName && submittedCode) {
-      document.title = `${resolvedStockName}(${submittedCode}) | AIASK`;
+    if (stockName && submittedCode) {
+      document.title = `${stockName}(${submittedCode}) | AIASK`;
       return () => {
         document.title = '基本面分析 | AIASK';
       };
     }
     document.title = '基本面分析 | AIASK';
     return undefined;
-  }, [resolvedStockName, submittedCode]);
+  }, [stockName, submittedCode]);
 
   const missing = useMemo(() => {
     const checks = [
@@ -314,7 +311,7 @@ export default function FundamentalPage() {
         },
       },
     ],
-    [extraQ, historyQ, overviewQ],
+    [extraQ, fetchExtra, historyQ, overviewQ],
   );
 
   usePageActions(pageActions);
@@ -388,169 +385,101 @@ export default function FundamentalPage() {
 
   return (
     <PageContainer narrow>
-      <section className="page-hero mb-4 p-4 sm:p-5">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Fundamental Workbench</Badge>
-              <Badge variant={submittedCode ? 'success' : 'warning'}>
-                {submittedCode ? `当前标的 ${submittedCode}` : '等待确认标的'}
-              </Badge>
-              <Badge variant="neutral">{days} 天窗口</Badge>
-              <Badge variant="neutral">{activeExtraLabel}</Badge>
-            </div>
-            <h1 className="mb-0 mt-3 text-[1.7rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2rem]">
-              {compactLayout ? '基本面分析' : '基本面分析工作台'}
-            </h1>
-            {compactLayout ? null : (
-              <p className="mb-0 mt-2 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
-                这一页先回答三件事：当前看的标的是谁、估值区间在最近窗口里怎么变化、财务与补充资料是否支持当前判断。先用摘要卡快速判断，再进入历史走势和详细资料下钻。
-              </p>
-            )}
-            {!compactLayout ? (
-              <div className="mt-5 flex flex-wrap gap-2">
-                <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
-                  切到 90 天窗口
-                </button>
-                <>
-                  <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
-                    查看财务快照
-                  </button>
-                  <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
-                    查看财务历史
-                  </button>
-                </>
-              </div>
-            ) : null}
-            {compactLayout ? (
-              <details className="mt-3 rounded-[20px] border border-white/45 bg-white/24 px-4 py-2.5">
-                <summary className="cursor-pointer list-none text-sm font-medium text-text-primary">展开快捷跳转与缺口提示</summary>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
-                    切到 90 天窗口
-                  </button>
-                  <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
-                    查看财务快照
-                  </button>
-                  <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
-                    查看财务历史
-                  </button>
-                </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div className={NOTE_CARD_CLS}>
-                    关键缺口：<span className="font-medium text-text-primary">{missing.length || 0}</span>
-                    <div className="mt-1">{missing.length ? missing.join('、') : '核心字段齐全'}</div>
-                  </div>
-                  <div className={NOTE_CARD_CLS}>
-                    当前资料：<span className="font-medium text-text-primary">{activeExtraLabel}</span>
-                    <div className="mt-1">需要时再切到 F10 或财务历史继续下钻。</div>
-                  </div>
-                </div>
-              </details>
-            ) : null}
-
-            {compactLayout ? (
-              <div className="mt-3 rounded-[20px] border border-white/45 bg-white/28 px-4 py-3 text-sm text-text-secondary">
-                <span className="font-medium text-text-primary">{focusCode || '-'}</span>
-                <span className="mx-2 text-text-muted">/</span>
-                <span>{focusName || '等待名称解析'}</span>
-                <span className="mx-2 text-text-muted">/</span>
-                <span>{updatedAt || '待更新'}</span>
-              </div>
-            ) : (
-              <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-                <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                  <div className="mt-3 text-2xl font-semibold text-text-primary">{focusCode || '-'}</div>
-                  <div className="mt-1 text-xs text-text-secondary">{focusName || '等待名称解析'}</div>
-                </div>
-                <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近更新</div>
-                  <div className="mt-3 text-lg font-semibold text-text-primary">{updatedAt || '-'}</div>
-                  <div className="mt-1 text-xs text-text-secondary">
-                    抓取时间 {freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
-                  </div>
-                </div>
-                <>
-                  <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">关键缺口</div>
-                    <div className="mt-3 text-2xl font-semibold text-text-primary">{missing.length}</div>
-                    <div className="mt-1 text-xs text-text-secondary">
-                      {missing.length ? missing.join('、') : '核心字段齐全'}
-                    </div>
-                  </div>
-                  <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">资料标签</div>
-                    <div className="mt-3 text-2xl font-semibold text-text-primary">{activeExtraLabel}</div>
-                    <div className="mt-1 text-xs text-text-secondary">适合从快照切到 F10 或财务历史继续下钻</div>
-                  </div>
-                </>
-              </div>
-            )}
-          </div>
-
-          {compactLayout ? (
-            <div className="rounded-[20px] border border-white/45 bg-white/22 px-4 py-3 text-sm text-text-secondary">
-              PE / PB：<span className="font-medium text-text-primary">{fmtNum(valuation?.pe, 2)} / {fmtNum(valuation?.pb, 2)}</span>
-              <span className="mx-2 text-text-muted">/</span>
-              ROE：<span className="font-medium text-text-primary">{fmtNum(financials?.roe, 2)}%</span>
-            </div>
+      <LightOverviewHero
+        eyebrow="Fundamental Workbench"
+        title={compactLayout ? '基本面分析' : '基本面分析工作台'}
+        summary={
+          compactLayout
+            ? '先确认标的和观察窗口，再决定是否下钻估值、快照或历史走势。'
+            : '先确认当前标的和窗口，再判断估值区间、财务快照和补充资料是否支持当前判断。'
+        }
+        badges={compactLayout ? (
+          <>
+            <Badge variant={submittedCode ? 'success' : 'warning'}>
+              {submittedCode ? `当前标的 ${submittedCode}` : '等待确认标的'}
+            </Badge>
+            <Badge variant="neutral">{days} 天窗口</Badge>
+          </>
+        ) : (
+          <>
+            <Badge variant="info">Fundamental Workbench</Badge>
+            <Badge variant={submittedCode ? 'success' : 'warning'}>
+              {submittedCode ? `当前标的 ${submittedCode}` : '等待确认标的'}
+            </Badge>
+            <Badge variant="neutral">{days} 天窗口</Badge>
+            <Badge variant="neutral">{activeExtraLabel}</Badge>
+          </>
+        )}
+        actions={(
+          compactLayout ? (
+            <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
+              切到 90 天窗口
+            </button>
           ) : (
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前聚焦</div>
-              <div className="mt-3 text-base font-semibold text-text-primary">{focusName || '未选择标的'}</div>
-              {focusCode ? (
-                <div className="mt-3 flex items-center gap-2">
-                  <StockLink code={focusCode} name={focusName} />
-                  <WatchlistButton code={focusCode} name={focusName} />
-                </div>
-              ) : null}
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  PE / PB：
-                  <span className="font-medium text-text-primary">
-                    {fmtNum(valuation?.pe, 2)} / {fmtNum(valuation?.pb, 2)}
-                  </span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  ROE / 资产负债率：
-                  <span className="font-medium text-text-primary">
-                    {' '}
-                    {fmtNum(financials?.roe, 2)}% / {fmtNum(financials?.debtRatio, 2)}%
-                  </span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  历史点位：<span className="font-medium text-text-primary">{points.length || 0} 条</span>
-                </div>
-              </div>
+          <>
+            <button type="button" onClick={() => setDays(90)} className={HERO_PRIMARY_BUTTON_CLS}>
+              切到 90 天窗口
+            </button>
+            <button type="button" onClick={() => setExtraTab('snapshot')} className={HERO_SECONDARY_BUTTON_CLS}>
+              查看财务快照
+            </button>
+            <button type="button" onClick={() => setExtraTab('history')} className={HERO_SECONDARY_BUTTON_CLS}>
+              查看财务历史
+            </button>
+          </>
+          )
+        )}
+        status={compactLayout ? null : (
+          <div
+            data-testid="page-primary-status"
+            className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+          >
+            <div className="font-medium text-text-primary">
+              {focusCode || '-'} / {focusName || '等待名称解析'} / {updatedAt || '待更新'}
             </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">阅读建议</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先看摘要 KPI，确认估值与盈利能力是否同时改善。</div>
-                <div className={NOTE_CARD_CLS}>2. 再看历史走势，判断当前估值位置是修复还是透支。</div>
-                <div className={NOTE_CARD_CLS}>3. 最后切到 F10 与财务历史，核对公司规模、行业和报告期细节。</div>
+            <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
+              缺口 {missing.length} 项 ｜ Overview {cacheText(ovCache)} ｜ History {cacheText(hsCache)}
+            </p>
+          </div>
+        )}
+        metrics={compactLayout ? [] : [
+          { key: 'fundamental-focus', label: '当前标的', value: focusCode || '-', hint: focusName || '等待名称解析' },
+          { key: 'fundamental-update', label: '最近更新', value: updatedAt || '-', hint: freshness ? new Date(freshness).toLocaleString('zh-CN') : '待刷新' },
+          { key: 'fundamental-missing', label: '关键缺口', value: String(missing.length), hint: missing.length ? missing.join('、') : '核心字段齐全' },
+          { key: 'fundamental-extra', label: '资料标签', value: activeExtraLabel, hint: '适合从快照切到 F10 或财务历史继续下钻' },
+        ]}
+        compact={compactLayout}
+        detailsTitle="展开估值快照与阅读建议"
+        detailsContent={!compactLayout ? (
+          <div className="space-y-3">
+            {focusCode ? (
+              <div className="flex items-center gap-2">
+                <StockLink code={focusCode} name={focusName} />
+                <WatchlistButton code={focusCode} name={focusName} />
               </div>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className={NOTE_CARD_CLS}>
+                PE / PB：
+                <span className="font-medium text-text-primary">
+                  {fmtNum(valuation?.pe, 2)} / {fmtNum(valuation?.pb, 2)}
+                </span>
+              </div>
+              <div className={NOTE_CARD_CLS}>
+                ROE / 资产负债率：
+                <span className="font-medium text-text-primary">
+                  {' '}
+                  {fmtNum(financials?.roe, 2)}% / {fmtNum(financials?.debtRatio, 2)}%
+                </span>
+              </div>
+              <div className={NOTE_CARD_CLS}>历史点位：<span className="font-medium text-text-primary">{points.length || 0} 条</span></div>
+              <div className={NOTE_CARD_CLS}>先看摘要，再看历史走势，最后核对 F10 与财务历史。</div>
             </div>
           </div>
-          )}
-        </div>
-      </section>
-
-      <ResultWorkbench pageKey="fundamental" title="基本面结果工作台" result={fundamentalResult} />
+        ) : null}
+      />
 
       {error ? <ErrorState text={error} /> : null}
-
-      {!compactLayout ? (
-        <KpiGrid cols={4} className="mb-4">
-          <KpiCard title="PE" value={fmtNum(valuation?.pe, 2)} />
-          <KpiCard title="PB" value={fmtNum(valuation?.pb, 2)} />
-          <KpiCard title="ROE" value={fmtNum(financials?.roe, 2)} suffix="%" />
-          <KpiCard title="资产负债率" value={fmtNum(financials?.debtRatio, 2)} suffix="%" />
-        </KpiGrid>
-      ) : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -602,9 +531,11 @@ export default function FundamentalPage() {
             <button type="submit" disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
               {loading ? '查询中...' : '查询'}
             </button>
-            <button type="button" onClick={() => setExtraTab('f10')} className={HERO_SECONDARY_BUTTON_CLS}>
-              直达 F10
-            </button>
+            {!compactLayout ? (
+              <button type="button" onClick={() => setExtraTab('f10')} className={HERO_SECONDARY_BUTTON_CLS}>
+                直达 F10
+              </button>
+            ) : null}
           </div>
         </form>
 
@@ -625,7 +556,13 @@ export default function FundamentalPage() {
       </div>
 
       {compactLayout ? (
-        <section className="mt-4 panel-soft rounded-[28px] p-4 sm:p-5">
+        <CollapsibleSectionCard
+          title="估值、财务与历史走势"
+          summary="移动端只保留一个概览块，估值、财务和历史走势通过 tab 切换，不再把多个摘要同时堆在首屏。"
+          className="mt-4"
+          defaultOpen={false}
+          badge={<Badge variant="info">主摘要</Badge>}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="eyebrow">Core Summary</div>
@@ -725,9 +662,16 @@ export default function FundamentalPage() {
               </div>
             </div>
           ) : null}
-        </section>
+        </CollapsibleSectionCard>
       ) : (
-        <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <CollapsibleSectionCard
+          title="估值与财务快照"
+          summary="桌面端首屏默认只展开一层快照，先确认估值与财务是否支持当前判断，再决定是否进入历史走势和详细资料。"
+          className="mt-4"
+          defaultOpen
+          badge={<Badge variant="info">主摘要</Badge>}
+        >
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <div className="panel-soft rounded-[28px] p-4 sm:p-5">
             <div className="text-sm font-medium text-text-primary">估值快照</div>
             <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
@@ -771,10 +715,17 @@ export default function FundamentalPage() {
             )}
           </div>
         </section>
+        </CollapsibleSectionCard>
       )}
 
       {!compactLayout ? (
-        <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
+        <CollapsibleSectionCard
+          title={`历史估值走势（${days}天）`}
+          summary="历史图表改成次级下钻层，默认不和快照区同时展开，避免桌面端首屏出现双重点。"
+          className="mt-4"
+          badge={<Badge variant="neutral">{points.length} 条点位</Badge>}
+        >
+        <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="eyebrow">History View</div>
@@ -811,6 +762,7 @@ export default function FundamentalPage() {
             )}
           </div>
         </div>
+        </CollapsibleSectionCard>
       ) : null}
       {missing.length ? (
         <div className="panel-soft mt-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">

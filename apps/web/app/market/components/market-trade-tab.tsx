@@ -3,7 +3,6 @@ import { EmptyState } from '@/components/status-state';
 import {
   marketFieldCls,
   marketPrimaryButtonCls,
-  marketSecondaryButtonCls,
 } from '@/app/market/components/market-panel-styles';
 import { exportCSV } from '@/lib/export';
 
