@@ -18,7 +18,7 @@ export class ObservabilityController {
     @Res({ passthrough: true }) res: Response,
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
-    await this.healthService.getHealth().catch(() => null);
+    void this.healthService.getHealth().catch(() => null);
     const body = await this.observability.metrics();
     res.setHeader('Content-Type', this.observability.contentType());
     res.setHeader('X-Trace-Id', String(

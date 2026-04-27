@@ -192,6 +192,7 @@ export default function StrategyDetailPage() {
     comment,
     setComment,
     isSubscribed,
+    subscribePending,
     reviewPending,
     handleSubscribe,
     handleReview,
@@ -1458,6 +1459,23 @@ export default function StrategyDetailPage() {
         pendingActionId={pendingRuntimeActionId}
         onRuntimeAction={executeRuntimeAction}
       />
+
+      <section className="panel-soft rounded-[22px] px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1 text-sm text-text-secondary">
+            {isSubscribed ? '该策略已在你的收藏列表中，可继续比较、复制或加入组合。' : '收藏该策略后，可以在“我的收藏”工作区继续跟踪。'}
+          </div>
+          <button
+            type="button"
+            data-testid="strategy-subscribe-action"
+            onClick={() => void handleSubscribe()}
+            disabled={!userId || subscribePending}
+            className="rounded-full border border-primary/35 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:border-border disabled:bg-surface-alt disabled:text-text-muted disabled:opacity-70"
+          >
+            {subscribePending ? '处理中...' : isSubscribed ? '取消收藏策略' : '收藏策略'}
+          </button>
+        </div>
+      </section>
 
       {!compactLayout ? (
         <ProgressiveWorkbenchSection

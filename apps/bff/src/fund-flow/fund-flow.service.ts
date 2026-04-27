@@ -11,11 +11,31 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
+import {
+  FastDataTimeoutError,
+  attachFastDataMeta,
+  buildFastDataSnapshot,
+  snapshotAgeMs,
+  withFastDataTimeout,
+  type FastDataSnapshot,
+} from '../common/fast-data-response';
 
 export type NormalizedFlowItem = {
   date: string; name: string; netInflow: number | null; mainInflow: number | null;
   mainOutflow: number | null; retailInflow: number | null; retailOutflow: number | null;
   changePercent?: number | null;
+};
+
+type CacheBackend = 'redis' | 'memory' | 'none';
+type NorthFundResponse = {
+  data: { flows: NormalizedFlowItem[] };
+  meta: {
+    fetchedAt: string;
+    cache: { hit: boolean; backend: CacheBackend; key: string; ttlSeconds: number };
+  };
+  degraded?: boolean;
+  message?: string;
+  fallback_reason?: string[];
 };
 
 @Injectable()
@@ -24,6 +44,11 @@ export class FundFlowService {
   private static readonly SECTOR_TTL_SECONDS = 120;
   private static readonly CONCEPT_TTL_SECONDS = 120;
   private static readonly NORTH_TTL_SECONDS = 120;
+  private static readonly NORTH_STALE_SECONDS = 300;
+  private static readonly FAST_TIMEOUT_MS = 1500;
+  private static readonly SECTOR_STALE_SECONDS = 300;
+  private readonly northInflight = new Map<string, Promise<FastDataSnapshot<NorthFundResponse>>>();
+  private readonly sectorInflight = new Map<string, Promise<FastDataSnapshot<Record<string, unknown>>>>();
   constructor(
     private readonly mcp: McpGatewayService,
     private readonly cacheService: CommonCacheService,
@@ -87,34 +112,30 @@ export class FundFlowService {
   async getSectorFundFlow() {
     const cacheKey = 'fund-flow:sector';
     const ttlSeconds = this.cacheService.resolveTtl('fund-flow.sector', FundFlowService.SECTOR_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta(cacheKey);
+    const staleSeconds = this.cacheService.resolveTtl('fund-flow.sector_stale', FundFlowService.SECTOR_STALE_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(cacheKey);
     if (cached.value) {
-      return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
+      return this.decorateSectorCacheMeta(cached.value, true, cached.meta.backend, cacheKey, ttlSeconds, 'cache');
+    }
+
+    const staleKey = `${cacheKey}:stale`;
+    const stale = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(staleKey);
+    const refresh = this.refreshSectorFundFlow(cacheKey, staleKey, ttlSeconds, staleSeconds);
+    if (stale.value) {
+      void refresh.catch(() => undefined);
+      return this.decorateSectorCacheMeta(stale.value, true, stale.meta.backend, cacheKey, ttlSeconds, 'stale');
     }
 
     try {
-      const payload = await this.mcp.callTool('get_sector_fund_flow', {});
-      const result = {
-        data: { flows: this.normalizeFlows(payload) },
-        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
-      };
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
-      return result;
+      const snapshot = await withFastDataTimeout(refresh, FundFlowService.FAST_TIMEOUT_MS);
+      return attachFastDataMeta(snapshot.payload, { source: 'live', ageMs: snapshotAgeMs(snapshot) });
     } catch (error) {
-      const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
-        acceptanceStatus: 'degraded',
-        path: '/fund-flow/sector',
-        upstream: this.extractUpstreamDetail(error),
+      const fallbackReason = error instanceof FastDataTimeoutError ? 'mcp_timeout' : 'mcp_unavailable';
+      return attachFastDataMeta(this.buildSectorFundFlowFallback(cacheKey, ttlSeconds, error), {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason,
       });
-      return {
-        data: { flows: [] },
-        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
-        degraded: true,
-        message: '板块资金流暂时不可用，已降级为空结果',
-        fallback_reason: ['sector_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
-        detail,
-        transport: detail.transport,
-      };
     }
   }
 
@@ -132,21 +153,190 @@ export class FundFlowService {
     return result;
   }
 
-  async getNorthFund() {
+  async getNorthFund(): Promise<NorthFundResponse> {
     const cacheKey = 'fund-flow:north';
     const ttlSeconds = this.cacheService.resolveTtl('fund-flow.north', FundFlowService.NORTH_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta(cacheKey);
+    const staleSeconds = this.cacheService.resolveTtl('fund-flow.north_stale', FundFlowService.NORTH_STALE_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FastDataSnapshot<NorthFundResponse>>(cacheKey);
     if (cached.value) {
-      return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
+      const payload = this.decorateNorthCacheMeta(cached.value.payload, true, cached.meta.backend, cacheKey, ttlSeconds);
+      return attachFastDataMeta(payload, {
+        source: 'cache',
+        ageMs: snapshotAgeMs(cached.value),
+      });
     }
 
+    const staleKey = `${cacheKey}:stale`;
+    const stale = await this.cacheService.getWithMeta<FastDataSnapshot<NorthFundResponse>>(staleKey);
+    const refresh = this.refreshNorthFund(cacheKey, staleKey, ttlSeconds, staleSeconds);
+    if (stale.value) {
+      void refresh.catch(() => undefined);
+      const payload = this.decorateNorthCacheMeta(stale.value.payload, true, stale.meta.backend, cacheKey, ttlSeconds);
+      return attachFastDataMeta(payload, {
+        source: 'stale',
+        ageMs: snapshotAgeMs(stale.value),
+      });
+    }
+
+    try {
+      const snapshot = await withFastDataTimeout(refresh, FundFlowService.FAST_TIMEOUT_MS);
+      return attachFastDataMeta(snapshot.payload, { source: 'live', ageMs: snapshotAgeMs(snapshot) });
+    } catch (error) {
+      const fallbackReason = error instanceof FastDataTimeoutError ? 'mcp_timeout' : 'mcp_unavailable';
+      return attachFastDataMeta(this.buildNorthFundFallback(cacheKey, ttlSeconds, fallbackReason), {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason,
+      });
+    }
+  }
+
+  private refreshSectorFundFlow(
+    cacheKey: string,
+    staleKey: string,
+    ttlSeconds: number,
+    staleSeconds: number,
+  ): Promise<FastDataSnapshot<Record<string, unknown>>> {
+    const existing = this.sectorInflight.get(cacheKey);
+    if (existing) return existing;
+
+    const refresh = this.loadSectorFundFlow(cacheKey, ttlSeconds)
+      .then(async (payload) => {
+        const snapshot = buildFastDataSnapshot(payload);
+        await Promise.all([
+          this.cacheService.set(cacheKey, snapshot, ttlSeconds),
+          this.cacheService.set(staleKey, snapshot, staleSeconds),
+        ]);
+        return snapshot;
+      })
+      .finally(() => {
+        this.sectorInflight.delete(cacheKey);
+      });
+    this.sectorInflight.set(cacheKey, refresh);
+    return refresh;
+  }
+
+  private async loadSectorFundFlow(cacheKey: string, ttlSeconds: number): Promise<Record<string, unknown>> {
+    const payload = await this.mcp.callTool('get_sector_fund_flow', {}, { timeoutMs: FundFlowService.FAST_TIMEOUT_MS });
+    return {
+      data: { flows: this.normalizeFlows(payload) },
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds },
+      },
+    };
+  }
+
+  private decorateSectorCacheMeta(
+    cached: FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>,
+    hit: boolean,
+    backend: CacheBackend,
+    key: string,
+    ttlSeconds: number,
+    source: 'cache' | 'stale',
+  ): Record<string, unknown> {
+    const snapshot = this.isFastDataSnapshot(cached) ? cached : buildFastDataSnapshot(cached);
+    const payloadMeta = this.asRecord(snapshot.payload.meta) ?? {};
+    return attachFastDataMeta({
+      ...snapshot.payload,
+      meta: {
+        ...payloadMeta,
+        fetchedAt: source === 'cache' ? '' : snapshot.fetchedAt,
+        cache: { hit, backend, key, ttlSeconds },
+      },
+    }, {
+      source,
+      ageMs: snapshotAgeMs(snapshot),
+    });
+  }
+
+  private buildSectorFundFlowFallback(cacheKey: string, ttlSeconds: number, error: unknown): Record<string, unknown> {
+    const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
+      acceptanceStatus: 'degraded',
+      path: '/fund-flow/sector',
+      upstream: this.extractUpstreamDetail(error),
+    });
+    return {
+      data: { flows: [] },
+      meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      degraded: true,
+      message: '板块资金流暂时不可用，已降级为空结果',
+      fallback_reason: ['sector_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
+      detail,
+      transport: detail.transport,
+    };
+  }
+
+  private isFastDataSnapshot(value: unknown): value is FastDataSnapshot<Record<string, unknown>> {
+    const record = this.asRecord(value);
+    return Boolean(record?.payload && typeof record.payload === 'object' && typeof record.fetchedAt === 'string');
+  }
+
+  private refreshNorthFund(
+    cacheKey: string,
+    staleKey: string,
+    ttlSeconds: number,
+    staleSeconds: number,
+  ): Promise<FastDataSnapshot<NorthFundResponse>> {
+    const existing = this.northInflight.get(cacheKey);
+    if (existing) return existing;
+
+    const refresh = this.loadNorthFund(cacheKey, ttlSeconds)
+      .then(async (payload) => {
+        const snapshot = buildFastDataSnapshot(payload);
+        await Promise.all([
+          this.cacheService.set(cacheKey, snapshot, ttlSeconds),
+          this.cacheService.set(staleKey, snapshot, staleSeconds),
+        ]);
+        return snapshot;
+      })
+      .finally(() => {
+        this.northInflight.delete(cacheKey);
+      });
+    this.northInflight.set(cacheKey, refresh);
+    return refresh;
+  }
+
+  private async loadNorthFund(cacheKey: string, ttlSeconds: number): Promise<NorthFundResponse> {
     const payload = await this.mcp.callTool('get_north_fund', {});
     const flows = this.normalizeFlows(payload);
-    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    if (flows.length > 0) {
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
-    }
-    return result;
+    return {
+      data: { flows },
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds },
+      },
+    };
+  }
+
+  private decorateNorthCacheMeta(
+    payload: NorthFundResponse,
+    hit: boolean,
+    backend: CacheBackend,
+    key: string,
+    ttlSeconds: number,
+  ): NorthFundResponse {
+    return {
+      ...payload,
+      meta: {
+        ...payload.meta,
+        fetchedAt: hit ? '' : payload.meta.fetchedAt,
+        cache: { hit, backend, key, ttlSeconds },
+      },
+    };
+  }
+
+  private buildNorthFundFallback(cacheKey: string, ttlSeconds: number, reason: string): NorthFundResponse {
+    return {
+      data: { flows: [] },
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds },
+      },
+      degraded: true,
+      message: '北向资金暂时不可用，已返回空快照并在后台刷新',
+      fallback_reason: ['north_fund_unavailable', reason],
+    };
   }
 
   async getDragonTiger(date?: string, code?: string) {

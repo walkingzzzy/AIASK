@@ -139,6 +139,46 @@ uv sync --extra legacy
 - `packages/akshare-mcp/src/akshare_mcp/server.py::_enforce_http_security_baseline()` 已确认会对 `http / streamable-http / sse` 执行 host、origin、auth、token passthrough 四项硬校验
 - 因此本节既是推荐基线，也是当前服务端代码里已看到的启动约束；但“某个具体 AI 客户端配置已端到端验证通过”仍需按客户端单独回归
 
+应用端性能模式推荐把 `packages/akshare-mcp` 作为常驻 `streamable-http` 服务运行，然后让 BFF 连接该 endpoint，避免每次冷路径都落到 stdio worker 启停或连接池重建：
+
+推荐直接使用 Docker Compose 托管 MCP：
+
+```bash
+npm run mcp:up
+npm run mcp:logs
+```
+
+Compose 服务名为 `akshare-mcp`，容器内监听 `0.0.0.0:3100`，但宿主机只发布
+`127.0.0.1:3100`，因此 BFF 仍通过 `http://127.0.0.1:3100/mcp` 访问。容器内绑定
+`0.0.0.0` 必须同时设置 `MCP_CONTAINER_BIND_ALL=true` 与 `MCP_ALLOWED_HOSTS`。
+
+```env
+MCP_TRANSPORT=streamable-http
+AKSHARE_MCP_STARTUP_PROFILE=worker
+MCP_HOST=127.0.0.1
+MCP_PORT=3100
+MCP_CONTAINER_HOST=0.0.0.0
+MCP_CONTAINER_BIND_ALL=true
+MCP_ALLOWED_HOSTS=127.0.0.1:3100,localhost:3100,akshare-mcp:3100
+MCP_AUTH_MODE=bearer
+MCP_AUTH_TOKEN=change_me_mcp_token
+MCP_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001
+MCP_ALLOW_TOKEN_PASSTHROUGH=false
+
+MCP_STREAMABLE_HTTP_URL=http://127.0.0.1:3100/mcp
+MCP_STREAMABLE_HTTP_HEADERS={"authorization":"Bearer change_me_mcp_token"}
+MCP_STREAMABLE_HTTP_ALLOW_SSE_FALLBACK=false
+MCP_TRANSPORT_ALLOW_STDIO_FALLBACK=false
+MCP_STREAMABLE_HTTP_TIMEOUT_MS=2500
+MCP_POOL_ACQUIRE_TIMEOUT_MS=1500
+BFF_HEALTH_PROBE_TIMEOUT_MS=1500
+MARKET_SCHEDULER_ENABLED=true
+MARKET_INDEX_FAILURE_BACKOFF_MS=30000
+MARKET_INDEX_FAILURE_MAX_BACKOFF_MS=120000
+```
+
+`AKSHARE_MCP_STARTUP_PROFILE=worker` 是应用端实时模式的关键配置：它保留完整工具注册能力，但不会启动 StrategyFactory、DataSyncScheduler、StartupValidator 等自主后台任务，避免常驻 HTTP MCP 与前端交互请求抢 CPU。离线批处理或策略工厂巡检再单独使用 `full` profile。
+
 ## 5. HTTP 安全示例
 ```json
 {

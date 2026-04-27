@@ -55,6 +55,13 @@ const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondar
 type HomeDetailsTab = 'market' | 'personal' | 'operations';
 type HomeSummaryTab = 'market' | 'account' | 'operations';
 
+function formatFastDataState(source: string | null | undefined, ageMs: number | null | undefined) {
+  const sourceLabel = source === 'live' ? '实时' : source === 'cache' ? '缓存' : source === 'stale' ? '旧快照' : '待同步';
+  if (!Number.isFinite(ageMs ?? NaN) || ageMs == null) return sourceLabel;
+  if (ageMs < 1000) return `${sourceLabel} · 刚刚`;
+  return `${sourceLabel} · ${Math.floor(ageMs / 1000)}秒前`;
+}
+
 function toFiniteNumber(value: unknown): number | null {
   if (value == null || value === '') return null;
   const normalized = typeof value === 'string' ? value.replace(/[%\s,]/g, '') : value;
@@ -114,38 +121,54 @@ export default function HomePage() {
   const [detailTab, setDetailTab] = useState<HomeDetailsTab>('market');
   const [summaryTab, setSummaryTab] = useState<HomeSummaryTab>('market');
   const [showDashboardSettings, setShowDashboardSettings] = useState(false);
+  const [deferredDataReady, setDeferredDataReady] = useState(false);
+  const [fullDashboardOpen, setFullDashboardOpen] = useState(false);
   const liveRefetch = pageVisible ? poll : false;
   const lazyRefetch = pageVisible ? slowPoll : false;
 
   const user = useAuthStore((s) => s.user);
   const canLoadPersonalized = mounted && Boolean(user || hasLoggedInHint());
+  const canLoadMarketDetails = mounted && deferredDataReady && fullDashboardOpen && detailTab === 'market';
+  const canLoadPersonalSummary = canLoadPersonalized && deferredDataReady && (
+    summaryTab === 'account' || (fullDashboardOpen && detailTab === 'personal')
+  );
+  const canLoadPersonalDetails = canLoadPersonalized && deferredDataReady && fullDashboardOpen && detailTab === 'personal';
+  const canLoadOperationsSummary = canLoadPersonalized && deferredDataReady && (
+    summaryTab === 'operations' || (fullDashboardOpen && detailTab === 'operations')
+  );
+  const canLoadAlerts = canLoadPersonalized && deferredDataReady && (
+    summaryTab === 'account' ||
+    summaryTab === 'operations' ||
+    (fullDashboardOpen && (detailTab === 'personal' || detailTab === 'operations'))
+  );
 
   /* ── Data queries ─────────────────────────────────────────────── */
   const idxQ = useApiQuery<unknown>('/market/index-batch-quotes', {
     enabled: mounted,
-    refetchInterval: liveRefetch,
+    refetchInterval: false,
+    staleTime: 15_000,
     placeholderData: 'keepPrevious',
     body: { codes: INDEX_CODES },
     parse: (r) => ensureRecordOrArray(r, '首页指数批量'),
     redirectOnUnauthorized: false,
   });
   const limitUpQ = useApiQuery<unknown>('/market/limit-up-stats', {
-    enabled: mounted,
-    refetchInterval: liveRefetch,
+    enabled: canLoadMarketDetails,
+    refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecord(r, '涨停统计'),
     redirectOnUnauthorized: false,
   });
   const northQ = useApiQuery<unknown>('/fund-flow/north', {
-    enabled: mounted,
-    refetchInterval: liveRefetch,
+    enabled: mounted && deferredDataReady,
+    refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '北向资金'),
     redirectOnUnauthorized: false,
   });
   const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', {
-    enabled: mounted,
-    refetchInterval: liveRefetch,
+    enabled: mounted && deferredDataReady,
+    refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecord(r, '恐慌贪婪指数'),
     redirectOnUnauthorized: false,
@@ -158,19 +181,19 @@ export default function HomePage() {
     critical: true,
   });
   const paperSumQ = useApiQuery<PaperTradingSummary>('/paper-trading/summary', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadPersonalSummary,
     parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const paperPosQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadPersonalSummary,
     parse: normalizePaperPositionsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const newsQ = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', {
-    enabled: mounted,
+    enabled: canLoadPersonalDetails,
     parse: normalizeMarketNewsPayload,
     redirectOnUnauthorized: false,
   });
@@ -178,34 +201,34 @@ export default function HomePage() {
   const { visibility: dashboardVisibility, toggle: toggleDashboardModule } = useDashboardPrefs(mounted, profileQ);
 
   const sectorQ = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', {
-    enabled: mounted && dashboardVisibility.market,
+    enabled: canLoadMarketDetails && dashboardVisibility.market,
     refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块行情(首页)'),
     redirectOnUnauthorized: false,
   });
   const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', {
-    enabled: mounted && dashboardVisibility['fund-flow'],
+    enabled: canLoadMarketDetails && dashboardVisibility['fund-flow'],
     refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块资金流(首页)'),
     redirectOnUnauthorized: false,
   });
   const alertsQ = useApiQuery<{ items?: AlertItem[] }>('/alerts/list?status=active', {
-    enabled: canLoadPersonalized && dashboardVisibility.alerts,
+    enabled: canLoadAlerts && dashboardVisibility.alerts,
     parse: normalizeAlertsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const riskQ = useApiQuery<unknown>('/risk/summary?lookbackDays=252', {
-    enabled: canLoadPersonalized && dashboardVisibility.risk,
+    enabled: canLoadOperationsSummary && dashboardVisibility.risk,
     parse: (r) => ensureRecord(r, '风险汇总(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
   });
 
   const strategySubsQ = useApiQuery<unknown>(user ? '/strategy-market/my-subscriptions' : null, {
-    enabled: mounted && dashboardVisibility.strategy && Boolean(user),
+    enabled: canLoadOperationsSummary && dashboardVisibility.strategy && Boolean(user),
     parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
@@ -218,12 +241,12 @@ export default function HomePage() {
 
   /* ── WS real-time quotes ─────────────────────────────────────── */
   const wsQuotesRef = useRef<Map<string, DashboardQuoteSnapshot>>(new Map());
-  const [, setWsQuoteTick] = useState(0);
+  const [wsQuoteTick, setWsQuoteTick] = useState(0);
   const handleWsQuote = useCallback((data: QuoteData) => {
     wsQuotesRef.current.set(data.code, data as DashboardQuoteSnapshot);
     setWsQuoteTick((t) => t + 1);
   }, []);
-  useQuoteSubscription({ codes: [...INDEX_CODES], type: 'index', onUpdate: handleWsQuote });
+  useQuoteSubscription({ codes: [...INDEX_CODES], type: 'index', enabled: mounted, onUpdate: handleWsQuote });
 
   const quoteCodes = useMemo(() => {
     const s = new Set<string>();
@@ -233,7 +256,8 @@ export default function HomePage() {
   }, [watchlistItems, recentStocks]);
   const batchQ = useApiQuery<unknown>(quoteCodes.length > 0 ? '/market/batch-quotes' : null, {
     enabled: mounted && pageVisible,
-    refetchInterval: lazyRefetch,
+    refetchInterval: false,
+    staleTime: 15_000,
     body: { codes: quoteCodes },
     placeholderData: 'keepPrevious',
     redirectOnUnauthorized: false,
@@ -244,10 +268,28 @@ export default function HomePage() {
       const c = String(q.code ?? '');
       if (c) m.set(c, q as DashboardQuoteSnapshot);
     });
+    wsQuotesRef.current.forEach((q, code) => {
+      if (!INDEX_CODES.includes(code as typeof INDEX_CODES[number])) {
+        m.set(code, q);
+      }
+    });
     return m;
-  }, [batchQ.data]);
+  }, [batchQ.data, wsQuoteTick]);
+  useQuoteSubscription({ codes: quoteCodes, type: 'stock', enabled: mounted && quoteCodes.length > 0, onUpdate: handleWsQuote });
 
   /* ── Lifecycle ─────────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!mounted) return;
+    const idle = window.requestIdleCallback
+      ? window.requestIdleCallback(() => setDeferredDataReady(true), { timeout: 2500 })
+      : null;
+    const timer = window.setTimeout(() => setDeferredDataReady(true), 2500);
+    return () => {
+      if (idle != null && window.cancelIdleCallback) window.cancelIdleCallback(idle);
+      window.clearTimeout(timer);
+    };
+  }, [mounted]);
+
   useEffect(() => {
     const updateDate = () => setDateStr(new Date().toLocaleString('zh-CN', { hour12: false }));
     updateDate();
@@ -268,20 +310,32 @@ export default function HomePage() {
 
   /* ── Derived data ─────────────────────────────────────────────── */
   const lastUpdated = idxQ.dataUpdatedAt ? new Date(idxQ.dataUpdatedAt) : null;
+  const marketDataStateLabel = formatFastDataState(idxQ.dataSource, idxQ.dataAgeMs);
   const indices = useMemo<DashboardQuoteSnapshot[]>(() => {
     const arr = extractArray(idxQ.data, 'quotes', 'items', 'data');
+    const merged = new Map<string, DashboardQuoteSnapshot>();
     if (arr.length > 0) {
-      return arr
+      arr
         .map((item) => {
           const record = extractObject(item);
           return normalizeDashboardQuote(record.quote ? extractObject(record.quote) : record);
         })
-        .filter((item): item is DashboardQuoteSnapshot => item != null);
+        .filter((item): item is DashboardQuoteSnapshot => item != null)
+        .forEach((item) => merged.set(item.code || item.name || `index-${merged.size}`, item));
+    } else {
+      const obj = extractObject(idxQ.data);
+      const normalized = normalizeDashboardQuote(obj.quote ? extractObject(obj.quote) : obj);
+      if (normalized) merged.set(normalized.code || normalized.name || 'index', normalized);
     }
-    const obj = extractObject(idxQ.data);
-    const normalized = normalizeDashboardQuote(obj.quote ? extractObject(obj.quote) : obj);
-    return normalized ? [normalized] : [];
-  }, [idxQ.data]);
+    INDEX_CODES.forEach((code) => {
+      const wsQuote = wsQuotesRef.current.get(code);
+      if (wsQuote) {
+        const normalized = normalizeDashboardQuote(extractObject(wsQuote));
+        if (normalized) merged.set(code, normalized);
+      }
+    });
+    return Array.from(merged.values());
+  }, [idxQ.data, wsQuoteTick]);
   const validIndices = useMemo(() => indices.filter((item) => item.code || item.name), [indices]);
 
   const luStats = extractObject(limitUpQ.data);
@@ -333,20 +387,20 @@ export default function HomePage() {
   const watchlistCount = hydratedWatchlistItems.length;
   const primaryStockCode = hydratedRecentStocks[0]?.code || hydratedWatchlistItems[0]?.code || undefined;
   const displayDateStr = mounted ? dateStr : '';
-  const personalChainLoading = canLoadPersonalized && (
+  const personalChainLoading = canLoadPersonalSummary && (
     (paperSumQ.isPending && !paperSumQ.data)
     || (paperPosQ.isPending && !paperPosQ.data)
     || (alertsQ.isPending && !alertsQ.data)
   );
-  const personalChainUnavailable = canLoadPersonalized && Boolean(
+  const personalChainUnavailable = canLoadPersonalSummary && Boolean(
     paperSumQ.error || paperPosQ.error || alertsQ.error,
   );
-  const operationsChainLoading = canLoadPersonalized && (
+  const operationsChainLoading = canLoadOperationsSummary && (
     (riskQ.isPending && !riskQ.data)
     || (user && strategySubsQ.isPending && !strategySubsQ.data)
     || (alertsQ.isPending && !alertsQ.data)
   );
-  const operationsChainUnavailable = canLoadPersonalized && Boolean(
+  const operationsChainUnavailable = canLoadOperationsSummary && Boolean(
     riskQ.error || (user && strategySubsQ.error) || alertsQ.error,
   );
 
@@ -1309,7 +1363,10 @@ export default function HomePage() {
       </section>
 
       {/* ── 完整模块：标签页 + 折叠区 ── */}
-      <details className="group">
+      <details
+        className="group"
+        onToggle={(event) => setFullDashboardOpen((event.currentTarget as HTMLDetailsElement).open)}
+      >
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded-[16px] border border-border bg-surface px-4 py-3 text-sm font-medium text-text-secondary hover:bg-surface-alt">
           <span className="transition-transform group-open:rotate-90">▶</span>
           <span>展开完整首页模块</span>
@@ -1332,6 +1389,7 @@ export default function HomePage() {
                 mounted={mounted}
                 dateStr={displayDateStr}
                 lastUpdated={lastUpdated}
+                dataStateLabel={marketDataStateLabel}
                 fgValue={fgValue}
                 luStats={luStats}
                 latestNorth={latestNorth}

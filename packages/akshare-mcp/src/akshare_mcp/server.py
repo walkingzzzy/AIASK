@@ -437,8 +437,10 @@ def _enforce_http_security_baseline() -> None:
     transport = str(os.getenv("MCP_TRANSPORT", "stdio")).strip().lower()
     host = str(os.getenv("MCP_HOST", "127.0.0.1")).strip()
     allowed_origins = str(os.getenv("MCP_ALLOWED_ORIGINS", "")).strip()
+    allowed_hosts = str(os.getenv("MCP_ALLOWED_HOSTS", "")).strip()
     auth_mode = str(os.getenv("MCP_AUTH_MODE", "")).strip().lower()
     token_passthrough = _as_bool(os.getenv("MCP_ALLOW_TOKEN_PASSTHROUGH"))
+    allow_container_bind_all = _as_bool(os.getenv("MCP_CONTAINER_BIND_ALL"))
 
     http_transports = {"http", "streamable-http", "sse"}
     if transport not in http_transports:
@@ -448,8 +450,20 @@ def _enforce_http_security_baseline() -> None:
         return
 
     if host not in {"127.0.0.1", "localhost", "::1"}:
+        if not (host == "0.0.0.0" and allow_container_bind_all and allowed_hosts):
+            raise RuntimeError(
+                "Insecure MCP_HOST for HTTP transport. Use 127.0.0.1/localhost/::1 only, "
+                "or set MCP_CONTAINER_BIND_ALL=true with MCP_ALLOWED_HOSTS when running behind "
+                "a localhost-only Docker port mapping."
+            )
+        logging.getLogger(__name__).warning(
+            "[Security] MCP_HOST=0.0.0.0 allowed for container bind; restrict Docker port publishing "
+            "to 127.0.0.1 and keep MCP_ALLOWED_HOSTS configured."
+        )
+
+    if host == "0.0.0.0" and not allowed_hosts:
         raise RuntimeError(
-            "Insecure MCP_HOST for HTTP transport. Use 127.0.0.1/localhost/::1 only."
+            "MCP_ALLOWED_HOSTS is required when MCP_HOST=0.0.0.0."
         )
 
     if not allowed_origins:

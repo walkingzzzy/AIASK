@@ -241,15 +241,26 @@ export default function SkillsPage() {
     () => Boolean(requestedSkillId) && skills.some((skill) => skill.id === requestedSkillId),
     [requestedSkillId, skills],
   );
-  const preferredSkillId = requestedSkillExists ? requestedSkillId : selectedSkillId;
+  const selectedSkillIdExists = useMemo(
+    () => Boolean(selectedSkillId) && skills.some((skill) => skill.id === selectedSkillId),
+    [selectedSkillId, skills],
+  );
+  const preferredSkillId = requestedSkillExists ? requestedSkillId : selectedSkillIdExists ? selectedSkillId : '';
+  const defaultSkill = useMemo(
+    () =>
+      filteredSkills.find((skill) => skill.executable) ??
+      skills.find((skill) => skill.executable) ??
+      filteredSkills[0] ??
+      skills[0] ??
+      null,
+    [filteredSkills, skills],
+  );
   const selectedSkill = useMemo(
     () =>
       filteredSkills.find((skill) => skill.id === preferredSkillId) ??
       skills.find((skill) => skill.id === preferredSkillId) ??
-      filteredSkills[0] ??
-      skills[0] ??
-      null,
-    [filteredSkills, preferredSkillId, skills],
+      defaultSkill,
+    [defaultSkill, filteredSkills, preferredSkillId, skills],
   );
   const activeSkillId = selectedSkill?.id ?? preferredSkillId;
   const workspacePayload = useMemo(() => buildWorkspacePayload(workbenchContext), [workbenchContext]);
@@ -512,6 +523,7 @@ export default function SkillsPage() {
         summary="技能目录、可执行状态和推荐使用方式统一下沉到这一层。默认直接进入技能工作区，只有需要重新理解能力边界时再展开。"
         className="mt-4"
         badge={<Badge variant="neutral">{filteredSkills.length} / {skills.length || 0}</Badge>}
+        defaultOpen
       >
       <SectionCard className="border-0 bg-transparent p-0 shadow-none">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
@@ -681,6 +693,7 @@ export default function SkillsPage() {
                   </button>
                   <button
                     type="button"
+                    data-testid="skill-trigger-action"
                     onClick={() => {
                       void runSelectedSkill().catch(() => undefined);
                     }}

@@ -2548,9 +2548,21 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async mySubscriptions(userId: string) {
-    return this.call('my_subscriptions', { user_id: userId }, {
-      timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
-    });
+    try {
+      return await this.call('my_subscriptions', { user_id: userId }, {
+        timeoutMs: 1_500,
+      });
+    } catch (error) {
+      this.logger.warn(`策略订阅列表降级为空列表: ${this.describeError(error)}`);
+      return {
+        subscriptions: [],
+        favorites: [],
+        items: [],
+        count: 0,
+        degraded: true,
+        degraded_reason: this.describeError(error),
+      };
+    }
   }
 
   async favorite(id: string, userId: string) {

@@ -110,7 +110,24 @@ export class AlertsService {
       params: { status: normalizedStatus, user_id: userId },
     };
 
-    const payload = await this.callTool('alerts_manager', args);
+    let payload: unknown;
+    try {
+      payload = await this.callTool('alerts_manager', args, { timeoutMs: 1_500 });
+    } catch {
+      const result: AlertsListDto = {
+        status: normalizedStatus,
+        items: [],
+        sourceTool: 'alerts_manager',
+        argsMatched: args,
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+      };
+      await this.cacheService.set(cacheKey, result, Math.min(ttlSeconds, 10));
+      return result;
+    }
+
     const result: AlertsListDto = {
       status: normalizedStatus,
       items: this.pickArray(payload, ['data.items', 'data.alerts', 'data', 'items', 'alerts']).map((x) => this.normalizeAlertItem(x)),
@@ -144,9 +161,9 @@ export class AlertsService {
     };
   }
 
-  private async callTool(name: string, args: Record<string, unknown>) {
+  private async callTool(name: string, args: Record<string, unknown>, options?: { timeoutMs?: number }) {
     try {
-      const result = await this.mcpGatewayService.callTool(name, args);
+      const result = await this.mcpGatewayService.callTool(name, args, options);
       if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
         throw new Error(result);
       }

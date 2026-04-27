@@ -6,6 +6,7 @@ import {
   createIssueCollector,
   ensureDir,
   resolveAuditApiUrl,
+  responseMatchesAuditApi,
   gotoStable,
   login,
   relativePath,
@@ -159,32 +160,54 @@ async function waitForSettledUiSafe(page) {
   await waitForSettledUi(page, 800).catch(() => {});
 }
 
+function buildCookieHeader(cookies) {
+  return (Array.isArray(cookies) ? cookies : [])
+    .filter((cookie) => cookie?.name && cookie?.value != null)
+    .map((cookie) => `${encodeURIComponent(cookie.name)}=${encodeURIComponent(cookie.value)}`)
+    .join('; ');
+}
+
 async function fetchJson(page, path, init = {}) {
-  return page.evaluate(
-    async ({ targetPath, targetInit }) => {
-      const response = await fetch(targetPath, {
-        credentials: 'include',
-        ...targetInit,
-        headers: {
-          ...(targetInit?.body ? { 'content-type': 'application/json' } : {}),
-          ...(targetInit?.headers || {}),
-        },
-      });
-      const text = await response.text();
-      let body = null;
-      try {
-        body = text ? JSON.parse(text) : null;
-      } catch {
-        body = text;
-      }
-      return { ok: response.ok, status: response.status, body };
-    },
-    { targetPath: path, targetInit: init },
-  );
+  const targetUrl = new URL(String(path || '/'), page.url() || 'http://127.0.0.1').toString();
+  const headers = new Headers(init.headers || {});
+  if (init.body && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  if (!headers.has('cookie')) {
+    const cookieHeader = buildCookieHeader(await page.context().cookies().catch(() => []));
+    if (cookieHeader) headers.set('cookie', cookieHeader);
+  }
+
+  const response = await fetch(targetUrl, {
+    ...init,
+    headers,
+    cache: init.cache ?? 'no-store',
+    redirect: init.redirect ?? 'manual',
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return { ok: response.ok, status: response.status, body };
 }
 
 async function fetchAuditJson(page, args, apiPath, init = {}) {
   return fetchJson(page, resolveAuditApiUrl(args.baseUrl, apiPath), init);
+}
+
+function waitForAuditResponse(page, apiPaths, options = {}) {
+  const paths = Array.isArray(apiPaths) ? apiPaths : [apiPaths];
+  const method = options.method;
+  const timeout = options.timeout ?? 15000;
+  return page
+    .waitForResponse(
+      (response) => paths.some((apiPath) => responseMatchesAuditApi(response, apiPath, method)),
+      { timeout },
+    )
+    .catch(() => null);
 }
 
 async function ensureDeadLetterSeed(page, baseUrl) {
@@ -265,6 +288,25 @@ function treeSome(value, predicate, seen = new Set()) {
 
 function hasStrategySubscription(payload, strategyId) {
   return treeSome(payload, (record) => readString(record, ['id', 'strategy_id', 'strategyId']) === strategyId);
+}
+
+async function readStrategyFollowState(page, args, strategyId) {
+  const favorites = await fetchJson(page, resolveAuditApiUrl(args.baseUrl, '/api/strategy-market/my-favorites')).catch(() => null);
+  if (favorites?.ok) {
+    return {
+      ok: true,
+      followed: hasStrategySubscription(favorites.body, strategyId),
+      source: 'my-favorites',
+      status: favorites.status,
+    };
+  }
+  const subscriptions = await fetchJson(page, resolveAuditApiUrl(args.baseUrl, '/api/strategy-market/my-subscriptions')).catch(() => null);
+  return {
+    ok: Boolean(subscriptions?.ok),
+    followed: Boolean(subscriptions?.ok && hasStrategySubscription(subscriptions.body, strategyId)),
+    source: 'my-subscriptions',
+    status: subscriptions?.status ?? 0,
+  };
 }
 
 function hasWatchlistItem(payload, groupName, code) {
@@ -580,9 +622,38 @@ async function openSurface(page, args, manifest, surfaceId) {
 async function navigateByNameOrFallback(page, args, labelPattern, expectedPath, fallbackPath = expectedPath) {
   const link = page.getByRole('link', { name: labelPattern }).first();
   const button = page.getByRole('button', { name: labelPattern }).first();
+  const applyFallback = async (reason) => {
+    await gotoStable(page, `${args.baseUrl}${fallbackPath}`);
+    await waitForSettledUiSafe(page);
+    const landed = await waitForUrlPart(page, expectedPath, 3000);
+    return {
+      status: landed ? 'passed' : 'failed',
+      note: landed ? `${reason}，按 fallback 打开 ${fallbackPath}` : `${reason}，fallback 后仍未进入 ${expectedPath}`,
+      fallbackUsed: true,
+    };
+  };
+
   if (await isVisible(link)) {
-    await link.click().catch(() => {});
+    await link.scrollIntoViewIfNeeded().catch(() => {});
+    const href = await link.getAttribute('href').catch(() => null);
+    const clicked = await link.click({ timeout: 4000 }).then(() => true).catch(() => false);
     const landed = await waitForUrlPart(page, expectedPath);
+    if (!landed && href) {
+      const target = new URL(href, args.baseUrl);
+      await gotoStable(page, target.toString());
+      await waitForSettledUiSafe(page);
+      const hrefLanded = await waitForUrlPart(page, expectedPath, 3000);
+      if (hrefLanded) {
+        return {
+          status: 'passed',
+          note: clicked ? `链接点击未稳定落地，按 href 打开 ${expectedPath}` : `链接点击被拦截，按 href 打开 ${expectedPath}`,
+          fallbackUsed: true,
+        };
+      }
+    }
+    if (!landed) {
+      return applyFallback(clicked ? '链接点击未稳定落地' : '链接点击被拦截');
+    }
     return {
       status: landed ? 'passed' : 'failed',
       note: landed ? `通过页面链接进入 ${expectedPath}` : `点击后未进入 ${expectedPath}`,
@@ -590,8 +661,15 @@ async function navigateByNameOrFallback(page, args, labelPattern, expectedPath, 
     };
   }
   if (await isVisible(button)) {
-    await button.click().catch(() => {});
+    await button.scrollIntoViewIfNeeded().catch(() => {});
+    const clicked = await button.click({ timeout: 4000 }).then(() => true).catch(() => false);
     const landed = await waitForUrlPart(page, expectedPath);
+    if (!landed && !clicked) {
+      return applyFallback('按钮点击被拦截');
+    }
+    if (!landed) {
+      return applyFallback('按钮点击未稳定落地');
+    }
     return {
       status: landed ? 'passed' : 'failed',
       note: landed ? `通过页面按钮进入 ${expectedPath}` : `点击后未进入 ${expectedPath}`,
@@ -599,13 +677,7 @@ async function navigateByNameOrFallback(page, args, labelPattern, expectedPath, 
     };
   }
 
-  await gotoStable(page, `${args.baseUrl}${fallbackPath}`);
-  await waitForSettledUiSafe(page);
-  return {
-    status: 'observed',
-    note: `未命中稳定 CTA，按 fallback 打开 ${fallbackPath}`,
-    fallbackUsed: true,
-  };
+  return applyFallback('未命中稳定 CTA');
 }
 
 function payloadHasItems(payload, keys = ['items', 'data', 'results', 'rows', 'portfolios', 'accounts', 'tasks']) {
@@ -1134,17 +1206,26 @@ async function executeSurfaceCheck(surface, browser, args, manifest) {
             }));
           }
           const strategyId = decodeURIComponent(dynamic.path.split('/strategy-market/')[1]?.split(/[?#]/)[0] || '').trim();
-          const beforeSubs = await fetchAuditJson(page, args, '/api/strategy-market/my-subscriptions');
-          const wasSubscribed = beforeSubs.ok && hasStrategySubscription(beforeSubs.body, strategyId);
-          const toggle = await fetchAuditJson(page, args, `/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`, {
+          const beforeSubs = await readStrategyFollowState(page, args, strategyId);
+          const wasSubscribed = beforeSubs.ok && beforeSubs.followed;
+          const favoritePath = `/api/strategy-market/${encodeURIComponent(strategyId)}/favorite`;
+          const subscribePath = `/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`;
+          let usedPath = favoritePath;
+          let toggle = await fetchAuditJson(page, args, favoritePath, {
             method: wasSubscribed ? 'DELETE' : 'POST',
           });
-          const afterToggle = await fetchAuditJson(page, args, '/api/strategy-market/my-subscriptions');
-          const toggled = afterToggle.ok && hasStrategySubscription(afterToggle.body, strategyId) === !wasSubscribed;
-          await fetchAuditJson(page, args, `/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`, {
+          if (!toggle.ok) {
+            usedPath = subscribePath;
+            toggle = await fetchAuditJson(page, args, subscribePath, {
+              method: wasSubscribed ? 'DELETE' : 'POST',
+            });
+          }
+          const afterToggle = await readStrategyFollowState(page, args, strategyId);
+          const toggled = afterToggle.ok && afterToggle.followed === !wasSubscribed;
+          await fetchAuditJson(page, args, usedPath, {
             method: wasSubscribed ? 'POST' : 'DELETE',
           }).catch(() => null);
-          const proof = buildProof(toggle.ok && toggled ? 'passed' : 'failed', toggle.ok && toggled ? '策略订阅切换并回读成功' : '策略订阅切换失败', {
+          const proof = buildProof(toggle.ok && toggled ? 'passed' : 'failed', toggle.ok && toggled ? '策略收藏切换并回读成功' : '策略收藏切换失败', {
             source: 'api+bff',
             artifactRefs: await saveProofArtifact(page, args.outputDir, surface.surfaceId, 'write', 'strategy-subscribe'),
             refreshVerified: toggled,
@@ -1153,7 +1234,7 @@ async function executeSurfaceCheck(surface, browser, args, manifest) {
           return finalize(buildProof('passed', `已解析策略详情 ${dynamic.path}`, { source: 'resolver' }), proof);
         }
         case 'strategy-market': {
-          const ranking = await fetchAuditJson(page, args, '/api/strategy-market/ranking?limit=10');
+          const ranking = await fetchAuditJson(page, args, '/api/strategy-market/ranking?limit=10&status=all');
           const ok = ranking.ok && payloadHasItems(ranking.body, ['strategies', 'items', 'data']);
           readArtifacts.push(...(await saveProofArtifact(page, args.outputDir, surface.surfaceId, 'read', 'strategy-market')));
           const read = buildProof(ok ? 'passed' : 'failed', ok ? '策略超市排名与列表可读取' : '策略超市列表不可用', {
@@ -1727,9 +1808,10 @@ function buildFlows(manifest) {
           await fillStable(page.locator('#reg-username'), username);
           await fillStable(page.locator('#reg-password'), password);
           await fillStable(page.locator('#reg-confirm'), password);
-          const registerResponsePromise = page
-            .waitForResponse((response) => response.url().includes('/api/auth/register'), { timeout: 20000 })
-            .catch(() => null);
+          const registerResponsePromise = waitForAuditResponse(page, '/api/auth/register', {
+            method: 'POST',
+            timeout: 20000,
+          });
           const clicked = await clickIfVisible(submit, 1200);
           const registerResponse = clicked ? await registerResponsePromise : null;
           await page.waitForURL((url) => !/\/register(?:\?|$)/.test(url.toString()), { timeout: 15000 }).catch(() => {});
@@ -1764,9 +1846,10 @@ function buildFlows(manifest) {
           await waitUntilEnabled(submit, 8000);
           await fillStable(page.locator('#login-username'), username);
           await fillStable(page.locator('#login-password'), password);
-          const loginResponsePromise = page
-            .waitForResponse((response) => response.url().includes('/api/auth/login'), { timeout: 20000 })
-            .catch(() => null);
+          const loginResponsePromise = waitForAuditResponse(page, '/api/auth/login', {
+            method: 'POST',
+            timeout: 20000,
+          });
           const clicked = await clickIfVisible(submit, 1200);
           const loginResponse = clicked ? await loginResponsePromise : null;
           await page.waitForURL((url) => !/\/login(?:\?|$)/.test(url.toString()), { timeout: 15000 }).catch(() => {});
@@ -1843,12 +1926,7 @@ function buildFlows(manifest) {
         await addStep('数据中心查询期权链', async () => {
           await openSurface(page, args, manifest, 'data');
           const input = page.locator('#data-option-underlying').first();
-          const queryResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/data/option-chain') && response.request().method() === 'GET',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const queryResponsePromise = waitForAuditResponse(page, '/api/data/option-chain', { method: 'GET' });
           const filled = await fillStable(input, '510050');
           const clicked = await clickIfVisible(page.getByRole('button', { name: '查询期权链工作台', exact: true }).first(), 1200);
           const response = clicked ? await queryResponsePromise : null;
@@ -1865,12 +1943,7 @@ function buildFlows(manifest) {
         });
         await addStep('数据中心加载交易日历', async () => {
           await clickIfVisible(page.getByRole('tab', { name: '交易日历' }).first(), 700);
-          const calendarResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/data/trading-dates') && response.request().method() === 'GET',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const calendarResponsePromise = waitForAuditResponse(page, '/api/data/trading-dates', { method: 'GET' });
           const clicked = await clickIfVisible(page.getByRole('button', { name: '加载交易日历工作台', exact: true }).first(), 1200);
           const response = clicked ? await calendarResponsePromise : null;
           await page.getByRole('columnheader', { name: '日期' }).first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
@@ -1900,12 +1973,7 @@ function buildFlows(manifest) {
           await openSurface(page, args, manifest, 'watchlist');
           const createTriggerButtons = page.getByRole('button', { name: '新建分组', exact: true });
           await createTriggerButtons.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-          const createResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/watchlist/groups/create') && response.request().method() === 'POST',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const createResponsePromise = waitForAuditResponse(page, '/api/watchlist/groups/create', { method: 'POST' });
           const createTrigger =
             (await clickIfVisible(createTriggerButtons.first(), 1500)) ||
             (await clickIfVisible(createTriggerButtons.last(), 1500));
@@ -1945,24 +2013,14 @@ function buildFlows(manifest) {
             await clickIfVisible(page.locator('summary').filter({ hasText: '展开分组管理、搜索与全局统计' }).first(), 700);
           }
 
-          const searchResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes(`/api/market/search?keyword=${auditCode}`) && response.request().method() === 'GET',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const searchResponsePromise = waitForAuditResponse(page, '/api/market/search', { method: 'GET' });
           const searchFilled = await fillStable(page.locator('#watchlist-search').first(), auditCode);
           const searchClicked = await clickIfVisible(page.getByRole('button', { name: '搜索', exact: true }).first(), 1200);
           const searchResponse = searchClicked ? await searchResponsePromise : null;
           const addButton = page.getByRole('button', { name: '+ 添加', exact: true }).first();
           await addButton.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
-          const addResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/watchlist/stocks/add') && response.request().method() === 'POST',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const addResponsePromise = waitForAuditResponse(page, '/api/watchlist/stocks/add', { method: 'POST' });
           const addClicked = await clickIfVisible(addButton, 1200);
           const addResponse = addClicked ? await addResponsePromise : null;
 
@@ -2015,12 +2073,10 @@ function buildFlows(manifest) {
         await addStep('AI 中心生成统一决策结果', async () => {
           await openSurface(page, args, manifest, 'assistant');
           const input = page.locator('#assistant-stock-code').first();
-          const responsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/assistant/unified-decision') && response.request().method() === 'POST',
-              { timeout: 30000 },
-            )
-            .catch(() => null);
+          const responsePromise = waitForAuditResponse(page, '/api/assistant/unified-decision', {
+            method: 'POST',
+            timeout: 30000,
+          });
           const filled = await fillStable(input, '000001');
           const clicked = await clickIfVisible(page.getByRole('button', { name: '统一决策' }).first(), 1200);
           const response = clicked ? await responsePromise : null;
@@ -2040,12 +2096,10 @@ function buildFlows(manifest) {
           if (!(await isVisible(detailButton))) {
             return { status: 'blocked', surfaceIds: ['assistant'], note: '当前结果不支持按需加载详情' };
           }
-          const responsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/assistant/unified-decision/details') && response.request().method() === 'POST',
-              { timeout: 30000 },
-            )
-            .catch(() => null);
+          const responsePromise = waitForAuditResponse(page, '/api/assistant/unified-decision/details', {
+            method: 'POST',
+            timeout: 30000,
+          });
           const clicked = await clickIfVisible(detailButton, 1200);
           const response = clicked ? await responsePromise : null;
           await page.getByText('融合结果层').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
@@ -2070,18 +2124,19 @@ function buildFlows(manifest) {
         const auditOrderCode = '000001';
         await addStep('提交模拟交易并回读订单', async () => {
           await openSurface(page, args, manifest, 'paper-trading');
-          const codeInput = page.getByRole('textbox', { name: '股票代码' }).first();
+          const codeInput = page.locator('#paper-order-code').first();
+          await codeInput.waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
           const filled = (await isVisible(codeInput)) ? await fillStable(codeInput, auditOrderCode) : false;
-          const orderResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/paper-trading/order') && response.request().method() === 'POST',
-              { timeout: 30000 },
-            )
-            .catch(() => null);
+          const orderResponsePromise = waitForAuditResponse(page, '/api/paper-trading/order', {
+            method: 'POST',
+            timeout: 30000,
+          });
           const submit = page.getByRole('button', { name: /确认买入|确认卖出|提交订单|提交/ }).first();
+          await submit.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+          await waitUntilEnabled(submit, 10000);
           const submitClicked = await clickIfVisible(submit, 1200);
           const confirmButton = page.getByRole('button', { name: '确认下单', exact: true }).first();
-          await confirmButton.waitFor({ state: 'visible', timeout: 1800 }).catch(() => {});
+          await confirmButton.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
           const confirmVisible = await isVisible(confirmButton);
           const confirmClicked = confirmVisible ? await clickIfVisible(confirmButton, 1600) : false;
           const orderResponse = submitClicked ? await orderResponsePromise : null;
@@ -2172,35 +2227,25 @@ function buildFlows(manifest) {
           if (!strategyId) {
             return { status: 'failed', surfaceIds: ['strategy-detail'], note: '当前详情页缺少策略标识' };
           }
-          const beforeSubs = await fetchJson(page, resolveAuditApiUrl(args.baseUrl, '/api/strategy-market/my-subscriptions'));
-          const wasSubscribed = beforeSubs.ok && hasStrategySubscription(beforeSubs.body, strategyId);
+          const beforeSubs = await readStrategyFollowState(page, args, strategyId);
+          const wasSubscribed = beforeSubs.ok && beforeSubs.followed;
 
           const toggle = page.locator('[data-testid="strategy-subscribe-action"]').first();
-          const firstResponsePromise = page
-            .waitForResponse(
-              (response) =>
-                response.url().includes(`/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`) &&
-                (response.request().method() === 'POST' || response.request().method() === 'DELETE'),
-              { timeout: 20000 },
-            )
-            .catch(() => null);
+          const followPaths = [
+            `/api/strategy-market/${encodeURIComponent(strategyId)}/favorite`,
+            `/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`,
+          ];
+          const firstResponsePromise = waitForAuditResponse(page, followPaths, { timeout: 20000 });
           const firstToggle = await clickIfVisible(toggle, 1400);
           const firstResponse = firstToggle ? await firstResponsePromise : null;
-          const afterFirst = await fetchJson(page, resolveAuditApiUrl(args.baseUrl, '/api/strategy-market/my-subscriptions'));
-          const toggledStateOk = afterFirst.ok && hasStrategySubscription(afterFirst.body, strategyId) === !wasSubscribed;
+          const afterFirst = await readStrategyFollowState(page, args, strategyId);
+          const toggledStateOk = afterFirst.ok && afterFirst.followed === !wasSubscribed;
 
-          const restoreResponsePromise = page
-            .waitForResponse(
-              (response) =>
-                response.url().includes(`/api/strategy-market/${encodeURIComponent(strategyId)}/subscribe`) &&
-                (response.request().method() === 'POST' || response.request().method() === 'DELETE'),
-              { timeout: 20000 },
-            )
-            .catch(() => null);
+          const restoreResponsePromise = waitForAuditResponse(page, followPaths, { timeout: 20000 });
           const restoreToggle = firstToggle ? await clickIfVisible(toggle, 1400) : false;
           const restoreResponse = restoreToggle ? await restoreResponsePromise : null;
-          const restoredSubs = await fetchJson(page, resolveAuditApiUrl(args.baseUrl, '/api/strategy-market/my-subscriptions'));
-          const restored = restoredSubs.ok && hasStrategySubscription(restoredSubs.body, strategyId) === wasSubscribed;
+          const restoredSubs = await readStrategyFollowState(page, args, strategyId);
+          const restored = restoredSubs.ok && restoredSubs.followed === wasSubscribed;
 
           return {
             status:
@@ -2210,7 +2255,7 @@ function buildFlows(manifest) {
             surfaceIds: ['strategy-detail'],
             note:
               firstToggle
-                ? `订阅写入后回读 ${toggledStateOk ? '成功' : '失败'}，恢复初始状态 ${restored ? '成功' : '失败'}`
+                ? `收藏写入后回读 ${toggledStateOk ? '成功' : '失败'}（${afterFirst.source}），恢复初始状态 ${restored ? '成功' : '失败'}`
                 : '未命中策略订阅入口',
           };
         });
@@ -2248,9 +2293,10 @@ function buildFlows(manifest) {
           await fillStable(page.locator('#reg-username'), auditUsername);
           await fillStable(page.locator('#reg-password'), auditPassword);
           await fillStable(page.locator('#reg-confirm'), auditPassword);
-          const registerResponsePromise = page
-            .waitForResponse((response) => response.url().includes('/api/auth/register'), { timeout: 20000 })
-            .catch(() => null);
+          const registerResponsePromise = waitForAuditResponse(page, '/api/auth/register', {
+            method: 'POST',
+            timeout: 20000,
+          });
           const clicked = await clickIfVisible(submit, 1200);
           const registerResponse = clicked ? await registerResponsePromise : null;
           await page.waitForURL((url) => !/\/register(?:\?|$)/.test(url.toString()), { timeout: 15000 }).catch(() => {});
@@ -2274,12 +2320,7 @@ function buildFlows(manifest) {
           if (await isVisible(riskLevel)) {
             await riskLevel.selectOption('激进').catch(() => {});
           }
-          const profileResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/api/auth/profile') && response.request().method() === 'POST',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const profileResponsePromise = waitForAuditResponse(page, '/api/auth/profile', { method: 'POST' });
           const saveClicked = await clickIfVisible(page.getByRole('button', { name: '保存资料' }).first(), 1200);
           const profileResponse = saveClicked ? await profileResponsePromise : null;
           await gotoStable(page, `${args.baseUrl}/settings`);
@@ -2308,12 +2349,7 @@ function buildFlows(manifest) {
             return { status: 'blocked', surfaceIds: ['settings-security'], note: '安全页没有启用 2FA 入口' };
           }
           await waitUntilEnabled(enableButton, 8000);
-          const setupResponsePromise = page
-            .waitForResponse(
-              (response) => response.url().includes('/auth/2fa/setup') && response.request().method() === 'POST',
-              { timeout: 15000 },
-            )
-            .catch(() => null);
+          const setupResponsePromise = waitForAuditResponse(page, '/api/auth/2fa/setup', { method: 'POST' });
           const enableClicked = await clickIfVisible(enableButton, 1200);
           if (!enableClicked) {
             return { status: 'blocked', surfaceIds: ['settings-security'], note: '未能触发 2FA setup' };

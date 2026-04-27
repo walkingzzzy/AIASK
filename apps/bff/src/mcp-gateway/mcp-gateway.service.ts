@@ -156,8 +156,14 @@ export class McpGatewayService implements OnModuleDestroy {
     );
     this.transportMode = this.resolveTransportMode();
     this.streamableHttpUrl = this.configService.get<string>('MCP_STREAMABLE_HTTP_URL', '').trim();
-    this.allowSseFallback = this.readBooleanConfig('MCP_STREAMABLE_HTTP_ALLOW_SSE_FALLBACK', true);
-    this.allowStdioFallback = this.readBooleanConfig('MCP_TRANSPORT_ALLOW_STDIO_FALLBACK', true);
+    this.allowSseFallback = this.readBooleanConfig(
+      'MCP_STREAMABLE_HTTP_ALLOW_SSE_FALLBACK',
+      this.transportMode === 'auto',
+    );
+    this.allowStdioFallback = this.readBooleanConfig(
+      'MCP_TRANSPORT_ALLOW_STDIO_FALLBACK',
+      this.transportMode === 'auto',
+    );
     this.streamableHttpTimeoutMs = Math.max(
       1000,
       Number(this.configService.get<string>('MCP_STREAMABLE_HTTP_TIMEOUT_MS', '10000')),
@@ -177,13 +183,16 @@ export class McpGatewayService implements OnModuleDestroy {
       return cached;
     }
 
-    if (this.healthInFlight) {
-      return this.healthInFlight;
-    }
-
     const stale = this.getStaleHealth('pool_busy_or_waiting');
     if (this.shouldServeStaleHealth() && stale) {
       return stale;
+    }
+
+    if (this.healthInFlight) {
+      if (stale) {
+        return stale;
+      }
+      return this.healthInFlight;
     }
 
     this.healthInFlight = this.fetchAvailableTools().finally(() => {
@@ -581,6 +590,7 @@ export class McpGatewayService implements OnModuleDestroy {
         AKSHARE_MCP_CONNECTION_SLOT: String(id),
         AKSHARE_MCP_DB_POOL_MIN: this.configService.get<string>('AKSHARE_MCP_DB_POOL_MIN', '1'),
         AKSHARE_MCP_DB_POOL_MAX: this.configService.get<string>('AKSHARE_MCP_DB_POOL_MAX', '2'),
+        MCP_TRANSPORT: 'stdio',
       };
       const transport = new StdioClientTransport({
         command,

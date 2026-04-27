@@ -155,8 +155,8 @@ export class ResearchService {
     return result;
   }
 
-  private async callTool(name: string, args: Record<string, unknown>) {
-    try { return await this.mcpGatewayService.callTool(name, args); }
+  private async callTool(name: string, args: Record<string, unknown>, options?: { timeoutMs?: number }) {
+    try { return await this.mcpGatewayService.callTool(name, args, options); }
     catch (error) { throw new BadGatewayException({ success: false, message: `调用 MCP ${name} 失败`, detail: error instanceof Error ? error.message : String(error) }); }
   }
 
@@ -177,7 +177,7 @@ export class ResearchService {
 
   async getMarketNews(limit = 20) {
     try {
-      const payload = await this.callTool('get_market_news', { limit });
+      const payload = await this.callTool('get_market_news', { limit }, { timeoutMs: 1_500 });
       const list = this.asRecordArray(this.unwrapPayload(payload));
       return {
         items: list.map((item) => ({

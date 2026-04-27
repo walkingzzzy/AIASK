@@ -615,7 +615,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }, [isAuthPage, pathname]);
 
   if (isAuthPage) {
-    return <>{children}</>;
+    return <OnboardingProvider>{children}</OnboardingProvider>;
   }
 
   // 在水合完成前使用默认布局值，避免持久化 store 与 SSR 默认值不一致导致结构性 hydration 错误

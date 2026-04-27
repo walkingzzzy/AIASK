@@ -71,6 +71,29 @@ export function resolveAuditApiUrl(baseUrl, targetPath) {
   return `${getAuditApiBaseUrl(baseUrl)}${rawPath}`;
 }
 
+function normalizeAuditApiPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '/';
+  let pathname = raw;
+  try {
+    pathname = new URL(raw, 'http://audit.local').pathname;
+  } catch {
+    pathname = raw.split('?')[0] || '/';
+  }
+  if (pathname.startsWith('/api/bff/')) return pathname.slice('/api/bff'.length);
+  if (pathname === '/api/bff') return '/';
+  if (pathname.startsWith('/api/')) return pathname.slice('/api'.length);
+  return pathname.startsWith('/') ? pathname : `/${pathname}`;
+}
+
+export function responseMatchesAuditApi(response, targetPath, method) {
+  if (!response) return false;
+  if (method && response.request().method().toUpperCase() !== String(method).toUpperCase()) {
+    return false;
+  }
+  return normalizeAuditApiPath(response.url()) === normalizeAuditApiPath(targetPath);
+}
+
 export async function gotoStable(page, url) {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -186,36 +209,46 @@ export async function openProtectedPage(page, baseUrl, targetPath, credentials) 
   await waitForSettledUi(page, 1000);
 }
 
+function buildCookieHeader(cookies) {
+  return (Array.isArray(cookies) ? cookies : [])
+    .filter((cookie) => cookie?.name && cookie?.value != null)
+    .map((cookie) => `${encodeURIComponent(cookie.name)}=${encodeURIComponent(cookie.value)}`)
+    .join('; ');
+}
+
 async function fetchJson(page, path, init = {}) {
-  return page.evaluate(
-    async ({ targetPath, targetInit }) => {
-      const response = await fetch(targetPath, {
-        credentials: 'include',
-        ...targetInit,
-        headers: {
-          ...(targetInit?.body ? { 'content-type': 'application/json' } : {}),
-          ...(targetInit?.headers || {}),
-        },
-      });
-      const text = await response.text();
-      let body = null;
-      try {
-        body = text ? JSON.parse(text) : null;
-      } catch {
-        body = text;
-      }
-      return {
-        ok: response.ok,
-        status: response.status,
-        body,
-      };
-    },
-    { targetPath: path, targetInit: init },
-  );
+  const targetUrl = new URL(String(path || '/'), page.url() || 'http://127.0.0.1').toString();
+  const headers = new Headers(init.headers || {});
+  if (init.body && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  if (!headers.has('cookie')) {
+    const cookieHeader = buildCookieHeader(await page.context().cookies().catch(() => []));
+    if (cookieHeader) headers.set('cookie', cookieHeader);
+  }
+
+  const response = await fetch(targetUrl, {
+    ...init,
+    headers,
+    cache: init.cache ?? 'no-store',
+    redirect: init.redirect ?? 'manual',
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return {
+    ok: response.ok,
+    status: response.status,
+    body,
+  };
 }
 
 async function ensureStrategyMarketSample(page, baseUrl) {
-  const ranking = await fetchJson(page, resolveAuditApiUrl(baseUrl, '/api/strategy-market/ranking?limit=5'));
+  const ranking = await fetchJson(page, resolveAuditApiUrl(baseUrl, '/api/strategy-market/ranking?limit=5&status=all'));
   const strategies = Array.isArray(ranking.body?.data?.strategies) ? ranking.body.data.strategies : [];
   const existing = strategies.find((item) => {
     const strategyId = String(item?.id || '').trim();

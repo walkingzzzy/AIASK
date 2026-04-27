@@ -58,7 +58,7 @@ async function withFixedDate(iso, run) {
   }
 }
 
-test('PaperTradingService.summary propagates upstream failure instead of returning an empty snapshot', async () => {
+test('PaperTradingService.summary returns a degraded fast snapshot when upstream is unavailable', async () => {
   const calls = [];
   const service = new PaperTradingService(
     {
@@ -75,17 +75,13 @@ test('PaperTradingService.summary propagates upstream failure instead of returni
     createCacheStub(),
   );
 
-  await assert.rejects(
-    () => service.summary('u_demo', 'acct-1'),
-    (error) => {
-      assert.equal(typeof error?.getResponse, 'function');
-      const response = error.getResponse();
-      assert.equal(response.success, false);
-      assert.equal(response.message, '调用 paper_trading_manager.summary 失败');
-      assert.match(String(response.detail ?? ''), /summary unavailable/);
-      return true;
-    },
-  );
+  const data = await service.summary('u_demo', 'acct-1');
+
+  assert.equal(data.degraded, true);
+  assert.equal(data.account_id, 'default');
+  assert.equal(data.total_value, 100000);
+  assert.equal(data.total_return_pct, 0);
+  assert.deepEqual(data.fallback_reason, ['paper_trading_summary_unavailable', 'mcp_unavailable']);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tool, 'paper_trading_manager');

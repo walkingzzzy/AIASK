@@ -34,7 +34,7 @@ export class WatchlistService {
         if (cached.value) return cached.value;
 
         try {
-            const payload = await this.callManager('list', { user_id: userId });
+            const payload = await this.callManager('list', { user_id: userId }, { timeoutMs: 1_500 });
             const groups = this.extractGroups(payload);
             await this.cacheService.set(cacheKey, groups, WatchlistService.CACHE_TTL);
             return groups;
@@ -101,16 +101,20 @@ export class WatchlistService {
         await this.cacheService.del(`watchlist:${userId}:groups`);
     }
 
-    private async callManager(action: string, payload: Record<string, unknown>) {
+    private async callManager(
+        action: string,
+        payload: Record<string, unknown>,
+        options?: { timeoutMs?: number },
+    ) {
         return this.callTool('watchlist_manager', {
             action,
             params: payload,
-        });
+        }, options);
     }
 
-    private async callTool(name: string, args: Record<string, unknown>) {
+    private async callTool(name: string, args: Record<string, unknown>, options?: { timeoutMs?: number }) {
         try {
-            const result = await this.mcpGatewayService.callTool(name, args);
+            const result = await this.mcpGatewayService.callTool(name, args, options);
             const toolError = this.extractToolError(result);
             if (toolError) {
                 throw new Error(toolError);

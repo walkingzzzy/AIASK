@@ -32,10 +32,13 @@ type HealthSnapshot = {
   reasons: string[];
   degradedReasons: string[];
   timestamp: string;
+  stale?: boolean;
+  staleReason?: string | null;
 };
 type HealthCacheEntry = {
   value: HealthSnapshot;
   expiresAt: number;
+  staleUntil: number;
 };
 type ComponentCacheEntry = {
   value: ComponentSnapshot;
@@ -46,6 +49,11 @@ type ComponentCacheEntry = {
 @Injectable()
 export class HealthService implements OnModuleInit {
   private static readonly HEALTH_CACHE_TTL_MS = 10_000;
+  private static readonly HEALTH_STALE_IF_ERROR_MS = 2 * 60_000;
+  private static readonly HEALTH_PROBE_TIMEOUT_MS = readPositiveIntEnv(
+    'BFF_HEALTH_PROBE_TIMEOUT_MS',
+    1_500,
+  );
   private static readonly VECTOR_HEALTH_CACHE_TTL_MS = 60_000;
   private static readonly VECTOR_HEALTH_STALE_IF_ERROR_MS = 5 * 60_000;
   private startedAt = new Date().toISOString();
@@ -74,14 +82,37 @@ export class HealthService implements OnModuleInit {
       return cached;
     }
 
-    if (this.healthInFlight) {
-      return this.healthInFlight;
+    const stale = this.getStaleHealth('health_snapshot_stale');
+    if (stale) {
+      this.refreshHealthInBackground();
+      return stale;
     }
 
-    this.healthInFlight = this.buildHealth().finally(() => {
-      this.healthInFlight = null;
-    });
-    return this.healthInFlight;
+    return this.awaitHealthWithTimeout(
+      this.refreshHealthInBackground(),
+      'health_probe_timeout',
+    );
+  }
+
+  getLivenessProbe() {
+    return {
+      service: 'aiask-bff',
+      status: 'normal',
+      probe: 'liveness',
+      startedAt: this.startedAt,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  getStartupProbe() {
+    const started = this.startupCompleted;
+    return {
+      service: 'aiask-bff',
+      status: started ? 'normal' : 'starting',
+      probe: 'startup',
+      startedAt: this.startedAt,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   private async buildHealth(): Promise<HealthSnapshot> {
@@ -418,9 +449,11 @@ export class HealthService implements OnModuleInit {
   }
 
   private cacheHealth(value: HealthSnapshot): HealthSnapshot {
+    const now = Date.now();
     this.healthCache = {
       value,
-      expiresAt: Date.now() + HealthService.HEALTH_CACHE_TTL_MS,
+      expiresAt: now + HealthService.HEALTH_CACHE_TTL_MS,
+      staleUntil: now + HealthService.HEALTH_STALE_IF_ERROR_MS,
     };
     return value;
   }
@@ -432,4 +465,128 @@ export class HealthService implements OnModuleInit {
     }
     return this.healthCache.value;
   }
+
+  private getStaleHealth(reason: string): HealthSnapshot | null {
+    if (!this.healthCache || Date.now() > this.healthCache.staleUntil) {
+      return null;
+    }
+    return {
+      ...this.healthCache.value,
+      stale: true,
+      staleReason: reason,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  private refreshHealthInBackground(): Promise<HealthSnapshot> {
+    if (!this.healthInFlight) {
+      this.healthInFlight = this.buildHealth()
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          return this.getStaleHealth(message) ?? this.buildDeferredHealth('health_probe_failed', message);
+        })
+        .finally(() => {
+          this.healthInFlight = null;
+        });
+    }
+    return this.healthInFlight;
+  }
+
+  private async awaitHealthWithTimeout(
+    promise: Promise<HealthSnapshot>,
+    reason: string,
+  ): Promise<HealthSnapshot> {
+    return Promise.race([
+      promise,
+      new Promise<HealthSnapshot>((resolve) => {
+        setTimeout(() => {
+          resolve(this.getStaleHealth(reason) ?? this.buildDeferredHealth(reason));
+        }, HealthService.HEALTH_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+  }
+
+  private buildDeferredHealth(reason: string, lastError: string | null = null): HealthSnapshot {
+    const cache = this.cache.getStats();
+    const audit = this.auditStore.getStatus();
+    const notifications = this.notificationService.getDeliveryStatus();
+    const db = this.buildDbSnapshot();
+    const cacheSnapshot = this.buildCacheSnapshot(cache);
+    const auditSnapshot = this.buildAuditSnapshot(audit);
+    const notificationSnapshot = this.buildNotificationSnapshot(notifications);
+    const transport = this.mcpGatewayService.getTransportSnapshot();
+    const mcpSnapshot: ComponentSnapshot = {
+      reachable: false,
+      toolCount: null,
+      expectedTools: null,
+      matched: false,
+      source: transport.transportKind,
+      message: 'MCP health probe deferred',
+      poolSize: undefined,
+      activeConnections: transport.healthyConnections,
+      transportMode: transport.requestedTransport,
+      transportKind: transport.transportKind,
+      degraded: true,
+      fallbackReason: reason,
+      sourceChain: transport.sourceChain,
+      endpoint: transport.endpoint,
+      lastError: lastError ?? transport.lastError,
+      stale: true,
+      staleReason: reason,
+      status: 'degraded',
+      signal: 'operational',
+      reasons: this.uniqueReasons([reason], lastError ? ['mcp_health_probe_failed'] : []),
+    };
+    const vector = this.getStaleVectorSnapshot(lastError) ?? {
+      status: 'degraded',
+      signal: 'operational',
+      reasons: ['vector_health_probe_deferred'],
+      stale: true,
+      lastProbeError: lastError,
+      staleReason: reason,
+    };
+
+    const reasons = this.uniqueReasons(
+      db.reasons,
+      cacheSnapshot.reasons,
+      auditSnapshot.reasons,
+      mcpSnapshot.reasons,
+      vector.reasons,
+      notificationSnapshot.reasons,
+    );
+    const status: HealthStatus = db.status === 'untrusted' ? 'untrusted' : 'degraded';
+
+    this.observability.setDependencyState('mcp', 'degraded');
+    this.observability.setDependencyState('vector', vector.status);
+    this.observability.setDependencyState('audit', auditSnapshot.status);
+    this.observability.setDependencyState('notifications', notificationSnapshot.status);
+
+    return {
+      success: true,
+      service: 'aiask-bff',
+      status,
+      startedAt: this.startedAt,
+      probes: {
+        liveness: 'normal',
+        startup: this.startupCompleted ? 'complete' : 'starting',
+        readiness: status === 'untrusted' ? 'blocked' : 'degraded',
+      },
+      db,
+      cache: cacheSnapshot,
+      audit: auditSnapshot,
+      notifications: notificationSnapshot,
+      mcp: mcpSnapshot,
+      vector,
+      reasons,
+      degradedReasons: reasons,
+      timestamp: new Date().toISOString(),
+      stale: true,
+      staleReason: reason,
+    };
+  }
+}
+
+function readPositiveIntEnv(key: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[key] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

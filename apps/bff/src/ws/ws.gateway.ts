@@ -118,6 +118,8 @@ export class WsGateway
       this.logger.debug(`${client.id} subscribed to ${codes.length} ${roomType} quotes`);
       if (roomType === 'stock') {
         this.marketScheduler.addSubscribedCodes(codes);
+      } else if (roomType === 'index') {
+        this.marketScheduler.addSubscribedIndexCodes(codes);
       }
     }
   }
@@ -336,17 +338,28 @@ export class WsGateway
   }
 
   private _removeTrackedQuoteCode(room: string) {
-    const code = this._extractTrackedQuoteCode(room);
-    if (code) {
-      this.marketScheduler.removeSubscribedCodes([code]);
+    const tracked = this._extractTrackedQuoteCode(room);
+    if (tracked?.type === 'stock') {
+      this.marketScheduler.removeSubscribedCodes([tracked.code]);
+    } else if (tracked?.type === 'index') {
+      this.marketScheduler.removeSubscribedIndexCodes([tracked.code]);
     }
   }
 
-  private _extractTrackedQuoteCode(room: string) {
-    const prefix = 'quote:stock:';
-    if (!room.startsWith(prefix)) return null;
-    const code = room.slice(prefix.length).trim();
-    return code || null;
+  private _extractTrackedQuoteCode(room: string): { type: 'stock' | 'index'; code: string } | null {
+    const stockPrefix = 'quote:stock:';
+    if (room.startsWith(stockPrefix)) {
+      const code = room.slice(stockPrefix.length).trim();
+      return code ? { type: 'stock', code } : null;
+    }
+
+    const indexPrefix = 'quote:index:';
+    if (room.startsWith(indexPrefix)) {
+      const code = room.slice(indexPrefix.length).trim();
+      return code ? { type: 'index', code } : null;
+    }
+
+    return null;
   }
 
   private async authenticateClient(client: Socket): Promise<WsUser | null> {

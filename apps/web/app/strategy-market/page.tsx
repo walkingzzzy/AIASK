@@ -148,7 +148,7 @@ export default function StrategyMarketPage() {
   const [category, setCategory] = useState<string>(entryCategory?.trim() || 'all');
   const [search, setSearch] = useState(entryQuery?.trim() || '');
   const [marketStatusSegment, setMarketStatusSegment] = useState<StrategyMarketStatusSegment>(() =>
-    normalizeStrategyStatusSegment(searchParams.get('status')),
+    searchParams.has('status') ? normalizeStrategyStatusSegment(searchParams.get('status')) : 'all',
   );
   const [incubationStageFilter, setIncubationStageFilter] = useState<StrategyIncubationStageFilter>(() =>
     normalizeIncubationStageFilter(searchParams.get('incubation_stage') ?? searchParams.get('stage')),

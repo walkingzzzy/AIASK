@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
   authedFetch,
@@ -18,6 +18,8 @@ type FetchOptions = {
   headers?: Record<string, string>;
 };
 
+export type ApiDataSource = 'live' | 'cache' | 'stale';
+
 export type UseApiQueryOptions<TData> = {
   /** 额外 key 片段，附加在 ['api', path] 之后 */
   queryKey?: unknown[];
@@ -25,6 +27,8 @@ export type UseApiQueryOptions<TData> = {
   enabled?: boolean;
   /** 轮询间隔（ms），传函数可动态控制 */
   refetchInterval?: number | false | (() => number | false);
+  /** 窗口重新聚焦时是否自动重拉，默认关闭以避免切页/点击后触发全量冷请求 */
+  refetchOnWindowFocus?: boolean;
   /** 覆盖默认 staleTime */
   staleTime?: number;
   /** POST 读请求的 body */
@@ -56,6 +60,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     queryKey: keyExtra = [],
     enabled = true,
     refetchInterval,
+    refetchOnWindowFocus = false,
     staleTime,
     body,
     fetchOptions,
@@ -70,7 +75,19 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
   const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
   const prevReachableRef = useRef(bffAvailability.reachable);
+  const mountedRef = useRef(false);
+  const [responseMeta, setResponseMeta] = useState<{ dataSource: ApiDataSource | null; dataAgeMs: number | null }>({
+    dataSource: null,
+    dataAgeMs: null,
+  });
   const hasFallbackData = fallbackData !== undefined;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Extract module from path (e.g. '/portfolio/list' → 'portfolio')
   // so invalidateQueries({ queryKey: ['api', 'portfolio'] }) matches all portfolio queries.
@@ -91,6 +108,16 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
         init.headers = fetchOptions.headers;
       }
       const resp = await authedFetch(path!, init, { redirectOnUnauthorized });
+      const sourceHeader = resp.headers.get('x-data-source');
+      const ageHeader = resp.headers.get('x-data-age-ms');
+      const dataSource =
+        sourceHeader === 'live' || sourceHeader === 'cache' || sourceHeader === 'stale'
+          ? sourceHeader
+          : null;
+      const dataAgeMs = ageHeader != null && Number.isFinite(Number(ageHeader)) ? Math.max(0, Number(ageHeader)) : null;
+      if (mountedRef.current) {
+        setResponseMeta({ dataSource, dataAgeMs });
+      }
       const bodyPayload = await resp.json().catch(() => null);
       if (!resp.ok) {
         throw buildApiError(bodyPayload, {
@@ -130,6 +157,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     },
     enabled: queryEnabled,
     refetchInterval: refetchInterval as number | false | undefined,
+    refetchOnWindowFocus,
     staleTime,
     placeholderData: placeholderData === 'keepPrevious' ? keepPreviousData : undefined,
   });
@@ -191,6 +219,8 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     rawError: queryError ?? null,
     acceptanceStatus,
     dataUpdatedAt: queryDataUpdatedAt,
+    dataSource: responseMeta.dataSource,
+    dataAgeMs: responseMeta.dataAgeMs,
     refetch,
     serviceUnavailable: disabledByOffline,
   };

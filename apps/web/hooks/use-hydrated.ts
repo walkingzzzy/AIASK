@@ -1,11 +1,13 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
+import { useEffect, useState } from 'react';
 
 export function useHydrated() {
-  return useSyncExternalStore(
-    () => () => {},
-    () => true,
-    () => false,
-  );
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  return hydrated;
 }

@@ -30,6 +30,13 @@ const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondar
 const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
+function formatQuoteDataState(source: string | null | undefined, ageMs: number | null | undefined) {
+  const sourceLabel = source === 'live' ? '实时' : source === 'cache' ? '缓存' : source === 'stale' ? '旧快照' : '待同步';
+  if (!Number.isFinite(ageMs ?? NaN) || ageMs == null) return sourceLabel;
+  if (ageMs < 1000) return `${sourceLabel} · 刚刚`;
+  return `${sourceLabel} · ${Math.floor(ageMs / 1000)}秒前`;
+}
+
 export default function WatchlistPage() {
   const hydrated = useHydrated();
   const compactBoard = useMobile(640);
@@ -111,9 +118,10 @@ export default function WatchlistPage() {
   // Batch quote for all watchlist stocks
   const batchQ = useApiQuery<unknown>(allCodes.length > 0 ? '/market/batch-quotes' : null, {
     body: { codes: allCodes },
-    refetchInterval: 30000,
+    refetchInterval: false,
+    staleTime: 15_000,
     placeholderData: 'keepPrevious',
-    critical: true,
+    redirectOnUnauthorized: false,
   });
 
   const quoteMap = useMemo(() => {
@@ -132,7 +140,7 @@ export default function WatchlistPage() {
     if (!data.code) return;
     setWsQuotes((prev) => ({ ...prev, [data.code]: data as Record<string, unknown> }));
   }, []);
-  useQuoteSubscription({ codes: allCodes, type: 'stock', onUpdate: handleWsQuote });
+  useQuoteSubscription({ codes: allCodes, type: 'stock', enabled: hydrated && allCodes.length > 0, onUpdate: handleWsQuote });
 
   // Merge REST + WS quotes
   const getQuote = (code: string) => {
@@ -255,6 +263,7 @@ export default function WatchlistPage() {
   const watchlistSummary = `当前共有 ${visibleGroups.length} 个分组，活跃分组 ${activeGroup?.name ?? '未选择'}，包含 ${activeGroup?.items.length ?? 0} 只股票。`;
   const watchlistFreshness =
     hydrated && batchQ.dataUpdatedAt ? new Date(batchQ.dataUpdatedAt).toLocaleString('zh-CN') : null;
+  const watchlistQuoteState = formatQuoteDataState(batchQ.dataSource, batchQ.dataAgeMs);
   const watchlistStatus =
     hydrated && syncing && !synced
       ? 'loading'
@@ -793,6 +802,9 @@ export default function WatchlistPage() {
           <div className="flex flex-wrap gap-2">
             <Badge variant="neutral">{viewModeLabel}</Badge>
             <Badge variant="info">{activeGroupCount} 只股票</Badge>
+            <Badge variant={batchQ.dataSource === 'stale' ? 'warning' : batchQ.dataSource === 'cache' ? 'neutral' : 'success'}>
+              {watchlistQuoteState}
+            </Badge>
             <button
               type="button"
               onClick={() => {

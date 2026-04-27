@@ -18,6 +18,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigin,
     credentials: true,
+    exposedHeaders: ['X-Data-Source', 'X-Data-Age-Ms', 'X-Data-Stale', 'X-Data-Fallback', 'X-Trace-Id'],
   });
 
   const config = app.get(ConfigService);

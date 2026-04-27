@@ -20,14 +20,33 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
+import {
+  FastDataTimeoutError,
+  attachFastDataMeta,
+  buildFastDataSnapshot,
+  snapshotAgeMs,
+  withFastDataTimeout,
+  type FastDataSnapshot,
+} from '../common/fast-data-response';
+
+type BatchQuotesResponse = {
+  quotes: NormalizedQuote[];
+  count: number;
+};
 
 @Injectable()
 export class MarketService {
-  private static readonly QUOTE_TTL_SECONDS = 30;
+  private static readonly QUOTE_TTL_SECONDS = 5;
+  private static readonly INDEX_QUOTE_TTL_SECONDS = 3;
+  private static readonly BATCH_QUOTE_TTL_SECONDS = 3;
+  private static readonly BATCH_QUOTE_STALE_SECONDS = 15;
+  private static readonly FAST_QUOTE_TIMEOUT_MS = 1800;
   private static readonly KLINE_TTL_SECONDS = 30;
   private static readonly ORDER_BOOK_TTL_SECONDS = 30;
   private static readonly DEFAULT_KLINE_LIMIT = 60;
   private static readonly MAX_KLINE_LIMIT = 1000;
+  private readonly batchQuoteInflight = new Map<string, Promise<FastDataSnapshot<BatchQuotesResponse>>>();
+  private readonly indexBatchQuoteInflight = new Map<string, Promise<FastDataSnapshot<BatchQuotesResponse>>>();
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
@@ -251,35 +270,24 @@ export class MarketService {
 
   private static readonly INDEX_QUOTE_SOURCE = 'get_index_quote' as const;
 
-  async getBatchQuotes(codes: string[]) {
-    const indexCodes = codes.filter(c => MarketService.INDEX_CODES.has(c));
-    const stockCodes = codes.filter(c => !MarketService.INDEX_CODES.has(c));
+  async getBatchQuotes(codes: string[]): Promise<BatchQuotesResponse> {
+    const normalizedCodes = this.normalizeQuoteCodeList(codes);
+    if (normalizedCodes.length === 0) {
+      return attachFastDataMeta({ quotes: [], count: 0 }, { source: 'live', ageMs: 0 });
+    }
 
-    const [indexResults, stockResult]: [Array<NormalizedQuote | null>, Record<string, unknown>[]] = await Promise.all([
-      Promise.all(indexCodes.map(c => this.getIndexQuote(c).then(r => r.quote).catch(() => null))),
-      stockCodes.length > 0
-        ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then((payload) => {
-            const root = this.unwrapPayload(payload);
-            const data = this.asRecord(root);
-            return this.asRecordArray(data.quotes ?? root);
-          })
-        : Promise.resolve([]),
-    ]);
-
-    const list = [
-      ...indexResults.filter(Boolean),
-      ...stockResult.map((quote) => this.normalizeQuote(quote)),
-    ];
-    return { quotes: list, count: list.length };
+    const cacheKey = `market:batch-quotes:${normalizedCodes.join(',')}`;
+    return this.getFastBatchQuotes(cacheKey, this.batchQuoteInflight, () => this.loadBatchQuotes(normalizedCodes));
   }
 
-  async getIndexBatchQuotes(codes: string[]) {
-    const normalizedCodes = codes.map((code) => code.trim()).filter(Boolean);
-    const quotes: Array<NormalizedQuote | null> = await Promise.all(
-      normalizedCodes.map((code) => this.getIndexQuote(code).then((result) => result.quote).catch(() => null)),
-    );
-    const list = quotes.filter((quote): quote is NormalizedQuote => Boolean(quote));
-    return { quotes: list, count: list.length };
+  async getIndexBatchQuotes(codes: string[]): Promise<BatchQuotesResponse> {
+    const normalizedCodes = this.normalizeQuoteCodeList(codes);
+    if (normalizedCodes.length === 0) {
+      return attachFastDataMeta({ quotes: [], count: 0 }, { source: 'live', ageMs: 0 });
+    }
+
+    const cacheKey = `market:index-batch-quotes:${normalizedCodes.join(',')}`;
+    return this.getFastBatchQuotes(cacheKey, this.indexBatchQuoteInflight, () => this.loadIndexBatchQuotes(normalizedCodes));
   }
 
   async getMinuteKline(code: string, period = '5m', limit = 300) {
@@ -314,7 +322,7 @@ export class MarketService {
   }> {
     const code = indexCode.trim();
     const cacheKey = `market:index-quote:${code}`;
-    const ttlSeconds = this.cacheService.resolveTtl('market.index_quote', 30);
+    const ttlSeconds = this.cacheService.resolveTtl('market.index_quote', MarketService.INDEX_QUOTE_TTL_SECONDS);
     const cached = await this.cacheService.getWithMeta<{
       quote: NormalizedQuote;
       sourceTool: typeof MarketService.INDEX_QUOTE_SOURCE;
@@ -378,7 +386,22 @@ export class MarketService {
   async getLimitUpStats(date?: string) {
     const args: Record<string, unknown> = {};
     if (date) args.date = date.trim();
-    const payload = await this.callTool('get_limit_up_statistics', args);
+    let payload: unknown;
+    try {
+      payload = await this.callTool('get_limit_up_statistics', args, { timeoutMs: 1_500 });
+    } catch (error) {
+      return {
+        totalLimitUp: 0,
+        firstBoard: 0,
+        secondBoard: 0,
+        failedBoard: 0,
+        limitDown: 0,
+        successRate: null,
+        date: date?.trim() ?? '',
+        degraded: true,
+        fallback_reason: error instanceof Error ? error.message : String(error),
+      };
+    }
     const data = this.asRecord(this.unwrapPayload(payload));
     return {
       totalLimitUp: this.toNum(data.totalLimitUp ?? data.total_limit_up),
@@ -403,7 +426,21 @@ export class MarketService {
     }
     const args: Record<string, unknown> = { block_type: blockType };
     if (limit) args.limit = limit;
-    const payload = await this.callTool('get_market_blocks', args);
+    let payload: unknown;
+    try {
+      payload = await this.callTool('get_market_blocks', args, { timeoutMs: 1_500 });
+    } catch (error) {
+      const result = {
+        blocks: [],
+        count: 0,
+        blockType,
+        degraded: true,
+        fallback_reason: error instanceof Error ? error.message : String(error),
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      };
+      await this.cacheService.set(cacheKey, result, Math.min(ttlSeconds, 10));
+      return result;
+    }
     const root = this.unwrapPayload(payload);
     const data = this.asRecord(root);
     const blocks = this.asRecordArray(data.blocks ?? root);
@@ -477,6 +514,118 @@ export class MarketService {
       })),
       count: results.length,
     };
+  }
+
+  private normalizeQuoteCodeList(codes: string[]): string[] {
+    return Array.from(
+      new Set(
+        codes
+          .map((code) => String(code).trim())
+          .filter(Boolean),
+      ),
+    ).sort();
+  }
+
+  private async getFastBatchQuotes(
+    cacheKey: string,
+    inflight: Map<string, Promise<FastDataSnapshot<BatchQuotesResponse>>>,
+    loader: () => Promise<BatchQuotesResponse>,
+  ): Promise<BatchQuotesResponse> {
+    const ttlSeconds = this.cacheService.resolveTtl('market.batch_quotes', MarketService.BATCH_QUOTE_TTL_SECONDS);
+    const staleSeconds = this.cacheService.resolveTtl('market.batch_quotes_stale', MarketService.BATCH_QUOTE_STALE_SECONDS);
+    const fresh = await this.cacheService.getWithMeta<FastDataSnapshot<BatchQuotesResponse>>(cacheKey);
+    if (fresh.value) {
+      return attachFastDataMeta(fresh.value.payload, {
+        source: 'cache',
+        ageMs: snapshotAgeMs(fresh.value),
+      });
+    }
+
+    const staleKey = `${cacheKey}:stale`;
+    const stale = await this.cacheService.getWithMeta<FastDataSnapshot<BatchQuotesResponse>>(staleKey);
+    const refresh = this.refreshFastBatchQuotes(cacheKey, staleKey, ttlSeconds, staleSeconds, inflight, loader);
+    if (stale.value) {
+      void refresh.catch(() => undefined);
+      return attachFastDataMeta(stale.value.payload, {
+        source: 'stale',
+        ageMs: snapshotAgeMs(stale.value),
+      });
+    }
+
+    try {
+      const snapshot = await withFastDataTimeout(refresh, MarketService.FAST_QUOTE_TIMEOUT_MS);
+      return attachFastDataMeta(snapshot.payload, { source: 'live', ageMs: snapshotAgeMs(snapshot) });
+    } catch (error) {
+      if (error instanceof FastDataTimeoutError) {
+        return attachFastDataMeta({ quotes: [], count: 0 }, {
+          source: 'stale',
+          ageMs: 0,
+          fallbackReason: 'mcp_timeout',
+        });
+      }
+      return attachFastDataMeta({ quotes: [], count: 0 }, {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason: 'mcp_unavailable',
+      });
+    }
+  }
+
+  private refreshFastBatchQuotes(
+    cacheKey: string,
+    staleKey: string,
+    ttlSeconds: number,
+    staleSeconds: number,
+    inflight: Map<string, Promise<FastDataSnapshot<BatchQuotesResponse>>>,
+    loader: () => Promise<BatchQuotesResponse>,
+  ): Promise<FastDataSnapshot<BatchQuotesResponse>> {
+    const existing = inflight.get(cacheKey);
+    if (existing) return existing;
+
+    const refresh = loader()
+      .then(async (payload) => {
+        const snapshot = buildFastDataSnapshot(payload);
+        await Promise.all([
+          this.cacheService.set(cacheKey, snapshot, ttlSeconds),
+          this.cacheService.set(staleKey, snapshot, staleSeconds),
+        ]);
+        return snapshot;
+      })
+      .finally(() => {
+        inflight.delete(cacheKey);
+      });
+    inflight.set(cacheKey, refresh);
+    return refresh;
+  }
+
+  private async loadBatchQuotes(codes: string[]): Promise<BatchQuotesResponse> {
+    const indexCodes = codes.filter((c) => MarketService.INDEX_CODES.has(c));
+    const stockCodes = codes.filter((c) => !MarketService.INDEX_CODES.has(c));
+
+    const [indexResults, stockResult]: [Array<NormalizedQuote | null>, Record<string, unknown>[]] = await Promise.all([
+      Promise.all(indexCodes.map((c) => this.getIndexQuote(c).then((r) => r.quote).catch(() => null))),
+      stockCodes.length > 0
+        ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then((payload) => {
+            const root = this.unwrapPayload(payload);
+            const data = this.asRecord(root);
+            return this.asRecordArray(data.quotes ?? root);
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const list = [
+      ...indexResults.filter((quote): quote is NormalizedQuote => Boolean(quote)),
+      ...stockResult.map((quote) => this.normalizeQuote(quote)),
+    ];
+    return { quotes: list, count: list.length };
+  }
+
+  private async loadIndexBatchQuotes(codes: string[]): Promise<BatchQuotesResponse> {
+    const quotes: Array<NormalizedQuote | null> = await Promise.all(
+      codes.map((code) => this.getIndexQuote(code).then((result) => result.quote).catch(() => null)),
+    );
+    const list = quotes.filter((quote): quote is NormalizedQuote => Boolean(quote));
+    return { quotes: list, count: list.length };
   }
 
   private toNum(v: unknown): number | null {
@@ -617,9 +766,9 @@ export class MarketService {
     };
   }
 
-  private async callTool(name: string, args: Record<string, unknown>) {
+  private async callTool(name: string, args: Record<string, unknown>, options?: { timeoutMs?: number }) {
     try {
-      const payload = await this.mcpGatewayService.callTool(name, args);
+      const payload = await this.mcpGatewayService.callTool(name, args, options);
       const toolError = this.extractToolError(payload);
       if (toolError) {
         throw new Error(toolError);

@@ -31,8 +31,8 @@ export class ExportService {
         preferences: {},
       } as Awaited<ReturnType<AuthService['getProfile']>>),
       this.resolveSection('paper_trading.summary', () => this.paperTradingService.summary(userId), {}),
-      this.resolveSection('paper_trading.positions', () => this.paperTradingService.positions(userId), []),
-      this.resolveSection('paper_trading.orders', () => this.paperTradingService.orders(userId), []),
+      this.resolveSection('paper_trading.positions', () => this.paperTradingService.positions(userId), { positions: [] }),
+      this.resolveSection('paper_trading.orders', () => this.paperTradingService.orders(userId), { orders: [] }),
       this.resolveSection('paper_trading.performance', () => this.paperTradingService.performance(userId, undefined, 30), {
         dailyReturns: [],
         metrics: {

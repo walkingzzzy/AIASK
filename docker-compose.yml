@@ -75,6 +75,55 @@ services:
       timeout: 5s
       retries: 5
 
+  akshare-mcp:
+    image: ${AKSHARE_MCP_IMAGE:-aiask-akshare-mcp:local}
+    build:
+      context: .
+      dockerfile: packages/akshare-mcp/Dockerfile
+    container_name: akshare-mcp
+    ports:
+      - "127.0.0.1:${MCP_PORT:-3100}:${MCP_PORT:-3100}"
+    environment:
+      MCP_TRANSPORT: streamable-http
+      AKSHARE_MCP_STARTUP_PROFILE: ${AKSHARE_MCP_STARTUP_PROFILE:-worker}
+      MCP_HOST: ${MCP_CONTAINER_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-3100}
+      MCP_CONTAINER_BIND_ALL: ${MCP_CONTAINER_BIND_ALL:-true}
+      MCP_PUBLIC_HOST: ${MCP_PUBLIC_HOST:-127.0.0.1}
+      MCP_PUBLIC_PORT: ${MCP_PORT:-3100}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1:3100,localhost:3100,akshare-mcp:3100}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001}
+      MCP_AUTH_MODE: ${MCP_AUTH_MODE:-bearer}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-change_me_mcp_token}
+      MCP_ALLOW_TOKEN_PASSTHROUGH: ${MCP_ALLOW_TOKEN_PASSTHROUGH:-false}
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-stockdb}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+      AKSHARE_MCP_DB_POOL_MIN: ${AKSHARE_MCP_DB_POOL_MIN:-1}
+      AKSHARE_MCP_DB_POOL_MAX: ${AKSHARE_MCP_DB_POOL_MAX:-2}
+      PYTHONUNBUFFERED: "1"
+      PYTHONUTF8: "1"
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('MCP_PORT', '3100'))), 3); s.close()\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: akshare-pgadmin

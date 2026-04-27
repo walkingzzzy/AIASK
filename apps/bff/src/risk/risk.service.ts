@@ -196,7 +196,7 @@ export class RiskService {
       const data = await this.mcpGatewayService.callTool(tool, {
         action,
         kwargs: params,
-      });
+      }, { timeoutMs: 1_500 });
       const toolError = this.extractToolError(data);
       if (toolError) {
         return { ok: false as const, error: `${action}: ${toolError}` };
@@ -288,7 +288,7 @@ export class RiskService {
       const payload = await this.mcpGatewayService.callTool('portfolio_manager', {
         action: 'list',
         kwargs: JSON.stringify({ user_id: userId }),
-      });
+      }, { timeoutMs: 1_500 });
       const record = this.extractDataRecord(payload);
       const portfolios = Array.isArray(record.portfolios) ? record.portfolios as Record<string, unknown>[] : [];
       const first = portfolios[0];
@@ -304,7 +304,7 @@ export class RiskService {
       const payload = await this.mcpGatewayService.callTool('portfolio_manager', {
         action: 'get',
         kwargs: JSON.stringify({ user_id: userId, portfolio_id: portfolioId }),
-      });
+      }, { timeoutMs: 1_500 });
       const record = this.extractDataRecord(payload);
       const id = Number(record.id ?? record.portfolio_id);
       return Number.isFinite(id);
@@ -318,7 +318,7 @@ export class RiskService {
       const payload = await this.mcpGatewayService.callTool('paper_trading_manager', {
         action: 'positions',
         kwargs: JSON.stringify({ user_id: userId }),
-      });
+      }, { timeoutMs: 1_500 });
       const record = this.extractDataRecord(payload);
       const positions = Array.isArray(record.positions)
         ? record.positions as Record<string, unknown>[]

@@ -1,12 +1,23 @@
 import { BadGatewayException, HttpException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
 import type { PaperTradingTrustLevel, PaperTradingTrustState, PaperTradingTrustStatus } from '@aiask/shared-types';
 import { CommonCacheService } from '../common/cache.service';
+import {
+  FastDataTimeoutError,
+  attachFastDataMeta,
+  buildFastDataSnapshot,
+  snapshotAgeMs,
+  withFastDataTimeout,
+  type FastDataSnapshot,
+} from '../common/fast-data-response';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PaperTradingIdempotencyService } from './paper-trading-idempotency.service';
 
 @Injectable()
 export class PaperTradingService {
   private static readonly SUMMARY_TTL_SECONDS = 30;
+  private static readonly POSITIONS_TTL_SECONDS = 15;
+  private static readonly STALE_TTL_SECONDS = 300;
+  private static readonly FAST_READ_TIMEOUT_MS = 1_500;
   private readonly logger = new Logger(PaperTradingService.name);
 
   constructor(
@@ -15,12 +26,16 @@ export class PaperTradingService {
     private readonly cacheService: CommonCacheService,
   ) { }
 
-  private async call(action: string, params: Record<string, unknown> = {}) {
+  private async call(
+    action: string,
+    params: Record<string, unknown> = {},
+    options?: { timeoutMs?: number },
+  ) {
     try {
       const result = await this.mcp.callTool('paper_trading_manager', {
         action,
         params,
-      });
+      }, options);
       return this.unwrapManagerResult(action, result);
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -34,25 +49,95 @@ export class PaperTradingService {
   }
 
   async listAccounts(userId: string) {
-    return this.call('list_accounts', { user_id: userId });
+    return this.fastPaperRead(
+      'list_accounts',
+      { user_id: userId },
+      {
+        accounts: [this.buildDefaultPaperAccount()],
+        degraded: true,
+        message: '模拟交易账户暂时不可用，已返回本地默认账户',
+      },
+    );
   }
 
   async summary(userId: string, accountId?: string) {
     const cacheKey = `paper-trading:summary:${userId}:${accountId?.trim() || 'default'}`;
+    const staleKey = `${cacheKey}:stale`;
     const ttlSeconds = this.cacheService.resolveTtl('paper-trading.summary', PaperTradingService.SUMMARY_TTL_SECONDS);
-    const data = await this.call('summary', { user_id: userId, account_id: accountId });
-    if (data && typeof data === 'object') {
-      await this.cacheService.set(cacheKey, data, ttlSeconds);
+    const staleSeconds = this.cacheService.resolveTtl('paper-trading.summary_stale', PaperTradingService.STALE_TTL_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(cacheKey);
+    if (cached.value) {
+      return this.decorateCachedPaperPayload(cached.value, cached.meta.backend, cacheKey, ttlSeconds, 'cache');
     }
-    return data;
+
+    try {
+      const data = await withFastDataTimeout(
+        this.call('summary', { user_id: userId, account_id: accountId }, { timeoutMs: PaperTradingService.FAST_READ_TIMEOUT_MS }),
+        PaperTradingService.FAST_READ_TIMEOUT_MS,
+      );
+      const payload = this.asRecord(data) ?? {};
+      const snapshot = buildFastDataSnapshot(payload);
+      await Promise.all([
+        this.cacheService.set(cacheKey, snapshot, ttlSeconds),
+        this.cacheService.set(staleKey, snapshot, staleSeconds),
+      ]);
+      return attachFastDataMeta(payload, { source: 'live', ageMs: snapshotAgeMs(snapshot) });
+    } catch (error) {
+      const fallbackReason = this.fastReadFallbackReason(error);
+      const stale = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(staleKey);
+      if (stale.value) {
+        return this.decorateCachedPaperPayload(stale.value, stale.meta.backend, cacheKey, ttlSeconds, 'stale', fallbackReason);
+      }
+      return attachFastDataMeta(this.buildSummaryFallback(cacheKey, ttlSeconds, error), {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason,
+      });
+    }
   }
 
   async positions(userId: string, accountId?: string) {
-    return this.call('positions', { user_id: userId, account_id: accountId });
+    const cacheKey = `paper-trading:positions:${userId}:${accountId?.trim() || 'default'}`;
+    const staleKey = `${cacheKey}:stale`;
+    const ttlSeconds = this.cacheService.resolveTtl('paper-trading.positions', PaperTradingService.POSITIONS_TTL_SECONDS);
+    const staleSeconds = this.cacheService.resolveTtl('paper-trading.positions_stale', PaperTradingService.STALE_TTL_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(cacheKey);
+    if (cached.value) {
+      return this.decorateCachedPaperPayload(cached.value, cached.meta.backend, cacheKey, ttlSeconds, 'cache');
+    }
+
+    try {
+      const data = await withFastDataTimeout(
+        this.call('positions', { user_id: userId, account_id: accountId }, { timeoutMs: PaperTradingService.FAST_READ_TIMEOUT_MS }),
+        PaperTradingService.FAST_READ_TIMEOUT_MS,
+      );
+      const payload = this.asRecord(data) ?? { positions: [] };
+      const snapshot = buildFastDataSnapshot(payload);
+      await Promise.all([
+        this.cacheService.set(cacheKey, snapshot, ttlSeconds),
+        this.cacheService.set(staleKey, snapshot, staleSeconds),
+      ]);
+      return attachFastDataMeta(payload, { source: 'live', ageMs: snapshotAgeMs(snapshot) });
+    } catch (error) {
+      const fallbackReason = this.fastReadFallbackReason(error);
+      const stale = await this.cacheService.getWithMeta<FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>>(staleKey);
+      if (stale.value) {
+        return this.decorateCachedPaperPayload(stale.value, stale.meta.backend, cacheKey, ttlSeconds, 'stale', fallbackReason);
+      }
+      return attachFastDataMeta(this.buildPositionsFallback(cacheKey, ttlSeconds, error), {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason,
+      });
+    }
   }
 
   async orders(userId: string, accountId?: string) {
-    return this.call('orders', { user_id: userId, account_id: accountId });
+    return this.fastPaperRead(
+      'orders',
+      { user_id: userId, account_id: accountId },
+      { orders: [], degraded: true, message: '模拟交易订单暂时不可用，已返回空列表' },
+    );
   }
 
   async orderEvents(userId: string, params: {
@@ -62,7 +147,11 @@ export class PaperTradingService {
   }
 
   async pendingOrders(userId: string, accountId?: string) {
-    return this.call('pending_orders', { user_id: userId, account_id: accountId });
+    return this.fastPaperRead(
+      'pending_orders',
+      { user_id: userId, account_id: accountId },
+      { orders: [], degraded: true, message: '模拟交易挂单暂时不可用，已返回空列表' },
+    );
   }
 
   async reconcile(userId: string, params: {
@@ -104,7 +193,11 @@ export class PaperTradingService {
   }
 
   async navHistory(userId: string, accountId?: string, limit?: number) {
-    return this.call('nav_history', { user_id: userId, account_id: accountId, limit: limit ?? 90 });
+    return this.fastPaperRead(
+      'nav_history',
+      { user_id: userId, account_id: accountId, limit: limit ?? 90 },
+      { nav: [], degraded: true, message: '模拟交易净值历史暂时不可用，已返回空列表' },
+    );
   }
 
   async performance(userId: string, accountId?: string, days = 30) {
@@ -167,11 +260,19 @@ export class PaperTradingService {
   }
 
   async matchingStatus() {
-    return this.call('matching_status');
+    return this.fastPaperRead(
+      'matching_status',
+      {},
+      { status: 'degraded', running: false, ok: false, degraded: true, message: '撮合状态暂时不可用' },
+    );
   }
 
   async navStatus() {
-    return this.call('nav_status');
+    return this.fastPaperRead(
+      'nav_status',
+      {},
+      { status: 'degraded', running: false, ok: false, degraded: true, message: '净值状态暂时不可用' },
+    );
   }
 
   async trustStatus(userId: string, accountId?: string): Promise<PaperTradingTrustStatus> {
@@ -537,6 +638,118 @@ export class PaperTradingService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? value as Record<string, unknown>
       : null;
+  }
+
+  private decorateCachedPaperPayload(
+    cached: FastDataSnapshot<Record<string, unknown>> | Record<string, unknown>,
+    backend: 'redis' | 'memory' | 'none',
+    cacheKey: string,
+    ttlSeconds: number,
+    source: 'cache' | 'stale',
+    fallbackReason?: string,
+  ): Record<string, unknown> {
+    const snapshot = this.isFastDataSnapshot(cached) ? cached : buildFastDataSnapshot(cached);
+    const payloadMeta = this.asRecord(snapshot.payload.meta) ?? {};
+    return attachFastDataMeta({
+      ...snapshot.payload,
+      meta: {
+        ...payloadMeta,
+        fetchedAt: source === 'cache' ? '' : snapshot.fetchedAt,
+        cache: { hit: true, backend, key: cacheKey, ttlSeconds },
+      },
+    }, {
+      source,
+      ageMs: snapshotAgeMs(snapshot),
+      fallbackReason,
+    });
+  }
+
+  private buildSummaryFallback(cacheKey: string, ttlSeconds: number, error: unknown): Record<string, unknown> {
+    return {
+      account: {
+        account_id: 'default',
+        initial_capital: 100000,
+        current_capital: 100000,
+        total_value: 100000,
+        status: 'degraded',
+      },
+      account_id: 'default',
+      positions_count: 0,
+      pending_orders_count: 0,
+      total_value: 100000,
+      total_return_pct: 0,
+      reconciliation: null,
+      degraded: true,
+      message: '模拟交易摘要暂时不可用，已返回本地空快照',
+      fallback_reason: ['paper_trading_summary_unavailable', this.fastReadFallbackReason(error)],
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+    };
+  }
+
+  private buildPositionsFallback(cacheKey: string, ttlSeconds: number, error: unknown): Record<string, unknown> {
+    return {
+      positions: [],
+      reconciliation: null,
+      degraded: true,
+      message: '模拟交易持仓暂时不可用，已返回本地空快照',
+      fallback_reason: ['paper_trading_positions_unavailable', this.fastReadFallbackReason(error)],
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+    };
+  }
+
+  private async fastPaperRead(
+    action: string,
+    params: Record<string, unknown>,
+    fallback: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const data = await withFastDataTimeout(
+        this.call(action, params, { timeoutMs: PaperTradingService.FAST_READ_TIMEOUT_MS }),
+        PaperTradingService.FAST_READ_TIMEOUT_MS,
+      );
+      return attachFastDataMeta(this.asRecord(data) ?? {}, { source: 'live', ageMs: 0 });
+    } catch (error) {
+      const fallbackReason = this.fastReadFallbackReason(error);
+      return attachFastDataMeta({
+        ...fallback,
+        fallback_reason: [String(`paper_trading_${action}_unavailable`), fallbackReason],
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          cache: { hit: false, backend: 'none', key: `paper-trading:${action}`, ttlSeconds: 0 },
+        },
+      }, {
+        source: 'stale',
+        ageMs: 0,
+        fallbackReason,
+      });
+    }
+  }
+
+  private buildDefaultPaperAccount(): Record<string, unknown> {
+    return {
+      account_id: 'default',
+      initial_capital: 100000,
+      current_capital: 100000,
+      total_value: 100000,
+      status: 'degraded',
+    };
+  }
+
+  private fastReadFallbackReason(error: unknown): string {
+    if (error instanceof FastDataTimeoutError) return 'mcp_timeout';
+    if (error instanceof Error && /timed out|timeout/i.test(error.message)) return 'mcp_timeout';
+    return 'mcp_unavailable';
+  }
+
+  private isFastDataSnapshot(value: unknown): value is FastDataSnapshot<Record<string, unknown>> {
+    const record = this.asRecord(value);
+    return Boolean(record?.payload && typeof record.payload === 'object' && typeof record.fetchedAt === 'string');
   }
 
   private asRecordArray(value: unknown): Record<string, unknown>[] {

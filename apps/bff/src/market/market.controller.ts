@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, Res } from '@nestjs/common';
 import { ArrayMinSize, IsArray, IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import type { Response } from 'express';
 import { MarketService } from './market.service';
+import { setFastDataHeaders } from '../common/fast-data-response';
 
 class StockCodeQueryDto {
   @IsString()
@@ -127,14 +129,16 @@ export class MarketController {
   }
 
   @Post('batch-quotes')
-  async getBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest) {
+  async getBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest, @Res({ passthrough: true }) res: Response) {
     const data = await this.marketService.getBatchQuotes(body.codes);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('index-batch-quotes')
-  async getIndexBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest) {
+  async getIndexBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest, @Res({ passthrough: true }) res: Response) {
     const data = await this.marketService.getIndexBatchQuotes(body.codes);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 

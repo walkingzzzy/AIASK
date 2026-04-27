@@ -111,6 +111,8 @@ function MarketPageInner({
 
   const quoteQ = useApiQuery<QuoteData>(activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null, {
     critical: true,
+    staleTime: 5_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情报价');
       if ('quote' in obj && obj.quote != null && typeof obj.quote !== 'object') {
@@ -123,6 +125,8 @@ function MarketPageInner({
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}` : null,
     {
       critical: true,
+      staleTime: 30_000,
+      placeholderData: 'keepPrevious',
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -134,6 +138,8 @@ function MarketPageInner({
   );
   const obQ = useApiQuery<ObData>(activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null, {
     critical: true,
+    staleTime: 10_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情盘口');
       if ('orderBook' in obj && obj.orderBook != null && typeof obj.orderBook !== 'object') {
@@ -272,30 +278,48 @@ function MarketPageInner({
   }
 
   const limitUpQ = useApiQuery<unknown>(effectiveLimitUpPath, {
+    staleTime: 30_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '涨停列表'),
   });
   const limitUpStatsQ = useApiQuery<unknown>(effectiveLimitUpStatsPath, {
+    staleTime: 30_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecord(raw, '涨停统计详情'),
   });
   const blocksQ = useApiQuery<unknown>(effectiveBlocksPath, {
+    staleTime: 30_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '板块列表'),
   });
   const tradeQ = useApiQuery<unknown>(effectiveTradePath, {
+    staleTime: 10_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '逐笔成交'),
   });
   const indexQuoteQ = useApiQuery<unknown>(effectiveIndexPath, {
+    staleTime: 5_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecord(raw, '指数行情'),
   });
   const minuteKlineQ = useApiQuery<unknown>(effectiveMinutePath, {
+    staleTime: 10_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '分时K线'),
   });
   const searchQ = useApiQuery<unknown>(effectiveSearchPath, {
+    staleTime: 60_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '股票搜索结果'),
   });
   const stockListQ = useApiQuery<unknown>(effectiveStockListPath, {
+    staleTime: 300_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '股票列表'),
   });
   const blockStocksQ = useApiQuery<unknown>(effectiveBlockStocksPath, {
+    staleTime: 60_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => ensureRecordOrArray(raw, '板块成分股'),
   });
   const batchQuotes = useApiMutation<unknown>({

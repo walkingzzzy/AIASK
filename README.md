@@ -62,6 +62,16 @@ npm run dev:web
 ### 2. MCP 服务
 
 ```bash
+npm run mcp:up
+```
+
+这会通过 Docker Compose 启动常驻 `akshare-mcp` streamable-http 服务，并发布到
+`http://127.0.0.1:3100/mcp`。BFF 默认使用 `MCP_STREAMABLE_HTTP_URL` 连接该端点，
+避免每次请求都通过 stdio 冷启动 Python MCP。
+
+本地直接运行仍然可用：
+
+```bash
 cd packages/akshare-mcp
 uv sync --extra legacy
 uv run python start_server.py

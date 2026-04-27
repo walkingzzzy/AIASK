@@ -1,6 +1,8 @@
-import { Controller, Get, Query, Req } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res } from '@nestjs/common';
 import { IsOptional, IsString, Matches } from 'class-validator';
+import type { Response } from 'express';
 import { FundFlowService } from './fund-flow.service';
+import { setFastDataHeaders } from '../common/fast-data-response';
 
 class StockCodeQueryDto {
   @IsString()
@@ -51,8 +53,9 @@ export class FundFlowController {
   }
 
   @Get('sector')
-  async getSectorFundFlow(@Req() req: TraceRequest) {
+  async getSectorFundFlow(@Req() req: TraceRequest, @Res({ passthrough: true }) res: Response) {
     const data = await this.fundFlowService.getSectorFundFlow();
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 
@@ -63,8 +66,9 @@ export class FundFlowController {
   }
 
   @Get('north')
-  async getNorthFund(@Req() req: TraceRequest) {
+  async getNorthFund(@Req() req: TraceRequest, @Res({ passthrough: true }) res: Response) {
     const data = await this.fundFlowService.getNorthFund();
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 

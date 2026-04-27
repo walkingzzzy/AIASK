@@ -117,6 +117,31 @@ function normalizeRiskPct(value: unknown, fallback: number): number {
   return numeric <= 1 ? numeric * 100 : numeric;
 }
 
+const DEFAULT_PAPER_ACCOUNT: PaperTradingAccount = {
+  account_id: 'default',
+  initial_capital: 100000,
+  current_capital: 100000,
+  total_value: 100000,
+  status: 'degraded',
+};
+
+const DEFAULT_PAPER_STATUS: PaperTradingStatusProbe = {
+  status: 'degraded',
+  running: false,
+  ok: false,
+  message: '模拟交易状态暂时不可用',
+} as PaperTradingStatusProbe;
+
+const DEFAULT_PAPER_SUMMARY: PaperTradingSummary = {
+  account_id: 'default',
+  account: DEFAULT_PAPER_ACCOUNT,
+  positions_count: 0,
+  pending_orders_count: 0,
+  total_value: 100000,
+  total_return_pct: 0,
+  reconciliation: null,
+};
+
 export default function PaperTradingPage() {
   const { toast } = useToast();
   const searchParams = useStableSearchParams();
@@ -190,32 +215,65 @@ export default function PaperTradingPage() {
 
   // 8 read queries — auto-fetch on mount, re-fetch when qs changes
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
-  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts', { critical: true });
-  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status', { critical: true });
-  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status', { critical: true });
+  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts', {
+    fallbackData: { accounts: [DEFAULT_PAPER_ACCOUNT] },
+    nonFatal: true,
+    staleTime: 15_000,
+  });
+  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status', {
+    fallbackData: DEFAULT_PAPER_STATUS,
+    nonFatal: true,
+    staleTime: 15_000,
+  });
+  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status', {
+    fallbackData: DEFAULT_PAPER_STATUS,
+    nonFatal: true,
+    staleTime: 15_000,
+  });
   const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary', {
-    critical: true,
     enabled: canLoadAccountQueries,
+    fallbackData: DEFAULT_PAPER_SUMMARY,
+    nonFatal: true,
+    placeholderData: 'keepPrevious',
+    staleTime: 15_000,
   });
   const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
+    fallbackData: { positions: [], reconciliation: null },
+    nonFatal: true,
+    placeholderData: 'keepPrevious',
+    staleTime: 15_000,
   });
   const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
+    fallbackData: { orders: [] },
+    nonFatal: true,
+    placeholderData: 'keepPrevious',
+    staleTime: 15_000,
   });
   const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
+    fallbackData: { orders: [] },
+    nonFatal: true,
+    placeholderData: 'keepPrevious',
+    staleTime: 15_000,
   });
   const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
+    fallbackData: { nav: [] },
+    nonFatal: true,
+    placeholderData: 'keepPrevious',
+    staleTime: 15_000,
   });
   const performanceQ = useApiQuery<PaperTradingPerformanceResponse>(
     `/paper-trading/performance${qs ? `${qs}&days=${perfDays}` : `?days=${perfDays}`}`,
-    { critical: true, enabled: canLoadAccountQueries },
+    {
+      enabled: canLoadAccountQueries,
+      fallbackData: { dailyReturns: [], metrics: {} },
+      nonFatal: true,
+      placeholderData: 'keepPrevious',
+      staleTime: 15_000,
+    },
   );
   const trustStatusQ = useApiQuery<PaperTradingTrustStatus>('/paper-trading/trust-status' + qs, {
     placeholderData: 'keepPrevious',

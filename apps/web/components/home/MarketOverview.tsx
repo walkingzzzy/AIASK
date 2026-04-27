@@ -15,6 +15,7 @@ export interface MarketOverviewProps {
   mounted: boolean;
   dateStr: string;
   lastUpdated: Date | null;
+  dataStateLabel?: string;
   fgValue: number;
   luStats: Record<string, unknown>;
   latestNorth: Record<string, unknown> | null;
@@ -39,6 +40,7 @@ function MarketPulse({
   mounted,
   dateStr,
   lastUpdated,
+  dataStateLabel,
   fgValue,
   luStats,
   latestNorth,
@@ -46,6 +48,7 @@ function MarketPulse({
 }: Pick<
   MarketOverviewProps,
   'mounted' | 'dateStr' | 'lastUpdated' | 'fgValue' | 'luStats' | 'latestNorth' | 'fmtAmount'
+  | 'dataStateLabel'
 >) {
   const marketOpen = mounted ? isTradingHours() : false;
   const lastUpdatedLabel = mounted && lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : null;
@@ -71,6 +74,9 @@ function MarketPulse({
             <span className="action-chip text-sm text-text-primary">{mounted ? dateStr : '等待时间同步'}</span>
             {lastUpdatedLabel ? (
               <span className="action-chip text-sm text-text-primary">最近更新 {lastUpdatedLabel}</span>
+            ) : null}
+            {dataStateLabel ? (
+              <span className="action-chip text-sm text-text-secondary">{dataStateLabel}</span>
             ) : null}
             <Link href="/fund-flow" className="action-chip text-sm no-underline text-inherit">
               去资金流
@@ -256,6 +262,7 @@ export function MarketOverview(props: MarketOverviewProps) {
         mounted={props.mounted}
         dateStr={props.dateStr}
         lastUpdated={props.lastUpdated}
+        dataStateLabel={props.dataStateLabel}
         fgValue={props.fgValue}
         luStats={props.luStats}
         latestNorth={props.latestNorth}

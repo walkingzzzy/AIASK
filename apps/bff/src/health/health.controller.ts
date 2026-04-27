@@ -15,16 +15,9 @@ export class HealthController {
   @Public()
   @Get('live')
   async getLiveness() {
-    const base = await this.healthService.getHealth();
     return {
       success: true,
-      data: {
-        service: base.service,
-        status: 'normal',
-        probe: 'liveness',
-        startedAt: base.startedAt,
-        timestamp: base.timestamp,
-      },
+      data: this.healthService.getLivenessProbe(),
     };
   }
 
@@ -59,17 +52,11 @@ export class HealthController {
   @Public()
   @Get('startup')
   async getStartupHealth() {
-    const base = await this.healthService.getHealth();
-    const started = base.probes.startup === 'complete';
+    const data = this.healthService.getStartupProbe();
+    const started = data.status === 'normal';
     const payload = {
       success: started,
-      data: {
-        service: base.service,
-        status: started ? 'normal' : 'starting',
-        probe: 'startup',
-        startedAt: base.startedAt,
-        timestamp: base.timestamp,
-      },
+      data,
     };
 
     if (!started) {

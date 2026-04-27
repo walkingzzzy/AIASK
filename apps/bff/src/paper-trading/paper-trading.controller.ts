@@ -1,7 +1,9 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, Res } from '@nestjs/common';
 import { IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
+import { setFastDataHeaders } from '../common/fast-data-response';
 import { PaperTradingService } from './paper-trading.service';
 
 class PlaceOrderDto {
@@ -98,26 +100,30 @@ export class PaperTradingController {
   constructor(private readonly svc: PaperTradingService) { }
 
   @Get('accounts')
-  async listAccounts(@Req() req: Req_) {
+  async listAccounts(@Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.listAccounts(userId(req));
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
   @Get('summary')
-  async summary(@Query('account_id') accountId: string, @Req() req: Req_) {
+  async summary(@Query('account_id') accountId: string, @Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.summary(userId(req), accountId);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
   @Get('positions')
-  async positions(@Query('account_id') accountId: string, @Req() req: Req_) {
+  async positions(@Query('account_id') accountId: string, @Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.positions(userId(req), accountId);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
   @Get('orders')
-  async orders(@Query('account_id') accountId: string, @Req() req: Req_) {
+  async orders(@Query('account_id') accountId: string, @Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.orders(userId(req), accountId);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
@@ -128,8 +134,9 @@ export class PaperTradingController {
   }
 
   @Get('pending-orders')
-  async pendingOrders(@Query('account_id') accountId: string, @Req() req: Req_) {
+  async pendingOrders(@Query('account_id') accountId: string, @Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.pendingOrders(userId(req), accountId);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
@@ -167,8 +174,10 @@ export class PaperTradingController {
     @Query('account_id') accountId: string,
     @Query('limit') limit: string,
     @Req() req: Req_,
+    @Res({ passthrough: true }) res: Response,
   ) {
     const data = await this.svc.navHistory(userId(req), accountId, limit ? Number(limit) : undefined);
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
@@ -185,14 +194,16 @@ export class PaperTradingController {
   }
 
   @Get('matching-status')
-  async matchingStatus(@Req() req: Req_) {
+  async matchingStatus(@Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.matchingStatus();
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
   @Get('nav-status')
-  async navStatus(@Req() req: Req_) {
+  async navStatus(@Req() req: Req_, @Res({ passthrough: true }) res: Response) {
     const data = await this.svc.navStatus();
+    setFastDataHeaders(res, data);
     return { success: true, data, traceId: traceId(req) };
   }
 
