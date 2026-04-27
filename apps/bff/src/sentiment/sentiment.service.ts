@@ -17,7 +17,7 @@ export class SentimentService {
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      return await this.mcpGatewayService.callTool(name, args);
+      return await this.mcpGatewayService.callTool(name, args, { retryOnTransportError: true });
     } catch (error) {
       throw new BadGatewayException({
         success: false, message: `调用 MCP ${name} 失败`,

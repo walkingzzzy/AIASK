@@ -619,7 +619,7 @@ export class MarketService {
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      const payload = await this.mcpGatewayService.callTool(name, args);
+      const payload = await this.mcpGatewayService.callTool(name, args, { retryOnTransportError: true });
       const toolError = this.extractToolError(payload);
       if (toolError) {
         throw new Error(toolError);

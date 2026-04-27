@@ -54,6 +54,8 @@ export class UpdateStrategyDto {
   @IsOptional() params?: Record<string, unknown>;
   @IsOptional() factor_weights?: Record<string, number>;
   @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
+  @IsOptional() @IsIn(['draft', 'lifecycle']) mutationScope?: 'draft' | 'lifecycle';
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() run_post_update_pipeline?: boolean;
 }
 
 export class PersonalStrategySuggestionDto {

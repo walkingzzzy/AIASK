@@ -19,7 +19,7 @@ import { FUND_FLOW_HERO_NOTES, FUND_FLOW_TABS, type FundFlowTab } from '@/app/fu
 export default function FundFlowPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const [tab, setTab] = useState<FundFlowTab>('stock');
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode, setCodeError } = useStockCode();
   const autoStockPath = resolvedCode ? `/fund-flow/stock?code=${encodeURIComponent(resolvedCode)}` : null;
   const [stockPath, setStockPath] = useState<string | null>(null);
   const [sectorPath, setSectorPath] = useState<string | null>(null);
@@ -69,10 +69,14 @@ export default function FundFlowPage() {
   const loading = tabLoading[tab];
   const error = tabError[tab];
   const activeTabLabel = FUND_FLOW_TABS.find((item) => item.key === tab)?.label ?? '资金流向';
-  const activeCodeLabel = trimmedCode || resolvedCode || '600519';
+  const activeCodeLabel = trimmedCode || resolvedCode || '未选择标的';
   const tabStatusLabel = loading ? '加载中' : error ? '需重试' : '就绪';
 
-  function loadStockFlow(nextCode = trimmedCode || resolvedCode || '600519') {
+  function loadStockFlow(nextCode = trimmedCode || resolvedCode || '') {
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票');
+      return;
+    }
     setCode(nextCode);
     const p = `/fund-flow/stock?code=${encodeURIComponent(nextCode)}`;
     if (p === effectiveStockPath) stockQ.refetch();
@@ -88,7 +92,11 @@ export default function FundFlowPage() {
     else setMarginPath(p);
   }
 
-  function loadNorthDetail(nextCode = trimmedCode || resolvedCode || '600519') {
+  function loadNorthDetail(nextCode = trimmedCode || resolvedCode || '') {
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票');
+      return;
+    }
     setCode(nextCode);
     const hp = `/fund-flow/north-holding?code=${encodeURIComponent(nextCode)}`;
     if (hp === northHoldingPath) northHoldingQ.refetch();
@@ -185,8 +193,12 @@ export default function FundFlowPage() {
     preferredActionIds: ['fund-flow.refresh-tab', 'fund-flow.open-stock', 'fund-flow.open-north'],
     recommendedLinks: [
       { id: 'fund-flow-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
-      { id: 'fund-flow-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeCodeLabel)}` },
-      { id: 'fund-flow-open-technical-link', label: '技术分析', href: `/technical?code=${encodeURIComponent(activeCodeLabel)}` },
+      trimmedCode || resolvedCode
+        ? { id: 'fund-flow-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(trimmedCode || resolvedCode || '')}` }
+        : { id: 'fund-flow-open-watchlist-link', label: '自选股', href: '/watchlist?from=fund-flow' },
+      trimmedCode || resolvedCode
+        ? { id: 'fund-flow-open-technical-link', label: '技术分析', href: `/technical?code=${encodeURIComponent(trimmedCode || resolvedCode || '')}` }
+        : { id: 'fund-flow-open-market-link', label: '行情看板', href: '/market?from=fund-flow' },
       { id: 'fund-flow-open-risk-link', label: '风险中心', href: '/risk' },
     ],
     evidence: [
@@ -208,7 +220,7 @@ export default function FundFlowPage() {
       `复查${activeTabLabel}`,
       `/fund-flow`,
       'fund-flow-review',
-      { tab, code: activeCodeLabel },
+      { tab, code: trimmedCode || resolvedCode || null },
     ),
   });
   usePageContext({

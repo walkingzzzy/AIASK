@@ -68,7 +68,7 @@ export default function ExecutionPage() {
   const initialAccountId = searchParams.get('account_id') ?? '';
   const initialExecutionId = searchParams.get('execution_id') ?? '';
   const initialArtifactId = searchParams.get('artifact_id') ?? '';
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode(searchParams.get('code') ?? '600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode(searchParams.get('code') ?? '');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
   const [price, setPrice] = useState('');

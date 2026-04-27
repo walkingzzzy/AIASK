@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
@@ -98,7 +98,7 @@ function WorkbenchField({
 }
 
 export default function StrategyPage() {
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [strategy, setStrategy] = useState('ma_cross');
   const [artifactId, setArtifactId] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('experiment');
@@ -106,7 +106,7 @@ export default function StrategyPage() {
   const [portfolioName, setPortfolioName] = useState('我的策略组合');
   const [holdingOp, setHoldingOp] = useState<HoldingOp>({
     portfolioId: '',
-    code: '600519',
+    code: '',
     shares: '100',
     costPrice: '1',
   });
@@ -152,6 +152,11 @@ export default function StrategyPage() {
     stressTestApi.error ||
     actionApi.error;
   const confirmPrefs = useMemo(() => readTransactionConfirmations(profileQ.data), [profileQ.data]);
+
+  useEffect(() => {
+    if (!trimmedCode) return;
+    setHoldingOp((prev) => (prev.code ? prev : { ...prev, code: trimmedCode }));
+  }, [trimmedCode]);
 
   async function runBacktest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -510,10 +515,10 @@ export default function StrategyPage() {
     pageActions: strategyPageActions,
     preferredActionIds: ['strategy.open-experiment', 'strategy.load-portfolios', 'strategy.open-risk'],
     recommendedLinks: [
-      { id: 'strategy-link-portfolio', label: '去组合页', href: `/portfolio?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-backtest', label: '去回测页', href: `/backtest?code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-paper', label: '去模拟盘', href: `/paper-trading?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'strategy-link-portfolio', label: '去组合页', href: trimmedCode ? `/portfolio?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/portfolio?from=strategy' },
+      { id: 'strategy-link-backtest', label: '去回测页', href: trimmedCode ? `/backtest?code=${encodeURIComponent(trimmedCode)}` : '/backtest' },
+      { id: 'strategy-link-paper', label: '去模拟盘', href: trimmedCode ? `/paper-trading?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/paper-trading?from=strategy' },
+      { id: 'strategy-link-assistant', label: '继续追问 Copilot', href: trimmedCode ? `/assistant?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/assistant?from=strategy' },
     ],
     evidence: [
       { label: '当前标的', value: trimmedCode || '-' },
@@ -536,7 +541,7 @@ export default function StrategyPage() {
       fallbackReason: [error].filter((item): item is string => Boolean(item)),
     },
     workbenchTask: defaultWorkbenchTask('strategy', `复查策略工作台 ${strategy}`, '/strategy', 'strategy-workspace-review', {
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       strategy,
       artifactId,
       portfolioId: holdingOp.portfolioId || null,

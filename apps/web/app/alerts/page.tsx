@@ -58,7 +58,7 @@ const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
 export default function AlertsPage() {
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [indicator, setIndicator] = useState('price');
   const [condition, setCondition] = useState('>');
   const [value, setValue] = useState('1800');
@@ -282,7 +282,7 @@ export default function AlertsPage() {
             <div className="mt-5 hidden gap-3 md:grid md:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '未选择标的'}</div>
                 <div className="mt-1 text-xs text-text-secondary">用于创建下一条监控规则</div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">

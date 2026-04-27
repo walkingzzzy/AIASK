@@ -49,6 +49,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { ObservabilityInterceptor } from './observability/observability.interceptor';
 import { McpJobsModule } from './mcp-jobs/mcp-jobs.module';
 import { BehaviorModule } from './behavior/behavior.module';
+import { UserDefaultContextModule } from './user-default-context/user-default-context.module';
 
 const DEFAULT_HTTP_THROTTLE_TTL_MS = 60_000;
 const DEFAULT_HTTP_THROTTLE_LIMIT = 600;
@@ -85,6 +86,7 @@ function readPositiveInt(value: string | undefined, fallback: number) {
     McpJobsModule,
     AuthModule,
     BehaviorModule,
+    UserDefaultContextModule,
     HealthModule,
     MarketModule,
     FundamentalModule,

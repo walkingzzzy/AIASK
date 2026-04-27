@@ -31,20 +31,6 @@ type DecayResponse = {
   };
 };
 
-const DEFAULT_FACTOR_UNIVERSE = [
-  '600519',
-  '000858',
-  '300750',
-  '601318',
-  '000001',
-  '600036',
-  '601166',
-  '000333',
-  '600276',
-  '601899',
-  '002594',
-  '000651',
-];
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const HERO_SECONDARY_BUTTON_CLS =
@@ -70,10 +56,10 @@ export default function FactorAnalysisPage() {
   const [decayPath, setDecayPath] = useState<string | null>(null);
   const icHistoryQ = useApiQuery<IcHistoryResponse>(icHistoryPath);
   const decayQ = useApiQuery<DecayResponse>(decayPath);
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [factor, setFactor] = useState('momentum');
   const sampleUniverse = useMemo(
-    () => Array.from(new Set([trimmedCode || '600519', ...DEFAULT_FACTOR_UNIVERSE])).filter(Boolean),
+    () => trimmedCode ? [trimmedCode] : [],
     [trimmedCode],
   );
 
@@ -189,8 +175,12 @@ export default function FactorAnalysisPage() {
     preferredActionIds: ['factor-analysis.run', 'factor-analysis.view-ic', 'factor-analysis.load-library'],
     recommendedLinks: [
       { id: 'factor-analysis-link-factor', label: '回因子研究工作台', href: '/factor' },
-      { id: 'factor-analysis-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor-analysis&symbol=${encodeURIComponent(trimmedCode || '600519')}` },
+      trimmedCode
+        ? { id: 'factor-analysis-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(trimmedCode)}` }
+        : { id: 'factor-analysis-link-watchlist', label: '去自选股', href: '/watchlist?from=factor-analysis' },
+      trimmedCode
+        ? { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor-analysis&code=${encodeURIComponent(trimmedCode)}` }
+        : { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: '/assistant?from=factor-analysis' },
     ],
     evidence: [
       { label: '当前因子', value: factor },
@@ -213,7 +203,7 @@ export default function FactorAnalysisPage() {
     },
     workbenchTask: defaultWorkbenchTask('factor-analysis', `复查因子 ${factor}`, '/factor-analysis', 'factor-analysis-review', {
       factor,
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       ic: ic?.ic ?? null,
       tab: resultTab,
     }),
@@ -243,7 +233,7 @@ export default function FactorAnalysisPage() {
     freshness: factorAnalysisResult.freshness ?? null,
     raw: {
       factor,
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       resultTab,
       sampleSize: sampleUniverse.length,
       ic: ic?.ic ?? null,
@@ -264,7 +254,7 @@ export default function FactorAnalysisPage() {
               <Badge variant={analysisReady ? 'success' : 'warning'}>
                 {analysisReady ? '已生成分析结果' : '等待首次分析'}
               </Badge>
-              <Badge variant="neutral">{trimmedCode || '600519'}</Badge>
+              <Badge variant="neutral">{trimmedCode || '未选择标的'}</Badge>
             </div>
 
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
@@ -374,7 +364,7 @@ export default function FactorAnalysisPage() {
                   </button>
                 </div>
                 <div className={`${NOTE_CARD_CLS} mt-4`}>
-                  当前会使用目标股票加默认样本池共 {sampleUniverse.length} 只股票，IC 历史窗口为 20 期，最多展示 60 个观察点。
+                  当前会使用用户选择的目标股票共 {sampleUniverse.length} 只，IC 历史窗口为 20 期，最多展示 60 个观察点。
                 </div>
               </div>
               <details className={SIDE_PANEL_CLS} open={!compactLayout}>

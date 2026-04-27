@@ -101,7 +101,7 @@ function parseIndicators(raw: unknown) {
 export default function TechnicalPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('indicators');
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, setCodeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const [period, setPeriod] = useState('daily');
   const [limit, setLimit] = useState('100');
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(['MA', 'RSI', 'MACD']);
@@ -171,7 +171,11 @@ export default function TechnicalPage() {
       return;
     }
 
-    const nextCode = trimmedCode || resolvedCode || '600519';
+    const nextCode = trimmedCode || resolvedCode || '';
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票，再运行推荐技术分析');
+      return;
+    }
     const nextPeriod = 'daily';
     const nextLimit = 120;
     setCode(nextCode);
@@ -211,7 +215,7 @@ export default function TechnicalPage() {
   const requestSummary =
     tab === 'available'
       ? '当前查看：系统支持的 K 线形态库'
-      : `最近一次参数：${trimmedCode || resolvedCode || '600519'} / ${period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'} / ${limit} 根${tab === 'indicators' ? ` / ${selectedIndicators.join('、')}` : ''}`;
+      : `最近一次参数：${trimmedCode || resolvedCode || '未选择标的'} / ${period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'} / ${limit} 根${tab === 'indicators' ? ` / ${selectedIndicators.join('、')}` : ''}`;
   const unwrapped = useMemo(() => (rawData ? unwrapToolPayload(rawData) : null), [rawData]);
   const { series: indicatorSeries, summary: indicatorSummary } = useMemo(() => {
     if (tab !== 'indicators' || !unwrapped) return { series: [], summary: [] };
@@ -264,7 +268,16 @@ export default function TechnicalPage() {
         };
   }, [error, hasIndicatorData, rawData, rows.length, tab]);
   const actionLinks = useMemo(() => {
-    const encodedCode = encodeURIComponent(trimmedCode || resolvedCode || '600519');
+    const nextCode = trimmedCode || resolvedCode || '';
+    if (!nextCode) {
+      return [
+        { label: '自选股', href: '/watchlist?from=technical' },
+        { label: '行情页', href: '/market?from=technical' },
+        { label: '风险页', href: '/risk' },
+        { label: '回测', href: '/backtest' },
+      ];
+    }
+    const encodedCode = encodeURIComponent(nextCode);
     return [
       { label: '个股详情', href: `/stock?code=${encodedCode}` },
       { label: '资金流', href: `/fund-flow?code=${encodedCode}` },
@@ -274,7 +287,8 @@ export default function TechnicalPage() {
     ];
   }, [resolvedCode, trimmedCode]);
   const activeTabLabel = TABS.find((item) => item.key === tab)?.label ?? '技术分析';
-  const focusCode = trimmedCode || resolvedCode || '600519';
+  const focusCode = trimmedCode || resolvedCode || '';
+  const focusLabel = focusCode || '未选择标的';
   const periodLabel = period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线';
   const pageActions = [
     {
@@ -309,13 +323,17 @@ export default function TechnicalPage() {
       scope: 'page' as const,
       pageKey: 'technical',
       run: () => {
+        if (!focusCode) {
+          setCodeError('请先选择你的关注股票，再打开个股详情');
+          return { message: '请先选择你的关注股票' };
+        }
         window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
         return { message: '已跳到个股详情' };
       },
     },
   ];
   usePageActions(pageActions);
-  const technicalSummary = `当前技术页聚焦 ${focusCode}，Tab 为 ${activeTabLabel}，周期 ${periodLabel}，状态 ${isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析'}。`;
+  const technicalSummary = `当前技术页聚焦 ${focusLabel}，Tab 为 ${activeTabLabel}，周期 ${periodLabel}，状态 ${isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析'}。`;
   const technicalViews = [
     ...(rows.length > 1 || indicatorSeries.length > 1 ? (['compare'] as const) : []),
     ...(indicatorSeries.length > 0 ? (['visual'] as const) : []),
@@ -326,14 +344,14 @@ export default function TechnicalPage() {
     pageActions,
     preferredActionIds: ['technical.run-recommended', 'technical.submit', 'technical.open-stock'],
     recommendedLinks: [
-      { id: 'technical-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode)}` },
-      { id: 'technical-open-fund-flow-link', label: '资金流', href: `/fund-flow?code=${encodeURIComponent(focusCode)}` },
+      { id: 'technical-open-stock-link', label: focusCode ? '个股详情' : '选择标的', href: focusCode ? `/stock?code=${encodeURIComponent(focusCode)}` : '/watchlist?from=technical' },
+      { id: 'technical-open-fund-flow-link', label: '资金流', href: focusCode ? `/fund-flow?code=${encodeURIComponent(focusCode)}` : '/fund-flow' },
       { id: 'technical-open-risk-link', label: '风险页', href: '/risk' },
-      { id: 'technical-open-backtest-link', label: '回测', href: `/backtest?code=${encodeURIComponent(focusCode)}` },
+      { id: 'technical-open-backtest-link', label: '回测', href: focusCode ? `/backtest?code=${encodeURIComponent(focusCode)}` : '/backtest' },
     ],
     evidence: [
       { label: '当前 Tab', value: activeTabLabel },
-      { label: '标的', value: focusCode },
+      { label: '标的', value: focusLabel },
       { label: '周期', value: periodLabel },
       { label: '结果条数', value: String(rows.length || indicatorSeries.length || indicatorSummary.length) },
       { label: '状态', value: isPending ? '加载中' : error ? '需重试' : rawData ? '已返回' : '待分析' },
@@ -346,8 +364,8 @@ export default function TechnicalPage() {
       degraded: Boolean(error),
       fallbackReason: error ? [error] : undefined,
     },
-    workbenchTask: defaultWorkbenchTask('technical', `复查${activeTabLabel}`, `/technical?code=${encodeURIComponent(focusCode)}`, 'technical-review', {
-      code: focusCode,
+    workbenchTask: defaultWorkbenchTask('technical', `复查${activeTabLabel}`, focusCode ? `/technical?code=${encodeURIComponent(focusCode)}` : '/technical', 'technical-review', {
+      code: focusCode || null,
       tab,
       period,
       limit,
@@ -359,11 +377,11 @@ export default function TechnicalPage() {
     summary: technicalSummary,
     stockCode: focusCode || undefined,
     objectType: 'stock',
-    objectId: focusCode,
+    objectId: focusCode || 'technical',
     resultType: `technical-${tab}`,
-    tags: [activeTabLabel, periodLabel, focusCode],
+    tags: [activeTabLabel, periodLabel, focusLabel],
     suggestions: [
-      `总结 ${focusCode} 当前技术面的关键结论`,
+      focusCode ? `总结 ${focusCode} 当前技术面的关键结论` : '先根据我的自选和持仓选择一个适合技术分析的标的',
       '告诉我下一步更该看资金流还是风险',
       '把当前技术结果整理成操作清单',
     ],
@@ -373,7 +391,7 @@ export default function TechnicalPage() {
     riskNotes: technicalResult.riskNotes ?? [],
     freshness: technicalResult.freshness ?? null,
     raw: {
-      code: focusCode,
+      code: focusCode || null,
       tab,
       period,
       limit,
@@ -392,7 +410,7 @@ export default function TechnicalPage() {
             <Badge variant="info">Technical Workspace</Badge>
             <Badge variant="neutral">{activeTabLabel}</Badge>
             <Badge variant={tab === 'available' ? 'info' : 'success'}>
-              {tab === 'available' ? '形态库视图' : `${focusCode} · ${periodLabel}`}
+              {tab === 'available' ? '形态库视图' : `${focusLabel} · ${periodLabel}`}
             </Badge>
           </>
         )}
@@ -407,13 +425,13 @@ export default function TechnicalPage() {
             className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
           >
             <div className="font-medium text-text-primary">
-              当前焦点：{tab === 'available' ? '可用形态库' : `${focusCode} · ${periodLabel}`}
+              当前焦点：{tab === 'available' ? '可用形态库' : `${focusLabel} · ${periodLabel}`}
             </div>
             <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">{requestSummary}</p>
           </div>
         )}
         metrics={[
-          { key: 'technical-focus', label: '当前焦点', value: tab === 'available' ? '可用形态库' : focusCode },
+          { key: 'technical-focus', label: '当前焦点', value: tab === 'available' ? '可用形态库' : focusLabel },
           { key: 'technical-period', label: '观察周期', value: tab === 'available' ? '形态库' : periodLabel },
           { key: 'technical-updated', label: '最近更新', value: lastUpdatedText || '尚未更新' },
           { key: 'technical-result', label: '当前结论', value: explanation?.title ?? '等待结果返回' },
@@ -613,7 +631,7 @@ export default function TechnicalPage() {
 
         {resolvedCode && tab !== 'available' && !error && !isPending && hasRequested ? (
           <KpiGrid cols={4} className="mt-4">
-            <KpiCard title="当前标的" value={focusCode} />
+            <KpiCard title="当前标的" value={focusLabel} />
             <KpiCard title="当前周期" value={periodLabel} />
             <KpiCard title="K 线数量" value={limit} />
             <KpiCard title="结果条数" value={tab === 'indicators' ? indicatorSeries.length + indicatorSummary.length : rows.length} />

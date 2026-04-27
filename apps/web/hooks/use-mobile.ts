@@ -3,13 +3,12 @@
 import { useLayoutEffect, useState } from 'react';
 
 export function useMobile(breakpoint = 768) {
-  const [isMobile, setIsMobile] = useState(() =>
-    typeof window === 'undefined' ? false : window.matchMedia(`(max-width: ${breakpoint}px)`).matches,
-  );
+  const [isMobile, setIsMobile] = useState(false);
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
     const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+    setIsMobile(mq.matches);
 
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     if (typeof mq.addEventListener === 'function') {

@@ -1,18 +1,21 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { fetchUserDefaultContext, saveUserDefaultContext, type UserDefaultContext } from '@/lib/user-default-context';
 import { useStockContext } from '@/store/stock-context';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 const STOCK_CODE_RE = /^\d{6}$/;
+const SYSTEM_STOCK_FALLBACKS = new Set(['600519', '000001']);
 
 /**
  * 增强版股票代码 hook — 支持 URL query param 同步 + 全局上下文
  *
- * 优先级：URL ?code= > 全局上下文 > initial 参数
+ * 优先级：URL ?code= > 工作区上下文 > 全局最近使用 > 用户服务端默认上下文 > initial 参数
  *
  * @param initial  默认代码（仅在 URL 和全局上下文都为空时使用）
  * @param syncUrl  是否同步到 URL query param（默认 true）
@@ -22,16 +25,46 @@ export function useStockCode(initial = '', syncUrl = true) {
   const router = useRouter();
   const pathname = useStablePathname();
   const hydrated = useHydrated();
-  const { code: globalCode, setStock } = useStockContext();
+  const { code: globalCode, recent, setStock } = useStockContext();
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workspaces = useWorkbenchStore((state) => state.workspaces);
+  const updateWorkspaceContext = useWorkbenchStore((state) => state.updateContext);
+  const [remoteContext, setRemoteContext] = useState<UserDefaultContext | null>(null);
   const urlCode = searchParams.get('code') || '';
   const normalizedUrlCode = STOCK_CODE_RE.test(urlCode) ? urlCode : '';
   const normalizedGlobalCode = STOCK_CODE_RE.test(globalCode) ? globalCode : '';
-  const resolvedCode = normalizedUrlCode || (hydrated ? normalizedGlobalCode : '') || null;
-  const resolvedInitial = resolvedCode || initial;
+  const activeWorkspace = useMemo(
+    () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
+    [activeWorkspaceId, workspaces],
+  );
+  const workspaceCode = workbenchHydrated && STOCK_CODE_RE.test(activeWorkspace.context.stockCode ?? '')
+    ? activeWorkspace.context.stockCode ?? ''
+    : '';
+  const recentCode = hydrated
+    ? recent.map((item) => item.code).find((item) => STOCK_CODE_RE.test(item)) ?? ''
+    : '';
+  const remoteCode = hydrated && remoteContext?.stockCode && STOCK_CODE_RE.test(remoteContext.stockCode)
+    ? remoteContext.stockCode
+    : '';
+  const normalizedInitial = STOCK_CODE_RE.test(initial) && !SYSTEM_STOCK_FALLBACKS.has(initial) ? initial : '';
+  const resolvedCode = normalizedUrlCode || workspaceCode || (hydrated ? normalizedGlobalCode : '') || recentCode || remoteCode || normalizedInitial || null;
+  const resolvedInitial = resolvedCode || '';
 
   const [draftCode, setDraftCode] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const code = draftCode ?? resolvedInitial;
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let alive = true;
+    fetchUserDefaultContext().then((context) => {
+      if (alive) setRemoteContext(context);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hydrated]);
 
   const setCode = useCallback((value: string) => {
     setDraftCode(value);
@@ -59,9 +92,11 @@ export function useStockCode(initial = '', syncUrl = true) {
       // 验证通过时同步到全局上下文和 URL
       syncToUrl(v);
       setStock(v);
+      updateWorkspaceContext({ stockCode: v });
+      void saveUserDefaultContext({ stockCode: v, workspaceId: activeWorkspace.id });
       return true;
     },
-    [code, syncToUrl, setStock],
+    [activeWorkspace.id, code, syncToUrl, setStock, updateWorkspaceContext],
   );
 
   return { code, setCode, codeError, setCodeError, validate, trimmedCode: code.trim(), resolvedCode };

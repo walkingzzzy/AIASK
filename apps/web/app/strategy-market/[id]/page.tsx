@@ -416,7 +416,7 @@ export default function StrategyDetailPage() {
         {
           ...normalizedPayload,
           persist: true,
-          run_post_update_pipeline: true,
+          run_post_update_pipeline: false,
         },
       ) as PersonalStrategySuggestionResponse | null;
       const nextStrategy = response?.strategy;
@@ -431,7 +431,7 @@ export default function StrategyDetailPage() {
       { method: 'PATCH' },
       {
         ...applyPayload,
-        run_post_update_pipeline: true,
+        mutationScope: 'draft',
       },
     ) as Record<string, unknown> | null;
     const nextStrategy = response?.strategy;
@@ -458,6 +458,7 @@ export default function StrategyDetailPage() {
       `/strategy-market/${strategy.id}`,
       { method: 'PATCH' },
       {
+        mutationScope: 'draft',
         name: editNameRef.current?.value?.trim() || strategy.name,
         description: editDescriptionRef.current?.value?.trim() ?? '',
         params,
@@ -978,7 +979,9 @@ export default function StrategyDetailPage() {
           {
             id: 'strategy-detail-link-copilot',
             label: '继续追问 Copilot',
-            href: strategy ? `/assistant?symbol=${encodeURIComponent(strategy.name)}` : '/assistant?from=strategy-detail',
+            href: strategy
+              ? `/assistant?from=strategy-detail&strategy_id=${encodeURIComponent(String(strategy.id))}&objectType=strategy`
+              : '/assistant?from=strategy-detail',
           },
         ],
         evidence: [

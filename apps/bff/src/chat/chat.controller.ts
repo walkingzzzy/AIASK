@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, Post, Req, Res } from '@nestjs/common';
 import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject, IsBoolean, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
@@ -174,7 +174,7 @@ class ChatConversationDto {
 }
 
 class SyncChatConversationsDto {
-  @IsArray() @ValidateNested({ each: true }) @Type(() => ChatConversationDto) conversations!: ChatConversationDto[];
+  @IsArray() conversations!: unknown[];
 }
 
 const MODEL_PRESETS = [
@@ -193,6 +193,8 @@ type ChatRequest = Request & {
 
 @Controller('chat')
 export class ChatController {
+  private readonly logger = new Logger(ChatController.name);
+
   constructor(
     private readonly chatService: ChatService,
     private readonly preferencesService: PreferencesService,
@@ -281,14 +283,16 @@ export class ChatController {
   async syncConversations(@Req() req: ChatRequest, @Body() body: SyncChatConversationsDto) {
     const userId = String(req.user?.sub ?? req.user?.id ?? '');
     const prefs = await this.preferencesService.getUserPreferences(userId);
+    const sanitized = this.sanitizeConversations(body.conversations);
     await this.preferencesService.setUserPreferences(userId, {
       ...prefs,
       chatHistory: {
-        conversations: body.conversations.slice(0, 50),
+        conversations: sanitized.conversations,
         syncedAt: new Date().toISOString(),
+        droppedMessages: sanitized.droppedMessages,
       },
     });
-    return { success: true, data: { saved: true, count: body.conversations.length } };
+    return { success: true, data: { saved: true, count: sanitized.conversations.length, droppedMessages: sanitized.droppedMessages } };
   }
 
   @Post('completions')
@@ -328,5 +332,46 @@ export class ChatController {
     if (!res.writableEnded && !res.destroyed) {
       res.end();
     }
+  }
+
+  private sanitizeConversations(input: unknown[] = []) {
+    let droppedMessages = 0;
+    const conversations = input
+      .map((item) => item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : null)
+      .filter((conversation): conversation is Record<string, unknown> => Boolean(conversation && typeof conversation.id === 'string'))
+      .slice(0, 50)
+      .map((conversation) => {
+        const messages = Array.isArray(conversation.messages)
+          ? conversation.messages
+              .filter((message) => {
+                const record = message && typeof message === 'object' && !Array.isArray(message)
+                  ? message as Record<string, unknown>
+                  : null;
+                const ok = message
+                  && (record?.role === 'user' || record?.role === 'assistant')
+                  && typeof record?.id === 'string';
+                if (!ok) droppedMessages += 1;
+                return ok;
+              })
+              .map((message) => ({
+                ...(message as Record<string, unknown>),
+                content: typeof (message as Record<string, unknown>).content === 'string' ? (message as Record<string, unknown>).content : '',
+                toolCalls: Array.isArray((message as Record<string, unknown>).toolCalls) ? (message as Record<string, unknown>).toolCalls : undefined,
+                actions: Array.isArray((message as Record<string, unknown>).actions) ? (message as Record<string, unknown>).actions : undefined,
+              }))
+          : [];
+        return {
+          id: String(conversation.id),
+          title: typeof conversation.title === 'string' ? conversation.title : '当前会话',
+          updatedAt: typeof conversation.updatedAt === 'string' ? conversation.updatedAt : new Date().toISOString(),
+          workspaceId: typeof conversation.workspaceId === 'string' ? conversation.workspaceId : undefined,
+          messages,
+        };
+      });
+
+    if (droppedMessages > 0) {
+      this.logger.warn(`Dropped ${droppedMessages} invalid chat sync messages`);
+    }
+    return { conversations, droppedMessages };
   }
 }

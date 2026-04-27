@@ -12,7 +12,7 @@ import ProgressiveWorkbenchSection from '@/components/progressive-workbench-sect
 import { LoadingState, PageStatusCard } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, TabBar } from '@/components/ui';
+import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -248,6 +248,10 @@ export default function PaperTradingPage() {
   // 2 write mutations — invalidate all paper queries on success
   const placeApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
   const cancelApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
+  const cleanupApi = useApiMutation<Record<string, unknown>>({
+    invalidates: [[...apiKeys.paper()]],
+    successToast: false,
+  });
 
   const refreshPaperData = useCallback(async () => {
     const tasks = [
@@ -439,7 +443,7 @@ export default function PaperTradingPage() {
     pendingQ.error ||
     navQ.error ||
     performanceQ.error;
-  const error = pageError || refreshPricesApi.error || reconcileApi.error;
+  const error = pageError || refreshPricesApi.error || reconcileApi.error || cleanupApi.error;
   const accountIdRef = useRef(activeAccountId);
   const autoRefreshBusyRef = useRef(false);
   const manualRefreshPendingRef = useRef(refreshPricesApi.isPending);
@@ -502,6 +506,35 @@ export default function PaperTradingPage() {
       setFormError(err instanceof Error ? err.message : String(err));
     }
   }, [activeAccountId, canLoadAccountQueries, reconcileApi, toast]);
+
+  const isTestAccount = /sandbox|test|demo|paper-audit|playwright|qa/i.test(activeAccountId);
+
+  const handleTestCleanup = useCallback(async () => {
+    if (!activeAccountId || !isTestAccount) {
+      setFormError('测试清理只允许 sandbox/test/demo/qa 等测试账户，真实模拟账户不会绕过交易规则。');
+      return;
+    }
+    setFormError(null);
+    setFormStatus('正在清理测试账户挂单并刷新对账...');
+    setLastActionResult(null);
+    try {
+      await cleanupApi.triggerAsync(
+        '/paper-trading/test-cleanup',
+        { method: 'POST' },
+        {
+          account_id: activeAccountId,
+          test_run_id: createIdempotencyKey('paper-test-cleanup'),
+        },
+      );
+      await refreshPaperData();
+      toast('测试账户清理完成', 'success');
+      setFormStatus(null);
+      setLastActionResult('测试账户挂单清理与对账刷新已完成');
+    } catch (err) {
+      setFormStatus(null);
+      setFormError(err instanceof Error ? err.message : String(err));
+    }
+  }, [activeAccountId, cleanupApi, isTestAccount, refreshPaperData, toast]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -825,8 +858,20 @@ export default function PaperTradingPage() {
           return { message: useComplianceCheck ? '已关闭合规检查' : '已开启合规检查' };
         },
       },
+      {
+        id: 'paper.test-cleanup',
+        label: '清理测试账户',
+        description: '仅对 sandbox/test/demo/qa 账户取消未成交挂单并刷新对账',
+        keywords: ['测试清理', '撤销', '重置'],
+        scope: 'page' as const,
+        pageKey: 'paper-trading',
+        run: async () => {
+          await handleTestCleanup();
+          return { message: isTestAccount ? '已触发测试账户清理' : '当前账户不是测试账户，未执行清理' };
+        },
+      },
     ],
-    [handleReconcileLedger, handleRefreshPrices, refreshPaperData, useComplianceCheck],
+    [handleReconcileLedger, handleRefreshPrices, handleTestCleanup, isTestAccount, refreshPaperData, useComplianceCheck],
   );
 
   usePageActions(pageActions);
@@ -836,7 +881,7 @@ export default function PaperTradingPage() {
     status: showAccountBootstrap ? 'empty' : (!matchOk || !navOk ? 'degraded' : 'ready'),
     availableViews: positions.length > 1 || pending.length > 1 || trades.length > 1 ? ['compare'] : [],
     pageActions,
-    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.reconcile', 'paper.toggle-compliance'],
+    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.reconcile', ...(isTestAccount ? ['paper.test-cleanup'] : ['paper.toggle-compliance'])],
     recommendedLinks: [
       { id: 'paper-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
       { id: 'paper-open-performance-link', label: '绩效中心', href: '/performance' },
@@ -853,12 +898,13 @@ export default function PaperTradingPage() {
       { label: '挂单数', value: String(pending.length) },
       { label: '订单数', value: String(trades.length) },
       { label: '总资产', value: fmtNum(totalValue, 2) },
+      { label: '测试清理', value: isTestAccount ? '可用' : '仅测试账户' },
     ],
     riskNotes: [...statusNotes, ...riskHints.slice(0, 3), ...(error ? [error] : [])],
     emptyState: showAccountBootstrap ? {
       title: '账户还没有形成交易轨迹',
       description: '先输入真实标的和委托参数，再提交首笔模拟交易。',
-      example: 'code=600519，direction=buy，quantity=100',
+      example: 'code=你的自选标的，direction=buy，quantity=100',
     } : null,
     degradedState: !matchOk || !navOk ? {
       title: '交易链路当前未完全就绪',
@@ -927,6 +973,7 @@ export default function PaperTradingPage() {
       personalStrategyMode,
       urgentExecution,
       useComplianceCheck,
+      isTestAccount,
     },
   });
 
@@ -1032,6 +1079,30 @@ export default function PaperTradingPage() {
         />
       ) : null}
 
+      {activeAccountId ? (
+        <SectionCard className="mb-4 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-text-primary">测试数据清理</div>
+              <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
+                只对 sandbox/test/demo/qa 账户开放，用于撤销未成交测试挂单并刷新对账；真实账户保持 T+1 与撤单规则。
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={!isTestAccount || cleanupApi.isPending}
+              onClick={() => void handleTestCleanup()}
+              className="action-chip cursor-pointer text-sm text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cleanupApi.isPending ? '清理中...' : '清理测试账户'}
+            </button>
+          </div>
+          {!isTestAccount ? (
+            <p className="mb-0 mt-2 text-xs text-text-secondary">当前账户 {accountDisplayId} 不是测试账户，清理入口保持禁用。</p>
+          ) : null}
+        </SectionCard>
+      ) : null}
+
       {showAccountBootstrap || !matchOk || !navOk ? (
         !collapseToTabs ? (
           <PageStatusCard
@@ -1056,7 +1127,7 @@ export default function PaperTradingPage() {
                 校准账本
               </button>
             )}
-            example="code=600519，direction=buy，quantity=100"
+            example="code=你的自选标的，direction=buy，quantity=100"
             className="mb-4"
           />
         ) : null
@@ -1288,7 +1359,7 @@ export default function PaperTradingPage() {
               </button>
             )}
             secondaryAction={<Link href="/market" className="action-chip text-sm no-underline text-inherit">先去行情页</Link>}
-            example="code=600519，direction=buy，quantity=100"
+            example="code=你的自选标的，direction=buy，quantity=100"
           />
           <LoadingState text="正在加载模拟交易账户、持仓与绩效数据..." />
         </div>

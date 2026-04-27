@@ -116,7 +116,7 @@ function describeBacktestFailure(message: string | null): BacktestFailureReason 
 
 export default function BacktestPage() {
   const searchParams = useStableSearchParams();
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const from = searchParams.get('from');
   const [surfaceTab, setSurfaceTab] = useState<BacktestSurfaceTab>('results');
   const [resultTab, setResultTab] = useState<BacktestResultTab>('overview');

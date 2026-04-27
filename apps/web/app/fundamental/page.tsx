@@ -122,7 +122,7 @@ export default function FundamentalPage() {
   const hydrated = useHydrated();
   const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const compactLayout = hydrated ? compactLayoutDetected : true;
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const [days, setDays] = useState(90);
   const [extraTab, setExtraTab] = useState<ExtraTab>('info');
   const [compactOverviewTab, setCompactOverviewTab] = useState<CompactOverviewTab>('valuation');

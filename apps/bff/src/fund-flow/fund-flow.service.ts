@@ -93,7 +93,7 @@ export class FundFlowService {
     }
 
     try {
-      const payload = await this.mcp.callTool('get_sector_fund_flow', {});
+      const payload = await this.mcp.callTool('get_sector_fund_flow', {}, { retryOnTransportError: true });
       const result = {
         data: { flows: this.normalizeFlows(payload) },
         meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
@@ -140,13 +140,30 @@ export class FundFlowService {
       return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
     }
 
-    const payload = await this.mcp.callTool('get_north_fund', {});
-    const flows = this.normalizeFlows(payload);
-    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    if (flows.length > 0) {
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    try {
+      const payload = await this.mcp.callTool('get_north_fund', {}, { retryOnTransportError: true });
+      const flows = this.normalizeFlows(payload);
+      const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+      if (flows.length > 0) {
+        await this.cacheService.set(cacheKey, result, ttlSeconds);
+      }
+      return result;
+    } catch (error) {
+      const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
+        acceptanceStatus: 'degraded',
+        path: '/fund-flow/north',
+        upstream: this.extractUpstreamDetail(error),
+      });
+      return {
+        data: { flows: [] },
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        degraded: true,
+        message: '北向资金暂时不可用，已降级为空结果',
+        fallback_reason: ['north_fund_unavailable', detail.transport.fallback_reason].filter(Boolean),
+        detail,
+        transport: detail.transport,
+      };
     }
-    return result;
   }
 
   async getDragonTiger(date?: string, code?: string) {

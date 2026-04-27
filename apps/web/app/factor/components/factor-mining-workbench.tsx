@@ -35,7 +35,7 @@ import {
   renderWarnings,
 } from '@/app/factor/components/factor-mining-support';
 
-const DEFAULT_MINING_CODES = '600519,000858,300750,601318,000001,600036';
+const DEFAULT_MINING_CODES = '';
 
 export function FactorMiningWorkbench() {
   const [formError, setFormError] = useState<string | null>(null);

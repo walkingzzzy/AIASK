@@ -82,7 +82,7 @@ export default function BacktestHero({
           <div className="mt-5 grid gap-3 sm:grid-cols-4">
             <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
+              <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '未选择标的'}</div>
               <div className="mt-1 text-xs text-text-secondary">{strategyLabel}</div>
             </div>
             <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">

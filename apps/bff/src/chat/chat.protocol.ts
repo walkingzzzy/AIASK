@@ -61,5 +61,6 @@ export type ChatEvent =
   | { type: 'tool_result'; name: string; result: unknown }
   | { type: 'tool_trace'; trace: ChatToolTraceDto }
   | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
+  | { type: 'final_fallback'; content: string }
   | { type: 'error'; message: string }
   | { type: 'done' };

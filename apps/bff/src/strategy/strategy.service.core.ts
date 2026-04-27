@@ -200,6 +200,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         },
         {
           timeoutMs: options.timeoutMs,
+          retryOnTransportError: options.retryOnTransportError,
         },
       );
       if (result && typeof result === 'object') {
@@ -2548,9 +2549,22 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async mySubscriptions(userId: string) {
-    return this.call('my_subscriptions', { user_id: userId }, {
-      timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
-    });
+    try {
+      return await this.call('my_subscriptions', { user_id: userId }, {
+        timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+        retryOnTransportError: true,
+      });
+    } catch (error) {
+      this.logger.warn(`策略订阅列表降级为空列表: ${this.describeError(error)}`);
+      return {
+        subscriptions: [],
+        favorites: [],
+        items: [],
+        count: 0,
+        degraded: true,
+        degraded_reason: this.describeError(error),
+      };
+    }
   }
 
   async favorite(id: string, userId: string) {
@@ -2565,6 +2579,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     try {
       const payload = this.asRecord(await this.call('my_favorites', { user_id: userId }, {
         timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+        retryOnTransportError: true,
       }));
       return this.withRuntimeActionContracts({
         ...payload,
@@ -2695,11 +2710,30 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async updateStrategy(id: string, updates: Record<string, unknown>, actor: { actorId: string; role: string }) {
+    const sanitizedUpdates = this.sanitizeStrategyUpdates(updates);
     return this.call('update_strategy', {
       strategy_id: id,
-      updates,
+      updates: sanitizedUpdates.updates,
+      mutation_scope: sanitizedUpdates.mutationScope,
+      run_post_update_pipeline: sanitizedUpdates.runPostUpdatePipeline,
       ...this.managerActorParams(actor),
     });
+  }
+
+  private sanitizeStrategyUpdates(updates: Record<string, unknown>) {
+    const mutationScope = updates.mutationScope === 'lifecycle' ? 'lifecycle' : 'draft';
+    const runPostUpdatePipeline = mutationScope === 'lifecycle' && updates.run_post_update_pipeline === true;
+    if (mutationScope === 'lifecycle') {
+      const { mutationScope: _mutationScope, run_post_update_pipeline: _pipeline, ...rest } = updates;
+      return { updates: rest, mutationScope, runPostUpdatePipeline };
+    }
+
+    const draftKeys = new Set(['name', 'description', 'params', 'factor_weights', 'tags']);
+    const draftUpdates = Object.entries(updates).reduce<Record<string, unknown>>((acc, [key, value]) => {
+      if (draftKeys.has(key)) acc[key] = value;
+      return acc;
+    }, {});
+    return { updates: draftUpdates, mutationScope, runPostUpdatePipeline: false };
   }
 
   async deletePersonalStrategy(id: string, actor: { actorId: string; role: string }) {

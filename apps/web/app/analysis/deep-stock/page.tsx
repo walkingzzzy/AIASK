@@ -9,6 +9,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStockCode } from '@/hooks/use-stock-code';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { ensureRecord } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
@@ -55,7 +56,7 @@ function gapItems(run: DeepAnalysisRunResponse | null): AnalysisGapItem[] {
 
 export default function DeepStockAnalysisPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
-  const [code, setCode] = useState('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const [task, setTask] = useState<DeepAnalysisTask>('deep_analysis');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
@@ -92,6 +93,8 @@ export default function DeepStockAnalysisPage() {
   const stages = useMemo(() => (run?.steps ?? []) as AnalysisStage[], [run?.steps]);
   const summary = run?.summary ?? null;
   const activeTaskOption = TASK_OPTIONS.find((item) => item.value === task);
+  const focusCode = trimmedCode || summary?.code || resolvedCode || '';
+  const focusLabel = focusCode || '未指定标的';
 
   const stageStats = useMemo(() => {
     const total = stages.length;
@@ -99,8 +102,8 @@ export default function DeepStockAnalysisPage() {
     return { total, success };
   }, [stages]);
   async function startAnalysis(nextTask = task, runId?: string) {
-    const normalizedCode = code.trim();
-    if (!normalizedCode) return;
+    const normalizedCode = (code.trim() || resolvedCode || '').trim();
+    if (!validate(normalizedCode)) return;
     await createRun.triggerAsync(
       '/v1/analysis/deep-stock/runs',
       { method: 'POST' },
@@ -122,12 +125,12 @@ export default function DeepStockAnalysisPage() {
       id: 'deep-stock.start-analysis',
       label: '启动分析',
       description: '按当前代码与任务模式启动或刷新一轮深度分析',
-      keywords: ['深度分析', '启动', code.trim()],
+      keywords: ['深度分析', '启动', focusCode],
       scope: 'page' as const,
       pageKey: 'analysis-deep-stock',
       run: async () => {
         await startAnalysis(task);
-        return { message: `已发起 ${code.trim() || '当前标的'} 的 ${task}` };
+        return { message: `已发起 ${focusLabel} 的 ${task}` };
       },
     },
     {
@@ -146,20 +149,20 @@ export default function DeepStockAnalysisPage() {
   ];
   usePageActions(deepStockActions);
   const deepStockSummary = run
-    ? `${code.trim() || summary?.code || '当前标的'} 当前状态 ${run.status ?? 'unknown'}，已完成 ${stageStats.success}/${stageStats.total} 个阶段，缺口 ${gaps.length} 个，报告 ${summary?.report_ready ? '已就绪' : '待生成'}。`
-    : `${code.trim() || '当前标的'} 还没有创建深度分析 run，建议先启动一次分析，确认 evidence、review、synthesis 和报告工件是否完整。`;
+    ? `${focusLabel} 当前状态 ${run.status ?? 'unknown'}，已完成 ${stageStats.success}/${stageStats.total} 个阶段，缺口 ${gaps.length} 个，报告 ${summary?.report_ready ? '已就绪' : '待生成'}。`
+    : `${focusLabel} 还没有创建深度分析 run，建议先启动一次分析，确认 evidence、review、synthesis 和报告工件是否完整。`;
   const deepStockResult = buildLocalResultContract({
     summary: deepStockSummary,
     availableViews: report?.standalone_html || stages.length > 1 ? ['compare', 'visual'] : [],
     pageActions: deepStockActions,
     preferredActionIds: ['deep-stock.start-analysis', 'deep-stock.rebuild-report'],
     recommendedLinks: [
-      { id: 'deep-stock-link-stock', label: '去个股详情', href: `/stock?code=${encodeURIComponent(code.trim() || '600519')}` },
-      { id: 'deep-stock-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(code.trim() || '600519')}` },
-      { id: 'deep-stock-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=analysis-deep-stock&code=${encodeURIComponent(code.trim() || '600519')}` },
+      { id: 'deep-stock-link-stock', label: focusCode ? '去个股详情' : '选择标的', href: focusCode ? `/stock?code=${encodeURIComponent(focusCode)}` : '/watchlist?from=analysis-deep-stock' },
+      { id: 'deep-stock-link-research', label: '去研究页', href: focusCode ? `/research?code=${encodeURIComponent(focusCode)}` : '/research?from=analysis-deep-stock' },
+      { id: 'deep-stock-link-assistant', label: '继续追问 Copilot', href: focusCode ? `/assistant?from=analysis-deep-stock&code=${encodeURIComponent(focusCode)}` : '/assistant?from=analysis-deep-stock' },
     ],
     evidence: [
-      { label: '当前代码', value: code.trim() || summary?.code || '-' },
+      { label: '当前代码', value: focusCode || '-' },
       { label: '任务模式', value: task },
       { label: '运行状态', value: String(run?.status ?? 'idle') },
       { label: '阶段进度', value: `${stageStats.success}/${stageStats.total}` },
@@ -179,8 +182,8 @@ export default function DeepStockAnalysisPage() {
       degraded: Boolean(createRun.error || reportQuery.error),
       fallbackReason: [createRun.error, reportQuery.error].filter((item): item is string => Boolean(item)),
     },
-    workbenchTask: defaultWorkbenchTask('analysis-deep-stock', `复查深度分析 ${code.trim() || '600519'}`, '/analysis/deep-stock', 'deep-stock-review', {
-      code: code.trim() || '600519',
+    workbenchTask: defaultWorkbenchTask('analysis-deep-stock', `复查深度分析 ${focusLabel}`, focusCode ? `/analysis/deep-stock?code=${encodeURIComponent(focusCode)}` : '/analysis/deep-stock', 'deep-stock-review', {
+      code: focusCode || null,
       task,
       runId: activeRunId,
       gapCount: gaps.length,
@@ -191,10 +194,10 @@ export default function DeepStockAnalysisPage() {
     title: '个股深度分析工作台',
     summary: deepStockSummary,
     objectType: 'stock',
-    objectId: code.trim() || summary?.code || 'deep-stock',
+    objectId: focusCode || 'deep-stock',
     resultType: 'deep-stock-analysis',
     tags: [
-      code.trim() || summary?.code || '未指定标的',
+      focusLabel,
       task,
       run?.status ?? 'idle',
       summary?.report_ready ? '报告已就绪' : '等待报告',
@@ -210,7 +213,7 @@ export default function DeepStockAnalysisPage() {
     riskNotes: deepStockResult.riskNotes ?? [],
     freshness: deepStockResult.freshness ?? null,
     raw: {
-      code: code.trim() || summary?.code || null,
+      code: focusCode || null,
       task,
       runId: activeRunId,
       status: run?.status ?? null,
@@ -282,7 +285,7 @@ export default function DeepStockAnalysisPage() {
             className="rounded-[20px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
           >
             <div className="font-medium text-text-primary">
-              当前代码 {code.trim() || summary?.code || '-'} ｜ 任务 {task} ｜ 阶段 {stageStats.success}/{stageStats.total}
+              当前代码 {focusCode || '-'} ｜ 任务 {task} ｜ 阶段 {stageStats.success}/{stageStats.total}
             </div>
             <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
               当前任务说明：{activeTaskOption?.hint ?? '无'} ｜ 缺口 {gaps.length} 个
@@ -290,7 +293,7 @@ export default function DeepStockAnalysisPage() {
           </div>
         )}
         metrics={compactLayout ? [] : [
-          { key: 'deep-stock-code', label: '当前代码', value: code.trim() || summary?.code || '-' },
+          { key: 'deep-stock-code', label: '当前代码', value: focusCode || '-' },
           { key: 'deep-stock-task', label: '任务模式', value: task },
           { key: 'deep-stock-stages', label: '阶段进度', value: `${stageStats.success}/${stageStats.total}` },
           { key: 'deep-stock-gaps', label: '结构化缺口', value: String(gaps.length) },
@@ -310,6 +313,7 @@ export default function DeepStockAnalysisPage() {
               onChange={(event) => setCode(event.target.value)}
               placeholder="例如 600519 / 贵州茅台"
             />
+            {codeError ? <span className="text-xs text-danger">{codeError}</span> : null}
           </label>
           <label className="flex flex-col gap-2">
             <span className="text-sm font-medium text-text-secondary">任务模式</span>

@@ -127,6 +127,17 @@ function ToolTracePanel({ trace, isUser }: { trace: ChatToolTrace; isUser: boole
   );
 }
 
+function ToolTraceOnlyFallback({ msg }: { msg: ChatMsg }) {
+  if (msg.role === 'user' || msg.content.trim() || !msg.toolTrace) return null;
+  const success = msg.toolTrace.items.filter((item) => item.status === 'success').length;
+  const failed = msg.toolTrace.items.filter((item) => item.status === 'error').length;
+  return (
+    <div className="mb-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
+      AI 已完成工具调用，但最终回答没有返回正文。请查看工具轨迹；成功 {success} 项{failed ? `，失败 ${failed} 项` : ''}，可重试生成总结。
+    </div>
+  );
+}
+
 export default function ChatMessage({
   msg,
   onActionClick,
@@ -142,6 +153,7 @@ export default function ChatMessage({
           isUser ? 'bg-primary text-white' : 'surface-card text-text'
         }`}
       >
+        <ToolTraceOnlyFallback msg={msg} />
         {msg.content || (msg.toolCalls?.length || msg.toolTrace ? null : <span className="opacity-50">...</span>)}
         {msg.toolTrace ? <ToolTracePanel trace={msg.toolTrace} isUser={isUser} /> : null}
         {!msg.toolTrace && msg.toolCalls?.map((tc, i) => (

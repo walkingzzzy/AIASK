@@ -51,6 +51,19 @@ export default function ToolsDashboardPage() {
       avgLatency: Number(raw.avgLatency ?? 0),
       p99Latency: Number(raw.p99Latency ?? 0),
       errorRate: Number(raw.errorRate ?? 0),
+      failureModes: Array.isArray(raw.failureModes)
+        ? raw.failureModes.map((item: Record<string, unknown>) => ({
+          mode: String(item.mode ?? 'unknown'),
+          count: Number(item.count ?? 0),
+        })).filter((item) => item.count > 0)
+        : [],
+      queue: {
+        shared: Number((raw.queue as Record<string, unknown> | undefined)?.shared ?? 0),
+        dedicated: Number((raw.queue as Record<string, unknown> | undefined)?.dedicated ?? 0),
+        poolSize: Number((raw.queue as Record<string, unknown> | undefined)?.poolSize ?? 0),
+        acquireTimeoutMs: Number((raw.queue as Record<string, unknown> | undefined)?.acquireTimeoutMs ?? 0),
+        toolTimeoutMs: Number((raw.queue as Record<string, unknown> | undefined)?.toolTimeoutMs ?? 0),
+      },
       reachable: raw.reachable !== false,
       matched: raw.matched !== false,
       toolCount: Number(raw.toolCount ?? 0),
@@ -61,8 +74,15 @@ export default function ToolsDashboardPage() {
         name: String(t.name ?? ''),
         calls: Number(t.calls ?? 0),
         avgMs: Number(t.avgMs ?? 0),
+        p99Ms: Number(t.p99Ms ?? 0),
         errors: Number(t.errors ?? 0),
         status: String(t.status ?? 'healthy'),
+        failureModes: Array.isArray(t.failureModes)
+          ? t.failureModes.map((item: Record<string, unknown>) => ({
+            mode: String(item.mode ?? 'unknown'),
+            count: Number(item.count ?? 0),
+          })).filter((item) => item.count > 0)
+          : [],
       })),
     };
   }, [statsQ.data]);
@@ -90,6 +110,13 @@ export default function ToolsDashboardPage() {
     [parityQ.data],
   );
   const activeOperatorJob = operatorJobQ.data ?? operatorJobApi.data;
+  const failureModeLabels: Record<string, string> = {
+    timeout: '超时',
+    transport: '传输',
+    validation: '校验',
+    tool_error: '工具错误',
+    unknown: '未知',
+  };
 
   const STATUS_COLORS: Record<string, 'success' | 'warning' | 'danger'> = {
     healthy: 'success',
@@ -154,7 +181,9 @@ export default function ToolsDashboardPage() {
   ];
 
   usePageActions(pageActions);
-  const toolsSummary = `当前状态 ${mcpHealthLabel}，总调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，异常工具 ${abnormalTools.length} 个，传输方式 ${data.transportKind}。`;
+  const queueDepth = data.queue.shared + data.queue.dedicated;
+  const topFailureMode = data.failureModes[0];
+  const toolsSummary = `当前状态 ${mcpHealthLabel}，总调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，异常工具 ${abnormalTools.length} 个，队列 ${queueDepth}，传输方式 ${data.transportKind}。`;
   const toolsResult = buildLocalResultContract({
     summary: toolsSummary,
     availableViews: abnormalTools.length > 1 ? ['compare'] : [],
@@ -170,6 +199,8 @@ export default function ToolsDashboardPage() {
       { label: '总调用', value: String(data.totalCalls) },
       { label: '错误率', value: `${data.errorRate.toFixed(2)}%` },
       { label: '异常工具', value: String(abnormalTools.length) },
+      { label: '失败模式', value: topFailureMode ? `${failureModeLabels[topFailureMode.mode] ?? topFailureMode.mode} ${topFailureMode.count}` : '无' },
+      { label: '队列深度', value: String(queueDepth) },
       { label: '传输方式', value: data.transportKind },
     ],
     riskNotes: [
@@ -224,6 +255,8 @@ export default function ToolsDashboardPage() {
       expectedTools: data.expectedTools,
       transportKind: data.transportKind,
       fallbackReason: data.fallbackReason || null,
+      failureModes: data.failureModes,
+      queue: data.queue,
     },
   });
 
@@ -365,6 +398,31 @@ export default function ToolsDashboardPage() {
         <KpiCard title="错误率" value={`${data.errorRate.toFixed(2)}%`} />
       </KpiGrid>
 
+      <SectionCard className="mt-4 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="mt-0 text-sm font-semibold">MCP 失败模式聚合</h3>
+            <p className="mt-1 mb-0 text-xs text-text-secondary">
+              聚合 timeout、transport、validation 和 tool error，用于判断 P99 尾延迟是排队、连接还是工具侧失败。
+            </p>
+          </div>
+          <Badge variant={queueDepth > 0 ? 'warning' : 'success'}>
+            队列 {queueDepth} / 池 {data.queue.poolSize || '-'}
+          </Badge>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {(data.failureModes.length ? data.failureModes : [{ mode: 'none', count: 0 }]).map((item) => (
+            <div key={item.mode} className="rounded-xl border border-glass-border bg-surface-alt/35 px-3 py-3">
+              <div className="text-xs text-text-secondary">{failureModeLabels[item.mode] ?? (item.mode === 'none' ? '暂无失败' : item.mode)}</div>
+              <div className="mt-2 text-xl font-semibold text-text-primary">{item.count}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 mb-0 text-xs text-text-secondary">
+          acquire timeout {data.queue.acquireTimeoutMs || '-'}ms ｜ tool timeout {data.queue.toolTimeoutMs || '-'}ms ｜ shared queue {data.queue.shared} ｜ dedicated queue {data.queue.dedicated}
+        </p>
+      </SectionCard>
+
       {abnormalTools.length > 0 && (
         <SectionCard id="admin-tools-abnormal-section" className="mt-4 p-4">
           <h3 className="mt-0 text-sm font-semibold">优先关注工具</h3>
@@ -403,7 +461,9 @@ export default function ToolsDashboardPage() {
                   <th className="text-left py-2 px-2">工具名</th>
                   <th className="text-right py-2 px-2">调用数</th>
                   <th className="text-right py-2 px-2">平均延迟</th>
+                  <th className="text-right py-2 px-2">P99</th>
                   <th className="text-right py-2 px-2">错误数</th>
+                  <th className="text-left py-2 px-2">失败模式</th>
                   <th className="text-center py-2 px-2">状态</th>
                 </tr>
               </thead>
@@ -413,7 +473,13 @@ export default function ToolsDashboardPage() {
                     <td className="py-2 px-2 font-mono text-xs">{t.name}</td>
                     <td className="py-2 px-2 text-right">{t.calls}</td>
                     <td className="py-2 px-2 text-right">{t.avgMs.toFixed(0)}ms</td>
+                    <td className="py-2 px-2 text-right">{t.p99Ms.toFixed(0)}ms</td>
                     <td className={`py-2 px-2 text-right ${t.errors > 0 ? 'text-danger' : ''}`}>{t.errors}</td>
+                    <td className="py-2 px-2 text-xs text-text-secondary">
+                      {t.failureModes.length
+                        ? t.failureModes.map((item) => `${failureModeLabels[item.mode] ?? item.mode}:${item.count}`).join(' / ')
+                        : '-'}
+                    </td>
                     <td className="py-2 px-2 text-center">
                       <Badge variant={STATUS_COLORS[t.status] ?? 'info'}>
                         {t.status === 'healthy' ? '🟢' : t.status === 'degraded' ? '🟡' : '🔴'}

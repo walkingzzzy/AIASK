@@ -105,8 +105,10 @@ function normalizeAlertsPayload(raw: unknown): { items?: AlertItem[] } {
 export default function HomePage() {
   const router = useRouter();
   const mounted = useHydrated();
-  const compactHome = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
-  const compactHero = useMobile(RESPONSIVE_BREAKPOINTS.tablet);
+  const compactHomeViewport = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
+  const compactHeroViewport = useMobile(RESPONSIVE_BREAKPOINTS.tablet);
+  const compactHome = mounted && compactHomeViewport;
+  const compactHero = mounted && compactHeroViewport;
   const [dateStr, setDateStr] = useState('');
   const [pageVisible, setPageVisible] = useState(() =>
     typeof document === 'undefined' ? true : document.visibilityState === 'visible',
@@ -143,8 +145,11 @@ export default function HomePage() {
     parse: (r) => ensureRecordOrArray(r, '北向资金'),
     redirectOnUnauthorized: false,
   });
+
+  const marketCoreReady = mounted && !idxQ.isPending && !limitUpQ.isPending && !northQ.isPending;
+
   const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', {
-    enabled: mounted,
+    enabled: marketCoreReady,
     refetchInterval: liveRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecord(r, '恐慌贪婪指数'),
@@ -158,54 +163,58 @@ export default function HomePage() {
     critical: true,
   });
   const paperSumQ = useApiQuery<PaperTradingSummary>('/paper-trading/summary', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadPersonalized && marketCoreReady,
     parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const paperPosQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadPersonalized && marketCoreReady,
     parse: normalizePaperPositionsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const newsQ = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', {
-    enabled: mounted,
+    enabled: marketCoreReady,
     parse: normalizeMarketNewsPayload,
     redirectOnUnauthorized: false,
   });
 
   const { visibility: dashboardVisibility, toggle: toggleDashboardModule } = useDashboardPrefs(mounted, profileQ);
+  const personalCoreReady =
+    !canLoadPersonalized || (!paperSumQ.isPending && !paperPosQ.isPending);
+  const marketInsightReady = marketCoreReady && !fearGreedQ.isPending && !newsQ.isPending;
+  const dashboardSecondaryReady = marketInsightReady && personalCoreReady;
 
   const sectorQ = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', {
-    enabled: mounted && dashboardVisibility.market,
+    enabled: dashboardSecondaryReady && dashboardVisibility.market,
     refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块行情(首页)'),
     redirectOnUnauthorized: false,
   });
   const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', {
-    enabled: mounted && dashboardVisibility['fund-flow'],
+    enabled: dashboardSecondaryReady && dashboardVisibility['fund-flow'],
     refetchInterval: lazyRefetch,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块资金流(首页)'),
     redirectOnUnauthorized: false,
   });
   const alertsQ = useApiQuery<{ items?: AlertItem[] }>('/alerts/list?status=active', {
-    enabled: canLoadPersonalized && dashboardVisibility.alerts,
+    enabled: canLoadPersonalized && dashboardSecondaryReady && dashboardVisibility.alerts,
     parse: normalizeAlertsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const riskQ = useApiQuery<unknown>('/risk/summary?lookbackDays=252', {
-    enabled: canLoadPersonalized && dashboardVisibility.risk,
+    enabled: canLoadPersonalized && dashboardSecondaryReady && dashboardVisibility.risk,
     parse: (r) => ensureRecord(r, '风险汇总(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
   });
 
   const strategySubsQ = useApiQuery<unknown>(user ? '/strategy-market/my-subscriptions' : null, {
-    enabled: mounted && dashboardVisibility.strategy && Boolean(user),
+    enabled: dashboardSecondaryReady && dashboardVisibility.strategy && Boolean(user),
     parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
@@ -232,7 +241,7 @@ export default function HomePage() {
     return Array.from(s);
   }, [watchlistItems, recentStocks]);
   const batchQ = useApiQuery<unknown>(quoteCodes.length > 0 ? '/market/batch-quotes' : null, {
-    enabled: mounted && pageVisible,
+    enabled: dashboardSecondaryReady && pageVisible,
     refetchInterval: lazyRefetch,
     body: { codes: quoteCodes },
     placeholderData: 'keepPrevious',

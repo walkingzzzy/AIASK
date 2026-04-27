@@ -50,7 +50,7 @@ export default function StockPage() {
   const mobileOnlyDetected = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
   const compactLayout = hydrated ? compactLayoutDetected : true;
   const mobileOnly = hydrated ? mobileOnlyDetected : true;
-  const { code, setCode, codeError, validate, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, resolvedCode } = useStockCode();
   const [period, setPeriod] = useState<Period>('daily');
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
@@ -346,7 +346,7 @@ export default function StockPage() {
       ? `${(((Number(quote.high) - Number(quote.low)) / Number(quote.prevClose)) * 100).toFixed(2)}%`
       : '-';
   const activeTabLabel = STOCK_INFO_TABS.find((item) => item.key === infoTab)?.label ?? 'K线图';
-  const currentFocusCode = contextCode || code.trim() || '600519';
+  const currentFocusCode = contextCode || code.trim() || '未选择标的';
   const refreshStatus = quoteQ.isFetching ? '数据刷新中' : quote ? '已同步最新报价' : '等待首次加载';
   const refreshTimeText = quoteQ.dataUpdatedAt
     ? new Date(quoteQ.dataUpdatedAt).toLocaleString('zh-CN', { hour12: false })
@@ -360,7 +360,7 @@ export default function StockPage() {
     : [
         '先输入代码并确认周期，再看报价和主图，首屏现在会优先保留关键指标与动作入口。',
         '技术面、估值、新闻和 AI 诊断都保留在同一页内，但建议顺着 tab 从左到右阅读。',
-        '第一次使用时优先跑 600519 之类的熟悉标的，更容易判断信号是否合理。',
+        '如果还没有关注标的，先从自选股、持仓或搜索结果中选择一个，再进入详情页判断信号。',
       ];
   const askAiSummary = quote ? `${quote.name}，现价 ${fmtNum(Number(quote.price), 2)}，涨跌幅 ${fmtPct(priceChangePct)}` : undefined;
 

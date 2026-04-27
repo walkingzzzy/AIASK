@@ -78,7 +78,7 @@ export default function ValuationPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('dcf');
   const [viewTab, setViewTab] = useState<ViewTab>('params');
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
   const [discountRate, setDiscountRate] = useState('0.1');
   const [growthRate, setGrowthRate] = useState('0.05');
@@ -149,7 +149,11 @@ export default function ValuationPage() {
   }
 
   function runRecommendedValuation() {
-    const nextCode = trimmedCode || resolvedCode || '600519';
+    const nextCode = trimmedCode || resolvedCode || '';
+    if (!nextCode) {
+      setFormError('请先选择你的关注股票，再运行推荐估值');
+      return;
+    }
     setCode(nextCode);
     setFormError(null);
 
@@ -282,7 +286,11 @@ export default function ValuationPage() {
       scope: 'page' as const,
       pageKey: 'valuation',
       run: () => {
-        window.location.href = `/stock?code=${encodeURIComponent(focusCode || '600519')}`;
+        if (!focusCode) {
+          setFormError('请先选择你的关注股票，再打开个股详情');
+          return { message: '请先选择你的关注股票' };
+        }
+        window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
         return { message: '已跳到个股详情' };
       },
     },
@@ -295,9 +303,9 @@ export default function ValuationPage() {
     pageActions,
     preferredActionIds: ['valuation.run-recommended', 'valuation.submit', 'valuation.open-stock'],
     recommendedLinks: [
-      { id: 'valuation-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode || '600519')}` },
-      { id: 'valuation-open-fundamental-link', label: '基本面', href: `/fundamental?code=${encodeURIComponent(focusCode || '600519')}` },
-      { id: 'valuation-open-research-link', label: '研究中心', href: `/research?code=${encodeURIComponent(focusCode || '600519')}` },
+      { id: 'valuation-open-stock-link', label: focusCode ? '个股详情' : '选择标的', href: focusCode ? `/stock?code=${encodeURIComponent(focusCode)}` : '/watchlist?from=valuation' },
+      { id: 'valuation-open-fundamental-link', label: '基本面', href: focusCode ? `/fundamental?code=${encodeURIComponent(focusCode)}` : '/fundamental' },
+      { id: 'valuation-open-research-link', label: '研究中心', href: focusCode ? `/research?code=${encodeURIComponent(focusCode)}` : '/research?from=valuation' },
       { id: 'valuation-open-risk-link', label: '风险中心', href: '/risk' },
     ],
     evidence: [

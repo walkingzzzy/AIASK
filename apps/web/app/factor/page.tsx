@@ -16,7 +16,7 @@ import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } fro
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 
-const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
+const EXAMPLE_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const CHIP_LINK_CLS = 'action-chip cursor-pointer border-0 bg-transparent text-xs no-underline text-inherit';
@@ -143,23 +143,23 @@ export default function FactorPage() {
   const libQ = useApiQuery<unknown>(libPath);
 
   const [calcName, setCalcName] = useState('momentum');
-  const [calcCodes, setCalcCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [calcCodes, setCalcCodes] = useState('');
   const calcMut = useApiMutation<unknown>();
 
   const [icName, setIcName] = useState('momentum');
-  const [icCodes, setIcCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [icCodes, setIcCodes] = useState('');
   const icMut = useApiMutation<unknown>();
 
   const [btName, setBtName] = useState('momentum');
-  const [btCodes, setBtCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [btCodes, setBtCodes] = useState('');
   const btMut = useApiMutation<unknown>();
 
   const [oosName, setOosName] = useState('momentum');
-  const [oosCodes, setOosCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [oosCodes, setOosCodes] = useState('');
   const oosMut = useApiMutation<unknown>();
 
   const [robName, setRobName] = useState('momentum');
-  const [robCodes, setRobCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [robCodes, setRobCodes] = useState('');
   const robMut = useApiMutation<unknown>();
 
   const libLoading = libQ.isFetching;
@@ -206,10 +206,14 @@ export default function FactorPage() {
 
   function runRecommendedResearchSample() {
     setFormError(null);
+    if (!validateCodes(calcCodes)) {
+      setFormError(`请先输入来自自选、持仓或当前研究目标的股票池。示例格式：${EXAMPLE_FACTOR_CODES}`);
+      return;
+    }
     setStageTab('foundation');
     setFoundationTab('calculate');
     const recommendedFactorName = 'momentum';
-    const recommendedCodes = DEFAULT_FACTOR_CODES;
+    const recommendedCodes = calcCodes;
     const stockCodes = splitCodes(recommendedCodes);
     setCalcName(recommendedFactorName);
     setCalcCodes(recommendedCodes);
@@ -285,14 +289,14 @@ export default function FactorPage() {
   const factorPageActions = [
     {
       id: 'factor.run-sample',
-      label: '运行推荐研究样例',
-      description: '按默认样本池启动一轮标准因子研究链路',
+      label: '运行当前样本研究',
+      description: '按用户输入的样本池启动一轮标准因子研究链路',
       keywords: ['因子', '样例', '研究'],
       scope: 'page' as const,
       pageKey: 'factor',
       run: () => {
         runRecommendedResearchSample();
-        return { message: '已发起推荐因子研究样例' };
+        return { message: '已按当前样本池发起因子研究' };
       },
     },
     {
@@ -449,7 +453,7 @@ export default function FactorPage() {
                 data-testid="page-primary-action"
                 className={HERO_PRIMARY_BUTTON_CLS}
               >
-                {calcLoading ? '运行中...' : '运行推荐研究样例'}
+                {calcLoading ? '运行中...' : '运行当前样本研究'}
               </button>
             </div>
             <div
@@ -461,7 +465,7 @@ export default function FactorPage() {
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 因子库 {libraryRows.length > 0 ? `已加载 ${libraryRows.length} 项` : '待加载'} ｜
-                推荐流程会先刷新因子库，再运行首轮样本计算。
+                研究流程会先刷新因子库，再按当前样本池运行首轮计算。
               </p>
               <p className="mt-2 mb-0 text-xs text-text-secondary">
                 研究状态：{calcMut.data ? '已完成推荐样例计算' : anyLoading ? '处理中' : '等待启动'}
@@ -472,7 +476,7 @@ export default function FactorPage() {
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本池</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{splitCodes(calcCodes).length}</div>
-                <div className="mt-1 text-xs text-text-secondary">默认覆盖白酒、银行、新能源与消费龙头</div>
+                <div className="mt-1 text-xs text-text-secondary">来自用户输入、自选或持仓的研究样本</div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前因子</div>

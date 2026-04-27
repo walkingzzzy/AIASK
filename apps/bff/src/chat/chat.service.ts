@@ -181,11 +181,17 @@ export class ChatService {
       }
 
       if (toolCallFragments.size === 0) {
+        const finalContent = assistantContent.trim()
+          ? assistantContent
+          : this.buildToolOnlyFallbackAnswer(toolTrace, pageContext);
+        if (!assistantContent.trim() && finalContent.trim()) {
+          yield { type: 'final_fallback', content: finalContent };
+        }
         const enforcedCalls = await this.enforceRequiredToolCalls(
           userId,
           userContext,
           messages,
-          assistantContent,
+          finalContent,
           calledTools,
           lastProfileArgs,
         );
@@ -202,7 +208,7 @@ export class ChatService {
             enforced.finishedAt,
           );
         }
-        finalizeToolTrace(toolTrace, assistantContent, {
+        finalizeToolTrace(toolTrace, finalContent, {
           hasPageContextEvidence: this.hasPageContextEvidence(pageContext),
         });
         yield this.buildToolTraceEvent(toolTrace);
@@ -305,6 +311,22 @@ export class ChatService {
     yield this.buildToolTraceEvent(toolTrace);
     yield { type: 'error', message: '工具调用轮次超限' };
     yield { type: 'done' };
+  }
+
+  private buildToolOnlyFallbackAnswer(toolTrace: ChatToolTraceDto, pageContext: ChatPageContext | null) {
+    const completed = toolTrace.items.filter((item) => item.status === 'success');
+    const failed = toolTrace.items.filter((item) => item.status === 'error');
+    if (completed.length === 0 && failed.length === 0) return '';
+
+    const scope = pageContext?.title ? `当前页面「${pageContext.title}」` : '当前上下文';
+    const successSummary = completed
+      .slice(0, 3)
+      .map((item) => `[${item.referenceLabel}] ${item.toolName}: ${(item.outputSummary[0] ?? '已返回结果').slice(0, 120)}`)
+      .join('\n');
+    const failedSummary = failed.length
+      ? `\n\n失败项：${failed.slice(0, 3).map((item) => `[${item.referenceLabel}] ${item.toolName}: ${item.errorMessage ?? '调用失败'}`).join('；')}`
+      : '';
+    return `基于工具结果，${scope}本轮已完成 ${completed.length} 项工具调用。由于模型没有返回最终正文，下面先给出可见的工具摘要：\n${successSummary}${failedSummary}\n\n建议根据上方工具轨迹继续追问或重试生成完整结论。`;
   }
 
   private startTraceItem(

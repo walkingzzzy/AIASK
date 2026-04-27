@@ -117,6 +117,7 @@ export class SkillsService {
         execution: execution.execution ?? execution.result ?? raw,
         result: execution.result ?? execution.execution ?? raw,
         source: execution.source ?? registry.source ?? 'unknown',
+        workbench: this.buildWorkbenchTarget(skillName, execution.result ?? execution.execution ?? raw),
         meta: {
           backend_requested: execution.backend_requested,
           backend_used: execution.backend_used,
@@ -343,5 +344,38 @@ export class SkillsService {
     }
     if (status === 'deprecated') return 'deprecated';
     return executable ? 'orchestrated' : 'no_handler';
+  }
+
+  private buildWorkbenchTarget(skillName: string, result: unknown) {
+    const executionId = this.pickExecutionId(result);
+    const params = new URLSearchParams();
+    params.set('from', 'skill');
+    params.set('skill', skillName);
+    if (executionId) params.set('execution_id', executionId);
+    return {
+      targetPage: 'workbench',
+      href: `/assistant?${params.toString()}`,
+      executionId,
+      observable: true,
+    };
+  }
+
+  private pickExecutionId(value: unknown): string | null {
+    const record = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    const candidates = [
+      record.execution_id,
+      record.executionId,
+      record.run_id,
+      record.runId,
+      record.artifact_id,
+      record.artifactId,
+    ];
+    for (const candidate of candidates) {
+      const normalized = String(candidate ?? '').trim();
+      if (normalized) return normalized;
+    }
+    return null;
   }
 }

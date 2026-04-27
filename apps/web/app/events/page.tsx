@@ -43,7 +43,7 @@ export default function EventsPage() {
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
-  const initialCode = searchParams.get('code') || workbenchContext.eventCode || workbenchContext.stockCode || '600519';
+  const initialCode = searchParams.get('code') || workbenchContext.eventCode || workbenchContext.stockCode || '';
   const { code, setCode, trimmedCode, validate, codeError } = useStockCode(initialCode);
   const [days, setDays] = useState<number>(() => {
     const raw = Number(searchParams.get('days') ?? 7);

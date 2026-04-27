@@ -8,6 +8,7 @@ export type ChatEvent =
   | { type: 'tool_result'; name: string; result: unknown }
   | { type: 'tool_trace'; trace: ChatToolTrace }
   | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
+  | { type: 'final_fallback'; content: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -153,6 +154,16 @@ export async function streamChat(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data: ')) return;
+    try {
+      const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
+      onEvent(event);
+    } catch {
+      // skip malformed SSE payloads
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -160,15 +171,11 @@ export async function streamChat(
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) continue;
-      try {
-        const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
-        onEvent(event);
-      } catch {
-        // skip malformed SSE payloads
-      }
-    }
+    lines.forEach(handleLine);
+  }
+
+  const tail = `${decoder.decode()}${buffer}`.trim();
+  if (tail) {
+    tail.split('\n').forEach(handleLine);
   }
 }

@@ -74,6 +74,16 @@ type BuildIsolatedPythonPathOptions = {
   exists?: (path: string) => boolean;
 };
 
+type McpFailureMode = 'timeout' | 'transport' | 'validation' | 'tool_error' | 'unknown';
+
+type ToolMetricBucket = {
+  calls: number;
+  errors: number;
+  totalLatencyMs: number;
+  samples: number[];
+  failureModes: Partial<Record<McpFailureMode, number>>;
+};
+
 export function buildIsolatedPythonPath({
   cwd,
   configured,
@@ -126,6 +136,8 @@ export class McpGatewayService implements OnModuleDestroy {
   private totalToolErrors = 0;
   private readonly latencyHistoryMs: number[] = [];
   private readonly toolUsage = new Map<string, number>();
+  private readonly toolMetrics = new Map<string, ToolMetricBucket>();
+  private readonly failureModeTotals = new Map<McpFailureMode, number>();
   private lastTransportError: string | null = null;
   private lastConnectionMeta: McpConnectionMeta | null = null;
 
@@ -201,9 +213,19 @@ export class McpGatewayService implements OnModuleDestroy {
     try {
       const conn = await this.acquire();
       try {
-        const tools = await conn.client.listTools(undefined, {
-          timeout: Math.min(this.toolCallTimeoutMs, 30_000),
-        });
+        let tools: Awaited<ReturnType<Client['listTools']>>;
+        try {
+          tools = await conn.client.listTools(undefined, {
+            timeout: Math.min(this.toolCallTimeoutMs, 30_000),
+          });
+        } catch (error) {
+          this.recordTransportError(error);
+          if (this.isTransportError(error)) {
+            this.logger.warn(`Transport error on pool[${conn.id}] while listing tools, recycling connection`);
+            await this.recycleConnection(conn);
+          }
+          throw error;
+        }
         const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
         if (count !== null) {
           const resolvedExpectedTools = expectedTools ?? count;
@@ -258,40 +280,57 @@ export class McpGatewayService implements OnModuleDestroy {
   async callTool(
     name: string,
     args: Record<string, unknown> = {},
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; retryOnTransportError?: boolean },
   ): Promise<unknown> {
     const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
-    const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
-    const startedAt = performance.now();
     const timeoutMs = this.resolveToolTimeoutMs(options?.timeoutMs);
-    try {
-      const result = await this.withTimeout(
-        conn.client.callTool(
-          { name, arguments: args },
-          undefined,
-          {
-            timeout: timeoutMs,
-            resetTimeoutOnProgress: true,
-            maxTotalTimeout: timeoutMs,
-          },
-        ),
-        timeoutMs,
-        `MCP tool ${name} timed out after ${timeoutMs}ms`,
-        'tool_call',
-      );
-      this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
-      return this.normalizeToolResult(result, conn.meta);
-    } catch (error) {
-      this.recordToolMetric(name, performance.now() - startedAt, true, conn.meta);
-      if (this.isTransportError(error)) {
-        this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
-        await this.recycleConnection(conn, dedicated ? name : undefined);
+    const maxAttempts = options?.retryOnTransportError ? 2 : 1;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let conn: PooledConnection | null = null;
+      const startedAt = performance.now();
+      try {
+        conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
+        const result = await this.withTimeout(
+          conn.client.callTool(
+            { name, arguments: args },
+            undefined,
+            {
+              timeout: timeoutMs,
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: timeoutMs,
+            },
+          ),
+          timeoutMs,
+          `MCP tool ${name} timed out after ${timeoutMs}ms`,
+          'tool_call',
+        );
+        this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
+        return this.normalizeToolResult(result, conn.meta);
+      } catch (error) {
+        lastError = error;
+        this.recordToolMetric(name, performance.now() - startedAt, true, conn?.meta, error);
+        const transportError = this.isTransportError(error);
+        const canRetry = transportError && attempt < maxAttempts;
+        if (transportError && conn) {
+          this.logger.warn(
+            `Transport error on pool[${conn.id}], recycling connection${canRetry ? ' before retry' : ''}`,
+          );
+          await this.recycleConnection(conn, dedicated ? name : undefined);
+        }
+        if (!canRetry) {
+          throw error;
+        }
+      } finally {
+        if (conn) {
+          if (dedicated) this.releaseDedicated(name, conn);
+          else this.release(conn);
+        }
       }
-      throw error;
-    } finally {
-      if (dedicated) this.releaseDedicated(name, conn);
-      else this.release(conn);
     }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? `MCP tool ${name} failed`));
   }
 
   async readResource(uri: string): Promise<unknown> {
@@ -314,7 +353,7 @@ export class McpGatewayService implements OnModuleDestroy {
       this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false, conn.meta);
       return this.normalizeResourceResult(result);
     } catch (error) {
-      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true, conn.meta);
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true, conn.meta, error);
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}] while reading resource, recycling connection`);
         await this.recycleConnection(conn);
@@ -330,7 +369,18 @@ export class McpGatewayService implements OnModuleDestroy {
     avgLatency: number;
     p99Latency: number;
     errorRate: number;
-    tools: Array<{ name: string; calls: number }>;
+    failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    queue: { shared: number; dedicated: number; poolSize: number; acquireTimeoutMs: number; toolTimeoutMs: number };
+    tools: Array<{
+      name: string;
+      calls: number;
+      avgMs: number;
+      p99Ms: number;
+      errors: number;
+      errorRate: number;
+      status: 'healthy' | 'degraded' | 'down';
+      failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    }>;
     transport: ReturnType<McpGatewayService['getTransportSnapshot']>;
   } {
     const samples = [...this.latencyHistoryMs].sort((a, b) => a - b);
@@ -340,10 +390,35 @@ export class McpGatewayService implements OnModuleDestroy {
     const p99Index = samples.length > 0
       ? Math.min(samples.length - 1, Math.max(0, Math.ceil(samples.length * 0.99) - 1))
       : 0;
-    const topTools = [...this.toolUsage.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    const topTools = [...this.toolMetrics.entries()]
+      .sort((left, right) => right[1].calls - left[1].calls || left[0].localeCompare(right[0]))
       .slice(0, 12)
-      .map(([name, calls]) => ({ name, calls }));
+      .map(([name, bucket]) => {
+        const toolSamples = [...bucket.samples].sort((a, b) => a - b);
+        const toolP99Index = toolSamples.length > 0
+          ? Math.min(toolSamples.length - 1, Math.max(0, Math.ceil(toolSamples.length * 0.99) - 1))
+          : 0;
+        const errorRate = bucket.calls > 0 ? (bucket.errors / bucket.calls) * 100 : 0;
+        const p99Ms = Number((toolSamples[toolP99Index] ?? 0).toFixed(2));
+        const status: 'healthy' | 'degraded' | 'down' = bucket.errors === 0
+          ? 'healthy'
+          : errorRate >= 50
+            ? 'down'
+            : 'degraded';
+        return {
+          name,
+          calls: bucket.calls,
+          avgMs: Number((bucket.calls > 0 ? bucket.totalLatencyMs / bucket.calls : 0).toFixed(2)),
+          p99Ms,
+          errors: bucket.errors,
+          errorRate: Number(errorRate.toFixed(2)),
+          status,
+          failureModes: Object.entries(bucket.failureModes)
+            .map(([mode, count]) => ({ mode: mode as McpFailureMode, count: Number(count ?? 0) }))
+            .filter((item) => item.count > 0)
+            .sort((left, right) => right.count - left.count || left.mode.localeCompare(right.mode)),
+        };
+      });
 
     return {
       totalCalls: this.totalToolCalls,
@@ -352,6 +427,16 @@ export class McpGatewayService implements OnModuleDestroy {
       errorRate: this.totalToolCalls > 0
         ? Number(((this.totalToolErrors / this.totalToolCalls) * 100).toFixed(2))
         : 0,
+      failureModes: [...this.failureModeTotals.entries()]
+        .map(([mode, count]) => ({ mode, count }))
+        .sort((left, right) => right.count - left.count || left.mode.localeCompare(right.mode)),
+      queue: {
+        shared: this.waitQueue.length,
+        dedicated: [...this.dedicatedWaitQueues.values()].reduce((sum, queue) => sum + queue.length, 0),
+        poolSize: this.poolSize,
+        acquireTimeoutMs: this.poolAcquireTimeoutMs,
+        toolTimeoutMs: this.toolCallTimeoutMs,
+      },
       tools: topTools,
       transport: this.getTransportSnapshot(),
     };
@@ -489,6 +574,9 @@ export class McpGatewayService implements OnModuleDestroy {
       this.logger.log(
         `MCP pool initialized (1/${this.poolSize} connections, heavy-worker slots=${this.fullProfilePoolSlots})`,
       );
+      void this.warmPool().catch((error) => {
+        this.logger.warn(`MCP pool warmup stopped: ${this.formatError(error)}`);
+      });
     })();
 
     try {
@@ -515,6 +603,14 @@ export class McpGatewayService implements OnModuleDestroy {
       if (this.poolCreationInFlight === creation) {
         this.poolCreationInFlight = null;
       }
+    }
+  }
+
+  private async warmPool(): Promise<void> {
+    while (this.initialized && this.pool.length < this.poolSize) {
+      const conn = await this.createPoolConnection();
+      if (!conn) continue;
+      this.logger.log(`MCP pool warmup connected (${this.pool.length}/${this.poolSize})`);
     }
   }
 
@@ -756,6 +852,10 @@ export class McpGatewayService implements OnModuleDestroy {
       msg.includes('connection') ||
       msg.includes('closed') ||
       msg.includes('transport') ||
+      msg.includes('streamable http') ||
+      msg.includes('no valid session') ||
+      msg.includes('session id') ||
+      msg.includes('posting to endpoint') ||
       msg.includes('econnreset') ||
       msg.includes('econnrefused') ||
       msg.includes('broken pipe') ||
@@ -965,6 +1065,7 @@ export class McpGatewayService implements OnModuleDestroy {
     latencyMs: number,
     errored: boolean,
     meta?: McpConnectionMeta | null,
+    error?: unknown,
   ): void {
     this.totalToolCalls += 1;
     if (errored) {
@@ -977,6 +1078,26 @@ export class McpGatewayService implements OnModuleDestroy {
     if (this.latencyHistoryMs.length > 500) {
       this.latencyHistoryMs.splice(0, this.latencyHistoryMs.length - 500);
     }
+    const bucket = this.toolMetrics.get(normalizedName) ?? {
+      calls: 0,
+      errors: 0,
+      totalLatencyMs: 0,
+      samples: [],
+      failureModes: {},
+    };
+    bucket.calls += 1;
+    bucket.totalLatencyMs += latencyMs;
+    bucket.samples.push(latencyMs);
+    if (bucket.samples.length > 100) {
+      bucket.samples.splice(0, bucket.samples.length - 100);
+    }
+    if (errored) {
+      bucket.errors += 1;
+      const mode = this.classifyFailureMode(error);
+      bucket.failureModes[mode] = (bucket.failureModes[mode] ?? 0) + 1;
+      this.failureModeTotals.set(mode, (this.failureModeTotals.get(mode) ?? 0) + 1);
+    }
+    this.toolMetrics.set(normalizedName, bucket);
     this.observability.recordMcpCall({
       name: normalizedName,
       latencyMs,
@@ -984,6 +1105,25 @@ export class McpGatewayService implements OnModuleDestroy {
       transportKind: meta?.transportKind ?? this.getTransportSnapshot().transportKind,
       degraded: Boolean(meta?.degraded ?? this.getTransportSnapshot().degraded),
     });
+  }
+
+  private classifyFailureMode(error: unknown): McpFailureMode {
+    if (!error) return 'unknown';
+    const message = this.formatError(error).toLowerCase();
+    if (error instanceof McpGatewayTimeoutError || message.includes('timeout') || message.includes('timed out')) {
+      return 'timeout';
+    }
+    if (this.isTransportError(error)) return 'transport';
+    if (
+      message.includes('validation') ||
+      message.includes('invalid') ||
+      message.includes('schema') ||
+      message.includes('pydantic') ||
+      message.includes('parse')
+    ) {
+      return 'validation';
+    }
+    return 'tool_error';
   }
 
   private withFallbackMetaDefaults(payload: unknown): unknown {

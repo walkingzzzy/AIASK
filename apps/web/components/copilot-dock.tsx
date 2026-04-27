@@ -30,8 +30,8 @@ function mergePageContext(
 
   if (!pageContext) {
     return {
-      pageKey: 'ask-ai-injected',
-      title: '局部对象分析',
+      pageKey: patch.pageKey ?? 'ask-ai-injected',
+      title: patch.title ?? '局部对象分析',
       summary: patch.summary?.trim() || '已注入局部上下文，优先基于该对象回答。',
       primaryGoal: patch.primaryGoal,
       requiredInputs: patch.requiredInputs ?? [],
@@ -57,6 +57,8 @@ function mergePageContext(
   const mergedTags = Array.from(new Set([...(pageContext.tags ?? []), ...(patch.tags ?? [])]));
   return {
     ...pageContext,
+    pageKey: patch.pageKey ?? pageContext.pageKey,
+    title: patch.title ?? pageContext.title,
     primaryGoal: patch.primaryGoal ?? pageContext.primaryGoal,
     requiredInputs: patch.requiredInputs ?? pageContext.requiredInputs,
     stockCode: patch.stockCode ?? pageContext.stockCode,
@@ -350,6 +352,7 @@ export default function CopilotDock({
     const abort = new AbortController();
     abortRef.current = abort;
     let reasoningReplacementInserted = false;
+    let assistantContentReceived = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let idleTimedOut = false;
     const clearIdleTimer = () => {
@@ -380,6 +383,7 @@ export default function CopilotDock({
                 const sanitized = sanitizeReasoningDelta(event.content, reasoningReplacementInserted);
                 reasoningReplacementInserted = sanitized.replaced;
                 if (sanitized.content) {
+                  assistantContentReceived = true;
                   appendAssistantDelta(assistantId, sanitized.content);
                 }
               }
@@ -418,7 +422,14 @@ export default function CopilotDock({
               }
               break;
             }
+            case 'final_fallback':
+              if (!assistantContentReceived && event.content.trim()) {
+                assistantContentReceived = true;
+                appendAssistantDelta(assistantId, event.content);
+              }
+              break;
             case 'error':
+              assistantContentReceived = true;
               appendAssistantDelta(assistantId, `\n⚠ ${event.message}`);
               break;
             case 'done':

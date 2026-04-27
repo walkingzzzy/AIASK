@@ -11,7 +11,13 @@ export type CreateAlertInput = {
 };
 
 export type NormalizedAlertItem = {
-  id: string; code: string; indicator: string; condition: string; value: number | null;
+  id: string;
+  code: string;
+  indicator: string;
+  condition: string;
+  value: number | null;
+  status?: string;
+  userId?: string;
 };
 
 export type AlertsListDto = {
@@ -28,6 +34,7 @@ export type AlertsListDto = {
 @Injectable()
 export class AlertsService {
   private static readonly LIST_TTL_SECONDS = 30;
+  private readonly recentlyCreated = new Map<string, NormalizedAlertItem[]>();
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
@@ -53,11 +60,22 @@ export class AlertsService {
     const alertId =
       this.pickString(payload, ['data.alert_id', 'data.alertId', 'data.id', 'alert_id', 'alertId', 'id']) ||
       `alert_${normalized.code}_${normalized.indicator}_${normalized.condition}`;
+    const alert: NormalizedAlertItem = {
+      id: alertId,
+      code: normalized.code,
+      indicator: normalized.indicator,
+      condition: normalized.condition,
+      value: normalized.value,
+      status: 'active',
+      userId,
+    };
 
+    this.rememberCreatedAlert(userId, alert);
     await this.clearUserListCache(userId);
 
     return {
       alertId,
+      alert,
       sourceTool: 'alerts_manager' as const,
       argsMatched: args,
       result: payload,
@@ -110,10 +128,14 @@ export class AlertsService {
       params: { status: normalizedStatus, user_id: userId },
     };
 
-    const payload = await this.callTool('alerts_manager', args);
+    const payload = await this.callTool('alerts_manager', args, true);
     const result: AlertsListDto = {
       status: normalizedStatus,
-      items: this.pickArray(payload, ['data.items', 'data.alerts', 'data', 'items', 'alerts']).map((x) => this.normalizeAlertItem(x)),
+      items: this.mergeRecentlyCreated(
+        userId,
+        normalizedStatus,
+        this.pickArray(payload, ['data.items', 'data.alerts', 'data', 'items', 'alerts']).map((x) => this.normalizeAlertItem(x)),
+      ),
       sourceTool: 'alerts_manager',
       argsMatched: args,
       meta: {
@@ -134,6 +156,7 @@ export class AlertsService {
     };
 
     const payload = await this.callTool('alerts_manager', args);
+    this.forgetCreatedAlert(userId, normalized);
     await this.clearUserListCache(userId);
 
     return {
@@ -144,9 +167,9 @@ export class AlertsService {
     };
   }
 
-  private async callTool(name: string, args: Record<string, unknown>) {
+  private async callTool(name: string, args: Record<string, unknown>, retryOnTransportError = false) {
     try {
-      const result = await this.mcpGatewayService.callTool(name, args);
+      const result = await this.mcpGatewayService.callTool(name, args, { retryOnTransportError });
       if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
         throw new Error(result);
       }
@@ -168,7 +191,32 @@ export class AlertsService {
       indicator: String(record.indicator ?? ''),
       condition: String(record.condition ?? ''),
       value: this.toNum(record.value ?? record.threshold),
+      status: String(record.status ?? '').trim() || undefined,
+      userId: String(record.userId ?? record.user_id ?? '').trim() || undefined,
     };
+  }
+
+  private rememberCreatedAlert(userId: string, alert: NormalizedAlertItem) {
+    const existing = this.recentlyCreated.get(userId) ?? [];
+    this.recentlyCreated.set(userId, [alert, ...existing.filter((item) => item.id !== alert.id)].slice(0, 50));
+  }
+
+  private forgetCreatedAlert(userId: string, alertId: string) {
+    const existing = this.recentlyCreated.get(userId) ?? [];
+    const next = existing.filter((item) => item.id !== alertId);
+    if (next.length) this.recentlyCreated.set(userId, next);
+    else this.recentlyCreated.delete(userId);
+  }
+
+  private mergeRecentlyCreated(userId: string, status: string, items: NormalizedAlertItem[]) {
+    const created = (this.recentlyCreated.get(userId) ?? [])
+      .filter((item) => status === 'all' || String(item.status ?? 'active').toLowerCase() === status);
+    if (!created.length) return items;
+    const seen = new Set(items.map((item) => item.id).filter(Boolean));
+    return [
+      ...created.filter((item) => item.id && !seen.has(item.id)),
+      ...items,
+    ];
   }
 
   private toNum(v: unknown): number | null {

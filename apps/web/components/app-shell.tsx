@@ -212,14 +212,16 @@ function resolveShellTheme(path: string) {
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
-  const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
-  const label = theme === 'light' ? '☀' : theme === 'dark' ? '🌙' : '⚙';
+  const hydrated = useHydrated();
+  const resolvedTheme = hydrated ? theme : 'system';
+  const next = resolvedTheme === 'light' ? 'dark' : resolvedTheme === 'dark' ? 'system' : 'light';
+  const label = resolvedTheme === 'light' ? '☀' : resolvedTheme === 'dark' ? '🌙' : '⚙';
   return (
     <button
       type="button"
       onClick={() => setTheme(next)}
       className="rounded-full border border-glass-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(246,250,255,0.4))] px-2.5 py-1 text-sm shadow-[0_12px_26px_-20px_rgba(15,23,42,0.28)] backdrop-blur-xl"
-      title={`当前: ${theme}，点击切换`}
+      title={`当前: ${resolvedTheme}，点击切换`}
     >
       {label}
     </button>
