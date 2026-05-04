@@ -248,20 +248,20 @@ export function StrategyMarketObservabilitySection({
               <div className="mt-2 text-base font-semibold text-text-primary">{recentValidatedCandidateCount}</div>
             </div>
             <div className="metric-tile rounded-[24px] px-4 py-4">
-              <div className="metric-label">Retrain 队列</div>
+              <div className="metric-label">重训队列</div>
               <div className="mt-2 text-base font-semibold text-text-primary">{retrainPlanCount}</div>
             </div>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
-            <span className={summaryChipCls}>最新工厂 Run {latestFactoryRunId}</span>
+            <span className={summaryChipCls}>最新工厂运行 {latestFactoryRunId}</span>
             <span className={summaryChipCls}>
               调度 freshness {schedulerFreshnessSec == null ? '-' : `${fmtNum(schedulerFreshnessSec, 1)}s`}
             </span>
             <span className={summaryChipCls}>被阻断候选 {blockedFactorCount}</span>
             <span className={summaryChipCls}>工厂最近 5 次 {factoryRunsCount} 条</span>
-            <span className={summaryChipCls}>本轮 governed {recentGovernedActiveCountAfterRun}</span>
-            <span className={summaryChipCls}>待执行 Retrain {retrainPendingCount}</span>
+            <span className={summaryChipCls}>本轮治理后 {recentGovernedActiveCountAfterRun}</span>
+            <span className={summaryChipCls}>待执行重训 {retrainPendingCount}</span>
           </div>
 
           {errors.length > 0 ? (
@@ -276,7 +276,7 @@ export function StrategyMarketObservabilitySection({
 
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             <div className="panel-soft rounded-[24px] p-4">
-              <div className="eyebrow">Registry Stage</div>
+              <div className="eyebrow">注册阶段</div>
               <h3 className="mt-2">候选治理阶段</h3>
               {stageRows.length > 0 ? (
                 <DataTable
@@ -292,7 +292,7 @@ export function StrategyMarketObservabilitySection({
             </div>
 
             <div className="panel-soft rounded-[24px] p-4">
-              <div className="eyebrow">Active Pool</div>
+              <div className="eyebrow">活跃池</div>
               <h3 className="mt-2">活跃池家族分布</h3>
               {familyRows.length > 0 ? (
                 <DataTable
@@ -317,7 +317,7 @@ export function StrategyMarketObservabilitySection({
 
           <div className="mt-4 grid gap-4 xl:grid-cols-3">
             <div className="panel-soft rounded-[24px] p-4">
-              <div className="eyebrow">Recent Auto Run</div>
+              <div className="eyebrow">最近自动运行</div>
               <h3 className="mt-2">最近一次自动挖掘</h3>
               <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
                 生成 {recentRunGeneratedCount} 个候选，验证通过 {recentRunValidatedCount} 个，运行后 governed active{' '}
@@ -326,7 +326,7 @@ export function StrategyMarketObservabilitySection({
             </div>
 
             <div className="panel-soft rounded-[24px] p-4">
-              <div className="eyebrow">Regime Mix</div>
+              <div className="eyebrow">市场状态组合</div>
               <h3 className="mt-2">活跃池 Regime 分布</h3>
               {regimeRows.length > 0 ? (
                 <DataTable
@@ -342,7 +342,7 @@ export function StrategyMarketObservabilitySection({
             </div>
 
             <div className="panel-soft rounded-[24px] p-4">
-              <div className="eyebrow">Retrain Queue</div>
+              <div className="eyebrow">重训队列</div>
               <h3 className="mt-2">重训练计划队列</h3>
               {retrainQueue.length > 0 ? (
                 <DataTable
@@ -355,7 +355,7 @@ export function StrategyMarketObservabilitySection({
                   ]}
                 />
               ) : (
-                <p className="mb-0 mt-3 text-sm text-text-secondary">当前没有 retrain 计划。</p>
+                <p className="mb-0 mt-3 text-sm text-text-secondary">当前没有重训计划。</p>
               )}
               <div className="mt-3 text-xs text-text-secondary">状态分布 {retrainStatusSummary || '-'}</div>
             </div>

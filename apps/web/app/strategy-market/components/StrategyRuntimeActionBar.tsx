@@ -75,7 +75,7 @@ export function StrategyRuntimeActionBar({
               }}
               className={actionButtonClass(action, compact)}
             >
-              <span>{pending ? '处理中...' : compact ? (action.short_label ?? action.label) : action.label}</span>
+              <span>{pending ? '正在执行...' : compact ? (action.short_label ?? action.label) : action.label}</span>
               {!compact ? <span className="ml-1 text-[11px] opacity-70">· {statusText(action)}</span> : null}
             </button>
           );

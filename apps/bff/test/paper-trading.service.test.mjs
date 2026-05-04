@@ -58,7 +58,7 @@ async function withFixedDate(iso, run) {
   }
 }
 
-test('PaperTradingService.summary propagates upstream failure instead of returning an empty snapshot', async () => {
+test('PaperTradingService.summary degrades upstream transport failure into an explicit fallback snapshot', async () => {
   const calls = [];
   const service = new PaperTradingService(
     {
@@ -75,21 +75,102 @@ test('PaperTradingService.summary propagates upstream failure instead of returni
     createCacheStub(),
   );
 
-  await assert.rejects(
-    () => service.summary('u_demo', 'acct-1'),
-    (error) => {
-      assert.equal(typeof error?.getResponse, 'function');
-      const response = error.getResponse();
-      assert.equal(response.success, false);
-      assert.equal(response.message, '调用 paper_trading_manager.summary 失败');
-      assert.match(String(response.detail ?? ''), /summary unavailable/);
-      return true;
-    },
-  );
+  const result = await service.summary('u_demo', 'acct-1');
+
+  assert.equal(result.account_id, 'acct-1');
+  assert.equal(result.degraded, true);
+  assert.equal(result.total_value, 100000);
+  assert.equal(result.total_return_pct, 0);
+  assert.match(result.section_errors.summary, /summary unavailable/);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tool, 'paper_trading_manager');
   assert.equal(calls[0].args.action, 'summary');
+});
+
+test('PaperTradingService.orders degrades transport failures to an empty order envelope', async () => {
+  const calls = [];
+  const service = new PaperTradingService(
+    {
+      callTool: async (tool, args) => {
+        calls.push({ tool, args });
+        throw new Error('orders transport timeout');
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('idempotency.execute should not be called in orders');
+      },
+    },
+    createCacheStub(),
+  );
+
+  const result = await service.orders('u_demo', 'sandbox-orders');
+
+  assert.deepEqual(result.orders, []);
+  assert.equal(result.count, 0);
+  assert.equal(result.degraded, true);
+  assert.match(result.fallback_reason, /orders/);
+  assert.match(result.section_errors.orders, /orders transport timeout/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.action, 'orders');
+});
+
+test('PaperTradingService.pendingOrders degrades transport failures to an empty order envelope', async () => {
+  const calls = [];
+  const service = new PaperTradingService(
+    {
+      callTool: async (tool, args) => {
+        calls.push({ tool, args });
+        throw new Error('pending transport timeout');
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('idempotency.execute should not be called in pendingOrders');
+      },
+    },
+    createCacheStub(),
+  );
+
+  const result = await service.pendingOrders('u_demo', 'sandbox-pending');
+
+  assert.deepEqual(result.orders, []);
+  assert.equal(result.count, 0);
+  assert.equal(result.degraded, true);
+  assert.match(result.fallback_reason, /pending_orders/);
+  assert.match(result.section_errors.pending_orders, /pending transport timeout/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.action, 'pending_orders');
+});
+
+test('PaperTradingService.updatePrices degrades transport failures to a non-throwing refresh envelope', async () => {
+  const calls = [];
+  const service = new PaperTradingService(
+    {
+      callTool: async (tool, args) => {
+        calls.push({ tool, args });
+        throw new Error('update prices transport timeout');
+      },
+    },
+    {
+      execute: async () => {
+        throw new Error('idempotency.execute should not be called in updatePrices');
+      },
+    },
+    createCacheStub(),
+  );
+
+  const result = await service.updatePrices('u_demo', 'playwright-demo');
+
+  assert.equal(result.account_id, 'playwright-demo');
+  assert.equal(result.degraded, true);
+  assert.equal(result.refreshed, false);
+  assert.equal(result.updated_count, 0);
+  assert.match(result.fallback_reason, /update_prices/);
+  assert.match(result.section_errors.update_prices, /update prices transport timeout/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.action, 'update_prices');
 });
 
 test('PaperTradingService.trustStatus marks latest paper account as ready for demo when scan, prices, and NAV are current', async () => {
@@ -217,4 +298,43 @@ test('PaperTradingService.trustStatus blocks demo when pending orders are newer 
     assert.equal(result.reasons.some((item) => /挂单/.test(String(item))), true);
     assert.equal(result.reasons.some((item) => /NAV 快照/.test(String(item))), true);
   });
+});
+
+test('PaperTradingService.testCleanup rejects non-sandbox accounts even when filled cleanup is requested', async () => {
+  const { service } = createServiceWithActions({});
+  await assert.rejects(
+    () => service.testCleanup('u_demo', { account_id: 'default', include_filled_positions: true }),
+    (error) => {
+      const response = error.getResponse?.();
+      assert.equal(response?.code, 'PAPER_TRADING_CLEANUP_FORBIDDEN');
+      return true;
+    },
+  );
+});
+
+test('PaperTradingService.testCleanup can request sandbox filled-position reset', async () => {
+  const { service, calls } = createServiceWithActions({
+    pending_orders: { account_id: 'playwright-demo', orders: [], count: 0 },
+    test_cleanup: {
+      account_id: 'playwright-demo',
+      positions_reset_count: 2,
+      trades_deleted_count: 3,
+      nav_deleted_count: 1,
+      failed_count: 0,
+    },
+    reconcile: { reconciled: true },
+  });
+
+  const result = await service.testCleanup('u_demo', {
+    account_id: 'playwright-demo',
+    include_filled_positions: true,
+  });
+
+  assert.equal(result.cancelled_count, 0);
+  assert.equal(result.filled_positions_count, 2);
+  assert.equal(result.reset_trades_count, 3);
+  assert.equal(result.reset_nav_count, 1);
+  const cleanupCall = calls.find((call) => call.args.action === 'test_cleanup');
+  assert.equal(cleanupCall?.args.params.include_filled_positions, true);
+  assert.equal(cleanupCall?.args.params.cancel_pending, false);
 });

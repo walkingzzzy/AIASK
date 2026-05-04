@@ -1,20 +1,21 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { fetchUserDefaultContext, saveUserDefaultContext, type UserDefaultContext } from '@/lib/user-default-context';
+import { normalizeStockCode, STOCK_CODE_RE, trustedUserStockCode } from '@/lib/stock-code-utils';
 import { useStockContext } from '@/store/stock-context';
-
-const STOCK_CODE_RE = /^\d{6}$/;
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 /**
  * 增强版股票代码 hook — 支持 URL query param 同步 + 全局上下文
  *
- * 优先级：URL ?code= > 全局上下文 > initial 参数
+ * 优先级：URL ?code= > 已确认工作区上下文 > 用户默认上下文 > initial 参数
  *
- * @param initial  默认代码（仅在 URL 和全局上下文都为空时使用）
+ * @param initial  默认代码（仅在 URL、工作区和用户默认上下文都为空时使用）
  * @param syncUrl  是否同步到 URL query param（默认 true）
  */
 export function useStockCode(initial = '', syncUrl = true) {
@@ -22,19 +23,44 @@ export function useStockCode(initial = '', syncUrl = true) {
   const router = useRouter();
   const pathname = useStablePathname();
   const hydrated = useHydrated();
-  const { code: globalCode, setStock } = useStockContext();
+  const { setStock } = useStockContext();
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workspaces = useWorkbenchStore((state) => state.workspaces);
+  const updateWorkspaceContext = useWorkbenchStore((state) => state.updateContext);
+  const [remoteContext, setRemoteContext] = useState<UserDefaultContext | null>(null);
   const urlCode = searchParams.get('code') || '';
-  const normalizedUrlCode = STOCK_CODE_RE.test(urlCode) ? urlCode : '';
-  const normalizedGlobalCode = STOCK_CODE_RE.test(globalCode) ? globalCode : '';
-  const resolvedCode = normalizedUrlCode || (hydrated ? normalizedGlobalCode : '') || null;
-  const resolvedInitial = resolvedCode || initial;
+  const normalizedUrlCode = normalizeStockCode(urlCode);
+  const activeWorkspace = useMemo(
+    () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
+    [activeWorkspaceId, workspaces],
+  );
+  const workspaceCode = workbenchHydrated
+    ? trustedUserStockCode(activeWorkspace.context.stockCode, activeWorkspace.context.stockConfirmedAt)
+    : '';
+  const remoteCode = hydrated ? normalizeStockCode(remoteContext?.trustedStockCode ?? remoteContext?.stockCode) : '';
+  const normalizedInitial = trustedUserStockCode(initial);
+  const resolvedCode = normalizedUrlCode || workspaceCode || remoteCode || normalizedInitial || null;
+  const resolvedInitial = resolvedCode || '';
 
   const [draftCode, setDraftCode] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const code = draftCode ?? resolvedInitial;
 
+  useEffect(() => {
+    if (!hydrated) return;
+    let alive = true;
+    fetchUserDefaultContext().then((context) => {
+      if (alive) setRemoteContext(context);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hydrated]);
+
   const setCode = useCallback((value: string) => {
-    setDraftCode(value);
+    const nextValue = value.trim();
+    setDraftCode((current) => (current === nextValue ? current : nextValue));
   }, []);
 
   // 写入 URL（在查询提交时调用，不在每次输入时调用）
@@ -59,9 +85,12 @@ export function useStockCode(initial = '', syncUrl = true) {
       // 验证通过时同步到全局上下文和 URL
       syncToUrl(v);
       setStock(v);
+      const stockConfirmedAt = new Date().toISOString();
+      updateWorkspaceContext({ stockCode: v, stockConfirmedAt });
+      void saveUserDefaultContext({ stockCode: v, workspaceId: activeWorkspace.id });
       return true;
     },
-    [code, syncToUrl, setStock],
+    [activeWorkspace.id, code, setStock, syncToUrl, updateWorkspaceContext],
   );
 
   return { code, setCode, codeError, setCodeError, validate, trimmedCode: code.trim(), resolvedCode };

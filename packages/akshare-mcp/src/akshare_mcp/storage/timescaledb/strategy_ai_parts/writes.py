@@ -494,6 +494,14 @@
         result["result"] = self._decode_json_field(result.get("result"), {})
         return result
 
+    async def get_strategy_task_run(self, run_id: int) -> Optional[dict]:
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM strategy_task_runs WHERE id = $1",
+                int(run_id),
+            )
+        return self._decode_task_run(dict(row)) if row else None
+
     async def save_strategy_task_run(self, run: dict) -> dict:
         payload = dict(run or {})
         started_at = self._coerce_timestamp(payload.get("started_at"))
@@ -567,6 +575,7 @@
         task_name: Optional[str] = None,
         task_scope: Optional[str] = None,
         status: Optional[str] = None,
+        task_key: Optional[str] = None,
         limit: int = 20,
     ) -> List[dict]:
         async with self.acquire() as conn:
@@ -589,10 +598,48 @@
                 sql += f" AND status = ${idx}"
                 params.append(status)
                 idx += 1
+            if task_key:
+                sql += f" AND task_key = ${idx}"
+                params.append(task_key)
+                idx += 1
             sql += f" ORDER BY started_at DESC LIMIT ${idx}"
             params.append(max(1, min(int(limit or 20), 500)))
             rows = await conn.fetch(sql, *params)
         return [self._decode_task_run(dict(row)) for row in rows]
+
+    async def claim_strategy_task_run(
+        self,
+        *,
+        task_scope: str,
+        task_names: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        names = [str(item).strip() for item in list(task_names or []) if str(item).strip()]
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                WITH next_run AS (
+                    SELECT id
+                    FROM strategy_task_runs
+                    WHERE status = 'queued'
+                      AND task_scope = $1
+                      AND (COALESCE(array_length($2::text[], 1), 0) = 0 OR task_name = ANY($2::text[]))
+                    ORDER BY started_at ASC, id ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE strategy_task_runs target
+                SET status = 'running',
+                    started_at = NOW(),
+                    completed_at = NULL,
+                    error = NULL
+                FROM next_run
+                WHERE target.id = next_run.id
+                RETURNING target.*
+                """,
+                task_scope,
+                names,
+            )
+        return self._decode_task_run(dict(row)) if row else None
 
     # ------------------------------------------------------------------
     # factory runs

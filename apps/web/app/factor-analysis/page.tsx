@@ -31,20 +31,6 @@ type DecayResponse = {
   };
 };
 
-const DEFAULT_FACTOR_UNIVERSE = [
-  '600519',
-  '000858',
-  '300750',
-  '601318',
-  '000001',
-  '600036',
-  '601166',
-  '000333',
-  '600276',
-  '601899',
-  '002594',
-  '000651',
-];
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const HERO_SECONDARY_BUTTON_CLS =
@@ -70,10 +56,10 @@ export default function FactorAnalysisPage() {
   const [decayPath, setDecayPath] = useState<string | null>(null);
   const icHistoryQ = useApiQuery<IcHistoryResponse>(icHistoryPath);
   const decayQ = useApiQuery<DecayResponse>(decayPath);
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [factor, setFactor] = useState('momentum');
   const sampleUniverse = useMemo(
-    () => Array.from(new Set([trimmedCode || '600519', ...DEFAULT_FACTOR_UNIVERSE])).filter(Boolean),
+    () => trimmedCode ? [trimmedCode] : [],
     [trimmedCode],
   );
 
@@ -132,7 +118,24 @@ export default function FactorAnalysisPage() {
 
   const loading = icApi.isPending || btApi.isPending || icHistoryQ.isFetching || decayQ.isFetching;
   const error = codeError || icApi.error || btApi.error || icHistoryQ.error || decayQ.error;
-  const analysisReady = Boolean(ic || decayView || groupBars.cats.length > 0 || icHistory);
+  const icReady = Boolean(ic && (
+    Number.isFinite(Number(ic.ic)) ||
+    Number.isFinite(Number(ic.ic_ir)) ||
+    Number.isFinite(Number(ic.p_value))
+  ));
+  const icHistoryReady = Boolean(icHistory?.dates.length);
+  const decayReady = Boolean(decayView && (
+    decayView.dates.length > 0 ||
+    (decayView.halfLife != null && decayView.sampleCount > 0)
+  ));
+  const groupReady = groupBars.cats.length > 0;
+  const analysisReady = icReady || icHistoryReady || decayReady || groupReady;
+  const missingAnalysisParts = [
+    !icReady && !icHistoryReady ? 'IC 时序' : null,
+    !decayReady ? '衰减曲线' : null,
+    !groupReady ? '分组收益' : null,
+  ].filter((item): item is string => Boolean(item));
+  const partialAnalysis = analysisReady && missingAnalysisParts.length > 0;
   const factorOptions =
     factors.length > 0 ? factors : [{ name: factor, description: '当前默认研究因子', category: 'default' }];
   const activeFactorMeta = factorOptions.find((item) => item.name === factor);
@@ -180,7 +183,7 @@ export default function FactorAnalysisPage() {
   ];
   usePageActions(factorAnalysisActions);
   const factorAnalysisSummary = analysisReady
-    ? `当前因子 ${factor} 已生成单因子分析，样本 ${sampleUniverse.length} 只，IC ${fmtNum(ic?.ic ?? null, 4)}，当前视图 ${activeTabLabel}。`
+    ? `当前因子 ${factor} 已返回${partialAnalysis ? '部分' : '完整'}单因子分析，样本 ${sampleUniverse.length} 只，IC ${fmtNum(ic?.ic ?? null, 4)}，当前视图 ${activeTabLabel}${missingAnalysisParts.length ? `，缺少 ${missingAnalysisParts.join('、')}` : ''}。`
     : `当前因子 ${factor} 尚未生成分析结果，样本 ${sampleUniverse.length} 只，建议先运行一次分析再判断 IC、衰减和分组收益。`;
   const factorAnalysisResult = buildLocalResultContract({
     summary: factorAnalysisSummary,
@@ -189,8 +192,12 @@ export default function FactorAnalysisPage() {
     preferredActionIds: ['factor-analysis.run', 'factor-analysis.view-ic', 'factor-analysis.load-library'],
     recommendedLinks: [
       { id: 'factor-analysis-link-factor', label: '回因子研究工作台', href: '/factor' },
-      { id: 'factor-analysis-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor-analysis&symbol=${encodeURIComponent(trimmedCode || '600519')}` },
+      trimmedCode
+        ? { id: 'factor-analysis-link-research', label: '去研究页', href: `/research?code=${encodeURIComponent(trimmedCode)}` }
+        : { id: 'factor-analysis-link-watchlist', label: '去自选股', href: '/watchlist?from=factor-analysis' },
+      trimmedCode
+        ? { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=factor-analysis&code=${encodeURIComponent(trimmedCode)}` }
+        : { id: 'factor-analysis-link-assistant', label: '继续追问 Copilot', href: '/assistant?from=factor-analysis' },
     ],
     evidence: [
       { label: '当前因子', value: factor },
@@ -203,17 +210,21 @@ export default function FactorAnalysisPage() {
     riskNotes: [
       ...(error ? [error] : []),
       ...(analysisReady ? [] : ['当前还没有生成单因子分析结果。']),
+      ...(partialAnalysis ? [`本次只返回部分模块，缺少：${missingAnalysisParts.join('、')}。`] : []),
       ...(decayView?.halfLife != null && decayView.halfLife < 5 ? ['当前信号半衰期较短，落地前需要确认稳定性。'] : []),
     ],
     platformMeta: {
       sourceTool: 'factor-analysis',
       sourceChain: ['factor/ic', 'factor/backtest', 'factor/decay'],
-      degraded: Boolean(error),
-      fallbackReason: [error].filter((item): item is string => Boolean(item)),
+      degraded: Boolean(error || partialAnalysis),
+      fallbackReason: [
+        error,
+        partialAnalysis ? `missing_modules:${missingAnalysisParts.join(',')}` : null,
+      ].filter((item): item is string => Boolean(item)),
     },
     workbenchTask: defaultWorkbenchTask('factor-analysis', `复查因子 ${factor}`, '/factor-analysis', 'factor-analysis-review', {
       factor,
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       ic: ic?.ic ?? null,
       tab: resultTab,
     }),
@@ -229,7 +240,7 @@ export default function FactorAnalysisPage() {
       factor,
       `${sampleUniverse.length} 样本`,
       activeTabLabel,
-      analysisReady ? '已生成结果' : '待运行',
+      partialAnalysis ? '部分结果' : analysisReady ? '已生成结果' : '待运行',
     ],
     suggestions: [
       '总结当前单因子是否值得继续深挖',
@@ -243,11 +254,12 @@ export default function FactorAnalysisPage() {
     freshness: factorAnalysisResult.freshness ?? null,
     raw: {
       factor,
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       resultTab,
       sampleSize: sampleUniverse.length,
       ic: ic?.ic ?? null,
       halfLife: decayView?.halfLife ?? null,
+      missingAnalysisParts,
     },
   });
 
@@ -257,21 +269,21 @@ export default function FactorAnalysisPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Factor Insight</Badge>
+              <Badge variant="info">因子洞察</Badge>
               <Badge variant={libraryLoaded ? 'success' : 'neutral'}>
                 {libraryLoaded ? `因子库 ${factors.length || 1} 项` : '因子库待加载'}
               </Badge>
-              <Badge variant={analysisReady ? 'success' : 'warning'}>
-                {analysisReady ? '已生成分析结果' : '等待首次分析'}
+              <Badge variant={partialAnalysis ? 'warning' : analysisReady ? 'success' : 'warning'}>
+                {partialAnalysis ? '部分结果可用' : analysisReady ? '已生成分析结果' : '等待首次分析'}
               </Badge>
-              <Badge variant="neutral">{trimmedCode || '600519'}</Badge>
+              <Badge variant="neutral">{trimmedCode || '未选择标的'}</Badge>
             </div>
 
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
               因子洞察工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              单因子页现在只保留一个活动视图。先确认标的与因子，再逐步看 IC、衰减和分组收益，不再把三块证据同时铺开。
+              先确认标的与因子，再逐步看 IC、衰减和分组收益，便于判断信号是否值得继续验证。
             </p>
 
             {!compactLayout ? (
@@ -294,7 +306,7 @@ export default function FactorAnalysisPage() {
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 {analysisReady
-                  ? `IC ${fmtNum(ic?.ic ?? null, 4)} ｜ 半衰期 ${decayView?.halfLife == null ? '-' : decayView.halfLife}`
+                  ? `${partialAnalysis ? `部分模块缺失：${missingAnalysisParts.join('、')} ｜ ` : ''}IC ${fmtNum(ic?.ic ?? null, 4)} ｜ 半衰期 ${decayView?.halfLife == null ? '-' : decayView.halfLife}`
                   : '先运行一次分析，再决定继续看 IC、衰减还是分组收益。'}
               </p>
             </div>
@@ -325,14 +337,14 @@ export default function FactorAnalysisPage() {
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Analysis Workspace</div>
+            <div className="eyebrow">分析配置</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">单因子快判</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              默认只展开一个活动视图。先配参数，再依次看 IC、衰减和分组收益。
+              先配参数，再依次看 IC、衰减和分组收益，避免多个结果口径混在一起。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
-            当前状态：<span className="font-medium text-text-primary">{analysisReady ? '已生成结果' : '等待运行'}</span>
+            当前状态：<span className="font-medium text-text-primary">{partialAnalysis ? `部分结果可用，缺少 ${missingAnalysisParts.join('、')}` : analysisReady ? '已生成结果' : '等待运行'}</span>
           </div>
         </div>
 
@@ -374,7 +386,7 @@ export default function FactorAnalysisPage() {
                   </button>
                 </div>
                 <div className={`${NOTE_CARD_CLS} mt-4`}>
-                  当前会使用目标股票加默认样本池共 {sampleUniverse.length} 只股票，IC 历史窗口为 20 期，最多展示 60 个观察点。
+                  当前会使用用户选择的目标股票共 {sampleUniverse.length} 只，IC 历史窗口为 20 期，最多展示 60 个观察点。
                 </div>
               </div>
               <details className={SIDE_PANEL_CLS} open={!compactLayout}>

@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
 import { LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { normalizeStrategyPercentMetric } from '@/lib/strategy-metrics';
 import {
   buildFactoryReviewViewModel,
   FACTORY_SECTION_TABS,
@@ -27,6 +28,8 @@ import type { FactoryReviewPanelProps } from './types';
 export function FactoryReviewPanel({
   highConfidenceQualityUiEnabled,
   canViewOperatorPanels,
+  readDegraded,
+  readDegradedReason,
   strategyStatus,
   strategyIncubationSurface,
   ownerState,
@@ -212,7 +215,7 @@ export function FactoryReviewPanel({
       <SectionCard className="p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Closure Summary</div>
+            <div className="eyebrow">闭环摘要</div>
             <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">
               闭环状态总览
             </h3>
@@ -220,10 +223,15 @@ export function FactoryReviewPanel({
               {presentation?.stage_summary || '先看当前阶段说明，再决定是否需要深入到孵化、运行时或实验明细。'}
             </p>
           </div>
-          <Badge variant={canViewOperatorPanels ? 'info' : 'neutral'}>
-            {canViewOperatorPanels ? '运营视图可用' : '默认用户视图'}
+          <Badge variant={readDegraded ? 'warning' : canViewOperatorPanels ? 'info' : 'neutral'}>
+            {readDegraded ? '读取降级' : canViewOperatorPanels ? '运营视图可用' : '默认用户视图'}
           </Badge>
         </div>
+        {readDegraded ? (
+          <div className="mt-3 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
+            {readDegradedReason || '策略详情存在降级读取，写入动作已暂停，避免在不完整上下文下触发运行态变更。'}
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
           <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
           {displayStatus.label !== marketStatus.label ? (
@@ -284,7 +292,10 @@ export function FactoryReviewPanel({
         <KpiCard title="证据门禁" value={review?.summary?.evidence_gate_status ?? '-'} />
         <KpiCard title="池子画像" value={review?.summary?.pool_profile ?? review?.pool_profile ?? '-'} />
         <KpiCard title="孵化信号数" value={incubation?.total_signals ?? latestMetric?.total_signals ?? '-'} />
-        <KpiCard title="5日命中率" value={fmtPct(incubation?.hit_rate_5d ?? latestMetric?.hit_rate_5d)} />
+        <KpiCard
+          title="5日命中率"
+          value={fmtPct(normalizeStrategyPercentMetric(incubation?.hit_rate_5d ?? latestMetric?.hit_rate_5d))}
+        />
       </KpiGrid>
 
       {(
@@ -319,7 +330,7 @@ export function FactoryReviewPanel({
                 评审链路里同步展示预测、执行和合同状态，只做 additive 呈现，不替代现有质量门卡片。
               </p>
             </div>
-            <Badge variant="info">High Confidence</Badge>
+            <Badge variant="info">高置信度</Badge>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {highConfidencePanel.predictionQualityLabel ? (
@@ -344,23 +355,23 @@ export function FactoryReviewPanel({
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {highConfidencePanel.primarySkillLcb == null ? '-' : fmtNum(highConfidencePanel.primarySkillLcb, 4)}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">primary skill LCB</div>
+              <div className="mt-1 text-xs text-text-secondary">主信号置信下界</div>
             </div>
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">覆盖率</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {highConfidencePanel.coverageRatio == null ? '-' : fmtPct(highConfidencePanel.coverageRatio)}
+                {highConfidencePanel.coverageRatio == null ? '-' : fmtPct(normalizeStrategyPercentMetric(highConfidencePanel.coverageRatio))}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">signal / forward coverage</div>
+              <div className="mt-1 text-xs text-text-secondary">信号覆盖 / 前瞻覆盖</div>
             </div>
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行轴</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {highConfidencePanel.executionConversionEfficiency == null
                   ? '-'
-                  : fmtPct(highConfidencePanel.executionConversionEfficiency)}
+                  : fmtPct(normalizeStrategyPercentMetric(highConfidencePanel.executionConversionEfficiency))}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">execution conversion efficiency</div>
+              <div className="mt-1 text-xs text-text-secondary">执行转化效率</div>
             </div>
           </div>
           <div className="mt-3 rounded-[24px] border border-border bg-surface-alt px-4 py-3 text-sm text-text-secondary">

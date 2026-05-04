@@ -61,7 +61,7 @@ export default function ProgressiveWorkbenchSection({
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="eyebrow">Result Summary</div>
+                <div className="eyebrow">结果摘要</div>
                 <Badge variant={result.status === 'degraded' || result.status === 'unavailable' ? 'warning' : 'neutral'}>
                   {STATUS_LABELS[result.status ?? 'ready']}
                 </Badge>
@@ -112,7 +112,7 @@ export default function ProgressiveWorkbenchSection({
       >
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <div className="eyebrow">Result Summary</div>
+            <div className="eyebrow">结果摘要</div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <h2 className="m-0 text-lg font-semibold text-text-primary">{title}</h2>
               <Badge variant={result.status === 'degraded' || result.status === 'unavailable' ? 'warning' : 'neutral'}>

@@ -475,9 +475,9 @@ export default function OptionsPage() {
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
                         <span>📈</span>
-                        期权全景分析 (Options)
+                        期权全景分析
                     </h1>
-                    <p className="text-muted-foreground mt-1 text-sm text-text-muted">全面洞察期权链分布、隐含波动率偏倚与希腊字母</p>
+                    <p className="text-muted-foreground mt-1 text-sm text-text-muted">查看期权链、隐含波动率和希腊字母，辅助判断到期月与行权价的风险收益结构。</p>
                 </div>
 
                 <form onSubmit={handleSearch} className="grid gap-2 w-full md:w-auto">
@@ -522,9 +522,9 @@ export default function OptionsPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <SectionCard className="col-span-1 md:col-span-3 p-4 sm:p-5">
-                    <h3 className="font-bold text-lg mb-2">T型报价牌 (T-Quote) - {querySymbol}</h3>
+                    <h3 className="font-bold text-lg mb-2">期权链报价 - {querySymbol}</h3>
                     <div className="mb-2 text-xs text-text-muted">
-                        点击认购或认沽“最新”报价，可将下方 Greeks 计算切换到对应期权腿。
+                        点击认购或认沽“最新”报价，可将下方希腊字母计算切换到对应期权腿。
                     </div>
                     {chainData?.underlying ? (
                         <div className="mb-2 text-sm text-text-muted flex flex-wrap gap-x-4 gap-y-1">
@@ -542,9 +542,9 @@ export default function OptionsPage() {
                                 <table className="w-full text-left text-[13px]">
                                     <thead className="bg-surface-alt">
                                         <tr>
-                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认购 (Call)</th>
-                                            <th className="text-center bg-muted/80 border-x border-b border-glass-border font-bold text-primary">行权价 (Strike)</th>
-                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认沽 (Put)</th>
+                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认购</th>
+                                            <th className="text-center bg-muted/80 border-x border-b border-glass-border font-bold text-primary">行权价</th>
+                                            <th className="text-center py-1.5 border-b border-glass-border" colSpan={4}>认沽</th>
                                         </tr>
                                         <tr className="text-xs text-text-muted border-b border-glass-border">
                                             <th className="text-right py-1.5 px-2">最新</th>
@@ -645,9 +645,9 @@ export default function OptionsPage() {
 
                 <CollapsibleSectionCard
                     className="col-span-1 md:col-span-3"
-                    eyebrow="Greeks & IV"
+                    eyebrow="希腊字母与 IV"
                     title="希腊字母与波动率"
-                    summary="按需展开查看当前选中腿的 Greeks、理论价格和解读，避免期权报价首屏被二级分析块拉长。"
+                    summary="按需查看当前选中期权腿的希腊字母、理论价格和波动率解释。"
                 >
                     <div>
                         <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -674,7 +674,7 @@ export default function OptionsPage() {
                         </div>
 
                         {showGreeksLoading ? (
-                            <LoadingState text="计算 Greeks 中..." />
+                            <LoadingState text="计算希腊字母中..." />
                         ) : greekEntries.length > 0 ? (
                             <div className="space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -702,7 +702,7 @@ export default function OptionsPage() {
                                 </div>
 
                                 <div className="rounded-md border border-glass-border bg-surface-alt p-4">
-                                    <div className="text-sm font-semibold mb-2">Greeks 解读</div>
+                                    <div className="text-sm font-semibold mb-2">希腊字母解读</div>
                                     <div className="space-y-1 text-sm text-text-muted">
                                         {interpretationEntries.map(([name, value]) => (
                                             <div key={name}><span className="font-medium text-text-primary">{name}:</span> {value}</div>
@@ -715,7 +715,7 @@ export default function OptionsPage() {
                             </div>
                         ) : showGreeksEmpty ? (
                             <EmptyState
-                                text="当前暂无 Greeks 数据"
+                                text="当前暂无希腊字母数据"
                                 hint="当前会等同批期权链一起返回后再判断是否真的为空，避免你在加载过程中误以为没有结果。若持续为空，通常意味着当前标的或参数覆盖不足。"
                                 action={
                                     <>
@@ -744,9 +744,9 @@ export default function OptionsPage() {
 
                 <CollapsibleSectionCard
                     className="col-span-1 md:col-span-3"
-                    eyebrow="Smirk"
+                    eyebrow="波动率偏斜"
                     title="隐含波动率偏斜"
-                    summary="曲线点位和 skew 表格默认折叠，主任务先聚焦 T 型报价与选腿。"
+                    summary="曲线点位和偏斜表格用于判断不同行权价的隐含波动率差异。"
                 >
                     <div>
                         {showSmirkLoading ? (

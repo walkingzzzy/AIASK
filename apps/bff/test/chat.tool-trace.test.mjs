@@ -73,3 +73,22 @@ test('tool trace result summaries classify failed tools', () => {
   assert.equal(result.errorMessage, 'MCP timeout');
   assert(result.summary[0].includes('错误'));
 });
+
+test('tool trace accepts compliance records separately from business MCP calls', () => {
+  const trace = createChatToolTrace({ mode: 'copilot', pageKey: 'home' });
+  const item = addToolTraceItem(trace, {
+    kind: 'compliance',
+    toolName: 'log_recommendation_audit',
+    args: {
+      user_id: 'u_demo',
+      stock_code: '600519',
+      action: 'hold',
+    },
+  });
+  finishToolTraceItem(trace, item.id, { success: true });
+  finalizeToolTrace(trace, '已给出持有建议 [T1]');
+
+  assert.equal(trace.items[0].kind, 'compliance');
+  assert.equal(trace.items[0].toolName, 'log_recommendation_audit');
+  assert.equal(trace.status, 'completed');
+});

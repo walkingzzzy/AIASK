@@ -11,6 +11,7 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
+import { buildDataQuality, degradedDataQuality, trustedDataQuality } from '../common/data-quality';
 
 export type NormalizedFlowItem = {
   date: string; name: string; netInflow: number | null; mainInflow: number | null;
@@ -44,21 +45,19 @@ export class FundFlowService {
     const root = this.unwrapPayload(payload);
     const data = this.asRecord(root);
     // MCP returns a single flat object, not an array — wrap it
-    const flows = Array.isArray(root) ? this.normalizeFlows(payload) : [{
-      date: new Date().toISOString().slice(0, 10),
-      name: String(data.name ?? ''),
-      netInflow: this.toNum(data.mainNetInflow ?? data.main_net_inflow ?? data.net_inflow),
-      mainInflow: this.toNum(data.mainNetInflow ?? data.main_net_inflow),
-      mainOutflow: null,
-      retailInflow: this.toNum(data.smallNetInflow ?? data.small_net_inflow),
-      retailOutflow: null,
-    }];
+    const flows = Array.isArray(root)
+      ? this.normalizeFlows(payload)
+      : [this.normalizeFlowItem(data)]
+        .filter((item) => this.isMeaningfulFlowItem(item));
     const fetchedAt = new Date().toISOString();
     const result = {
       data: { flows },
       meta: { fetchedAt, cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
       result_contract: buildResultContract({
-        summary: `${stockCode} 资金流已加载，当前样本 ${flows.length} 条。`,
+        summary: flows.length > 0
+          ? `${stockCode} 资金流已加载，当前样本 ${flows.length} 条。`
+          : `${stockCode} 资金流返回空结果。`,
+        status: flows.length > 0 ? 'ready' : 'empty',
         availableViews: ['summary', 'compare', 'next_step'],
         evidence: [
           { label: '股票代码', value: stockCode },
@@ -79,8 +78,11 @@ export class FundFlowService {
         argsMatched,
         aliasHits,
       }),
+      data_quality: this.buildFlowQuality(canonicalTool, flows, flows.length === 0 ? 'stock_fund_flow_empty' : null),
     };
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
+    if (flows.length > 0) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
     return result;
   }
 
@@ -94,11 +96,15 @@ export class FundFlowService {
 
     try {
       const payload = await this.mcp.callTool('get_sector_fund_flow', {});
+      const flows = this.normalizeFlows(payload);
       const result = {
-        data: { flows: this.normalizeFlows(payload) },
+        data: { flows },
         meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        data_quality: this.buildFlowQuality('get_sector_fund_flow', flows, flows.length === 0 ? 'sector_fund_flow_empty' : null),
       };
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
+      if (flows.length > 0) {
+        await this.cacheService.set(cacheKey, result, ttlSeconds);
+      }
       return result;
     } catch (error) {
       const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
@@ -112,6 +118,11 @@ export class FundFlowService {
         degraded: true,
         message: '板块资金流暂时不可用，已降级为空结果',
         fallback_reason: ['sector_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
+        fallback_used: true,
+        data_quality: degradedDataQuality('get_sector_fund_flow', 'sector_fund_flow_unavailable', {
+          sampleCount: 0,
+          qualityFlags: ['sector_fund_flow_fallback_empty'],
+        }),
         detail,
         transport: detail.transport,
       };
@@ -127,8 +138,15 @@ export class FundFlowService {
     }
 
     const payload = await this.mcp.callTool('get_concept_fund_flow', {});
-    const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
+    const flows = this.normalizeFlows(payload);
+    const result = {
+      data: { flows },
+      meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      data_quality: this.buildFlowQuality('get_concept_fund_flow', flows, flows.length === 0 ? 'concept_fund_flow_empty' : null),
+    };
+    if (flows.length > 0) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
     return result;
   }
 
@@ -140,13 +158,39 @@ export class FundFlowService {
       return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
     }
 
-    const payload = await this.mcp.callTool('get_north_fund', {});
-    const flows = this.normalizeFlows(payload);
-    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    if (flows.length > 0) {
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    try {
+      const payload = await this.mcp.callTool('get_north_fund', {}, { timeoutMs: 5000 });
+      const flows = this.normalizeFlows(payload);
+      const result = {
+        data: { flows },
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        data_quality: this.buildFlowQuality('get_north_fund', flows, flows.length === 0 ? 'north_fund_flow_empty' : null),
+      };
+      if (flows.length > 0) {
+        await this.cacheService.set(cacheKey, result, ttlSeconds);
+      }
+      return result;
+    } catch (error) {
+      const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
+        acceptanceStatus: 'degraded',
+        path: '/fund-flow/north',
+        upstream: this.extractUpstreamDetail(error),
+      });
+      return {
+        data: { flows: [] },
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        degraded: true,
+        message: '北向资金暂时不可用，已降级为空结果',
+        fallback_reason: ['north_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
+        fallback_used: true,
+        data_quality: degradedDataQuality('get_north_fund', 'north_fund_flow_unavailable', {
+          sampleCount: 0,
+          qualityFlags: ['north_fund_flow_fallback_empty'],
+        }),
+        detail,
+        transport: detail.transport,
+      };
     }
-    return result;
   }
 
   async getDragonTiger(date?: string, code?: string) {
@@ -267,16 +311,62 @@ export class FundFlowService {
           ?? this.asRecord(root).data
           ?? this.asRecord(root).records,
         );
-    return list.map((item) => ({
-      date: String(item.date ?? item.trade_date ?? item.Date ?? ''),
-      name: String(item.name ?? item.sector_name ?? item.concept_name ?? ''),
-      changePercent: this.toNum(item.changePercent ?? item.change_percent),
-      netInflow: this.toNum(item.net_inflow ?? item.netInflow ?? item.mainNetInflow ?? item.net_amount ?? item.total ?? item.value),
-      mainInflow: this.toNum(item.main_inflow ?? item.mainInflow ?? item.mainNetInflow ?? item.main_net_inflow ?? item.superLargeNetInflow),
-      mainOutflow: this.toNum(item.main_outflow ?? item.mainOutflow),
-      retailInflow: this.toNum(item.retail_inflow ?? item.retailInflow ?? item.smallNetInflow ?? item.inflow),
-      retailOutflow: this.toNum(item.retail_outflow ?? item.retailOutflow ?? item.outflow),
-    }));
+    return list
+      .map((item) => this.normalizeFlowItem(item))
+      .filter((item) => this.isMeaningfulFlowItem(item));
+  }
+
+  private normalizeFlowItem(item: Record<string, unknown>, options: { fallbackDate?: string } = {}): NormalizedFlowItem {
+    const mainNet = this.pickNum(item, [
+      'mainNetInflow',
+      'main_net_inflow',
+      'main_net_amount',
+      'mainNetAmount',
+      '主力净流入',
+      '主力净额',
+    ]);
+    const netInflow = this.pickNum(item, [
+      'netInflow',
+      'net_inflow',
+      'netAmount',
+      'net_amount',
+      'fundFlow',
+      'fund_flow',
+      '资金净流入',
+      '净流入',
+      '净额',
+    ]) ?? mainNet;
+    return {
+      date: String(item.date ?? item.trade_date ?? item.Date ?? options.fallbackDate ?? ''),
+      name: String(item.name ?? item.sector_name ?? item.concept_name ?? item.block_name ?? item.industry ?? ''),
+      changePercent: this.pickNum(item, [
+        'changePercent',
+        'change_percent',
+        'pct_change',
+        'pct_chg',
+        '涨跌幅',
+      ]),
+      netInflow,
+      mainInflow: this.pickNum(item, [
+        'main_inflow',
+        'mainInflow',
+        'mainNetInflow',
+        'main_net_inflow',
+        'superLargeNetInflow',
+        '主力流入',
+        '主力净流入',
+      ]),
+      mainOutflow: this.pickNum(item, ['main_outflow', 'mainOutflow', '主力流出']),
+      retailInflow: this.pickNum(item, [
+        'retail_inflow',
+        'retailInflow',
+        'smallNetInflow',
+        'small_net_inflow',
+        '散户流入',
+        '小单净流入',
+      ]),
+      retailOutflow: this.pickNum(item, ['retail_outflow', 'retailOutflow', '散户流出']),
+    };
   }
 
   private unwrapPayload(payload: unknown): unknown {
@@ -300,6 +390,47 @@ export class FundFlowService {
   private toNum(v: unknown): number | null {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
+  }
+
+  private pickNum(record: Record<string, unknown>, keys: string[]): number | null {
+    for (const key of keys) {
+      const value = this.toNum(record[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  private isMeaningfulFlowItem(item: NormalizedFlowItem): boolean {
+    return Boolean(
+      item.name.trim()
+      || item.netInflow != null
+      || item.mainInflow != null
+      || item.mainOutflow != null
+      || item.retailInflow != null
+      || item.retailOutflow != null,
+    );
+  }
+
+  private buildFlowQuality(sourceName: string, flows: NormalizedFlowItem[], emptyReason: string | null) {
+    if (flows.length > 0) {
+      const qualityFlags = flows.some((item) => !item.date.trim()) ? ['fund_flow_date_missing'] : [];
+      if (qualityFlags.length > 0) {
+        return buildDataQuality({
+          status: 'partial',
+          reasons: ['资金流数据缺少交易日期，已保留数值但不伪造日期'],
+          qualityFlags,
+          sources: [{ name: sourceName, status: 'partial', sampleCount: flows.length }],
+        });
+      }
+      return trustedDataQuality(sourceName, flows.length);
+    }
+    return buildDataQuality({
+      status: 'empty',
+      reasons: [emptyReason ?? `${sourceName}_empty`],
+      emptyReason: emptyReason ?? `${sourceName} 返回空结果`,
+      sources: [{ name: sourceName, status: 'empty', sampleCount: 0 }],
+      qualityFlags: [`${sourceName}_empty_result`],
+    });
   }
 
   private async callWithArgs(primaryTool: string, attempts: Array<Record<string, unknown>>) {

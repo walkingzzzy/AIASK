@@ -23,10 +23,15 @@ export default function ToolsDashboardPage() {
   const [operatorJobId, setOperatorJobId] = useState<string | null>(null);
   const statsQ = useApiQuery<unknown>('/admin/mcp-stats', {
     refetchInterval: 15000,
+    staleTime: 10_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => raw,
   });
   const parityQ = useApiQuery<StrategyOperatorParityResponse>('/strategy-market/operator/parity', {
+    enabled: false,
     refetchInterval: 60000,
+    staleTime: 60_000,
+    placeholderData: 'keepPrevious',
     nonFatal: true,
   });
   const operatorJobQ = useApiQuery<StrategyOperatorJobRecord>(
@@ -34,6 +39,7 @@ export default function ToolsDashboardPage() {
     {
       enabled: Boolean(operatorJobId),
       refetchInterval: 3000,
+      placeholderData: 'keepPrevious',
       nonFatal: true,
     },
   );
@@ -45,12 +51,38 @@ export default function ToolsDashboardPage() {
 
   const data = useMemo(() => {
     const raw = (statsQ.data ?? {}) as Record<string, unknown>;
+    const current = raw.current && typeof raw.current === 'object' && !Array.isArray(raw.current)
+      ? raw.current as Record<string, unknown>
+      : raw;
+    const cumulative = raw.cumulative && typeof raw.cumulative === 'object' && !Array.isArray(raw.cumulative)
+      ? raw.cumulative as Record<string, unknown>
+      : raw;
     const tools = Array.isArray(raw.tools) ? raw.tools : [];
     return {
-      totalCalls: Number(raw.totalCalls ?? 0),
-      avgLatency: Number(raw.avgLatency ?? 0),
-      p99Latency: Number(raw.p99Latency ?? 0),
-      errorRate: Number(raw.errorRate ?? 0),
+      totalCalls: Number(current.totalCalls ?? 0),
+      avgLatency: Number(current.avgLatency ?? 0),
+      p99Latency: Number(current.p99Latency ?? 0),
+      errorRate: Number(current.errorRate ?? 0),
+      windowSize: Number(current.windowSize ?? 0),
+      cumulative: {
+        totalCalls: Number(cumulative.totalCalls ?? raw.totalCalls ?? 0),
+        totalErrors: Number(cumulative.totalErrors ?? 0),
+        errorRate: Number(cumulative.errorRate ?? raw.errorRate ?? 0),
+        p99Latency: Number(cumulative.p99Latency ?? raw.p99Latency ?? 0),
+      },
+      failureModes: Array.isArray(current.failureModes)
+        ? current.failureModes.map((item: Record<string, unknown>) => ({
+          mode: String(item.mode ?? 'unknown'),
+          count: Number(item.count ?? 0),
+        })).filter((item) => item.count > 0)
+        : [],
+      queue: {
+        shared: Number((raw.queue as Record<string, unknown> | undefined)?.shared ?? 0),
+        dedicated: Number((raw.queue as Record<string, unknown> | undefined)?.dedicated ?? 0),
+        poolSize: Number((raw.queue as Record<string, unknown> | undefined)?.poolSize ?? 0),
+        acquireTimeoutMs: Number((raw.queue as Record<string, unknown> | undefined)?.acquireTimeoutMs ?? 0),
+        toolTimeoutMs: Number((raw.queue as Record<string, unknown> | undefined)?.toolTimeoutMs ?? 0),
+      },
       reachable: raw.reachable !== false,
       matched: raw.matched !== false,
       toolCount: Number(raw.toolCount ?? 0),
@@ -61,8 +93,18 @@ export default function ToolsDashboardPage() {
         name: String(t.name ?? ''),
         calls: Number(t.calls ?? 0),
         avgMs: Number(t.avgMs ?? 0),
+        p99Ms: Number(t.p99Ms ?? 0),
         errors: Number(t.errors ?? 0),
+        cumulativeCalls: Number(t.cumulativeCalls ?? t.calls ?? 0),
+        cumulativeErrors: Number(t.cumulativeErrors ?? t.errors ?? 0),
+        cumulativeErrorRate: Number(t.cumulativeErrorRate ?? 0),
         status: String(t.status ?? 'healthy'),
+        failureModes: Array.isArray(t.failureModes)
+          ? t.failureModes.map((item: Record<string, unknown>) => ({
+            mode: String(item.mode ?? 'unknown'),
+            count: Number(item.count ?? 0),
+          })).filter((item) => item.count > 0)
+          : [],
       })),
     };
   }, [statsQ.data]);
@@ -90,13 +132,20 @@ export default function ToolsDashboardPage() {
     [parityQ.data],
   );
   const activeOperatorJob = operatorJobQ.data ?? operatorJobApi.data;
+  const failureModeLabels: Record<string, string> = {
+    timeout: '超时',
+    transport: '传输',
+    validation: '校验',
+    tool_error: '工具错误',
+    unknown: '未知',
+  };
 
   const STATUS_COLORS: Record<string, 'success' | 'warning' | 'danger'> = {
     healthy: 'success',
     degraded: 'warning',
     down: 'danger',
   };
-  const statsStatus = statsQ.isFetching ? '刷新中' : statsQ.data ? '统计可用' : '等待统计';
+  const statsStatus = statsQ.isFetching && statsQ.data ? '刷新中（保留上次快照）' : statsQ.isFetching ? '刷新中' : statsQ.data ? '统计可用' : '等待统计';
   const latestStatsRefreshText = statsQ.dataUpdatedAt
     ? new Date(statsQ.dataUpdatedAt).toLocaleString('zh-CN')
     : '等待首个工具快照';
@@ -107,7 +156,9 @@ export default function ToolsDashboardPage() {
     ? 'MCP 不可达'
     : !data.matched
       ? 'MCP 配置漂移'
-      : 'MCP 正常';
+      : abnormalTools.length > 0 || data.errorRate > 0
+        ? 'MCP 局部降级'
+        : 'MCP 正常';
 
   async function refreshToolStats() {
     await statsQ.refetch();
@@ -141,20 +192,22 @@ export default function ToolsDashboardPage() {
     },
     {
       id: 'admin-tools.focus-mcp-jobs',
-      label: '聚焦 MCP Job 队列',
-      description: '滚动到 MCP 运营任务提交与轮询区域',
-      keywords: ['MCP Job', '任务'],
+      label: '聚焦 MCP 后台任务队列',
+      description: '滚动到 MCP 后台任务提交与轮询区域',
+      keywords: ['MCP 后台任务', '任务'],
       scope: 'page' as const,
       pageKey: 'admin-tools',
       run: () => {
         document.getElementById('admin-tools-mcp-job-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        return { message: '已聚焦 MCP Job 队列' };
+        return { message: '已聚焦 MCP 后台任务队列' };
       },
     },
   ];
 
   usePageActions(pageActions);
-  const toolsSummary = `当前状态 ${mcpHealthLabel}，总调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，异常工具 ${abnormalTools.length} 个，传输方式 ${data.transportKind}。`;
+  const queueDepth = data.queue.shared + data.queue.dedicated;
+  const topFailureMode = data.failureModes[0];
+  const toolsSummary = `当前状态 ${mcpHealthLabel}，当前窗口调用 ${data.totalCalls} 次，错误率 ${data.errorRate.toFixed(2)}%，累计调用 ${data.cumulative.totalCalls} 次，异常工具 ${abnormalTools.length} 个，队列 ${queueDepth}，传输方式 ${data.transportKind}。`;
   const toolsResult = buildLocalResultContract({
     summary: toolsSummary,
     availableViews: abnormalTools.length > 1 ? ['compare'] : [],
@@ -167,9 +220,12 @@ export default function ToolsDashboardPage() {
     ],
     evidence: [
       { label: 'MCP 状态', value: mcpHealthLabel },
-      { label: '总调用', value: String(data.totalCalls) },
-      { label: '错误率', value: `${data.errorRate.toFixed(2)}%` },
+      { label: '当前窗口调用', value: String(data.totalCalls) },
+      { label: '当前窗口错误率', value: `${data.errorRate.toFixed(2)}%` },
+      { label: '累计调用', value: String(data.cumulative.totalCalls) },
       { label: '异常工具', value: String(abnormalTools.length) },
+      { label: '失败模式', value: topFailureMode ? `${failureModeLabels[topFailureMode.mode] ?? topFailureMode.mode} ${topFailureMode.count}` : '无' },
+      { label: '队列深度', value: String(queueDepth) },
       { label: '传输方式', value: data.transportKind },
     ],
     riskNotes: [
@@ -181,7 +237,7 @@ export default function ToolsDashboardPage() {
     platformMeta: {
       sourceTool: 'mcp-stats',
       sourceChain: ['admin-tools', data.transportKind],
-      degraded: !data.reachable || !data.matched || Boolean(statsQ.error),
+      degraded: !data.reachable || !data.matched || abnormalTools.length > 0 || data.errorRate > 0 || Boolean(statsQ.error),
       fallbackReason: [data.fallbackReason, statsQ.error].filter((item): item is string => Boolean(item)),
     },
     workbenchTask: defaultWorkbenchTask('admin-tools', '复查 MCP 工具健康', '/admin/tools', 'tool-registry-review', {
@@ -224,16 +280,19 @@ export default function ToolsDashboardPage() {
       expectedTools: data.expectedTools,
       transportKind: data.transportKind,
       fallbackReason: data.fallbackReason || null,
+      failureModes: data.failureModes,
+      queue: data.queue,
+      cumulative: data.cumulative,
     },
   });
 
-  if (statsQ.error) {
+  if (statsQ.error && !statsQ.data) {
     return (
       <PageContainer>
         <h1 className="text-lg font-semibold mb-4">🔧 MCP 工具仪表盘</h1>
         <ErrorState
           text={statsQ.error}
-          hint="当前页面需要管理员权限；请求失败时不再伪装成空数据。"
+          hint="当前页面需要管理员权限；请求失败时会显示真实错误，而不是空面板。"
           onRetry={() => statsQ.refetch()}
         />
       </PageContainer>
@@ -250,8 +309,8 @@ export default function ToolsDashboardPage() {
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="mt-0 mb-1 text-base font-semibold">优先处理工具健康</h2>
-            <p className="m-0 text-sm text-text-secondary">
-              先看异常工具和延迟，再决定是否需要继续下钻调用明细。这个页面现在首屏只保留一个稳定低风险主动作。
+          <p className="m-0 text-sm text-text-secondary">
+              先看异常工具和延迟，再决定是否需要继续下钻调用明细。当前窗口决定实时健康，历史累计只用于审计。
             </p>
           </div>
           <button
@@ -271,8 +330,9 @@ export default function ToolsDashboardPage() {
         >
           <div className="font-medium text-text-primary">工具统计状态：{statsStatus}</div>
           <p className="mt-1 mb-0 text-xs text-text-secondary">
-            总调用 {data.totalCalls.toLocaleString()} ｜ 错误率 {data.errorRate.toFixed(2)}% ｜ 异常工具{' '}
-            {abnormalTools.length} 个
+            当前窗口 {data.totalCalls.toLocaleString()} 次
+            {data.windowSize ? ` / ${data.windowSize}` : ''} ｜ 错误率 {data.errorRate.toFixed(2)}% ｜ 累计{' '}
+            {data.cumulative.totalCalls.toLocaleString()} 次 ｜ 异常工具 {abnormalTools.length} 个
           </p>
           {driftHint ? (
             <p className="mt-2 mb-0 text-xs text-amber-700">{driftHint}</p>
@@ -281,15 +341,23 @@ export default function ToolsDashboardPage() {
             最近快照：{latestStatsRefreshText}
             {lastManualRefreshAt ? ` ｜ 手动刷新：${lastManualRefreshAt}` : ''}
           </p>
+          <p className="mt-2 mb-0 text-xs text-text-secondary">
+            前端观测说明：刷新中会保留上次快照；导航取消请求不会计为页面错误；队列和降级工具只代表当前窗口风险。
+          </p>
+          {statsQ.error ? (
+            <p className="mt-2 mb-0 text-xs text-warning">
+              本次刷新未完成：{statsQ.error}
+            </p>
+          ) : null}
         </div>
       </SectionCard>
 
       <SectionCard id="admin-tools-mcp-job-section" className="mb-4 p-4" data-testid="admin-tools-mcp-jobs">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="mt-0 mb-1 text-base font-semibold">MCP Job 管理</h2>
+            <h2 className="mt-0 mb-1 text-base font-semibold">MCP 后台任务管理</h2>
             <p className="m-0 text-sm text-text-secondary">
-              高权限策略工厂动作通过后台任务提交，返回 job id 后在这里轮询状态。
+              高权限策略工厂动作通过后台任务提交，返回任务 ID 后在这里轮询状态。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -314,7 +382,7 @@ export default function ToolsDashboardPage() {
           <input
             value={operatorStrategyId}
             onChange={(event) => setOperatorStrategyId(event.target.value)}
-            placeholder="strategy_id，可留空"
+            placeholder="策略 ID，可留空"
             className="rounded border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none"
           />
           <button
@@ -338,7 +406,7 @@ export default function ToolsDashboardPage() {
             }}
             className="inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {operatorJobApi.isPending ? '提交中...' : '提交 Job'}
+            {operatorJobApi.isPending ? '提交中...' : '提交任务'}
           </button>
         </div>
         {operatorJobApi.error ? <p className="mt-3 mb-0 text-xs text-danger">{operatorJobApi.error}</p> : null}
@@ -348,8 +416,8 @@ export default function ToolsDashboardPage() {
               {activeOperatorJob.action} · {activeOperatorJob.job.status}
             </div>
             <p className="mt-1 mb-0 text-xs text-text-secondary">
-              job {activeOperatorJob.job.job_id} ｜ poll {activeOperatorJob.poll_path}
-              {activeOperatorJob.strategy_id ? ` ｜ strategy ${activeOperatorJob.strategy_id}` : ''}
+              任务 {activeOperatorJob.job.job_id} ｜ 轮询 {activeOperatorJob.poll_path}
+              {activeOperatorJob.strategy_id ? ` ｜ 策略 ${activeOperatorJob.strategy_id}` : ''}
             </p>
             {activeOperatorJob.job.error ? (
               <p className="mt-2 mb-0 text-xs text-danger">{activeOperatorJob.job.error}</p>
@@ -359,11 +427,45 @@ export default function ToolsDashboardPage() {
       </SectionCard>
 
       <KpiGrid cols={4}>
-        <KpiCard title="总调用次数" value={data.totalCalls.toLocaleString()} />
-        <KpiCard title="平均延迟" value={`${data.avgLatency.toFixed(0)}ms`} />
-        <KpiCard title="P99 延迟" value={`${data.p99Latency.toFixed(0)}ms`} />
-        <KpiCard title="错误率" value={`${data.errorRate.toFixed(2)}%`} />
+        <KpiCard title="当前窗口调用" value={data.totalCalls.toLocaleString()} />
+        <KpiCard title="当前平均延迟" value={`${data.avgLatency.toFixed(0)}ms`} />
+        <KpiCard title="当前 P99 延迟" value={`${data.p99Latency.toFixed(0)}ms`} />
+        <KpiCard title="当前错误率" value={`${data.errorRate.toFixed(2)}%`} />
       </KpiGrid>
+
+      <SectionCard className="mt-4 p-4">
+        <h3 className="mt-0 text-sm font-semibold">历史累计参考</h3>
+        <p className="mt-1 mb-0 text-xs text-text-secondary">
+          当前健康按最近窗口判断；历史累计仅用于审计，不会直接把工具标记为实时 down。累计调用{' '}
+          {data.cumulative.totalCalls.toLocaleString()} 次，累计错误 {data.cumulative.totalErrors.toLocaleString()} 次，
+          累计错误率 {data.cumulative.errorRate.toFixed(2)}%，累计 P99 {data.cumulative.p99Latency.toFixed(0)}ms。
+        </p>
+      </SectionCard>
+
+      <SectionCard className="mt-4 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="mt-0 text-sm font-semibold">MCP 失败模式聚合</h3>
+            <p className="mt-1 mb-0 text-xs text-text-secondary">
+              聚合 timeout、transport、validation 和 tool error，用于判断 P99 尾延迟来自排队、连接还是工具侧失败。
+            </p>
+          </div>
+          <Badge variant={queueDepth > 0 ? 'warning' : 'success'}>
+            队列 {queueDepth} / 池 {data.queue.poolSize || '-'}
+          </Badge>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {(data.failureModes.length ? data.failureModes : [{ mode: 'none', count: 0 }]).map((item) => (
+            <div key={item.mode} className="rounded-xl border border-glass-border bg-surface-alt/35 px-3 py-3">
+              <div className="text-xs text-text-secondary">{failureModeLabels[item.mode] ?? (item.mode === 'none' ? '暂无失败' : item.mode)}</div>
+              <div className="mt-2 text-xl font-semibold text-text-primary">{item.count}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 mb-0 text-xs text-text-secondary">
+          acquire timeout {data.queue.acquireTimeoutMs || '-'}ms | tool timeout {data.queue.toolTimeoutMs || '-'}ms | shared queue {data.queue.shared} | dedicated queue {data.queue.dedicated}
+        </p>
+      </SectionCard>
 
       {abnormalTools.length > 0 && (
         <SectionCard id="admin-tools-abnormal-section" className="mt-4 p-4">
@@ -403,7 +505,10 @@ export default function ToolsDashboardPage() {
                   <th className="text-left py-2 px-2">工具名</th>
                   <th className="text-right py-2 px-2">调用数</th>
                   <th className="text-right py-2 px-2">平均延迟</th>
+                  <th className="text-right py-2 px-2">P99</th>
                   <th className="text-right py-2 px-2">错误数</th>
+                  <th className="text-right py-2 px-2">累计</th>
+                  <th className="text-left py-2 px-2">失败模式</th>
                   <th className="text-center py-2 px-2">状态</th>
                 </tr>
               </thead>
@@ -413,7 +518,16 @@ export default function ToolsDashboardPage() {
                     <td className="py-2 px-2 font-mono text-xs">{t.name}</td>
                     <td className="py-2 px-2 text-right">{t.calls}</td>
                     <td className="py-2 px-2 text-right">{t.avgMs.toFixed(0)}ms</td>
+                    <td className="py-2 px-2 text-right">{t.p99Ms.toFixed(0)}ms</td>
                     <td className={`py-2 px-2 text-right ${t.errors > 0 ? 'text-danger' : ''}`}>{t.errors}</td>
+                    <td className="py-2 px-2 text-right text-xs text-text-secondary">
+                      {t.cumulativeCalls}/{t.cumulativeErrors}
+                    </td>
+                    <td className="py-2 px-2 text-xs text-text-secondary">
+                      {t.failureModes.length
+                        ? t.failureModes.map((item) => `${failureModeLabels[item.mode] ?? item.mode}:${item.count}`).join(' / ')
+                        : '-'}
+                    </td>
                     <td className="py-2 px-2 text-center">
                       <Badge variant={STATUS_COLORS[t.status] ?? 'info'}>
                         {t.status === 'healthy' ? '🟢' : t.status === 'degraded' ? '🟡' : '🔴'}

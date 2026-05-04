@@ -421,11 +421,20 @@ export class AssistantService {
     keyword?: string,
     chainId?: string,
   ) {
-    const primary = chains[0] ?? null;
+    const match = this.selectIndustryChain(chains, keyword, chainId);
+    const primary = match.chain;
+    const requestedKeyword = String(keyword ?? chainId ?? '').trim();
+    const matchedKeyword = primary?.name || primary?.id || '';
+    const degradedReason =
+      requestedKeyword && primary && match.confidence < 0.35
+        ? `产业链返回主题与请求关键词不匹配：请求“${requestedKeyword}”，返回“${matchedKeyword || '未命名主题'}”`
+        : null;
     const followupQuery = primary?.name || keyword || chainId || '产业链';
     return buildResultContract({
       summary: primary
-        ? `已找到 ${chains.length} 条产业链线索，当前聚焦 ${primary.name || primary.id || '首条产业链'}。`
+        ? degradedReason
+          ? `已找到 ${chains.length} 条产业链线索，但当前返回主题与请求关键词不匹配。请求关键词“${requestedKeyword}”，返回主题“${matchedKeyword || '未命名主题'}”，已标记为降级。`
+          : `已找到 ${chains.length} 条产业链线索，当前聚焦 ${primary.name || primary.id || '首条产业链'}。`
         : `未找到明确产业链结果，建议调整关键词${keyword ? `“${keyword}”` : ''}后重试。`,
       availableViews: ['summary', 'next_step', ...(primary ? (['visual'] as const) : [])],
       recommendedActions: [
@@ -470,17 +479,28 @@ export class AssistantService {
       evidence: primary
         ? [
             { label: '产业链', value: primary.name || primary.id || '首条结果' },
+            ...(requestedKeyword ? [{ label: '请求关键词', value: requestedKeyword }] : []),
+            ...(matchedKeyword ? [{ label: '返回主题', value: matchedKeyword }] : []),
             { label: '上游节点', value: String(primary.upstream.length) },
             { label: '中游节点', value: String(primary.midstream.length) },
             { label: '下游节点', value: String(primary.downstream.length) },
           ]
         : [],
-      riskNotes: primary ? [] : ['当前结果为空，建议缩短关键词或改用更明确的产业链名称。'],
+      riskNotes: primary
+        ? degradedReason ? [degradedReason] : []
+        : ['当前结果为空，建议缩短关键词或改用更明确的产业链名称。'],
       freshness: extractFreshness(payload, null, '产业链结果'),
-      platformMeta: extractPlatformMeta(payload, {
-        sourceTool: 'get_industry_chain',
-        referencePath: '/data/tool-catalog',
-      }),
+      platformMeta: {
+        ...extractPlatformMeta(payload, {
+          sourceTool: 'get_industry_chain',
+          referencePath: '/data/tool-catalog',
+        }),
+        requested_keyword: requestedKeyword || null,
+        matched_keyword: matchedKeyword || null,
+        match_confidence: match.confidence,
+        degraded: Boolean(degradedReason),
+        degraded_reason: degradedReason,
+      },
       skillSuggestions: this.buildAssistantSkillSuggestions(),
       strategySuggestions: [
         {
@@ -509,6 +529,72 @@ export class AssistantService {
         },
       },
     });
+  }
+
+  private selectIndustryChain(
+    chains: Array<{
+      id: string;
+      name: string;
+      upstream: string[];
+      midstream: string[];
+      downstream: string[];
+    }>,
+    keyword?: string,
+    chainId?: string,
+  ) {
+    if (!chains.length) return { chain: null, confidence: 0 };
+    const requested = this.normalizeIndustryKeyword(keyword || chainId || '');
+    if (!requested) return { chain: chains[0], confidence: 1 };
+    const tokens = this.industryKeywordTokens(requested);
+    let best = { chain: chains[0], confidence: 0 };
+    for (const chain of chains) {
+      const haystack = this.normalizeIndustryKeyword([
+        chain.id,
+        chain.name,
+        ...chain.upstream,
+        ...chain.midstream,
+        ...chain.downstream,
+      ].join(' '));
+      let score = 0;
+      if (haystack.includes(requested)) score = Math.max(score, 1);
+      if (requested.includes(this.normalizeIndustryKeyword(chain.name))) score = Math.max(score, 0.8);
+      const hits = tokens.filter((token) => token.length > 1 && haystack.includes(token)).length;
+      if (tokens.length > 0) score = Math.max(score, hits / tokens.length);
+      if (score > best.confidence) best = { chain, confidence: Number(score.toFixed(4)) };
+    }
+    return best.confidence > 0 ? best : { chain: chains[0], confidence: 0 };
+  }
+
+  private normalizeIndustryKeyword(value: string) {
+    return String(value ?? '').replace(/\s+/g, '').replace(/[·•,，;；:/\\|_-]+/g, '').toLowerCase();
+  }
+
+  private industryKeywordTokens(normalized: string) {
+    const dictionary = [
+      '银行',
+      '金融',
+      '金融科技',
+      '科技',
+      '证券',
+      '保险',
+      '新能源',
+      '半导体',
+      '医药',
+      '消费',
+      '地产',
+      '汽车',
+      '算力',
+      '人工智能',
+      '机器人',
+      '光伏',
+      '储能',
+      '军工',
+    ];
+    const tokens = new Set<string>([normalized]);
+    dictionary.forEach((token) => {
+      if (normalized.includes(token)) tokens.add(token);
+    });
+    return [...tokens];
   }
 
   private buildDailyReportResultContract(

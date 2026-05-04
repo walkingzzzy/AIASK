@@ -60,7 +60,7 @@ export default function SettingsPage() {
   const searchParams = useStableSearchParams();
   const { toast } = useToast();
   const setUser = useAuthStore((s) => s.setUser);
-  const [tab, setTab] = useState<TabKey>(() => parseTabKey(searchParams.get('tab')) ?? 'account');
+  const tab = parseTabKey(searchParams.get('tab')) ?? 'account';
   const [profileForm, setProfileForm] = useState<ProfileFormState>(() => buildProfileForm(null));
   const [profileReady, setProfileReady] = useState(false);
   const [profileDirty, setProfileDirty] = useState(false);
@@ -79,27 +79,19 @@ export default function SettingsPage() {
   const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
   const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
 
-  useEffect(() => {
-    const requestedTab = parseTabKey(searchParams.get('tab'));
-    if (requestedTab && requestedTab !== tab) {
-      const timer = window.setTimeout(() => setTab(requestedTab), 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, [searchParams, tab]);
-
-  useEffect(() => {
+  const setTabAndUrl = useCallback((nextTab: TabKey) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (tab === 'account') {
+    if (nextTab === 'account') {
       params.delete('tab');
     } else {
-      params.set('tab', tab);
+      params.set('tab', nextTab);
     }
 
     const nextQuery = params.toString();
     const currentQuery = searchParams.toString();
     if (nextQuery === currentQuery) return;
     router.replace(nextQuery ? `/settings?${nextQuery}` : '/settings', { scroll: false });
-  }, [router, searchParams, tab]);
+  }, [router, searchParams]);
 
   useEffect(() => {
     if (profileDirty) return;
@@ -317,7 +309,7 @@ export default function SettingsPage() {
       </section>
 
       <div>
-        <TabBar tabs={TABS} active={tab} onChange={setTab} />
+        <TabBar tabs={TABS} active={tab} onChange={setTabAndUrl} />
       </div>
 
 
@@ -330,7 +322,7 @@ export default function SettingsPage() {
               <div className={CARD_CLS}>
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="m-0 text-base font-semibold text-text-primary">个人资料</h3>
-                  <Badge variant="neutral">Profile</Badge>
+                  <Badge variant="neutral">账户资料</Badge>
                 </div>
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   <label htmlFor="settings-nickname" className="block">

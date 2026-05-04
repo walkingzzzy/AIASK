@@ -7,7 +7,9 @@ This module is the public entry-point.  Heavy handler logic lives in
 
 import json
 import logging
+import os
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from ...contracts.strategy_manager_contract import (
@@ -107,6 +109,26 @@ from .strategy_mgr_helpers import (
 
 logger = logging.getLogger(__name__)
 _STRATEGY_MANAGER_IMPL = None
+
+STRATEGY_FACTORY_WORKER_TASK_SCOPE = "strategy_factory.worker"
+STRATEGY_FACTORY_WORKER_ACTIONS = frozenset(
+    {
+        "factory_run_once",
+        "factory_dispatch_run",
+        "incubation_sync_run",
+        "incubation_pipeline_run",
+        "risk_scan_run",
+        "runtime_alert_dispatch_run",
+        "promotion_review_run",
+        "runtime_cycle_run",
+        "domain_projection_rebuild",
+        "vector_reconcile",
+        "vector_rebuild",
+        "vector_cleanup",
+        "ai_generate",
+    }
+)
+_WORKER_BYPASS_PARAM = "__strategy_factory_worker"
 
 
 def _strategy_manager_error(code: str, message: str, *, detail: dict | None = None) -> dict:
@@ -264,6 +286,80 @@ def _normalize_strategy_manager_params(kwargs: Any = "{}", params: Any = None) -
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _public_strategy_factory_params(params: dict) -> dict:
+    payload = dict(params or {})
+    payload.pop(_WORKER_BYPASS_PARAM, None)
+    return payload
+
+
+def _strategy_factory_async_worker_enabled(action: str, params: dict) -> bool:
+    if action not in STRATEGY_FACTORY_WORKER_ACTIONS:
+        return False
+    if parse_bool((params or {}).get(_WORKER_BYPASS_PARAM), False):
+        return False
+    if (params or {}).get("run_inline") is True:
+        return False
+    return _env_bool("STRATEGY_FACTORY_ASYNC_WORKER_ENABLED", False)
+
+
+async def _enqueue_strategy_factory_worker_job(db, action: str, params: dict) -> dict:
+    if not hasattr(db, "save_strategy_task_run"):
+        return fail("strategy task run queue is unavailable")
+    public_params = _public_strategy_factory_params(params)
+    strategy_id = str(public_params.get("strategy_id") or public_params.get("id") or "").strip() or None
+    idempotency_key = str(public_params.get("idempotency_key") or "").strip() or None
+    trace_id = str(public_params.get("trace_id") or public_params.get("request_id") or "").strip() or None
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    task_run = await db.save_strategy_task_run(
+        {
+            "strategy_id": strategy_id,
+            "task_name": action,
+            "task_scope": STRATEGY_FACTORY_WORKER_TASK_SCOPE,
+            "task_key": idempotency_key or None,
+            "status": "queued",
+            "trace_id": trace_id,
+            "payload": {
+                "action": action,
+                "params": public_params,
+                "queue_backend": "db",
+                "task_scope": STRATEGY_FACTORY_WORKER_TASK_SCOPE,
+                "submitted_at": submitted_at,
+                "source": public_params.get("source") or "strategy_manager",
+            },
+            "result": {},
+            "started_at": submitted_at,
+        }
+    )
+    task_run_id = int(task_run.get("id"))
+    return ok(
+        {
+            "accepted": True,
+            "queued": True,
+            "already_running": False,
+            "job_id": str(task_run_id),
+            "task_run_id": task_run_id,
+            "status": "queued",
+            "source_action": action,
+            "queue": {
+                "backend": "db",
+                "scope": STRATEGY_FACTORY_WORKER_TASK_SCOPE,
+                "worker": "strategy-factory-worker",
+            },
+            "poll_action": "task_runs",
+            "poll_params": {"task_run_id": task_run_id},
+            "poll_path": f"/api/strategy-market/operator/jobs/{task_run_id}",
+            "task_run": task_run,
+        }
+    )
 
 
 # ── Vector / AI inline handlers (kept here to avoid circular deps) ───────────
@@ -621,12 +717,21 @@ async def _handle_ai_experiments(db, params: dict) -> dict:
 
 
 async def _handle_task_runs(db, params: dict) -> dict:
+    run_id = params.get("task_run_id") or params.get("job_id")
+    if run_id is not None and str(run_id).strip():
+        if not str(run_id).strip().isdigit():
+            return fail("task_run_id must be an integer")
+        row = await db.get_strategy_task_run(int(run_id)) if hasattr(db, "get_strategy_task_run") else None
+        if not row:
+            return fail(f"task run not found: {run_id}")
+        return ok({"item": row, "items": [row], "count": 1})
     limit = min(max(int(params.get("limit", 20)), 1), 500)
     rows = await db.list_strategy_task_runs(
         strategy_id=(str(params.get("strategy_id") or params.get("id") or "").strip() or None),
         task_name=(str(params.get("task_name") or "").strip() or None),
         task_scope=(str(params.get("task_scope") or "").strip() or None),
         status=(str(params.get("status") or "").strip() or None),
+        task_key=(str(params.get("task_key") or "").strip() or None),
         limit=limit,
     ) if hasattr(db, "list_strategy_task_runs") else []
     return ok({"items": rows, "count": len(rows)})
@@ -698,7 +803,10 @@ def register_strategy_manager(mcp):
                 source_chain=["strategy_manager"],
             )
             return validation_error
-        result = await handler(db, params)
+        if _strategy_factory_async_worker_enabled(action, params):
+            result = await _enqueue_strategy_factory_worker_job(db, action, params)
+        else:
+            result = await handler(db, params)
         result = _normalize_strategy_manager_failure(action, result)
         if isinstance(result, dict) and "meta" not in result:
             result["meta"] = build_manager_meta(

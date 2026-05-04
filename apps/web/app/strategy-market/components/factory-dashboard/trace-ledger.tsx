@@ -145,9 +145,9 @@ export function FactoryPredictionTraceLedgerPanel({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="text-xs font-medium text-text-primary">Prediction Trace Ledger</div>
+        <div className="text-xs font-medium text-text-primary">预测追踪账本</div>
         <div className="text-xs text-text-secondary">
-          Trace 数：{entries.length}
+          追踪数：{entries.length}
           {predictionTraceId ? ` · 当前 ${predictionTraceId}` : ''}
         </div>
       </div>

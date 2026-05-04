@@ -108,8 +108,8 @@ export default function UnifiedDecisionDiffLogList({
   if (!enabled) {
     return (
       <SectionCard className="mt-4 p-4">
-        <div className="text-sm font-semibold text-text-primary">Legacy Diff 历史</div>
-        <div className="mt-2 text-sm text-text-muted">开启 legacy diff 后，这里会显示当前用户最近的统一决策差异记录。</div>
+        <div className="text-sm font-semibold text-text-primary">历史接口差异记录</div>
+        <div className="mt-2 text-sm text-text-muted">开启历史接口对照后，这里会显示当前用户最近的统一决策差异记录。</div>
       </SectionCard>
     );
   }
@@ -117,7 +117,7 @@ export default function UnifiedDecisionDiffLogList({
   if (logsQ.error) {
     return (
       <SectionCard className="mt-4 p-4">
-        <ErrorState text={logsQ.error} hint="最近的 legacy diff 记录暂时不可用，请稍后重试。" onRetry={() => void logsQ.refetch()} />
+        <ErrorState text={logsQ.error} hint="最近的历史接口差异记录暂时不可用，请稍后重试。" onRetry={() => void logsQ.refetch()} />
       </SectionCard>
     );
   }
@@ -126,7 +126,7 @@ export default function UnifiedDecisionDiffLogList({
     <SectionCard className="mt-4 p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="text-sm font-semibold text-text-primary">Legacy Diff 历史</div>
+          <div className="text-sm font-semibold text-text-primary">历史接口差异记录</div>
           <div className="mt-1 text-xs text-text-muted">
             {trimmedCode ? `当前标的 ${trimmedCode} 最近的统一决策灰度对比记录。` : '当前用户最近的统一决策灰度对比记录。'}
           </div>

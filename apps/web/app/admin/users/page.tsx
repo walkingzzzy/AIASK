@@ -190,7 +190,7 @@ export default function UsersPage() {
         <h1 className="text-lg font-semibold mb-4">👥 用户管理</h1>
         <ErrorState
           text={usersQ.error}
-          hint="当前页面需要管理员权限；请求失败时不再渲染成 0 用户。"
+          hint="当前页面需要管理员权限；请求失败时会显示真实错误，而不是 0 用户。"
           onRetry={() => usersQ.refetch()}
         />
       </PageContainer>
@@ -208,7 +208,7 @@ export default function UsersPage() {
           <div>
             <h2 className="mt-0 mb-1 text-base font-semibold">先确认用户盘点</h2>
             <p className="m-0 text-sm text-text-secondary">
-              首屏只保留用户盘点和一个稳定的刷新动作，搜索与角色筛选都下沉到表头工具条。
+              先确认用户盘点和刷新状态，再通过表头工具条进行搜索与角色筛选。
             </p>
           </div>
           <button
@@ -314,7 +314,7 @@ export default function UsersPage() {
             </div>
           </details>
           <div className="text-xs text-text-secondary">
-            默认扫读只保留用户名、角色、状态和最近活跃；邮箱与注册时间下沉到详情态。
+            默认扫读用户名、角色、状态和最近活跃；邮箱与注册时间可在详情中核对。
           </div>
           <DataTable
             rows={filteredUsers}

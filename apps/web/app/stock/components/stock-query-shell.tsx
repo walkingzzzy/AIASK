@@ -50,7 +50,7 @@ export default function StockQueryShell({
         <form id="stock-query-form" onSubmit={onSubmit} className="grid gap-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <div className="eyebrow">Query Deck</div>
+              <div className="eyebrow">查询面板</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">代码、周期与刷新入口</h2>
               {!compactLayout ? (
                 <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">

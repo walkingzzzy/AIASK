@@ -37,6 +37,7 @@ except ImportError:
 import pandas as pd
 
 _KLINE_TOTAL_TIMEOUT = float(os.getenv("KLINE_TOTAL_TIMEOUT", "45"))
+_KLINE_TIMEOUT_DB_FALLBACK_TIMEOUT = float(os.getenv("KLINE_TIMEOUT_DB_FALLBACK_TIMEOUT", "2.5"))
 _MINUTE_KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_MINUTE_KLINE_TIMEOUTS", [4.0, 8.0])
 _MINUTE_SINA_TIMEOUT = float(os.getenv("AKSHARE_MINUTE_SINA_TIMEOUT", "6"))
 
@@ -136,6 +137,7 @@ def _ok_kline_response(
     source_chain: list[str],
     fallback_reason: Optional[list[str]] = None,
     started_at: Optional[datetime] = None,
+    force_degraded: bool = False,
 ) -> dict:
     response = ok(rows)
     latest_row = _latest_kline_row(rows)
@@ -157,7 +159,7 @@ def _ok_kline_response(
             fallback_reason=fallback_reason,
             asof_value=latest_row.get("date"),
             missing_fields=_kline_missing_fields(rows),
-            degraded=bool(_kline_missing_fields(rows)) or minimum_quality_passed is False,
+            degraded=force_degraded or bool(_kline_missing_fields(rows)) or minimum_quality_passed is False,
             success=True,
             started_at=started_at,
             accepted_count=accepted_count,
@@ -255,6 +257,17 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
         )
     except asyncio.TimeoutError:
         safe_stderr_print(f"[Kline] total timeout ({_KLINE_TOTAL_TIMEOUT}s) exceeded for {stock_code}")
+        if str(period or "").strip().lower() == "daily":
+            timeout_reason = f"total_timeout_exceeded:{_KLINE_TOTAL_TIMEOUT}s"
+            try:
+                fallback = await asyncio.wait_for(
+                    _get_db_kline_timeout_fallback(stock_code, limit, started_at, timeout_reason),
+                    timeout=_KLINE_TIMEOUT_DB_FALLBACK_TIMEOUT,
+                )
+                if fallback.get("success"):
+                    return fallback
+            except Exception as e_fallback:
+                safe_stderr_print(f"[Kline] DB timeout fallback failed for {stock_code}: {e_fallback}")
         return _fail_kline_response(
             f"K线请求总超时（>{_KLINE_TOTAL_TIMEOUT}s），所有数据源均未在时限内响应",
             source_chain=["total_timeout"],
@@ -265,6 +278,61 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
 
 def _time_remaining(started_at: datetime) -> float:
     return _KLINE_TOTAL_TIMEOUT - (datetime.now().astimezone() - started_at).total_seconds()
+
+
+async def _get_db_kline_timeout_fallback(
+    stock_code: str,
+    limit: int,
+    started_at: datetime,
+    timeout_reason: str,
+) -> dict:
+    raw_code = str(stock_code or "").strip()
+    if not re.fullmatch(r"\d{6}", raw_code):
+        return _fail_kline_response(
+            "股票代码格式无效，应为6位数字",
+            source_chain=["total_timeout", "validate.stock_code"],
+            fallback_reason=[timeout_reason, "invalid_stock_code"],
+            started_at=started_at,
+        )
+
+    code = normalize_code(raw_code)
+    source_chain = ["total_timeout", "db.get_klines"]
+    try:
+        db = get_db()
+        rows = await db.get_klines(code, limit=limit)
+    except Exception as exc:
+        return _fail_kline_response(
+            f"超时后 DB K 线兜底失败: {exc}",
+            source_chain=source_chain,
+            fallback_reason=[timeout_reason, f"db.get_klines failed: {exc}"],
+            started_at=started_at,
+        )
+
+    if not rows:
+        return _fail_kline_response(
+            "超时后 DB K 线兜底无可用数据",
+            source_chain=source_chain,
+            fallback_reason=[timeout_reason, "db.get_klines empty"],
+            started_at=started_at,
+        )
+
+    validated_results = _validated_kline_rows(rows)
+    if not _kline_rows_usable(validated_results):
+        return _fail_kline_response(
+            "超时后 DB K 线兜底数据质量不足",
+            source_chain=source_chain,
+            fallback_reason=[timeout_reason, "db.get_klines unusable"],
+            started_at=started_at,
+        )
+
+    return _ok_kline_response(
+        validated_results,
+        source="timescaledb",
+        source_chain=source_chain,
+        fallback_reason=[timeout_reason, "using db.get_klines after total timeout"],
+        started_at=started_at,
+        force_degraded=True,
+    )
 
 
 async def _get_kline_impl(stock_code: str, period: str, limit: int, started_at: datetime) -> dict:

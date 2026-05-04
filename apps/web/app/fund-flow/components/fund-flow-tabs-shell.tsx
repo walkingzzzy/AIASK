@@ -44,7 +44,7 @@ export default function FundFlowTabsShell({
       <div className={`${fundFlowPanelCls} mb-1`}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="eyebrow">Flow Tabs</div>
+            <div className="eyebrow">资金维度</div>
             <div className="mt-2 text-sm leading-7 text-text-secondary">
               先选一个资金维度，再在下方展开具体图表或榜单。个股、板块和北向是最常见的三条起手路径。
             </div>

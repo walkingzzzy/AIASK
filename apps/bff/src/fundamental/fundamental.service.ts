@@ -30,6 +30,7 @@ export class FundamentalService {
   private static readonly HISTORY_TTL_SECONDS = 300;
   private static readonly CAPITAL_TTL_SECONDS = 300;
   private static readonly PEERS_TTL_SECONDS = 300;
+  private static readonly STOCK_INFO_TTL_SECONDS = 120;
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
@@ -206,6 +207,33 @@ export class FundamentalService {
     } catch {
       return { pe: null, pb: null, ps: null, marketCap: null };
     }
+  }
+
+  private async buildStockInfoFallbackFromDb(code: string) {
+    if (!this.dbService.enabled) return null;
+    const res = await this.dbService.query<{
+      name: string | null;
+      industry: string | null;
+      market_cap: number | null;
+    }>(
+      `SELECT stock_name AS name, industry, market_cap FROM stocks WHERE code = $1 LIMIT 1`,
+      [code],
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+    const marketCap = row.market_cap != null ? Number(row.market_cap) : null;
+    return {
+      code,
+      name: String(row.name ?? ''),
+      industry: String(row.industry ?? ''),
+      listDate: '',
+      totalShares: null,
+      floatShares: null,
+      totalMarketCap: Number.isFinite(marketCap) ? marketCap : null,
+      floatMarketCap: null,
+      degraded: true,
+      fallbackSource: 'db.stocks',
+    };
   }
 
   private normalizeValuation(payload: unknown): NormalizedValuation {

@@ -59,6 +59,19 @@ skill_tool_*.txt
 test-screenshots/
 output/
 
+# Local browser verification captures
+/.req
+/docker-restart-*.png
+/docker-restart-*.md
+/homepage-*.png
+/homepage-*.md
+/risk-*.png
+/sentiment-*.png
+/skills-pending-registry.png
+/strategy-detail-*.png
+/strategy-market-*.png
+/strategy-operator-*.png
+
 # Project cleanup outputs
 reports/
 artifacts/

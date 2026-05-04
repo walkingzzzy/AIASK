@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { Badge, DataTable, SectionCard, TabBar } from '@/components/ui';
 import { StrategyCard } from '@/components/strategy-card';
@@ -47,6 +48,8 @@ type StrategyMarketCatalogSectionProps = {
   featuredStrategies: Strategy[];
   onAddToCart: (strategy: Strategy) => void;
   onRuntimeAction: (action: StrategyRuntimeActionContractItem, strategy: Strategy) => void | Promise<void>;
+  onDeletePersonalStrategy?: (strategy: Strategy) => void | Promise<void>;
+  showDeletePersonalAction?: boolean;
   showPersonalTestingBadge?: boolean;
   showResults?: boolean;
   emptyText?: string;
@@ -60,6 +63,30 @@ function hasPersonalTestingSession(row: Record<string, unknown>) {
     && !Array.isArray(paperSessionState)
     && (paperSessionState as Record<string, unknown>).has_session === true,
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+}
+
+function resolveStrategyTargets(strategy: Strategy): string[] {
+  const row = strategy as unknown as Record<string, unknown>;
+  const params = asRecord(row.params);
+  const stockPool = asRecord(params.stock_pool);
+  return [
+    ...readStringArray(row.target_symbols),
+    ...readStringArray(params.target_symbols),
+    ...readStringArray(stockPool.symbols),
+  ].filter((item, index, list) => list.indexOf(item) === index).slice(0, 4);
+}
+
+function shortStrategyId(strategy: Strategy) {
+  return String(strategy.id ?? '').trim().slice(-8) || '-';
 }
 
 export function StrategyMarketCatalogSection({
@@ -87,10 +114,21 @@ export function StrategyMarketCatalogSection({
   featuredStrategies,
   onAddToCart,
   onRuntimeAction,
+  onDeletePersonalStrategy,
+  showDeletePersonalAction = false,
   showPersonalTestingBadge = false,
   showResults = true,
   emptyText = '暂无可展示策略',
 }: StrategyMarketCatalogSectionProps) {
+  const duplicateNameCounts = useMemo(() => {
+    return strategies.reduce<Record<string, number>>((counts, strategy) => {
+      const name = String(strategy.name ?? '').trim();
+      if (!name) return counts;
+      counts[name] = (counts[name] ?? 0) + 1;
+      return counts;
+    }, {});
+  }, [strategies]);
+
   const statusTabs = [
     { key: 'visible', label: `市场可见 ${statusCounts?.visible ?? 0}` },
     { key: 'submitted', label: `已提交 ${statusCounts?.submitted ?? 0}` },
@@ -107,6 +145,8 @@ export function StrategyMarketCatalogSection({
       render: (_: unknown, row: Record<string, unknown>) => {
         const strategy = row as Strategy;
         const showTesting = showPersonalTestingBadge && hasPersonalTestingSession(row);
+        const targetSymbols = resolveStrategyTargets(strategy);
+        const showDisambiguator = Number(duplicateNameCounts[String(strategy.name ?? '').trim()] ?? 0) > 1;
         return (
           <div className="min-w-[200px]">
             <Link href={`/strategy-market/${strategy.id}`} className="no-underline text-inherit">
@@ -117,6 +157,12 @@ export function StrategyMarketCatalogSection({
               <div className="mt-1 text-xs text-text-secondary">
                 {strategy.description || strategy.strategy_type || '暂无描述'}
               </div>
+              {targetSymbols.length > 0 || showDisambiguator ? (
+                <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-text-muted">
+                  {targetSymbols.length > 0 ? <span>标的 {targetSymbols.join(' / ')}</span> : null}
+                  {showDisambiguator ? <span>ID {shortStrategyId(strategy)}</span> : null}
+                </div>
+              ) : null}
             </Link>
           </div>
         );
@@ -206,6 +252,15 @@ export function StrategyMarketCatalogSection({
       sortable: false,
       render: (_: unknown, row: Record<string, unknown>) => {
         const strategy = row as Strategy;
+        const ownerState = row.owner_state && typeof row.owner_state === 'object' && !Array.isArray(row.owner_state)
+          ? row.owner_state as Record<string, unknown>
+          : {};
+        const canDeletePersonalStrategy = Boolean(
+          showDeletePersonalAction
+          && onDeletePersonalStrategy
+          && ownerState.personal_strategy === true
+          && ownerState.owned === true,
+        );
         return (
           <div className="flex min-w-[280px] flex-col items-end gap-2">
             <Link
@@ -219,6 +274,15 @@ export function StrategyMarketCatalogSection({
               compact
               onAction={(action) => onRuntimeAction(action, strategy)}
             />
+            {canDeletePersonalStrategy ? (
+                <button
+                  type="button"
+                  onClick={() => void onDeletePersonalStrategy?.(strategy)}
+                className="rounded-full border border-danger/40 bg-danger/5 px-3 py-1 text-xs text-danger"
+              >
+                删除个人策略
+              </button>
+            ) : null}
           </div>
         );
       },
@@ -404,10 +468,21 @@ export function StrategyMarketCatalogSection({
                 const metrics = getStrategyMetricSnapshot(strategy);
                 const statusMeta = resolveStrategyStatusMeta(strategy.status);
                 const showTesting = showPersonalTestingBadge && hasPersonalTestingSession(row);
+                const ownerState = row.owner_state && typeof row.owner_state === 'object' && !Array.isArray(row.owner_state)
+                  ? row.owner_state as Record<string, unknown>
+                  : {};
+                const canDeletePersonalStrategy = Boolean(
+                  showDeletePersonalAction
+                  && onDeletePersonalStrategy
+                  && ownerState.personal_strategy === true
+                  && ownerState.owned === true,
+                );
                 const incubation = resolveIncubationSurface({
                   strategyStatus: strategy.status,
                   incubationSurface: strategy.incubation_surface,
                 });
+                const targetSymbols = resolveStrategyTargets(strategy);
+                const showDisambiguator = Number(duplicateNameCounts[String(strategy.name ?? '').trim()] ?? 0) > 1;
                 return (
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
@@ -421,6 +496,12 @@ export function StrategyMarketCatalogSection({
                         <div className="mt-1 text-xs text-text-secondary">
                           {strategy.description || strategy.strategy_type || '暂无描述'}
                         </div>
+                        {targetSymbols.length > 0 || showDisambiguator ? (
+                          <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-text-muted">
+                            {targetSymbols.length > 0 ? <span>标的 {targetSymbols.join(' / ')}</span> : null}
+                            {showDisambiguator ? <span>ID {shortStrategyId(strategy)}</span> : null}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
                         <Badge variant="neutral">{resolveCategoryLabel(strategy.strategy_type)}</Badge>
@@ -463,6 +544,15 @@ export function StrategyMarketCatalogSection({
                         compact
                         onAction={(action) => onRuntimeAction(action, strategy)}
                       />
+                      {canDeletePersonalStrategy ? (
+                        <button
+                          type="button"
+                          onClick={() => void onDeletePersonalStrategy?.(strategy)}
+                          className="rounded-full border border-danger/40 bg-danger/5 px-3 py-1.5 text-xs text-danger"
+                        >
+                          删除个人策略
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 );

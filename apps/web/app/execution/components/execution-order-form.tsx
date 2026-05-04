@@ -68,7 +68,7 @@ export default function ExecutionOrderForm({
         <div>
           <h3 className="m-0 font-medium">智能执行参数</h3>
           <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-            这里把模拟执行的输入参数、账户上下文和 artifact 关联一起整理成更松弛的表单栅格，减少旧式后台感。
+            这里集中填写模拟执行参数、账户上下文和制品关联，提交前可以核对方向、数量、价格和路由优先级。
           </p>
           <form onSubmit={onSubmit} className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StockCodeInput id="execution-code" label="股票代码" value={code} onChange={onCodeChange} error={codeError} />
@@ -156,7 +156,7 @@ export default function ExecutionOrderForm({
               </select>
             </label>
             <label className="flex flex-col gap-2 text-xs text-text-secondary">
-              <span>artifact_id</span>
+              <span>执行制品 ID</span>
               <input
                 value={artifactIdInput}
                 onChange={(event) => onArtifactIdChange(event.target.value)}

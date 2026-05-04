@@ -128,7 +128,7 @@ export function StrategyCapabilityGapPanel({
     <SectionCard className="mt-0" data-testid="strategy-capability-gap-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Capability Diagnostics</div>
+          <div className="eyebrow">能力诊断</div>
           <h2 className="mt-2">应用功能 / MCP / 工厂产物缺口表</h2>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
             当前表按 MCP manager、策略工厂产物、BFF 接口、前端入口四层归一，直接标出会影响用户体验的未匹配项。

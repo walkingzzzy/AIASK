@@ -223,7 +223,7 @@ export function FactoryGovernancePlanePanel({
           {(detail.prediction_trace_id || predictionTraceSummary.trace_count != null) && (
             <div className="space-y-2">
               <div className="text-xs text-text-secondary">
-                Trace 覆盖：{formatArtifactValue(predictionTraceSummary.trace_count)} / 缺失{' '}
+                追踪覆盖：{formatArtifactValue(predictionTraceSummary.trace_count)} / 缺失{' '}
                 {formatArtifactValue(predictionTraceSummary.missing_count)}
               </div>
               {predictionTraceLedgerEntries.length > 0 ? (

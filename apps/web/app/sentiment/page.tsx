@@ -18,7 +18,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState, EmptyState } from '@/components/status-state';
+import { DataQualityBanner, ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { ensureRecord } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
@@ -67,13 +67,15 @@ export default function SentimentPage() {
   }
 
   const stockPayload = unwrapToolPayload(stockSentimentQ.data);
-  const stockScore = (stockPayload.score as number) ?? null;
+  const stockScore = stockSentimentQ.trust.degraded ? null : ((stockPayload.score as number) ?? null);
   const stockSentiment = String(stockPayload.sentiment ?? '');
   const stockComponents = objToItems(stockPayload.components);
   const stockCode = String(stockPayload.code ?? resolvedCode ?? '');
 
   const fearGreedPayload = unwrapToolPayload(fearGreedQ.data);
-  const fearGreedIndex = (fearGreedPayload.index as number) ?? (fearGreedPayload.value as number) ?? null;
+  const fearGreedIndex = fearGreedQ.trust.degraded
+    ? null
+    : ((fearGreedPayload.index as number) ?? (fearGreedPayload.value as number) ?? null);
   const fearGreedLevel = String(fearGreedPayload.level ?? '');
   const fearGreedComponents = objToItems(fearGreedPayload.components);
 
@@ -154,6 +156,12 @@ export default function SentimentPage() {
   const sentimentSummaryText = stockScore != null
     ? `${focusCode} 当前情绪分数 ${fmtNum(stockScore, 1)}，市场温度 ${fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}，下一步建议 ${nextStepLabel}。`
     : `${focusCode} 当前还没有个股情绪结果，市场温度 ${fearGreedIndex != null ? fmtNum(fearGreedIndex, 0) : '-'}，建议先完成一次查询。`;
+  const degradedReasons = [
+    ...(stockSentimentQ.error ? [stockSentimentQ.error] : []),
+    ...(fearGreedQ.error ? [fearGreedQ.error] : []),
+    ...stockSentimentQ.trust.reasons,
+    ...fearGreedQ.trust.reasons,
+  ].filter(Boolean);
   const sentimentResult = buildLocalResultContract({
     summary: sentimentSummaryText,
     availableViews: stockComponents.length > 1 || fearGreedComponents.length > 1 ? ['compare', 'visual'] : [],
@@ -174,15 +182,14 @@ export default function SentimentPage() {
       { label: '当前视图', value: resultTab === 'stock' ? '个股情绪' : '市场温度' },
     ],
     riskNotes: [
-      ...(stockSentimentQ.error ? [stockSentimentQ.error] : []),
-      ...(fearGreedQ.error ? [fearGreedQ.error] : []),
+      ...degradedReasons,
       ...(stockScore == null ? ['当前个股情绪尚未返回，需要先完成一次查询。'] : []),
     ],
     platformMeta: {
       sourceTool: 'sentiment',
       sourceChain: ['sentiment-stock', 'fear-greed'],
-      degraded: Boolean(stockSentimentQ.error || fearGreedQ.error),
-      fallbackReason: [stockSentimentQ.error, fearGreedQ.error].filter((item): item is string => Boolean(item)),
+      degraded: Boolean(stockSentimentQ.error || fearGreedQ.error || stockSentimentQ.trust.degraded || fearGreedQ.trust.degraded),
+      fallbackReason: degradedReasons,
     },
     workbenchTask: defaultWorkbenchTask('sentiment', `复查情绪 ${focusCode}`, '/sentiment', 'sentiment-review', {
       code: focusCode,
@@ -225,12 +232,12 @@ export default function SentimentPage() {
   return (
     <PageContainer>
       <LightOverviewHero
-        eyebrow="Sentiment Workspace"
+        eyebrow="情绪工作台"
         title="情绪分析工作台"
         summary={compactLayout ? '先看个股，再切市场温度。' : '先看当前标的的讨论温度，再切到市场温度，判断是个股独立偏热还是整体环境在升温。'}
         badges={(
           <>
-            <Badge variant="info">Sentiment Workspace</Badge>
+            <Badge variant="info">情绪工作台</Badge>
             <Badge variant={stockCode ? 'success' : 'warning'}>
               {stockCode ? `当前标的 ${stockCode}` : '等待选择标的'}
             </Badge>
@@ -289,15 +296,19 @@ export default function SentimentPage() {
       <ProgressiveWorkbenchSection pageKey="sentiment" title="情绪结果工作台" result={sentimentResult} summaryMode="strip" />
 
       {stockSentimentQ.error || fearGreedQ.error ? <ErrorState text={stockSentimentQ.error || fearGreedQ.error!} /> : null}
+      <div className="space-y-3">
+        <DataQualityBanner trust={stockSentimentQ.trust} title="个股情绪数据质量" onRetry={() => void stockSentimentQ.refetch()} />
+        <DataQualityBanner trust={fearGreedQ.trust} title="市场情绪数据质量" onRetry={() => void fearGreedQ.refetch()} />
+      </div>
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Sentiment Setup</div>
+              <div className="eyebrow">查询设置</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询与结果</h2>
             {!compactLayout ? (
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                默认只展开一个结果视图，不再同时铺开个股情绪、恐贪指数和多组辅助卡片。
+                先查看个股情绪，再切换市场温度；两类信号适合与技术面和资金流交叉验证。
               </p>
             ) : null}
           </div>

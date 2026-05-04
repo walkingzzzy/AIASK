@@ -55,7 +55,7 @@ export default function PerformanceHero({
     return (
       <section className="page-hero p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="info">Performance Workspace</Badge>
+          <Badge variant="info">绩效工作台</Badge>
           <Badge variant={isAccountMode ? 'neutral' : 'warning'}>{activeModeLabel}</Badge>
           {!isAccountMode ? (
             <Badge variant={outperformance ? 'success' : 'warning'}>
@@ -67,7 +67,7 @@ export default function PerformanceHero({
           绩效复盘工作台
         </h1>
         <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
-          先选账户或组合，再直接进入筛选与结果区。长说明、归因建议和次级跳转已下沉，不再占首屏。
+          先选账户或组合，再进入筛选与结果区；归因解释和后续跳转可在下方展开查看。
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <button type="button" onClick={onRefresh} className={performancePrimaryButtonCls}>
@@ -129,7 +129,7 @@ export default function PerformanceHero({
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Performance Workspace</Badge>
+            <Badge variant="info">绩效工作台</Badge>
             <Badge variant={isAccountMode ? 'neutral' : 'warning'}>{activeModeLabel}</Badge>
             {!isAccountMode ? (
               <Badge variant={outperformance ? 'success' : 'warning'}>
@@ -141,7 +141,7 @@ export default function PerformanceHero({
             绩效复盘工作台
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-            这里不只看收益数字，而是把账户净值、组合归因、基准对照和下一跳动作收进一套连续界面。你可以先定观察窗口，再顺着风险中心、研究页和个股详情继续拆解收益来源。
+            这里不仅看收益数字，也同时查看账户净值、组合归因、基准对照和后续入口。你可以先确定观察窗口，再到风险中心、研究页或个股详情继续拆解收益来源。
           </p>
           {sourceExecutionId ? (
             <div className="mt-4 inline-flex rounded-full border border-white/45 bg-white/32 px-3 py-1.5 text-xs text-text-secondary shadow-sm">

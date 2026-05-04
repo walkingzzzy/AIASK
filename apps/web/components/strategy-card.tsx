@@ -6,7 +6,7 @@ import { LineChart } from '@/components/charts';
 import { resolveStrategyStatusMeta } from '@/app/strategy-market/components/strategy-market-support';
 import { resolveIncubationSurface } from '@/app/strategy-market/lib/incubation-surface';
 import { fmtPct, fmtNum } from '@/lib/data-utils';
-import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
+import { getStrategyMetricSnapshot, normalizeStrategyPercentMetric } from '@/lib/strategy-metrics';
 import type { Strategy, StrategyRuntimeActionContractItem } from '@aiask/shared-types';
 import { StrategyRuntimeActionBar } from '@/app/strategy-market/components/StrategyRuntimeActionBar';
 
@@ -51,7 +51,7 @@ export function StrategyCard({
   const cats = nav.map((_, i) => `${i}`);
   const trustedInfo = [
     s.sample_start_date && s.sample_end_date ? `${s.sample_start_date} ~ ${s.sample_end_date}` : null,
-    s.turnover_rate != null ? `换手 ${fmtPct(s.turnover_rate)}` : null,
+    s.turnover_rate != null ? `换手 ${fmtPct(normalizeStrategyPercentMetric(s.turnover_rate))}` : null,
     s.capacity != null ? `容量 ${fmtNum(s.capacity, 0)}` : null,
   ].filter(Boolean);
 

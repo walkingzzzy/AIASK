@@ -384,7 +384,7 @@ export default function NotificationsPage() {
   return (
     <PageContainer className="app-theme-market space-y-4">
       <LightOverviewHero
-        eyebrow="Notification Workspace"
+        eyebrow="通知中心"
         title="通知中心工作台"
         summary="先筛选降噪，再做批量处理，最后跳回告警、策略、交易或研究页面继续动作。默认只展示摘要、筛选和部分消息流。"
         badges={(
@@ -405,7 +405,7 @@ export default function NotificationsPage() {
               data-action-testid="notifications-mark-all-read-action"
               className={HERO_PRIMARY_BUTTON_CLS}
             >
-              {markAllReadApi.isPending ? '处理中...' : '全部标记已读'}
+              {markAllReadApi.isPending ? '正在标记...' : '全部标记已读'}
             </button>
             <button
               type="button"
@@ -486,7 +486,7 @@ export default function NotificationsPage() {
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Filter Deck</div>
+            <div className="eyebrow">筛选条件</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">先筛选，再处理通知</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
               通知筛选现在被抬升为主控制区。你可以先收窄到某个类别，再决定是否批量已读、删除，或者进入对应来源页面继续跟进。
@@ -529,7 +529,7 @@ export default function NotificationsPage() {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <div className="eyebrow">Action Deck</div>
+              <div className="eyebrow">批量操作</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">通知模板与批量处理</h2>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 上半区负责决定消息从哪里来，下半区负责决定现在怎么处理它们。模板卡片帮助你补齐来源，批量按钮帮助你快速清理视野。
@@ -593,10 +593,10 @@ export default function NotificationsPage() {
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Message Stream</div>
+            <div className="eyebrow">消息流</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">通知流与逐条处理区</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这里保留了逐条处理能力，但阅读顺序重新组织成卡片流。每条消息都同时告诉你来源类别、风险等级、时间和下一步动作，不再只是裸文本堆叠。
+              这里用卡片流保留逐条处理能力。每条消息都会展示来源类别、风险等级、时间和下一步动作。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -613,7 +613,7 @@ export default function NotificationsPage() {
               暂无{activeType === 'all' ? '' : TYPE_LABELS[activeType]}通知
             </p>
             <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-              可以先去告警中心、策略超市或模拟交易页面创建上游触发源，让通知页真正承担“统一接单”的角色。
+              可以先去告警中心、策略超市或模拟交易页面创建触发来源，通知会在这里统一查看和处理。
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
               <Link href="/alerts" className={LINK_CHIP_CLS}>

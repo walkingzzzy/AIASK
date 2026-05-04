@@ -23,6 +23,25 @@ function resolveNumber(...values: unknown[]) {
   return null;
 }
 
+export function normalizeStrategyPercentMetric(value: unknown, unit: 'ratio' | 'percent' | 'auto' = 'ratio'): number | null {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  if (unit === 'percent') return numeric;
+  if (unit === 'ratio') return numeric * 100;
+  return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+}
+
+function resolvePercentMetric(
+  ...candidates: Array<{ value: unknown; unit: 'ratio' | 'percent' }>
+) {
+  for (const candidate of candidates) {
+    const normalized = normalizeStrategyPercentMetric(candidate.value, candidate.unit);
+    if (normalized != null) return normalized;
+  }
+  return null;
+}
+
 export function getStrategyMetricSnapshot(strategy: StrategyMetricCarrier | null | undefined): StrategyMetricSnapshot {
   const description = String(strategy?.description ?? '');
   const summaryMatch = description.match(STRATEGY_BACKTEST_SUMMARY_REGEX);
@@ -31,21 +50,21 @@ export function getStrategyMetricSnapshot(strategy: StrategyMetricCarrier | null
   const parsedDrawdown = summaryMatch ? Number(summaryMatch[3]) : null;
 
   return {
-    totalReturn: resolveNumber(
-      strategy?.metrics?.annual_return,
-      strategy?.metrics?.total_return,
-      strategy?.total_return,
-      parsedReturn,
+    totalReturn: resolvePercentMetric(
+      { value: strategy?.metrics?.annual_return, unit: 'ratio' },
+      { value: strategy?.metrics?.total_return, unit: 'ratio' },
+      { value: strategy?.total_return, unit: 'ratio' },
+      { value: parsedReturn, unit: 'percent' },
     ),
     sharpe: resolveNumber(
       strategy?.metrics?.sharpe_ratio,
       strategy?.sharpe_ratio,
       parsedSharpe,
     ),
-    maxDrawdown: resolveNumber(
-      strategy?.metrics?.max_drawdown,
-      strategy?.max_drawdown,
-      parsedDrawdown,
+    maxDrawdown: resolvePercentMetric(
+      { value: strategy?.metrics?.max_drawdown, unit: 'ratio' },
+      { value: strategy?.max_drawdown, unit: 'ratio' },
+      { value: parsedDrawdown, unit: 'percent' },
     ),
   };
 }

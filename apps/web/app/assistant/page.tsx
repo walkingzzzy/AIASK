@@ -194,7 +194,7 @@ export default function AssistantPage() {
     if (!unifiedLegacyComparison) return null;
     return (
       <div className="rounded-[22px] border border-white/55 bg-white/28 p-4">
-        <div className="text-sm font-semibold text-text-primary">统一决策与旧入口差异快照</div>
+        <div className="text-sm font-semibold text-text-primary">统一决策与历史接口差异快照</div>
         <pre className="mt-3 max-h-[280px] overflow-auto rounded-[18px] bg-surface-alt/70 p-3 text-xs">
           {JSON.stringify(unifiedLegacyComparison, null, 2)}
         </pre>
@@ -296,7 +296,7 @@ export default function AssistantPage() {
       <div className="rounded-[24px] border border-white/50 bg-white/28 p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Sell Inputs</div>
+            <div className="eyebrow">卖出参数</div>
             <h3 className="mb-0 mt-2 text-lg font-semibold text-text-primary">卖出分析参数</h3>
           </div>
           <Badge variant="warning">按需填写</Badge>
@@ -334,7 +334,7 @@ export default function AssistantPage() {
             </label>
           </div>
           <p className="mb-0 text-xs text-text-secondary">
-            “卖出风险提示”会连同买入价和持有天数一起提交，避免出现成功返回但内容为空的假通过。
+            “卖出风险提示”会连同买入价和持有天数一起提交，确保结果能围绕真实持仓场景展开。
           </p>
         </div>
       </div>
@@ -342,14 +342,14 @@ export default function AssistantPage() {
       <div className="rounded-[24px] border border-white/50 bg-white/28 p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Extended Inputs</div>
+            <div className="eyebrow">扩展参数</div>
             <h3 className="mb-0 mt-2 text-lg font-semibold text-text-primary">扩展分析参数</h3>
           </div>
           <Badge variant="info">可独立运行</Badge>
         </div>
         <div className="mt-4 flex flex-col gap-3">
           <div className={NOTE_CARD_CLS}>
-            “产业链穿透”和“盘后复盘简报”不再强制要求股票代码，可按关键词或日期独立生成。
+            “产业链穿透”和“盘后复盘简报”支持按关键词或日期独立生成，也可以结合股票代码一起分析。
           </div>
           <div className="flex flex-wrap gap-3">
             <label className="grid flex-1 gap-2 text-xs text-text-secondary md:max-w-[280px]">
@@ -422,7 +422,7 @@ export default function AssistantPage() {
     pageKey: 'assistant',
     title: 'AI 中心',
     summary: `当前代码 ${currentCodeLabel}，投资风格 ${investmentStyleLabel}，最近主任务 ${actionLabel || '尚未执行'}，结果状态 ${resultStateLabel}，详情状态 ${detailsStateLabel}。`,
-    primaryGoal: '先用一个主任务收敛判断，再决定是否展开详情、差异对比或继续追问。',
+    primaryGoal: '先运行一个主任务形成初步判断，再决定是否展开详情、差异对比或继续追问。',
     requiredInputs: lastEndpoint === '/assistant/daily-report' ? ['date'] : ['stockCode'],
     stockCode: contextStockCode || undefined,
     objectType: contextStockCode ? 'stock' : undefined,
@@ -432,7 +432,7 @@ export default function AssistantPage() {
       `${investmentStyleLabel}风格`,
       resultStateLabel,
       detailsStateLabel,
-      legacyMode ? '旧入口对比开启' : '旧入口对比关闭',
+      legacyMode ? '历史接口对比开启' : '历史接口对比关闭',
     ],
     suggestions: [
       '先复述当前 AI 中心的配置与结果状态',
@@ -441,7 +441,7 @@ export default function AssistantPage() {
     ],
     recommendedNextActions: resultContract?.recommendedNextActions ?? [
       '先完成一个主任务，再决定是否展开统一决策详情。',
-      '需要延伸时再把结果注入 Copilot，不让首屏同时承担太多动作。',
+      '需要延伸时再把结果注入 Copilot，先把当前结论读清楚。',
     ],
     recommendedActions: assistantResultActions,
     recommendedLinks: assistantResultLinks,
@@ -606,7 +606,7 @@ export default function AssistantPage() {
             <div className={`grid gap-5 ${compactLayout ? '' : 'lg:grid-cols-[minmax(0,1fr)_clamp(240px,22vw,340px)]'}`}>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="info">Diagnostic Workspace</Badge>
+                  <Badge variant="info">AI 诊断台</Badge>
                   <Badge variant="neutral">{investmentStyleLabel}风格</Badge>
                   <Badge variant={result ? 'success' : isPending ? 'warning' : 'neutral'}>{resultStateLabel}</Badge>
                 </div>
@@ -615,7 +615,7 @@ export default function AssistantPage() {
                 </h1>
                 <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
                   {compactLayout
-                    ? '先用一个主任务收敛判断，其余参数和扩展分析按需展开。'
+                    ? '先运行一个主任务形成初步判断，其余参数和扩展分析按需展开。'
                     : '诊断工具台与 AI 对话合二为一。左侧运行结构化分析，右侧自由对话、联动页面动作。'}
                 </p>
                 <div className="mt-5 rounded-[24px] border border-white/45 bg-white/34 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)]">
@@ -624,7 +624,7 @@ export default function AssistantPage() {
                     {currentCodeLabel} ｜ {investmentStyleLabel}风格 ｜ {resultStateLabel}
                   </div>
                   <div className="mt-2 text-xs text-text-secondary">
-                    {mobileOnly ? '移动端默认只保留主任务和当前结果状态，其余说明按需展开。' : '主区先收敛主任务，扩展任务、参数和说明全部按需展开。'}
+                    {mobileOnly ? '移动端优先展示主任务和当前结果状态，更多说明可展开查看。' : '先处理当前主任务，扩展任务、参数和说明可按需展开。'}
                   </div>
                 </div>
                 <div className="mt-4 rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
@@ -670,11 +670,11 @@ export default function AssistantPage() {
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                   <div>
-                    <div className="eyebrow">Task Setup</div>
+                    <div className="eyebrow">任务配置</div>
                     <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">选择分析标的与报告类型</h2>
                     {!compactLayout && !mobileOnly ? (
                       <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-                        先判断当前是在做综合体检、交易验证，还是补充产业链与盘后总结。主任务和扩展任务都保留原有能力，但阅读顺序已经重新梳理。
+                        先判断当前是在做综合体检、交易验证，还是补充产业链与盘后总结；再选择对应任务并查看结构化结果。
                       </p>
                     ) : null}
                   </div>
@@ -766,7 +766,7 @@ export default function AssistantPage() {
                         </label>
                         <label className="flex items-center gap-2 text-xs text-text-secondary">
                           <input type="checkbox" checked={legacyMode} onChange={(e) => setLegacyMode(e.target.checked)} />
-                          <span>同时拉取旧入口结果并生成差异对比</span>
+                          <span>同时拉取历史接口结果并生成差异对比</span>
                         </label>
                       </div>
                     </div>
@@ -779,7 +779,7 @@ export default function AssistantPage() {
 
           {isPending ? (
             <div className={`${PANEL_CLS} mt-4 flex items-center justify-center p-12`}>
-              <LoadingState text={`报告生成引擎运转中：正在提取 ${actionLabel} 的多维度底层数据...`} />
+              <LoadingState text={`正在生成 ${actionLabel}：系统会汇总行情、研究和工具调用结果...`} />
             </div>
           ) : null}
 
@@ -804,10 +804,10 @@ export default function AssistantPage() {
                 <div className={`${PANEL_CLS} mt-4`}>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <div className="eyebrow">Result Deck</div>
+                      <div className="eyebrow">结果卡片</div>
                       <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">{actionLabel || '诊断结果'}</h2>
                       <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                        结果区现在集中承接主结论、可展开详情和差异对比，避免入口在上方、结果却散落在多个区域里。
+                        这里展示主结论、可展开详情和差异对比，便于从同一张结果卡继续追问或跳转。
                       </p>
                     </div>
                     <Badge variant={lastEndpoint === '/assistant/unified-decision' ? 'info' : 'success'}>
@@ -854,7 +854,7 @@ export default function AssistantPage() {
               </>
             ) : (
               <div className={`${PANEL_CLS} mt-4`}>
-                <div className="eyebrow">Result Deck</div>
+                <div className="eyebrow">结果卡片</div>
                 <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">等待第一张结果卡</h2>
                 <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                   先执行一次主任务，这里会生成第一轮结构化结论，随后再决定是否继续展开详情、对比和补充分析。

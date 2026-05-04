@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 import { buildPrerequisiteMissingException } from '../common/acceptance';
@@ -123,25 +123,6 @@ export class RiskService {
       .filter((x) => !x.ok)
       .map((x) => x.error);
 
-    if (degraded) {
-      throw new BadGatewayException({
-        success: false,
-        code: 'RISK_SUMMARY_UNAVAILABLE',
-        message: '风险汇总暂不可用',
-        detail: {
-          portfolioId: riskContext.mode === 'portfolio' ? riskContext.portfolioId : null,
-          lookbackDays,
-          sourceContext: riskContext,
-          degradeReasons,
-          moduleStatus: {
-            var: { ok: varResult.ok, reason: getSafeCallReason(varResult) },
-            stress: { ok: stressResult.ok, reason: getSafeCallReason(stressResult) },
-            exposure: { ok: exposureResult.ok, reason: getSafeCallReason(exposureResult) },
-          },
-        },
-      });
-    }
-
     const result = {
       portfolioId: riskContext.mode === 'portfolio' ? riskContext.portfolioId : null,
       lookbackDays,
@@ -174,7 +155,9 @@ export class RiskService {
       },
     };
 
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
+    if (!degraded) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
     return result;
   }
 
@@ -247,8 +230,8 @@ export class RiskService {
       sourceTool: summary.sourceTools.var,
       argsMatched: summary.argsMatched.var,
       result: summary.varResult,
-      degraded: false,
-      degradedReason: null,
+      degraded: !summary.moduleStatus.var.ok,
+      degradedReason: summary.moduleStatus.var.reason,
       meta: summary.meta,
     };
   }

@@ -24,6 +24,13 @@ const REC_STYLES: Record<string, { bg: string; text: string; label: string }> = 
     sell: { bg: 'bg-green-500/15 border-green-500/30', text: 'text-green-400', label: '🔴 建议卖出' },
 };
 
+function normalizeConfidence(value: unknown): number | null {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    const percent = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+    return Math.max(0, Math.min(100, percent));
+}
+
 function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
     const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
     const card = data.card && typeof data.card === 'object' ? data.card as Record<string, unknown> : null;
@@ -41,17 +48,11 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
         rawRecommendation.includes('buy') ? 'buy'
             : rawRecommendation.includes('sell') ? 'sell'
                 : 'hold';
-    const rawConfidence = Number(
+    const rawConfidence =
         card?.confidence ??
         rawData?.confidence ??
-        rawData?.score ??
-        NaN,
-    );
-    const confidence = Number.isFinite(rawConfidence)
-        ? rawConfidence <= 1
-            ? rawConfidence * 100
-            : rawConfidence
-        : null;
+        rawData?.score;
+    const confidence = normalizeConfidence(rawConfidence);
     const rawFactors = Array.isArray(rawData?.evidence) ? rawData.evidence : Array.isArray(rawData?.factors) ? rawData.factors : [];
     const factors = rawFactors
         .slice(0, 6)

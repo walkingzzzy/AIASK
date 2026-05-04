@@ -31,6 +31,7 @@ import {
   extractPlatformMeta,
 } from '../common/result-contract';
 import { buildResultContractMeta } from '../common/tool-contracts';
+import { degradedDataQuality, trustedDataQuality } from '../common/data-quality';
 
 @Injectable()
 export class ExecutionService {
@@ -228,7 +229,55 @@ export class ExecutionService {
   async tasks(userId: string, status?: string): Promise<ExecutionTasksResponse> {
     const normalizedStatus = String(status ?? '').trim().toLowerCase() || null;
     const params = normalizedStatus ? { user_id: userId, status: normalizedStatus } : { user_id: userId };
-    const payload = await this.callManager('list', params);
+    let payload: unknown;
+    try {
+      payload = await this.callManager('list', params);
+    } catch (error) {
+      const reason = this.extractExceptionDetail(error) ?? 'execution_tasks_unavailable';
+      return {
+        count: 0,
+        status: normalizedStatus,
+        tasks: [],
+        pendingOrders: [],
+        completedOrders: [],
+        sourceTool: 'execution_manager.list',
+        argsMatched: { action: 'list', params },
+        result: {
+          success: false,
+          degraded: true,
+          fallback_reason: reason,
+        },
+        degraded: true,
+        fallback_reason: reason,
+        data_quality: degradedDataQuality('execution_manager.list', reason, { sampleCount: 0 }),
+        result_contract: buildResultContract({
+          summary: '执行任务列表暂不可用，页面已保留下单、账户上下文和执行复盘入口。',
+          status: 'degraded',
+          availableViews: ['summary', 'next_step'],
+          evidence: [
+            { label: '任务数', value: '0' },
+            { label: '状态筛选', value: normalizedStatus ?? '全部' },
+          ],
+          riskNotes: [reason],
+          freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '执行任务列表抓取时间'),
+          platformMeta: extractPlatformMeta(
+            {
+              meta: {
+                fetchedAt: new Date().toISOString(),
+                degraded: true,
+                fallback_reason: [reason],
+                source_chain: ['execution_manager.list'],
+              },
+            },
+            {
+              sourceTool: 'execution.tasks',
+              referencePath: '/execution/tasks',
+              freshnessLabel: '执行任务列表抓取时间',
+            },
+          ),
+        }),
+      };
+    }
     const record = this.extractDataRecord(payload);
     const tasks = this.normalizeTaskList(record.tasks ?? []);
     const pendingOrders = this.normalizeTaskList(record.pending_orders ?? record.pendingOrders ?? []);
@@ -243,6 +292,7 @@ export class ExecutionService {
       sourceTool: 'execution_manager.list',
       argsMatched: { action: 'list', params },
       result: payload,
+      data_quality: trustedDataQuality('execution_manager.list', tasks.length),
     };
   }
 
@@ -341,7 +391,31 @@ export class ExecutionService {
   }
 
   async liveGatewayStatus(): Promise<LiveTradingGatewayStatusResponse> {
-    return this.callLiveManager('gateway_status');
+    try {
+      return await this.callLiveManager('gateway_status');
+    } catch (error) {
+      const detail = this.extractExceptionDetail(error) ?? '真实交易网关状态暂不可用';
+      return {
+        configured: false,
+        connected: false,
+        status: 'degraded',
+        message: '真实交易网关状态暂不可用，执行页已保留模拟交易和执行复盘能力。',
+        provider: 'unavailable',
+        mode: 'degraded',
+        account: null,
+        read_only: true,
+        write_enabled: false,
+        allow_write: false,
+        paper: false,
+        broker_env: 'unavailable',
+        error: detail,
+        raw: {
+          degraded: true,
+          fallback_reason: 'live_trading_manager.gateway_status_unavailable',
+          detail,
+        },
+      };
+    }
   }
 
   async liveAccount(): Promise<LiveTradingAccountResponse> {

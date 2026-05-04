@@ -1,4 +1,4 @@
-import type { ToolArgs, ToolMeta } from './common';
+import type { DataQuality, ToolArgs, ToolMeta } from './common';
 import type { ResultContract, ResultContractMeta } from './result-contract';
 
 export type NormalizedQuote = {
@@ -61,6 +61,7 @@ export type MarketQuoteResponseDto = {
     meta: ToolMeta;
     result_contract?: ResultContract | null;
     contract_meta?: ResultContractMeta | null;
+    data_quality?: DataQuality | null;
 };
 
 export type MarketKlineResponseDto = {
@@ -71,6 +72,7 @@ export type MarketKlineResponseDto = {
     meta: ToolMeta;
     result_contract?: ResultContract | null;
     contract_meta?: ResultContractMeta | null;
+    data_quality?: DataQuality | null;
 };
 
 export type MarketOrderBookResponseDto = {
@@ -81,4 +83,5 @@ export type MarketOrderBookResponseDto = {
     meta: ToolMeta;
     result_contract?: ResultContract | null;
     contract_meta?: ResultContractMeta | null;
+    data_quality?: DataQuality | null;
 };

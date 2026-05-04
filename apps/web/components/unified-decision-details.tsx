@@ -203,12 +203,12 @@ export default function UnifiedDecisionDetails({ details, legacyComparison }: Un
 
       {legacyResults.length ? (
         <SectionCard className="p-4">
-          <div className="mb-2 text-sm font-semibold text-text-primary">Legacy 差异对比</div>
-          <div className="text-sm text-text-secondary">{asText(legacy.diffSummary) || '已启用 legacy 对照。'}</div>
+          <div className="mb-2 text-sm font-semibold text-text-primary">历史接口差异对比</div>
+          <div className="text-sm text-text-secondary">{asText(legacy.diffSummary) || '已启用历史接口对照。'}</div>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             <SignalPill label="对齐状态" value={asText(legacy.actionAlignment) || '-'} tone={asText(legacy.actionAlignment) === 'aligned' ? 'good' : asText(legacy.actionAlignment) === 'divergent' ? 'danger' : 'warn'} />
             <SignalPill label="审计编号" value={asText(legacy.auditId) || '-'} tone={Boolean(legacy.auditLogged) ? 'good' : 'warn'} />
-            <SignalPill label="追踪 TraceId" value={asText(legacy.traceId) || '-'} tone="neutral" />
+            <SignalPill label="追踪编号" value={asText(legacy.traceId) || '-'} tone="neutral" />
           </div>
           <div className="mt-3 grid gap-3 xl:grid-cols-3">
             {legacyResults.map((item, index) => (

@@ -194,7 +194,7 @@ export default function ExecutionLiveGatewayPanel({
             <div>
               <div className="text-sm font-medium text-text-primary">真实订单预览 / 提交</div>
               <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-                把真实网关的订单参数、dry-run 和镜像动作收在一块更松弛的 glass 表单里，减少“配置区 + 结果区”割裂感。
+                这里集中填写真实网关订单参数、预览模式和镜像动作，提交前可以核对账户、标的、方向和数量。
               </p>
             </div>
             <Badge variant={liveForm.dryRun ? 'info' : 'warning'}>
@@ -293,7 +293,7 @@ export default function ExecutionLiveGatewayPanel({
               disabled={pending.submit}
               className={executionPrimaryButtonCls}
             >
-              {pending.submit ? '处理中...' : '预览 / 提交订单'}
+              {pending.submit ? '正在提交...' : '预览 / 提交订单'}
             </button>
             <button
               type="button"
@@ -322,7 +322,7 @@ export default function ExecutionLiveGatewayPanel({
               disabled={pending.cancel}
               className={executionChipButtonCls}
             >
-              {pending.cancel ? '处理中...' : '预览 / 撤单'}
+              {pending.cancel ? '正在撤单...' : '预览 / 撤单'}
             </button>
           </form>
           {errors.form ? <p className="mt-2 mb-0 text-xs text-danger">{errors.form}</p> : null}
@@ -437,7 +437,7 @@ export default function ExecutionLiveGatewayPanel({
           ) : null}
           {liveSyncEventsResult?.artifact_id ? (
             <div className={`${executionNoteCardCls} mt-3`}>
-              事件快照已同步，artifact {liveSyncEventsResult.artifact_id}。
+              事件快照已同步，执行制品 {liveSyncEventsResult.artifact_id}。
             </div>
           ) : null}
         </div>
@@ -493,7 +493,7 @@ export default function ExecutionLiveGatewayPanel({
                   onClick={() => onOpenArtifactDetail(liveEventArtifactId)}
                   className={executionChipButtonCls}
                 >
-                  查看 artifact 详情
+                  查看执行制品详情
                 </button>
               ) : null}
               <button
@@ -512,13 +512,13 @@ export default function ExecutionLiveGatewayPanel({
                 <KpiCard title="事件数" value={liveEventRows.length} />
                 <KpiCard title="回执" value={liveReceipt?.message_type || '-'} />
                 <KpiCard title="当前状态" value={liveEventCurrentStatus || '-'} />
-                <KpiCard title="同步 artifact" value={liveSyncEventsResult?.artifact_id || '-'} />
+                <KpiCard title="同步制品" value={liveSyncEventsResult?.artifact_id || '-'} />
               </KpiGrid>
               {liveEventArtifactId ? (
                 <div className={`${executionNoteCardCls} mb-3`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      当前事件链快照已写入 artifact {liveEventArtifactId}，已收集 {liveEventArtifactCount}{' '}
+                      当前事件链快照已写入执行制品 {liveEventArtifactId}，已收集 {liveEventArtifactCount}{' '}
                       条事件，可跳转独立详情页查看完整链路。
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -527,7 +527,7 @@ export default function ExecutionLiveGatewayPanel({
                         onClick={() => onUseArtifactForQuery(liveEventArtifactId)}
                         className={executionChipButtonCls}
                       >
-                        回填到 artifact 查询
+                        回填到制品查询
                       </button>
                       <button
                         type="button"

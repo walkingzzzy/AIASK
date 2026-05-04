@@ -169,7 +169,7 @@ export function NotificationBell() {
                     disabled={markAllReadApi.isPending}
                     className="text-xs text-primary cursor-pointer hover:underline"
                   >
-                    {markAllReadApi.isPending ? '处理中...' : '全部已读'}
+                    {markAllReadApi.isPending ? '正在标记...' : '全部已读'}
                   </button>
                 )}
                 <Link

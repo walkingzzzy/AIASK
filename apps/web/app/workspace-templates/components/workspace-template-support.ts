@@ -30,7 +30,7 @@ export function contextChips(context: WorkspaceSharedContext) {
     context.eventCode ? `事件 ${context.eventCode}` : null,
     context.accountId ? `账户 ${context.accountId}` : null,
     context.executionId ? `执行 ${context.executionId}` : null,
-    context.artifactId ? `Artifact ${context.artifactId}` : null,
+    context.artifactId ? `制品 ${context.artifactId}` : null,
     context.portfolioId ? `组合 ${context.portfolioId}` : null,
     context.benchmark ? `基准 ${context.benchmark}` : null,
     context.mode ? `模式 ${context.mode}` : null,

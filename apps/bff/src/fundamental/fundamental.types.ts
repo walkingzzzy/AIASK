@@ -1,4 +1,5 @@
 import type { ResultContract, ResultContractMeta } from '@aiask/shared-types';
+import type { DataQuality } from '../common/data-quality';
 
 export type FundamentalOverviewDto = {
   code: string;
@@ -17,6 +18,10 @@ export type FundamentalOverviewDto = {
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
   result_contract?: ResultContract | null;
+  degraded?: boolean;
+  fallbackReason?: string;
+  fallbackSource?: string;
+  data_quality?: DataQuality | null;
   contract_meta?: {
     financials: ResultContractMeta;
     valuation: ResultContractMeta;

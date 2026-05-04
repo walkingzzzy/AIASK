@@ -41,6 +41,11 @@ DEFAULT_RISK_RULES = {
 }
 
 
+def _is_test_cleanup_account(account_id: Any) -> bool:
+    text = str(account_id or "").strip().lower()
+    return any(token in text for token in ("sandbox", "test", "demo", "qa", "playwright", "paper-audit"))
+
+
 def _as_bool(value, default: bool) -> bool:
     if value is None:
         return default
@@ -73,7 +78,7 @@ def register_paper_trading_manager(mcp):
             kwargs: JSON 字符串或关键字参数
 
         Supported actions:
-            help, create_account, place_order, cancel_order, pending_orders,
+            help, create_account, place_order, cancel_order, pending_orders, test_cleanup,
             get_positions/list/positions, orders, order_events, summary, list_accounts/accounts,
             nav_history, set_risk_rules, matching_status, nav_status, update_prices
         """
@@ -115,6 +120,7 @@ def register_paper_trading_manager(mcp):
                 'list_accounts': '列出所有账户',
                 'accounts': '列出所有账户',
                 'reconcile': '校准账户账本与持仓快照',
+                'test_cleanup': '测试账户清理（仅 sandbox/test/demo/qa/playwright/paper-audit）',
                 'nav_history': '查看NAV历史',
                 'set_risk_rules': '设置风控规则',
                 'matching_status': '撮合引擎状态',
@@ -331,6 +337,100 @@ def register_paper_trading_manager(mcp):
                         account_id
                     )
                 return ok({'account_id': account_id, 'orders': [dict(r) for r in rows], 'count': len(rows)})
+
+            # --- test cleanup ---
+            elif action == 'test_cleanup':
+                account_id = str(kwargs.get('account_id') or '').strip()
+                if not account_id:
+                    return fail('需要提供 account_id')
+                if not _is_test_cleanup_account(account_id):
+                    return fail('test_cleanup only supports sandbox/test/demo/qa/playwright/paper-audit accounts')
+                include_filled_positions = _as_bool(kwargs.get('include_filled_positions'), False)
+                cancel_pending = _as_bool(kwargs.get('cancel_pending'), True)
+                test_run_id = str(kwargs.get('test_run_id') or '').strip()
+                async with db.acquire() as conn:
+                    account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+                    if not account:
+                        return fail('账户不存在')
+
+                    cancelled_count = 0
+                    if cancel_pending:
+                        pending_rows = await conn.fetch(
+                            "SELECT * FROM paper_orders WHERE account_id=$1 AND status='pending' ORDER BY created_at DESC",
+                            account_id,
+                        )
+                        for row in pending_rows:
+                            reason = " ".join(str(row.get(key) or "") for key in ("reason", "source", "id"))
+                            if test_run_id and test_run_id not in reason:
+                                continue
+                            await conn.execute(
+                                "UPDATE paper_orders SET status='cancelled', updated_at=NOW() WHERE id=$1",
+                                int(row.get('id')),
+                            )
+                            cancelled_count += 1
+                            await _record_order_event(
+                                conn,
+                                str(row.get('id')),
+                                'cancelled',
+                                account_id=account_id,
+                                code=row.get('code'),
+                                payload={'from_status': 'pending', 'reason': 'test_cleanup', 'test_run_id': test_run_id or None},
+                            )
+
+                    positions_reset_count = 0
+                    trades_deleted_count = 0
+                    nav_deleted_count = 0
+                    if include_filled_positions:
+                        positions_reset_count = int(await conn.fetchval(
+                            "WITH deleted AS (DELETE FROM paper_positions WHERE account_id=$1 RETURNING 1) SELECT COUNT(*) FROM deleted",
+                            account_id,
+                        ) or 0)
+                        trades_deleted_count = int(await conn.fetchval(
+                            "WITH deleted AS (DELETE FROM paper_trades WHERE account_id=$1 RETURNING 1) SELECT COUNT(*) FROM deleted",
+                            account_id,
+                        ) or 0)
+                        nav_deleted_count = int(await conn.fetchval(
+                            "WITH deleted AS (DELETE FROM paper_nav WHERE account_id=$1 RETURNING 1) SELECT COUNT(*) FROM deleted",
+                            account_id,
+                        ) or 0)
+                        initial_capital = float(account.get('initial_capital') or 0)
+                        await conn.execute(
+                            """UPDATE paper_accounts
+                               SET current_capital=$2, total_value=$2, updated_at=NOW()
+                               WHERE id=$1""",
+                            account_id,
+                            initial_capital,
+                        )
+                        await _record_order_event(
+                            conn,
+                            f"test-cleanup:{account_id}",
+                            'test_cleanup',
+                            account_id=account_id,
+                            payload={
+                                'include_filled_positions': True,
+                                'positions_reset_count': positions_reset_count,
+                                'trades_deleted_count': trades_deleted_count,
+                                'nav_deleted_count': nav_deleted_count,
+                                'test_run_id': test_run_id or None,
+                            },
+                        )
+
+                reconcile = await _reconcile_account_state(db, account_id, refresh_prices=True, force=True)
+                return ok({
+                    'account_id': account_id,
+                    'test_run_id': test_run_id or None,
+                    'cancelled_count': cancelled_count,
+                    'positions_reset_count': positions_reset_count,
+                    'filled_positions_count': positions_reset_count,
+                    'trades_deleted_count': trades_deleted_count,
+                    'nav_deleted_count': nav_deleted_count,
+                    'failed_count': 0,
+                    'reconcile': reconcile,
+                    'limitations': [
+                        'test_cleanup 仅允许测试账户',
+                        'include_filled_positions=True 会重置测试账户持仓、成交和 NAV',
+                    ],
+                })
 
             # --- positions ---
             elif action in ('get_positions', 'list', 'positions'):

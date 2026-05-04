@@ -79,7 +79,7 @@ export default function PaperTradingOrderWorkspace({
         <div>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Order Workspace</div>
+              <div className="eyebrow">下单面板</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">委托输入与提交流程</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 把参数输入、风控开关和提交预览放在同一块表单里，提交前就能确认方向、账户、价格和执行路径。

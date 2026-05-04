@@ -15,6 +15,7 @@ type BacktestHeroProps = {
   artifactId: string | null | undefined;
   from: string | null;
   onScrollToSection: (id: string) => void;
+  onRunBacktest: () => void;
   trimmedCode: string;
   strategyLabel: string;
   startDate: string;
@@ -33,6 +34,7 @@ export default function BacktestHero({
   artifactId,
   from,
   onScrollToSection,
+  onRunBacktest,
   trimmedCode,
   strategyLabel,
   startDate,
@@ -48,10 +50,10 @@ export default function BacktestHero({
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Backtest Workspace</Badge>
+            <Badge variant="info">回测工作台</Badge>
             <Badge variant={runStatusVariant}>{runStatusLabel}</Badge>
             <Badge variant={artifactId ? 'success' : 'neutral'}>
-              {artifactId ? `Artifact ${artifactId}` : '尚未生成 Artifact'}
+              {artifactId ? `回测制品 ${artifactId}` : '尚未生成回测制品'}
             </Badge>
             {from ? <Badge variant="neutral">来源 {from}</Badge> : null}
           </div>
@@ -59,10 +61,10 @@ export default function BacktestHero({
             回测分析工作台
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-            这一页把策略回测配置、结果阅读和跨标的比较收进一条完整链路。先完成参数配置并运行回测，再顺着摘要、净值曲线、历史对比和批量回测去判断一个策略是不是值得继续推进。
+            这一页用于完成策略回测配置、结果阅读和跨标的比较。先配置参数并运行回测，再结合摘要、净值曲线、历史对比和批量回测判断策略是否值得继续推进。
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <button type="submit" form="backtest-config-form" disabled={loading} className={backtestPrimaryButtonCls}>
+            <button type="button" onClick={onRunBacktest} disabled={loading} className={backtestPrimaryButtonCls}>
               {loading ? '运行中...' : '运行回测'}
             </button>
             <button type="button" onClick={() => onScrollToSection('backtest-overview')} className={backtestSecondaryButtonCls}>
@@ -82,7 +84,7 @@ export default function BacktestHero({
           <div className="mt-5 grid gap-3 sm:grid-cols-4">
             <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-              <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
+              <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '未选择标的'}</div>
               <div className="mt-1 text-xs text-text-secondary">{strategyLabel}</div>
             </div>
             <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">

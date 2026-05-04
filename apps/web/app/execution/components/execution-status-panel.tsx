@@ -80,7 +80,7 @@ export default function ExecutionStatusPanel({
       </form>
       <form onSubmit={onArtifactSubmit} className="mt-3 flex flex-wrap items-end gap-3">
         <label className="flex min-w-[280px] flex-col gap-1 text-xs text-text-secondary">
-          <span>artifact_id</span>
+          <span>执行制品 ID</span>
           <input
             value={artifactIdInput}
             onChange={(event) => onArtifactIdChange(event.target.value)}
@@ -88,7 +88,7 @@ export default function ExecutionStatusPanel({
           />
         </label>
         <button type="submit" className={executionChipButtonCls}>
-          查询 artifact
+          查询执行制品
         </button>
       </form>
       {executionWorkbenchError ? <p className="mt-2 text-xs font-medium text-danger">{executionWorkbenchError}</p> : null}
@@ -189,23 +189,23 @@ export default function ExecutionStatusPanel({
       {artifactData ? (
         <div className={`${executionSidePanelCls} mt-3`}>
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-medium text-text-primary">Artifact 关联执行</div>
+            <div className="text-sm font-medium text-text-primary">执行制品关联任务</div>
             <Badge variant={artifactData.count > 0 ? 'success' : 'neutral'}>
               {artifactData.count > 0 ? `${artifactData.count} 条任务` : '暂无任务'}
             </Badge>
           </div>
           <div className="mt-2 text-xs text-text-secondary">
-            artifact {artifactData.artifactId}，最新任务 {artifactData.latestTaskId || '-'}。
+            执行制品 {artifactData.artifactId}，最新任务 {artifactData.latestTaskId || '-'}。
           </div>
           {artifactData.count > 0 && artifactDetailId ? (
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => onOpenArtifactDetail(artifactDetailId)}
-                aria-label="打开 artifact 详情页面板"
+                aria-label="打开执行制品详情页面板"
                 className={executionChipButtonCls}
               >
-                打开 artifact 详情页
+                打开执行制品详情页
               </button>
               <Link href={artifactDetailHref} className={`${executionChipButtonCls} no-underline text-inherit`}>
                 打开独立详情链接
@@ -214,7 +214,7 @@ export default function ExecutionStatusPanel({
           ) : (
             <div className="mt-3">
               <Link href={artifactDetailHref} className={`${executionChipButtonCls} no-underline text-inherit`}>
-                查看 artifact 空态
+                查看执行制品空态
               </Link>
             </div>
           )}

@@ -155,11 +155,11 @@ export function parseStrategyCapabilityDiagnosticsResponse(raw: unknown): Strate
 }
 
 export function parseCoreChainAcceptanceResponse(raw: unknown): StrategyCoreChainAcceptanceResponse {
-  const payload = assertRecord(raw, '核心链路验收');
-  assertRecordIfPresent(payload.actor, '核心链路验收.actor');
-  assertRecordIfPresent(payload.environment, '核心链路验收.environment');
-  assertRecordIfPresent(payload.target, '核心链路验收.target');
-  assertRecordIfPresent(payload.summary, '核心链路验收.summary');
-  assertArrayIfPresent(payload.steps, '核心链路验收.steps');
+  const payload = assertRecord(raw, '核心链路诊断');
+  assertRecordIfPresent(payload.actor, '核心链路诊断.actor');
+  assertRecordIfPresent(payload.environment, '核心链路诊断.environment');
+  assertRecordIfPresent(payload.target, '核心链路诊断.target');
+  assertRecordIfPresent(payload.summary, '核心链路诊断.summary');
+  assertArrayIfPresent(payload.steps, '核心链路诊断.steps');
   return payload as StrategyCoreChainAcceptanceResponse;
 }

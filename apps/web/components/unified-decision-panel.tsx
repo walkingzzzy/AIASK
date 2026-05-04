@@ -65,7 +65,7 @@ export default function UnifiedDecisionPanel({
             </div>
             {legacyComparison ? (
               <div className="rounded-lg border border-glass-border bg-surface px-3 py-3 text-sm text-text-secondary">
-                legacy diff 已准备好，加载详情后可查看统一决策与旧入口的差异明细。
+                历史接口对比已准备好，加载详情后可查看统一决策与历史结果的差异明细。
               </div>
             ) : null}
           </div>

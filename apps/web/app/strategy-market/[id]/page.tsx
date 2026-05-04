@@ -146,6 +146,11 @@ export default function StrategyDetailPage() {
   const aiSuggestionApi = useApiMutation<PersonalStrategySuggestionResponse>({ successToast: 'AI 修改建议已生成' });
   const aiOptimizeApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: 'AI 优化已完成' });
   const paperSessionApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
+  const deletePersonalStrategyApi = useApiMutation({
+    critical: true,
+    invalidates: [apiKeys.strategy()],
+    successToast: '个人策略已删除',
+  });
   const personalStrategyContextQ = useApiQuery<PersonalStrategyContextResponse>(
     strategyId && userId ? `/strategy-market/${strategyId}/personal-context` : null,
     {
@@ -196,16 +201,17 @@ export default function StrategyDetailPage() {
     handleSubscribe,
     handleReview,
   } = overview;
+  const canEditPersonalStrategy = Boolean(ownerState?.personal_strategy && ownerState?.owned);
   const localPersonalStrategyContext = useMemo<PersonalStrategyContextResponse | null>(
     () => (strategy
       ? {
           strategy_id: String(strategy.id),
           strategy_name: strategy.name,
-          editable: Boolean(ownerState?.editable),
+          editable: canEditPersonalStrategy,
           personal_strategy: Boolean(ownerState?.personal_strategy),
           mutation_guard: {
-            allowed: Boolean(ownerState?.editable),
-            reason: ownerState?.editable ? null : '当前不是你的个人策略草稿，不能直接写入。',
+            allowed: canEditPersonalStrategy,
+            reason: canEditPersonalStrategy ? null : '当前不是你的个人策略草稿，不能直接写入。',
           },
           draft_snapshot: {
             name: strategy.name,
@@ -230,25 +236,25 @@ export default function StrategyDetailPage() {
             {
               action_kind: 'generate_update_suggestion',
               effect: 'advisory',
-              available: Boolean(ownerState?.editable),
+              available: canEditPersonalStrategy,
               label: '生成修改建议',
             },
             {
               action_kind: 'optimize',
               effect: 'stateful',
-              available: Boolean(ownerState?.editable),
+              available: canEditPersonalStrategy,
               label: '执行 AI 优化',
             },
             {
               action_kind: 'persist_update',
               effect: 'stateful',
-              available: Boolean(ownerState?.editable),
+              available: canEditPersonalStrategy,
               label: '保存到个人策略草稿',
             },
           ],
         }
       : null),
-    [ownerState?.editable, ownerState?.personal_strategy, strategy],
+    [canEditPersonalStrategy, ownerState?.personal_strategy, strategy],
   );
   const personalStrategyContext = aiSuggestionApi.data?.context
     ?? personalStrategyContextQ.data
@@ -416,7 +422,7 @@ export default function StrategyDetailPage() {
         {
           ...normalizedPayload,
           persist: true,
-          run_post_update_pipeline: true,
+          run_post_update_pipeline: false,
         },
       ) as PersonalStrategySuggestionResponse | null;
       const nextStrategy = response?.strategy;
@@ -431,7 +437,7 @@ export default function StrategyDetailPage() {
       { method: 'PATCH' },
       {
         ...applyPayload,
-        run_post_update_pipeline: true,
+        mutationScope: 'draft',
       },
     ) as Record<string, unknown> | null;
     const nextStrategy = response?.strategy;
@@ -458,6 +464,7 @@ export default function StrategyDetailPage() {
       `/strategy-market/${strategy.id}`,
       { method: 'PATCH' },
       {
+        mutationScope: 'draft',
         name: editNameRef.current?.value?.trim() || strategy.name,
         description: editDescriptionRef.current?.value?.trim() ?? '',
         params,
@@ -480,6 +487,26 @@ export default function StrategyDetailPage() {
       window.alert(`个人策略保存失败：${String(error instanceof Error ? error.message : error)}`);
     }
   }
+
+  const handleDeletePersonalStrategy = useCallback(async () => {
+    if (!strategy) return;
+    if (!canEditPersonalStrategy) {
+      window.alert('只有个人策略 owner 可以删除个人策略副本');
+      return;
+    }
+    const confirmed = window.confirm(`确认删除个人策略“${strategy.name ?? strategy.id}”？此操作不会影响市场策略。`);
+    if (!confirmed) return;
+    try {
+      await deletePersonalStrategyApi.triggerAsync(
+        `/strategy-market/${encodeURIComponent(String(strategy.id))}`,
+        { method: 'DELETE' },
+        {},
+      );
+      router.push('/strategy-market?workspace=mine');
+    } catch {
+      // useApiMutation already renders the user-facing error toast.
+    }
+  }, [canEditPersonalStrategy, deletePersonalStrategyApi, router, strategy]);
 
   const executeRuntimeAction = useCallback(async (action: StrategyRuntimeActionContractItem) => {
     if (action.status === 'unavailable') {
@@ -520,6 +547,8 @@ export default function StrategyDetailPage() {
         return;
       }
       throw new Error('动作合同缺少前端执行器');
+    } catch {
+      // Mutation hooks already surface failures through toast; keep click handlers from reaching Next's error overlay.
     } finally {
       setPendingRuntimeActionId(null);
     }
@@ -664,7 +693,7 @@ export default function StrategyDetailPage() {
           return { message: paperSessionState?.has_session ? '已打开个人模拟盘测试' : '已创建并打开个人模拟盘测试' };
         },
       },
-      ...(userId && !ownerState?.editable
+      ...(userId && !canEditPersonalStrategy
         ? [{
             id: 'strategy-detail.fork-personal',
             label: '复制为我的策略',
@@ -679,7 +708,7 @@ export default function StrategyDetailPage() {
             },
           }]
         : []),
-      ...(ownerState?.editable
+      ...(canEditPersonalStrategy
         ? [
           {
             id: 'strategy-detail.ai-suggest-personal',
@@ -754,6 +783,20 @@ export default function StrategyDetailPage() {
               };
             },
           },
+          {
+            id: 'strategy-detail.delete-personal',
+            label: '删除个人策略',
+            description: '删除当前用户拥有的个人策略副本',
+            keywords: ['删除', '个人策略', '清理'],
+            scope: 'page' as const,
+            pageKey,
+            strategyActionKind: 'persist_update' as const,
+            mutationEffect: 'stateful' as const,
+            run: async () => {
+              await handleDeletePersonalStrategy();
+              return { message: `已删除 ${strategy?.name ?? '当前个人策略'}` };
+            },
+          },
         ]
         : []),
     ],
@@ -765,9 +808,10 @@ export default function StrategyDetailPage() {
       handleAiOptimizePersonalStrategy,
       handleForkToPersonal,
       handleOpenPaperSession,
+      handleDeletePersonalStrategy,
       handleSubscribe,
       isSubscribed,
-      ownerState?.editable,
+      canEditPersonalStrategy,
       pageKey,
       paperSessionState?.has_session,
       router,
@@ -879,7 +923,7 @@ export default function StrategyDetailPage() {
               pageKey,
               run: async () => null,
             },
-            ...(userId && !ownerState?.editable
+            ...(userId && !canEditPersonalStrategy
               ? [{
                   id: 'strategy-detail.fork-personal',
                   label: '复制为我的策略',
@@ -891,7 +935,7 @@ export default function StrategyDetailPage() {
                   run: async () => null,
                 }]
               : []),
-            ...(ownerState?.editable
+            ...(canEditPersonalStrategy
               ? [
                   {
                     id: 'strategy-detail.ai-suggest-personal',
@@ -937,16 +981,27 @@ export default function StrategyDetailPage() {
                     mutationEffect: 'stateful' as const,
                     run: async () => null,
                   },
+                  {
+                    id: 'strategy-detail.delete-personal',
+                    label: '删除个人策略',
+                    description: '删除当前用户拥有的个人策略副本',
+                    keywords: ['删除', '个人策略', '清理'],
+                    scope: 'page' as const,
+                    pageKey,
+                    strategyActionKind: 'persist_update' as const,
+                    mutationEffect: 'stateful' as const,
+                    run: async () => null,
+                  },
                 ]
               : []),
           ],
-    [emptyDetailContract, isSubscribed, ownerState?.editable, pageKey, paperSessionState?.has_session, userId],
+    [canEditPersonalStrategy, emptyDetailContract, isSubscribed, pageKey, paperSessionState?.has_session, userId],
   );
 
   const strategyDetailSummary = emptyDetailContract
       ? '当前环境还没有可进入的策略详情数据，页面按空态契约渲染。'
       : strategy
-      ? `${strategy.name} 当前处于 ${displayStatus.label}，市场状态 ${marketStatus.label}，${showIncubationStage ? `孵化阶段 ${incubationSurface.stage.label}` : '暂未进入真实孵化链路'}，当前工作流为 ${activeTabLabel}。收藏数 ${strategy.favorite_count ?? strategy.subscriber_count ?? 0}，风险事件 ${openRiskEvents.length}，向量画像 ${vectorProfiles.length}。${ownerState?.editable ? `当前为可编辑个人策略，${latestAiSuggestion?.summary ? `最近一轮 AI 建议：${latestAiSuggestion.summary}` : '可生成修改建议、执行 AI 优化或直接保存草稿。'}` : ''}`
+      ? `${strategy.name} 当前处于 ${displayStatus.label}，市场状态 ${marketStatus.label}，${showIncubationStage ? `孵化阶段 ${incubationSurface.stage.label}` : '暂未进入真实孵化链路'}，当前工作流为 ${activeTabLabel}。收藏数 ${strategy.favorite_count ?? strategy.subscriber_count ?? 0}，风险事件 ${openRiskEvents.length}，向量画像 ${vectorProfiles.length}。${canEditPersonalStrategy ? `当前为可编辑个人策略，${latestAiSuggestion?.summary ? `最近一轮 AI 建议：${latestAiSuggestion.summary}` : '可生成修改建议、执行 AI 优化或直接保存草稿。'}` : ''}`
       : detailLoading
         ? '策略详情加载中。'
         : detailError
@@ -960,7 +1015,7 @@ export default function StrategyDetailPage() {
         pageActions: resultPageActions,
         preferredActionIds: emptyDetailContract
           ? ['strategy-detail.empty.open-market', 'strategy-detail.empty.reload']
-          : ownerState?.editable
+          : canEditPersonalStrategy
             ? ['strategy-detail.ai-suggest-personal', 'strategy-detail.save-personal', 'strategy-detail.ai-optimize']
             : ['strategy-detail.switch.overview', 'strategy-detail.switch.factory', 'strategy-detail.open-paper'],
         recommendedLinks: [
@@ -978,7 +1033,9 @@ export default function StrategyDetailPage() {
           {
             id: 'strategy-detail-link-copilot',
             label: '继续追问 Copilot',
-            href: strategy ? `/assistant?symbol=${encodeURIComponent(strategy.name)}` : '/assistant?from=strategy-detail',
+            href: strategy
+              ? `/assistant?from=strategy-detail&strategy_id=${encodeURIComponent(String(strategy.id))}&objectType=strategy`
+              : '/assistant?from=strategy-detail',
           },
         ],
         evidence: [
@@ -1029,7 +1086,7 @@ export default function StrategyDetailPage() {
       incubationSurface.stage.label,
       latestQualityReport?.summary?.validation_grade,
       marketStatus.label,
-      ownerState?.editable,
+      canEditPersonalStrategy,
       openRiskEvents.length,
       personalStrategyContextQ.error,
       portfolioHref,
@@ -1051,13 +1108,14 @@ export default function StrategyDetailPage() {
     summary: strategyDetailSummary,
     objectType: 'strategy',
     objectId: String(strategy?.id ?? strategyId ?? 'strategy-detail'),
+    strategyId: emptyDetailContract ? undefined : String(strategy?.id ?? strategyId ?? ''),
     resultType: 'strategy-detail',
     tags: [
       emptyDetailContract ? '空态契约' : null,
       strategy?.status ? marketStatus.label : null,
       activeTabLabel,
       showIncubationStage ? incubationSurface.stage.label : '未入孵化',
-      ownerState?.editable ? '个人策略可编辑' : null,
+      canEditPersonalStrategy ? '个人策略可编辑' : null,
       latestAiSuggestion?.summary ? '存在 AI 修改建议' : null,
       strategy?.author_id ? `作者 ${strategy.author_id}` : null,
       strategy?.favorite_count != null || strategy?.subscriber_count != null ? `${strategy.favorite_count ?? strategy.subscriber_count} 收藏` : null,
@@ -1069,7 +1127,7 @@ export default function StrategyDetailPage() {
         ? [
             activeTab === 'overview' ? '切到实盘跟踪看信号与命中率' : '回概览确认样本期和质量门',
             activeTab === 'factory' ? '继续切换工厂审查分区' : '打开工厂审查看运行风控与实验事件',
-            ...(ownerState?.editable
+            ...(canEditPersonalStrategy
               ? [
                   latestAiSuggestion?.summary ? '先看 AI 修改建议，再决定是否应用并保存' : '先生成 AI 修改建议，再决定是保存还是直接 AI 优化',
                 ]
@@ -1156,7 +1214,7 @@ export default function StrategyDetailPage() {
 
   const primaryContent = (
     <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
-      {ownerState?.editable ? (
+      {canEditPersonalStrategy ? (
         <section key={String(strategy.id)} className="panel-soft rounded-[24px] p-4 sm:p-5">
           <div className="eyebrow">个人策略编辑</div>
           <h3 className="mt-2 mb-0 text-lg font-semibold text-text-primary">当前策略可直接编辑</h3>
@@ -1305,9 +1363,19 @@ export default function StrategyDetailPage() {
                 className="rounded-full border border-border bg-surface px-4 py-2 text-sm"
               >
                 {pendingRuntimeActionId === 'open_personal_paper_session'
-                  ? '处理中...'
+                  ? '正在打开模拟盘...'
                   : (paperSessionAction?.label ?? '加入模拟盘')}
               </button>
+              {ownerState?.personal_strategy ? (
+                <button
+                  type="button"
+                  onClick={() => void handleDeletePersonalStrategy()}
+                  disabled={deletePersonalStrategyApi.isPending}
+                  className="rounded-full border border-danger/40 bg-danger/5 px-4 py-2 text-sm text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {deletePersonalStrategyApi.isPending ? '删除中...' : '删除个人策略'}
+                </button>
+              ) : null}
             </div>
             {[aiModifyPersonalAction, paperSessionAction]
               .filter((action): action is StrategyRuntimeActionContractItem => Boolean(action?.unavailable_reason))
@@ -1468,7 +1536,7 @@ export default function StrategyDetailPage() {
         />
       ) : null}
 
-      {!ownerState?.editable && userId ? (
+      {!canEditPersonalStrategy && userId ? (
         <section className="panel-soft rounded-[22px] px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <div className="text-sm text-text-secondary">

@@ -10,7 +10,7 @@ import type {
   StrategyOperatorParityResponse,
 } from '@aiask/shared-types';
 import { Badge, SectionCard } from '@/components/ui';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { DataQualityBanner, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { apiKeys } from '@/lib/query-keys';
@@ -31,8 +31,8 @@ const OPERATOR_ACTIONS: OperatorAction[] = [
   },
   {
     action: 'factory_run_once',
-    label: '同步验收工厂',
-    description: '高级验收动作，直接执行一次 factory_run_once 核验 submit stage。',
+    label: '同步校验工厂',
+    description: '高级校验动作，直接执行一次工厂运行并核验提交阶段。',
   },
   {
     action: 'publish',
@@ -67,27 +67,27 @@ const OPERATOR_ACTIONS: OperatorAction[] = [
   {
     action: 'incubation_pipeline_run',
     label: '运行孵化流水线',
-    description: '补齐孵化指标、forward window 和 promotion 输入。',
+    description: '补齐孵化指标、前瞻窗口和晋级输入。',
     params: { limit: 200, source: 'strategy_operator_console' },
   },
   {
     action: 'promotion_review_run',
     label: '运行晋级评审',
-    description: '对目标策略补 promotion review 证据。',
+    description: '为目标策略补充晋级评审证据。',
     strategyScoped: true,
     params: { auto_apply: false, source: 'strategy_operator_console' },
   },
   {
     action: 'execution_audit_acceptance',
-    label: '执行审计验收',
-    description: '重算目标策略 execution audit acceptance。',
+    label: '执行审计校验',
+    description: '重算目标策略执行审计结果。',
     strategyScoped: true,
     params: { backfill: true },
   },
   {
     action: 'incubation_sync_run',
-    label: '补 production samples',
-    description: '按历史信号 replay 真实 paper/incubation 样本，强制平仓后复验 execution audit。',
+    label: '补生产样本',
+    description: '按历史信号回放模拟盘与孵化样本，强制平仓后复核执行审计。',
     strategyScoped: true,
     params: {
       replay_history: true,
@@ -101,12 +101,12 @@ const OPERATOR_ACTIONS: OperatorAction[] = [
   {
     action: 'submission_replay',
     label: '提交重放',
-    description: '对目标策略执行 submission replay。',
+    description: '对目标策略重新回放提交链路。',
     strategyScoped: true,
   },
   {
     action: 'runtime_cycle_run',
-    label: '运行 runtime cycle',
+    label: '运行态闭环',
     description: '触发运行态风控闭环。',
   },
   {
@@ -124,7 +124,7 @@ const OPERATOR_ACTIONS: OperatorAction[] = [
   {
     action: 'vector_cleanup',
     label: '清理向量历史',
-    description: '默认 dry-run 清理，先检查待清理范围再执行非 dry-run。',
+    description: '默认先做演练清理，确认范围后再执行真实清理。',
     params: { index_name: 'strategy_behavior', dry_run: true, keep_versions: 3, source: 'strategy_operator_console' },
   },
   {
@@ -258,6 +258,19 @@ export function StrategyMarketOperatorPanel({
   const remediations = parity?.readiness_remediations ?? [];
   const activeJob = jobQ.data ?? operatorJobApi.data;
   const activeMcpJob = mcpJobQ.data ?? factorSchedulerApi.data?.job ?? null;
+  const activeJobResult = asRecord(activeJob?.job.result);
+  const activeJobResultData = asRecord(activeJobResult.data);
+  const activeJobSuccess =
+    typeof activeJobResult.success === 'boolean' ? activeJobResult.success : null;
+  const activeJobDryRun =
+    typeof activeJobResultData.dry_run === 'boolean'
+      ? activeJobResultData.dry_run
+      : typeof activeJobResult.dry_run === 'boolean'
+        ? activeJobResult.dry_run
+        : null;
+  const activeJobFallbackReason = String(
+    activeJobResultData.fallback_reason ?? activeJobResult.fallback_reason ?? '',
+  ).trim();
   const executionAuditRoot = asRecord(executionAuditQ.data);
   const executionAuditDegraded = Boolean(executionAuditRoot.degraded);
   const verification = asRecord(executionAuditRoot.verification);
@@ -267,8 +280,13 @@ export function StrategyMarketOperatorPanel({
     verificationSchema.all_required_tables_present ?? verificationSchema.all_required_columns_present,
   );
   const mappedPct = parity && parity.total_actions > 0 ? Math.round((parity.mapped_actions / parity.total_actions) * 100) : 0;
+  const operatorWritesBlocked = Boolean(parityQ.isPending || parityQ.error || parityQ.trust.degraded);
 
   async function submitOperatorAction(action: OperatorAction) {
+    if (operatorWritesBlocked) {
+      window.alert('MCP/策略工厂依赖尚未处于可信状态，写入动作已禁用。');
+      return;
+    }
     const strategyId = targetStrategyId.trim();
     if (action.strategyScoped && !strategyId) {
       window.alert('这个动作需要先填写目标 strategy_id');
@@ -299,7 +317,7 @@ export function StrategyMarketOperatorPanel({
     <SectionCard className="mt-0" data-testid="strategy-market-operator-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Operator Closure</div>
+          <div className="eyebrow">运营闭环</div>
           <h2 className="mt-2">MCP / 策略工厂运营闭环</h2>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
             管理员在这里查看 action parity、readiness 修复路径、execution audit 和后台任务状态。
@@ -318,6 +336,7 @@ export function StrategyMarketOperatorPanel({
 
       {parityQ.isPending ? <LoadingState text="加载策略工厂匹配矩阵..." /> : null}
       {parityQ.error ? <ErrorState text={parityQ.error} /> : null}
+      <DataQualityBanner trust={parityQ.trust} title="策略工厂操作台数据质量" onRetry={() => void parityQ.refetch()} className="mt-3" />
 
       {parity ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -356,7 +375,7 @@ export function StrategyMarketOperatorPanel({
                   <div key={code} className="rounded border border-border bg-surface px-3 py-3 text-xs">
                     <div className="font-medium text-text-primary">{code}</div>
                     <div className="mt-1 leading-5 text-text-secondary">
-                      {remediation?.description ?? '当前 blocker 没有专用修复动作，先复查最新 factory run detail。'}
+                      {remediation?.description ?? '当前阻断项没有专用修复动作，先复查最新工厂运行详情。'}
                     </div>
                     {remediation ? (
                       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -368,7 +387,7 @@ export function StrategyMarketOperatorPanel({
                 );
               })
             ) : (
-              <p className="mb-0 text-sm text-text-secondary">当前工厂状态没有暴露 readiness blocker。</p>
+              <p className="mb-0 text-sm text-text-secondary">当前工厂状态没有暴露就绪阻断项。</p>
             )}
           </div>
         </div>
@@ -379,7 +398,7 @@ export function StrategyMarketOperatorPanel({
             <input
               value={targetStrategyId}
               onChange={(event) => setTargetStrategyId(event.target.value)}
-              placeholder="strategy_id for scoped actions"
+              placeholder="策略 ID，用于定向任务"
               className="min-w-[220px] rounded border border-border bg-surface px-3 py-2 text-xs text-text-primary outline-none"
             />
           </div>
@@ -396,7 +415,7 @@ export function StrategyMarketOperatorPanel({
                   });
                 }
               }}
-              disabled={factorSchedulerApi.isPending}
+              disabled={operatorWritesBlocked || factorSchedulerApi.isPending}
               className="rounded border border-border bg-surface px-3 py-3 text-left text-xs text-text-primary disabled:opacity-50"
             >
               <span className="block font-medium">刷新 governed registry</span>
@@ -415,7 +434,7 @@ export function StrategyMarketOperatorPanel({
                   idempotency_key: `factor-active-pool-${Date.now()}`,
                 });
               }}
-              disabled={factorSchedulerApi.isPending}
+              disabled={operatorWritesBlocked || factorSchedulerApi.isPending}
               className="rounded border border-border bg-surface px-3 py-3 text-left text-xs text-text-primary disabled:opacity-50"
             >
               <span className="block font-medium">核验 active_pool</span>
@@ -426,7 +445,7 @@ export function StrategyMarketOperatorPanel({
                 key={item.action}
                 type="button"
                 onClick={() => void submitOperatorAction(item)}
-                disabled={operatorJobApi.isPending}
+                disabled={operatorWritesBlocked || operatorJobApi.isPending}
                 className="rounded border border-border bg-surface px-3 py-3 text-left text-xs text-text-primary disabled:opacity-50"
               >
                 <span className="block font-medium">{item.label}</span>
@@ -442,12 +461,12 @@ export function StrategyMarketOperatorPanel({
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <div className="rounded border border-border bg-surface-alt px-4 py-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="m-0 text-sm font-semibold text-text-primary">Execution audit verification</h3>
+            <h3 className="m-0 text-sm font-semibold text-text-primary">执行审计校验</h3>
             <Badge variant={schemaReady ? 'success' : executionAuditQ.error || executionAuditDegraded ? 'warning' : 'info'}>
-              {schemaReady ? 'schema ready' : executionAuditQ.error || executionAuditDegraded ? '读取降级' : '待核验'}
+              {schemaReady ? '结构已就绪' : executionAuditQ.error || executionAuditDegraded ? '读取降级' : '待核验'}
             </Badge>
           </div>
-          {executionAuditQ.isPending ? <LoadingState text="读取 execution audit verification..." /> : null}
+          {executionAuditQ.isPending ? <LoadingState text="正在读取执行审计校验..." /> : null}
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             <div className="metric-tile rounded-[18px] px-3 py-3">
               <div className="metric-label">策略数</div>
@@ -456,13 +475,13 @@ export function StrategyMarketOperatorPanel({
               </div>
             </div>
             <div className="metric-tile rounded-[18px] px-3 py-3">
-              <div className="metric-label">Ready</div>
+              <div className="metric-label">已就绪</div>
               <div className="mt-2 text-sm font-semibold text-text-primary">
                 {String(verificationSummary.ready_count ?? '-')}
               </div>
             </div>
             <div className="metric-tile rounded-[18px] px-3 py-3">
-              <div className="metric-label">Blockers</div>
+              <div className="metric-label">阻塞项</div>
               <div className="mt-2 text-sm font-semibold text-text-primary">
                 {String(verificationSummary.blocker_count ?? '-')}
               </div>
@@ -471,14 +490,14 @@ export function StrategyMarketOperatorPanel({
           {executionAuditQ.error ? <p className="mb-0 mt-3 text-xs text-warning">{executionAuditQ.error}</p> : null}
           {executionAuditDegraded ? (
             <p className="mb-0 mt-3 text-xs text-warning">
-              {String(asRecord(executionAuditRoot.error).message ?? 'execution audit verification 暂时不可用')}
+              {String(asRecord(executionAuditRoot.error).message ?? '执行审计校验暂时不可用')}
             </p>
           ) : null}
         </div>
 
         <div className="rounded border border-border bg-surface-alt px-4 py-4" data-testid="strategy-operator-job-queue">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="m-0 text-sm font-semibold text-text-primary">MCP Job 队列</h3>
+            <h3 className="m-0 text-sm font-semibold text-text-primary">MCP 后台任务队列</h3>
             <Badge variant={jobStatusVariant(String(activeJob?.job.status ?? activeMcpJob?.status ?? 'idle'))}>
               {activeJob?.job.status ?? activeMcpJob?.status ?? 'idle'}
             </Badge>
@@ -492,6 +511,15 @@ export function StrategyMarketOperatorPanel({
               </div>
               <div>提交时间：{activeJob.job.submitted_at}</div>
               <div>轮询路径：{activeJob.poll_path}</div>
+              {activeJob.job.status === 'succeeded' ? (
+                <div>
+                  结果：
+                  success={activeJobSuccess == null ? '-' : String(activeJobSuccess)}
+                  {' · '}
+                  dry_run={activeJobDryRun == null ? '-' : String(activeJobDryRun)}
+                </div>
+              ) : null}
+              {activeJobFallbackReason ? <div className="text-warning">降级：{activeJobFallbackReason}</div> : null}
               {activeJob.strategy_id ? <div>目标策略：{activeJob.strategy_id}</div> : null}
               {activeJob.job.error ? <div className="text-danger">错误：{activeJob.job.error}</div> : null}
             </div>
@@ -510,7 +538,7 @@ export function StrategyMarketOperatorPanel({
             </div>
           ) : null}
           {!activeJob && !activeMcpJob ? (
-            <p className="mb-0 mt-3 text-sm text-text-secondary">还没有从当前操作台提交的 MCP Job。</p>
+            <p className="mb-0 mt-3 text-sm text-text-secondary">还没有从当前操作台提交的 MCP 后台任务。</p>
           ) : null}
           {mcpJobQ.error ? <p className="mb-0 mt-3 text-xs text-warning">{mcpJobQ.error}</p> : null}
         </div>

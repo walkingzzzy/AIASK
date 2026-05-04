@@ -53,6 +53,8 @@ export type BacktestRunResponse = {
     initial_capital?: number | null;
     final_capital?: number | null;
     failureReason?: BacktestFailureReason | null;
+    degraded?: boolean;
+    fallbackReason?: string;
 };
 
 export type BacktestMetricsResponse = {
@@ -78,6 +80,8 @@ export type BacktestListResponse = {
     argsMatched?: Record<string, unknown>;
     result?: unknown;
     items?: BacktestHistoryItem[];
+    degraded?: boolean;
+    fallbackReason?: string;
 };
 
 export type BacktestBatchResultItem = {

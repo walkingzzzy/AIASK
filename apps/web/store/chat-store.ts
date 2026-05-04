@@ -11,7 +11,7 @@ export type ChatToolCall = {
   pending?: boolean;
 };
 
-export type ChatActionStatus = 'pending' | 'running' | 'done' | 'error';
+export type ChatActionStatus = 'pending' | 'scheduled' | 'auto_executed' | 'running' | 'done' | 'error';
 
 export type ChatActionBlock = {
   id: string;
@@ -78,6 +78,10 @@ type ChatState = {
 };
 
 let counter = 0;
+const MAX_SYNC_CONVERSATIONS = 20;
+const MAX_SYNC_MESSAGES_PER_CONVERSATION = 40;
+const MAX_SYNC_CONTENT_LENGTH = 8000;
+const MAX_SYNC_TEXT_LENGTH = 320;
 
 function uid(prefix = 'msg') {
   return `${prefix}_${Date.now()}_${++counter}`;
@@ -143,7 +147,7 @@ function normalizeToolTrace(input: unknown): ChatToolTrace | undefined {
         const source = asObject(item);
         const kind = String(source.kind ?? '');
         const status = String(source.status ?? '');
-        if (!['mcp', 'local_context', 'client_action'].includes(kind)) return null;
+        if (!['mcp', 'local_context', 'client_action', 'compliance'].includes(kind)) return null;
         if (!['pending', 'success', 'error'].includes(status)) return null;
         const id = String(source.id ?? uid('trace_item')).trim();
         const toolName = String(source.toolName ?? '').trim();
@@ -214,7 +218,7 @@ function normalizeActionBlock(input: unknown): ChatActionBlock | null {
   const actionId = String(record.actionId ?? '').trim();
   const label = String(record.label ?? '').trim();
   const status = record.status;
-  if (!id || !actionId || !label || !['pending', 'running', 'done', 'error'].includes(String(status))) {
+  if (!id || !actionId || !label || !['pending', 'scheduled', 'auto_executed', 'running', 'done', 'error'].includes(String(status))) {
     return null;
   }
 
@@ -231,7 +235,7 @@ function normalizeActionBlock(input: unknown): ChatActionBlock | null {
     reason: typeof record.reason === 'string' ? record.reason : undefined,
     payload,
     status: String(status) as ChatActionStatus,
-    autoExecute: record.autoExecute === true,
+    autoExecute: record.autoExecute === true ? true : record.autoExecute === false ? false : undefined,
     resultMessage: typeof record.resultMessage === 'string' ? record.resultMessage : undefined,
   };
 }
@@ -272,6 +276,119 @@ function normalizeConversation(input: ChatConversation): ChatConversation {
     workspaceId: input.workspaceId || undefined,
     messages,
   };
+}
+
+function truncateText(value: unknown, maxLength = MAX_SYNC_TEXT_LENGTH): string {
+  const text = String(value ?? '').trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function compactObjectFields(value: unknown, maxKeys = 12): Record<string, unknown> | undefined {
+  const record = asObject(value);
+  const entries = Object.entries(record).slice(0, maxKeys);
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries.map(([key, item]) => {
+    if (item == null || typeof item === 'number' || typeof item === 'boolean') return [key, item];
+    if (typeof item === 'string') return [key, truncateText(item)];
+    if (Array.isArray(item)) return [key, `[array:${item.length}]`];
+    if (typeof item === 'object') return [key, '[object]'];
+    return [key, String(item)];
+  }));
+}
+
+function summarizeUnknown(value: unknown): string | number | boolean | null | undefined {
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return truncateText(value, 1000);
+  if (Array.isArray(value)) return `[array:${value.length}]`;
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>).slice(0, 8);
+    return `[object:${keys.join(',')}]`;
+  }
+  return String(value);
+}
+
+function compactToolTraceForSync(trace: ChatToolTrace | undefined): ChatToolTrace | undefined {
+  if (!trace) return undefined;
+  return {
+    ...trace,
+    scope: {
+      mode: truncateText(trace.scope.mode, 80) || undefined,
+      pageKey: truncateText(trace.scope.pageKey, 120) || undefined,
+      objectType: truncateText(trace.scope.objectType, 120) || undefined,
+      objectId: truncateText(trace.scope.objectId, 160) || undefined,
+      stockCode: truncateText(trace.scope.stockCode, 32) || undefined,
+    },
+    items: trace.items.slice(0, 20).map((item) => ({
+      ...item,
+      referenceLabel: truncateText(item.referenceLabel, 16),
+      toolName: truncateText(item.toolName, 160),
+      inputSummary: item.inputSummary.slice(0, 8).map((text) => truncateText(text, 240)),
+      outputSummary: item.outputSummary.slice(0, 8).map((text) => truncateText(text, 320)),
+      errorMessage: item.errorMessage ? truncateText(item.errorMessage, 320) : undefined,
+    })),
+    answerReferences: trace.answerReferences.slice(0, 20).map((item) => ({
+      itemId: truncateText(item.itemId, 120),
+      referenceLabel: truncateText(item.referenceLabel, 16),
+      toolName: truncateText(item.toolName, 160),
+      evidenceSummary: truncateText(item.evidenceSummary, 320),
+    })),
+    advisoryReason: trace.advisoryReason ? truncateText(trace.advisoryReason, 320) : undefined,
+  };
+}
+
+function compactMessageForSync(message: ChatMsg) {
+  const toolCalls = message.toolCalls?.slice(0, 8).map((call) => ({
+    id: truncateText(call.id, 120),
+    name: truncateText(call.name, 160),
+    args: compactObjectFields(call.args),
+    result: summarizeUnknown(call.result),
+    pending: call.pending === true,
+  })).filter((call) => call.id && call.name);
+  const actions = message.actions?.slice(0, 8).map((action) => ({
+    id: truncateText(action.id, 120),
+    actionId: truncateText(action.actionId, 160),
+    label: truncateText(action.label, 160),
+    description: action.description ? truncateText(action.description, 320) : undefined,
+    reason: action.reason ? truncateText(action.reason, 320) : undefined,
+    payload: compactObjectFields(action.payload),
+    status: action.status,
+    autoExecute: action.autoExecute === true,
+    resultMessage: action.resultMessage ? truncateText(action.resultMessage, 320) : undefined,
+  })).filter((action) => action.id && action.actionId && action.label);
+  const toolTrace = compactToolTraceForSync(message.toolTrace);
+  const content = truncateText(message.content, MAX_SYNC_CONTENT_LENGTH);
+  if (!content && !toolCalls?.length && !actions?.length && !toolTrace) return null;
+  return {
+    id: truncateText(message.id, 120),
+    role: message.role,
+    content,
+    ...(toolCalls?.length ? { toolCalls } : {}),
+    ...(actions?.length ? { actions } : {}),
+    ...(toolTrace ? { toolTrace } : {}),
+  };
+}
+
+function compactConversationForSync(conversation: ChatConversation) {
+  const normalized = normalizeConversation(conversation);
+  const messages = normalized.messages
+    .slice(-MAX_SYNC_MESSAGES_PER_CONVERSATION)
+    .map((message) => compactMessageForSync(message))
+    .filter((message): message is NonNullable<ReturnType<typeof compactMessageForSync>> => message != null);
+  return {
+    id: truncateText(normalized.id, 120),
+    title: truncateText(normalized.title || '当前会话', 160),
+    updatedAt: normalized.updatedAt,
+    workspaceId: normalized.workspaceId ? truncateText(normalized.workspaceId, 120) : undefined,
+    messages,
+  };
+}
+
+function compactConversationsForSync(conversations: ChatConversation[]) {
+  return conversations
+    .map((conversation) => normalizeConversation(conversation))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .slice(0, MAX_SYNC_CONVERSATIONS)
+    .map((conversation) => compactConversationForSync(conversation));
 }
 
 function upsertConversation(
@@ -397,20 +514,7 @@ export const useChatStore = create<ChatState>()(
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              conversations: conversations.map((conversation) => ({
-                id: conversation.id,
-                title: conversation.title,
-                updatedAt: conversation.updatedAt,
-                workspaceId: conversation.workspaceId,
-                messages: conversation.messages.map((message) => ({
-                  id: message.id,
-                  role: message.role,
-                  content: message.content,
-                  toolCalls: message.toolCalls,
-                  toolTrace: message.toolTrace,
-                  actions: message.actions,
-                })),
-              })),
+              conversations: compactConversationsForSync(conversations),
             }),
           }, { redirectOnUnauthorized: false });
         } catch {

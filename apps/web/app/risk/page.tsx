@@ -71,6 +71,20 @@ function brief(v: unknown): string {
   return pairs.map(([k, x]) => `${k}:${String(x)}`).join(' | ');
 }
 
+function hasUsefulRiskData(value: unknown): boolean {
+  if (value == null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value !== 'object') return true;
+  const entries = Object.values(value as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  return entries.some((item) => {
+    if (item == null) return false;
+    if (Array.isArray(item)) return item.length > 0;
+    if (typeof item === 'object') return hasUsefulRiskData(item);
+    return String(item).trim().length > 0;
+  });
+}
+
 export default function RiskPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
@@ -91,6 +105,17 @@ export default function RiskPage() {
     () => buildRiskQueryString(searchParams.get('portfolioId') ?? '', searchParams.get('lookbackDays') ?? '252'),
     [searchParams],
   );
+
+  useEffect(() => {
+    const queryPortfolioId = searchParams.get('portfolioId');
+    const queryLookbackDays = searchParams.get('lookbackDays');
+    if (queryPortfolioId != null && queryPortfolioId !== portfolioId) {
+      setPortfolioId(queryPortfolioId);
+    }
+    if (queryLookbackDays != null && queryLookbackDays !== lookbackDays) {
+      setLookbackDays(queryLookbackDays);
+    }
+  }, [lookbackDays, portfolioId, searchParams]);
 
   const summaryQ = useApiQuery<RiskSummary>(submittedQs ? `/risk/summary?${submittedQs}` : null, {
     critical: true,
@@ -140,21 +165,22 @@ export default function RiskPage() {
 
   const moduleCards = useMemo(() => {
     const cfg: Array<{ key: ModuleKey; title: string; data: unknown }> = [
-      { key: 'var', title: 'VaR', data: summary?.varResult },
+      { key: 'var', title: 'VaR', data: varResult ?? summary?.varResult },
       { key: 'stress', title: '压力测试', data: summary?.stressResult },
       { key: 'exposure', title: '风险暴露', data: summary?.exposureResult },
     ];
     return cfg.map((x) => {
       const st = summary?.moduleStatus?.[x.key];
-      const ok = st?.ok ?? x.data != null;
+      const hasData = hasUsefulRiskData(x.data);
+      const ok = st?.ok === true && hasData || (st?.ok == null && hasData);
       return {
         ...x,
         status: ok ? '成功' : summary?.degraded ? '降级' : '空数据',
-        reason: st?.reason ?? null,
+        reason: st?.reason ?? (hasData ? null : `${x.title} 未返回可展示数据`),
         brief: brief(x.data),
       };
     });
-  }, [summary]);
+  }, [summary, varResult]);
 
   const varBarItems = useMemo(() => {
     if (!varResult) return [];
@@ -232,11 +258,11 @@ export default function RiskPage() {
       .map(([k, v]) => ({ name: k, value: Math.abs(Number(v)) }));
   }, [summary]);
 
-  const allEmpty = !!summary && moduleCards.every((c) => c.data == null);
+  const allEmpty = !!summary && moduleCards.every((c) => c.status !== '成功');
   const partialDegraded =
-    !!summary?.degraded && moduleCards.some((c) => c.data != null) && moduleCards.some((c) => c.data == null);
+    !!summary && moduleCards.some((c) => c.status === '成功') && moduleCards.some((c) => c.status !== '成功');
   const showInitialEmptyState = !summary && !loading && !error;
-  const availableModuleCount = moduleCards.filter((item) => item.data != null).length;
+  const availableModuleCount = moduleCards.filter((item) => item.status === '成功').length;
   const displayPortfolio = portfolioId || (topCards.portfolioId !== '-' ? topCards.portfolioId : '未选择');
   const latestRiskRefreshAt =
     [summaryQ.dataUpdatedAt, varQ.dataUpdatedAt]
@@ -384,6 +410,15 @@ export default function RiskPage() {
     if (!workbenchHydrated) return;
     let appliedWorkspaceDefaults = false;
     const deferredUpdates: Array<() => void> = [];
+    const nextPortfolioId = !portfolioId && workbenchContext.portfolioId
+      ? workbenchContext.portfolioId
+      : portfolioId;
+    const nextLookbackDays =
+      typeof workbenchContext.lookbackDays === 'number' &&
+      !searchParams.get('lookbackDays') &&
+      lookbackDays !== String(workbenchContext.lookbackDays)
+        ? String(workbenchContext.lookbackDays)
+        : lookbackDays;
     if (!portfolioId && workbenchContext.portfolioId) {
       appliedWorkspaceDefaults = true;
       deferredUpdates.push(() => setPortfolioId(workbenchContext.portfolioId!));
@@ -400,11 +435,18 @@ export default function RiskPage() {
     if (!deferredUpdates.length) return;
     const timer = window.setTimeout(() => {
       deferredUpdates.forEach((apply) => apply());
+      const hasExplicitPortfolio = Boolean(searchParams.get('portfolioId'));
+      const hasExplicitLookback = Boolean(searchParams.get('lookbackDays'));
+      if (!hasExplicitPortfolio || !hasExplicitLookback) {
+        router.replace(`${pathname}?${buildRiskQueryString(nextPortfolioId, nextLookbackDays)}`, { scroll: false });
+      }
     }, 0);
     return () => window.clearTimeout(timer);
   }, [
     lookbackDays,
+    pathname,
     portfolioId,
+    router,
     searchParams,
     workbenchContext.lookbackDays,
     workbenchContext.portfolioId,
@@ -451,7 +493,7 @@ export default function RiskPage() {
         <div className={`grid gap-5 ${compactLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_320px]'}`}>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Risk Workspace</Badge>
+              <Badge variant="info">风险工作台</Badge>
               <Badge variant={displayPortfolio !== '未选择' ? 'success' : 'warning'}>
                 {displayPortfolio !== '未选择' ? `组合 ${displayPortfolio}` : '等待选择组合'}
               </Badge>
@@ -463,7 +505,7 @@ export default function RiskPage() {
               风险分析工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary sm:text-[15px]">
-              先确认组合和窗口，再直接进入参数与结果区。排障、阅读建议和原始响应已下沉。
+              先确认组合和观察窗口，再进入参数与结果区；排障信息和原始响应可按需展开查看。
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -556,10 +598,10 @@ export default function RiskPage() {
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Configuration Workspace</div>
+            <div className="eyebrow">参数配置</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">参数工作台</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这里只保留组合和窗口选择，模板与辅助动作下沉到“更多选项”。
+              先选择组合与回看窗口；常用模板和辅助动作可在“更多选项”里处理。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -645,10 +687,10 @@ export default function RiskPage() {
       <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Result Workspace</div>
+            <div className="eyebrow">结果视图</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">风险结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              默认只展开一个结果视图，原始响应与排障说明移到次区。
+              先查看当前结果视图；如结果缺失或降级，再展开原始响应与排障说明。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">

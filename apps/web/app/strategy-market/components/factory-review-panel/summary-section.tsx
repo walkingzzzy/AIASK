@@ -2,6 +2,7 @@
 
 import { Badge, DataTable, KpiCard, SectionCard } from '@/components/ui';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { normalizeStrategyPercentMetric } from '@/lib/strategy-metrics';
 import { formatDateTime, shortText } from '@/app/strategy-market/lib/factory-review-view-model';
 import { qualityBadgeVariant, qualityLabelText } from './helpers';
 import type {
@@ -188,9 +189,9 @@ export function SummarySection({
         <SectionCard className="p-3">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
-              <h3 className="mt-0 mb-1">Timescale 执行审计验收</h3>
+              <h3 className="mt-0 mb-1">Timescale 执行审计校验</h3>
               <p className="mb-0 text-sm text-text-secondary">
-                把 migration、backfill、position/fill round-trip 和 hard gate readiness 放在同一个 acceptance matrix 里。
+                汇总迁移、回填、成交到仓位闭环和强校验状态，帮助确认执行审计是否可以进入下一步。
               </p>
             </div>
             <button
@@ -198,24 +199,24 @@ export function SummarySection({
               disabled={runExecutionAuditAcceptancePending}
               className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
             >
-              {runExecutionAuditAcceptancePending ? '回填验收中...' : '执行回填验收'}
+              {runExecutionAuditAcceptancePending ? '正在回填校验' : '执行回填校验'}
             </button>
           </div>
           <div className="flex gap-2 flex-wrap mb-3">
             <Badge variant={acceptanceMatrix.overall_ready ? 'success' : 'warning'}>
-              Overall: {acceptanceMatrix.overall_ready ? 'Ready' : 'Pending'}
+              总体：{acceptanceMatrix.overall_ready ? '已就绪' : '待确认'}
             </Badge>
             <Badge variant={acceptanceMatrix.schema_ready ? 'success' : 'danger'}>
-              Schema {acceptanceMatrix.schema_ready ? 'Ready' : 'Missing'}
+              结构：{acceptanceMatrix.schema_ready ? '已就绪' : '缺失'}
             </Badge>
             <Badge variant={acceptanceMatrix.migration_ready ? 'success' : 'warning'}>
-              Migration {acceptanceMatrix.migration_ready ? 'Ready' : 'Pending'}
+              迁移：{acceptanceMatrix.migration_ready ? '已就绪' : '待确认'}
             </Badge>
             <Badge variant={acceptanceMatrix.fill_round_trip_ready ? 'success' : 'warning'}>
-              Round Trip {acceptanceMatrix.fill_round_trip_ready ? 'Ready' : 'Incomplete'}
+              成交闭环：{acceptanceMatrix.fill_round_trip_ready ? '已就绪' : '未闭环'}
             </Badge>
             <Badge variant={acceptanceMatrix.hard_gate_ready ? 'success' : 'warning'}>
-              Hard Gate {acceptanceMatrix.hard_gate_ready ? 'Ready' : 'Blocked'}
+              强校验：{acceptanceMatrix.hard_gate_ready ? '已就绪' : '阻塞'}
             </Badge>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
@@ -226,12 +227,12 @@ export function SummarySection({
           </div>
           <DataTable
             columns={[
-              { key: 'item', label: '验收项' },
+              { key: 'item', label: '校验项' },
               { key: 'value', label: '结果' },
             ]}
             rows={[
-              { item: 'paper_orders.position_id 覆盖率', value: orderCoverage.position_id_ratio == null ? '-' : fmtPct(Number(orderCoverage.position_id_ratio)) },
-              { item: 'paper_trades.position_id 覆盖率', value: tradeCoverage.position_id_ratio == null ? '-' : fmtPct(Number(tradeCoverage.position_id_ratio)) },
+              { item: 'paper_orders.position_id 覆盖率', value: orderCoverage.position_id_ratio == null ? '-' : fmtPct(normalizeStrategyPercentMetric(orderCoverage.position_id_ratio)) },
+              { item: 'paper_trades.position_id 覆盖率', value: tradeCoverage.position_id_ratio == null ? '-' : fmtPct(normalizeStrategyPercentMetric(tradeCoverage.position_id_ratio)) },
               { item: '本地证据链', value: acceptanceMatrix.native_lineage_ready ? 'native_ready' : 'missing' },
               { item: 'Trade Evidence', value: acceptanceMatrix.trade_evidence_ready ? 'ready' : 'insufficient' },
               { item: 'Backfill 执行', value: executionAuditAcceptance.backfill_executed ? '是' : '否' },
@@ -261,13 +262,16 @@ export function SummarySection({
         <h3 className="mt-0">孵化观察窗口</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
           <KpiCard title="Sharpe" value={fmtNum(incubation?.sharpe_ratio ?? latestMetric?.sharpe_ratio, 2)} />
-          <KpiCard title="最大回撤" value={fmtPct(incubation?.max_drawdown ?? latestMetric?.max_drawdown)} />
+          <KpiCard
+            title="最大回撤"
+            value={fmtPct(normalizeStrategyPercentMetric(incubation?.max_drawdown ?? latestMetric?.max_drawdown))}
+          />
           <KpiCard title="前向IC(5D)" value={fmtNum(incubation?.forward_ic_5d ?? latestMetric?.forward_ic_5d, 4)} />
           <KpiCard title="前向Sharpe(5D)" value={fmtNum(incubation?.forward_sharpe_5d ?? latestMetric?.forward_sharpe_5d, 4)} />
         </div>
         <div className="flex gap-2 flex-wrap text-sm">
           <Badge variant={promotionReadyBadge ? 'success' : 'warning'}>
-            {promotionReadyBadge ? '达到上架条件' : '快照/Trace 仍在观察中'}
+            {promotionReadyBadge ? '达到上架条件' : '快照/追踪仍在观察中'}
           </Badge>
           <Badge variant={incubation?.deprecation_risk ? 'danger' : 'neutral'}>
             {incubation?.deprecation_risk ? '存在淘汰风险' : '暂无淘汰风险'}

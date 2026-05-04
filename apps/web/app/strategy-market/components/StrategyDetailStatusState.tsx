@@ -86,7 +86,7 @@ export function StrategyDetailErrorState({
           <>
             <ErrorState
               text="策略详情暂时无法加载"
-              hint="可以先返回策略超市重新选择，或稍后再试；原始接口路径和技术细节已下沉到下方折叠区。"
+              hint="可以先返回策略超市重新选择，或稍后再试；原始接口路径和技术细节可在下方折叠区查看。"
             />
             <div className="mt-4 flex flex-wrap gap-2">
               <Link href="/strategy-market" className={chipLinkCls}>
@@ -103,7 +103,7 @@ export function StrategyDetailErrorState({
             <summary className="cursor-pointer text-xs text-text-muted">查看技术详情</summary>
             <div className="panel-soft mt-2 rounded-[22px] p-3 text-xs text-text-secondary">
               <div>策略 ID：{strategyId ?? '-'}</div>
-              {traceId ? <div className="mt-1">Trace ID：{traceId}</div> : null}
+              {traceId ? <div className="mt-1">追踪 ID：{traceId}</div> : null}
               <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-xs">{detailError}</pre>
             </div>
           </details>

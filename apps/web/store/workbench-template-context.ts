@@ -9,6 +9,7 @@ import type {
 
 const WORKSPACE_CONTEXT_KEYS: Array<keyof WorkspaceSharedContext> = [
   'stockCode',
+  'stockConfirmedAt',
   'accountId',
   'executionId',
   'artifactId',
@@ -21,9 +22,13 @@ const WORKSPACE_CONTEXT_KEYS: Array<keyof WorkspaceSharedContext> = [
   'eventCode',
   'strategyId',
   'strategyName',
+  'linkedStrategyId',
+  'linkedStrategyName',
+  'screenerQuery',
   'sourcePage',
   'taskType',
   'resultType',
+  'strategyTestMode',
 ];
 
 function normalizeWorkspaceContextValue(
@@ -39,7 +44,11 @@ function normalizeWorkspaceContextValue(
   }
 
   if (key === 'mode') {
-    return value === 'portfolio' ? 'portfolio' : value === 'account' ? 'account' : null;
+    return value === 'portfolio' ? 'portfolio' : value === 'account' ? 'account' : value === 'personal-strategy' ? 'personal-strategy' : null;
+  }
+
+  if (key === 'strategyTestMode') {
+    return value === 'personal-strategy' || value === 'factory-incubation' ? value : null;
   }
 
   const normalized = String(value).trim();

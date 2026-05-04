@@ -38,7 +38,7 @@ export default function PaperTradingSummarySidebar({
 }: PaperTradingSummarySidebarProps) {
   return (
     <SectionCard className="p-4 sm:p-5">
-      <div className="eyebrow">Paper Summary</div>
+      <div className="eyebrow">模拟盘摘要</div>
       <h3 className="mt-2 mb-0 text-lg font-semibold text-text-primary">模拟盘工作区摘要</h3>
       <div className="mt-4 grid gap-3">
         <div className="metric-tile rounded-[24px] p-4">
@@ -70,7 +70,7 @@ export default function PaperTradingSummarySidebar({
           </div>
         </div>
         <div className="panel-soft rounded-[24px] p-4 text-xs text-text-secondary">
-          保存视图后，可把账户、下单参数和风控开关固定成一套模拟盘操作面板，在不同工作区之间快速复用。
+          保存视图后，可固定账户、下单参数和风控开关，在不同工作区之间快速复用。
         </div>
       </div>
     </SectionCard>

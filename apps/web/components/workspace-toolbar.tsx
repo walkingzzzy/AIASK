@@ -46,7 +46,7 @@ function contextChips(context: ReturnType<typeof selectActiveWorkspace>['context
     context.strategyName ? `策略 ${context.strategyName}` : context.strategyId ? `策略 ${context.strategyId}` : null,
     context.accountId ? `账户 ${context.accountId}` : null,
     context.executionId ? `执行 ${context.executionId}` : null,
-    context.artifactId ? `Artifact ${context.artifactId}` : null,
+    context.artifactId ? `制品 ${context.artifactId}` : null,
     context.portfolioId ? `组合 ${context.portfolioId}` : null,
     context.benchmark ? `基准 ${context.benchmark}` : null,
     context.days ? `${context.days} 天绩效` : null,
@@ -178,7 +178,7 @@ export default function WorkspaceToolbar({
                 {syncing ? '同步中' : remoteReady ? '已接入云端' : '本地工作区'}
               </Badge>
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-                Workspace Summary
+                工作区摘要
               </span>
             </div>
 

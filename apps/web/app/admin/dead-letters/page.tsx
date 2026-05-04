@@ -262,7 +262,7 @@ export default function DeadLettersPage() {
                         />
                     </SectionCard>
                 ) : (
-                    <ErrorState text={dlQ.error} hint="当前页面需要管理员权限；请求失败时不再显示“无死信消息”。" onRetry={() => dlQ.refetch()} />
+                    <ErrorState text={dlQ.error} hint="当前页面需要管理员权限；请求失败时会显示真实错误，而不是“无死信消息”。" onRetry={() => dlQ.refetch()} />
                 )}
             </PageContainer>
         );
@@ -272,7 +272,7 @@ export default function DeadLettersPage() {
         <PageContainer>
             <div className="mb-4">
                 <h1 className="text-lg font-semibold">📭 死信队列</h1>
-                <p className="mt-1 text-sm text-text-secondary">首屏只保留待处理概览和主表，排障说明与危险动作全部下沉。</p>
+                <p className="mt-1 text-sm text-text-secondary">先查看待处理概览和主表；排障说明与高风险动作可按需展开。</p>
             </div>
             {actionError ? <ErrorState text={actionError} /> : null}
 

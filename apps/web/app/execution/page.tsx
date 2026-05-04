@@ -22,6 +22,7 @@ import { useStockCode } from '@/hooks/use-stock-code';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { DataQualityBanner } from '@/components/status-state';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import {
   buildLocalResultContract,
@@ -57,6 +58,12 @@ const EXECUTION_MOBILE_PRIMARY_TABS = [
   { key: 'gateway', label: '实时网关' },
 ] as const;
 
+function readExecutionAccountId(account: unknown): string {
+  if (!account || typeof account !== 'object' || Array.isArray(account)) return '';
+  const record = account as Record<string, unknown>;
+  return String(record.account_id ?? record.id ?? '').trim();
+}
+
 export default function ExecutionPage() {
   const router = useRouter();
   const searchParams = useStableSearchParams();
@@ -68,7 +75,7 @@ export default function ExecutionPage() {
   const initialAccountId = searchParams.get('account_id') ?? '';
   const initialExecutionId = searchParams.get('execution_id') ?? '';
   const initialArtifactId = searchParams.get('artifact_id') ?? '';
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode(searchParams.get('code') ?? '600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode(searchParams.get('code') ?? '');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
   const [price, setPrice] = useState('');
@@ -86,10 +93,16 @@ export default function ExecutionPage() {
   const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
 
   const accountsQ = useApiQuery<PaperTradingAccountsResponse | unknown[]>('/paper-trading/accounts');
+  const accounts = useMemo(
+    () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as Array<{ account_id?: string }>,
+    [accountsQ.data],
+  );
+  const firstAccountId = useMemo(
+    () => accounts.map(readExecutionAccountId).find(Boolean) ?? '',
+    [accounts],
+  );
   const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>(
-    accountId
-      ? `/paper-trading/pending-orders?account_id=${encodeURIComponent(accountId)}`
-      : '/paper-trading/pending-orders',
+    accountId ? `/paper-trading/pending-orders?account_id=${encodeURIComponent(accountId)}` : null,
   );
   const routeExecutionApi = useApiMutation<Record<string, unknown>>();
   const workbenchPath = useMemo(() => {
@@ -119,10 +132,6 @@ export default function ExecutionPage() {
   const { liveGatewayReady, liveOrderCount, liveFillCount, panelProps: liveGatewayPanelProps } =
     useExecutionLiveGateway({ accountId });
 
-  const accounts = useMemo(
-    () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as Array<{ account_id?: string }>,
-    [accountsQ.data],
-  );
   const pendingOrders = useMemo(() => pendingQ.data?.orders ?? [], [pendingQ.data]);
   const latestExecution = routeExecutionApi.data ?? null;
   const currentExecutionId = useMemo(
@@ -161,20 +170,28 @@ export default function ExecutionPage() {
       ? asRecord((executionWorkbench.result as Record<string, unknown>).execution)
       : null;
   const executionInsight = useMemo(() => {
-    if (executionWorkbench?.overview) {
+    const overview = executionWorkbench?.overview;
+    const hasExecutionOverview = Boolean(
+      overview?.executionId ||
+        overview?.code ||
+        overview?.status ||
+        overview?.algorithm ||
+        overview?.totalShares,
+    );
+    if (overview && hasExecutionOverview) {
       return {
-        taskId: executionWorkbench.overview.executionId ?? '',
-        code: executionWorkbench.overview.code ?? '',
-        status: executionWorkbench.overview.status ?? '',
-        algorithm: executionWorkbench.overview.algorithm ?? '',
-        totalShares: executionWorkbench.overview.totalShares ?? null,
-        durationMinutes: executionWorkbench.overview.durationMinutes ?? null,
-        slices: executionWorkbench.overview.slices ?? null,
-        warningCount: executionWorkbench.overview.warningCount ?? executionWorkbench.warnings?.length ?? 0,
-        hasHighSeverity: executionWorkbench.overview.hasHighSeverity ?? false,
+        taskId: overview.executionId ?? '',
+        code: overview.code ?? '',
+        status: overview.status ?? '',
+        algorithm: overview.algorithm ?? '',
+        totalShares: overview.totalShares ?? null,
+        durationMinutes: overview.durationMinutes ?? null,
+        slices: overview.slices ?? null,
+        warningCount: overview.warningCount ?? executionWorkbench.warnings?.length ?? 0,
+        hasHighSeverity: overview.hasHighSeverity ?? false,
         estimatedCostTotal: executionWorkbench.cost?.estimatedTotal ?? null,
-        lifecycleCount: executionWorkbench.overview.lifecycleCount ?? null,
-        softGateProfile: executionWorkbench.overview.softGateProfile ?? '',
+        lifecycleCount: overview.lifecycleCount ?? null,
+        softGateProfile: overview.softGateProfile ?? '',
       };
     }
     if (statusPayload && Object.keys(statusPayload).length > 0) return readExecutionInsight(statusPayload);
@@ -251,6 +268,15 @@ export default function ExecutionPage() {
   }, [activeWorkspaceId, searchParams, setCode, workbenchContext, workbenchHydrated]);
 
   useEffect(() => {
+    if (accountId || initialAccountId) return;
+    const workspaceAccountId = String(workbenchContext.accountId ?? '').trim();
+    const nextAccountId = workspaceAccountId || firstAccountId;
+    if (nextAccountId) {
+      queueMicrotask(() => setAccountId(nextAccountId));
+    }
+  }, [accountId, firstAccountId, initialAccountId, workbenchContext.accountId]);
+
+  useEffect(() => {
     if (!workbenchHydrated) return;
     updateWorkbenchContext({
       stockCode: activeExecutionCode || null,
@@ -311,6 +337,10 @@ export default function ExecutionPage() {
       setFormError('止损单必须填写有效止损价');
       return;
     }
+    if (!accountId) {
+      setFormError('请先选择模拟交易账户。执行页不会默认使用 default 账户，以免把请求打到不存在或非测试账户。');
+      return;
+    }
 
     const body: PaperTradingRouteExecutionInput = {
       code: trimmedCode,
@@ -369,7 +399,7 @@ export default function ExecutionPage() {
     event?.preventDefault();
     const nextId = artifactIdInput.trim();
     if (!nextId) {
-      setFormError('请输入 artifact_id');
+      setFormError('请输入执行制品 ID');
       return;
     }
     setFormError(null);
@@ -472,7 +502,7 @@ export default function ExecutionPage() {
 
     setFormError(null);
     return {
-      message: `已更新执行参数${nextCode ? `，标的 ${nextCode}` : ''}${nextDirection ? `，方向 ${nextDirection === 'buy' ? '买入' : '卖出'}` : ''}${nextQuantity != null ? `，数量 ${Math.trunc(nextQuantity)} 股` : ''}${nextArtifactId ? `，artifact ${nextArtifactId}` : ''}`,
+      message: `已更新执行参数${nextCode ? `，标的 ${nextCode}` : ''}${nextDirection ? `，方向 ${nextDirection === 'buy' ? '买入' : '卖出'}` : ''}${nextQuantity != null ? `，数量 ${Math.trunc(nextQuantity)} 股` : ''}${nextArtifactId ? `，制品 ${nextArtifactId}` : ''}`,
     };
   }
 
@@ -539,7 +569,7 @@ export default function ExecutionPage() {
     });
     addWorkbenchTask({
       pageKey: 'execution',
-      title: resolvedArtifactId ? `查看 artifact ${resolvedArtifactId}` : '查看 artifact 空态契约',
+      title: resolvedArtifactId ? `查看执行制品 ${resolvedArtifactId}` : '查看执行制品空态',
       href,
       kind: 'artifact-review',
       payload: { accountId, executionId: currentExecutionId, artifactId: resolvedArtifactId || null },
@@ -584,7 +614,7 @@ export default function ExecutionPage() {
       id: 'execution.update-form',
       label: '更新执行参数',
       description:
-        '支持 payload: code, direction, quantity, urgency, orderType, price, stopPrice, accountId, executionId, artifactId，用于让 Copilot 直接改中间执行表单。',
+        '支持 payload: code, direction, quantity, urgency, orderType, price, stopPrice, accountId, executionId, artifactId，用于让 Copilot 调整当前执行表单。',
       keywords: ['更新参数', '表单联动', 'payload'],
       scope: 'page' as const,
       pageKey: 'execution',
@@ -689,26 +719,26 @@ export default function ExecutionPage() {
     },
     {
       id: 'execution.query-artifact',
-      label: '查询 artifact',
-      description: '按当前 artifact_id 查询对应执行任务和详情',
-      keywords: ['artifact', '任务联动'],
+      label: '查询执行制品',
+      description: '按当前制品 ID 查询对应执行任务和详情',
+      keywords: ['制品', '任务联动'],
       scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         handleArtifactQuery();
-        return { message: '已查询 artifact' };
+        return { message: '已查询执行制品' };
       },
     },
     {
       id: 'execution.open-artifact',
-      label: '打开 artifact 详情页',
-      description: '进入 artifact 独立详情页查看关联任务和执行链路',
-      keywords: ['artifact 详情', '任务链路'],
+      label: '打开执行制品详情页',
+      description: '进入执行制品详情页查看关联任务和执行链路',
+      keywords: ['制品详情', '任务链路'],
       scope: 'page' as const,
       pageKey: 'execution',
       run: () => {
         openArtifactDetail();
-        return { message: `已打开 artifact ${currentArtifactId}` };
+        return { message: `已打开执行制品 ${currentArtifactId}` };
       },
     },
   ];
@@ -876,10 +906,10 @@ export default function ExecutionPage() {
       <div className="panel-soft mb-4 rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Primary Focus</div>
+            <div className="eyebrow">执行主区</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">执行主区切换</h2>
             <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-              默认只展开一个主任务面板。先下单或先看网关状态，再结合右侧状态、挂单和复盘摘要继续处理。
+              先选择下单或查看实时网关，再结合状态、挂单和复盘摘要继续处理执行任务。
             </p>
           </div>
           <TabBar tabs={EXECUTION_MOBILE_PRIMARY_TABS} active={mobilePrimaryTab} onChange={setMobilePrimaryTab} />
@@ -913,12 +943,19 @@ export default function ExecutionPage() {
         onRefreshLiveGateway={liveGatewayPanelProps.onRefresh}
       />
 
+      <DataQualityBanner
+        trust={tasksQ.trust}
+        title="执行任务列表数据质量"
+        onRetry={() => void tasksQ.refetch()}
+        className="mb-4"
+      />
+
       <ResponsiveResultWorkbench pageKey="execution" title="执行结果工作台" result={executionResult} />
 
       {!collapseToTabs ? (
         <CollapsibleSectionCard
           title="工作区工具"
-          summary="执行页的保存视图、布局和任务同步下沉到工具层，不再默认撑高首屏。"
+          summary="这里用于保存执行页视图、调整布局和同步任务，适合在完成主操作后整理工作区。"
           className="mb-4"
         >
           <WorkspaceToolbar
@@ -939,7 +976,7 @@ export default function ExecutionPage() {
           <KpiCard title="执行模式" value={urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'} />
           <KpiCard title="挂单数量" value={pendingOrders.length} />
           <KpiCard title="执行单号" value={currentExecutionId || '-'} />
-          <KpiCard title="Artifact" value={currentArtifactId || '-'} />
+          <KpiCard title="执行制品" value={currentArtifactId || '-'} />
         </KpiGrid>
       ) : null}
 

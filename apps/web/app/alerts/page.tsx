@@ -58,7 +58,7 @@ const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
 export default function AlertsPage() {
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [indicator, setIndicator] = useState('price');
   const [condition, setCondition] = useState('>');
   const [value, setValue] = useState('1800');
@@ -67,7 +67,7 @@ export default function AlertsPage() {
   const [pendingAction, setPendingAction] = useState<PendingAlertAction | null>(null);
 
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
-  const listQ = useApiQuery<ListData>(`/alerts/list?status=${encodeURIComponent(status)}`);
+  const listQ = useApiQuery<ListData>(`/alerts/list?status=${encodeURIComponent(status)}`, { critical: true });
   const createApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
   const deleteApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
 
@@ -258,7 +258,7 @@ export default function AlertsPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Alerts Workspace</Badge>
+              <Badge variant="info">告警工作台</Badge>
               <Badge variant="neutral">{STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status}</Badge>
               <Badge variant={items.length > 0 ? 'success' : 'warning'}>
                 {items.length > 0 ? `已加载 ${items.length} 条规则` : '等待创建或加载'}
@@ -268,11 +268,11 @@ export default function AlertsPage() {
               告警中心工作台
             </h1>
             <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
-              这一页把模板、创建、筛选和结果放进一条连续链路。先确定监控指标和阈值，再在右侧立即确认列表结果，不用在多个页面之间来回跳转。
+              这里可以用模板创建规则、筛选告警列表并立即核对结果。先确定监控指标和阈值，再确认规则是否已进入当前列表。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button type="submit" form="alerts-create-form" disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
-                {loading ? '处理中...' : '创建告警'}
+                {loading ? '正在创建...' : '创建告警'}
               </button>
               <button type="button" onClick={() => listQ.refetch()} className={HERO_SECONDARY_BUTTON_CLS}>
                 刷新列表
@@ -282,7 +282,7 @@ export default function AlertsPage() {
             <div className="mt-5 hidden gap-3 md:grid md:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '未选择标的'}</div>
                 <div className="mt-1 text-xs text-text-secondary">用于创建下一条监控规则</div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
@@ -313,7 +313,7 @@ export default function AlertsPage() {
                 <div className={NOTE_CARD_CLS}>1. 先用模板快速建立第一条规则，再按需要微调阈值。</div>
                 <div className={NOTE_CARD_CLS}>2. 规则创建后会立即刷新列表，优先确认是否落在当前筛选状态里。</div>
                 <div className={NOTE_CARD_CLS}>
-                  3. 盘中异动更适合监控 `price` 与 `volume_ratio`，震荡策略更适合 `rsi`。
+                  3. 盘中异动更适合监控价格与量比，震荡策略更适合监控 RSI。
                 </div>
               </div>
             </div>
@@ -345,10 +345,10 @@ export default function AlertsPage() {
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Create Alert</div>
+              <div className="eyebrow">创建告警</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">创建告警</h2>
               <p className="mb-0 mt-2 hidden text-sm leading-7 text-text-secondary sm:block">
-                模板、创建结果和列表放在同一任务流中。创建成功后右侧会立即显示最新结果，避免“创建完不知道去哪看”。
+                先用模板或手工参数创建规则，创建成功后右侧会立即显示最新结果。
               </p>
             </div>
             <Badge variant="info">步骤 1</Badge>
@@ -439,7 +439,7 @@ export default function AlertsPage() {
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Alert List</div>
+              <div className="eyebrow">告警列表</div>
               <h2 className="mb-0 mt-2 flex items-center gap-2 text-xl font-semibold text-text-primary">
                 告警列表
                 <Badge variant={items.length > 0 ? 'info' : 'neutral'}>{items.length}</Badge>
@@ -478,7 +478,7 @@ export default function AlertsPage() {
             </button>
           </div>
 
-          {loading ? <LoadingState text="处理中..." /> : null}
+          {loading ? <LoadingState text="正在加载告警规则..." /> : null}
           {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
 
           <MetaLine>

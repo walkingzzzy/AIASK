@@ -39,12 +39,12 @@ export default function FundFlowHero({
 
   return (
     <LightOverviewHero
-      eyebrow="Flow Workspace"
+      eyebrow="资金工作台"
       title="资金流向工作台"
-      summary="先判断钱正在流向哪里，再把个股、板块、北向和融资融券这几类观察路径收束到同一套工作台语言里。"
+      summary="先判断资金正在流向哪里，再按个股、板块、北向和融资融券几条路径继续核对。"
       badges={(
         <>
-          <Badge variant="info">Flow Workspace</Badge>
+          <Badge variant="info">资金工作台</Badge>
           <Badge variant="neutral">{activeTabLabel}</Badge>
           <Badge variant={hasError ? 'warning' : loading ? 'warning' : 'success'}>{tabStatusLabel}</Badge>
         </>

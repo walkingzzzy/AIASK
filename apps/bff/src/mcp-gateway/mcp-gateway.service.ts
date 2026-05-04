@@ -74,6 +74,30 @@ type BuildIsolatedPythonPathOptions = {
   exists?: (path: string) => boolean;
 };
 
+type McpFailureMode = 'timeout' | 'transport' | 'validation' | 'tool_error' | 'unknown';
+
+type ToolMetricBucket = {
+  calls: number;
+  errors: number;
+  totalLatencyMs: number;
+  samples: number[];
+  recent: ToolMetricSample[];
+  failureModes: Partial<Record<McpFailureMode, number>>;
+};
+
+type ToolMetricSample = {
+  name: string;
+  latencyMs: number;
+  errored: boolean;
+  failureMode?: McpFailureMode;
+  at: number;
+};
+
+type ToolCircuitState = {
+  openUntil: number;
+  reason: string;
+};
+
 export function buildIsolatedPythonPath({
   cwd,
   configured,
@@ -99,15 +123,20 @@ export function buildIsolatedPythonPath({
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
   private readonly logger = new Logger(McpGatewayService.name);
-  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set<string>();
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;
+  private readonly waitQueueLimit: number;
+  private readonly dedicatedToolConnections: Set<string>;
   private readonly fullProfilePoolSlots: number;
   private readonly poolAcquireTimeoutMs: number;
   private readonly toolCallTimeoutMs: number;
   private readonly healthCacheTtlMs: number;
   private readonly healthStaleIfErrorMs: number;
+  private readonly metricsWindowSize: number;
+  private readonly toolTimeoutOverrides: Map<string, number>;
+  private readonly toolCircuitBreakerMs: number;
+  private readonly toolCircuitBreakerFailures: number;
   private readonly transportMode: McpTransportMode;
   private readonly streamableHttpUrl: string;
   private readonly allowSseFallback: boolean;
@@ -121,11 +150,18 @@ export class McpGatewayService implements OnModuleDestroy {
   private poolCreationInFlight: Promise<PooledConnection> | null = null;
   private healthCache: HealthCacheEntry | null = null;
   private healthInFlight: Promise<McpHealth> | null = null;
+  private poolHealInFlight: Promise<void> | null = null;
   private initialized = false;
+  private nextConnectionId = 0;
   private totalToolCalls = 0;
   private totalToolErrors = 0;
   private readonly latencyHistoryMs: number[] = [];
+  private readonly recentMetricEvents: ToolMetricSample[] = [];
   private readonly toolUsage = new Map<string, number>();
+  private readonly toolMetrics = new Map<string, ToolMetricBucket>();
+  private readonly toolCircuitBreakers = new Map<string, ToolCircuitState>();
+  private readonly toolCircuitFailureCounts = new Map<string, number>();
+  private readonly failureModeTotals = new Map<McpFailureMode, number>();
   private lastTransportError: string | null = null;
   private lastConnectionMeta: McpConnectionMeta | null = null;
 
@@ -137,6 +173,11 @@ export class McpGatewayService implements OnModuleDestroy {
       1,
       Number(this.configService.get<string>('MCP_POOL_SIZE', '4')),
     );
+    this.waitQueueLimit = Math.max(
+      this.poolSize,
+      Number(this.configService.get<string>('MCP_WAIT_QUEUE_LIMIT', String(this.poolSize * 8))),
+    );
+    this.dedicatedToolConnections = this.resolveDedicatedToolConnections();
     this.fullProfilePoolSlots = this.resolveConfiguredFullProfilePoolSlots();
     this.poolAcquireTimeoutMs = Math.max(
       1000,
@@ -153,6 +194,19 @@ export class McpGatewayService implements OnModuleDestroy {
     this.healthStaleIfErrorMs = Math.max(
       this.healthCacheTtlMs,
       Number(this.configService.get<string>('MCP_HEALTH_STALE_IF_ERROR_MS', '120000')),
+    );
+    this.metricsWindowSize = Math.max(
+      20,
+      Number(this.configService.get<string>('MCP_METRICS_WINDOW_SIZE', '120')),
+    );
+    this.toolTimeoutOverrides = this.resolveToolTimeoutOverrides();
+    this.toolCircuitBreakerMs = Math.max(
+      0,
+      Number(this.configService.get<string>('MCP_TOOL_CIRCUIT_BREAKER_MS', '10000')),
+    );
+    this.toolCircuitBreakerFailures = Math.max(
+      1,
+      Number(this.configService.get<string>('MCP_TOOL_CIRCUIT_BREAKER_FAILURES', '2')),
     );
     this.transportMode = this.resolveTransportMode();
     this.streamableHttpUrl = this.configService.get<string>('MCP_STREAMABLE_HTTP_URL', '').trim();
@@ -198,12 +252,32 @@ export class McpGatewayService implements OnModuleDestroy {
       ? Number(configuredExpected)
       : null;
 
-    try {
-      const conn = await this.acquire();
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      let conn: PooledConnection | null = null;
       try {
-        const tools = await conn.client.listTools(undefined, {
-          timeout: Math.min(this.toolCallTimeoutMs, 30_000),
-        });
+        conn = await this.acquire();
+        let tools: Awaited<ReturnType<Client['listTools']>>;
+        try {
+          tools = await conn.client.listTools(undefined, {
+            timeout: Math.min(this.toolCallTimeoutMs, 30_000),
+          });
+        } catch (error) {
+          this.recordTransportError(error);
+          if (this.isTransportError(error)) {
+            const retrying = attempt < 2;
+            const message =
+              `Transport error on pool[${conn.id}] while listing tools, recycling connection${retrying ? ' before retry' : ''}`;
+            if (retrying) this.logger.debug(message);
+            else this.logger.warn(message);
+            await this.recycleConnection(conn);
+            if (retrying) {
+              continue;
+            }
+          }
+          throw error;
+        }
         const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
         if (count !== null) {
           const resolvedExpectedTools = expectedTools ?? count;
@@ -225,14 +299,22 @@ export class McpGatewayService implements OnModuleDestroy {
             lastError: conn.meta.lastError ?? this.lastTransportError,
           });
         }
+        lastError = new Error('available_tools response format unknown');
+      } catch (error) {
+        lastError = error;
+        if (!(this.isTransportError(error) && attempt < 2)) {
+          break;
+        }
       } finally {
-        this.release(conn);
+        if (conn) {
+          this.release(conn);
+        }
       }
-    } catch (error) {
-      const stale = this.getStaleHealth(this.formatError(error));
-      if (stale) {
-        return stale;
-      }
+    }
+
+    const stale = this.getStaleHealth(this.formatError(lastError));
+    if (stale) {
+      return stale;
     }
 
     const transport = this.getTransportSnapshot();
@@ -258,40 +340,61 @@ export class McpGatewayService implements OnModuleDestroy {
   async callTool(
     name: string,
     args: Record<string, unknown> = {},
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; retryOnTransportError?: boolean },
   ): Promise<unknown> {
-    const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
-    const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
-    const startedAt = performance.now();
-    const timeoutMs = this.resolveToolTimeoutMs(options?.timeoutMs);
-    try {
-      const result = await this.withTimeout(
-        conn.client.callTool(
-          { name, arguments: args },
-          undefined,
-          {
-            timeout: timeoutMs,
-            resetTimeoutOnProgress: true,
-            maxTotalTimeout: timeoutMs,
-          },
-        ),
-        timeoutMs,
-        `MCP tool ${name} timed out after ${timeoutMs}ms`,
-        'tool_call',
-      );
-      this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
-      return this.normalizeToolResult(result, conn.meta);
-    } catch (error) {
-      this.recordToolMetric(name, performance.now() - startedAt, true, conn.meta);
-      if (this.isTransportError(error)) {
-        this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
-        await this.recycleConnection(conn, dedicated ? name : undefined);
+    const dedicated = this.dedicatedToolConnections.has(name);
+    const timeoutMs = this.resolveToolTimeoutMs(options?.timeoutMs, name);
+    const maxAttempts = options?.retryOnTransportError ? 2 : 1;
+    let lastError: unknown = null;
+
+    this.assertToolCircuitClosed(name);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let conn: PooledConnection | null = null;
+      const startedAt = performance.now();
+      try {
+        conn = dedicated ? await this.acquireDedicated(name, timeoutMs) : await this.acquire(timeoutMs);
+        const result = await this.withTimeout(
+          conn.client.callTool(
+            { name, arguments: args },
+            undefined,
+            {
+              timeout: timeoutMs,
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: timeoutMs,
+            },
+          ),
+          timeoutMs,
+          `MCP tool ${name} timed out after ${timeoutMs}ms`,
+          'tool_call',
+        );
+        this.recordToolMetric(name, performance.now() - startedAt, false, conn.meta);
+        this.recordToolCircuitSuccess(name);
+        return this.normalizeToolResult(result, conn.meta);
+      } catch (error) {
+        lastError = error;
+        this.recordToolMetric(name, performance.now() - startedAt, true, conn?.meta, error);
+        const transportError = this.isTransportError(error);
+        this.recordToolCircuitFailure(name, error);
+        const canRetry = transportError && attempt < maxAttempts;
+        if (transportError && conn) {
+          const message = `Transport error on pool[${conn.id}], recycling connection${canRetry ? ' before retry' : ''}`;
+          if (canRetry) this.logger.debug(message);
+          else this.logger.warn(message);
+          await this.recycleConnection(conn, dedicated ? name : undefined);
+        }
+        if (!canRetry) {
+          throw error;
+        }
+      } finally {
+        if (conn) {
+          if (dedicated) this.releaseDedicated(name, conn);
+          else this.release(conn);
+        }
       }
-      throw error;
-    } finally {
-      if (dedicated) this.releaseDedicated(name, conn);
-      else this.release(conn);
     }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? `MCP tool ${name} failed`));
   }
 
   async readResource(uri: string): Promise<unknown> {
@@ -314,7 +417,7 @@ export class McpGatewayService implements OnModuleDestroy {
       this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false, conn.meta);
       return this.normalizeResourceResult(result);
     } catch (error) {
-      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true, conn.meta);
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true, conn.meta, error);
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}] while reading resource, recycling connection`);
         await this.recycleConnection(conn);
@@ -330,29 +433,122 @@ export class McpGatewayService implements OnModuleDestroy {
     avgLatency: number;
     p99Latency: number;
     errorRate: number;
-    tools: Array<{ name: string; calls: number }>;
+    failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    queue: {
+      shared: number;
+      dedicated: number;
+      limit: number;
+      poolSize: number;
+      acquireTimeoutMs: number;
+      toolTimeoutMs: number;
+    };
+    tools: Array<{
+      name: string;
+      calls: number;
+      avgMs: number;
+      p99Ms: number;
+      errors: number;
+      errorRate: number;
+      status: 'healthy' | 'degraded' | 'down';
+      cumulativeCalls: number;
+      cumulativeErrors: number;
+      cumulativeErrorRate: number;
+      failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    }>;
+    current: {
+      windowSize: number;
+      totalCalls: number;
+      totalErrors: number;
+      avgLatency: number;
+      p99Latency: number;
+      errorRate: number;
+      failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    };
+    cumulative: {
+      totalCalls: number;
+      totalErrors: number;
+      avgLatency: number;
+      p99Latency: number;
+      errorRate: number;
+      failureModes: Array<{ mode: McpFailureMode; count: number }>;
+    };
     transport: ReturnType<McpGatewayService['getTransportSnapshot']>;
   } {
-    const samples = [...this.latencyHistoryMs].sort((a, b) => a - b);
-    const avgLatency = samples.length > 0
-      ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+    const currentStats = this.buildMetricStats(this.recentMetricEvents);
+    const cumulativeFailureModes = [...this.failureModeTotals.entries()]
+      .map(([mode, count]) => ({ mode, count }))
+      .sort((left, right) => right.count - left.count || left.mode.localeCompare(right.mode));
+    const cumulativeAvgLatency = this.latencyHistoryMs.length > 0
+      ? this.latencyHistoryMs.reduce((sum, value) => sum + value, 0) / this.latencyHistoryMs.length
       : 0;
-    const p99Index = samples.length > 0
-      ? Math.min(samples.length - 1, Math.max(0, Math.ceil(samples.length * 0.99) - 1))
+    const cumulativeSamplesSorted = [...this.latencyHistoryMs].sort((a, b) => a - b);
+    const cumulativeP99Index = cumulativeSamplesSorted.length > 0
+      ? Math.min(cumulativeSamplesSorted.length - 1, Math.max(0, Math.ceil(cumulativeSamplesSorted.length * 0.99) - 1))
       : 0;
-    const topTools = [...this.toolUsage.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    const topTools = [...this.toolMetrics.entries()]
+      .sort((left, right) => {
+        const recentDiff = right[1].recent.length - left[1].recent.length;
+        if (recentDiff !== 0) return recentDiff;
+        return right[1].calls - left[1].calls || left[0].localeCompare(right[0]);
+      })
       .slice(0, 12)
-      .map(([name, calls]) => ({ name, calls }));
+      .map(([name, bucket]) => {
+        const recentStats = this.buildMetricStats(bucket.recent);
+        const cumulativeErrorRate = bucket.calls > 0 ? (bucket.errors / bucket.calls) * 100 : 0;
+        const status: 'healthy' | 'degraded' | 'down' = recentStats.totalErrors === 0
+          ? 'healthy'
+          : recentStats.errorRate >= 50
+            ? 'down'
+            : 'degraded';
+        return {
+          name,
+          calls: recentStats.totalCalls,
+          avgMs: recentStats.avgLatency,
+          p99Ms: recentStats.p99Latency,
+          errors: recentStats.totalErrors,
+          errorRate: recentStats.errorRate,
+          status,
+          cumulativeCalls: bucket.calls,
+          cumulativeErrors: bucket.errors,
+          cumulativeErrorRate: Number(cumulativeErrorRate.toFixed(2)),
+          failureModes: recentStats.failureModes,
+        };
+      });
 
     return {
-      totalCalls: this.totalToolCalls,
-      avgLatency: Number(avgLatency.toFixed(2)),
-      p99Latency: Number((samples[p99Index] ?? 0).toFixed(2)),
-      errorRate: this.totalToolCalls > 0
-        ? Number(((this.totalToolErrors / this.totalToolCalls) * 100).toFixed(2))
-        : 0,
+      totalCalls: currentStats.totalCalls,
+      avgLatency: currentStats.avgLatency,
+      p99Latency: currentStats.p99Latency,
+      errorRate: currentStats.errorRate,
+      failureModes: currentStats.failureModes,
+      queue: {
+        shared: this.waitQueue.length,
+        dedicated: [...this.dedicatedWaitQueues.values()].reduce((sum, queue) => sum + queue.length, 0),
+        limit: this.waitQueueLimit,
+        poolSize: this.poolSize,
+        acquireTimeoutMs: this.poolAcquireTimeoutMs,
+        toolTimeoutMs: this.toolCallTimeoutMs,
+      },
       tools: topTools,
+      current: {
+        windowSize: this.metricsWindowSize,
+        totalCalls: currentStats.totalCalls,
+        totalErrors: currentStats.totalErrors,
+        avgLatency: currentStats.avgLatency,
+        p99Latency: currentStats.p99Latency,
+        errorRate: currentStats.errorRate,
+        failureModes: currentStats.failureModes,
+      },
+      cumulative: {
+        totalCalls: this.totalToolCalls,
+        totalErrors: this.totalToolErrors,
+        avgLatency: Number(cumulativeAvgLatency.toFixed(2)),
+        p99Latency: Number((cumulativeSamplesSorted[cumulativeP99Index] ?? 0).toFixed(2)),
+        errorRate: this.totalToolCalls > 0
+          ? Number(((this.totalToolErrors / this.totalToolCalls) * 100).toFixed(2))
+          : 0,
+        failureModes: cumulativeFailureModes,
+      },
       transport: this.getTransportSnapshot(),
     };
   }
@@ -383,13 +579,49 @@ export class McpGatewayService implements OnModuleDestroy {
     };
   }
 
-  resolveToolTimeoutMs(timeoutMs?: number | null): number {
-    return Math.max(1000, Number(timeoutMs ?? this.toolCallTimeoutMs));
+  resolveToolTimeoutMs(timeoutMs?: number | null, toolName?: string): number {
+    if (timeoutMs != null) {
+      return Math.max(1000, Number(timeoutMs));
+    }
+    const override = toolName ? this.toolTimeoutOverrides.get(toolName) : undefined;
+    return Math.max(1000, Number(override ?? this.toolCallTimeoutMs));
+  }
+
+  private assertToolCircuitClosed(name: string): void {
+    const state = this.toolCircuitBreakers.get(name);
+    if (!state) return;
+    if (Date.now() >= state.openUntil) {
+      this.toolCircuitBreakers.delete(name);
+      this.toolCircuitFailureCounts.delete(name);
+      return;
+    }
+    throw new McpGatewayTimeoutError(
+      `MCP tool ${name} circuit open: ${state.reason}`,
+      'tool_call',
+    );
+  }
+
+  private recordToolCircuitFailure(name: string, error: unknown): void {
+    if (this.toolCircuitBreakerMs <= 0) return;
+    const mode = this.classifyFailureMode(error);
+    if (mode !== 'timeout' && mode !== 'transport') return;
+    const failures = (this.toolCircuitFailureCounts.get(name) ?? 0) + 1;
+    this.toolCircuitFailureCounts.set(name, failures);
+    if (failures < this.toolCircuitBreakerFailures) return;
+    this.toolCircuitBreakers.set(name, {
+      openUntil: Date.now() + this.toolCircuitBreakerMs,
+      reason: this.formatError(error),
+    });
+  }
+
+  private recordToolCircuitSuccess(name: string): void {
+    this.toolCircuitFailureCounts.delete(name);
+    this.toolCircuitBreakers.delete(name);
   }
 
   /* ── Pool Management ── */
 
-  private async acquire(): Promise<PooledConnection> {
+  private async acquire(timeoutMs = this.poolAcquireTimeoutMs): Promise<PooledConnection> {
     if (!this.initialized) {
       await this.initPool();
     }
@@ -410,7 +642,8 @@ export class McpGatewayService implements OnModuleDestroy {
 
       return this.waitForConnection(
         this.waitQueue,
-        `Timed out waiting ${this.poolAcquireTimeoutMs}ms for an available MCP pool connection`,
+        `Timed out waiting ${timeoutMs}ms for an available MCP pool connection`,
+        timeoutMs,
       );
     }
   }
@@ -423,7 +656,7 @@ export class McpGatewayService implements OnModuleDestroy {
           .then((nextConn) => waiter.resolve(nextConn))
           .catch((error) => {
             this.logger.error(`Failed to reacquire MCP connection for waiter: ${String(error)}`);
-            this.waitQueue.unshift(waiter);
+            waiter.reject(error instanceof Error ? error : new Error(String(error)));
           });
       }
       return;
@@ -437,7 +670,7 @@ export class McpGatewayService implements OnModuleDestroy {
     }
   }
 
-  private async acquireDedicated(toolName: string): Promise<PooledConnection> {
+  private async acquireDedicated(toolName: string, timeoutMs = this.poolAcquireTimeoutMs): Promise<PooledConnection> {
     const existing = this.dedicatedConnections.get(toolName);
     if (existing) {
       if (!existing.busy) {
@@ -448,11 +681,12 @@ export class McpGatewayService implements OnModuleDestroy {
       this.dedicatedWaitQueues.set(toolName, queue);
       return this.waitForConnection(
         queue,
-        `Timed out waiting ${this.poolAcquireTimeoutMs}ms for dedicated MCP connection ${toolName}`,
+        `Timed out waiting ${timeoutMs}ms for dedicated MCP connection ${toolName}`,
+        timeoutMs,
       );
     }
 
-    const conn = await this.createConnection(this.poolSize + this.dedicatedConnections.size);
+    const conn = await this.createConnection(this.allocateConnectionId());
     conn.busy = true;
     this.dedicatedConnections.set(toolName, conn);
     this.logger.log(`MCP dedicated connection[${conn.id}] assigned to ${toolName}`);
@@ -461,7 +695,10 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private releaseDedicated(toolName: string, conn: PooledConnection): void {
     const current = this.dedicatedConnections.get(toolName);
-    if (current !== conn) return;
+    if (current !== conn) {
+      void this.drainDedicatedQueue(toolName);
+      return;
+    }
 
     conn.busy = false;
     const queue = this.dedicatedWaitQueues.get(toolName);
@@ -483,12 +720,15 @@ export class McpGatewayService implements OnModuleDestroy {
     }
 
     this.initPromise = (async () => {
-      const first = await this.createConnection(0);
+      const first = await this.createConnection(this.allocateConnectionId());
       this.pool.push(first);
       this.initialized = true;
       this.logger.log(
         `MCP pool initialized (1/${this.poolSize} connections, heavy-worker slots=${this.fullProfilePoolSlots})`,
       );
+      void this.warmPool().catch((error) => {
+        this.logger.warn(`MCP pool warmup stopped: ${this.formatError(error)}`);
+      });
     })();
 
     try {
@@ -504,7 +744,7 @@ export class McpGatewayService implements OnModuleDestroy {
       return null;
     }
 
-    const connectionId = this.pool.length;
+    const connectionId = this.allocateConnectionId();
     const creation = this.createConnection(connectionId);
     this.poolCreationInFlight = creation;
     try {
@@ -515,6 +755,14 @@ export class McpGatewayService implements OnModuleDestroy {
       if (this.poolCreationInFlight === creation) {
         this.poolCreationInFlight = null;
       }
+    }
+  }
+
+  private async warmPool(): Promise<void> {
+    while (this.initialized && this.pool.length < this.poolSize) {
+      const conn = await this.createPoolConnection();
+      if (!conn) continue;
+      this.logger.log(`MCP pool warmup connected (${this.pool.length}/${this.poolSize})`);
     }
   }
 
@@ -545,6 +793,7 @@ export class McpGatewayService implements OnModuleDestroy {
         };
         this.lastTransportError = meta.lastError;
         this.lastConnectionMeta = meta;
+        this.healthCache = null;
         return { id, client: resolved.client, transport: resolved.transport, busy: false, connectPromise: null, meta };
       } catch (error) {
         lastError = error;
@@ -704,16 +953,83 @@ export class McpGatewayService implements OnModuleDestroy {
       conn.transport = fresh.transport;
       conn.connectPromise = fresh.connectPromise;
       conn.meta = fresh.meta;
+      this.healthCache = null;
     } catch (err) {
       if (dedicatedTool) {
         this.dedicatedConnections.delete(dedicatedTool);
+        void this.drainDedicatedQueue(dedicatedTool);
       } else {
         const idx = this.pool.indexOf(conn);
         if (idx !== -1) {
           this.pool.splice(idx, 1);
         }
+        this.schedulePoolHeal(`recycle_failed_pool_${conn.id}`);
       }
+      this.healthCache = null;
       this.logger.error(`Failed to recycle pool[${conn.id}]: ${err}`);
+    }
+  }
+
+  private allocateConnectionId(): number {
+    const id = this.nextConnectionId;
+    this.nextConnectionId += 1;
+    return id;
+  }
+
+  private schedulePoolHeal(reason: string): void {
+    if (!this.initialized || this.poolHealInFlight) return;
+    this.poolHealInFlight = this.healPool(reason).finally(() => {
+      this.poolHealInFlight = null;
+    });
+  }
+
+  private async healPool(reason: string): Promise<void> {
+    this.logger.warn(`MCP pool self-heal started (${reason}; active=${this.pool.length}/${this.poolSize})`);
+    while (this.initialized && this.pool.length < this.poolSize) {
+      try {
+        const conn = await this.createPoolConnection();
+        if (!conn) continue;
+        this.logger.log(`MCP pool self-heal connected (${this.pool.length}/${this.poolSize})`);
+      } catch (error) {
+        this.logger.warn(`MCP pool self-heal paused: ${this.formatError(error)}`);
+        break;
+      }
+    }
+    this.drainSharedWaitQueue();
+  }
+
+  private drainSharedWaitQueue(): void {
+    while (this.waitQueue.length > 0) {
+      const idle = this.pool.find((conn) => !conn.busy);
+      const waiter = this.waitQueue.shift();
+      if (!waiter) return;
+      if (!idle) {
+        void this.acquire()
+          .then((conn) => waiter.resolve(conn))
+          .catch((error) => waiter.reject(error instanceof Error ? error : new Error(String(error))));
+        return;
+      }
+      idle.busy = true;
+      waiter.resolve(idle);
+    }
+  }
+
+  private async drainDedicatedQueue(toolName: string): Promise<void> {
+    const queue = this.dedicatedWaitQueues.get(toolName);
+    if (!queue || queue.length === 0) return;
+    if (this.dedicatedConnections.has(toolName)) return;
+
+    const waiter = queue.shift();
+    if (!waiter) return;
+    try {
+      const conn = await this.acquireDedicated(toolName);
+      waiter.resolve(conn);
+    } catch (error) {
+      waiter.reject(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      if (queue.length === 0) {
+        this.dedicatedWaitQueues.delete(toolName);
+      }
     }
   }
 
@@ -740,6 +1056,7 @@ export class McpGatewayService implements OnModuleDestroy {
     this.healthInFlight = null;
     this.initPromise = null;
     this.poolCreationInFlight = null;
+    this.poolHealInFlight = null;
     this.initialized = false;
   }
 
@@ -756,6 +1073,10 @@ export class McpGatewayService implements OnModuleDestroy {
       msg.includes('connection') ||
       msg.includes('closed') ||
       msg.includes('transport') ||
+      msg.includes('streamable http') ||
+      msg.includes('no valid session') ||
+      msg.includes('session id') ||
+      msg.includes('posting to endpoint') ||
       msg.includes('econnreset') ||
       msg.includes('econnrefused') ||
       msg.includes('broken pipe') ||
@@ -795,9 +1116,20 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private recordTransportError(error: unknown): void {
     this.lastTransportError = this.formatError(error);
+    this.healthCache = null;
   }
 
-  private waitForConnection(queue: Waiter[], timeoutMessage: string): Promise<PooledConnection> {
+  private waitForConnection(
+    queue: Waiter[],
+    timeoutMessage: string,
+    timeoutMs = this.poolAcquireTimeoutMs,
+  ): Promise<PooledConnection> {
+    if (queue.length >= this.waitQueueLimit) {
+      return Promise.reject(
+        new Error(`MCP wait queue exceeded limit ${this.waitQueueLimit}; backpressure applied`),
+      );
+    }
+
     return new Promise<PooledConnection>((resolve, reject) => {
       let waiter!: Waiter;
       waiter = {
@@ -815,7 +1147,7 @@ export class McpGatewayService implements OnModuleDestroy {
             queue.splice(index, 1);
           }
           reject(new Error(timeoutMessage));
-        }, this.poolAcquireTimeoutMs),
+        }, timeoutMs),
       };
       queue.push(waiter);
     });
@@ -960,11 +1292,90 @@ export class McpGatewayService implements OnModuleDestroy {
     return id < this.fullProfilePoolSlots ? 'worker' : 'tool-only';
   }
 
+  private resolveDedicatedToolConnections(): Set<string> {
+    const configured = this.configService.get<string>('MCP_DEDICATED_TOOLS');
+    const raw = configured && configured.trim().length > 0
+      ? configured
+      : [
+        'assistant_workflow',
+        'comprehensive_manager',
+        'decision_manager',
+        'get_kline',
+        'get_kline_data',
+        'industry_chain_manager',
+        'list_skills',
+        'market_insight_manager',
+        'paper_trading_manager',
+        'strategy_manager',
+        'stock_deep_analysis',
+        'skills_orchestrator',
+        'watchlist_manager',
+      ].join(',');
+
+    return new Set(
+      raw
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean),
+    );
+  }
+
+  private resolveToolTimeoutOverrides(): Map<string, number> {
+    const configured = this.configService.get<string>('MCP_TOOL_TIMEOUT_OVERRIDES');
+    const raw = configured && configured.trim().length > 0
+      ? configured
+      : [
+        'get_kline:60000',
+        'get_kline_data:60000',
+        'strategy_manager:120000',
+        'paper_trading_manager:90000',
+        'watchlist_manager:90000',
+      ].join(',');
+
+    const overrides = new Map<string, number>();
+    for (const item of raw.split(',')) {
+      const [name, value] = item.split(':').map((part) => part.trim());
+      const timeout = Number(value);
+      if (name && Number.isFinite(timeout) && timeout >= 1000) {
+        overrides.set(name, timeout);
+      }
+    }
+    return overrides;
+  }
+
+  private buildMetricStats(events: ToolMetricSample[]) {
+    const samples = events.map((event) => event.latencyMs).sort((a, b) => a - b);
+    const totalCalls = events.length;
+    const totalErrors = events.filter((event) => event.errored).length;
+    const avgLatency = samples.length > 0
+      ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+      : 0;
+    const p99Index = samples.length > 0
+      ? Math.min(samples.length - 1, Math.max(0, Math.ceil(samples.length * 0.99) - 1))
+      : 0;
+    const failureModes = new Map<McpFailureMode, number>();
+    for (const event of events) {
+      if (!event.errored || !event.failureMode) continue;
+      failureModes.set(event.failureMode, (failureModes.get(event.failureMode) ?? 0) + 1);
+    }
+    return {
+      totalCalls,
+      totalErrors,
+      avgLatency: Number(avgLatency.toFixed(2)),
+      p99Latency: Number((samples[p99Index] ?? 0).toFixed(2)),
+      errorRate: totalCalls > 0 ? Number(((totalErrors / totalCalls) * 100).toFixed(2)) : 0,
+      failureModes: [...failureModes.entries()]
+        .map(([mode, count]) => ({ mode, count }))
+        .sort((left, right) => right.count - left.count || left.mode.localeCompare(right.mode)),
+    };
+  }
+
   private recordToolMetric(
     name: string,
     latencyMs: number,
     errored: boolean,
     meta?: McpConnectionMeta | null,
+    error?: unknown,
   ): void {
     this.totalToolCalls += 1;
     if (errored) {
@@ -977,6 +1388,43 @@ export class McpGatewayService implements OnModuleDestroy {
     if (this.latencyHistoryMs.length > 500) {
       this.latencyHistoryMs.splice(0, this.latencyHistoryMs.length - 500);
     }
+    const failureMode = errored ? this.classifyFailureMode(error) : undefined;
+    const event: ToolMetricSample = {
+      name: normalizedName,
+      latencyMs,
+      errored,
+      failureMode,
+      at: Date.now(),
+    };
+    this.recentMetricEvents.push(event);
+    if (this.recentMetricEvents.length > this.metricsWindowSize) {
+      this.recentMetricEvents.splice(0, this.recentMetricEvents.length - this.metricsWindowSize);
+    }
+    const bucket = this.toolMetrics.get(normalizedName) ?? {
+      calls: 0,
+      errors: 0,
+      totalLatencyMs: 0,
+      samples: [],
+      recent: [],
+      failureModes: {},
+    };
+    bucket.calls += 1;
+    bucket.totalLatencyMs += latencyMs;
+    bucket.samples.push(latencyMs);
+    if (bucket.samples.length > 100) {
+      bucket.samples.splice(0, bucket.samples.length - 100);
+    }
+    bucket.recent.push(event);
+    if (bucket.recent.length > this.metricsWindowSize) {
+      bucket.recent.splice(0, bucket.recent.length - this.metricsWindowSize);
+    }
+    if (errored) {
+      bucket.errors += 1;
+      const mode = failureMode ?? 'unknown';
+      bucket.failureModes[mode] = (bucket.failureModes[mode] ?? 0) + 1;
+      this.failureModeTotals.set(mode, (this.failureModeTotals.get(mode) ?? 0) + 1);
+    }
+    this.toolMetrics.set(normalizedName, bucket);
     this.observability.recordMcpCall({
       name: normalizedName,
       latencyMs,
@@ -984,6 +1432,25 @@ export class McpGatewayService implements OnModuleDestroy {
       transportKind: meta?.transportKind ?? this.getTransportSnapshot().transportKind,
       degraded: Boolean(meta?.degraded ?? this.getTransportSnapshot().degraded),
     });
+  }
+
+  private classifyFailureMode(error: unknown): McpFailureMode {
+    if (!error) return 'unknown';
+    const message = this.formatError(error).toLowerCase();
+    if (error instanceof McpGatewayTimeoutError || message.includes('timeout') || message.includes('timed out')) {
+      return 'timeout';
+    }
+    if (this.isTransportError(error)) return 'transport';
+    if (
+      message.includes('validation') ||
+      message.includes('invalid') ||
+      message.includes('schema') ||
+      message.includes('pydantic') ||
+      message.includes('parse')
+    ) {
+      return 'validation';
+    }
+    return 'tool_error';
   }
 
   private withFallbackMetaDefaults(payload: unknown): unknown {

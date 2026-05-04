@@ -21,6 +21,10 @@ export type ChatPageContext = {
   primaryGoal?: string;
   requiredInputs?: string[];
   stockCode?: string;
+  selectedCode?: string;
+  accountId?: string;
+  strategyId?: string;
+  workspaceId?: string;
   objectType?: string;
   objectId?: string;
   resultType?: string;
@@ -61,5 +65,7 @@ export type ChatEvent =
   | { type: 'tool_result'; name: string; result: unknown }
   | { type: 'tool_trace'; trace: ChatToolTraceDto }
   | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
+  | { type: 'heartbeat'; at: string; scope?: string }
+  | { type: 'final_fallback'; content: string }
   | { type: 'error'; message: string }
   | { type: 'done' };

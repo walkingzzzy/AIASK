@@ -1,6 +1,9 @@
 'use client';
 
 import { ReactNode } from 'react';
+import type { DataTrust } from '@/lib/api';
+
+export type PageSectionStatus = 'ready' | 'loading' | 'slow' | 'degraded' | 'unavailable';
 
 export function LoadingState({ text = '加载中...' }: { text?: string }) {
   return (
@@ -36,6 +39,53 @@ export function UnavailableState({
   onRetry?: () => void;
 }) {
   return <ErrorState text={text} hint={hint ?? '请稍后重试，或先检查 BFF / MCP / 上游服务状态。'} onRetry={onRetry} />;
+}
+
+export function DataQualityBanner({
+  trust,
+  title = '数据源降级',
+  onRetry,
+  className = '',
+}: {
+  trust?: DataTrust | null;
+  title?: string;
+  onRetry?: () => void;
+  className?: string;
+}) {
+  if (!trust || !trust.degraded) return null;
+  const reasons = [...trust.reasons, ...trust.qualityFlags, trust.emptyReason]
+    .map((item) => String(item ?? '').trim())
+    .filter((item, index, list) => item.length > 0 && list.indexOf(item) === index)
+    .slice(0, 4);
+  const sourceText = trust.sources.length > 0
+    ? trust.sources
+      .slice(0, 3)
+      .map((source) => `${String(source.name ?? 'unknown')}:${String(source.status ?? 'unknown')}`)
+      .join(' / ')
+    : '';
+
+  return (
+    <div className={`rounded-[18px] border border-warning/30 bg-[linear-gradient(180deg,rgba(245,158,11,0.14),rgba(255,255,255,0.58))] px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] ${className}`} role="status">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold text-warning">{title} · {trust.status}</div>
+          <div className="mt-1 text-xs leading-5 text-text-secondary">
+            {reasons.length > 0 ? reasons.join('；') : '上游返回了非可信或不完整数据，页面已停止按正常结果展示。'}
+          </div>
+          {sourceText ? <div className="mt-1 text-[11px] text-text-muted">来源：{sourceText}</div> : null}
+        </div>
+        {onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="shrink-0 rounded-full border border-warning/30 px-3 py-1 text-xs font-medium text-warning"
+          >
+            重试
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 export function PrerequisiteState({
@@ -123,33 +173,38 @@ export function PageStatusCard({
   primaryAction,
   secondaryAction,
   example,
+  statusLabel,
   className = '',
 }: {
-  status: 'ready' | 'loading' | 'empty' | 'degraded' | 'unavailable';
+  status: PageSectionStatus | 'empty';
   title: string;
   reason: string;
   freshness?: string | null;
   primaryAction?: ReactNode;
   secondaryAction?: ReactNode;
   example?: string;
+  statusLabel?: string;
   className?: string;
 }) {
   const tone =
     status === 'unavailable'
       ? 'border-danger/20 bg-[linear-gradient(180deg,rgba(217,45,32,0.12),rgba(255,255,255,0.52))]'
-      : status === 'degraded'
+      : status === 'degraded' || status === 'slow'
         ? 'border-warning/20 bg-[linear-gradient(180deg,rgba(245,158,11,0.14),rgba(255,255,255,0.52))]'
         : 'border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.68),rgba(244,249,255,0.48))]';
-  const label =
+  const label = statusLabel || (
     status === 'unavailable'
       ? '服务不可用'
       : status === 'degraded'
         ? '降级运行'
-        : status === 'empty'
-          ? '等待输入'
-          : status === 'loading'
-            ? '加载中'
-            : '已就绪';
+        : status === 'slow'
+          ? '加载较慢'
+          : status === 'empty'
+            ? '等待输入'
+            : status === 'loading'
+              ? '加载中'
+              : '已就绪'
+  );
 
   return (
     <div className={`rounded-[24px] border p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-xl ${tone} ${className}`}>

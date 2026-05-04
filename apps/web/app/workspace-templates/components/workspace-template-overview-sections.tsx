@@ -33,7 +33,7 @@ export function WorkspaceTemplateContextCard({ baseContextChips }: WorkspaceTemp
             )}
           </div>
           <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
-            工作区模板用于“一键新建完整工作区”，任务模板用于“向当前工作区注入一组流程任务”。现在两者都支持覆盖股票、账户、执行、组合、窗口等参数，不再局限于固定注入。
+            工作区模板用于“一键新建完整工作区”，任务模板用于“向当前工作区注入一组流程任务”。两者都支持覆盖股票、账户、执行、组合、窗口等参数，适合按当前任务快速派生新流程。
           </p>
         </div>
         <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">

@@ -100,7 +100,7 @@ export default function PaperTradingTrustStatusCard({ status }: PaperTradingTrus
     <SectionCard className="mb-4 p-4 sm:p-5">
       <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]">
         <div>
-          <div className="eyebrow">Trust Gate</div>
+          <div className="eyebrow">可信边界</div>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Badge variant={status.latest ? 'success' : 'warning'}>
               {status.latest ? '数据最新' : '数据待刷新'}
@@ -109,7 +109,7 @@ export default function PaperTradingTrustStatusCard({ status }: PaperTradingTrus
               {status.demo_ready ? (status.level === 'caution' ? '谨慎演示' : '可演示') : '暂不演示'}
             </Badge>
             <Badge variant={status.environment?.dry_run ? 'warning' : 'info'}>
-              {status.environment?.dry_run ? 'dry-run' : status.environment?.label ?? '环境待确认'}
+              {status.environment?.dry_run ? '演练模式' : status.environment?.label ?? '环境待确认'}
             </Badge>
             <Badge variant={status.market_phase === 'trading' ? 'warning' : 'neutral'}>
               {status.market_phase === 'trading' ? '交易时段' : '非交易时段'}

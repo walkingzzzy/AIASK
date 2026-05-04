@@ -342,7 +342,7 @@ export function FactoryCapabilityStateStrip({ factoryStatus }: { factoryStatus: 
   const items = [
     {
       key: 'trace-ledger',
-      label: 'Trace Ledger V2',
+      label: '追踪账本 V2',
       implemented: Boolean(factoryStatus.trace_ledger_v2_implemented),
       enabled: Boolean(factoryStatus.trace_ledger_v2_enabled),
     },

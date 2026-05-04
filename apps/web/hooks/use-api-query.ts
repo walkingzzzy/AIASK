@@ -5,10 +5,13 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
   authedFetch,
   buildApiError,
+  extractDataTrust,
   getApiErrorAcceptanceStatus,
+  isAbortLikeError,
   rejectFallbackPayload,
   unwrapApiEnvelope,
 } from '@/lib/api';
+import type { DataTrust } from '@/lib/api';
 import { ensureBffAvailability, useBffAvailability } from '@/lib/bff-availability';
 import { useAuthStore } from '@/store/auth-store';
 import type { Envelope } from '@aiask/shared-types';
@@ -45,6 +48,10 @@ export type UseApiQueryOptions<TData> = {
   critical?: boolean;
   /** 额外业务校验，返回错误文案则视为失败 */
   reject?: (raw: unknown) => string | null;
+  /** 覆盖 React Query retry；默认沿用全局配置 */
+  retry?: boolean | number | ((failureCount: number, error: Error) => boolean);
+  /** 覆盖默认请求超时；<=0 表示仅使用 React Query signal */
+  timeoutMs?: number;
 };
 
 /**
@@ -66,6 +73,8 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     nonFatal = false,
     critical = false,
     reject,
+    retry,
+    timeoutMs,
   } = options;
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
   const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
@@ -79,58 +88,87 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
 
   const queryEnabled = !isLoggingOut && enabled && path != null && !bffAvailability.unavailable;
 
+  const queryRetry = retry ?? ((failureCount: number, error: Error) => !isAbortLikeError(error) && failureCount < 1);
+
   const query = useQuery<TData, Error>({
     queryKey: qk,
     queryFn: async ({ signal }) => {
       const method = fetchOptions?.method ?? (body ? 'POST' : 'GET');
-      const init: RequestInit = { method, signal };
+      const requestTimeoutMs = timeoutMs ?? (critical ? 10_000 : 12_000);
+      const controller = requestTimeoutMs > 0 ? new AbortController() : null;
+      let timedOut = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const abortFromQuery = () => controller?.abort(signal.reason);
+      if (controller) {
+        if (signal.aborted) controller.abort(signal.reason);
+        else signal.addEventListener('abort', abortFromQuery, { once: true });
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort(new DOMException('请求超时', 'AbortError'));
+        }, requestTimeoutMs);
+      }
+      const init: RequestInit = { method, signal: controller?.signal ?? signal };
       if (body) {
         init.headers = { 'content-type': 'application/json', ...fetchOptions?.headers };
         init.body = JSON.stringify(body);
       } else if (fetchOptions?.headers) {
         init.headers = fetchOptions.headers;
       }
-      const resp = await authedFetch(path!, init, { redirectOnUnauthorized });
-      const bodyPayload = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        throw buildApiError(bodyPayload, {
-          status: resp.status,
-          path: path!,
-          fallbackMessage: `HTTP ${resp.status}`,
-        });
-      }
-      const envelope = bodyPayload as Envelope<TData>;
-      const unwrapped = unwrapApiEnvelope<TData>(envelope);
-      const trace = unwrapped.traceId ? ` (traceId: ${unwrapped.traceId})` : '';
-      if (unwrapped.errorMessage) {
-        throw new Error(`${unwrapped.errorMessage} @ ${path}${trace}`);
-      }
-      const rawData = unwrapped.data;
-      if (critical) {
-        const fallbackReason = rejectFallbackPayload(rawData);
-        if (fallbackReason) {
-          throw new Error(`关键数据不可用: ${fallbackReason} @ ${path}${trace}`);
-        }
-      }
-      if (reject) {
-        const rejection = reject(rawData);
-        if (rejection) {
-          throw new Error(`${rejection} @ ${path}${trace}`);
-        }
-      }
-      if (parse) {
+      try {
+        let resp: Response;
         try {
-          return parse(rawData);
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          throw new Error(`数据结构异常: ${detail} @ ${path}${trace}`);
+          resp = await authedFetch(path!, init, { redirectOnUnauthorized });
+        } catch (error) {
+          if (timedOut && isAbortLikeError(error)) {
+            throw new Error(`请求超时: ${requestTimeoutMs}ms @ ${path}`);
+          }
+          throw error;
         }
+        const bodyPayload = await resp.json().catch(() => null);
+        if (!resp.ok) {
+          throw buildApiError(bodyPayload, {
+            status: resp.status,
+            path: path!,
+            fallbackMessage: `HTTP ${resp.status}`,
+          });
+        }
+        const envelope = bodyPayload as Envelope<TData>;
+        const unwrapped = unwrapApiEnvelope<TData>(envelope);
+        const trace = unwrapped.traceId ? ` (traceId: ${unwrapped.traceId})` : '';
+        if (unwrapped.errorMessage) {
+          throw new Error(`${unwrapped.errorMessage} @ ${path}${trace}`);
+        }
+        const rawData = unwrapped.data;
+        if (critical) {
+          const fallbackReason = rejectFallbackPayload(rawData);
+          if (fallbackReason) {
+            throw new Error(`关键数据不可用: ${fallbackReason} @ ${path}${trace}`);
+          }
+        }
+        if (reject) {
+          const rejection = reject(rawData);
+          if (rejection) {
+            throw new Error(`${rejection} @ ${path}${trace}`);
+          }
+        }
+        if (parse) {
+          try {
+            return parse(rawData);
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            throw new Error(`数据结构异常: ${detail} @ ${path}${trace}`);
+          }
+        }
+        return rawData as TData;
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (controller) signal.removeEventListener('abort', abortFromQuery);
       }
-      return rawData as TData;
     },
     enabled: queryEnabled,
     refetchInterval: refetchInterval as number | false | undefined,
     staleTime,
+    retry: queryRetry,
     placeholderData: placeholderData === 'keepPrevious' ? keepPreviousData : undefined,
   });
 
@@ -143,16 +181,21 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
   const hasQueryData = queryData != null;
   const hasUsableDataResolved = hasQueryData || hasFallbackData;
   const disabledByOffline = enabled && path != null && bffAvailability.unavailable && !hasUsableDataResolved;
+  const queryCanceled = isAbortLikeError(queryError);
   const acceptanceStatus = disabledByOffline
     ? 'unavailable'
     : bffAvailability.unavailable && hasUsableDataResolved
       ? 'degraded'
-      : getApiErrorAcceptanceStatus(queryError);
+      : queryCanceled
+        ? null
+        : getApiErrorAcceptanceStatus(queryError);
   const derivedError = nonFatal
     ? null
     : disabledByOffline
       ? '数据服务暂不可用'
-      : (queryError?.message ?? null);
+      : queryCanceled
+        ? null
+        : (queryError?.message ?? null);
   const derivedPending = queryIsPending || (enabled && path != null && bffAvailability.checking && !hasUsableDataResolved);
   const refetch = useCallback(async () => {
     if (enabled && path != null && !bffAvailability.reachable) {
@@ -183,6 +226,8 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     queryRefetch,
   ]);
 
+  const trust: DataTrust = extractDataTrust(queryData ?? fallbackData ?? null);
+
   return {
     data: queryData ?? fallbackData ?? null,
     isPending: derivedPending,
@@ -191,6 +236,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     rawError: queryError ?? null,
     acceptanceStatus,
     dataUpdatedAt: queryDataUpdatedAt,
+    trust,
     refetch,
     serviceUnavailable: disabledByOffline,
   };

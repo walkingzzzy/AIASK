@@ -100,7 +100,7 @@ export default function UserPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">User Workspace</Badge>
+              <Badge variant="info">用户中心</Badge>
               <Badge variant={user ? 'success' : 'warning'}>
                 {user ? `当前用户 ${fmt(user.username)}` : '等待加载用户信息'}
               </Badge>
@@ -190,7 +190,7 @@ export default function UserPage() {
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Profile</div>
+              <div className="eyebrow">个人资料</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">个人信息</h2>
             </div>
           </div>
@@ -241,7 +241,7 @@ export default function UserPage() {
         </div>
 
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
-          <div className="eyebrow">Quick Actions</div>
+          <div className="eyebrow">快捷操作</div>
           <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">快捷入口</h2>
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-2">
             {QUICK_LINKS.map((link) => (
@@ -289,7 +289,7 @@ export default function UserPage() {
       {!compactLayout && tradingQ.data != null ? (
         <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
           <div className="flex items-center gap-2">
-            <div className="eyebrow">Trading Summary</div>
+            <div className="eyebrow">交易摘要</div>
             <Badge variant="info">实时</Badge>
           </div>
           <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">模拟交易概览</h2>
@@ -305,7 +305,7 @@ export default function UserPage() {
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-center gap-2">
-            <div className="eyebrow">Subscriptions</div>
+            <div className="eyebrow">订阅信息</div>
             <Badge variant={subs.length > 0 ? 'success' : 'neutral'}>{subs.length}</Badge>
           </div>
           <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">我的订阅</h2>
@@ -340,7 +340,7 @@ export default function UserPage() {
 
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-center gap-2">
-            <div className="eyebrow">Portfolios</div>
+            <div className="eyebrow">组合信息</div>
             <Badge variant={portfolios.length > 0 ? 'info' : 'neutral'}>{portfolios.length}</Badge>
           </div>
           <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">我的组合</h2>

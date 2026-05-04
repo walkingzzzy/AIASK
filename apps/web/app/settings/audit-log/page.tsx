@@ -89,7 +89,7 @@ function parseAuditError(raw: string) {
     details: [
       status ? `状态码：${status}` : null,
       path ? `接口：${path}` : null,
-      traceId ? `Trace ID：${traceId}` : null,
+      traceId ? `追踪 ID：${traceId}` : null,
       normalized ? `原始错误：${normalized}` : null,
     ].filter(Boolean) as string[],
   };
@@ -328,9 +328,9 @@ export default function AuditLogPage() {
   return (
     <PageContainer>
       <LightOverviewHero
-        eyebrow="Audit Workspace"
+        eyebrow="审计日志"
         title="操作审计日志"
-        summary="默认先看摘要和筛选，再决定是否下钻到整张流水表。长表格改为固定高度滚动，不再把整页直接拉长。"
+        summary="先看摘要和筛选条件，再进入完整流水表；长表格会在固定区域内滚动，便于连续排查。"
         badges={(
           <>
             <Badge variant="info">{sourceFilter === 'all' ? '全部来源' : sourceFilter === 'audit' ? '后端审计' : '前端行为'}</Badge>

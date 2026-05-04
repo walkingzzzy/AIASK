@@ -7,20 +7,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function findArray(value: unknown, keys: string[], seen = new Set<unknown>(), depth = 0): Record<string, unknown>[] {
-  if (Array.isArray(value)) return value as Record<string, unknown>[];
+function toRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function findArray(
+  value: unknown,
+  keys: string[],
+  seen = new Set<unknown>(),
+  depth = 0,
+  allowCurrentArray = keys.length === 0,
+): Record<string, unknown>[] {
+  if (Array.isArray(value)) return allowCurrentArray ? toRecordArray(value) : [];
   if (!isRecord(value) || seen.has(value) || depth > 6) return [];
 
   seen.add(value);
 
   for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
     const nested = value[key];
-    const hit = findArray(nested, [], seen, depth + 1);
-    if (hit.length > 0) return hit;
+    return findArray(nested, [], seen, depth + 1, true);
   }
 
   for (const nested of Object.values(value)) {
-    const hit = findArray(nested, keys, seen, depth + 1);
+    const hit = findArray(nested, keys, seen, depth + 1, keys.length === 0);
     if (hit.length > 0) return hit;
   }
 

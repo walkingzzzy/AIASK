@@ -86,7 +86,7 @@ export function StrategyDetailHeroSection({
             &larr; 返回策略超市
           </Link>
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Badge variant="info">Strategy Workspace</Badge>
+            <Badge variant="info">策略工作台</Badge>
             <Badge variant={displayStatus.variant}>{displayStatus.label}</Badge>
             {displayStatus.label !== marketStatus.label ? (
               <Badge variant={marketStatus.variant}>市场状态 · {marketStatus.label}</Badge>

@@ -67,7 +67,7 @@ export default function ExecutionHero({
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Execution Workspace</Badge>
+            <Badge variant="info">执行工作台</Badge>
             <Badge variant={urgency === 'high' ? 'warning' : 'neutral'}>
               {urgency === 'high' ? '高优先级 VWAP' : '标准 TWAP'}
             </Badge>
@@ -79,7 +79,7 @@ export default function ExecutionHero({
             执行工作台
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-            这里负责把下单参数、执行回执、实时网关和复盘入口收进一个操作面。重点不是替代模拟交易页，而是把一次执行后的状态、告警与后续动作压缩到可连续处理的首屏里。
+            这里集中处理下单参数、执行回执、实时网关和复盘入口。它不替代模拟交易页，而是帮助你在一次执行后继续查看状态、告警和后续动作。
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
             <button type="button" onClick={onOpenPerformanceReview} className={executionPrimaryButtonCls}>
@@ -103,7 +103,7 @@ export default function ExecutionHero({
                 onClick={() => onOpenArtifactDetail(currentArtifactId)}
                 className={executionSecondaryButtonCls}
               >
-                查看 Artifact
+                查看执行制品
               </button>
             ) : null}
           </div>
@@ -160,7 +160,7 @@ export default function ExecutionHero({
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行单号</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{currentExecutionId || '-'}</div>
                 <div className="mt-1 text-xs text-text-secondary">
-                  {currentArtifactId ? `Artifact ${currentArtifactId}` : '提交后自动回填关联 artifact'}
+                  {currentArtifactId ? `执行制品 ${currentArtifactId}` : '提交后自动回填关联制品'}
                 </div>
               </div>
             </div>
@@ -177,7 +177,7 @@ export default function ExecutionHero({
                   挂单数量：<span className="font-medium text-text-primary">{pendingOrderCount}</span>
                 </div>
                 <div className={executionNoteCardCls}>
-                  最近 Artifact：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span>
+                  最近执行制品：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span>
                 </div>
                 <div className={executionNoteCardCls}>
                   真实订单 / 成交：

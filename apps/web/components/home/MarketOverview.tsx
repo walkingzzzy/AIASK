@@ -1,9 +1,10 @@
 'use client';
 
 import { SectionCard, KpiCard, KpiGrid, Skeleton, SkeletonCard } from '@/components/ui';
-import { ErrorState, EmptyState } from '@/components/status-state';
+import { DataQualityBanner, ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { isTradingHours } from '@/lib/trading-hours';
+import type { DataTrust } from '@/lib/api';
 import Link from 'next/link';
 import type { DashboardQuoteSnapshot } from '@aiask/shared-types';
 
@@ -15,7 +16,7 @@ export interface MarketOverviewProps {
   mounted: boolean;
   dateStr: string;
   lastUpdated: Date | null;
-  fgValue: number;
+  fgValue: number | null;
   luStats: Record<string, unknown>;
   latestNorth: Record<string, unknown> | null;
   fmtAmount: (v: unknown) => string;
@@ -27,7 +28,7 @@ export interface MarketOverviewProps {
   INDEX_CODES: readonly string[];
 
   /* Sector heatmap */
-  sectorQ: { error: string | null; isPending: boolean; data: unknown; refetch: () => void };
+  sectorQ: { error: string | null; isPending: boolean; data: unknown; trust?: DataTrust; refetch: () => void };
   sectors: Record<string, unknown>[];
 }
 
@@ -49,17 +50,17 @@ function MarketPulse({
 >) {
   const marketOpen = mounted ? isTradingHours() : false;
   const lastUpdatedLabel = mounted && lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : null;
+  const fearGreedLabel = fgValue == null ? '-' : fgValue.toFixed(0);
   return (
     <section className="panel-soft rounded-[32px] p-4 sm:p-5">
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div>
-          <div className="eyebrow">Market Pulse</div>
+          <div className="eyebrow">市场脉搏</div>
           <h3 className="mb-0 mt-2 text-[1.4rem] font-semibold tracking-[-0.03em] text-text-primary">
             交易状态、情绪与增量资金
           </h3>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-            这一段负责给首页市场区定调。它不再单独做成第二个
-            hero，而是作为总览工作流的第一块内容，先说明市场是否开盘、情绪温度和最近一次可靠刷新时点。
+            这一段负责给首页市场区定调：先说明市场是否开盘、情绪温度和最近一次可靠刷新时点，再进入更细的行情视图。
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="action-chip text-sm text-text-primary">
@@ -81,9 +82,9 @@ function MarketPulse({
           <div className="rounded-[24px] border border-white/50 bg-white/35 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">情绪温度</div>
             <div
-              className={`mt-3 text-xl font-semibold ${fgValue > 60 ? 'text-success' : fgValue < 40 ? 'text-danger' : 'text-text-primary'}`}
+              className={`mt-3 text-xl font-semibold ${fgValue == null ? 'text-text-secondary' : fgValue > 60 ? 'text-success' : fgValue < 40 ? 'text-danger' : 'text-text-primary'}`}
             >
-              恐贪 {fgValue.toFixed(0)}
+              恐贪 {fearGreedLabel}
             </div>
             <div className="mt-1 text-xs text-text-secondary">帮助判断今天更偏趋势还是防守</div>
           </div>
@@ -186,6 +187,7 @@ function SectorHeatmap({
   sectors,
 }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'sectorQ' | 'sectors'>) {
   if (!dashboardVisibility['market']) return null;
+  const unavailable = Boolean(sectorQ.trust?.degraded);
   return (
     <SectionCard className="min-h-[220px]">
       <div className="mb-4 flex items-end justify-between gap-3">
@@ -198,7 +200,8 @@ function SectorHeatmap({
         </Link>
       </div>
       {sectorQ.error ? <ErrorState text={sectorQ.error} onRetry={() => sectorQ.refetch()} /> : null}
-      {sectors.length > 0 ? (
+      <DataQualityBanner trust={sectorQ.trust} title="板块热力数据质量" onRetry={() => void sectorQ.refetch()} className="mb-3" />
+      {sectors.length > 0 && !unavailable ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           {sectors.map((s, i) => {
             const chg = Number(s.avgChange ?? s.avg_change ?? s.change_pct ?? 0);
@@ -229,8 +232,8 @@ function SectorHeatmap({
         </div>
       ) : !sectorQ.error ? (
         <EmptyState
-          text="当前没有板块热力数据"
-          hint="非交易时段或数据源波动时可能为空，稍后刷新通常会恢复。"
+          text={unavailable ? '板块热力数据不可用' : '当前没有板块热力数据'}
+          hint={unavailable ? '上游未返回可验证板块数据，页面不再使用数据质量元信息拼成伪板块。' : '非交易时段或数据源波动时可能为空，稍后刷新通常会恢复。'}
           action={
             <Link
               href="/market?tab=blocks"

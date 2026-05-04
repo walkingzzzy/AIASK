@@ -13,6 +13,7 @@ function formatTraceTime(value?: string) {
 function traceKindLabel(kind: ChatToolTraceItem['kind']) {
   if (kind === 'mcp') return 'MCP';
   if (kind === 'local_context') return '本地上下文';
+  if (kind === 'compliance') return '合规记录';
   return '页面动作';
 }
 
@@ -33,6 +34,22 @@ function statusTone(status: ChatToolTraceItem['status']) {
   if (status === 'success') return 'border-success/40 bg-success/10 text-success';
   if (status === 'error') return 'border-danger/40 bg-danger/10 text-danger';
   return 'border-warning/40 bg-warning/10 text-warning';
+}
+
+function actionStatusLabel(action: ChatActionBlock) {
+  if (action.status === 'scheduled') return '已排队';
+  if (action.status === 'auto_executed') return 'AI 已自动执行';
+  if (action.status === 'running') return '执行中';
+  if (action.status === 'done') return '已完成';
+  if (action.status === 'error') return '执行失败';
+  return '待手动执行';
+}
+
+function actionStatusTone(action: ChatActionBlock) {
+  if (action.status === 'done') return 'text-success';
+  if (action.status === 'error') return 'text-danger';
+  if (action.status === 'running' || action.status === 'scheduled' || action.status === 'auto_executed') return 'text-warning';
+  return 'text-text-muted';
 }
 
 function ToolTracePanel({ trace, isUser }: { trace: ChatToolTrace; isUser: boolean }) {
@@ -172,17 +189,14 @@ export default function ChatMessage({
             <div className="font-medium text-text-primary">{action.label}</div>
             {action.description ? <div className="mt-1 text-text-secondary">{action.description}</div> : null}
             {action.reason ? <div className="mt-1 text-text-muted">原因: {action.reason}</div> : null}
+            <div className="mt-1 text-[11px] text-text-muted">
+              触发方式：{action.autoExecute === true ? 'AI 自动执行' : action.autoExecute === false ? '等待用户确认' : '用户手动或快捷动作'}
+            </div>
             <div className="mt-2 flex items-center justify-between gap-3">
-              <span className="text-[11px] text-text-muted">
-                {action.status === 'running'
-                  ? '执行中'
-                  : action.status === 'done'
-                    ? '已完成'
-                    : action.status === 'error'
-                      ? '执行失败'
-                      : '待执行'}
+              <span className={`text-[11px] ${actionStatusTone(action)}`}>
+                {actionStatusLabel(action)}
               </span>
-              {action.status !== 'running' && action.status !== 'done' ? (
+              {(action.status === 'pending' || action.status === 'error') ? (
                 <button
                   type="button"
                   onClick={() => onActionClick?.(action, msg.id)}

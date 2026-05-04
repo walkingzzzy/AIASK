@@ -226,7 +226,7 @@ export default function CachePage() {
         ) : (
           <ErrorState
             text={cacheQ.error}
-            hint="当前页面需要管理员权限；请求失败时不再显示 0 命中率。"
+            hint="当前页面需要管理员权限；请求失败时会显示真实错误，而不是空命中率。"
             onRetry={() => cacheQ.refetch()}
           />
         )}

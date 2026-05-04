@@ -106,7 +106,7 @@ export default function StockDetailTabs({
       <div className={stockPanelCls}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Detail Tabs</div>
+            <div className="eyebrow">分析维度</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">分层阅读各个分析维度</h2>
             {!compactLayout ? (
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">

@@ -30,7 +30,7 @@ export const RESOURCE_PRESETS = [
     requiresId: true,
     inputLabel: 'Run ID',
     placeholder: '输入 Run ID',
-    description: '回看一次运行的 linege、artifact 和关键摘要。',
+    description: '回看一次运行的 lineage、制品和关键摘要。',
   },
   {
     key: 'datasetQuality',
@@ -78,7 +78,7 @@ export const RESOURCE_PRESETS = [
     requiresId: true,
     inputLabel: 'Experiment ID',
     placeholder: '输入 Experiment ID',
-    description: '查看实验对象、关键指标和 artifact 关联关系。',
+    description: '查看实验对象、关键指标和制品关联关系。',
   },
   {
     key: 'governanceReport',

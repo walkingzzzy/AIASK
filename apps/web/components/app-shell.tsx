@@ -9,6 +9,7 @@ import { Onboarding, OnboardingProvider } from '@/components/onboarding';
 import { useMobile } from '@/hooks/use-mobile';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { describeActionableElement, ensureBehaviorSessionId, flushBehaviorEvents, resolveBehaviorPageKey, trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { useTheme } from '@/hooks/use-theme';
@@ -16,9 +17,9 @@ import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
 import { pageActionBus, type PageActionDefinition } from '@/lib/page-action-bus';
 import { isPublicPathname } from '@/lib/public-routes';
 import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
+import { normalizeStockCode, trustedUserStockCode } from '@/lib/stock-code-utils';
 import { useAuthStore, type User } from '@/store/auth-store';
 import { useCopilotStore } from '@/store/copilot-store';
-import { useStockContext } from '@/store/stock-context';
 import { resolveWorkspaceLayout, selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type NavItem = { href: string; label: string };
@@ -93,6 +94,25 @@ const UTILITY_LINKS: NavItem[] = [
 ];
 
 const FALLBACK_PAGE_LABELS: Record<string, string> = {
+  '/stock': '个股详情',
+  '/valuation': '估值分析',
+  '/fund-flow': '资金流向',
+  '/macro': '宏观数据',
+  '/options': '期权分析',
+  '/chat': 'AI 对话',
+  '/data': '数据中心',
+  '/factor': '因子研究',
+  '/strategy': '策略工作台',
+  '/portfolio': '组合管理',
+  '/paper-trading': '模拟交易',
+  '/settings/security': '安全设置',
+  '/settings/audit-log': '审计日志',
+  '/settings': '设置中心',
+  '/admin/tools': 'MCP 工具',
+  '/admin/cache': '缓存管理',
+  '/admin/dead-letters': '死信队列',
+  '/admin/users': '用户管理',
+  '/admin': '管理后台',
   '/skills': '技能中心',
   '/events': '事件中心',
   '/execution': '执行中心',
@@ -124,9 +144,10 @@ const STOCK_AWARE_PATHS = new Set([
 ]);
 
 const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }> = {
-  connected: { color: '#22c55e', label: '已连接' },
-  connecting: { color: '#eab308', label: '重连中' },
-  disconnected: { color: '#ef4444', label: '断开' },
+  connected: { color: '#22c55e', label: '实时通道已连接' },
+  idle: { color: '#64748b', label: '实时通道空闲' },
+  reconnecting: { color: '#eab308', label: '实时通道重连中' },
+  offline: { color: '#ef4444', label: '实时通道离线' },
 };
 
 function buildHref(basePath: string, stockCode: string) {
@@ -212,14 +233,16 @@ function resolveShellTheme(path: string) {
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
-  const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
-  const label = theme === 'light' ? '☀' : theme === 'dark' ? '🌙' : '⚙';
+  const hydrated = useHydrated();
+  const resolvedTheme = hydrated ? theme : 'system';
+  const next = resolvedTheme === 'light' ? 'dark' : resolvedTheme === 'dark' ? 'system' : 'light';
+  const label = resolvedTheme === 'light' ? '☀' : resolvedTheme === 'dark' ? '🌙' : '⚙';
   return (
     <button
       type="button"
       onClick={() => setTheme(next)}
       className="rounded-full border border-glass-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(246,250,255,0.4))] px-2.5 py-1 text-sm shadow-[0_12px_26px_-20px_rgba(15,23,42,0.28)] backdrop-blur-xl"
-      title={`当前: ${theme}，点击切换`}
+      title={`当前: ${resolvedTheme}，点击切换`}
     >
       {label}
     </button>
@@ -229,12 +252,12 @@ function ThemeToggle() {
 function WsIndicator() {
   const status = useWsStatus();
   const hydrated = useHydrated();
-  const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.connecting;
+  const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.reconnecting;
 
   return (
     <span
       className="flex items-center gap-1 rounded-full border border-glass-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(246,250,255,0.4))] px-2.5 py-1 text-xs text-text-secondary backdrop-blur-xl"
-      title={`WebSocket: ${label}`}
+      title={label}
     >
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
       <span className="hidden sm:inline">{label}</span>
@@ -285,6 +308,7 @@ function NavSection({
             <Link
               key={item.href}
               href={buildHref(item.href, stockCode)}
+              prefetch={false}
               data-tour={getTourAttr(item.href)}
               onClick={onNavigate}
               className={`rounded-2xl px-3 py-2.5 text-sm no-underline transition ${
@@ -320,6 +344,7 @@ function CompactNav({
             <Link
               key={item.href}
               href={buildHref(item.href, stockCode)}
+              prefetch={false}
               onClick={onNavigate}
               title={item.label}
               className={`flex h-11 items-center justify-center rounded-2xl no-underline text-xs transition ${
@@ -340,10 +365,10 @@ function CompactNav({
 export default function AppShell({ children }: { children: ReactNode }) {
   const rawPathname = useStablePathname();
   const pathname = rawPathname ?? '/';
+  const searchParams = useStableSearchParams();
   const useOverlayDock = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const router = useRouter();
   const { user, setUser, logout } = useAuthStore();
-  const storeCode = useStockContext((state) => state.code);
   const hydrated = useHydrated();
   const isAuthPage = rawPathname ? isPublicPathname(rawPathname) : false;
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -364,10 +389,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
     [activeWorkspaceId, workspaces],
   );
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
-  const currentStockCode = hydrated ? storeCode || activeWorkspace.context.stockCode || '' : '';
+  const currentStockCode = hydrated
+    ? trustedUserStockCode(activeWorkspace.context.stockCode, activeWorkspace.context.stockConfirmedAt)
+    : '';
+  const routeStockCode = hydrated ? normalizeStockCode(searchParams.get('code')) : '';
+  const effectiveStockCode = routeStockCode || currentStockCode;
   const isStrategyMarketPage = pathname === '/strategy-market' || pathname.startsWith('/strategy-market/');
   const shellWorkspaceName = isStrategyMarketPage ? '策略工作区' : activeWorkspace.name;
-  const shellHeaderStockCode = isStrategyMarketPage ? '' : currentStockCode;
+  const shellHeaderStockCode = isStrategyMarketPage ? '' : effectiveStockCode;
   const isAiCenterPage = pathname === '/assistant' || pathname.startsWith('/assistant/');
   const dockRequested = hydrated && !isAiCenterPage && layout.dockPreference !== 'hidden' && (layout.dockVisible || dockOpen);
   const projectedMainWidth = viewportWidth - layout.navWidth - layout.dockWidth;
@@ -628,13 +657,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
     : '本地工作区';
   const activePageLabel = findNavLabel(pathname);
   const shellTheme = resolveShellTheme(pathname);
+  const userDisplayName = user?.nickname?.trim() || user?.username || '';
+  const userAccountLabel = user ? `@${user.username} · ${user.role}` : '';
+  const userAvatarLetter = (userDisplayName || user?.username || 'U').slice(0, 1).toUpperCase();
 
   const desktopNav = (
     <aside className="app-shell-sidebar hidden shrink-0 xl:flex xl:flex-col" style={{ width: navRailWidth }}>
       <div className="border-b border-sidebar-border px-4 py-4">
         <div className="eyebrow mb-2">AIASK 导航</div>
         <div className="flex items-center justify-between gap-2">
-          <Link href="/" className="no-underline text-lg font-semibold text-text-primary">
+          <Link href="/" prefetch={false} className="no-underline text-lg font-semibold text-text-primary">
             AIASK
           </Link>
           <button
@@ -655,11 +687,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         {navCollapsed ? (
-          <CompactNav pathname={pathname} stockCode={currentStockCode} />
+          <CompactNav pathname={pathname} stockCode={effectiveStockCode} />
         ) : (
           <>
             {NAV_GROUPS.map((group) => (
-              <NavSection key={group.label} group={group} pathname={pathname} stockCode={currentStockCode} />
+              <NavSection key={group.label} group={group} pathname={pathname} stockCode={effectiveStockCode} />
             ))}
             <div className="mt-6 border-t border-sidebar-border pt-4">
               <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
@@ -671,7 +703,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   return (
                     <Link
                       key={item.href}
-                      href={buildHref(item.href, currentStockCode)}
+                      href={buildHref(item.href, effectiveStockCode)}
+                      prefetch={false}
                       className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${
                         active
                           ? 'border border-primary/18 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(229,241,255,0.68))] text-nav-active shadow-[0_18px_34px_-26px_rgba(11,107,203,0.42)]'
@@ -694,12 +727,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <div className="mt-3 flex flex-wrap gap-2">
             <Link
               href="/settings"
+              prefetch={false}
               className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit"
             >
               设置
             </Link>
             <Link
               href="/skills"
+              prefetch={false}
               className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit"
             >
               技能中心
@@ -718,6 +753,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-4">
           <Link
             href="/"
+            prefetch={false}
             onClick={() => setDrawerOpen(false)}
             className="no-underline text-base font-semibold text-text-primary"
           >
@@ -742,7 +778,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
               return (
                 <Link
                   key={group.label}
-                  href={buildHref(firstItem.href, currentStockCode)}
+                  href={buildHref(firstItem.href, effectiveStockCode)}
+                  prefetch={false}
                   onClick={() => setDrawerOpen(false)}
                   className={`flex flex-col items-center justify-center gap-1.5 rounded-[18px] border p-3 no-underline transition ${
                     isActive
@@ -776,7 +813,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 return (
                   <Link
                     key={item.href}
-                    href={buildHref(item.href, currentStockCode)}
+                    href={buildHref(item.href, effectiveStockCode)}
+                    prefetch={false}
                     onClick={() => setDrawerOpen(false)}
                     className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${
                       active ? 'bg-nav-active-bg text-nav-active' : 'text-nav-text hover:bg-surface'
@@ -797,7 +835,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
             {UTILITY_LINKS.map((item) => (
               <Link
                 key={item.href}
-                href={buildHref(item.href, currentStockCode)}
+                href={buildHref(item.href, effectiveStockCode)}
+                prefetch={false}
                 onClick={() => setDrawerOpen(false)}
                 className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface"
               >
@@ -806,6 +845,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             ))}
             <Link
               href="/settings"
+              prefetch={false}
               onClick={() => setDrawerOpen(false)}
               className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface"
             >
@@ -824,7 +864,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
             <div className="text-sm font-medium text-text-primary">AI 助手</div>
-            <div className="text-xs text-text-secondary">按需展开，不常驻占据主画布</div>
+            <div className="text-xs text-text-secondary">需要追问或执行页面动作时再展开</div>
           </div>
           <button
             type="button"
@@ -897,7 +937,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <NotificationBell />
                 <ThemeToggle />
                 {user ? (
-                  <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
+                  <Link href="/settings" prefetch={false} className="flex items-center gap-2 no-underline text-inherit">
                     {user.avatarUrl ? (
                       <img
                         src={user.avatarUrl}
@@ -906,10 +946,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
                       />
                     ) : (
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-white shadow-sm">
-                        {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
+                        {userAvatarLetter}
                       </span>
                     )}
-                    <span className="hidden text-sm text-text-secondary xl:inline">{user.nickname || user.username}</span>
+                    <span className="hidden min-w-0 lg:inline-flex lg:flex-col" title={`${userDisplayName} ${userAccountLabel}`.trim()}>
+                      <span className="max-w-[140px] truncate text-sm text-text-secondary">{userDisplayName}</span>
+                      <span className="max-w-[140px] truncate text-[11px] leading-4 text-text-muted">{userAccountLabel}</span>
+                    </span>
                   </Link>
                 ) : null}
                 {user ? (

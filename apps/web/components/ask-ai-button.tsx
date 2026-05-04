@@ -13,6 +13,16 @@ export type AskAiButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'on
   summary?: string;
   /** 额外 raw 上下文，JSON 序列化后附到提问末尾 */
   raw?: Record<string, unknown>;
+  pageKey?: string;
+  title?: string;
+  objectType?: string;
+  objectId?: string;
+  resultType?: string;
+  evidenceSummary?: string[];
+  selectedCode?: string;
+  accountId?: string;
+  strategyId?: string;
+  workspaceId?: string;
   /** 按钮文案 */
   label?: ReactNode;
   /** 是否仅展示图标（图标模式下不显示文字） */
@@ -36,6 +46,16 @@ export function AskAiButton({
   stockCode,
   summary,
   raw,
+  pageKey,
+  title,
+  objectType,
+  objectId,
+  resultType,
+  evidenceSummary,
+  selectedCode,
+  accountId,
+  strategyId,
+  workspaceId,
   label,
   iconOnly = false,
   className = '',
@@ -43,6 +63,7 @@ export function AskAiButton({
 }: AskAiButtonProps) {
   const setDockOpen = useCopilotStore((s) => s.setDockOpen);
   const setPendingInject = useCopilotStore((s) => s.setPendingInject);
+  const pageContext = useCopilotStore((s) => s.pageContext);
 
   const handleClick = () => {
     const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
@@ -58,12 +79,32 @@ export function AskAiButton({
       parts.push(`（${summary}）`);
     }
 
+    const resolvedRaw = {
+      ...(pageContext?.raw ?? {}),
+      ...(raw ?? {}),
+      ...(selectedCode ? { selectedCode } : {}),
+      ...(accountId ? { accountId } : {}),
+      ...(strategyId ? { strategyId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      route: currentPath,
+    };
+
     setPendingInject({
       prompt: parts.join(''),
       contextPatch: {
+        pageKey: pageKey ?? pageContext?.pageKey ?? 'ask-ai-button',
+        title: title ?? pageContext?.title ?? '局部对象分析',
         ...(stockCode ? { stockCode } : {}),
+        ...(selectedCode ? { selectedCode } : stockCode ? { selectedCode: stockCode } : {}),
         ...(summary ? { summary } : {}),
-        ...(raw ? { raw } : {}),
+        ...(objectType ? { objectType } : {}),
+        ...(objectId ? { objectId } : {}),
+        ...(resultType ? { resultType } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(strategyId ? { strategyId } : {}),
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(evidenceSummary?.length ? { evidenceSummary } : pageContext?.evidenceSummary?.length ? { evidenceSummary: pageContext.evidenceSummary } : {}),
+        raw: resolvedRaw,
       },
     });
     trackBehaviorEvent({
@@ -75,6 +116,13 @@ export function AskAiButton({
       payload: {
         stockCode,
         summary,
+        pageKey: pageKey ?? pageContext?.pageKey,
+        objectType,
+        objectId,
+        selectedCode,
+        accountId,
+        strategyId,
+        workspaceId,
       },
       source: 'ask-ai-button',
     });

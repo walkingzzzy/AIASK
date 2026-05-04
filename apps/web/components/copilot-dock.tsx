@@ -20,7 +20,27 @@ const DEFAULT_PROMPTS = [
   '给我一个下一步操作建议',
   '把当前页面数据整理成行动清单',
 ];
-const CLIENT_STREAM_IDLE_TIMEOUT_MS = 30_000;
+const CLIENT_STREAM_IDLE_TIMEOUT_MS = 90_000;
+type CopilotStreamPhase = 'connecting' | 'waiting_tools' | 'generating' | 'fallback' | 'timeout' | null;
+
+function streamPhaseLabel(phase: CopilotStreamPhase) {
+  if (phase === 'connecting') return '连接中';
+  if (phase === 'waiting_tools') return '等待工具';
+  if (phase === 'generating') return '生成中';
+  if (phase === 'fallback') return '降级回答';
+  if (phase === 'timeout') return '请求超时';
+  return null;
+}
+
+function contextLine(label: string, value: unknown) {
+  const text = value == null || value === '' ? '-' : String(value);
+  return (
+    <div className="rounded-lg border border-border bg-surface px-2.5 py-2">
+      <div className="text-[10px] uppercase tracking-[0.14em] text-text-muted">{label}</div>
+      <div className="mt-1 break-all font-mono text-[11px] text-text-secondary">{text}</div>
+    </div>
+  );
+}
 
 function mergePageContext(
   pageContext: CopilotPageContext | null,
@@ -30,12 +50,16 @@ function mergePageContext(
 
   if (!pageContext) {
     return {
-      pageKey: 'ask-ai-injected',
-      title: '局部对象分析',
+      pageKey: patch.pageKey ?? 'ask-ai-injected',
+      title: patch.title ?? '局部对象分析',
       summary: patch.summary?.trim() || '已注入局部上下文，优先基于该对象回答。',
       primaryGoal: patch.primaryGoal,
       requiredInputs: patch.requiredInputs ?? [],
       stockCode: patch.stockCode,
+      selectedCode: patch.selectedCode,
+      accountId: patch.accountId,
+      strategyId: patch.strategyId,
+      workspaceId: patch.workspaceId,
       objectType: patch.objectType,
       objectId: patch.objectId,
       resultType: patch.resultType,
@@ -57,9 +81,15 @@ function mergePageContext(
   const mergedTags = Array.from(new Set([...(pageContext.tags ?? []), ...(patch.tags ?? [])]));
   return {
     ...pageContext,
+    pageKey: patch.pageKey ?? pageContext.pageKey,
+    title: patch.title ?? pageContext.title,
     primaryGoal: patch.primaryGoal ?? pageContext.primaryGoal,
     requiredInputs: patch.requiredInputs ?? pageContext.requiredInputs,
     stockCode: patch.stockCode ?? pageContext.stockCode,
+    selectedCode: patch.selectedCode ?? pageContext.selectedCode,
+    accountId: patch.accountId ?? pageContext.accountId,
+    strategyId: patch.strategyId ?? pageContext.strategyId,
+    workspaceId: patch.workspaceId ?? pageContext.workspaceId,
     objectType: patch.objectType ?? pageContext.objectType,
     objectId: patch.objectId ?? pageContext.objectId,
     resultType: patch.resultType ?? pageContext.resultType,
@@ -162,6 +192,7 @@ export default function CopilotDock({
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
 
   const [input, setInput] = useState('');
+  const [streamPhase, setStreamPhase] = useState<CopilotStreamPhase>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -267,7 +298,12 @@ export default function CopilotDock({
       },
       source: actionSource,
     });
-    updateActionBlock(messageId, action.id, { status: 'running', resultMessage: '正在执行页面动作...' });
+    const autoSource = actionSource === 'copilot.ai-auto';
+    updateActionBlock(messageId, action.id, {
+      status: autoSource ? 'auto_executed' : 'running',
+      autoExecute: autoSource ? true : action.autoExecute,
+      resultMessage: autoSource ? 'AI 已自动执行页面动作，等待页面返回结果...' : '正在执行页面动作...',
+    });
     try {
       const result = await pageActionBus.execute(action.actionId, action.payload);
       updateActionBlock(messageId, action.id, {
@@ -349,7 +385,9 @@ export default function CopilotDock({
 
     const abort = new AbortController();
     abortRef.current = abort;
+    setStreamPhase('connecting');
     let reasoningReplacementInserted = false;
+    let assistantContentReceived = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let idleTimedOut = false;
     const clearIdleTimer = () => {
@@ -364,6 +402,7 @@ export default function CopilotDock({
         idleTimedOut = true;
         abort.abort();
         appendAssistantDelta(assistantId, '\n⚠ 请求超时，请重试；如果你在要求页面联动，当前页面可能没有可执行动作。');
+        setStreamPhase('timeout');
         setStreaming(false);
       }, CLIENT_STREAM_IDLE_TIMEOUT_MS);
     };
@@ -377,33 +416,41 @@ export default function CopilotDock({
           switch (event.type) {
             case 'delta':
               {
+                setStreamPhase('generating');
                 const sanitized = sanitizeReasoningDelta(event.content, reasoningReplacementInserted);
                 reasoningReplacementInserted = sanitized.replaced;
                 if (sanitized.content) {
                   appendAssistantDelta(assistantId, sanitized.content);
+                  if (sanitized.content.trim()) {
+                    assistantContentReceived = true;
+                  }
                 }
               }
               break;
             case 'tool_call':
+              setStreamPhase('waiting_tools');
               break;
             case 'tool_result':
+              setStreamPhase('waiting_tools');
               break;
             case 'tool_trace':
+              if (event.trace.items.length > 0) setStreamPhase('waiting_tools');
               setToolTrace(assistantId, event.trace);
               break;
             case 'action': {
+              const shouldAutoExecute = event.autoExecute === true;
               const actionBlockId = addActionBlock(assistantId, {
                 actionId: event.actionId,
                 label: event.label,
                 description: event.description,
                 reason: event.reason,
                 payload: event.payload,
-                status: event.autoExecute === false ? 'pending' : 'running',
+                status: shouldAutoExecute ? 'scheduled' : 'pending',
                 autoExecute: event.autoExecute,
-                resultMessage: event.autoExecute === false ? '等待手动执行' : '正在执行页面动作...',
+                resultMessage: shouldAutoExecute ? '已排队自动执行页面动作...' : '等待手动执行',
               });
 
-              if (event.autoExecute !== false) {
+              if (shouldAutoExecute) {
                 void executeAction(assistantId, {
                   id: actionBlockId,
                   kind: 'action',
@@ -412,13 +459,24 @@ export default function CopilotDock({
                   description: event.description,
                   reason: event.reason,
                   payload: event.payload,
-                  status: 'running',
+                  status: 'scheduled',
                   autoExecute: event.autoExecute,
                 }, 'copilot.ai-auto');
               }
               break;
             }
+            case 'heartbeat':
+              break;
+            case 'final_fallback':
+              setStreamPhase('fallback');
+              if (!assistantContentReceived && event.content.trim()) {
+                assistantContentReceived = true;
+                appendAssistantDelta(assistantId, event.content);
+              }
+              break;
             case 'error':
+              assistantContentReceived = true;
+              setStreamPhase('fallback');
               appendAssistantDelta(assistantId, `\n⚠ ${event.message}`);
               break;
             case 'done':
@@ -443,6 +501,7 @@ export default function CopilotDock({
       clearIdleTimer();
       abortRef.current = null;
       setStreaming(false);
+      setStreamPhase(null);
       setNextContextPatch(null);
     }
   }
@@ -450,6 +509,7 @@ export default function CopilotDock({
   function stop() {
     abortRef.current?.abort();
     setStreaming(false);
+    setStreamPhase(null);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -473,6 +533,7 @@ export default function CopilotDock({
           <div className="text-sm font-semibold text-text-primary">AI 工作台</div>
           <div className="mt-1 text-xs text-text-secondary">
             {effectivePageContext ? `正在联动 ${effectivePageContext.title}` : '可直接对话，也可联动当前页面动作'}
+            {streaming && streamPhaseLabel(streamPhase) ? ` · ${streamPhaseLabel(streamPhase)}` : ''}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -544,6 +605,26 @@ export default function CopilotDock({
               {effectivePageContext.stockCode ? <span className="ml-2 font-mono text-xs text-primary">{effectivePageContext.stockCode}</span> : null}
             </div>
             <div className="mt-2 text-xs leading-5 text-text-secondary">{effectivePageContext.summary}</div>
+            <details className="mt-3 rounded-xl border border-border bg-surface-alt/60 p-2">
+              <summary className="cursor-pointer list-none text-xs font-medium text-text-primary">页面上下文摘要</summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {contextLine('pageKey', effectivePageContext.pageKey)}
+                {contextLine('objectType', effectivePageContext.objectType)}
+                {contextLine('objectId', effectivePageContext.objectId)}
+                {contextLine('selectedCode', effectivePageContext.selectedCode ?? effectivePageContext.stockCode)}
+                {contextLine('strategyId', effectivePageContext.strategyId)}
+                {contextLine('workspaceId', effectivePageContext.workspaceId)}
+              </div>
+              {effectivePageContext.evidenceSummary?.length ? (
+                <ul className="m-0 mt-2 space-y-1 p-0">
+                  {effectivePageContext.evidenceSummary.slice(0, 4).map((item, index) => (
+                    <li key={`${index}-${item}`} className="list-none text-[11px] leading-5 text-text-secondary">
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </details>
             {effectivePageContext.tags?.length ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 {effectivePageContext.tags.map((tag) => (

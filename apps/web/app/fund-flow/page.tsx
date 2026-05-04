@@ -9,7 +9,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { DataQualityBanner, ErrorState, LoadingState } from '@/components/status-state';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import FundFlowHero from '@/app/fund-flow/components/fund-flow-hero';
 import FundFlowTabPanels from '@/app/fund-flow/components/fund-flow-tab-panels';
@@ -19,7 +19,7 @@ import { FUND_FLOW_HERO_NOTES, FUND_FLOW_TABS, type FundFlowTab } from '@/app/fu
 export default function FundFlowPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const [tab, setTab] = useState<FundFlowTab>('stock');
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode, setCodeError } = useStockCode();
   const autoStockPath = resolvedCode ? `/fund-flow/stock?code=${encodeURIComponent(resolvedCode)}` : null;
   const [stockPath, setStockPath] = useState<string | null>(null);
   const [sectorPath, setSectorPath] = useState<string | null>(null);
@@ -34,16 +34,17 @@ export default function FundFlowPage() {
 
   const effectiveStockPath = stockPath ?? autoStockPath;
 
-  const stockQ = useApiQuery<unknown>(effectiveStockPath);
-  const sectorQ = useApiQuery<unknown>(sectorPath);
-  const conceptQ = useApiQuery<unknown>(conceptPath);
-  const northQ = useApiQuery<unknown>(northPath);
-  const dragonQ = useApiQuery<unknown>(dragonPath);
-  const marginQ = useApiQuery<unknown>(marginPath);
-  const marginRankQ = useApiQuery<unknown>(marginRankPath);
-  const blockTradesQ = useApiQuery<unknown>(blockTradesPath);
-  const northHoldingQ = useApiQuery<unknown>(northHoldingPath);
-  const northTopQ = useApiQuery<unknown>(northTopPath);
+  const strictRead = { critical: true, retry: false, timeoutMs: 15_000 };
+  const stockQ = useApiQuery<unknown>(effectiveStockPath, strictRead);
+  const sectorQ = useApiQuery<unknown>(sectorPath, strictRead);
+  const conceptQ = useApiQuery<unknown>(conceptPath, strictRead);
+  const northQ = useApiQuery<unknown>(northPath, strictRead);
+  const dragonQ = useApiQuery<unknown>(dragonPath, strictRead);
+  const marginQ = useApiQuery<unknown>(marginPath, strictRead);
+  const marginRankQ = useApiQuery<unknown>(marginRankPath, strictRead);
+  const blockTradesQ = useApiQuery<unknown>(blockTradesPath, strictRead);
+  const northHoldingQ = useApiQuery<unknown>(northHoldingPath, strictRead);
+  const northTopQ = useApiQuery<unknown>(northTopPath, strictRead);
 
   // Per-tab loading & error — 避免跨 Tab 互相阻塞
   const tabLoading: Record<FundFlowTab, boolean> = {
@@ -68,11 +69,47 @@ export default function FundFlowPage() {
   };
   const loading = tabLoading[tab];
   const error = tabError[tab];
+  const activeQuery = tab === 'stock'
+    ? stockQ
+    : tab === 'sector'
+      ? sectorQ
+      : tab === 'concept'
+        ? conceptQ
+        : tab === 'north'
+          ? northQ
+          : tab === 'dragon'
+            ? dragonQ
+            : tab === 'margin'
+              ? (marginQ.trust.degraded ? marginQ : marginRankQ)
+              : tab === 'block-trades'
+                ? blockTradesQ
+                : (northHoldingQ.trust.degraded ? northHoldingQ : northTopQ);
   const activeTabLabel = FUND_FLOW_TABS.find((item) => item.key === tab)?.label ?? '资金流向';
-  const activeCodeLabel = trimmedCode || resolvedCode || '600519';
-  const tabStatusLabel = loading ? '加载中' : error ? '需重试' : '就绪';
+  const activeCode = trimmedCode || resolvedCode || '';
+  const activeCodeLabel = activeCode || '未选择标的';
+  const trustStatus = activeQuery.trust.status;
+  const tabStatusLabel = loading
+    ? '加载中'
+    : error
+      ? '需重试'
+      : trustStatus === 'partial'
+        ? '部分降级'
+        : trustStatus === 'degraded'
+          ? '降级'
+          : trustStatus === 'conflict'
+            ? '源冲突'
+            : trustStatus === 'empty'
+              ? '真实无数据'
+              : trustStatus === 'unavailable'
+                ? '不可用'
+                : '就绪';
+  const degradedReasons = activeQuery.trust.reasons.length ? activeQuery.trust.reasons : activeQuery.trust.qualityFlags;
 
-  function loadStockFlow(nextCode = trimmedCode || resolvedCode || '600519') {
+  function loadStockFlow(nextCode = trimmedCode || resolvedCode || '') {
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票');
+      return;
+    }
     setCode(nextCode);
     const p = `/fund-flow/stock?code=${encodeURIComponent(nextCode)}`;
     if (p === effectiveStockPath) stockQ.refetch();
@@ -88,7 +125,11 @@ export default function FundFlowPage() {
     else setMarginPath(p);
   }
 
-  function loadNorthDetail(nextCode = trimmedCode || resolvedCode || '600519') {
+  function loadNorthDetail(nextCode = trimmedCode || resolvedCode || '') {
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票');
+      return;
+    }
     setCode(nextCode);
     const hp = `/fund-flow/north-holding?code=${encodeURIComponent(nextCode)}`;
     if (hp === northHoldingPath) northHoldingQ.refetch();
@@ -136,16 +177,16 @@ export default function FundFlowPage() {
       scope: 'page' as const,
       pageKey: 'fund-flow',
       run: () => {
-        if (tab === 'stock') loadStockFlow(activeCodeLabel);
+        if (tab === 'stock') loadStockFlow(activeCode);
         else if (tab === 'sector') loadSectorFlow();
         else if (tab === 'concept') loadConceptFlow();
         else if (tab === 'north') loadNorthFlow();
         else if (tab === 'dragon') loadDragonTiger();
         else if (tab === 'margin') {
-          loadMarginData(activeCodeLabel);
+          loadMarginData(activeCode);
           loadMarginRanking();
         } else if (tab === 'block-trades') loadBlockTrades();
-        else loadNorthDetail(activeCodeLabel);
+        else loadNorthDetail(activeCode);
         return { message: `已触发${activeTabLabel}刷新` };
       },
     },
@@ -158,7 +199,7 @@ export default function FundFlowPage() {
       pageKey: 'fund-flow',
       run: () => {
         setTab('stock');
-        loadStockFlow(activeCodeLabel);
+        loadStockFlow(activeCode);
         return { message: `已切到 ${activeCodeLabel} 的个股资金流` };
       },
     },
@@ -185,8 +226,12 @@ export default function FundFlowPage() {
     preferredActionIds: ['fund-flow.refresh-tab', 'fund-flow.open-stock', 'fund-flow.open-north'],
     recommendedLinks: [
       { id: 'fund-flow-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
-      { id: 'fund-flow-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeCodeLabel)}` },
-      { id: 'fund-flow-open-technical-link', label: '技术分析', href: `/technical?code=${encodeURIComponent(activeCodeLabel)}` },
+      activeCode
+        ? { id: 'fund-flow-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(activeCode)}` }
+        : { id: 'fund-flow-open-watchlist-link', label: '自选股', href: '/watchlist?from=fund-flow' },
+      activeCode
+        ? { id: 'fund-flow-open-technical-link', label: '技术分析', href: `/technical?code=${encodeURIComponent(activeCode)}` }
+        : { id: 'fund-flow-open-market-link', label: '行情看板', href: '/market?from=fund-flow' },
       { id: 'fund-flow-open-risk-link', label: '风险中心', href: '/risk' },
     ],
     evidence: [
@@ -196,28 +241,28 @@ export default function FundFlowPage() {
       { label: '是否报错', value: error ? '是' : '否' },
       { label: '自动标的', value: resolvedCode || '-' },
     ],
-    riskNotes: error ? [error] : [],
+    riskNotes: error ? [error] : degradedReasons,
     platformMeta: {
       sourceTool: 'fund-flow',
       sourceChain: ['fund-flow', tab],
-      degraded: Boolean(error),
-      fallbackReason: error ? [error] : undefined,
+      degraded: Boolean(error) || activeQuery.trust.degraded,
+      fallbackReason: error ? [error] : degradedReasons.length ? degradedReasons : undefined,
     },
     workbenchTask: defaultWorkbenchTask(
       'fund-flow',
       `复查${activeTabLabel}`,
       `/fund-flow`,
       'fund-flow-review',
-      { tab, code: activeCodeLabel },
+      { tab, code: activeCode || null },
     ),
   });
   usePageContext({
     pageKey: 'fund-flow',
     title: '资金流向',
     summary: fundFlowSummary,
-    stockCode: activeCodeLabel || undefined,
+    stockCode: activeCode || undefined,
     objectType: tab === 'stock' || tab === 'north-detail' ? 'stock' : 'stock-list',
-    objectId: activeCodeLabel,
+    objectId: activeCode || 'fund-flow',
     resultType: `fund-flow-${tab}`,
     tags: [activeTabLabel, tabStatusLabel, activeCodeLabel],
     suggestions: [
@@ -232,7 +277,7 @@ export default function FundFlowPage() {
     freshness: fundFlowResult.freshness ?? null,
     raw: {
       tab,
-      activeCodeLabel,
+      code: activeCode || null,
       status: tabStatusLabel,
       hasError: Boolean(error),
     },
@@ -242,7 +287,7 @@ export default function FundFlowPage() {
     <PageContainer className="app-theme-market">
       <FundFlowHero
         activeTabLabel={activeTabLabel}
-        hasError={Boolean(error)}
+        hasError={Boolean(error) || activeQuery.trust.degraded}
         loading={loading}
         tabStatusLabel={tabStatusLabel}
         activeCodeLabel={activeCodeLabel}
@@ -250,7 +295,7 @@ export default function FundFlowPage() {
         resolvedCode={resolvedCode}
         onOpenStockFlow={() => {
           setTab('stock');
-          loadStockFlow(activeCodeLabel);
+          loadStockFlow(activeCode);
         }}
         onOpenNorthFlow={() => {
           setTab('north');
@@ -264,6 +309,7 @@ export default function FundFlowPage() {
 
       {loading ? <LoadingState text="加载中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
+      <DataQualityBanner trust={activeQuery.trust} title={`${activeTabLabel}数据质量`} onRetry={() => void activeQuery.refetch()} />
       <FundFlowTabsShell activeTabLabel={activeTabLabel} activeTab={tab} onTabChange={setTab} />
       <FundFlowTabPanels
         tab={tab}

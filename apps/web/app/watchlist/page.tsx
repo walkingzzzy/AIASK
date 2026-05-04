@@ -423,7 +423,7 @@ export default function WatchlistPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Watchlist Workspace</Badge>
+              <Badge variant="info">自选工作台</Badge>
               <Badge variant="neutral">{activeGroupName || '未选择分组'}</Badge>
               <Badge variant={activeGroupCount > 0 ? 'success' : 'warning'}>
                 {activeGroupCount > 0 ? `${activeGroupCount} 只股票` : '等待添加股票'}
@@ -433,7 +433,7 @@ export default function WatchlistPage() {
               自选股工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这次重构把自选页从“股票堆叠列表”升级成连续工作台。搜索、分组、视图切换、分组统计和后续跳转都放回同一条阅读动线，方便你把盘中观察节奏固定下来。
+              这里按分组组织你的观察池，并把搜索、视图切换、分组统计和常用跳转放在一起，方便盘中快速扫盘和复盘。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <AskAiButton
@@ -545,10 +545,10 @@ export default function WatchlistPage() {
       <div className={PANEL_CLS}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Active Pool</div>
+            <div className="eyebrow">当前观察池</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">按分组切换当前观察池</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              默认先切换分组，再进入下方观察面板。搜索、建组和全局统计都收进下方管理区，避免把自选页变成长控制台。
+              先切换分组，再查看下方观察面板。搜索、建组和全局统计集中在管理区，主观察区更适合连续扫盘。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -601,10 +601,10 @@ export default function WatchlistPage() {
       >
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-[24px] text-left">
           <div>
-            <div className="eyebrow">Management Zone</div>
+            <div className="eyebrow">分组管理</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">展开分组管理、搜索与全局统计</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这些是次级管理动作，不默认占据主阅读路径；需要补充股票、建组或看全局统计时再展开。
+              这里处理补充股票、创建分组和全局统计。平时可以收起，专注当前观察池。
             </p>
           </div>
           <Badge variant={allCodes.length > 0 ? 'success' : 'warning'}>
@@ -640,7 +640,7 @@ export default function WatchlistPage() {
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="eyebrow">Search Deck</div>
+                  <div className="eyebrow">搜索与添加</div>
                   <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">搜索并添加股票</h2>
                   <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                     搜索结果会直接告诉你当前分组是否已经包含该标的，补池后再回到主观察面板继续看盘。
@@ -764,7 +764,7 @@ export default function WatchlistPage() {
           <SectionCard className="mt-0 p-4 sm:p-5">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <div className="eyebrow">Overview</div>
+                <div className="eyebrow">全局概览</div>
                 <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">全局统计与分组概览</h2>
               </div>
               <Badge variant={allCodes.length > 0 ? 'success' : 'warning'}>
@@ -784,10 +784,10 @@ export default function WatchlistPage() {
       <section className="panel-soft rounded-[32px] p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <div className="eyebrow">Live Board</div>
+            <div className="eyebrow">观察面板</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前分组观察面板</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              这里负责承接真正的盯盘动作。网格模式偏向“快速扫一眼”，列表模式偏向“逐行比较”，两种视图都围绕当前分组展开，避免信息散掉。
+              这里用于处理实际盯盘。网格模式适合快速浏览，列表模式适合逐行比较，两种视图都围绕当前分组展开。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

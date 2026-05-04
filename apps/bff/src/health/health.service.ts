@@ -46,6 +46,7 @@ type ComponentCacheEntry = {
 @Injectable()
 export class HealthService implements OnModuleInit {
   private static readonly HEALTH_CACHE_TTL_MS = 10_000;
+  private static readonly DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1_500;
   private static readonly VECTOR_HEALTH_CACHE_TTL_MS = 60_000;
   private static readonly VECTOR_HEALTH_STALE_IF_ERROR_MS = 5 * 60_000;
   private startedAt = new Date().toISOString();
@@ -84,9 +85,34 @@ export class HealthService implements OnModuleInit {
     return this.healthInFlight;
   }
 
+  getLivenessSnapshot() {
+    return {
+      success: true,
+      data: {
+        service: 'aiask-bff',
+        status: 'normal',
+        probe: 'liveness',
+        startedAt: this.startedAt,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  async getMcpHealthSnapshot() {
+    const mcp = this.buildMcpSnapshot(await this.getMcpHealthFast());
+    return {
+      service: 'aiask-bff',
+      status: mcp.status,
+      signal: mcp.signal,
+      reasons: mcp.reasons,
+      mcp,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   private async buildHealth(): Promise<HealthSnapshot> {
     const cache = this.cache.getStats();
-    const mcp = await this.mcpGatewayService.checkAvailableTools();
+    const mcp = await this.getMcpHealthFast();
     const audit = this.auditStore.getStatus();
     const notifications = this.notificationService.getDeliveryStatus();
     const db = this.buildDbSnapshot();
@@ -267,6 +293,37 @@ export class HealthService implements OnModuleInit {
     };
   }
 
+  private async getMcpHealthFast(): Promise<Awaited<ReturnType<McpGatewayService['checkAvailableTools']>>> {
+    const timeoutMs = this.getHealthProbeTimeoutMs();
+    try {
+      return await this.withTimeout(
+        this.mcpGatewayService.checkAvailableTools(),
+        timeoutMs,
+        `mcp_health_probe_timeout_${timeoutMs}ms`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const transport = this.mcpGatewayService.getTransportSnapshot();
+      return {
+        reachable: false,
+        toolCount: null,
+        expectedTools: null,
+        matched: false,
+        source: transport.transportKind,
+        message: 'MCP health probe unavailable',
+        poolSize: undefined,
+        activeConnections: transport.healthyConnections,
+        transportMode: transport.requestedTransport,
+        transportKind: transport.transportKind,
+        degraded: true,
+        fallbackReason: message,
+        sourceChain: transport.sourceChain,
+        endpoint: transport.endpoint,
+        lastError: transport.lastError ?? message,
+      };
+    }
+  }
+
   private async buildVectorSnapshot(mcp: ComponentSnapshot): Promise<ComponentSnapshot> {
     if (mcp.status === 'untrusted') {
       return {
@@ -306,7 +363,7 @@ export class HealthService implements OnModuleInit {
           },
         },
         {
-          timeoutMs: 8_000,
+          timeoutMs: this.getHealthProbeTimeoutMs(),
         },
       );
       payload = this.unwrapManagerPayload(result);
@@ -431,5 +488,32 @@ export class HealthService implements OnModuleInit {
       return null;
     }
     return this.healthCache.value;
+  }
+
+  private getHealthProbeTimeoutMs(): number {
+    const configured = Number(process.env.BFF_HEALTH_PROBE_TIMEOUT_MS ?? '');
+    return Math.max(
+      500,
+      Math.min(
+        5_000,
+        Number.isFinite(configured) && configured > 0
+          ? configured
+          : HealthService.DEFAULT_HEALTH_PROBE_TIMEOUT_MS,
+      ),
+    );
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }

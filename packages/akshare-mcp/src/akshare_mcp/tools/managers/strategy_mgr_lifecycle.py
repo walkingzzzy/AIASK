@@ -2,6 +2,7 @@
 
 import inspect
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -61,6 +62,128 @@ def _execution_audit_entity_chain_available(db) -> bool:
         "get_paper_nav_rows",
     )
     return all(hasattr(db, method) for method in required_methods)
+
+
+def _factory_status_source(params: dict) -> str:
+    raw = str(
+        params.get("status_source")
+        or params.get("source_mode")
+        or os.getenv("STRATEGY_FACTORY_STATUS_SOURCE")
+        or "db"
+    ).strip().lower()
+    if raw in {"live", "scheduler", "runtime"}:
+        return "scheduler"
+    return "db"
+
+
+def _int_config(factory_constants: dict, key: str) -> int:
+    try:
+        return int(factory_constants.get(key) or 0)
+    except Exception:
+        return 0
+
+
+def _default_bulk_config(factory_constants: dict) -> dict:
+    return {
+        "enabled": bool(factory_constants.get("STOCK_STRATEGY_MATRIX_ENABLED")),
+        "universe_limit": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT"),
+        "families_per_stock": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK"),
+        "max_tasks_per_run": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN"),
+        "max_candidates_per_run": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN"),
+        "generation_limit_per_task": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK"),
+        "batch_size": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_BATCH_SIZE"),
+        "bulk_concurrency": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY"),
+        "run_window": factory_constants.get("STOCK_STRATEGY_MATRIX_RUN_WINDOW"),
+        "tasks_per_shard": _int_config(factory_constants, "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD"),
+        "pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
+    }
+
+
+def _factory_run_status_brief(row: Optional[dict]) -> dict:
+    payload = dict(row or {})
+    if not payload:
+        return {}
+    summary = dict(payload.get("summary") or {})
+    return {
+        "run_id": payload.get("run_id"),
+        "status": payload.get("status"),
+        "started_at": payload.get("started_at"),
+        "completed_at": payload.get("completed_at"),
+        "elapsed_seconds": payload.get("elapsed_seconds"),
+        "execution_mode": payload.get("execution_mode") or "legacy_primary",
+        "engine_version": payload.get("engine_version") or "strategy_factory.v2",
+        "parity_status": payload.get("parity_status"),
+        "parity_result": dict(payload.get("parity_result") or {}),
+        "artifact_refs": list(payload.get("artifact_refs") or []),
+        "summary": merge_factory_run_summary_observability(summary, payload),
+        "snapshot_summary": dict(payload.get("snapshot_summary") or {}),
+        "research_window": dict(summary.get("research_window") or {}),
+        "full_market_topn": dict(summary.get("full_market_topn") or {}),
+        "error": payload.get("error"),
+    }
+
+
+async def _build_db_factory_status(db, params: dict) -> dict:
+    from strategy_factory import get_factory_constants
+
+    factory_constants = get_factory_constants()
+    latest_run = await db.get_latest_strategy_factory_run() if hasattr(db, "get_latest_strategy_factory_run") else None
+    latest_run_summary = _factory_run_status_brief(latest_run)
+    recent_run_limit = min(max(int(params.get("recent_run_limit", 5)), 1), 10)
+    recent_rows = (
+        await db.list_strategy_factory_runs(limit=recent_run_limit)
+        if hasattr(db, "list_strategy_factory_runs")
+        else []
+    )
+    recent_items = [_factory_run_status_brief(row) for row in recent_rows]
+    recent_diagnostics = build_factory_recent_run_diagnostics(recent_items, limit=recent_run_limit)
+    last_summary = merge_factory_run_summary_observability(
+        latest_run_summary.get("summary") or {},
+        latest_run_summary,
+    )
+    quality_baseline = {
+        "available": bool(latest_run_summary),
+        "source": "db_snapshot",
+        "recent_run_diagnostics": recent_diagnostics,
+    }
+    return {
+        "status": "idle",
+        "running": False,
+        "status_source": "db_snapshot",
+        "scheduler_attached": False,
+        "last_run": latest_run_summary.get("completed_at") or latest_run_summary.get("started_at"),
+        "last_result": latest_run_summary,
+        "last_summary": last_summary,
+        "last_persisted_run": latest_run_summary,
+        "recent_run_diagnostics": recent_diagnostics,
+        "quality_baseline": quality_baseline,
+        "bulk_stock_matrix_config": _default_bulk_config(factory_constants),
+        "research_window": dict(last_summary.get("research_window") or {}),
+        "full_market_topn": dict(last_summary.get("full_market_topn") or {}),
+        "execution_mode": latest_run_summary.get("execution_mode") or "legacy_primary",
+        "engine_version": latest_run_summary.get("engine_version") or "strategy_factory.v2",
+        "latest_parity_result": dict(latest_run_summary.get("parity_result") or {}),
+        "capability_health": build_factory_capability_health(
+            db,
+            factory_constants=factory_constants,
+            latest_run=latest_run_summary,
+        ),
+        "high_confidence_enabled": bool(factory_constants.get("STRATEGY_FACTORY_HIGH_CONFIDENCE_ENABLED")),
+        "evidence_contract_enabled": bool(factory_constants.get("STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED")),
+        "confidence_diagnostics_enabled": bool(factory_constants.get("STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED")),
+        "execution_audit_enabled": bool(factory_constants.get("STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED")),
+        "quality_ui_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_QUALITY_UI_V2_ENABLED")),
+        "research_protocol_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_RESEARCH_PROTOCOL_V2_ENABLED")),
+        "gate_model_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_GATE_MODEL_V2_ENABLED")),
+        "trace_ledger_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_TRACE_LEDGER_V2_ENABLED")),
+        "feedback_v2_enabled": bool(factory_constants.get("STRATEGY_FACTORY_FEEDBACK_V2_ENABLED")),
+        "trace_ledger_v2_implemented": True,
+        "governance_gate_report_v2_implemented": True,
+        "execution_audit_entity_chain_available": _execution_audit_entity_chain_available(db),
+        "spec_completeness_mode": str(factory_constants.get("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE") or "warn"),
+        "feature_flags": dict(factory_constants.get("HIGH_CONFIDENCE_FEATURE_FLAGS") or {}),
+        "signal_quality_registry": {},
+    }
 
 _TRADE_AUDIT_BACKTEST_KEYS = (
     "post_cost_sharpe",
@@ -589,6 +712,9 @@ async def handle_closure_review(db, params: dict) -> dict:
 
 
 async def handle_factory_status(db, params: dict) -> dict:
+    if _factory_status_source(params) == "db":
+        return ok(await _build_db_factory_status(db, params))
+
     from strategy_factory import get_factory_constants, get_strategy_factory_scheduler
     from strategy_factory.application._bulk_cursor import extract_bulk_stock_cursor
     from strategy_factory.application.factory_market_views import (

@@ -103,7 +103,7 @@ export default function DecisionPage() {
     evidence: [
       { label: '股票', value: trimmedCode || '未选择' },
       { label: '风格', value: investmentStyle },
-      { label: 'Legacy diff', value: legacyMode ? '开启' : '关闭' },
+      { label: '历史接口对照', value: legacyMode ? '开启' : '关闭' },
       { label: '结果', value: result ? '已生成' : '未生成' },
       { label: '详情', value: details ? '已加载' : '未加载' },
     ],
@@ -180,7 +180,7 @@ export default function DecisionPage() {
           <div>
             <h1 className="mt-0 text-2xl font-bold text-primary">统一决策工作台</h1>
             <p className="mb-0 mt-2 text-sm text-text-secondary">
-              把 stock / quant / event / user 风险偏好统一收束到一条决策流水线里，并支持旧入口差异对照。
+              将基本面、量化、事件和用户风险偏好合并成一张决策卡片，并支持与历史接口结果对照。
             </p>
           </div>
           <div className="grid gap-3">
@@ -265,7 +265,7 @@ export default function DecisionPage() {
         <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
           <div>股票：{trimmedCode || '-'}</div>
           <div className="mt-1">风格：{investmentStyle}</div>
-          <div className="mt-1">Legacy diff：{legacyMode ? '开启' : '关闭'}</div>
+          <div className="mt-1">历史接口对照：{legacyMode ? '开启' : '关闭'}</div>
           <div className="mt-1">结果：{result ? '已生成' : '未生成'}</div>
           <div className="mt-1">详情：{details ? '已加载' : '未加载'}</div>
         </div>

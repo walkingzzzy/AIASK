@@ -95,28 +95,28 @@ export function StrategyMarketHeroSection({
     : workspace === 'mine'
       ? '这里是你的个人策略工作区，可继续编辑、AI 优化和发起个人模拟盘测试。'
       : workspace === 'factory'
-        ? '工厂运行态单独下沉到独立工作区，避免和选策略任务抢注意力。'
+        ? '集中查看工厂调度、快照和可观测性。'
         : '先看筛选结果，再决定收藏、组合和工厂动作。';
   const compactWorkspaceTitle = workspace === 'favorites'
     ? '继续比较你已收藏的策略。'
     : workspace === 'mine'
       ? '继续编辑、优化和测试你的个人策略。'
       : workspace === 'factory'
-        ? '工厂运行态单独处理，不再和选策略混排。'
+        ? '集中查看工厂调度和可观测性。'
         : '先筛选结果，再决定收藏、组合和工厂动作。';
   const workspaceLead = workspace === 'favorites'
     ? '收藏视图只保留你已经标记过的策略，方便继续比较、复制为个人策略或加入组合购物车。'
     : workspace === 'mine'
       ? '个人策略视图只展示你拥有的草稿和个人版本。这里优先关注编辑、模拟盘测试和 AI 优化，而不是工厂运维信号。'
       : workspace === 'factory'
-        ? '工厂运行态集中展示调度、快照、可观测性和最近 run，面向运营与治理，不再和市场榜单混排。'
-        : '市场策略视图只保留榜单和目录，工厂运行态默认下沉到单独工作区，不再和选策略任务抢注意力。';
+        ? '工厂运行态展示调度、快照、可观测性和最近运行记录，面向运营与治理。'
+        : '市场策略视图聚焦榜单、目录、筛选和加入组合，工厂运行态可切到独立工作区查看。';
   const compactWorkspaceLead = workspace === 'favorites'
     ? '收藏视图只保留你已经标记过的策略，便于继续比较。'
     : workspace === 'mine'
       ? '这里优先做个人策略编辑、AI 优化和模拟盘测试。'
       : workspace === 'factory'
-        ? '这里只看调度、快照和可观测性，面向运营与治理。'
+        ? '这里聚焦调度、快照和可观测性，面向运营与治理。'
         : '列表页当前只负责筛选、比较和加入组合，深度动作留到详情页。';
   const fallbackSummaryMetrics: SummaryMetricItem[] = [
     { key: 'strategy-count', label: '目录策略数', value: String(strategyCount) },
@@ -173,7 +173,7 @@ export function StrategyMarketHeroSection({
   if (compactLayout) {
     return (
       <LightOverviewHero
-        eyebrow="Strategy Workspace"
+        eyebrow="策略工作台"
         title={compactWorkspaceTitle}
         summary={compactWorkspaceLead}
         badges={(
@@ -227,8 +227,8 @@ export function StrategyMarketHeroSection({
             </div>
             <p className="mb-0 mt-1 text-xs leading-6 text-text-secondary">
               {workspace === 'factory'
-                ? '首屏只保留概况与动作，联动观测和工厂明细按需展开。'
-                : '首屏只保留筛选、比较和下一步动作，深度动作进入详情页。'}
+                ? '先查看概况与关键动作，需要排查时再展开联动观测和工厂明细。'
+                : '先完成筛选、比较和下一步动作，策略深度分析进入详情页查看。'}
             </p>
           </div>
         )}
@@ -301,7 +301,7 @@ export function StrategyMarketHeroSection({
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
       <div className="page-hero p-6 sm:p-7">
-        <div className="eyebrow">Strategy Workspace</div>
+        <div className="eyebrow">策略工作台</div>
         <h1 className="mt-3">{compactLayout ? compactWorkspaceTitle : workspaceTitle}</h1>
         <p className="page-lead mb-0 mt-3">
           {compactLayout ? compactWorkspaceLead : workspaceLead}

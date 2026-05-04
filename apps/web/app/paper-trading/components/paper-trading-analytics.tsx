@@ -70,7 +70,7 @@ export default function PaperTradingAnalytics({
       <SectionCard className="mb-4 p-4 sm:p-5">
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.12fr)_minmax(320px,0.88fr)]">
           <div>
-            <div className="eyebrow">System Status</div>
+            <div className="eyebrow">系统状态</div>
             <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">撮合、净值与账户上下文</h3>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
               交易时段内会自动刷新价格，非交易时段建议手动刷新后再核对持仓与收益。先确保账户和状态正常，再进入绩效复盘更稳妥。

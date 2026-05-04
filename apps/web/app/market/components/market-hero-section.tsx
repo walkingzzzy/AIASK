@@ -189,7 +189,7 @@ export default function MarketHeroSection({
             ))}
           </div>
           {compactLayout && quickJumpLinks.length > visibleQuickLinks.length ? (
-            <div className="mt-3 text-xs text-text-secondary">其余跳转入口已收进后续工作区内。</div>
+            <div className="mt-3 text-xs text-text-secondary">更多跳转入口可在后续工作区查看。</div>
           ) : null}
         </section>
       </div>

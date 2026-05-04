@@ -2,6 +2,7 @@ export { normalizeStrategyDetailResponse } from '@aiask/shared-types';
 
 export type StrategyManagerCallOptions = {
   timeoutMs?: number;
+  retryOnTransportError?: boolean;
 };
 
 export type BackgroundFactoryRunStatus = 'queued' | 'running' | 'success' | 'failed';

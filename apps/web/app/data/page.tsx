@@ -180,7 +180,7 @@ export default function DataPage() {
         : tab === 'ipo'
         ? '适合快速查看最近新股与新债窗口，判断一级市场供给节奏。'
         : tab === 'resource'
-          ? '适合直接查看 MCP 资源对象，把 workflow、run、dataset、model、strategy 的结构化摘要拉出来核对。'
+          ? '适合直接查看 MCP 资源对象，核对工作流、运行记录、数据集、模型和策略的结构化摘要。'
           : tab === 'cb'
             ? '适合用单只转债快速看价格、转股价值和溢价率。'
             : '适合用股本结构确认流通盘、限售盘与总市值的关系。';
@@ -349,7 +349,7 @@ export default function DataPage() {
       return (
         <EmptyState
           text="请输入可转债代码后再查询"
-          hint="这里不再预填样例代码，直接输入你要核对的真实转债代码即可。"
+          hint="请直接输入你要核对的真实转债代码。"
         />
       );
     }
@@ -451,7 +451,7 @@ export default function DataPage() {
             <DataTable rows={resourceTableRows} searchable maxHeight={460} onExport={() => exportCSV(resourceTableRows, `resource-${resourceKind}`)} />
           ) : (
             <EmptyState
-              text="当前资源没有可平铺的列表数据"
+              text="当前资源没有可展示的列表数据"
               hint="如果这个对象更偏摘要类资源，左侧字段表和右侧 JSON 通常已经足够完成核对。"
             />
           )}
@@ -603,7 +603,7 @@ export default function DataPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Data Workspace</Badge>
+              <Badge variant="info">数据工作台</Badge>
               <Badge variant="neutral">{activeTabLabel}</Badge>
               <Badge variant={queryPath ? 'success' : 'warning'}>
                 {queryPath ? '已建立查询上下文' : '等待首次查询'}
@@ -740,10 +740,10 @@ export default function DataPage() {
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Data Setup</div>
+            <div className="eyebrow">查询配置</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询工作台</h2>
             <p className="mb-0 mt-2 hidden text-sm leading-7 text-text-secondary sm:block">
-              先切换数据类别，再填写对应输入项。查询区只负责决定目标，不把结果阅读和筛选动作揉在一起。
+              先切换数据类别，再填写对应输入项。确认目标后，下方结果区会用于查看、筛选和导出。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -932,7 +932,7 @@ export default function DataPage() {
       <div className="panel-soft mt-4 rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Result View</div>
+            <div className="eyebrow">结果视图</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
               结果区负责查看、比对和导出。先确认返回是否完整，再决定跳去行情、技术或估值页继续联动。

@@ -16,7 +16,7 @@ import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } fro
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 
-const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
+const EXAMPLE_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
 const HERO_PRIMARY_BUTTON_CLS =
   'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
 const CHIP_LINK_CLS = 'action-chip cursor-pointer border-0 bg-transparent text-xs no-underline text-inherit';
@@ -143,23 +143,23 @@ export default function FactorPage() {
   const libQ = useApiQuery<unknown>(libPath);
 
   const [calcName, setCalcName] = useState('momentum');
-  const [calcCodes, setCalcCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [calcCodes, setCalcCodes] = useState('');
   const calcMut = useApiMutation<unknown>();
 
   const [icName, setIcName] = useState('momentum');
-  const [icCodes, setIcCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [icCodes, setIcCodes] = useState('');
   const icMut = useApiMutation<unknown>();
 
   const [btName, setBtName] = useState('momentum');
-  const [btCodes, setBtCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [btCodes, setBtCodes] = useState('');
   const btMut = useApiMutation<unknown>();
 
   const [oosName, setOosName] = useState('momentum');
-  const [oosCodes, setOosCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [oosCodes, setOosCodes] = useState('');
   const oosMut = useApiMutation<unknown>();
 
   const [robName, setRobName] = useState('momentum');
-  const [robCodes, setRobCodes] = useState(DEFAULT_FACTOR_CODES);
+  const [robCodes, setRobCodes] = useState('');
   const robMut = useApiMutation<unknown>();
 
   const libLoading = libQ.isFetching;
@@ -206,10 +206,14 @@ export default function FactorPage() {
 
   function runRecommendedResearchSample() {
     setFormError(null);
+    if (!validateCodes(calcCodes)) {
+      setFormError(`请先输入来自自选、持仓或当前研究目标的股票池。示例格式：${EXAMPLE_FACTOR_CODES}`);
+      return;
+    }
     setStageTab('foundation');
     setFoundationTab('calculate');
     const recommendedFactorName = 'momentum';
-    const recommendedCodes = DEFAULT_FACTOR_CODES;
+    const recommendedCodes = calcCodes;
     const stockCodes = splitCodes(recommendedCodes);
     setCalcName(recommendedFactorName);
     setCalcCodes(recommendedCodes);
@@ -285,14 +289,14 @@ export default function FactorPage() {
   const factorPageActions = [
     {
       id: 'factor.run-sample',
-      label: '运行推荐研究样例',
-      description: '按默认样本池启动一轮标准因子研究链路',
+      label: '运行当前样本研究',
+      description: '按用户输入的样本池启动一轮标准因子研究链路',
       keywords: ['因子', '样例', '研究'],
       scope: 'page' as const,
       pageKey: 'factor',
       run: () => {
         runRecommendedResearchSample();
-        return { message: '已发起推荐因子研究样例' };
+        return { message: '已按当前样本池发起因子研究' };
       },
     },
     {
@@ -396,10 +400,10 @@ export default function FactorPage() {
       <SectionCard className="mb-4 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Workspace Layers</div>
+            <div className="eyebrow">研究阶段</div>
             <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">因子研究切换</h3>
             <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-              基础研究、收益验证和 AI 挖掘分层显示。默认只保留当前步骤，避免因子库、IC、回测和稳健性同时平铺成长页。
+              基础研究、收益验证和 AI 挖掘分层显示。先聚焦当前步骤，再按需要切换因子库、IC、回测和稳健性检查。
             </p>
           </div>
           <Badge variant={stageTab === 'mining' ? 'info' : 'neutral'}>
@@ -421,7 +425,7 @@ export default function FactorPage() {
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Factor Workspace</Badge>
+              <Badge variant="info">因子研究工作台</Badge>
               <Badge variant={libraryRows.length > 0 ? 'success' : 'neutral'}>
                 {libraryRows.length > 0 ? `因子库 ${libraryRows.length} 项` : '因子库待加载'}
               </Badge>
@@ -437,8 +441,8 @@ export default function FactorPage() {
               因子研究工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这里把普通因子研究与 AI
-              候选挖掘收进一条完整链路。先建立因子库认知，再完成计算、IC、回测、样本外与稳健性检验，最后进入候选生成、验证、记忆治理与调度巡检。
+              这里同时支持普通因子研究与 AI
+              候选挖掘。先建立因子库认知，再完成计算、IC、回测、样本外与稳健性检验，最后进入候选生成、验证、研究记忆和调度巡检。
             </p>
 
             <div className="mt-5 flex flex-wrap gap-2">
@@ -449,7 +453,7 @@ export default function FactorPage() {
                 data-testid="page-primary-action"
                 className={HERO_PRIMARY_BUTTON_CLS}
               >
-                {calcLoading ? '运行中...' : '运行推荐研究样例'}
+                {calcLoading ? '运行中...' : '运行当前样本研究'}
               </button>
             </div>
             <div
@@ -461,10 +465,10 @@ export default function FactorPage() {
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 因子库 {libraryRows.length > 0 ? `已加载 ${libraryRows.length} 项` : '待加载'} ｜
-                推荐流程会先刷新因子库，再运行首轮样本计算。
+                研究流程会先刷新因子库，再按当前样本池运行首轮计算。
               </p>
               <p className="mt-2 mb-0 text-xs text-text-secondary">
-                研究状态：{calcMut.data ? '已完成推荐样例计算' : anyLoading ? '处理中' : '等待启动'}
+                研究状态：{calcMut.data ? '已完成当前样本计算' : anyLoading ? '正在运行' : '等待启动'}
               </p>
             </div>
 
@@ -472,7 +476,7 @@ export default function FactorPage() {
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本池</div>
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{splitCodes(calcCodes).length}</div>
-                <div className="mt-1 text-xs text-text-secondary">默认覆盖白酒、银行、新能源与消费龙头</div>
+                <div className="mt-1 text-xs text-text-secondary">来自用户输入、自选或持仓的研究样本</div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前因子</div>
@@ -553,7 +557,7 @@ export default function FactorPage() {
 
       <ResponsiveResultWorkbench pageKey="factor" title="因子研究结果工作台" result={factorResult} />
 
-      {anyLoading ? <LoadingState text="处理中..." /> : null}
+      {anyLoading ? <LoadingState text="正在运行因子研究..." /> : null}
       {error ? <ErrorState text={error} hint="请先确认因子名称与股票池输入" /> : null}
 
       {!collapseToTabs ? (
@@ -572,7 +576,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Library Layer</div>
+              <div className="eyebrow">因子库</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">因子库</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 先用因子库建立命名、分类和用途的共同语言，避免后续 IC 与回测只剩下数字，没有研究语境。
@@ -644,7 +648,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Calculation Layer</div>
+              <div className="eyebrow">因子计算</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">因子计算</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 先看单期因子值分布是否符合直觉，再决定是否进入 IC 与回测。这里更像“信号体检”，不是最后结论。
@@ -659,7 +663,7 @@ export default function FactorPage() {
             <FactorRequestFields
               legend="计算样本"
               description="先确认单期因子值是否合理，再继续看 IC 或回测。"
-              note="默认样本覆盖 12 只龙头股，适合直接做首轮信号体检。若要做分组收益比较，建议再扩一轮股票池。"
+              note="使用用户输入的股票池做首轮信号体检。若要做分组收益比较，建议先从自选、持仓或研究目标扩充样本。"
               nameId="factor-calc-name"
               nameValue={calcName}
               onNameChange={setCalcName}
@@ -686,7 +690,7 @@ export default function FactorPage() {
             />
 
             <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-              <div className="eyebrow">Result Snapshot</div>
+              <div className="eyebrow">结果快照</div>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 重点看不同股票之间是否形成有辨识度的差异，而不是所有值都挤在一条直线上。
               </p>
@@ -728,7 +732,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Signal Verification</div>
+              <div className="eyebrow">信号验证</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">IC 分析</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 IC 用来回答一个更关键的问题: 因子值和未来收益是否同向，以及这种关系是否足够稳定。
@@ -770,7 +774,7 @@ export default function FactorPage() {
             />
 
             <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-              <div className="eyebrow">IC Outcome</div>
+              <div className="eyebrow">IC 结果</div>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 除了看单次 IC，也要注意时间序列是否持续为正，以及波动是否过大。
               </p>
@@ -818,7 +822,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Return Validation</div>
+              <div className="eyebrow">收益验证</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">因子回测</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 回测用来验证因子排序是否能形成稳定的分组收益与净值抬升，它是 IC 之后的第二层证据。
@@ -860,7 +864,7 @@ export default function FactorPage() {
             />
 
             <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-              <div className="eyebrow">Backtest Outcome</div>
+              <div className="eyebrow">回测结果</div>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 看总收益的同时，也要一起看夏普、回撤和分组收益，否则很容易误把高波动当成好结果。
               </p>
@@ -920,7 +924,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Generalization Check</div>
+              <div className="eyebrow">泛化检查</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">样本外验证</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 样本外验证用来回答“这个因子能否离开样本内仍然有效”，它决定了研究结果是否有迁移价值。
@@ -962,7 +966,7 @@ export default function FactorPage() {
             />
 
             <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-              <div className="eyebrow">OOS Outcome</div>
+              <div className="eyebrow">样本外结果</div>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 样本内和样本外指标差距过大时，通常意味着过拟合或样本结构差异，需要重新审视因子定义。
               </p>
@@ -1040,7 +1044,7 @@ export default function FactorPage() {
         <SectionCard className="p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Stability Check</div>
+              <div className="eyebrow">稳定性检查</div>
               <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">稳健性检验</h3>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 稳健性检验适合放在最后一步，用来判断结果是不是由少量样本、单一市场状态或偶然区间驱动。
@@ -1082,7 +1086,7 @@ export default function FactorPage() {
             />
 
             <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-              <div className="eyebrow">Robustness Outcome</div>
+              <div className="eyebrow">稳健性结果</div>
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                 这里要关注“哪些检验项没过”，而不只是看最终是否通过，因为失败项本身就会提示下一轮修正方向。
               </p>
@@ -1144,7 +1148,7 @@ export default function FactorPage() {
         {stageTab === 'mining' ? (
           <>
             <div className="panel-soft mb-4 rounded-[24px] px-4 py-3 text-sm text-text-secondary">
-              基础研究链路确认后，再进入 AI 因子挖掘工作台，把候选生成、验证、研究记忆和候选池治理串成闭环。
+              基础研究确认后，再进入 AI 因子挖掘工作台，继续处理候选生成、验证、研究记忆和候选池治理。
             </div>
             <FactorMiningWorkbench />
           </>

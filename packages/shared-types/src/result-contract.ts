@@ -50,6 +50,10 @@ export type ResultPlatformMeta = {
     sourceChain?: string[];
     degraded?: boolean;
     fallbackReason?: string[];
+    requested_keyword?: string | null;
+    matched_keyword?: string | null;
+    match_confidence?: number | null;
+    degraded_reason?: string | null;
     freshnessLabel?: string | null;
     referencePath?: string | null;
 };

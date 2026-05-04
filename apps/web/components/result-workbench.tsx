@@ -228,7 +228,7 @@ export default function ResultWorkbench({
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <div className="eyebrow">Result Workbench</div>
+            <div className="eyebrow">结果工作台</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">{title}</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">{activeResult.summary}</p>
           </div>
@@ -320,7 +320,7 @@ export default function ResultWorkbench({
                       {item}
                     </Badge>
                   ))}
-                  {activeResult.freshness?.asOf ? <Badge variant="neutral">as of {activeResult.freshness.asOf}</Badge> : null}
+                  {activeResult.freshness?.asOf ? <Badge variant="neutral">截至 {activeResult.freshness.asOf}</Badge> : null}
                 </div>
                 {activeResult.platformMeta?.fallbackReason?.length ? (
                   <div className="mt-3 flex flex-col gap-2">
@@ -331,7 +331,7 @@ export default function ResultWorkbench({
                     ))}
                   </div>
                 ) : (
-                  <div className="mt-3 text-xs leading-6 text-text-secondary">当前结果未报告 fallback 或降级原因。</div>
+                  <div className="mt-3 text-xs leading-6 text-text-secondary">当前结果未报告降级或备用数据原因。</div>
                 )}
                 {activeResult.platformMeta?.referencePath ? (
                   <div className="mt-4">

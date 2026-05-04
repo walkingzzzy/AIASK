@@ -9,10 +9,10 @@ import PaperTradingOrderWorkspace from '@/app/paper-trading/components/paper-tra
 import PaperTradingSummarySidebar from '@/app/paper-trading/components/paper-trading-summary-sidebar';
 import PaperTradingTrustStatusCard from '@/app/paper-trading/components/paper-trading-trust-status';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
-import { LoadingState, PageStatusCard } from '@/components/status-state';
+import { DataQualityBanner, LoadingState, PageStatusCard } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, TabBar } from '@/components/ui';
+import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -91,6 +91,26 @@ function readStatusProbeNote(probe: PaperTradingStatusProbe, fallback: string) {
   return typeof note === 'string' && note.trim() ? note : fallback;
 }
 
+function isSandboxAccount(accountId: string) {
+  return /(sandbox|test|demo|paper-audit|playwright|qa)/i.test(accountId);
+}
+
+function readDegradedReason(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.degraded !== true) return null;
+  const fallbackReason = record.fallback_reason ?? record.fallbackReason;
+  if (typeof fallbackReason === 'string' && fallbackReason.trim()) {
+    return fallbackReason.trim();
+  }
+  if (Array.isArray(fallbackReason)) {
+    const joined = fallbackReason.map((item) => String(item).trim()).filter(Boolean).join('；');
+    if (joined) return joined;
+  }
+  const message = record.message;
+  return typeof message === 'string' && message.trim() ? message.trim() : '价格刷新暂不可用，已保留当前快照';
+}
+
 function normalizePaperRiskRules(value: unknown): Record<string, unknown> {
   if (!value) return {};
   if (typeof value === 'string') {
@@ -115,6 +135,12 @@ function normalizeRiskPct(value: unknown, fallback: number): number {
     return fallback;
   }
   return numeric <= 1 ? numeric * 100 : numeric;
+}
+
+function readPaperAccountId(account: unknown): string {
+  if (!account || typeof account !== 'object' || Array.isArray(account)) return '';
+  const record = account as Record<string, unknown>;
+  return String(record.account_id ?? record.id ?? '').trim();
 }
 
 export default function PaperTradingPage() {
@@ -150,6 +176,7 @@ export default function PaperTradingPage() {
   const [cancelingOrderIds, setCancelingOrderIds] = useState<number[]>([]);
   const [tradeNotice, setTradeNotice] = useState<string | null>(null);
   const [perfDays, setPerfDays] = useState(30);
+  const [loadingGraceExpired, setLoadingGraceExpired] = useState(false);
   const [mobilePrimaryTab, setMobilePrimaryTab] = useState<PaperTradingMobilePrimaryTab>('order');
   const collapseToTabs = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const strategyDetailQ = useApiQuery<Record<string, unknown>>(
@@ -163,6 +190,15 @@ export default function PaperTradingPage() {
       staleTime: 60_000,
       nonFatal: true,
     },
+  );
+  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts');
+  const accounts = useMemo(
+    () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as PaperTradingAccount[],
+    [accountsQ.data],
+  );
+  const firstAccountId = useMemo(
+    () => accounts.map(readPaperAccountId).find(Boolean) ?? '',
+    [accounts],
   );
 
   // T-005: WS real-time trade order updates
@@ -184,38 +220,36 @@ export default function PaperTradingPage() {
       ?? '',
   ).trim();
   const requiresPersonalSession = personalStrategyMode && Boolean(linkedStrategyId);
-  const activeAccountId = queryAccountId || (requiresPersonalSession ? (accountId || resolvedPersonalAccountId) : accountId);
-  const canLoadAccountQueries = !requiresPersonalSession || Boolean(activeAccountId);
-  const qs = canLoadAccountQueries && activeAccountId ? `?account_id=${activeAccountId}` : '';
+  const workspaceAccountId = String(workbenchContext.accountId ?? '').trim();
+  const activeAccountId = queryAccountId
+    || (requiresPersonalSession
+      ? (accountId || resolvedPersonalAccountId)
+      : (accountId || workspaceAccountId || firstAccountId));
+  const canLoadAccountQueries = Boolean(activeAccountId);
+  const qs = canLoadAccountQueries ? `?account_id=${encodeURIComponent(activeAccountId)}` : '';
 
   // 8 read queries — auto-fetch on mount, re-fetch when qs changes
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
-  const accountsQ = useApiQuery<PaperTradingAccountsResponse | PaperTradingAccount[]>('/paper-trading/accounts', { critical: true });
-  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status', { critical: true });
-  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status', { critical: true });
+  const matchStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/matching-status');
+  const navStatusQ = useApiQuery<PaperTradingStatusProbe>('/paper-trading/nav-status');
   const summaryQ = useApiQuery<PaperTradingSummary>(qs ? '/paper-trading/summary' + qs : '/paper-trading/summary', {
-    critical: true,
     enabled: canLoadAccountQueries,
   });
   const positionsQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
   });
   const ordersQ = useApiQuery<PaperTradingOrdersResponse>('/paper-trading/orders' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
   });
   const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>('/paper-trading/pending-orders' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
   });
   const navQ = useApiQuery<PaperTradingNavHistoryResponse>('/paper-trading/nav-history' + qs, {
-    critical: true,
     enabled: canLoadAccountQueries,
   });
   const performanceQ = useApiQuery<PaperTradingPerformanceResponse>(
     `/paper-trading/performance${qs ? `${qs}&days=${perfDays}` : `?days=${perfDays}`}`,
-    { critical: true, enabled: canLoadAccountQueries },
+    { enabled: canLoadAccountQueries },
   );
   const trustStatusQ = useApiQuery<PaperTradingTrustStatus>('/paper-trading/trust-status' + qs, {
     placeholderData: 'keepPrevious',
@@ -224,7 +258,7 @@ export default function PaperTradingPage() {
   });
 
   // Subscribe to trade updates via WS
-  useTradeSubscription({ accountId: activeAccountId || 'default', onUpdate: handleTradeUpdate, enabled: canLoadAccountQueries });
+  useTradeSubscription({ accountId: activeAccountId, onUpdate: handleTradeUpdate, enabled: canLoadAccountQueries });
 
   // Advanced MCP Managers (Compliance & Execution)
   const [useComplianceCheck, setUseComplianceCheck] = useState(false);
@@ -238,6 +272,10 @@ export default function PaperTradingPage() {
   const reconcileApi = useApiMutation<Record<string, unknown>>({
     invalidates: [[...apiKeys.paper()]],
     successToast: false,
+  });
+  const cleanupApi = useApiMutation<Record<string, unknown>>({
+    invalidates: [[...apiKeys.paper()]],
+    successToast: '测试账户已清理',
   });
   const autoRefreshPricesApi = useApiMutation<Record<string, unknown>>({
     invalidates: [[...apiKeys.paper()]],
@@ -273,10 +311,6 @@ export default function PaperTradingPage() {
     await Promise.allSettled(tasks);
   }, [accountsQ, canLoadAccountQueries, linkedStrategyId, matchStatusQ, navQ, navStatusQ, ordersQ, pendingQ, performanceQ, personalStrategyMode, positionsQ, profileQ, strategyPaperContextQ, summaryQ, trustStatusQ]);
 
-  const accounts = useMemo(
-    () => extractArray(accountsQ.data, 'accounts', 'items', 'data') as PaperTradingAccount[],
-    [accountsQ.data],
-  );
   const matchStatus = useMemo(() => matchStatusQ.data ?? {}, [matchStatusQ.data]);
   const navStatus = useMemo(() => navStatusQ.data ?? {}, [navStatusQ.data]);
   const matchOk = matchStatus.status === 'running' || matchStatus.running === true || matchStatus.ok === true;
@@ -416,29 +450,37 @@ export default function PaperTradingPage() {
     [performanceData],
   );
 
-  const pageLoading =
-    (requiresPersonalSession && !queryAccountId && strategyPaperContextQ.isPending) ||
-    profileQ.isPending ||
-    accountsQ.isPending ||
-    matchStatusQ.isPending ||
-    navStatusQ.isPending ||
+  useEffect(() => {
+    setLoadingGraceExpired(false);
+    const timer = window.setTimeout(() => setLoadingGraceExpired(true), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [activeAccountId, requiresPersonalSession]);
+
+  const accountDataLoading = canLoadAccountQueries && (
     summaryQ.isPending ||
     positionsQ.isPending ||
     ordersQ.isPending ||
     pendingQ.isPending ||
     navQ.isPending ||
-    performanceQ.isPending;
+    performanceQ.isPending
+  );
+  const accountDataError = canLoadAccountQueries
+    ? summaryQ.error || positionsQ.error || ordersQ.error || pendingQ.error || navQ.error || performanceQ.error
+    : null;
+  const rawPageLoading =
+    (requiresPersonalSession && !queryAccountId && strategyPaperContextQ.isPending) ||
+    profileQ.isPending ||
+    accountsQ.isPending ||
+    matchStatusQ.isPending ||
+    navStatusQ.isPending ||
+    accountDataLoading;
+  const pageLoading = rawPageLoading && !loadingGraceExpired;
   const pageError =
     profileQ.error ||
     accountsQ.error ||
     matchStatusQ.error ||
     navStatusQ.error ||
-    summaryQ.error ||
-    positionsQ.error ||
-    ordersQ.error ||
-    pendingQ.error ||
-    navQ.error ||
-    performanceQ.error;
+    accountDataError;
   const error = pageError || refreshPricesApi.error || reconcileApi.error;
   const accountIdRef = useRef(activeAccountId);
   const autoRefreshBusyRef = useRef(false);
@@ -466,14 +508,20 @@ export default function PaperTradingPage() {
     setFormStatus('正在刷新持仓价格...');
     setLastActionResult(null);
     try {
-      await refreshPricesApi.triggerAsync(
+      const refreshResult = await refreshPricesApi.triggerAsync(
         '/paper-trading/update-prices',
         { method: 'POST' },
         activeAccountId ? { account_id: activeAccountId } : {},
       );
-      toast('持仓价格已刷新', 'success');
       setFormStatus(null);
-      setLastActionResult('持仓价格已刷新');
+      const degradedReason = readDegradedReason(refreshResult);
+      if (degradedReason) {
+        setFormError(degradedReason);
+        setLastActionResult('持仓价格刷新已降级，页面保留当前快照');
+      } else {
+        toast('持仓价格已刷新', 'success');
+        setLastActionResult('持仓价格已刷新');
+      }
     } catch (err) {
       setFormStatus(null);
       setFormError(err instanceof Error ? err.message : String(err));
@@ -508,6 +556,7 @@ export default function PaperTradingPage() {
     const tick = async () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       if (!canLoadAccountQueries) return;
+      if (positions.length === 0 && pending.length === 0 && trades.length === 0) return;
       if (!isTradingHours()) return;
       if (manualRefreshPendingRef.current || autoRefreshBusyRef.current) return;
       autoRefreshBusyRef.current = true;
@@ -528,7 +577,7 @@ export default function PaperTradingPage() {
       void tick();
     }, 15_000);
     return () => window.clearInterval(id);
-  }, [canLoadAccountQueries]);
+  }, [canLoadAccountQueries, pending.length, positions.length, trades.length]);
 
   async function submitOrder(request: PendingOrderRequest) {
     const { body, idempotencyKey } = request;
@@ -687,6 +736,31 @@ export default function PaperTradingPage() {
     await submitCancel(request);
   }
 
+  const handleTestCleanup = useCallback(async () => {
+    if (!activeAccountId || !isSandboxAccount(activeAccountId)) {
+      setFormError('测试清理只允许 sandbox/test/demo/qa/playwright/paper-audit 账户');
+      return;
+    }
+    setFormError(null);
+    setFormStatus('正在清理测试账户挂单、测试持仓并刷新对账...');
+    try {
+      const cleanup = await cleanupApi.triggerAsync(
+        '/paper-trading/test-cleanup',
+        { method: 'POST' },
+        { account_id: activeAccountId, include_filled_positions: true },
+      );
+      setFormStatus(null);
+      const cancelled = Number(cleanup?.cancelled_count ?? 0);
+      const positions = Number(cleanup?.filled_positions_count ?? 0);
+      const failed = Number(cleanup?.failed_count ?? 0);
+      setLastActionResult(`测试账户清理已完成：取消 ${cancelled}，重置持仓 ${positions}，失败 ${failed}`);
+      await refreshPaperData();
+    } catch (err) {
+      setFormStatus(null);
+      setFormError(err instanceof Error ? err.message : String(err));
+    }
+  }, [activeAccountId, cleanupApi, refreshPaperData]);
+
   function quickSell(position: PaperTradingPosition) {
     const sellable = Number(position.sellable ?? position.quantity ?? 0);
     if (!Number.isFinite(sellable) || sellable <= 0) {
@@ -710,7 +784,7 @@ export default function PaperTradingPage() {
     && !queryAccountId
     && !resolvedPersonalAccountId
     && !strategyPaperContextQ.isPending;
-  const accountDisplayId = activeAccountId || (requiresPersonalSession ? '未创建个人盘' : 'default');
+  const accountDisplayId = activeAccountId || (requiresPersonalSession ? '未创建个人盘' : '未选择账户');
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -726,15 +800,16 @@ export default function PaperTradingPage() {
       setAccountId(resolvedPersonalAccountId || '');
       return;
     }
-    setAccountId(workbenchContext.accountId ?? '');
+    setAccountId(workspaceAccountId || firstAccountId || '');
   }, [
     activeWorkspaceId,
+    firstAccountId,
     queryAccountId,
     queryStockCode,
     requiresPersonalSession,
     resolvedPersonalAccountId,
     setCode,
-    workbenchContext.accountId,
+    workspaceAccountId,
     workbenchContext.stockCode,
     workbenchHydrated,
   ]);
@@ -750,8 +825,12 @@ export default function PaperTradingPage() {
     }
     if (requiresPersonalSession) {
       setAccountId(resolvedPersonalAccountId || '');
+      return;
     }
-  }, [queryAccountId, queryStockCode, requiresPersonalSession, resolvedPersonalAccountId, setCode, workbenchHydrated]);
+    if (!accountId && (workspaceAccountId || firstAccountId)) {
+      setAccountId(workspaceAccountId || firstAccountId);
+    }
+  }, [accountId, firstAccountId, queryAccountId, queryStockCode, requiresPersonalSession, resolvedPersonalAccountId, setCode, workspaceAccountId, workbenchHydrated]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
@@ -814,6 +893,18 @@ export default function PaperTradingPage() {
         },
       },
       {
+        id: 'paper.test-cleanup',
+        label: '清理测试账户',
+        description: '仅 sandbox/test/demo/qa 账户可用，取消测试挂单并刷新对账',
+        keywords: ['清理', '测试账户', 'cleanup'],
+        scope: 'page' as const,
+        pageKey: 'paper-trading',
+        run: async () => {
+          await handleTestCleanup();
+          return { message: '已触发测试账户清理' };
+        },
+      },
+      {
         id: 'paper.toggle-compliance',
         label: useComplianceCheck ? '关闭合规检查' : '开启合规检查',
         description: '切换下单前的合规风控检查',
@@ -826,7 +917,7 @@ export default function PaperTradingPage() {
         },
       },
     ],
-    [handleReconcileLedger, handleRefreshPrices, refreshPaperData, useComplianceCheck],
+    [handleReconcileLedger, handleRefreshPrices, handleTestCleanup, refreshPaperData, useComplianceCheck],
   );
 
   usePageActions(pageActions);
@@ -836,7 +927,7 @@ export default function PaperTradingPage() {
     status: showAccountBootstrap ? 'empty' : (!matchOk || !navOk ? 'degraded' : 'ready'),
     availableViews: positions.length > 1 || pending.length > 1 || trades.length > 1 ? ['compare'] : [],
     pageActions,
-    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.reconcile', 'paper.toggle-compliance'],
+    preferredActionIds: ['paper.refresh', 'paper.refresh-prices', 'paper.reconcile', 'paper.test-cleanup', 'paper.toggle-compliance'],
     recommendedLinks: [
       { id: 'paper-open-assistant-link', label: '继续问 Copilot', href: '/assistant' },
       { id: 'paper-open-performance-link', label: '绩效中心', href: '/performance' },
@@ -1021,7 +1112,34 @@ export default function PaperTradingPage() {
         />
       </div>
 
+      <div className="space-y-2">
+        <DataQualityBanner trust={summaryQ.trust} title="模拟盘资产数据质量" onRetry={() => void summaryQ.refetch()} />
+        <DataQualityBanner trust={positionsQ.trust} title="模拟盘持仓数据质量" onRetry={() => void positionsQ.refetch()} />
+        <DataQualityBanner trust={performanceQ.trust} title="模拟盘绩效数据质量" onRetry={() => void performanceQ.refetch()} />
+      </div>
+
       {!collapseToTabs && trustStatus ? <PaperTradingTrustStatusCard status={trustStatus} /> : null}
+
+      {!collapseToTabs ? (
+        <SectionCard className="mb-4 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="m-0 text-sm font-semibold text-text-primary">测试数据清理</h3>
+              <p className="mt-1 mb-0 text-xs text-text-secondary">
+                仅 sandbox/test/demo/qa/playwright/paper-audit 账户可用；可取消挂单并重置测试持仓，真实或默认账户会被拒绝。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleTestCleanup()}
+              disabled={!activeAccountId || !isSandboxAccount(activeAccountId) || cleanupApi.isPending}
+              className="action-chip cursor-pointer text-sm text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cleanupApi.isPending ? '清理中...' : '清理测试账户'}
+            </button>
+          </div>
+        </SectionCard>
+      ) : null}
 
       {!collapseToTabs ? (
         <ProgressiveWorkbenchSection
@@ -1310,7 +1428,7 @@ export default function PaperTradingPage() {
             </button>
           )}
           secondaryAction={<Link href="/market" className="action-chip text-sm no-underline text-inherit">先去行情页</Link>}
-          example="account_id=default，strategy_id=123"
+          example="请确认账户 ID 存在；测试清理仅支持 sandbox / demo / test / qa / playwright / paper-audit 账户。"
         />
       </PageContainer>
     );

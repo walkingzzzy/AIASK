@@ -146,6 +146,9 @@ export class WorkspaceService {
     const stockCode = this.toNonEmptyString(record.stockCode);
     if (stockCode) context.stockCode = stockCode;
 
+    const stockConfirmedAt = this.toIsoString(record.stockConfirmedAt);
+    if (stockConfirmedAt) context.stockConfirmedAt = stockConfirmedAt;
+
     const accountId = this.toNonEmptyString(record.accountId);
     if (accountId) context.accountId = accountId;
 
@@ -175,6 +178,35 @@ export class WorkspaceService {
 
     const eventCode = this.toNonEmptyString(record.eventCode);
     if (eventCode) context.eventCode = eventCode;
+
+    const strategyId = this.toNonEmptyString(record.strategyId);
+    if (strategyId) context.strategyId = strategyId;
+
+    const strategyName = this.toNonEmptyString(record.strategyName);
+    if (strategyName) context.strategyName = strategyName;
+
+    const linkedStrategyId = this.toNonEmptyString(record.linkedStrategyId);
+    if (linkedStrategyId) context.linkedStrategyId = linkedStrategyId;
+
+    const linkedStrategyName = this.toNonEmptyString(record.linkedStrategyName);
+    if (linkedStrategyName) context.linkedStrategyName = linkedStrategyName;
+
+    const screenerQuery = this.toNonEmptyString(record.screenerQuery);
+    if (screenerQuery) context.screenerQuery = screenerQuery;
+
+    const sourcePage = this.toNonEmptyString(record.sourcePage);
+    if (sourcePage) context.sourcePage = sourcePage;
+
+    const taskType = this.toNonEmptyString(record.taskType);
+    if (taskType) context.taskType = taskType;
+
+    const resultType = this.toNonEmptyString(record.resultType);
+    if (resultType) context.resultType = resultType;
+
+    const strategyTestMode = this.toNonEmptyString(record.strategyTestMode);
+    if (strategyTestMode === 'personal-strategy' || strategyTestMode === 'factory-incubation') {
+      context.strategyTestMode = strategyTestMode;
+    }
 
     return context;
   }

@@ -6,7 +6,7 @@ import CollapsibleSectionCard from '@/components/collapsible-section-card';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import { Badge, DataTable, PageContainer, SectionCard } from '@/components/ui';
-import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
+import { DataQualityBanner, EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -27,6 +27,12 @@ type SkillTriggerResponse = {
   execution?: unknown;
   result?: unknown;
   source?: string;
+  workbench?: {
+    targetPage?: string;
+    href?: string;
+    executionId?: string | null;
+    observable?: boolean;
+  };
   meta?: {
     backend_requested?: string;
     backend_used?: string;
@@ -101,6 +107,45 @@ function modeBadgeVariant(mode?: SkillExecutionMode) {
   return 'neutral' as const;
 }
 
+function statusLabel(status: SkillStatus) {
+  if (status === 'executable') return '可执行';
+  if (status === 'deprecated') return '已废弃';
+  return '已注册';
+}
+
+function executionModeLabel(mode?: SkillExecutionMode) {
+  if (mode === 'orchestrated') return '编排执行';
+  if (mode === 'deprecated') return '已废弃';
+  return '暂无执行入口';
+}
+
+function skillCategoryLabel(category?: string) {
+  const value = String(category ?? '').trim();
+  if (!value) return '未分类';
+  const labels: Record<string, string> = {
+    market: '行情数据',
+    quant: '量化分析',
+    strategy: '策略工厂',
+    fundamental: '基本面',
+    portfolio: '组合与回测',
+    news: '资讯事件',
+  };
+  return labels[value] ?? value.replace(/[_-]+/g, ' ');
+}
+
+function skillTaskLabel(task: string) {
+  const value = String(task ?? '').trim();
+  const labels: Record<string, string> = {
+    smoke_test: '连通性检查',
+    quick_scan: '快速扫描',
+    quote_only: '只取报价',
+    deep_analysis: '深度分析',
+    strategy_factory: '策略工厂',
+    market_overview: '市场概览',
+  };
+  return labels[value] ?? value.replace(/[_-]+/g, ' ');
+}
+
 function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>['context']) {
   const payload: Record<string, unknown> = {};
   if (context.stockCode) {
@@ -124,6 +169,13 @@ function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>
 
 function stringifyPayload(payload: Record<string, unknown>) {
   return JSON.stringify(payload, null, 2);
+}
+
+function stringifyFallbackReason(value: unknown) {
+  if (value == null || value === '') return null;
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean).join('；') || null;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 function inferWorkspacePatch(payload: Record<string, unknown>): WorkspaceContextPatch {
@@ -179,7 +231,7 @@ function parsePayloadText(text: string) {
   if (!trimmed) return {};
   const parsed = JSON.parse(trimmed);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('payload 必须是 JSON 对象');
+    throw new Error('参数必须是 JSON 对象');
   }
   return parsed as Record<string, unknown>;
 }
@@ -196,9 +248,10 @@ export default function SkillsPage() {
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
-  const skillsQ = useApiQuery<SkillDescriptor[]>('/v1/skills', {
-    parse: (raw) => normalizeSkills(raw),
+  const skillsQ = useApiQuery<unknown>('/v1/skills', {
     staleTime: 60_000,
+    placeholderData: 'keepPrevious',
+    timeoutMs: 4_000,
   });
   const triggerSkillApi = useApiMutation<SkillTriggerResponse>({
     successToast: false,
@@ -211,8 +264,20 @@ export default function SkillsPage() {
   const [payloadText, setPayloadText] = useState('{}');
   const [payloadError, setPayloadError] = useState<string | null>(null);
   const [lastSkillsRefreshAt, setLastSkillsRefreshAt] = useState<string | null>(null);
+  const [lastSuccessfulSkills, setLastSuccessfulSkills] = useState<SkillDescriptor[]>([]);
 
-  const skills = useMemo(() => skillsQ.data ?? [], [skillsQ.data]);
+  useEffect(() => {
+    const nextSkills = skillsQ.data ? normalizeSkills(skillsQ.data) : null;
+    if (!nextSkills) return;
+
+    const id = window.setTimeout(() => setLastSuccessfulSkills(nextSkills), 0);
+    return () => window.clearTimeout(id);
+  }, [skillsQ.data]);
+
+  const currentSkills = useMemo(() => skillsQ.data ? normalizeSkills(skillsQ.data) : null, [skillsQ.data]);
+  const skills = useMemo(() => currentSkills ?? lastSuccessfulSkills, [currentSkills, lastSuccessfulSkills]);
+  const skillsUsingStaleSnapshot = !skillsQ.data && lastSuccessfulSkills.length > 0;
+  const skillsRefreshingWithSnapshot = skillsQ.isFetching && lastSuccessfulSkills.length > 0;
   const skillsBootstrapping = skillsQ.isPending && skills.length === 0;
   const skillsUnavailable = skillsQ.serviceUnavailable && skills.length === 0;
   const categories = useMemo(
@@ -268,6 +333,16 @@ export default function SkillsPage() {
     }
   }, [activeSkillId, router, searchParams]);
 
+  const selectSkill = useCallback((skillId: string) => {
+    const normalized = skillId.trim();
+    setSelectedSkillId(normalized);
+    const params = new URLSearchParams(searchParams.toString());
+    if (normalized) params.set('skill', normalized);
+    else params.delete('skill');
+    const nextQs = params.toString();
+    router.replace(nextQs ? `/skills?${nextQs}` : '/skills', { scroll: false });
+  }, [router, searchParams]);
+
   const fillWorkspacePayload = useCallback(() => {
     setPayloadError(null);
     setPayloadText(stringifyPayload(workspacePayload));
@@ -289,10 +364,10 @@ export default function SkillsPage() {
     ) {
       setStatusFilter(snapshot.statusFilter);
     }
-    if (typeof snapshot.selectedSkillId === 'string') setSelectedSkillId(snapshot.selectedSkillId);
+    if (typeof snapshot.selectedSkillId === 'string') selectSkill(snapshot.selectedSkillId);
     if (typeof snapshot.payloadText === 'string') setPayloadText(snapshot.payloadText);
     setPayloadError(null);
-  }, []);
+  }, [selectSkill]);
 
   const currentView = useMemo<Record<string, unknown>>(
     () => ({
@@ -389,7 +464,7 @@ export default function SkillsPage() {
       {
         id: 'skills.trigger-selected',
         label: selectedSkill ? `执行 ${shortSkillName(selectedSkill)}` : '执行当前技能',
-        description: '按当前 JSON payload 触发选中的技能',
+        description: '按当前 JSON 参数触发选中的技能',
         keywords: ['执行技能', '触发'],
         scope: 'page' as const,
         pageKey: 'skills',
@@ -405,7 +480,7 @@ export default function SkillsPage() {
     { label: '技能总数', value: String(skills.length) },
     { label: '筛选后结果', value: String(filteredSkills.length) },
     { label: '状态筛选', value: statusFilter === 'all' ? '全部状态' : statusFilter },
-    { label: '分类筛选', value: categoryFilter === 'all' ? '全部分类' : categoryFilter },
+    { label: '分类筛选', value: categoryFilter === 'all' ? '全部分类' : skillCategoryLabel(categoryFilter) },
     { label: '当前技能', value: selectedSkill ? shortSkillName(selectedSkill) : '未选择技能' },
   ];
   const skillsLinks = [
@@ -417,7 +492,7 @@ export default function SkillsPage() {
   const skillsRiskNotes = [
     ...(skillsUnavailable ? ['当前技能注册表不可用，目录可能不完整。'] : []),
     ...((selectedSkill && !selectedSkill.executable) ? [`当前技能 ${shortSkillName(selectedSkill)} 暂不可执行。`] : []),
-    ...(payloadError ? [`当前 payload 存在错误：${payloadError}`] : []),
+    ...(payloadError ? [`当前参数存在错误：${payloadError}`] : []),
   ];
   const skillsResult = buildLocalResultContract({
     summary: skillsSummary,
@@ -509,7 +584,7 @@ export default function SkillsPage() {
       {!compactLayout ? (
       <CollapsibleSectionCard
         title="技能总览与筛选策略"
-        summary="技能目录、可执行状态和推荐使用方式统一下沉到这一层。默认直接进入技能工作区，只有需要重新理解能力边界时再展开。"
+        summary="这里汇总技能目录、可执行状态和推荐使用方式。需要确认能力边界或刷新注册表时，再展开查看。"
         className="mt-4"
         badge={<Badge variant="neutral">{filteredSkills.length} / {skills.length || 0}</Badge>}
       >
@@ -529,6 +604,9 @@ export default function SkillsPage() {
               <Badge variant="danger">
                 已废弃 {skillsBootstrapping || skillsUnavailable ? '--' : skills.filter((skill) => skill.status === 'deprecated').length}
               </Badge>
+              {skillsRefreshingWithSnapshot || skillsUsingStaleSnapshot ? (
+                <Badge variant="warning">保留上次快照</Badge>
+              ) : null}
             </div>
             <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">
               技能中心不是新的对话入口，而是把后端已有的能力目录、可执行状态和触发结果显式化，便于用户理解“系统现在到底能做什么”。
@@ -571,15 +649,18 @@ export default function SkillsPage() {
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 {skillsBootstrapping
                   ? '技能注册表正在同步，稍后会自动恢复。'
+                  : skillsRefreshingWithSnapshot || skillsUsingStaleSnapshot
+                    ? '技能注册表正在刷新，当前列表保留上一次成功快照。'
                   : skillsUnavailable
                     ? '技能注册表暂不可用，页面会在服务恢复后自动重试。'
                     : selectedSkill
-                  ? `状态 ${selectedSkill.status} ｜ 执行模式 ${selectedSkill.execution_mode ?? 'no_handler'} ｜ ${selectedSkill.executable ? '可触发' : '不可触发'}`
+                  ? `状态 ${statusLabel(selectedSkill.status)} ｜ 执行模式 ${executionModeLabel(selectedSkill.execution_mode)} ｜ ${selectedSkill.executable ? '可触发' : '不可触发'}`
                   : '请先在右侧列表选择一个技能。'}
               </p>
               <p className="mt-2 mb-0 text-xs text-text-secondary">
                 最近快照：{latestSkillsRefreshText}
                 {lastSkillsRefreshAt ? ` ｜ 手动刷新：${lastSkillsRefreshAt}` : ''}
+                {skillsRefreshingWithSnapshot || skillsUsingStaleSnapshot ? ' ｜ 保留上次快照' : ''}
               </p>
             </div>
           </div>
@@ -587,7 +668,7 @@ export default function SkillsPage() {
             <div className="font-medium text-text-primary">推荐使用方式</div>
             <ol className="mb-0 mt-2 space-y-1 pl-4">
               <li>先按分类或可执行状态收窄范围。</li>
-              <li>再把当前工作区上下文填进 payload，避免手工重复输入。</li>
+              <li>再把当前工作区上下文填进参数，避免手工重复输入。</li>
               <li>最后将常用技能记入工作区任务，作为固定流程的一部分。</li>
             </ol>
           </div>
@@ -600,6 +681,7 @@ export default function SkillsPage() {
         pageKey="skills"
         primary={
           <SectionCard className="h-full p-4">
+            <DataQualityBanner trust={skillsQ.trust} onRetry={() => void skillsQ.refetch()} className="mb-3" />
             {skillsBootstrapping ? (
               <LoadingState text="正在同步技能注册表..." />
             ) : skillsUnavailable ? (
@@ -610,7 +692,7 @@ export default function SkillsPage() {
             ) : !selectedSkill ? (
               <EmptyState
                 text="还没有选中的技能。"
-                hint="从左侧选择一个技能，查看它的执行状态、输入 schema 和触发结果。"
+                hint="从左侧选择一个技能，查看它的执行状态、输入结构和触发结果。"
               />
             ) : (
               <>
@@ -620,9 +702,9 @@ export default function SkillsPage() {
                     <MetaLine>{selectedSkill.description ?? '该技能当前没有描述信息。'}</MetaLine>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant={statusBadgeVariant(selectedSkill.status)}>{selectedSkill.status}</Badge>
+                    <Badge variant={statusBadgeVariant(selectedSkill.status)}>{statusLabel(selectedSkill.status)}</Badge>
                     <Badge variant={modeBadgeVariant(selectedSkill.execution_mode)}>
-                      {selectedSkill.execution_mode ?? 'no_handler'}
+                      {executionModeLabel(selectedSkill.execution_mode)}
                     </Badge>
                     <Badge variant={selectedSkill.executable ? 'success' : 'warning'}>
                       {selectedSkill.executable ? '可触发' : '不可触发'}
@@ -634,8 +716,8 @@ export default function SkillsPage() {
                   <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
                     <div className="font-medium text-text-primary">技能标识</div>
                     <div className="mt-2 break-all font-mono">{selectedSkill.id}</div>
-                    <div className="mt-2">分类：{selectedSkill.category ?? '未分类'}</div>
-                    <div className="mt-1">Handler：{selectedSkill.handler_available ? '已接入' : '未声明'}</div>
+                    <div className="mt-2">分类：{skillCategoryLabel(selectedSkill.category)}</div>
+                    <div className="mt-1">执行入口：{selectedSkill.handler_available ? '已接入' : '未声明'}</div>
                     {selectedSkill.path ? <div className="mt-1 break-all">路径：{selectedSkill.path}</div> : null}
                   </div>
                   <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
@@ -644,11 +726,11 @@ export default function SkillsPage() {
                       {(selectedSkill.supported_tasks ?? []).length > 0 ? (
                         selectedSkill.supported_tasks?.map((task) => (
                           <Badge key={task} variant="neutral">
-                            {task}
+                            {skillTaskLabel(task)}
                           </Badge>
                         ))
                       ) : (
-                        <span>当前未声明 supported_tasks。</span>
+                        <span>当前未声明支持任务。</span>
                       )}
                     </div>
                   </div>
@@ -707,13 +789,13 @@ export default function SkillsPage() {
 
                 <div className="mt-4 grid gap-3 xl:grid-cols-2">
                   <details className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
-                    <summary className="cursor-pointer text-sm font-medium text-text-primary">输入 Schema</summary>
+                    <summary className="cursor-pointer text-sm font-medium text-text-primary">输入结构</summary>
                     <pre className="mb-0 mt-3 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] text-text-secondary">
                       {JSON.stringify(selectedSkill.input_schema ?? {}, null, 2)}
                     </pre>
                   </details>
                   <details className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
-                    <summary className="cursor-pointer text-sm font-medium text-text-primary">输出 Schema</summary>
+                    <summary className="cursor-pointer text-sm font-medium text-text-primary">输出结构</summary>
                     <pre className="mb-0 mt-3 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] text-text-secondary">
                       {JSON.stringify(selectedSkill.output_schema ?? {}, null, 2)}
                     </pre>
@@ -729,7 +811,7 @@ export default function SkillsPage() {
                   {!triggerSkillApi.isPending && !executionResult && !triggerSkillApi.error ? (
                     <EmptyState
                       text="当前还没有触发结果。"
-                      hint="先确认技能状态为 executable，再用上面的 JSON payload 触发一次。"
+                      hint="先确认技能状态为可执行，再用上面的 JSON 参数触发一次。"
                       className="py-6"
                     />
                   ) : null}
@@ -751,8 +833,23 @@ export default function SkillsPage() {
                         {typeof executionResult.meta?.latency_ms === 'number' ? (
                           <Badge variant="neutral">耗时 {executionResult.meta.latency_ms}ms</Badge>
                         ) : null}
-                        {executionResult.meta?.fallback_used ? <Badge variant="warning">使用回退</Badge> : null}
+                        {executionResult.meta?.fallback_used ? <Badge variant="warning">备用执行</Badge> : null}
                       </div>
+                      {executionResult.meta?.fallback_used ? (
+                        <div className="mt-3 rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-xs leading-5 text-text-secondary">
+                          <span className="font-medium text-warning">降级执行：</span>
+                          {stringifyFallbackReason(executionResult.meta.fallback_reason) ?? '已使用本地备用执行，后端未返回具体原因。'}
+                        </div>
+                      ) : null}
+                      {executionResult.workbench?.href ? (
+                        <a
+                          href={executionResult.workbench.href}
+                          className="mt-3 inline-flex rounded-full border border-glass-border px-3 py-1.5 text-xs font-medium text-primary no-underline"
+                        >
+                          跳转到 Workbench
+                          {executionResult.workbench.executionId ? ` #${executionResult.workbench.executionId}` : ''}
+                        </a>
+                      ) : null}
                       <details className="mt-3 rounded-xl border border-glass-border bg-surface/60 p-3">
                         <summary className="cursor-pointer text-sm font-medium text-text-primary">
                           查看执行结果 JSON
@@ -789,7 +886,7 @@ export default function SkillsPage() {
                 <option value="all">全部分类</option>
                 {categories.map((category) => (
                   <option key={category} value={category}>
-                    {category}
+                    {skillCategoryLabel(category)}
                   </option>
                 ))}
               </select>
@@ -816,18 +913,20 @@ export default function SkillsPage() {
 
             {filteredSkills.length > 0 ? (
               <DataTable
-                rows={filteredSkills.map((skill) => ({
-                  id: skill.id,
-                  name: shortSkillName(skill),
-                  category: skill.category ?? '未分类',
-                  status: skill.status,
-                  executionMode: skill.execution_mode ?? 'no_handler',
-                  executable: skill.executable ? '是' : '否',
-                  description: skill.description ?? '',
-                }))}
+	                rows={filteredSkills.map((skill) => ({
+	                  id: skill.id,
+	                  name: shortSkillName(skill),
+	                  category: skillCategoryLabel(skill.category),
+	                  status: statusLabel(skill.status),
+	                  statusRaw: skill.status,
+	                  executionMode: executionModeLabel(skill.execution_mode),
+	                  executionModeRaw: skill.execution_mode,
+	                  executable: skill.executable ? '是' : '否',
+	                  description: skill.description ?? '',
+	                }))}
                 rowKey="id"
                 maxHeight={620}
-                onRowClick={(row) => setSelectedSkillId(String(row.id ?? ''))}
+                onRowClick={(row) => selectSkill(String(row.id ?? ''))}
                 columns={[
                   {
                     key: 'name',
@@ -848,21 +947,21 @@ export default function SkillsPage() {
                   },
                   { key: 'category', label: '分类', width: 120 },
                   {
-                    key: 'status',
-                    label: '状态',
-                    width: 92,
-                    render: (value) => (
-                      <Badge variant={statusBadgeVariant(String(value) as SkillStatus)}>{String(value)}</Badge>
-                    ),
-                  },
+	                    key: 'status',
+	                    label: '状态',
+	                    width: 92,
+	                    render: (value, row) => (
+	                      <Badge variant={statusBadgeVariant(String(row.statusRaw ?? value) as SkillStatus)}>{String(value)}</Badge>
+	                    ),
+	                  },
                   {
-                    key: 'executionMode',
-                    label: '执行',
-                    width: 110,
-                    render: (value) => (
-                      <Badge variant={modeBadgeVariant(String(value) as SkillExecutionMode)}>{String(value)}</Badge>
-                    ),
-                  },
+	                    key: 'executionMode',
+	                    label: '执行',
+	                    width: 110,
+	                    render: (value, row) => (
+	                      <Badge variant={modeBadgeVariant(String(row.executionModeRaw ?? value) as SkillExecutionMode)}>{String(value)}</Badge>
+	                    ),
+	                  },
                 ]}
               />
             ) : null}

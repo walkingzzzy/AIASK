@@ -13,6 +13,11 @@ let lastCheckedAt = 0;
 let probePromise: Promise<boolean> | null = null;
 const listeners = new Set<() => void>();
 
+function isAbortLikeError(error: unknown) {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  return error instanceof Error && /abort(?:ed|error)|the user aborted a request|signal is aborted/i.test(error.message);
+}
+
 function emitChange() {
   listeners.forEach((listener) => listener());
 }
@@ -72,6 +77,7 @@ export async function ensureBffAvailability(options: { force?: boolean } = {}) {
 
   if (probePromise) return probePromise;
 
+  const previousStatus = status;
   setStatus('checking');
   probePromise = (async () => {
     const { signal, cleanup } = withTimeout();
@@ -90,7 +96,11 @@ export async function ensureBffAvailability(options: { force?: boolean } = {}) {
 
       markBffUnavailable();
       return false;
-    } catch {
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        setStatus(previousStatus === 'checking' ? 'unknown' : previousStatus);
+        return previousStatus === 'online';
+      }
       markBffUnavailable();
       return false;
     } finally {

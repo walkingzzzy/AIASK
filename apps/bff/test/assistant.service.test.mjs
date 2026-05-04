@@ -62,3 +62,34 @@ test('AssistantService.shouldBuy emits additive result_contract for unified resu
   );
   assert.match(response.result_contract?.summary ?? '', /盈利改善/);
 });
+
+test('AssistantService.getIndustryChain marks mismatched keyword results as degraded', async () => {
+  const service = new AssistantService(
+    {
+      callTool: async (tool, args) => {
+        assert.equal(tool, 'get_industry_chain');
+        assert.equal(args.keyword, '银行金融科技');
+        return {
+          data: {
+            chains: [
+              {
+                id: 'new-energy',
+                name: '新能源产业链',
+                upstream: ['锂矿'],
+                midstream: ['电池'],
+                downstream: ['整车'],
+              },
+            ],
+          },
+        };
+      },
+    },
+    cacheStub,
+  );
+
+  const response = await service.getIndustryChain('银行金融科技');
+  assert.equal(response.result_contract?.platformMeta?.degraded, true);
+  assert.equal(response.result_contract?.platformMeta?.requested_keyword, '银行金融科技');
+  assert.equal(response.result_contract?.platformMeta?.matched_keyword, '新能源产业链');
+  assert.match(response.result_contract?.summary ?? '', /不匹配/);
+});

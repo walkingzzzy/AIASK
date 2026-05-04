@@ -46,6 +46,8 @@ export type FactoryReviewAuditRows = FactoryReviewViewModel['reviewAuditRows'];
 export type FactoryReviewPanelProps = {
   highConfidenceQualityUiEnabled: boolean;
   canViewOperatorPanels: boolean;
+  readDegraded?: boolean;
+  readDegradedReason?: string | null;
   strategyStatus?: string | null;
   strategyIncubationSurface?: StrategyIncubationSurface | null;
   paperContext?: StrategyPaperContextResponse | null;

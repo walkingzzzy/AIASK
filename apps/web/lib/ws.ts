@@ -35,17 +35,18 @@ function resolveWsUrl() {
 
 // ── 连接状态类型 ─────────────────────────────────────────────
 
-export type WsConnectionStatus = 'connected' | 'connecting' | 'disconnected';
+export type RealtimeDisplayState = 'connected' | 'idle' | 'reconnecting' | 'offline';
+export type WsConnectionStatus = RealtimeDisplayState;
 
 // ── 单例连接管理 ─────────────────────────────────────────────
 
 let _socket: Socket | null = null;
 let _refCount = 0;
-let _status: WsConnectionStatus = 'disconnected';
+let _status: WsConnectionStatus = 'idle';
 let _statusListeners = new Set<(s: WsConnectionStatus) => void>();
 let _releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
-const SOCKET_RELEASE_GRACE_MS = 1500;
+const SOCKET_RELEASE_GRACE_MS = 10_000;
 
 function notifyStatus(status: WsConnectionStatus) {
   _status = status;
@@ -65,8 +66,12 @@ function getSocket(): Socket {
       autoConnect: false,
     });
     _socket.on('connect', () => notifyStatus('connected'));
-    _socket.on('disconnect', () => notifyStatus('disconnected'));
-    _socket.io.on('reconnect_attempt', () => notifyStatus('connecting'));
+    _socket.on('disconnect', () => notifyStatus(_refCount > 0 ? 'reconnecting' : 'idle'));
+    _socket.on('connect_error', () => {
+      if (_refCount > 0) notifyStatus('offline');
+    });
+    _socket.io.on('reconnect_attempt', () => notifyStatus('reconnecting'));
+    _socket.io.on('reconnect_failed', () => notifyStatus('offline'));
   }
   return _socket;
 }
@@ -80,7 +85,7 @@ function acquireSocket(): Socket {
   const s = getSocket();
   _refCount++;
   if (!s.connected && !s.active) {
-    notifyStatus('connecting');
+    notifyStatus('reconnecting');
     s.connect();
   }
   return s;
@@ -90,13 +95,15 @@ function releaseSocket() {
   _refCount = Math.max(0, _refCount - 1);
   if (_refCount > 0 || !_socket || _releaseTimer) return;
 
+  notifyStatus('idle');
+
   _releaseTimer = setTimeout(() => {
     _releaseTimer = null;
     if (_refCount !== 0 || !_socket) return;
 
     _socket.disconnect();
     _socket = null;
-    notifyStatus('disconnected');
+    notifyStatus('idle');
   }, SOCKET_RELEASE_GRACE_MS);
 }
 
@@ -132,7 +139,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   useEffect(() => {
     if (!canConnect) {
-      if (bffAvailability.unavailable) notifyStatus('disconnected');
+      notifyStatus(bffAvailability.unavailable ? 'offline' : 'idle');
       return;
     }
 
@@ -190,7 +197,7 @@ export function useWsStatus(): WsConnectionStatus {
       };
     },
     () => _status,
-    () => 'disconnected',
+    () => 'idle',
   );
 }
 

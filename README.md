@@ -46,6 +46,29 @@ docs/
 
 ## 本地启动
 
+### 0. Docker 全栈启动
+
+```bash
+cp .env.example .env
+npm run docker:up
+```
+
+默认端口：
+
+- Web: `3000`
+- BFF: `3001`
+- AKShare MCP: `3100`
+- Strategy Factory Worker: 无对外端口，消费 `strategy_task_runs` 队列
+- PostgreSQL / TimescaleDB: `5432`
+- Redis: `6379`
+- pgAdmin: `5050`
+
+监控栈按需启动：
+
+```bash
+docker compose --profile monitoring up -d --build
+```
+
 ### 1. 前端 / BFF
 
 ```bash

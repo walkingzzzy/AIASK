@@ -19,7 +19,7 @@ export default function ExecutionTasksPanel({
         <div>
           <h3 className="m-0 font-medium">执行任务列表</h3>
           <p className="mb-0 mt-1 text-xs text-text-secondary">
-            这里直接映射 execution_manager.list，点选任务后会刷新当前详情和 artifact 结果。
+            这里展示 execution_manager.list 返回的任务，点选后会刷新当前详情和执行制品结果。
           </p>
         </div>
         <button type="button" onClick={onRefresh} className={executionChipButtonCls}>
@@ -34,7 +34,7 @@ export default function ExecutionTasksPanel({
         onRowClick={(row) => onSelectTask(String(row.taskId ?? '').trim(), String(row.artifactId ?? '').trim())}
         columns={[
           { key: 'taskId', label: '任务 ID' },
-          { key: 'artifactId', label: 'Artifact' },
+          { key: 'artifactId', label: '执行制品' },
           { key: 'code', label: '标的' },
           { key: 'algorithm', label: '算法' },
           { key: 'status', label: '状态' },
@@ -59,7 +59,7 @@ export default function ExecutionTasksPanel({
               </Badge>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
-              <div>Artifact：{String(row.artifactId ?? '-')}</div>
+              <div>执行制品：{String(row.artifactId ?? '-')}</div>
               <div>告警：{String(row.warningCount ?? 0)}</div>
             </div>
           </div>

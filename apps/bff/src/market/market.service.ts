@@ -20,6 +20,7 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
+import { buildDataQuality, trustedDataQuality, unavailableDataQuality, uniqueQualityReasons } from '../common/data-quality';
 
 @Injectable()
 export class MarketService {
@@ -51,7 +52,67 @@ export class MarketService {
 
     const attempts: ToolArgs[] = [{ code: stockCode }];
 
-    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_realtime_quote', attempts);
+    let call: Awaited<ReturnType<MarketService['callWithArgs']>>;
+    try {
+      call = await this.callWithArgs('get_realtime_quote', attempts);
+    } catch (error) {
+      const fetchedAt = new Date().toISOString();
+      const reason = this.describeError(error);
+      return {
+        quote: {
+          symbol: stockCode,
+          code: stockCode,
+          name: '',
+          last: null,
+          price: null,
+          change: null,
+          pct_change: null,
+          changePercent: null,
+          change_pct: null,
+          volume: null,
+          turnover: null,
+          amount: null,
+          timestamp: null,
+        },
+        tool: 'get_realtime_quote',
+        argsTried: attempts,
+        argsMatched: {},
+        meta: {
+          fetchedAt,
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+        result_contract: buildResultContract({
+          summary: `${stockCode} 实时行情暂时不可用，页面已保留降级原因，未把空报价当作真实行情。`,
+          status: 'unavailable',
+          availableViews: ['summary', 'next_step'],
+          evidence: [
+            { label: '标的', value: stockCode },
+            { label: '最新价', value: '-' },
+            { label: '涨跌幅', value: '-' },
+          ],
+          riskNotes: [reason],
+          freshness: { updatedAt: fetchedAt, label: '行情降级时间' },
+          platformMeta: {
+            sourceTool: 'get_realtime_quote',
+            referencePath: '/market/quote',
+            sourceChain: ['get_realtime_quote'],
+            degraded: true,
+            fallbackReason: ['quote_unavailable', reason],
+          },
+        }),
+        contract_meta: buildResultContractMeta({
+          canonicalTool: 'get_realtime_quote',
+          canonicalArgs: attempts[0],
+          argsMatched: {},
+          aliasHits: [],
+        }),
+        data_quality: unavailableDataQuality('get_realtime_quote', reason, {
+          emptyReason: '实时行情上游暂时不可用，未返回可验证价格',
+          qualityFlags: ['quote_unavailable'],
+        }),
+      };
+    }
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = call;
     const quote = this.normalizeQuote(payload, stockCode);
     const fetchedAt = new Date().toISOString();
     const result: MarketQuoteResponseDto = {
@@ -85,6 +146,7 @@ export class MarketService {
         argsMatched,
         aliasHits,
       }),
+      data_quality: this.buildQuoteQuality('get_realtime_quote', quote),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -113,9 +175,66 @@ export class MarketService {
 
     const attempts: ToolArgs[] = [{ code: normalized, period: klinePeriod, limit: klineLimit, start_date: '', end_date: '', adjust: '' }];
 
-    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
-    const kline = this.normalizeKline(payload);
+    let call: Awaited<ReturnType<MarketService['callWithArgs']>>;
+    try {
+      call = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
+    } catch (error) {
+      const fetchedAt = new Date().toISOString();
+      const reason = this.describeError(error);
+      return {
+        kline: [],
+        tool: 'get_kline_data',
+        argsTried: attempts,
+        argsMatched: {},
+        meta: {
+          fetchedAt,
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+        result_contract: buildResultContract({
+          summary: `${normalized} ${klinePeriod} K 线暂时不可用，页面已展示上游原因，未把空图表当作真实 K 线。`,
+          status: 'unavailable',
+          availableViews: ['summary', 'next_step'],
+          evidence: [
+            { label: '标的', value: normalized },
+            { label: '周期', value: klinePeriod },
+            { label: '样本数', value: '0' },
+          ],
+          riskNotes: [reason],
+          freshness: { updatedAt: fetchedAt, label: 'K线降级时间' },
+          platformMeta: {
+            sourceTool: 'get_kline_data',
+            referencePath: '/market/kline',
+            sourceChain: ['get_kline_data', 'get_kline'],
+            degraded: true,
+            fallbackReason: ['kline_unavailable', reason],
+          },
+        }),
+        contract_meta: buildResultContractMeta({
+          canonicalTool: 'get_kline_data',
+          canonicalArgs: attempts[0],
+          argsMatched: {},
+          aliasHits: [],
+        }),
+        data_quality: unavailableDataQuality('get_kline_data', reason, {
+          emptyReason: 'K线行情上游暂时不可用，未返回可验证交易日数据',
+          qualityFlags: ['kline_unavailable'],
+        }),
+      };
+    }
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = call;
+    const { points: kline, qualityWarnings } = this.normalizeKlineWithQuality(payload, klineLimit);
     const fetchedAt = new Date().toISOString();
+    const rawPlatformMeta = extractPlatformMeta(payload, {
+      sourceTool: canonicalTool,
+      referencePath: '/market/kline',
+      freshnessLabel: 'K线抓取时间',
+    });
+    const fallbackReason = rawPlatformMeta.fallbackReason ?? [];
+    const platformMeta = {
+      ...rawPlatformMeta,
+      degraded: fallbackReason.length > 0,
+      fallbackReason,
+    };
     const result: MarketKlineResponseDto = {
       kline,
       tool: 'get_kline_data',
@@ -127,6 +246,7 @@ export class MarketService {
       },
       result_contract: buildResultContract({
         summary: `${normalized} ${klinePeriod} K 线已加载，共 ${kline.length} 根。`,
+        status: qualityWarnings.length > 0 || platformMeta.degraded ? 'degraded' : 'ready',
         availableViews: ['summary', 'visual', 'next_step'],
         evidence: [
           { label: '标的', value: normalized },
@@ -134,12 +254,9 @@ export class MarketService {
           { label: '样本数', value: String(kline.length) },
           { label: '最新日期', value: kline.at(-1)?.date || '-' },
         ],
+        riskNotes: qualityWarnings,
         freshness: extractFreshness(payload, fetchedAt, 'K线抓取时间'),
-        platformMeta: extractPlatformMeta(payload, {
-          sourceTool: canonicalTool,
-          referencePath: '/market/kline',
-          freshnessLabel: 'K线抓取时间',
-        }),
+        platformMeta,
       }),
       contract_meta: buildResultContractMeta({
         canonicalTool,
@@ -147,6 +264,7 @@ export class MarketService {
         argsMatched,
         aliasHits,
       }),
+      data_quality: this.buildKlineQuality(canonicalTool, kline.length, qualityWarnings, platformMeta),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -169,7 +287,58 @@ export class MarketService {
 
     const attempts: ToolArgs[] = [{ code: normalized }];
 
-    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_order_book', attempts);
+    let call: Awaited<ReturnType<MarketService['callWithArgs']>>;
+    try {
+      call = await this.callWithArgs('get_order_book', attempts);
+    } catch (error) {
+      const fetchedAt = new Date().toISOString();
+      const reason = this.describeError(error);
+      return {
+        orderBook: {
+          symbol: normalized,
+          bids: [],
+          asks: [],
+          timestamp: null,
+        },
+        tool: 'get_order_book',
+        argsTried: attempts,
+        argsMatched: {},
+        meta: {
+          fetchedAt,
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+        result_contract: buildResultContract({
+          summary: `${normalized} 五档盘口暂时不可用，页面已保留为空盘口并展示原因。`,
+          status: 'unavailable',
+          availableViews: ['summary', 'next_step'],
+          evidence: [
+            { label: '标的', value: normalized },
+            { label: '买盘档数', value: '0' },
+            { label: '卖盘档数', value: '0' },
+          ],
+          riskNotes: [reason],
+          freshness: { updatedAt: fetchedAt, label: '盘口降级时间' },
+          platformMeta: {
+            sourceTool: 'get_order_book',
+            referencePath: '/market/order-book',
+            sourceChain: ['get_order_book'],
+            degraded: true,
+            fallbackReason: ['order_book_unavailable', reason],
+          },
+        }),
+        contract_meta: buildResultContractMeta({
+          canonicalTool: 'get_order_book',
+          canonicalArgs: attempts[0],
+          argsMatched: {},
+          aliasHits: [],
+        }),
+        data_quality: unavailableDataQuality('get_order_book', reason, {
+          emptyReason: '盘口上游暂时不可用',
+          qualityFlags: ['order_book_unavailable'],
+        }),
+      };
+    }
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = call;
     const orderBook = this.normalizeOrderBook(payload, normalized);
     const fetchedAt = new Date().toISOString();
     const result: MarketOrderBookResponseDto = {
@@ -255,22 +424,33 @@ export class MarketService {
     const indexCodes = codes.filter(c => MarketService.INDEX_CODES.has(c));
     const stockCodes = codes.filter(c => !MarketService.INDEX_CODES.has(c));
 
-    const [indexResults, stockResult]: [Array<NormalizedQuote | null>, Record<string, unknown>[]] = await Promise.all([
+    const [indexResults, stockResult]: [Array<NormalizedQuote | null>, { quotes: Record<string, unknown>[]; warnings: string[] }] = await Promise.all([
       Promise.all(indexCodes.map(c => this.getIndexQuote(c).then(r => r.quote).catch(() => null))),
       stockCodes.length > 0
         ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then((payload) => {
             const root = this.unwrapPayload(payload);
             const data = this.asRecord(root);
-            return this.asRecordArray(data.quotes ?? root);
+            return { quotes: this.asRecordArray(data.quotes ?? root), warnings: [] };
+          }).catch(async (error) => {
+            const settled = await Promise.allSettled(stockCodes.map((code) => this.getQuote(code)));
+            return {
+              quotes: settled
+                .filter((item): item is PromiseFulfilledResult<MarketQuoteResponseDto> => item.status === 'fulfilled')
+                .map((item) => item.value.quote as unknown as Record<string, unknown>),
+              warnings: [
+                `get_batch_quotes failed; returned ${settled.filter((item) => item.status === 'fulfilled').length}/${stockCodes.length} individual quotes`,
+                error instanceof Error ? error.message : String(error),
+              ],
+            };
           })
-        : Promise.resolve([]),
+        : Promise.resolve({ quotes: [], warnings: [] }),
     ]);
 
     const list = [
       ...indexResults.filter(Boolean),
-      ...stockResult.map((quote) => this.normalizeQuote(quote)),
+      ...stockResult.quotes.map((quote) => this.normalizeQuote(quote)),
     ];
-    return { quotes: list, count: list.length };
+    return { quotes: list, count: list.length, warnings: stockResult.warnings };
   }
 
   async getIndexBatchQuotes(codes: string[]) {
@@ -378,17 +558,50 @@ export class MarketService {
   async getLimitUpStats(date?: string) {
     const args: Record<string, unknown> = {};
     if (date) args.date = date.trim();
-    const payload = await this.callTool('get_limit_up_statistics', args);
-    const data = this.asRecord(this.unwrapPayload(payload));
-    return {
-      totalLimitUp: this.toNum(data.totalLimitUp ?? data.total_limit_up),
-      firstBoard: this.toNum(data.firstBoard ?? data.first_board),
-      secondBoard: this.toNum(data.secondBoard ?? data.second_board),
-      failedBoard: this.toNum(data.failedBoard ?? data.failed_board),
-      limitDown: this.toNum(data.limitDown ?? data.limit_down),
-      successRate: this.toNum(data.successRate ?? data.success_rate),
-      date: String(data.date ?? ''),
-    };
+    try {
+      const payload = await this.callTool('get_limit_up_statistics', args);
+      const data = this.asRecord(this.unwrapPayload(payload));
+      const result = {
+        totalLimitUp: this.toNum(data.totalLimitUp ?? data.total_limit_up),
+        firstBoard: this.toNum(data.firstBoard ?? data.first_board),
+        secondBoard: this.toNum(data.secondBoard ?? data.second_board),
+        failedBoard: this.toNum(data.failedBoard ?? data.failed_board),
+        limitDown: this.toNum(data.limitDown ?? data.limit_down),
+        successRate: this.toNum(data.successRate ?? data.success_rate),
+        date: String(data.date ?? ''),
+      };
+      const sampleCount = Object.values(result).some((value) => value != null && value !== '') ? 1 : 0;
+      return {
+        ...result,
+        data_quality: sampleCount > 0
+          ? trustedDataQuality('get_limit_up_statistics', sampleCount, result.date || null)
+          : buildDataQuality({
+            status: 'empty',
+            reasons: ['limit_up_statistics_empty'],
+            emptyReason: '涨停统计接口没有返回有效数据',
+            sources: [{ name: 'get_limit_up_statistics', status: 'empty', sampleCount: 0 }],
+            qualityFlags: ['limit_up_statistics_empty'],
+          }),
+      };
+    } catch (error) {
+      const reason = this.describeError(error);
+      return {
+        totalLimitUp: null,
+        firstBoard: null,
+        secondBoard: null,
+        failedBoard: null,
+        limitDown: null,
+        successRate: null,
+        date: date?.trim() ?? '',
+        degraded: true,
+        fallback_used: false,
+        fallback_reason: reason,
+        data_quality: unavailableDataQuality('get_limit_up_statistics', reason, {
+          emptyReason: '涨停统计上游不可用，未返回可验证数据',
+          qualityFlags: ['limit_up_statistics_unavailable'],
+        }),
+      };
+    }
   }
 
   async getMarketBlocks(blockType = 'industry', limit?: number) {
@@ -403,27 +616,53 @@ export class MarketService {
     }
     const args: Record<string, unknown> = { block_type: blockType };
     if (limit) args.limit = limit;
-    const payload = await this.callTool('get_market_blocks', args);
-    const root = this.unwrapPayload(payload);
-    const data = this.asRecord(root);
-    const blocks = this.asRecordArray(data.blocks ?? root);
-    const result = {
-      blocks: blocks.map((block) => ({
-        code: String(block.block_code ?? block.code ?? ''),
-        name: String(block.block_name ?? block.name ?? ''),
-        stockCount: this.toNum(block.stock_count ?? block.stockCount),
-        avgChange: this.toNum(block.avg_change_pct ?? block.avgChange),
-        leaderCode: String(block.leader_code ?? ''),
-        leaderName: String(block.leader_name ?? ''),
-      })),
-      count: blocks.length,
-      blockType,
-      meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
-    };
-    if (blocks.length > 0) {
-      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    try {
+      const payload = await this.callTool('get_market_blocks', args);
+      const root = this.unwrapPayload(payload);
+      const data = this.asRecord(root);
+      const blocks = this.asRecordArray(data.blocks ?? root);
+      const result = {
+        blocks: blocks.map((block) => ({
+          code: String(block.block_code ?? block.code ?? ''),
+          name: String(block.block_name ?? block.name ?? ''),
+          stockCount: this.toNum(block.stock_count ?? block.stockCount),
+          avgChange: this.toNum(block.avg_change_pct ?? block.avgChange),
+          leaderCode: String(block.leader_code ?? ''),
+          leaderName: String(block.leader_name ?? ''),
+        })),
+        count: blocks.length,
+        blockType,
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        data_quality: blocks.length > 0
+          ? trustedDataQuality('get_market_blocks', blocks.length)
+          : buildDataQuality({
+            status: 'empty',
+            reasons: ['market_blocks_empty'],
+            emptyReason: '板块行情接口没有返回有效板块数据',
+            sources: [{ name: 'get_market_blocks', status: 'empty', sampleCount: 0 }],
+            qualityFlags: ['market_blocks_empty'],
+          }),
+      };
+      if (blocks.length > 0) {
+        await this.cacheService.set(cacheKey, result, ttlSeconds);
+      }
+      return result;
+    } catch (error) {
+      const reason = this.describeError(error);
+      return {
+        blocks: [],
+        count: 0,
+        blockType,
+        degraded: true,
+        fallback_used: false,
+        fallback_reason: reason,
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+        data_quality: unavailableDataQuality('get_market_blocks', reason, {
+          emptyReason: '板块行情上游不可用，未返回可验证数据',
+          qualityFlags: ['market_blocks_unavailable'],
+        }),
+      };
     }
-    return result;
   }
 
   async getBlockStocks(blockCode: string) {
@@ -513,20 +752,131 @@ export class MarketService {
   }
 
   private normalizeKline(payload: unknown): NormalizedKlinePoint[] {
+    return this.normalizeKlineWithQuality(payload).points;
+  }
+
+  private buildQuoteQuality(sourceName: string, quote: NormalizedQuote) {
+    const hasPrice = quote.price != null && Number.isFinite(Number(quote.price));
+    if (hasPrice) {
+      return trustedDataQuality(sourceName, 1, quote.timestamp ?? null);
+    }
+    return buildDataQuality({
+      status: 'empty',
+      reasons: ['quote_price_missing'],
+      emptyReason: '实时行情没有返回有效价格',
+      sources: [{ name: sourceName, status: 'empty', freshness: quote.timestamp ?? null, sampleCount: 0 }],
+      qualityFlags: ['quote_price_missing'],
+    });
+  }
+
+  private buildKlineQuality(
+    sourceName: string,
+    sampleCount: number,
+    qualityWarnings: string[],
+    platformMeta: { degraded?: boolean; fallbackReason?: string[]; freshnessLabel?: string | null },
+  ) {
+    const reasons = uniqueQualityReasons([qualityWarnings, platformMeta.fallbackReason]);
+    if (sampleCount <= 0) {
+      return buildDataQuality({
+        status: 'empty',
+        reasons: [...reasons, 'kline_empty'],
+        emptyReason: 'K线接口没有返回有效交易日数据',
+        qualityFlags: qualityWarnings,
+        sources: [{ name: sourceName, status: 'empty', sampleCount: 0 }],
+      });
+    }
+    if (platformMeta.degraded || qualityWarnings.length > 0) {
+      return buildDataQuality({
+        status: platformMeta.degraded ? 'degraded' : 'partial',
+        reasons: reasons.length > 0 ? reasons : ['kline_quality_degraded'],
+        qualityFlags: qualityWarnings,
+        sources: [{ name: sourceName, status: platformMeta.degraded ? 'degraded' : 'partial', sampleCount }],
+      });
+    }
+    return trustedDataQuality(sourceName, sampleCount);
+  }
+
+  private normalizeKlineWithQuality(
+    payload: unknown,
+    limit = MarketService.MAX_KLINE_LIMIT,
+  ): { points: NormalizedKlinePoint[]; qualityWarnings: string[] } {
     const root = this.unwrapPayload(payload);
     const list = Array.isArray(root)
       ? this.asRecordArray(root)
       : this.asRecordArray(this.asRecord(root).data ?? this.asRecord(root).records ?? this.asRecord(root).items);
-    return list.map((point) => ({
-      timestamp: point.timestamp ? String(point.timestamp) : point.date ? String(point.date) : null,
-      date: String(point.date ?? point.Date ?? point.trade_date ?? ''),
-      open: Number(point.open ?? point.Open ?? 0),
-      close: Number(point.close ?? point.Close ?? 0),
-      low: Number(point.low ?? point.Low ?? 0),
-      high: Number(point.high ?? point.High ?? 0),
-      volume: Number(point.volume ?? point.vol ?? point.Volume ?? 0),
-      turnover: this.toNum(point.turnover ?? point.amount ?? point.Amount),
-    }));
+    const qualityWarnings: string[] = [];
+    const byDate = new Map<string, { point: NormalizedKlinePoint; score: number }>();
+    let duplicateCount = 0;
+    let convertedVolumeCount = 0;
+    let ignoredTurnoverCount = 0;
+
+    for (const rawPoint of list) {
+      const date = String(rawPoint.date ?? rawPoint.Date ?? rawPoint.trade_date ?? rawPoint.timestamp ?? '').slice(0, 10);
+      if (!date) continue;
+      const close = this.toFinite(rawPoint.close ?? rawPoint.Close);
+      const volumeRaw = this.toFinite(rawPoint.volume ?? rawPoint.vol ?? rawPoint.Volume);
+      const turnoverRaw = this.toFinite(rawPoint.amount ?? rawPoint.Amount ?? rawPoint.turnover);
+      const turnover = turnoverRaw != null && Math.abs(turnoverRaw) >= 1_000_000 ? turnoverRaw : null;
+      if (turnoverRaw != null && turnover == null && Math.abs(turnoverRaw) > 0) {
+        ignoredTurnoverCount += 1;
+      }
+      const volume = this.normalizeKlineVolume(volumeRaw, close, turnover);
+      if (volumeRaw != null && volume != null && Math.abs(volumeRaw - volume) > 1) {
+        convertedVolumeCount += 1;
+      }
+      const point: NormalizedKlinePoint = {
+        timestamp: rawPoint.timestamp ? String(rawPoint.timestamp) : date,
+        date,
+        open: this.toFinite(rawPoint.open ?? rawPoint.Open) ?? 0,
+        close: close ?? 0,
+        low: this.toFinite(rawPoint.low ?? rawPoint.Low) ?? 0,
+        high: this.toFinite(rawPoint.high ?? rawPoint.High) ?? 0,
+        volume: volume ?? 0,
+        turnover,
+      };
+      const validOhlc = [point.open, point.close, point.low, point.high].every((value) => Number.isFinite(value) && value > 0);
+      const score = (validOhlc ? 4 : 0) + (turnover != null ? 2 : 0) + (volume != null && volume > 0 ? 1 : 0);
+      const previous = byDate.get(date);
+      if (previous) {
+        duplicateCount += 1;
+      }
+      if (!previous || score >= previous.score) {
+        byDate.set(date, { point, score });
+      }
+    }
+
+    if (duplicateCount > 0) {
+      qualityWarnings.push(`K线已去重 ${duplicateCount} 条同日重复记录`);
+    }
+    if (convertedVolumeCount > 0) {
+      qualityWarnings.push(`K线成交量已统一为手，转换 ${convertedVolumeCount} 条记录`);
+    }
+    if (ignoredTurnoverCount > 0) {
+      qualityWarnings.push(`K线忽略 ${ignoredTurnoverCount} 条疑似换手率的 turnover 字段`);
+    }
+
+    const points = Array.from(byDate.values())
+      .map((item) => item.point)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-Math.max(1, Math.min(limit, MarketService.MAX_KLINE_LIMIT)));
+    return { points, qualityWarnings };
+  }
+
+  private toFinite(value: unknown): number | null {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  private normalizeKlineVolume(volume: number | null, close: number | null, turnover: number | null): number | null {
+    if (volume == null) return null;
+    if (close == null || close <= 0 || turnover == null || turnover <= 0) return volume;
+    const estimatedShares = turnover / close;
+    if (estimatedShares <= 0) return volume;
+    const shareDiff = Math.abs(volume - estimatedShares) / estimatedShares;
+    if (shareDiff <= 0.3) {
+      return Math.round(volume / 100);
+    }
+    return volume;
   }
 
   private normalizeOrderBook(payload: unknown, fallbackCode?: string): NormalizedOrderBook {
@@ -599,7 +949,7 @@ export class MarketService {
       primaryTool,
       attempts,
       async (name, args) => {
-        const payload = await this.mcpGatewayService.callTool(name, args);
+        const payload = await this.mcpGatewayService.callTool(name, args, { retryOnTransportError: true });
         const toolError = this.extractToolError(payload);
         if (toolError) {
           throw new Error(toolError);
@@ -619,7 +969,7 @@ export class MarketService {
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      const payload = await this.mcpGatewayService.callTool(name, args);
+      const payload = await this.mcpGatewayService.callTool(name, args, { retryOnTransportError: true });
       const toolError = this.extractToolError(payload);
       if (toolError) {
         throw new Error(toolError);
@@ -632,5 +982,16 @@ export class MarketService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private describeError(error: unknown) {
+    if (error instanceof BadGatewayException) {
+      const response = error.getResponse();
+      if (typeof response === 'object' && response && 'detail' in response) {
+        const detail = String((response as { detail?: unknown }).detail ?? '').trim();
+        if (detail) return detail;
+      }
+    }
+    return error instanceof Error ? error.message : String(error);
   }
 }

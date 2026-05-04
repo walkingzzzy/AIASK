@@ -5,6 +5,15 @@ import type { CacheMeta, Envelope } from '@aiask/shared-types';
 
 export type { CacheMeta, Envelope } from '@aiask/shared-types';
 export type ApiAcceptanceStatus = 'unavailable' | 'prerequisite_missing' | 'degraded';
+export type DataTrustStatus = 'trusted' | 'degraded' | 'partial' | 'conflict' | 'empty' | 'unavailable' | 'unknown';
+export type DataTrust = {
+  status: DataTrustStatus;
+  degraded: boolean;
+  reasons: string[];
+  qualityFlags: string[];
+  sources: Array<Record<string, unknown>>;
+  emptyReason?: string;
+};
 
 export class ApiError extends Error {
   status?: number;
@@ -203,60 +212,265 @@ export function extractApiErrorMessage(payload: unknown, fallback = '请求失�
   return fallback;
 }
 
-function findFirstRecord(value: unknown, seen = new Set<unknown>(), depth = 0): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || depth > 5 || seen.has(value)) return null;
-  seen.add(value);
-  if (!Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    if (
-      record.degraded === true ||
-      record.fallback != null ||
-      record.fallback_reason != null ||
-      record.fallbackReason != null ||
-      typeof record.message === 'string'
-    ) {
-      return record;
-    }
-    for (const nested of Object.values(record)) {
-      const hit = findFirstRecord(nested, seen, depth + 1);
-      if (hit) return hit;
-    }
-    return record;
+const TRUST_META_KEYS = new Set([
+  'argsMatched',
+  'argsTried',
+  'attempted_sources',
+  'backend_requested',
+  'backend_used',
+  'cached',
+  'contract_meta',
+  'data',
+  'data_quality',
+  'data_timestamp',
+  'empty_reason',
+  'error',
+  'fallback_reason',
+  'fallback_used',
+  'local_fallback_used',
+  'message',
+  'meta',
+  'ok',
+  'quality_flags',
+  'result',
+  'result_contract',
+  'source',
+  'source_chain',
+  'sourceTool',
+  'sourceTools',
+  'success',
+  'timestamp',
+  'tool',
+  'traceId',
+  'transport',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactReason(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value.map((item) => compactReason(item)).filter(Boolean).join('；');
   }
-  for (const item of value) {
-    const hit = findFirstRecord(item, seen, depth + 1);
+  if (isRecord(value)) {
+    const preferred = value.message ?? value.reason ?? value.code ?? value.detail;
+    return compactReason(preferred);
+  }
+  return '';
+}
+
+function compactReasons(...values: unknown[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) => {
+          if (Array.isArray(value)) return value;
+          return value == null ? [] : [value];
+        })
+        .map((value) => compactReason(value))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function readDataQuality(record: Record<string, unknown>): DataTrust | null {
+  const quality = record.data_quality;
+  if (!isRecord(quality)) return null;
+  const rawStatus = String(quality.status ?? '').trim().toLowerCase();
+  const status: DataTrustStatus = (
+    rawStatus === 'trusted'
+    || rawStatus === 'degraded'
+    || rawStatus === 'partial'
+    || rawStatus === 'conflict'
+    || rawStatus === 'empty'
+    || rawStatus === 'unavailable'
+  ) ? rawStatus : 'unknown';
+  const emptyReason = compactReason(quality.empty_reason);
+  const reasons = compactReasons(quality.reasons, emptyReason);
+  const qualityFlags = compactReasons(quality.quality_flags);
+  const sources = Array.isArray(quality.sources)
+    ? quality.sources.filter(isRecord)
+    : [];
+  return {
+    status,
+    degraded: ['degraded', 'partial', 'conflict', 'empty', 'unavailable'].includes(status),
+    reasons,
+    qualityFlags,
+    sources,
+    ...(emptyReason ? { emptyReason } : {}),
+  };
+}
+
+function hasBusinessValue(value: unknown, seen = new Set<unknown>(), depth = 0): boolean {
+  if (value == null || value === '') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (!isRecord(value) || seen.has(value) || depth > 5) return true;
+  seen.add(value);
+
+  const businessKeys = Object.keys(value).filter((key) => !TRUST_META_KEYS.has(key));
+  if (businessKeys.some((key) => hasBusinessValue(value[key], seen, depth + 1))) {
+    return true;
+  }
+  if (businessKeys.length > 0) {
+    return false;
+  }
+  return ['data', 'result'].some((key) => hasBusinessValue(value[key], seen, depth + 1));
+}
+
+function isEmptyShell(value: unknown): boolean {
+  if (Array.isArray(value)) return false;
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return true;
+  const hasWrapperSignal = keys.some((key) => TRUST_META_KEYS.has(key));
+  return hasWrapperSignal && !hasBusinessValue(value);
+}
+
+function shouldEvaluateEmptyShell(path: string[]): boolean {
+  if (path.length === 0) return true;
+  const last = path[path.length - 1];
+  return path.length === 1 && (last === 'data' || last === 'result' || last === 'payload');
+}
+
+function describeFallbackRecord(record: Record<string, unknown>, path: string[]): string | null {
+  const pathKey = path.join('.');
+  const isResultContractMeta = pathKey.includes('result_contract.platformMeta');
+  const trust = readDataQuality(record);
+  const acceptsPartialTrust = trust?.status === 'partial';
+  if (trust?.degraded && trust.status !== 'partial') {
+    return compactReasons(trust.reasons, trust.qualityFlags, trust.emptyReason).join('；')
+      || `数据质量状态为 ${trust.status}`;
+  }
+  if (record.success === false || record.ok === false) {
+    return compactReason(record.error ?? record.message) || '上游返回失败状态';
+  }
+  if (record.degraded === true && !acceptsPartialTrust && !isResultContractMeta) {
+    return compactReason(
+      record.message
+        ?? record.fallback_reason
+        ?? record.fallbackReason
+        ?? record.degraded_reason
+        ?? record.degradedReason,
+    ) || '上游能力暂不可用';
+  }
+  if (record.fallback_used === true || record.local_fallback_used === true) {
+    return compactReason(record.fallback_reason ?? record.fallbackReason ?? record.message) || '上游能力已回退，不接受降级结果';
+  }
+  if (record.fallback && typeof record.fallback === 'object') {
+    const fallback = record.fallback as Record<string, unknown>;
+    if (fallback.used === true) {
+      return compactReason(fallback.reason) || '上游能力已回退，不接受降级结果';
+    }
+  }
+  const fallbackReason = compactReason(record.fallback_reason ?? record.fallbackReason);
+  if (fallbackReason && !acceptsPartialTrust && !isResultContractMeta) return fallbackReason;
+  const degradedReason = compactReason(record.degraded_reason ?? record.degradedReason);
+  if (degradedReason && !acceptsPartialTrust && !isResultContractMeta) return degradedReason;
+  const sectionErrors = compactReason(record.section_errors);
+  if (sectionErrors) return sectionErrors;
+  const message = compactReason(record.message);
+  if (/已返回空结果|降级到缓存|降级到空结果|暂时不可用/i.test(message)) {
+    return message;
+  }
+  if (shouldEvaluateEmptyShell(path) && isEmptyShell(record)) {
+    return '上游返回空壳数据';
+  }
+  return null;
+}
+
+function findFallbackReason(value: unknown, seen = new Set<unknown>(), depth = 0, path: string[] = []): string | null {
+  if (value == null || depth > 6 || seen.has(value)) return null;
+  if (!isRecord(value)) return null;
+  seen.add(value);
+
+  const ownReason = describeFallbackRecord(value, path);
+  if (ownReason) return ownReason;
+  const ownTrust = readDataQuality(value);
+  if (ownTrust?.status === 'partial') return null;
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (!nested || typeof nested !== 'object') continue;
+    const hit = Array.isArray(nested)
+      ? nested.map((item, index) => findFallbackReason(item, seen, depth + 1, [...path, key, String(index)])).find(Boolean)
+      : findFallbackReason(nested, seen, depth + 1, [...path, key]);
     if (hit) return hit;
   }
   return null;
 }
 
 export function rejectFallbackPayload(payload: unknown): string | null {
-  const record = findFirstRecord(payload);
-  if (!record) return null;
+  const reason = findFallbackReason(payload);
+  if (reason) return reason;
+  if (isEmptyShell(payload)) return '上游返回空壳数据';
+  return null;
+}
 
-  if (record.degraded === true) {
-    return typeof record.message === 'string' && record.message.trim() ? record.message : '上游能力暂不可用';
+function findDataTrust(value: unknown, seen = new Set<unknown>(), depth = 0): DataTrust | null {
+  if (value == null || depth > 6 || seen.has(value)) return null;
+  if (!isRecord(value)) return null;
+  seen.add(value);
+  const own = readDataQuality(value);
+  if (own) return own;
+  const platformMeta = value.result_contract && isRecord(value.result_contract)
+    ? (value.result_contract as Record<string, unknown>).platformMeta
+    : null;
+  if (isRecord(platformMeta) && platformMeta.degraded === true) {
+    const reasons = compactReasons(platformMeta.fallbackReason, platformMeta.degraded_reason);
+    return {
+      status: 'degraded',
+      degraded: true,
+      reasons: reasons.length > 0 ? reasons : ['result_contract platformMeta degraded'],
+      qualityFlags: [],
+      sources: [],
+    };
   }
-  if (record.fallback && typeof record.fallback === 'object') {
-    const fallback = record.fallback as Record<string, unknown>;
-    if (fallback.used === true) {
-      return typeof fallback.reason === 'string' && fallback.reason.trim()
-        ? fallback.reason
-        : '上游能力已回退，不接受降级结果';
+  for (const nested of Object.values(value)) {
+    if (!nested || typeof nested !== 'object') continue;
+    if (Array.isArray(nested)) {
+      for (const item of nested) {
+        const hit = findDataTrust(item, seen, depth + 1);
+        if (hit) return hit;
+      }
+    } else {
+      const hit = findDataTrust(nested, seen, depth + 1);
+      if (hit) return hit;
     }
   }
-  const fallbackReason = record.fallback_reason ?? record.fallbackReason;
-  if (Array.isArray(fallbackReason) && fallbackReason.some((item) => String(item).trim())) {
-    return fallbackReason.map((item) => String(item).trim()).filter(Boolean).join('；');
-  }
-  if (typeof fallbackReason === 'string' && fallbackReason.trim()) {
-    return fallbackReason.trim();
-  }
-  const message = typeof record.message === 'string' ? record.message.trim() : '';
-  if (/已返回空结果|降级到缓存|降级到空结果|暂时不可用/i.test(message)) {
-    return message;
-  }
   return null;
+}
+
+export function extractDataTrust(payload: unknown): DataTrust {
+  const direct = findDataTrust(payload);
+  if (direct) return direct;
+  const fallbackReason = rejectFallbackPayload(payload);
+  if (fallbackReason) {
+    return {
+      status: 'degraded',
+      degraded: true,
+      reasons: [fallbackReason],
+      qualityFlags: [],
+      sources: [],
+    };
+  }
+  if (isEmptyShell(payload)) {
+    return {
+      status: 'empty',
+      degraded: true,
+      reasons: ['上游返回空壳数据'],
+      qualityFlags: ['empty_shell'],
+      sources: [],
+      emptyReason: '上游返回空壳数据',
+    };
+  }
+  return {
+    status: 'trusted',
+    degraded: false,
+    reasons: [],
+    qualityFlags: [],
+    sources: [],
+  };
 }
 
 export function getApiErrorAcceptanceStatus(error: unknown): ApiAcceptanceStatus | null {

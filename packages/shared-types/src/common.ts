@@ -121,6 +121,30 @@ export type ToolMeta = {
 
 export type AcceptanceStatus = 'degraded' | 'prerequisite_missing' | 'unavailable';
 
+export type DataQualityStatus =
+    | 'trusted'
+    | 'degraded'
+    | 'partial'
+    | 'conflict'
+    | 'empty'
+    | 'unavailable';
+
+export type DataQualitySource = {
+    name: string;
+    status: DataQualityStatus | 'failed';
+    freshness?: string | null;
+    error?: string | null;
+    sampleCount?: number | null;
+};
+
+export type DataQuality = {
+    status: DataQualityStatus;
+    reasons: string[];
+    sources: DataQualitySource[];
+    quality_flags: string[];
+    empty_reason?: string;
+};
+
 export type McpTransportMode = 'stdio' | 'streamable-http' | 'sse' | 'auto';
 
 export type McpTransportKind = 'stdio' | 'streamable-http' | 'sse';

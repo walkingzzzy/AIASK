@@ -49,12 +49,12 @@ export default function StockHero({
 
   return (
     <LightOverviewHero
-      eyebrow="Stock Workspace"
+      eyebrow="个股工作台"
       title={title}
       summary="先锁定代码和周期，再看报价、主图和行动卡，最后跳转到资金流、研究、交易或 AI 诊断。"
       badges={(
         <>
-          <Badge variant="info">Stock Workspace</Badge>
+          <Badge variant="info">个股工作台</Badge>
           <Badge variant="neutral">{activeTabLabel}</Badge>
           <Badge variant={hasQuote ? 'success' : loading ? 'warning' : 'neutral'}>
             {hasQuote ? '报价已加载' : loading ? '加载中' : '等待查询'}

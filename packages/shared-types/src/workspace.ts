@@ -14,6 +14,7 @@ export type WorkspaceTaskStatus = 'todo' | 'active' | 'done';
 
 export type WorkspaceSharedContext = {
     stockCode?: string;
+    stockConfirmedAt?: string;
     eventCode?: string;
     accountId?: string;
     executionId?: string;

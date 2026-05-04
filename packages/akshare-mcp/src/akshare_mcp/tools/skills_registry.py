@@ -11,22 +11,28 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 _FALLBACK_SKILLS: List[Dict[str, Any]] = [
     {
-        "id": "momentum_screen",
-        "name": "Momentum Screen",
-        "category": "screening",
-        "description": "fallback demo",
+        "id": "akshare-stock-deep-analysis",
+        "name": "个股深度分析",
+        "category": "analysis",
+        "description": "股票 quick_scan / deep_analysis / trade_plan 编排能力。",
     },
     {
-        "id": "value_screen",
-        "name": "Value Screen",
-        "category": "screening",
-        "description": "fallback demo",
-    },
-    {
-        "id": "trend_follow",
-        "name": "Trend Follow",
+        "id": "akshare-strategy-factory",
+        "name": "策略工厂",
         "category": "strategy",
-        "description": "fallback demo",
+        "description": "策略工厂、策略超市、运行时风控与生命周期治理编排能力。",
+    },
+    {
+        "id": "akshare-market",
+        "name": "A股行情",
+        "category": "market",
+        "description": "行情、K线、盘口与市场数据只读分析能力。",
+    },
+    {
+        "id": "akshare-quant",
+        "name": "量化分析",
+        "category": "quant",
+        "description": "技术指标、因子、相似K线与量化研究只读编排能力。",
     },
 ]
 
@@ -684,6 +690,13 @@ def _load_skills() -> List[Dict[str, Any]]:
     if not skills:
         return _filter_visible_skills(_FALLBACK_SKILLS)
 
+    for fallback in _filter_visible_skills(_FALLBACK_SKILLS):
+        skill_id = str(fallback.get("id") or "")
+        if skill_id and skill_id not in deduped:
+            deduped[skill_id] = fallback
+
+    skills = list(deduped.values())
+
     skills.sort(key=lambda x: x.get("id", ""))
     return list(skills or [])
 
@@ -871,4 +884,4 @@ def _build_skill_registry_summary(
 
 
 def _skills_source(skills: List[Dict[str, Any]]) -> str:
-    return "codex_registry" if skills and any(skill.get("path") for skill in skills) else "fallback_demo"
+    return "codex_registry" if skills and any(skill.get("path") for skill in skills) else "fallback_registry"

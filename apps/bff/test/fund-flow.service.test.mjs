@@ -46,3 +46,33 @@ test('FundFlowService.getSectorFundFlow degrades to an empty payload when MCP se
   assert.match(String(response.detail.upstream?.message ?? ''), /sector flow upstream unavailable/);
   assert.equal(cacheSetCalls, 0);
 });
+
+test('FundFlowService.getSectorFundFlow keeps price change separate from fund-flow amounts', async () => {
+  const service = new FundFlowService(
+    {
+      callTool: async () => ({
+        success: true,
+        data: [
+          { name: '银行', change_percent: 1.23, net_inflow: 350000000, main_net_inflow: 120000000 },
+          { name: '煤炭', changePercent: -0.4, value: 2.6 },
+        ],
+      }),
+      getTransportSnapshot: () => ({}),
+    },
+    {
+      resolveTtl: (_scope, fallbackSeconds) => fallbackSeconds,
+      getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
+      set: async () => {},
+    },
+  );
+
+  const response = await service.getSectorFundFlow();
+  const flows = response.data.flows;
+
+  assert.equal(flows[0].changePercent, 1.23);
+  assert.equal(flows[0].netInflow, 350000000);
+  assert.equal(flows[0].mainInflow, 120000000);
+  assert.equal(flows[1].changePercent, -0.4);
+  assert.equal(flows[1].netInflow, null);
+  assert.equal(flows[1].mainInflow, null);
+});

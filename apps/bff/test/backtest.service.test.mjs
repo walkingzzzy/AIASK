@@ -42,6 +42,14 @@ function buildGateway() {
   };
 }
 
+function buildFailingGateway(message = 'transport timeout') {
+  return {
+    async callTool() {
+      throw new Error(message);
+    },
+  };
+}
+
 test('BacktestService.optimize ranks candidates and returns best params', async () => {
   const service = new BacktestService(buildGateway());
   const data = await service.optimize({
@@ -81,4 +89,35 @@ test('BacktestService.walkForward returns fold summary', async () => {
   assert.ok(data.folds.length >= 1);
   assert.equal(data.summary?.foldCount, data.folds.length);
   assert.equal(typeof data.summary?.positiveFoldRatio, 'number');
+});
+
+test('BacktestService.run returns degraded envelope instead of throwing when manager unavailable', async () => {
+  const service = new BacktestService(buildFailingGateway('backtest manager unavailable'));
+  const data = await service.run({
+    code: '600519',
+    strategy: 'ma_cross',
+    startDate: '2025-01-01',
+    endDate: '2025-12-31',
+    artifactId: 'artifact_unavailable',
+  });
+
+  assert.equal(data.degraded, true);
+  assert.equal(data.artifactId, 'artifact_unavailable');
+  assert.equal(data.sourceTool, 'backtest_manager');
+  assert.equal(data.failureReason?.reasonCode, 'backtest_run_failed');
+  assert.match(String(data.fallbackReason), /backtest manager unavailable/);
+  assert.deepEqual(data.equity_curve, []);
+  assert.deepEqual(data.dates, []);
+  assert.deepEqual(data.trades, []);
+  assert.equal(data.metrics?.totalReturn, null);
+});
+
+test('BacktestService.list returns empty degraded envelope instead of throwing when manager unavailable', async () => {
+  const service = new BacktestService(buildFailingGateway('backtest list timeout'));
+  const data = await service.list(20);
+
+  assert.equal(data.degraded, true);
+  assert.equal(data.sourceTool, 'backtest_manager');
+  assert.deepEqual(data.items, []);
+  assert.match(String(data.fallbackReason), /backtest list timeout/);
 });

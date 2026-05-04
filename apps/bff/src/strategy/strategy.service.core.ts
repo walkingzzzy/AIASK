@@ -7,6 +7,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type {
   StrategyManagerAction,
   StrategyManagerErrorCode,
@@ -25,6 +26,7 @@ import type {
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import { buildDataQuality } from '../common/data-quality';
 import { DbService } from '../db/db.service';
 import { PaperTradingService } from '../paper-trading/paper-trading.service';
 import {
@@ -53,7 +55,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly RANKING_TTL = 1500; // 25 min
   private static readonly STRATEGY_SUMMARY_FALLBACK_TTL_MS = 5 * 60 * 1000;
   private static readonly FACTORY_STATUS_TTL = 15;
-  private static readonly FACTORY_STATUS_WARMUP_DELAY_MS = 5_000;
+  private static readonly FACTORY_STATUS_WARMUP_DELAY_MS = Math.max(
+    0,
+    Number(process.env.STRATEGY_FACTORY_STATUS_WARMUP_DELAY_MS ?? '20000'),
+  );
   private static readonly FACTORY_RUNS_TTL = 60;
   private static readonly FACTORY_RUN_DETAIL_TTL = 60;
   private static readonly READ_SURFACE_TIMEOUT_MS = 4_500;
@@ -136,6 +141,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         this.factoryStatusWarmupTimer = undefined;
         void this.fetchFactoryStatusWithCache(false, {
           timeoutMs: StrategyMarketService.FACTORY_MARKET_FAST_TIMEOUT_MS,
+          retryOnTransportError: true,
         }).catch((error) => {
           this.logger.debug(`预热 factory/status 缓存失败: ${String(error)}`);
         });
@@ -200,6 +206,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         },
         {
           timeoutMs: options.timeoutMs,
+          retryOnTransportError: options.retryOnTransportError,
         },
       );
       if (result && typeof result === 'object') {
@@ -342,7 +349,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const normalized: Record<string, unknown> = {};
 
     const passthroughKeys = [
+      'status',
       'running',
+      'status_source',
+      'scheduler_attached',
       'run_time',
       'last_run',
       'last_summary',
@@ -465,6 +475,56 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.asRecord(this.asRecord(strategy.params).metadata);
   }
 
+  private buildLocalStrategySurfaceState(
+    strategy: Record<string, unknown>,
+    actor?: { userId?: string | null; role?: string | null },
+  ) {
+    const userId = String(actor?.userId ?? '').trim();
+    const role = String(actor?.role ?? '').trim().toLowerCase();
+    const authorId = String(strategy.author_id ?? '').trim();
+    const existingOwnerState = this.asRecord(strategy.owner_state);
+    const existingFavoriteState = this.asRecord(strategy.favorite_state);
+    const existingPaperSessionState = this.asRecord(strategy.paper_session_state);
+    const personalStrategy =
+      typeof existingOwnerState.personal_strategy === 'boolean'
+        ? existingOwnerState.personal_strategy
+        : this.isPersonalStrategyRecord(strategy);
+    const owned =
+      typeof existingOwnerState.owned === 'boolean'
+        ? existingOwnerState.owned
+        : Boolean(userId && authorId && userId === authorId);
+    const editable = Boolean(userId && owned && personalStrategy);
+    const ownerState = {
+      ...existingOwnerState,
+      kind: !userId
+        ? 'anonymous'
+        : editable
+          ? 'owned_personal_strategy'
+          : owned
+            ? 'owned_strategy'
+            : 'market_strategy',
+      owned,
+      editable,
+      author_id: authorId || null,
+      personal_strategy: personalStrategy,
+      admin_override: role === 'admin',
+    };
+    const favoriteState = {
+      available: Boolean(userId),
+      favorited: false,
+      label: userId ? '收藏策略' : '登录后收藏',
+      ...existingFavoriteState,
+    };
+    const paperSessionState = {
+      available: Boolean(userId),
+      has_session: false,
+      session_type: 'personal-strategy',
+      mode: 'personal-strategy',
+      ...existingPaperSessionState,
+    };
+    return { ownerState, favoriteState, paperSessionState };
+  }
+
   private isPersonalStrategyRecord(strategy: Record<string, unknown>) {
     const tags = Array.isArray(strategy.tags)
       ? strategy.tags.map((item) => String(item ?? '').trim().toLowerCase())
@@ -475,7 +535,8 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       metadata.source_strategy_id ||
       tags.includes('personal_strategy') ||
       tags.includes('draft_personal_strategy') ||
-      tags.includes('forked_strategy'),
+      tags.includes('forked_strategy') ||
+      String(strategy.status ?? '').trim().toLowerCase() === 'draft',
     );
   }
 
@@ -782,10 +843,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       typeof ownerState.owned === 'boolean'
         ? ownerState.owned
         : Boolean(userId && authorId && authorId === userId);
-    const editable =
-      typeof ownerState.editable === 'boolean'
-        ? ownerState.editable
-        : Boolean(isAdmin || (userId && owned && personalStrategy));
+    const editable = Boolean(userId && owned && personalStrategy);
     const hasPaperSession = Boolean(paperSessionState.has_session);
     const paperAvailable = Boolean(userId && (paperSessionState.available ?? true));
     const sourceStrategyId = this.sourceStrategyId(strategy);
@@ -801,13 +859,15 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
     const saveAsPersonalStatus: StrategyRuntimeActionStatus = !userId
       ? 'unavailable'
-      : editable
+      : personalStrategy
         ? 'unavailable'
         : 'confirm_required';
     const saveAsPersonalReason = !userId
       ? loginRequired
-      : editable
-        ? '当前已经是可编辑个人策略，无需再次收藏为个人策略'
+      : personalStrategy
+        ? editable
+          ? '当前已经是可编辑个人策略，无需再次收藏为个人策略'
+          : '当前已经是个人策略副本，不能再次收藏为个人策略'
         : null;
 
     const paperStatus: StrategyRuntimeActionStatus = !paperAvailable
@@ -1290,8 +1350,9 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     if (!forceRefresh) {
       const cached = await this.cache.getWithMeta(cacheKey);
       if (cached.value && !this.isMcpToolErrorPayload(cached.value)) {
-        this.rememberStrategySummaries(cached.value);
-        return { data: cached.value, cacheKey, ttl, cacheHit: true };
+        const data = this.annotateRankingDataQuality(cached.value);
+        this.rememberStrategySummaries(data);
+        return { data, cacheKey, ttl, cacheHit: true };
       }
       if (this.isMcpToolErrorPayload(cached.value)) {
         await this.cache.del(cacheKey);
@@ -1306,19 +1367,51 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         { status: params.status || 'visible', ...params },
         { timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS },
       );
-      this.rememberStrategySummaries(data);
-      await this.cache.set(cacheKey, data, ttl);
-      return { data, cacheKey, ttl, cacheHit: false };
+      const annotated = this.annotateRankingDataQuality(data);
+      this.rememberStrategySummaries(annotated);
+      await this.cache.set(cacheKey, annotated, ttl);
+      return { data: annotated, cacheKey, ttl, cacheHit: false };
     } catch (error) {
       if (forceRefresh) {
         throw error;
       }
-      const fallback = await this.loadRankingFallbackFromDb(params);
+      const reason = this.describeError(error);
+      const fallback = this.annotateRankingDataQuality(await this.loadRankingFallbackFromDb(params), reason);
       this.rememberStrategySummaries(fallback);
       await this.cache.set(cacheKey, fallback, Math.min(ttl, 60));
-      this.logger.warn(`策略榜单降级为 DB snapshot: ${this.describeError(error)}`);
+      this.logger.warn(`策略榜单降级为 DB snapshot: ${reason}`);
       return { data: fallback, cacheKey, ttl, cacheHit: false };
     }
+  }
+
+  private annotateRankingDataQuality(data: unknown, fallbackReason?: string | null) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+    const record = data as Record<string, unknown>;
+    if (record.data_quality && !fallbackReason) return record;
+    const source = String(record.source ?? '').trim();
+    const isDbSnapshot = source === 'db_snapshot';
+    if (!fallbackReason && !isDbSnapshot) return record;
+    const strategies = Array.isArray(record.strategies) ? record.strategies : [];
+    const reason = String(
+      fallbackReason
+        ?? record.fallback_reason
+        ?? record.degraded_reason
+        ?? 'strategy_ranking_from_db_snapshot',
+    ).trim();
+    return {
+      ...record,
+      fallback_used: true,
+      fallback_reason: reason,
+      data_quality: buildDataQuality({
+        status: 'partial',
+        reasons: ['strategy_ranking_db_snapshot', reason],
+        qualityFlags: ['strategy_ranking_db_snapshot'],
+        sources: [
+          { name: 'strategy_manager.rank', status: 'failed', error: reason },
+          { name: 'strategy_db_snapshot', status: 'trusted', sampleCount: strategies.length },
+        ],
+      }),
+    };
   }
 
   private async fetchFactoryRunsWithCache(
@@ -1611,6 +1704,18 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return String(error instanceof Error ? error.message : error).trim() || 'unknown_error';
   }
 
+  private degradedReadSurface(section: string, error: unknown, extra: Record<string, unknown> = {}) {
+    const reason = this.describeError(error);
+    this.logger.warn(`策略工厂只读分区 ${section} 降级: ${reason}`);
+    return {
+      ...extra,
+      degraded: true,
+      section_errors: { [section]: reason },
+      fallback_reason: reason,
+      errors: [reason],
+    };
+  }
+
   private async withLocalTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -1705,6 +1810,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     avg_rating: number | string | null;
     review_count: number | string | null;
     metrics: Record<string, unknown> | null;
+    backtest_artifact_id?: string | null;
   }) {
     return {
       id: row.id,
@@ -1721,6 +1827,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       avg_rating: Number(row.avg_rating ?? 0),
       review_count: Number(row.review_count ?? 0),
       metrics: this.asRecord(row.metrics),
+      backtest_artifact_id: row.backtest_artifact_id ?? null,
       source: 'db_snapshot',
     };
   }
@@ -1778,6 +1885,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       review_count: number | string | null;
       metrics: Record<string, unknown> | null;
       total_count: number | string | null;
+      backtest_artifact_id: string | null;
     }>(
       `
         WITH filtered AS (
@@ -1795,6 +1903,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
           s.factor_weights,
           s.status,
           s.tags,
+          s.backtest_artifact_id,
           s.subscriber_count,
           COALESCE(r.avg_rating, 0) AS avg_rating,
           COALESCE(r.review_count, 0) AS review_count,
@@ -1840,6 +1949,109 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private async loadMyStrategiesFallbackFromDb(
+    actorId: string,
+    role: string,
+    params: { include_archived?: boolean; limit?: number; offset?: number } = {},
+  ) {
+    const userId = String(actorId ?? '').trim();
+    if (!userId) {
+      return { strategies: [], items: [], count: 0, source: 'db_snapshot' };
+    }
+    const limit = Math.max(1, Math.min(Number(params.limit) || 50, 200));
+    const offset = Math.max(0, Number(params.offset) || 0);
+    const archivedFilter = params.include_archived === true ? '' : "AND COALESCE(s.status, '') <> 'archived'";
+    const result = await this.db.query<{
+      id: string;
+      name: string | null;
+      description: string | null;
+      author_id: string | null;
+      strategy_type: string | null;
+      params: Record<string, unknown> | null;
+      factor_weights: Record<string, unknown> | null;
+      status: string | null;
+      tags: string[] | null;
+      backtest_artifact_id: string | null;
+      subscriber_count: number | null;
+      avg_rating: number | string | null;
+      review_count: number | string | null;
+      metrics: Record<string, unknown> | null;
+      total_count: number | string | null;
+    }>(
+      `
+        WITH filtered AS (
+          SELECT s.*
+          FROM strategies s
+          WHERE s.author_id = $1
+            ${archivedFilter}
+            AND (
+              COALESCE(s.status, '') = 'draft'
+              OR COALESCE(s.tags, '{}'::text[]) && ARRAY['personal_strategy', 'draft_personal_strategy', 'forked_strategy']::text[]
+              OR NULLIF(s.params #>> '{metadata,source_strategy_id}', '') IS NOT NULL
+            )
+        )
+        SELECT
+          s.id,
+          s.name,
+          s.description,
+          s.author_id,
+          s.strategy_type,
+          s.params,
+          s.factor_weights,
+          s.status,
+          s.tags,
+          s.backtest_artifact_id,
+          s.subscriber_count,
+          COALESCE(r.avg_rating, 0) AS avg_rating,
+          COALESCE(r.review_count, 0) AS review_count,
+          jsonb_build_object(
+            'total_return', m.total_return,
+            'annual_return', m.annual_return,
+            'sharpe_ratio', m.sharpe_ratio,
+            'max_drawdown', m.max_drawdown,
+            'win_rate', m.win_rate
+          ) AS metrics,
+          (SELECT COUNT(*) FROM filtered) AS total_count
+        FROM filtered s
+        LEFT JOIN LATERAL (
+          SELECT total_return, annual_return, sharpe_ratio, max_drawdown, win_rate
+          FROM strategy_metrics
+          WHERE strategy_id = s.id
+          ORDER BY computed_at DESC NULLS LAST, id DESC
+          LIMIT 1
+        ) m ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT AVG(rating)::float AS avg_rating, COUNT(*)::int AS review_count
+          FROM strategy_reviews
+          WHERE strategy_id = s.id
+        ) r ON TRUE
+        ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
+        LIMIT $2
+        OFFSET $3
+      `,
+      [userId, limit, offset],
+    );
+    const strategies = result.rows.map((row) => {
+      const summary = this.normalizeStrategySummaryRow(row);
+      const surface = this.buildLocalStrategySurfaceState(summary, { userId, role });
+      return {
+        ...summary,
+        owner_state: surface.ownerState,
+        favorite_state: surface.favoriteState,
+        paper_session_state: surface.paperSessionState,
+      };
+    });
+    this.rememberStrategySummaries({ strategies });
+    return {
+      strategies,
+      items: strategies,
+      count: Number(result.rows[0]?.total_count ?? strategies.length),
+      limit,
+      offset,
+      source: 'db_snapshot',
+    };
+  }
+
   private async loadStrategySummaryFromDb(id: string) {
     const result = await this.db.query<{
       id: string;
@@ -1855,6 +2067,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       avg_rating: number | string | null;
       review_count: number | string | null;
       metrics: Record<string, unknown> | null;
+      backtest_artifact_id: string | null;
     }>(
       `
         SELECT
@@ -1867,6 +2080,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
           s.factor_weights,
           s.status,
           s.tags,
+          s.backtest_artifact_id,
           s.subscriber_count,
           COALESCE(r.avg_rating, 0) AS avg_rating,
           COALESCE(r.review_count, 0) AS review_count,
@@ -1902,6 +2116,140 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return summary;
   }
 
+  private async forkStrategyFallbackToDb(id: string, actor: { actorId: string; role: string }) {
+    const sourceStrategy = await this.loadStrategySummaryFromDb(id);
+    if (!sourceStrategy) {
+      throw new NotFoundException(`策略 ${id} 不存在`);
+    }
+    const actorId = String(actor.actorId ?? '').trim();
+    if (!actorId) {
+      throw new BadRequestException('登录状态无效');
+    }
+    const forkId = `strat_${Math.floor(Date.now() / 1000)}_${randomUUID().replaceAll('-', '').slice(0, 8)}`;
+    const parentTags = Array.isArray(sourceStrategy.tags)
+      ? sourceStrategy.tags.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    const tags = Array.from(new Set([...parentTags, 'personal_strategy', 'forked_strategy']));
+    const parentParams = this.asRecord(sourceStrategy.params);
+    const params = {
+      ...parentParams,
+      metadata: {
+        ...this.asRecord(parentParams.metadata),
+        source_strategy_id: String(sourceStrategy.id),
+        forked_at: new Date().toISOString(),
+        forked_by: actorId,
+        fallback_source: 'bff.db_fork',
+      },
+    };
+    const factorWeights = this.asRecord(sourceStrategy.factor_weights);
+    const forkName = `${String(sourceStrategy.name ?? id).trim() || id} · 我的版本`;
+
+    await this.db.query(
+      `
+        INSERT INTO strategies (
+          id, name, description, author_id, strategy_type, params, factor_weights,
+          status, tags, backtest_artifact_id, subscriber_count, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, 'draft', $8::text[], $9, 0, NOW(), NOW())
+      `,
+      [
+        forkId,
+        forkName,
+        String(sourceStrategy.description ?? ''),
+        actorId,
+        String(sourceStrategy.strategy_type ?? '').trim() || 'custom',
+        JSON.stringify(params),
+        JSON.stringify(factorWeights),
+        tags,
+        sourceStrategy.backtest_artifact_id ?? null,
+      ],
+    );
+    await this.db.query(
+      `
+        INSERT INTO strategy_lineage (strategy_id, parent_id, spawn_reason, birth_regime, created_at)
+        VALUES ($1, $2, 'user_fork', $3::jsonb, NOW())
+      `,
+      [
+        forkId,
+        String(sourceStrategy.id),
+        JSON.stringify({ source: 'strategy_market_bff_fallback', actor_id: actorId, actor_role: actor.role }),
+      ],
+    ).catch((error) => {
+      this.logger.warn(`策略 ${forkId} lineage 写入失败: ${this.describeError(error)}`);
+    });
+
+    const strategy = await this.loadStrategySummaryFromDb(forkId) ?? {
+      ...sourceStrategy,
+      id: forkId,
+      name: forkName,
+      author_id: actorId,
+      params,
+      factor_weights: factorWeights,
+      status: 'draft',
+      tags,
+    };
+    const surface = this.buildLocalStrategySurfaceState(strategy, { userId: actorId, role: actor.role });
+    const strategyWithSurface = this.withRuntimeActionContract({
+      ...strategy,
+      owner_state: surface.ownerState,
+      favorite_state: surface.favoriteState,
+      paper_session_state: surface.paperSessionState,
+      local_fallback_used: true,
+    }, { userId: actorId, role: actor.role });
+    return {
+      strategy_id: forkId,
+      source_strategy_id: String(sourceStrategy.id),
+      strategy: strategyWithSurface,
+      owner_state: surface.ownerState,
+      favorite_state: surface.favoriteState,
+      paper_session_state: surface.paperSessionState,
+      local_fallback_used: true,
+    };
+  }
+
+  private async deletePersonalStrategyFallbackToDb(id: string, actor: { actorId: string; role: string }) {
+    const strategy = await this.loadStrategySummaryFromDb(id);
+    if (!strategy) {
+      throw new NotFoundException(`策略 ${id} 不存在`);
+    }
+    const actorId = String(actor.actorId ?? '').trim();
+    const authorId = String(strategy.author_id ?? '').trim();
+    if (!actorId) {
+      throw new BadRequestException('登录状态无效');
+    }
+    if (!this.isPersonalStrategyRecord(strategy)) {
+      throw new BadRequestException('市场策略不能通过个人策略清理入口删除');
+    }
+    if (!authorId || authorId !== actorId) {
+      throw new BadRequestException('只有个人策略 owner 可以删除个人策略副本');
+    }
+    await this.db.query(
+      `
+        UPDATE strategies
+        SET status = 'archived', updated_at = NOW()
+        WHERE id = $1 AND author_id = $2
+      `,
+      [id, actorId],
+    );
+    return {
+      strategy_id: id,
+      archived: true,
+      status: 'archived',
+      local_fallback_used: true,
+    };
+  }
+
+  private async archiveLocalPersonalStrategyMirror(id: string, actor: { actorId: string; role: string }) {
+    try {
+      const result = await this.deletePersonalStrategyFallbackToDb(id, actor);
+      this.strategySummaryFallbackCache.delete(id);
+      return result.archived === true;
+    } catch (error) {
+      this.logger.debug(`个人策略 ${id} 本地镜像归档跳过: ${this.describeError(error)}`);
+      return false;
+    }
+  }
+
   private buildFallbackStrategyDetail(
     id: string,
     summary: Record<string, unknown>,
@@ -1917,27 +2265,6 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const avgRating = Number(summary.avg_rating ?? 0);
     const reviewCount = Number(summary.review_count ?? 0);
     const safeError = this.describeError(error);
-    const ownedByActor = Boolean(actor?.userId && authorId && actor.userId === authorId);
-
-    const ownerState = {
-      kind: 'market',
-      owned: ownedByActor,
-      editable: false,
-      author_id: authorId,
-      personal_strategy: false,
-      admin_override: String(actor?.role ?? '').trim().toLowerCase() === 'admin',
-    };
-    const favoriteState = {
-      available: Boolean(actor?.userId),
-      favorited: false,
-      label: actor?.userId ? '收藏策略' : '登录后收藏',
-    };
-    const paperSessionState = {
-      available: Boolean(actor?.userId),
-      has_session: false,
-      session_type: 'personal-strategy',
-      mode: 'personal-strategy',
-    };
     const strategyPayload = {
       id: strategyId,
       name: strategyName,
@@ -1955,6 +2282,8 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       metrics: [],
       reviews: [],
     };
+    const surface = this.buildLocalStrategySurfaceState(strategyPayload, actor);
+    const { ownerState, favoriteState, paperSessionState } = surface;
     const contract = this.buildRuntimeActionContract({
       strategy: strategyPayload,
       actor,
@@ -2548,9 +2877,22 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async mySubscriptions(userId: string) {
-    return this.call('my_subscriptions', { user_id: userId }, {
-      timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
-    });
+    try {
+      return await this.call('my_subscriptions', { user_id: userId }, {
+        timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+        retryOnTransportError: true,
+      });
+    } catch (error) {
+      this.logger.warn(`策略订阅列表降级为空列表: ${this.describeError(error)}`);
+      return {
+        subscriptions: [],
+        favorites: [],
+        items: [],
+        count: 0,
+        degraded: true,
+        degraded_reason: this.describeError(error),
+      };
+    }
   }
 
   async favorite(id: string, userId: string) {
@@ -2565,6 +2907,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     try {
       const payload = this.asRecord(await this.call('my_favorites', { user_id: userId }, {
         timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+        retryOnTransportError: true,
       }));
       return this.withRuntimeActionContracts({
         ...payload,
@@ -2594,12 +2937,29 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     role: string,
     params: { include_archived?: boolean; limit?: number; offset?: number } = {},
   ) {
-    return this.withRuntimeActionContracts(await this.call('my_strategies', {
-      ...this.managerActorParams({ actorId, role }),
-      include_archived: params.include_archived,
-      limit: params.limit,
-      offset: params.offset,
-    }), { userId: actorId, role });
+    try {
+      return this.withRuntimeActionContracts(await this.call('my_strategies', {
+        ...this.managerActorParams({ actorId, role }),
+        include_archived: params.include_archived,
+        limit: params.limit,
+        offset: params.offset,
+      }, {
+        timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+        retryOnTransportError: true,
+      }), { userId: actorId, role });
+    } catch (error) {
+      this.logger.warn(`我的策略列表降级为 DB 快照: ${this.describeError(error)}`);
+      const fallback = await this.withLocalTimeout(
+        this.loadMyStrategiesFallbackFromDb(actorId, role, params),
+        StrategyMarketService.DETAIL_FALLBACK_TIMEOUT_MS,
+        `my strategies fallback timed out after ${StrategyMarketService.DETAIL_FALLBACK_TIMEOUT_MS}ms`,
+      );
+      return this.withRuntimeActionContracts({
+        ...fallback,
+        local_fallback_used: true,
+        upstream_error: this.describeError(error),
+      }, { userId: actorId, role });
+    }
   }
 
   async runtimeActions(id: string, actor?: { userId?: string | null; role?: string | null }) {
@@ -2619,10 +2979,18 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async forkStrategy(id: string, actor: { actorId: string; role: string }) {
-    return this.call('fork_strategy', {
-      strategy_id: id,
-      ...this.managerActorParams(actor),
-    });
+    try {
+      return await this.call('fork_strategy', {
+        strategy_id: id,
+        ...this.managerActorParams(actor),
+      });
+    } catch (error) {
+      if (!(error instanceof BadGatewayException)) {
+        throw error;
+      }
+      this.logger.warn(`策略 ${id} fork 降级为 DB 写入: ${this.describeError(error)}`);
+      return this.forkStrategyFallbackToDb(id, actor);
+    }
   }
 
   async personalStrategyContext(id: string, actor: { actorId: string; role: string }) {
@@ -2695,18 +3063,55 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async updateStrategy(id: string, updates: Record<string, unknown>, actor: { actorId: string; role: string }) {
+    const sanitizedUpdates = this.sanitizeStrategyUpdates(updates);
     return this.call('update_strategy', {
       strategy_id: id,
-      updates,
+      updates: sanitizedUpdates.updates,
+      mutation_scope: sanitizedUpdates.mutationScope,
+      run_post_update_pipeline: sanitizedUpdates.runPostUpdatePipeline,
       ...this.managerActorParams(actor),
     });
   }
 
+  private sanitizeStrategyUpdates(updates: Record<string, unknown>) {
+    const mutationScope = updates.mutationScope === 'lifecycle' ? 'lifecycle' : 'draft';
+    const runPostUpdatePipeline = mutationScope === 'lifecycle' && updates.run_post_update_pipeline === true;
+    if (mutationScope === 'lifecycle') {
+      const rest = Object.fromEntries(
+        Object.entries(updates).filter(([key]) => key !== 'mutationScope' && key !== 'run_post_update_pipeline'),
+      );
+      return { updates: rest, mutationScope, runPostUpdatePipeline };
+    }
+
+    const draftKeys = new Set(['name', 'description', 'params', 'factor_weights', 'tags']);
+    const draftUpdates = Object.entries(updates).reduce<Record<string, unknown>>((acc, [key, value]) => {
+      if (draftKeys.has(key)) acc[key] = value;
+      return acc;
+    }, {});
+    return { updates: draftUpdates, mutationScope, runPostUpdatePipeline: false };
+  }
+
   async deletePersonalStrategy(id: string, actor: { actorId: string; role: string }) {
-    return this.call('delete_personal_strategy', {
-      strategy_id: id,
-      ...this.managerActorParams(actor),
-    });
+    try {
+      const result = await this.call('delete_personal_strategy', {
+        strategy_id: id,
+        ...this.managerActorParams(actor),
+      });
+      const localMirrorArchived = await this.archiveLocalPersonalStrategyMirror(id, actor);
+      return {
+        ...this.asRecord(result),
+        strategy_id: String(this.asRecord(result).strategy_id ?? id),
+        local_mirror_archived: localMirrorArchived,
+      };
+    } catch (error) {
+      if (!(error instanceof BadGatewayException)) {
+        throw error;
+      }
+      this.logger.warn(`个人策略 ${id} 删除降级为 DB 归档: ${this.describeError(error)}`);
+      const fallback = await this.deletePersonalStrategyFallbackToDb(id, actor);
+      this.strategySummaryFallbackCache.delete(id);
+      return fallback;
+    }
   }
 
   async paperSession(id: string, actor: { actorId: string; role: string }) {
@@ -2808,16 +3213,33 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async factoryTopnLatest(limit?: number, options: StrategyManagerCallOptions = {}) {
-    return this.call('factory_topn_latest', {
-      limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
-    }, options);
+    try {
+      return await this.call('factory_topn_latest', {
+        limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
+      }, options);
+    } catch (error) {
+      return this.degradedReadSurface('factory_topn_latest', error, {
+        snapshot: null,
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async factoryRunTopn(runId: string, limit?: number) {
-    return this.call('factory_run_topn', {
-      run_id: runId,
-      limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
-    });
+    try {
+      return await this.call('factory_run_topn', {
+        run_id: runId,
+        limit: limit == null ? undefined : Math.max(1, Math.min(Number(limit) || 20, 100)),
+      });
+    } catch (error) {
+      return this.degradedReadSurface('factory_run_topn', error, {
+        run_id: runId,
+        snapshot: null,
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async factoryDispatchStatus(dispatchId: string) {
@@ -3539,7 +3961,15 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async dailySnapshots(params: { limit?: number; start_date?: string; end_date?: string } = {}) {
-    return this.call('daily_snapshots', params);
+    try {
+      return await this.call('daily_snapshots', params);
+    } catch (error) {
+      return this.degradedReadSurface('daily_snapshots', error, {
+        snapshots: [],
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async dailySnapshot(snapshotDate?: string, options: StrategyManagerCallOptions = {}) {
@@ -3635,13 +4065,30 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async vectorIndexes(params: { index_name?: string; status?: string; limit?: number } = {}) {
-    return this.call('vector_indexes', params);
+    try {
+      return await this.call('vector_indexes', params);
+    } catch (error) {
+      return this.degradedReadSurface('vector_indexes', error, {
+        indexes: [],
+        registries: [],
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async vectorIndexSnapshots(
     params: { index_name?: string; index_version?: string; status?: string; limit?: number } = {},
   ) {
-    return this.call('vector_index_snapshots', params);
+    try {
+      return await this.call('vector_index_snapshots', params);
+    } catch (error) {
+      return this.degradedReadSurface('vector_index_snapshots', error, {
+        snapshots: [],
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async vectorAnnSearch(
@@ -3675,7 +4122,17 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async vectorHealth(params: { index_name?: string; limit_versions?: number; include_hnsw_indexes?: boolean } = {}) {
-    return this.call('vector_health', params);
+    try {
+      return await this.call('vector_health', params);
+    } catch (error) {
+      return this.degradedReadSurface('vector_health', error, {
+        healthy: false,
+        indexes: [],
+        versions: [],
+        items: [],
+        count: 0,
+      });
+    }
   }
 
   async vectorCleanup(

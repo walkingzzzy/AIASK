@@ -1,4 +1,5 @@
 import type { ResultContract, ResultContractMeta } from './result-contract';
+import type { DataQuality } from './common';
 
 export type ExecutionWorkbenchSeverity = 'high' | 'medium' | 'low' | 'unknown';
 
@@ -108,6 +109,10 @@ export type ExecutionTasksResponse = {
     sourceTool?: string;
     argsMatched?: Record<string, unknown>;
     result?: unknown;
+    degraded?: boolean;
+    fallback_reason?: string | null;
+    data_quality?: DataQuality | null;
+    result_contract?: ResultContract | null;
 };
 
 export type ExecutionTaskDetailResponse = ExecutionWorkbenchResponse & {

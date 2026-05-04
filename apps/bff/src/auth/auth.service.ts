@@ -24,6 +24,8 @@ import {
 } from './session.service';
 import { TotpService } from './totp.service';
 
+type AdminPasswordSyncMode = 'never' | 'if-default' | 'if-mismatch';
+
 @Injectable()
 export class AuthService implements OnModuleInit {
   private static readonly DEFAULT_JWT_SECRET = 'dev-secret-change-me';
@@ -35,6 +37,8 @@ export class AuthService implements OnModuleInit {
   private readonly refreshTtlSec: number;
   private readonly jwtSecret: string;
   private readonly adminPassword: string;
+  private readonly adminPasswordConfigured: boolean;
+  private readonly adminPasswordSyncMode: AdminPasswordSyncMode;
   private readonly demoPassword: string;
   private readonly demoUserEnabled: boolean;
 
@@ -51,9 +55,12 @@ export class AuthService implements OnModuleInit {
     this.refreshTtlSec = Math.max(300, Number(this.configService.get('APP_REFRESH_TOKEN_TTL_SECONDS', 604800)));
     this.jwtSecret = this.configService.get<string>('APP_JWT_SECRET', AuthService.DEFAULT_JWT_SECRET);
 
-    this.adminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD', AuthService.DEFAULT_ADMIN_PASSWORD);
+    const configuredAdminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD');
+    this.adminPasswordConfigured = Boolean(configuredAdminPassword?.trim());
+    this.adminPassword = configuredAdminPassword?.trim() || AuthService.DEFAULT_ADMIN_PASSWORD;
     this.demoPassword = this.configService.get<string>('APP_DEMO_PASSWORD', AuthService.DEFAULT_DEMO_PASSWORD);
     const isProduction = this.isProductionEnv();
+    this.adminPasswordSyncMode = this.resolveAdminPasswordSyncMode(isProduction);
     this.demoUserEnabled = this.readBooleanConfig('APP_ENABLE_DEMO_USER', !isProduction);
 
     if (this.isWeakJwtSecret(this.jwtSecret)) {
@@ -420,6 +427,16 @@ export class AuthService implements OnModuleInit {
     return fallback;
   }
 
+  private resolveAdminPasswordSyncMode(isProduction: boolean): AdminPasswordSyncMode {
+    const fallback: AdminPasswordSyncMode = isProduction ? 'if-default' : 'if-mismatch';
+    const raw = String(this.configService.get<string>('APP_ADMIN_PASSWORD_SYNC', fallback)).trim().toLowerCase();
+    if (['0', 'false', 'no', 'n', 'off', 'never', 'none'].includes(raw)) return 'never';
+    if (['1', 'true', 'yes', 'y', 'on', 'always', 'force', 'sync', 'if-mismatch'].includes(raw)) {
+      return 'if-mismatch';
+    }
+    return 'if-default';
+  }
+
   private isWeakJwtSecret(secret: string): boolean {
     const normalized = String(secret || '').trim();
     return !normalized || normalized === AuthService.DEFAULT_JWT_SECRET || normalized.length < 32;
@@ -460,13 +477,30 @@ export class AuthService implements OnModuleInit {
 
       for (const row of result.rows) {
         if (row.username === 'admin') {
+          const matchesConfiguredAdminPassword = await verifyPassword(this.adminPassword, row.password_hash);
+          if (matchesConfiguredAdminPassword) {
+            continue;
+          }
+
           const usesDefaultAdminPassword = await verifyPassword(AuthService.DEFAULT_ADMIN_PASSWORD, row.password_hash);
-          if (usesDefaultAdminPassword && this.adminPassword !== AuthService.DEFAULT_ADMIN_PASSWORD) {
+          const canSyncConfiguredAdminPassword =
+            this.adminPasswordConfigured && this.adminPassword !== AuthService.DEFAULT_ADMIN_PASSWORD;
+          const shouldSyncConfiguredAdminPassword =
+            canSyncConfiguredAdminPassword &&
+            (this.adminPasswordSyncMode === 'if-mismatch' ||
+              (this.adminPasswordSyncMode === 'if-default' && usesDefaultAdminPassword));
+
+          if (shouldSyncConfiguredAdminPassword) {
             await this.dbService.query(
               'UPDATE app_users SET password_hash = $2 WHERE id = $1',
               [row.id, await hashPassword(this.adminPassword)],
             );
-            this.logger.warn('检测到数据库中的 admin 账户仍使用默认密码，已按 APP_ADMIN_PASSWORD 自动升级');
+            const reason = usesDefaultAdminPassword ? '默认密码' : '与 APP_ADMIN_PASSWORD 不一致';
+            this.logger.warn(`检测到数据库中的 admin 账户${reason}，已按 APP_ADMIN_PASSWORD 自动同步`);
+          } else if (this.adminPasswordSyncMode !== 'never') {
+            this.logger.warn(
+              '数据库中的 admin 密码与 APP_ADMIN_PASSWORD 不一致；如需启动时同步，请设置 APP_ADMIN_PASSWORD_SYNC=if-mismatch',
+            );
           }
         }
 

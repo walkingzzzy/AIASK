@@ -166,7 +166,9 @@ export default function ScreenerPage() {
   );
   const screenResultSummary = resultContract?.summary ?? (results.length > 0
     ? `当前筛到 ${results.length} 只股票，优先结果 ${primaryName || primaryCode || '未命名'}。`
-    : '');
+    : hasScreenOutcome
+      ? `当前${tab === 'semantic' ? '语义选股' : '条件组合'}已执行，但暂未命中可继续查看的股票结果。`
+      : '等待输入选股条件并执行。');
   const screenEvidenceSummary = useMemo(
     () => resultContract?.evidence?.map((item) => `${item.label}：${item.value}`) ?? [],
     [resultContract?.evidence],
@@ -189,8 +191,8 @@ export default function ScreenerPage() {
     if (results.length < 2) return null;
     return (
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {results.slice(0, 3).map((row) => (
-          <div key={row.code} className="metric-tile rounded-[22px] p-4">
+        {results.slice(0, 3).map((row, index) => (
+          <div key={`${row.code || row.name || 'candidate'}-${index}`} className="metric-tile rounded-[22px] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{row.code}</div>
             <div className="mt-3 text-base font-semibold text-text-primary">{row.name || row.code}</div>
             <div className="mt-2 text-xs leading-6 text-text-secondary">

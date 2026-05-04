@@ -137,7 +137,7 @@ export default function AdminPage() {
     <PageContainer>
       <h1 className="text-lg font-semibold mb-2">管理后台概览</h1>
       <p className="mt-0 mb-4 text-sm text-text-secondary">
-        把“先做什么”放在第一屏，把详细运行快照下沉到第二层，减少管理页一进来就被状态卡淹没的感觉。
+        第一屏先呈现需要处理的管理动作和健康概览，详细运行快照可在后续区域继续查看。
       </p>
 
       {healthQ.error ? (

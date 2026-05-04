@@ -35,7 +35,7 @@ import {
   renderWarnings,
 } from '@/app/factor/components/factor-mining-support';
 
-const DEFAULT_MINING_CODES = '600519,000858,300750,601318,000001,600036';
+const DEFAULT_MINING_CODES = '';
 
 export function FactorMiningWorkbench() {
   const [formError, setFormError] = useState<string | null>(null);
@@ -646,10 +646,10 @@ export function FactorMiningWorkbench() {
       </SectionCard>
 
       <SectionCard className="p-4 sm:p-5">
-        <h3 className="mt-0">Episode 回放与调度巡检</h3>
+        <h3 className="mt-0">研究过程回放与调度巡检</h3>
         <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
           <div className={factorMiningPanelCls}>
-            <h4 className="mb-2 text-sm font-medium text-text-primary">回放 Episode</h4>
+            <h4 className="mb-2 text-sm font-medium text-text-primary">回放研究过程</h4>
             <div className="grid gap-3 lg:grid-cols-3">
               <MiningSelect
                 id="factor-replay-op"
@@ -657,25 +657,25 @@ export function FactorMiningWorkbench() {
                 value={replayOp}
                 onChange={setReplayOp}
                 options={[
-                  { label: 'run', value: 'run' },
-                  { label: 'summary', value: 'summary' },
-                  { label: 'list', value: 'list' },
-                  { label: 'get', value: 'get' },
+                  { label: '运行回放', value: 'run' },
+                  { label: '查看摘要', value: 'summary' },
+                  { label: '列出记录', value: 'list' },
+                  { label: '读取详情', value: 'get' },
                 ]}
               />
               <MiningField
                 id="factor-replay-artifact"
-                label="mining / replay artifact"
+                label="挖掘 / 回放制品"
                 value={replayArtifactId}
                 onChange={setReplayArtifactId}
-                placeholder="run/get 时常用"
+                placeholder="运行回放或读取详情时常用"
               />
               <MiningField
                 id="factor-replay-source-artifact"
-                label="source artifact"
+                label="来源制品"
                 value={replaySourceArtifactId}
                 onChange={setReplaySourceArtifactId}
-                placeholder="list/summary 可选"
+                placeholder="列出记录或查看摘要时可选"
               />
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-4">
@@ -684,7 +684,7 @@ export function FactorMiningWorkbench() {
                 label="回放股票池"
                 value={replayCodes}
                 onChange={setReplayCodes}
-                placeholder="run 时建议 3 只以上"
+                placeholder="运行回放时建议 3 只以上"
               />
               <MiningField
                 id="factor-replay-candidate-limit"

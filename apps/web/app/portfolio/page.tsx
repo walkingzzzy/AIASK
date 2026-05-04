@@ -528,6 +528,14 @@ export default function PortfolioPage() {
     }),
     [holdCode, holdCost, holdShares, portfolioId],
   );
+  const workspaceTabLabel =
+    workspaceTab === 'list'
+      ? '组合列表'
+      : workspaceTab === 'compose'
+        ? '创建与加仓'
+        : workspaceTab === 'detail'
+          ? '组合详情'
+          : '优化与风控';
 
   const applyView = useCallback(
     (snapshot: Record<string, unknown>) => {
@@ -553,7 +561,7 @@ export default function PortfolioPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Portfolio Workspace</Badge>
+              <Badge variant="info">组合工作台</Badge>
               <Badge variant={activePortfolioId ? 'success' : 'warning'}>
                 {activePortfolioId ? `组合 ${portfolioDisplayName}` : '等待选择组合'}
               </Badge>
@@ -568,7 +576,7 @@ export default function PortfolioPage() {
               组合管理工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              当前页面只保留一个活动工作流。先锁定目标组合，再决定是维护持仓、查看详情，还是继续做优化与风控。
+              先锁定目标组合，再选择维护持仓、查看组合详情，或继续做优化、风险分析和压力测试。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button
@@ -588,7 +596,7 @@ export default function PortfolioPage() {
               className="mt-4 rounded-[22px] border border-white/50 bg-white/28 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
             >
               <div className="font-medium text-text-primary">
-                当前组合 {portfolioDisplayName} ｜ 当前视图 {workspaceTab === 'list' ? '组合列表' : workspaceTab === 'compose' ? '创建与加仓' : workspaceTab === 'detail' ? '组合详情' : '优化与风控'}
+                当前组合 {portfolioDisplayName} ｜ 当前视图 {workspaceTabLabel}
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
                 组合 {portfolioList.length} 个 ｜ 持仓 {detailHoldings.length} 条 ｜ 策略 {detailStrategies.length} 条
@@ -619,16 +627,16 @@ export default function PortfolioPage() {
 
       <ResponsiveResultWorkbench pageKey="portfolio" title="组合结果工作台" result={portfolioResult} />
 
-      {loading ? <LoadingState text="处理中..." /> : null}
+      {loading ? <LoadingState text="正在加载组合数据..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Workspace Flow</div>
+            <div className="eyebrow">工作流</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前工作流</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              主区一次只展开一个工作流，避免列表、表单、详情和风险卡片在移动端连续堆叠。
+              按列表、创建与加仓、详情、优化与风控分步处理，便于在同一组合下复查每个动作。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -671,10 +679,10 @@ export default function PortfolioPage() {
                 <SectionCard className="mt-0 p-4 sm:p-5">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <div className="eyebrow">Strategy Cart</div>
+                      <div className="eyebrow">策略购物车</div>
                       <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">待创建的策略分配</h3>
                       <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
-                        当前购物车里有 {cartItems.length} 条策略，权重合计 {cartTotalWeight.toFixed(1)}%。这里才是把购物车落成真实策略组合的主入口。
+                        当前购物车里有 {cartItems.length} 条策略，权重合计 {cartTotalWeight.toFixed(1)}%。确认权重后，可直接生成一组可跟踪的策略组合。
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -764,10 +772,10 @@ export default function PortfolioPage() {
               <SectionCard className="mt-0 p-4 sm:p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="eyebrow">Risk Workspace</div>
+                    <div className="eyebrow">优化与风控</div>
                     <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">优化与风控</h3>
                     <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                      这里默认只承接优化、风险与压力测试动作，不再把组合列表和创建表单留在同一首屏里。
+                      在已选组合上运行优化、风险分析和压力测试，结果会回到下方摘要卡片用于继续复盘。
                     </p>
                   </div>
                 </div>
@@ -823,7 +831,7 @@ export default function PortfolioPage() {
         secondary={secondaryContent}
         mobileSummary={
           <div className="panel-soft rounded-[24px] px-4 py-3 text-sm text-text-secondary">
-            组合 {portfolioDisplayName} ｜ 持仓 {detailHoldings.length} 条 ｜ 当前视图 {workspaceTab}
+            组合 {portfolioDisplayName} ｜ 持仓 {detailHoldings.length} 条 ｜ 当前视图 {workspaceTabLabel}
           </div>
         }
         maxDefaultSections={0}

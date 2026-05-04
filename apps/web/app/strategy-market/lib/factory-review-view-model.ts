@@ -1,4 +1,5 @@
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { normalizeStrategyPercentMetric } from '@/lib/strategy-metrics';
 import type {
   AiExperiment,
   DomainEvent,
@@ -240,7 +241,7 @@ export function buildFactoryReviewViewModel({
     executionLineageRows,
     forwardRows: (incubation?.forward_returns ?? []).map((item) => ({
       label: item.label ?? '-',
-      hit_rate: item.hit_rate == null ? '-' : fmtPct(item.hit_rate),
+      hit_rate: item.hit_rate == null ? '-' : fmtPct(normalizeStrategyPercentMetric(item.hit_rate)),
       forward_ic: item.forward_ic == null ? '-' : fmtNum(item.forward_ic, 4),
       forward_sharpe: item.forward_sharpe == null ? '-' : fmtNum(item.forward_sharpe, 4),
     })),
@@ -290,30 +291,30 @@ export function buildFactoryReviewViewModel({
     incubationPipelineOverviewRows: [
       { item: '当前阶段', value: latestIncubationPipelineSnapshot?.pipeline_stage ?? currentAccount?.stage ?? '-' },
       { item: '流水线状态', value: latestIncubationPipelineSnapshot?.pipeline_status ?? '-' },
-      { item: '硬门状态', value: latestIncubationPipelineSnapshot?.gate_status ?? '-' },
-      { item: '硬门原因', value: shortText((latestIncubationPipelineSnapshot?.gate_reasons ?? []).join(' / ') || '-', 48) },
-      { item: '硬门结果', value: hardGateResult?.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
-      { item: 'Signal Snapshot', value: String(signalQualitySnapshot?.status ?? '-') },
-      { item: 'Execution Snapshot', value: String(executionQualitySnapshot?.status ?? '-') },
+      { item: '强校验状态', value: latestIncubationPipelineSnapshot?.gate_status ?? '-' },
+      { item: '强校验原因', value: shortText((latestIncubationPipelineSnapshot?.gate_reasons ?? []).join(' / ') || '-', 48) },
+      { item: '强校验结果', value: hardGateResult?.passed == null ? '-' : hardGateResult.passed ? '通过' : '未通过' },
+      { item: '信号快照', value: String(signalQualitySnapshot?.status ?? '-') },
+      { item: '执行快照', value: String(executionQualitySnapshot?.status ?? '-') },
       {
-        item: 'Trace Ledger',
+        item: '追踪账本',
         value: formatIssueSummary(
           [
             String(predictionTraceLedger?.prediction_trace_id ?? ''),
             predictionTraceLedger?.contract_version ? 'v2' : '',
             predictionTraceGapCodes.length
-              ? `gaps:${predictionTraceGapCodes.length}`
+              ? `缺口:${predictionTraceGapCodes.length}`
               : '',
           ],
           48,
         ),
       },
       {
-        item: 'Trace 缺口',
+        item: '追踪缺口',
         value: formatIssueSummary(predictionTraceGapCodes.map((item) => String(item)), 64),
       },
       {
-        item: '硬门语义',
+        item: '强校验语义',
         value: formatIssueSummary(
           [
             String(hardGateResult?.pipeline_stage ?? ''),
@@ -366,10 +367,10 @@ export function buildFactoryReviewViewModel({
     metricRows: incubationMetrics.map((item) => ({
       metric_date: item.metric_date ?? '-',
       nav: fmtNum(item.nav, 4),
-      daily_return: fmtPct(item.daily_return),
-      max_drawdown: fmtPct(item.max_drawdown),
+      daily_return: fmtPct(normalizeStrategyPercentMetric(item.daily_return)),
+      max_drawdown: fmtPct(normalizeStrategyPercentMetric(item.max_drawdown)),
       sharpe_ratio: fmtNum(item.sharpe_ratio, 2),
-      exposure_rate: fmtPct(item.exposure_rate),
+      exposure_rate: fmtPct(normalizeStrategyPercentMetric(item.exposure_rate)),
       alpha_decay: fmtNum(item.alpha_decay, 3),
       drift_score: fmtNum(item.drift_score, 3),
       decision: item.decision ?? '-',
@@ -394,7 +395,7 @@ export function buildFactoryReviewViewModel({
       cost_price: fmtNum(item.cost_price, 4),
       current_price: fmtNum(item.current_price, 4),
       market_value: fmtNum(item.market_value, 2),
-      profit_rate: fmtPct(item.profit_rate),
+      profit_rate: fmtPct(normalizeStrategyPercentMetric(item.profit_rate)),
     })),
     paperOrderRows: paperOrders.map((item) => ({
       signal_date: item.signal_date ?? '-',
@@ -412,7 +413,7 @@ export function buildFactoryReviewViewModel({
       total_value: fmtNum(item.total_value, 2),
       cash: fmtNum(item.cash, 2),
       market_value: fmtNum(item.market_value, 2),
-      daily_return: fmtPct(item.daily_return),
+      daily_return: fmtPct(normalizeStrategyPercentMetric(item.daily_return)),
     })),
   };
 
@@ -577,7 +578,7 @@ export function buildFactoryReviewViewModel({
   const committeeAcceptBlockers = Array.isArray(committeeReview.accept_blockers) ? committeeReview.accept_blockers : [];
   const reviewAuditRows = [
     { item: 'Bootstrap CI 下界', value: fmtNum(review?.quality_gate?.bootstrap_ci_lower, 4) },
-    { item: '参数敏感性', value: fmtPct(review?.quality_gate?.param_sensitivity) },
+    { item: '参数敏感性', value: fmtPct(normalizeStrategyPercentMetric(review?.quality_gate?.param_sensitivity)) },
     { item: '多重检验模式', value: review?.run_correction?.multiple_testing_mode ?? review?.quality_gate?.multiple_testing_mode ?? '-' },
     { item: 'Deflated Sharpe Ratio', value: fmtNum(review?.run_correction?.deflated_sharpe_ratio ?? review?.quality_gate?.deflated_sharpe_ratio, 4) },
     { item: 'PBO', value: fmtNum(review?.run_correction?.pbo ?? review?.quality_gate?.pbo, 4) },
@@ -608,7 +609,7 @@ export function buildFactoryReviewViewModel({
       item: '约束审计',
       value: formatIssueSummary([
         constraintCheck.constraint_violation ? `violation:${constraintCheck.constraint_violation}` : '',
-        constraintCheck.intersection_ratio == null ? '' : `intersection:${fmtPct(constraintCheck.intersection_ratio)}`,
+        constraintCheck.intersection_ratio == null ? '' : `intersection:${fmtPct(normalizeStrategyPercentMetric(constraintCheck.intersection_ratio))}`,
         constraintCheck.expansion_applied ? `expansion:${constraintCheck.expansion_reason ?? 'applied'}` : '',
       ], 64),
     },
@@ -645,7 +646,7 @@ export function buildFactoryReviewViewModel({
       item: '尝试惩罚',
       value: formatIssueSummary([
         attemptAdjustment.penalty == null ? '' : `penalty:${fmtNum(attemptAdjustment.penalty, 4)}`,
-        attemptAdjustment.selection_ratio == null ? '' : `selection:${fmtPct(attemptAdjustment.selection_ratio)}`,
+        attemptAdjustment.selection_ratio == null ? '' : `selection:${fmtPct(normalizeStrategyPercentMetric(attemptAdjustment.selection_ratio))}`,
         attemptAdjustment.attempt_count == null ? '' : `attempts:${attemptAdjustment.attempt_count}`,
       ], 64),
     },

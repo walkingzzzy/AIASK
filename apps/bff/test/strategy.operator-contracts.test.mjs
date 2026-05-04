@@ -53,41 +53,91 @@ test('readiness remediations distinguish registry freshness and production sampl
   }
 });
 
-test('StrategyOperatorService requires confirmation and wraps allowed actions as MCP jobs', async () => {
+test('StrategyOperatorService requires confirmation and wraps heavy actions as strategy task runs', async () => {
   const calls = [];
-  const fakeJobs = {
-    async createToolJob(input, options) {
-      calls.push({ input, options });
+  const fakeMcp = {
+    async callTool(toolName, args) {
+      calls.push({ toolName, args });
       return {
-        accepted: true,
-        deduplicated: false,
-        job: {
-          job_id: '00000000-0000-4000-8000-000000000001',
-          status: 'queued',
-          submitted_at: '2026-04-24T00:00:00.000Z',
-          started_at: null,
-          completed_at: null,
-          poll_path: '/api/mcp/jobs/00000000-0000-4000-8000-000000000001',
-          idempotency_key: null,
-          target: {
-            kind: 'tool',
-            name: input.tool_name,
-            arguments: input.arguments,
-            timeout_ms: input.timeout_ms ?? 120000,
+        success: true,
+        data: {
+          accepted: true,
+          queued: true,
+          job_id: '42',
+          task_run_id: 42,
+          poll_path: '/api/strategy-market/operator/jobs/42',
+          task_run: {
+            id: 42,
+            strategy_id: 'strat_demo',
+            task_name: 'factory_run_once',
+            task_scope: 'strategy_factory.worker',
+            task_key: null,
+            status: 'queued',
+            trace_id: 'trace-operator',
+            payload: {
+              action: 'factory_run_once',
+              params: {
+                dry_run: false,
+                strategy_id: 'strat_demo',
+                source: 'strategy_operator_console',
+                trace_id: 'trace-operator',
+              },
+              submitted_at: '2026-04-24T00:00:00.000Z',
+            },
+            result: {},
+            error: null,
+            started_at: '2026-04-24T00:00:00.000Z',
+            completed_at: null,
           },
-          result: null,
-          error: null,
-          error_code: null,
-          trace_id: options.traceId ?? null,
-          meta: {},
         },
       };
+    },
+  };
+  const fakeJobs = {
+    async createToolJob() {
+      throw new Error('not used');
     },
     async getJobOrThrow() {
       throw new Error('not used');
     },
   };
-  const service = new StrategyOperatorService({}, fakeJobs);
+  const dbQueries = [];
+  const fakeDb = {
+    async query(sql, params) {
+      dbQueries.push({ sql, params });
+      if (/INSERT INTO strategy_task_runs/i.test(sql)) {
+        const [
+          strategyId,
+          action,
+          taskScope,
+          taskKey,
+          traceId,
+          payloadJson,
+          submittedAt,
+        ] = params;
+        return {
+          rows: [
+            {
+              id: 42,
+              strategy_id: strategyId,
+              task_name: action,
+              task_scope: taskScope,
+              task_key: taskKey,
+              status: 'queued',
+              trace_id: traceId,
+              payload: JSON.parse(payloadJson),
+              result: {},
+              error: null,
+              started_at: submittedAt,
+              completed_at: null,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+  const service = new StrategyOperatorService(fakeMcp, fakeJobs, fakeDb);
 
   await assert.rejects(
     service.createOperatorJob({
@@ -116,16 +166,24 @@ test('StrategyOperatorService requires confirmation and wraps allowed actions as
 
   assert.equal(record.action, 'factory_run_once');
   assert.equal(record.strategy_id, 'strat_demo');
-  assert.equal(record.poll_path, '/api/strategy-market/operator/jobs/00000000-0000-4000-8000-000000000001');
-  assert.equal(calls[0].input.tool_name, 'strategy_manager');
-  assert.deepEqual(calls[0].input.arguments, {
+  assert.equal(record.poll_path, '/api/strategy-market/operator/jobs/42');
+  assert.equal(record.job.job_id, '42');
+  assert.equal(calls.length, 0);
+  assert.equal(dbQueries.length, 1);
+  assert.match(dbQueries[0].sql, /INSERT INTO strategy_task_runs/i);
+  assert.deepEqual(record.job.target.arguments, {
     action: 'factory_run_once',
     params: {
       dry_run: false,
       strategy_id: 'strat_demo',
       source: 'strategy_operator_console',
+      trace_id: 'trace-operator',
     },
   });
-  assert.equal(calls[0].input.timeout_ms, 300000);
-  assert.equal(calls[0].options.traceId, 'trace-operator');
+  assert.deepEqual(record.job.meta, {
+    queue_backend: 'db',
+    task_scope: 'strategy_factory.worker',
+    task_run_id: 42,
+    raw_task_status: 'queued',
+  });
 });

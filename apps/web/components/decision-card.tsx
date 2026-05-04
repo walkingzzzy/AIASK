@@ -52,9 +52,16 @@ const ACTION_STYLE: Record<string, { bg: string; text: string; label: string }> 
   watch: { bg: 'bg-glass', text: 'text-text-secondary', label: '观望' },
 };
 
+function formatConfidence(value: unknown): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '-';
+  const percent = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+  return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
+}
+
 export default function DecisionCard({ data }: { data: CardData }) {
   const a = ACTION_STYLE[data.action ?? ''] ?? ACTION_STYLE.watch;
-  const pct = data.confidence != null ? `${(data.confidence * 100).toFixed(0)}%` : '-';
+  const pct = data.confidence != null ? formatConfidence(data.confidence) : '-';
   const finalScore = data.finalScore;
   const executionPlan = data.executionPlan ?? data.execution_plan;
   const executionPlanDetails = executionPlan && !Array.isArray(executionPlan) ? executionPlan : null;
@@ -77,10 +84,10 @@ export default function DecisionCard({ data }: { data: CardData }) {
         }
       : null);
   const suggestedPositionPct = positionSignal?.suggestedPositionPct != null
-    ? `${(positionSignal.suggestedPositionPct * 100).toFixed(0)}%`
+    ? formatConfidence(positionSignal.suggestedPositionPct)
     : null;
   const positionCapPct = positionSignal?.positionCapPct != null
-    ? `${(positionSignal.positionCapPct * 100).toFixed(0)}%`
+    ? formatConfidence(positionSignal.positionCapPct)
     : null;
 
   return (

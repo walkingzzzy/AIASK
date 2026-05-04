@@ -44,11 +44,10 @@ export default function FactorMiningObservability({
     <SectionCard className="p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Observability</div>
+          <div className="eyebrow">可观测性</div>
           <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">自动挖掘与治理可观测性</h3>
           <p className="mt-2 text-sm leading-7 text-text-secondary">
-            这里汇总 scheduler、governed pool、研究记忆和 champion/challenger 摘要，用来判断自动因子挖掘是否真的形成了生成
-            → 验证 → 治理闭环。
+            这里汇总调度器、治理池、研究记忆和主备候选摘要，用来判断自动因子挖掘是否已经完成生成、验证和治理。
           </p>
         </div>
         <div className={factorMiningPanelCls}>
@@ -89,9 +88,9 @@ export default function FactorMiningObservability({
             <KpiCard title="本轮生成" value={String(observabilityOverview.recent_generated_candidate_count ?? '-')} />
             <KpiCard title="本轮验证通过" value={String(observabilityOverview.recent_validated_candidate_count ?? '-')} />
             <KpiCard title="本轮验证失败" value={String(observabilityOverview.recent_validation_failed_count ?? '-')} />
-            <KpiCard title="本轮 active_pool" value={String(observabilityOverview.recent_active_pool_count_after_run ?? '-')} />
-            <KpiCard title="本轮 governed" value={String(observabilityOverview.recent_governed_active_count_after_run ?? '-')} />
-            <KpiCard title="Retrain 计划" value={String(observabilityOverview.retrain_plan_count ?? '-')} />
+            <KpiCard title="本轮活跃池" value={String(observabilityOverview.recent_active_pool_count_after_run ?? '-')} />
+            <KpiCard title="本轮治理后" value={String(observabilityOverview.recent_governed_active_count_after_run ?? '-')} />
+            <KpiCard title="重训计划" value={String(observabilityOverview.retrain_plan_count ?? '-')} />
           </KpiGrid>
 
           <div className="mt-3 flex flex-wrap gap-2">
@@ -103,14 +102,14 @@ export default function FactorMiningObservability({
             />
             <BadgeValue value={!degraded} trueText="聚合链路完整" falseText="聚合存在降级" />
             <Badge variant={Number(observabilityOverview.retrain_pending_count ?? 0) > 0 ? 'warning' : 'neutral'}>
-              待执行 Retrain {String(observabilityOverview.retrain_pending_count ?? 0)}
+              待执行重训 {String(observabilityOverview.retrain_pending_count ?? 0)}
             </Badge>
           </div>
 
           {observabilityErrors.length > 0 ? renderWarnings(observabilityErrors) : null}
 
           <div className={`${factorMiningPanelCls} mt-4`}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Recent Auto Run</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近自动挖掘</div>
             <div className="mt-3 grid gap-3 xl:grid-cols-2">
               <div className={factorMiningNoteCardCls}>
                 <div className="font-medium text-text-primary">自动挖掘结果</div>
@@ -197,7 +196,7 @@ export default function FactorMiningObservability({
             </div>
 
             <div className={factorMiningPanelCls}>
-              <h4 className="mb-2 text-sm font-medium text-text-primary">Retrain 队列</h4>
+              <h4 className="mb-2 text-sm font-medium text-text-primary">重训队列</h4>
               {observabilityRetrainQueue.length > 0 ? (
                 <DataTable
                   rows={observabilityRetrainQueue}
@@ -210,7 +209,7 @@ export default function FactorMiningObservability({
                   ]}
                 />
               ) : (
-                <EmptyState text="当前没有 retrain 计划队列" />
+                <EmptyState text="当前没有重训计划队列" />
               )}
               <div className="mt-3 text-xs text-text-secondary">
                 队列总数 {String(observabilityRetrainSummary.count ?? 0)}，状态分布{' '}

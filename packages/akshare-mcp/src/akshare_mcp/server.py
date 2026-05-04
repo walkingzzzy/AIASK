@@ -35,6 +35,8 @@ load_mcp_env(override=False)
 # 在所有导入之前抑制警告，避免干扰 MCP 协议通信
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+if str(os.getenv("AKSHARE_MCP_SUPPRESS_RESOURCE_WARNINGS", "true")).strip().lower() in {"1", "true", "yes", "on"}:
+    warnings.filterwarnings("ignore", category=ResourceWarning)
 warnings.filterwarnings("ignore", message=".*Pydantic.*")
 warnings.filterwarnings("ignore", message=".*invalid escape sequence.*")
 
@@ -439,6 +441,7 @@ def _enforce_http_security_baseline() -> None:
     allowed_origins = str(os.getenv("MCP_ALLOWED_ORIGINS", "")).strip()
     auth_mode = str(os.getenv("MCP_AUTH_MODE", "")).strip().lower()
     token_passthrough = _as_bool(os.getenv("MCP_ALLOW_TOKEN_PASSTHROUGH"))
+    container_bind_all = _as_bool(os.getenv("MCP_CONTAINER_BIND_ALL"))
 
     http_transports = {"http", "streamable-http", "sse"}
     if transport not in http_transports:
@@ -447,9 +450,12 @@ def _enforce_http_security_baseline() -> None:
         )
         return
 
-    if host not in {"127.0.0.1", "localhost", "::1"}:
+    if host not in {"127.0.0.1", "localhost", "::1"} and not (
+        container_bind_all and host in {"0.0.0.0", "::"}
+    ):
         raise RuntimeError(
-            "Insecure MCP_HOST for HTTP transport. Use 127.0.0.1/localhost/::1 only."
+            "Insecure MCP_HOST for HTTP transport. Use 127.0.0.1/localhost/::1 only, "
+            "or set MCP_CONTAINER_BIND_ALL=true for an explicitly containerized service."
         )
 
     if not allowed_origins:

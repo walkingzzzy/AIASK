@@ -37,7 +37,7 @@ export default function StockSnapshot({
         <>
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <div className="eyebrow">Snapshot</div>
+              <div className="eyebrow">报价快照</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">报价与关键指标</h2>
               {!compactLayout ? (
                 <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
@@ -119,7 +119,7 @@ export default function StockSnapshot({
         <div className="space-y-4" aria-hidden="true">
           {compactLayout ? (
             <div className="rounded-[22px] border border-white/45 bg-white/24 px-4 py-4 text-sm text-text-secondary">
-              当前还没有可展示的报价快照，移动端会先保留更短的加载壳层，等报价返回后再展开完整指标。
+              当前还没有可展示的报价快照。报价返回后，这里会展开价格、涨跌幅、成交和盘口入口。
             </div>
           ) : (
             <>
@@ -140,7 +140,7 @@ export default function StockSnapshot({
               <LoadingState text="正在加载个股报价与关键指标..." />
             ) : (
               <p className="m-0 text-sm text-text-secondary">
-                输入股票代码后，这里会先展示报价头部、关键指标和快捷动作，避免结果返回时把主图整体推下去。
+                输入股票代码后，这里会展示报价头部、关键指标和常用跳转，方便继续查看技术面、资金流或模拟交易。
               </p>
             )}
           </div>

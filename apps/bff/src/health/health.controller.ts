@@ -15,38 +15,20 @@ export class HealthController {
   @Public()
   @Get('live')
   async getLiveness() {
-    const base = await this.healthService.getHealth();
-    return {
-      success: true,
-      data: {
-        service: base.service,
-        status: 'normal',
-        probe: 'liveness',
-        startedAt: base.startedAt,
-        timestamp: base.timestamp,
-      },
-    };
+    return this.healthService.getLivenessSnapshot();
   }
 
   @Public()
   @Get('mcp')
   async getMcpHealth() {
-    const base = await this.healthService.getHealth();
-    return {
-      service: base.service,
-      status: base.mcp.status,
-      signal: base.mcp.signal,
-      reasons: base.mcp.reasons,
-      mcp: base.mcp,
-      timestamp: base.timestamp,
-    };
+    return this.healthService.getMcpHealthSnapshot();
   }
 
   @Public()
   @Get('ready')
   async getReadyHealth() {
     const base = await this.healthService.getHealth();
-    const ready = base.probes.readiness === 'ready';
+    const ready = base.probes.readiness !== 'blocked';
     const payload = { success: ready, data: base };
 
     if (!ready) {

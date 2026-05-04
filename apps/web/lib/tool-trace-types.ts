@@ -1,4 +1,4 @@
-export type ChatToolTraceItemKind = 'mcp' | 'local_context' | 'client_action';
+export type ChatToolTraceItemKind = 'mcp' | 'local_context' | 'client_action' | 'compliance';
 export type ChatToolTraceItemStatus = 'pending' | 'success' | 'error';
 export type ChatToolTraceStatus = 'empty' | 'running' | 'completed' | 'partial_error';
 export type ChatToolTraceEvidenceMode =

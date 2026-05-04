@@ -52,7 +52,7 @@ export function PortfolioHeroSection({
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Portfolio Workspace</Badge>
+            <Badge variant="info">组合工作台</Badge>
             <Badge variant={activePortfolioId ? 'success' : 'warning'}>
               {activePortfolioId ? '已锁定当前组合' : '等待选择组合'}
             </Badge>
@@ -67,7 +67,7 @@ export function PortfolioHeroSection({
             组合管理工作台
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-            组合页不再让创建、加仓、优化和风险分析同时争夺注意力，而是把它们收束成一套连续的工作流。先锁定目标组合，再顺着持仓维护、配置优化和风险复盘依次推进。
+            组合页把创建、加仓、优化和风险分析串成连续工作流。先锁定目标组合，再顺着持仓维护、配置优化和风险复盘依次推进。
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
             <button
@@ -251,7 +251,7 @@ export function PortfolioOperationWorkspaceSection({
     <SectionCard className="mt-0 p-4 sm:p-5">
       <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
         <div>
-          <div className="eyebrow">Operation Workspace</div>
+          <div className="eyebrow">组合操作</div>
           <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">锁定组合后再展开动作</h2>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
             优先从组合列表点选目标组合；创建成功后也会自动选中。锁定对象之后，再继续做加仓、优化、风险分析和压力测试，能明显减少上下文切换。
@@ -473,7 +473,7 @@ export function PortfolioSidebarSummary({
 }: PortfolioSidebarSummaryProps) {
   return (
     <SectionCard className="p-4 sm:p-5">
-      <div className="eyebrow">Portfolio Summary</div>
+      <div className="eyebrow">组合摘要</div>
       <h3 className="mb-0 mt-2 text-lg font-semibold text-text-primary">组合工作区摘要</h3>
       <div className="mt-4 grid gap-3">
         <div className="metric-tile rounded-[24px] p-4">

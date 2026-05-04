@@ -4,6 +4,7 @@ import { LineChart, BarChart } from '@/components/charts';
 import { Badge, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
 import { useMobile } from '@/hooks/use-mobile';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import { normalizeStrategyPercentMetric } from '@/lib/strategy-metrics';
 import {
   resolveIncubationSurface,
   resolveMarketStatusMeta,
@@ -429,17 +430,21 @@ export function StrategyDetailOverviewTab({
               当前这组收益、Sharpe 和样本净值来自策略 `metrics / nav_series`，用于回测与历史样本说明，不代表实时模拟盘实际收益。
             </p>
           </div>
-          <Badge variant="info">Backtest Metrics</Badge>
+          <Badge variant="info">回测指标</Badge>
         </div>
       </SectionCard>
 
       {allMetrics ? (
         <KpiGrid cols={6}>
-          <KpiCard title="回测总收益" value={fmtPct(allMetrics.total_return ?? 0)} change={allMetrics.total_return} />
-          <KpiCard title="回测年化" value={fmtPct(allMetrics.annual_return ?? 0)} />
+          <KpiCard
+            title="回测总收益"
+            value={fmtPct(normalizeStrategyPercentMetric(allMetrics.total_return) ?? 0)}
+            change={normalizeStrategyPercentMetric(allMetrics.total_return) ?? undefined}
+          />
+          <KpiCard title="回测年化" value={fmtPct(normalizeStrategyPercentMetric(allMetrics.annual_return) ?? 0)} />
           <KpiCard title="Sharpe" value={fmtNum(allMetrics.sharpe_ratio ?? 0, 2)} />
-          <KpiCard title="最大回撤" value={fmtPct(allMetrics.max_drawdown ?? 0)} />
-          <KpiCard title="胜率" value={fmtPct(allMetrics.win_rate ?? 0)} />
+          <KpiCard title="最大回撤" value={fmtPct(normalizeStrategyPercentMetric(allMetrics.max_drawdown) ?? 0)} />
+          <KpiCard title="胜率" value={fmtPct(normalizeStrategyPercentMetric(allMetrics.win_rate) ?? 0)} />
           <KpiCard title="交易次数" value={allMetrics.trade_count ?? '-'} />
         </KpiGrid>
       ) : null}
@@ -480,7 +485,7 @@ export function StrategyDetailOverviewTab({
               个人模拟盘测试和孵化模拟盘并列展示，便于区分当前用户自己的测试收益与策略绑定孵化账户的真实表现。
             </p>
           </div>
-          <Badge variant="info">Dual Track</Badge>
+          <Badge variant="info">双轨验证</Badge>
         </div>
         <div className="mt-4 grid gap-3 xl:grid-cols-2">
           {paperTrackCards.map(({ key, title, badge, track }) => {
@@ -582,7 +587,7 @@ export function StrategyDetailOverviewTab({
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">换手 / 容量</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {turnoverRate == null ? '-' : fmtPct(turnoverRate)} / {capacityValue == null ? '-' : fmtNum(capacityValue, 2)}
+                {turnoverRate == null ? '-' : fmtPct(normalizeStrategyPercentMetric(turnoverRate))} / {capacityValue == null ? '-' : fmtNum(capacityValue, 2)}
               </div>
               <div className="mt-1 text-xs text-text-secondary">{capacityLabel}</div>
             </div>
@@ -598,7 +603,7 @@ export function StrategyDetailOverviewTab({
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">闭环状态</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {hardGatePassed ? 'Hard Gate 通过' : 'Hard Gate 未通过'}
+                {hardGatePassed ? '强校验通过' : '强校验未通过'}
               </div>
               <div className="mt-1 text-xs text-text-secondary">
                 semantic {semanticClaimCount} / step {semanticTradeStepCount}
@@ -606,7 +611,7 @@ export function StrategyDetailOverviewTab({
             </div>
           </div>
           <div className="mt-3 rounded-[20px] border border-white/45 bg-white/20 px-3 py-3 text-xs leading-6 text-text-secondary">
-            更详细的 lineage、各期表现和因子暴露已下沉到桌面宽屏视图；在紧凑断点下优先保留合同口径、统计修正和闭环状态。
+            更详细的 lineage、各期表现和因子暴露适合在桌面宽屏查看；紧凑断点优先保留合同口径、统计修正和闭环状态。
           </div>
         </details>
       ) : null}
@@ -619,7 +624,7 @@ export function StrategyDetailOverviewTab({
               合同字段、样本边界与容量口径放在同一层，避免这类“可信来源”被埋在指标流里。
             </p>
           </div>
-          <Badge variant="info">Contract First</Badge>
+          <Badge variant="info">契约优先</Badge>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div className="metric-tile rounded-[24px] p-4">
@@ -629,7 +634,7 @@ export function StrategyDetailOverviewTab({
           <div className="metric-tile rounded-[24px] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近换手</div>
             <div className="mt-3 text-base font-semibold text-text-primary">
-              {turnoverRate == null ? '-' : fmtPct(turnoverRate)}
+              {turnoverRate == null ? '-' : fmtPct(normalizeStrategyPercentMetric(turnoverRate))}
             </div>
           </div>
           <div className="metric-tile rounded-[24px] p-4">
@@ -653,7 +658,7 @@ export function StrategyDetailOverviewTab({
                 把预测质量、执行转化和合同就绪度放在同一块，只做增量展示，不替代现有验证卡片。
               </p>
             </div>
-            <Badge variant="info">High Confidence</Badge>
+            <Badge variant="info">高置信度</Badge>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {predictionQualityLabel ? (
@@ -678,23 +683,23 @@ export function StrategyDetailOverviewTab({
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {Number.isFinite(primarySkillLcb) ? fmtNum(primarySkillLcb, 4) : '-'}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">primary skill LCB</div>
+              <div className="mt-1 text-xs text-text-secondary">主信号置信下界</div>
             </div>
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">覆盖率</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {Number.isFinite(coverageRatio) ? fmtPct(coverageRatio) : '-'}
+                {Number.isFinite(coverageRatio) ? fmtPct(normalizeStrategyPercentMetric(coverageRatio)) : '-'}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">signal coverage / forward coverage</div>
+              <div className="mt-1 text-xs text-text-secondary">信号覆盖 / 前瞻覆盖</div>
             </div>
             <div className="metric-tile rounded-[24px] p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">执行轴</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {Number.isFinite(executionConversionEfficiency)
-                  ? fmtPct(executionConversionEfficiency)
+                  ? fmtPct(normalizeStrategyPercentMetric(executionConversionEfficiency))
                   : '-'}
               </div>
-              <div className="mt-1 text-xs text-text-secondary">execution conversion efficiency</div>
+              <div className="mt-1 text-xs text-text-secondary">执行转化效率</div>
             </div>
           </div>
           <div className="mt-3 rounded-[24px] border border-border bg-surface-alt px-4 py-3 text-sm text-text-secondary">
@@ -711,17 +716,17 @@ export function StrategyDetailOverviewTab({
             <div>
               <h3 className="mt-0">闭环语义</h3>
               <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
-                把 hard gate、diagnostic only 和 semantic lineage 分开讲清楚，避免把排序分误读成硬通过。
+                把强校验、仅诊断模式和语义血缘分开讲清楚，避免把排序分误读成硬通过。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               {hardGateResult && Object.keys(hardGateResult).length > 0 ? (
                 <Badge variant={hardGatePassed ? 'success' : 'warning'}>
-                  Hard Gate: {hardGatePassed ? '通过' : '未通过'}
+                  强校验：{hardGatePassed ? '通过' : '未通过'}
                 </Badge>
               ) : null}
               <Badge variant={executionDiagnostics?.diagnostic_only ? 'info' : 'neutral'}>
-                {executionDiagnostics?.diagnostic_only ? 'Diagnostic Only' : 'Runtime Contract'}
+                {executionDiagnostics?.diagnostic_only ? '仅诊断' : '运行合同'}
               </Badge>
             </div>
           </div>

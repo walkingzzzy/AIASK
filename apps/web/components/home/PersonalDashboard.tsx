@@ -155,7 +155,7 @@ export function PersonalSecondaryCards({
       <SectionCard className="min-h-[220px] xl:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <div className="eyebrow">Watchlist Focus</div>
+            <div className="eyebrow">自选关注</div>
             <h2 className="mt-2">自选股行情</h2>
           </div>
           <Link href="/watchlist" className="text-sm text-primary no-underline">
@@ -207,7 +207,7 @@ export function PersonalSecondaryCards({
       <SectionCard className="min-h-[220px] xl:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <div className="eyebrow">Position Watch</div>
+            <div className="eyebrow">持仓观察</div>
             <h2 className="mt-2">持仓概览</h2>
           </div>
           <Link href="/paper-trading" className="text-sm text-primary no-underline">
@@ -247,7 +247,7 @@ export function PersonalSecondaryCards({
       <SectionCard className="min-h-[220px] xl:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <div className="eyebrow">News Feed</div>
+            <div className="eyebrow">资讯动态</div>
             <h2 className="mt-2">市场快讯</h2>
           </div>
           <Link href="/research" className="text-sm text-primary no-underline">

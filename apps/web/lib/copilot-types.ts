@@ -11,6 +11,7 @@ export type CopilotStrategyActionKind =
   | 'persist_update';
 
 export type CopilotActionEffect = 'readonly' | 'advisory' | 'stateful';
+export type CopilotActionDisplayStatus = 'pending' | 'scheduled' | 'auto_executed' | 'running' | 'done' | 'error';
 
 export type CopilotActionMeta = {
   id: string;
@@ -30,6 +31,10 @@ export type CopilotPageContext = {
   primaryGoal?: string;
   requiredInputs?: string[];
   stockCode?: string;
+  selectedCode?: string;
+  accountId?: string;
+  strategyId?: string;
+  workspaceId?: string;
   objectType?: string;
   objectId?: string;
   resultType?: string;
@@ -53,6 +58,12 @@ export type CopilotPageContextPatch = Partial<
     | 'primaryGoal'
     | 'requiredInputs'
     | 'stockCode'
+    | 'selectedCode'
+    | 'accountId'
+    | 'strategyId'
+    | 'workspaceId'
+    | 'pageKey'
+    | 'title'
     | 'summary'
     | 'objectType'
     | 'objectId'

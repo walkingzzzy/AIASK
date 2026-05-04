@@ -553,7 +553,7 @@ export default function WorkspaceTemplatesPage() {
               <div className="font-medium text-text-primary">收口原则</div>
               <ol className="mb-0 mt-2 space-y-1 pl-4">
                 <li>主动作只保留当前选中工作流的执行入口。</li>
-                <li>蓝图创建和任务注入继续保留，但下沉为次动作。</li>
+                <li>蓝图创建和任务注入仍可使用，但建议在确认主工作流后再操作。</li>
                 <li>所有结果先看最近运行摘要，再决定是否下钻到具体步骤。</li>
               </ol>
             </div>
@@ -564,7 +564,7 @@ export default function WorkspaceTemplatesPage() {
       {!compactLayout ? (
         <CollapsibleSectionCard
           title="视图工具"
-          summary="保存/恢复模板中心视图属于次级动作，不再默认占据首屏。"
+          summary="这里用于保存和恢复模板中心视图，适合在完成主流程后整理常用配置。"
           className="mt-4"
         >
           <WorkspaceToolbar
@@ -580,9 +580,9 @@ export default function WorkspaceTemplatesPage() {
           <SectionCard className="p-4">
             <div className="flex flex-col gap-4">
               <div>
-                <div className="eyebrow">Workflow View</div>
-                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前工作流只展开一个子视图</h2>
-                <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">默认先看预览，其他信息按需再切。</p>
+                <div className="eyebrow">工作流视图</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前工作流</h2>
+                <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">先看预览，再按需调整参数、查看目录或回看运行记录。</p>
               </div>
               <TabBar
                 tabs={[
@@ -697,8 +697,8 @@ export default function WorkspaceTemplatesPage() {
           <SectionCard className="p-4">
             <div className="flex flex-col gap-4">
               <div>
-                <div className="eyebrow">Blueprint View</div>
-                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">蓝图页默认只展开一个子视图</h2>
+                <div className="eyebrow">蓝图视图</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">工作区蓝图</h2>
                 <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">默认先看蓝图预览，再决定是否切到参数或目录。</p>
               </div>
               <TabBar
@@ -781,8 +781,8 @@ export default function WorkspaceTemplatesPage() {
           <SectionCard className="p-4">
             <div className="flex flex-col gap-4">
               <div>
-                <div className="eyebrow">Task View</div>
-                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">任务模板页默认只展开一个子视图</h2>
+                <div className="eyebrow">任务视图</div>
+                <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">任务模板</h2>
                 <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">先确认会注入什么，再在需要时调整参数或回看目录。</p>
               </div>
               <TabBar

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useOnboarding } from '@/components/onboarding';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
-import { ErrorState, LoadingState, PageStatusCard } from '@/components/status-state';
+import { DataQualityBanner, ErrorState, LoadingState, PageStatusCard } from '@/components/status-state';
 import { Badge, PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useMobile } from '@/hooks/use-mobile';
@@ -174,7 +174,7 @@ export default function StrategyMarketPage() {
       : null,
     {
       enabled: isMarketWorkspace,
-      critical: true,
+      critical: false,
       parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
     },
   );
@@ -185,7 +185,9 @@ export default function StrategyMarketPage() {
     {
       enabled: isFactoryWorkspace,
       parse: parseFactoryMarketViewResponse,
-      critical: true,
+      critical: false,
+      staleTime: 60_000,
+      placeholderData: 'keepPrevious',
     },
   );
   const capabilityDiagnosticsQ = useApiQuery<StrategyCapabilityDiagnosticsResponse>(
@@ -227,31 +229,31 @@ export default function StrategyMarketPage() {
   }, [runFactoryApi.data]);
   const dailySnapshotsQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace ? '/strategy-market/daily-snapshots?limit=5' : null,
-    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const latestTopnQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace ? '/strategy-market/factory/topn/latest?limit=10' : null,
-    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const runTopnQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace && expandedRunId ? `/strategy-market/factory/runs/${encodeURIComponent(expandedRunId)}/topn?limit=10` : null,
-    { enabled: isFactoryWorkspace && Boolean(expandedRunId), nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace && Boolean(expandedRunId), nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const dispatchStatusQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace && lastDispatchId ? `/strategy-market/factory/dispatches/${encodeURIComponent(lastDispatchId)}` : null,
-    { enabled: isFactoryWorkspace && Boolean(lastDispatchId), nonFatal: true, refetchInterval: 3000 },
+    { enabled: isFactoryWorkspace && Boolean(lastDispatchId), nonFatal: true, refetchInterval: 3000, placeholderData: 'keepPrevious' },
   );
   const vectorHealthQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace ? '/strategy-market/vector-health?index_name=strategy_behavior&limit_versions=10' : null,
-    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const vectorIndexesQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace ? '/strategy-market/vector-indexes?index_name=strategy_behavior&limit=20' : null,
-    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const vectorIndexSnapshotsFactoryQ = useApiQuery<Record<string, unknown>>(
     isFactoryWorkspace ? '/strategy-market/vector-indexes/snapshots?index_name=strategy_behavior&limit=10' : null,
-    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 60_000 },
+    { enabled: isFactoryWorkspace, nonFatal: true, staleTime: 120_000, placeholderData: 'keepPrevious' },
   );
   const vectorReconcileApi = useApiMutation({
     critical: true,
@@ -266,7 +268,7 @@ export default function StrategyMarketPage() {
   const vectorCleanupApi = useApiMutation({
     critical: true,
     invalidates: [apiKeys.strategy()],
-    successToast: '向量清理 dry-run 已提交',
+    successToast: '向量演练清理已提交',
   });
   const aiGenerateApi = useApiMutation<Record<string, unknown>>({
     critical: true,
@@ -282,6 +284,11 @@ export default function StrategyMarketPage() {
     critical: true,
     invalidates: [apiKeys.strategy()],
     successToast: '策略动作已执行',
+  });
+  const deletePersonalStrategyApi = useApiMutation({
+    critical: true,
+    invalidates: [apiKeys.strategy()],
+    successToast: '个人策略已删除',
   });
 
   const addToCart = useCartStore((state) => state.addStrategy);
@@ -579,7 +586,7 @@ export default function StrategyMarketPage() {
       : workspace === 'mine'
         ? `这里集中管理你的个人策略草稿与个人版本，优先做编辑、AI 优化和模拟盘测试。当前孵化阶段筛选为“${incubationStageLabel}”。`
         : workspace === 'factory'
-          ? `工厂运行、快照、可观测性与最近 run 集中在这里；当前最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，工厂明细${showFactoryDetails ? '已展开' : '默认收起'}。`
+          ? `工厂运行、快照、可观测性与最近运行记录集中在这里；当前最近 ${factoryRuns.length} 条记录，失败 ${failedRuns.length} 条，工厂明细${showFactoryDetails ? '已展开' : '默认收起'}。`
           : `市场目录按生命周期分层展示，当前处于“${marketStatusLabel}”分层，孵化阶段筛选为“${incubationStageLabel}”。${marketStatusHelpText}`;
   const workspaceCountLabel =
     workspace === 'favorites'
@@ -659,7 +666,7 @@ export default function StrategyMarketPage() {
   );
   const heroAiRecommendationPrompt =
     workspace === 'factory'
-      ? `当前工厂运行态最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，调度 ${factoryStatus?.running ? '运行中' : '待命'}，请建议下一步该优先检查哪些工厂动作、治理项或运行链路。`
+      ? `当前工厂运行态最近 ${factoryRuns.length} 条运行记录，失败 ${failedRuns.length} 条，调度 ${factoryStatus?.running ? '运行中' : '待命'}，请建议下一步该优先检查哪些工厂动作、治理项或运行链路。`
       : `当前${workspaceLabel}共 ${strategies.length} 个策略，请推荐几个值得重点关注的，并说明理由`;
 
   const updateWorkspace = useCallback(
@@ -719,77 +726,126 @@ export default function StrategyMarketPage() {
 
   const handleVectorReconcile = useCallback(() => {
     vectorReconcileApi.trigger(
-      '/strategy-market/vector-indexes/reconcile',
+      '/strategy-market/operator/jobs',
       { method: 'POST' },
-      { index_name: 'strategy_behavior', profile_type: 'behavior', limit_profiles: 500 },
+      {
+        action: 'vector_reconcile',
+        params: { index_name: 'strategy_behavior', profile_type: 'behavior', limit_profiles: 500 },
+        confirmed: true,
+        confirmation_text: 'vector_reconcile',
+        reason: 'strategy_factory_vector_governance_panel',
+        timeout_ms: 120000,
+      },
     );
   }, [vectorReconcileApi]);
 
   const handleVectorRebuild = useCallback(() => {
     if (!window.confirm('确认重建 strategy_behavior 向量索引？')) return;
     vectorRebuildApi.trigger(
-      '/strategy-market/vector-indexes/rebuild',
+      '/strategy-market/operator/jobs',
       { method: 'POST' },
-      { index_name: 'strategy_behavior', profile_type: 'behavior', limit: 500 },
+      {
+        action: 'vector_rebuild',
+        params: { index_name: 'strategy_behavior', profile_type: 'behavior', limit: 500, source: 'strategy_factory_vector_governance_panel' },
+        confirmed: true,
+        confirmation_text: 'vector_rebuild',
+        reason: 'strategy_factory_vector_governance_panel',
+        timeout_ms: 300000,
+      },
     );
   }, [vectorRebuildApi]);
 
   const handleVectorCleanupDryRun = useCallback(() => {
+    if (!window.confirm('确认提交 vector_cleanup dry-run 任务？')) return;
     vectorCleanupApi.trigger(
-      '/strategy-market/vector-indexes/cleanup',
+      '/strategy-market/operator/jobs',
       { method: 'POST' },
-      { index_name: 'strategy_behavior', dry_run: true, keep_versions: 3, limit_versions: 50 },
+      {
+        action: 'vector_cleanup',
+        params: {
+          index_name: 'strategy_behavior',
+          dry_run: true,
+          keep_versions: 3,
+          limit_versions: 50,
+          source: 'strategy_factory_vector_governance_panel',
+        },
+        confirmed: true,
+        confirmation_text: 'vector_cleanup',
+        reason: 'strategy_factory_vector_governance_panel',
+        timeout_ms: 120000,
+      },
     );
   }, [vectorCleanupApi]);
 
   const handleRuntimeAction = useCallback(async (action: StrategyRuntimeActionContractItem, strategy: Strategy) => {
-    if (action.status === 'unavailable') {
-      window.alert(action.unavailable_reason ?? '当前动作不可用');
-      return;
-    }
-    if (action.requires_confirmation) {
-      const confirmed = window.confirm(action.confirm?.message ?? `确认执行“${action.label}”？`);
-      if (!confirmed) return;
-    }
-    if (action.navigation?.href && !action.endpoint) {
-      router.push(action.navigation.href);
-      return;
-    }
-    if (!action.endpoint?.path) {
-      window.alert('动作合同缺少可执行入口');
-      return;
-    }
-    const payload = await strategyRuntimeActionApi.triggerAsync(
-      action.endpoint.path,
-      { method: action.endpoint.method },
-      action.endpoint.body ?? {},
-    );
-    const record = isRecord(payload) ? payload : {};
-    if (action.id === 'save_as_personal_strategy') {
-      const strategyRecord = isRecord(record.strategy) ? record.strategy : {};
-      const nextId = String(record.strategy_id ?? strategyRecord.id ?? '').trim();
-      if (nextId) {
-        router.push(`/strategy-market/${encodeURIComponent(nextId)}`);
+    try {
+      if (action.status === 'unavailable') {
+        window.alert(action.unavailable_reason ?? '当前动作不可用');
+        return;
       }
-      return;
-    }
-    if (action.id === 'open_personal_paper_session') {
-      const session = isRecord(record.session) ? record.session : {};
-      const account = isRecord(record.account) ? record.account : {};
-      const accountId = String(account.id ?? session.account_id ?? '').trim();
-      const qs = new URLSearchParams({
-        from: 'strategy-market',
-        strategy_id: String(strategy.id),
-        mode: 'personal-strategy',
-        ...(accountId ? { account_id: accountId } : {}),
-      });
-      router.push(`/paper-trading?${qs.toString()}`);
-      return;
-    }
-    if (action.navigation?.href) {
-      router.push(action.navigation.href);
+      if (action.requires_confirmation) {
+        const confirmed = window.confirm(action.confirm?.message ?? `确认执行“${action.label}”？`);
+        if (!confirmed) return;
+      }
+      if (action.navigation?.href && !action.endpoint) {
+        router.push(action.navigation.href);
+        return;
+      }
+      if (!action.endpoint?.path) {
+        window.alert('动作合同缺少可执行入口');
+        return;
+      }
+      const payload = await strategyRuntimeActionApi.triggerAsync(
+        action.endpoint.path,
+        { method: action.endpoint.method },
+        action.endpoint.body ?? {},
+      );
+      const record = isRecord(payload) ? payload : {};
+      if (action.id === 'save_as_personal_strategy') {
+        const strategyRecord = isRecord(record.strategy) ? record.strategy : {};
+        const nextId = String(record.strategy_id ?? strategyRecord.id ?? '').trim();
+        if (nextId) {
+          router.push(`/strategy-market/${encodeURIComponent(nextId)}`);
+        }
+        return;
+      }
+      if (action.id === 'open_personal_paper_session') {
+        const session = isRecord(record.session) ? record.session : {};
+        const account = isRecord(record.account) ? record.account : {};
+        const accountId = String(account.id ?? session.account_id ?? '').trim();
+        const qs = new URLSearchParams({
+          from: 'strategy-market',
+          strategy_id: String(strategy.id),
+          mode: 'personal-strategy',
+          ...(accountId ? { account_id: accountId } : {}),
+        });
+        router.push(`/paper-trading?${qs.toString()}`);
+        return;
+      }
+      if (action.navigation?.href) {
+        router.push(action.navigation.href);
+      }
+    } catch {
+      // useApiMutation already shows the failure toast; avoid unhandled click-handler rejections.
     }
   }, [router, strategyRuntimeActionApi]);
+
+  const handleDeletePersonalStrategy = useCallback(async (strategy: Strategy) => {
+    if (!strategy?.id) return;
+    const confirmed = window.confirm(`确认删除个人策略“${strategy.name ?? strategy.id}”？此操作只影响你的个人策略副本。`);
+    if (!confirmed) return;
+    try {
+      await deletePersonalStrategyApi.triggerAsync(
+        `/strategy-market/${encodeURIComponent(String(strategy.id))}`,
+        { method: 'DELETE' },
+        {},
+      );
+      await myStrategiesQ.refetch();
+      updateWorkspace('mine');
+    } catch {
+      // useApiMutation already renders the user-facing error toast.
+    }
+  }, [deletePersonalStrategyApi, myStrategiesQ, updateWorkspace]);
 
   useEffect(() => {
     if (category !== 'all' || search.trim() || showFactoryDetails || showFeatured || cartItems.length > 0) {
@@ -1063,7 +1119,7 @@ export default function StrategyMarketPage() {
     workspace === 'market'
       ? `${workspaceLabel} 当前分层 ${marketStatusLabel}，孵化阶段 ${incubationStageLabel}，共 ${strategies.length} 条，目录总量 ${marketCatalogStrategies.length} 条，分类 ${activeCategoryLabel}，搜索词 ${search.trim() || '无'}，${showFeatured ? '仅看精选' : '展示全部'}。`
       : workspace === 'factory'
-        ? `${workspaceLabel} 最近 ${factoryRuns.length} 个 run，失败 ${failedRuns.length} 个，调度 ${factoryStatus?.running ? '运行中' : '待命'}，${showFactoryDetails ? '已展开工厂明细' : '明细默认收起'}。`
+        ? `${workspaceLabel} 最近 ${factoryRuns.length} 条运行记录，失败 ${failedRuns.length} 条，调度 ${factoryStatus?.running ? '运行中' : '待命'}，${showFactoryDetails ? '已展开工厂明细' : '明细默认收起'}。`
         : `${workspaceLabel} 当前孵化阶段 ${incubationStageLabel}，可见 ${strategies.length} 条，分类 ${activeCategoryLabel}，搜索词 ${search.trim() || '无'}，${showFeatured ? '仅看精选' : '展示全部'}。`;
   const strategyMarketEvidence =
     workspace === 'factory'
@@ -1095,7 +1151,7 @@ export default function StrategyMarketPage() {
       ? [`工厂主链部分降级：${factoryWorkspaceDegradedReason}`]
       : []),
     ...(snapshotDegraded ? ['当前工厂快照处于降级态，运行指标需要二次核对。'] : []),
-    ...(workspace === 'factory' && failedRuns.length > 0 ? [`最近运行中有 ${failedRuns.length} 个失败 run。`] : []),
+    ...(workspace === 'factory' && failedRuns.length > 0 ? [`最近运行中有 ${failedRuns.length} 条失败记录。`] : []),
   ];
   const strategyMarketResult = buildLocalResultContract({
     summary: strategyMarketSummary,
@@ -1122,12 +1178,12 @@ export default function StrategyMarketPage() {
     recommendedNextActions: [
       workspace === 'factory'
         ? showFactoryDetails
-          ? '先看工厂运行态是否稳定，再决定回到目录还是继续追 run 细节。'
-          : '先看概况与最近 run，再按需展开工厂明细。'
+          ? '先看工厂运行态是否稳定，再决定回到目录还是继续追运行细节。'
+          : '先看概况与最近运行记录，再按需展开工厂明细。'
         : '先在当前工作区收紧分类、状态和孵化阶段，再决定是否展开工厂面板。',
       workspace === 'factory'
         ? factoryRuns.length === 0
-          ? '如果近期没有 run，优先触发一轮工厂或检查调度状态。'
+          ? '如果近期没有运行记录，优先触发一轮工厂或检查调度状态。'
           : '只在需要排查治理链路时，再展开工厂联动观测。'
         : strategies.length === 0
           ? '当前没有命中策略，优先调整筛选而不是继续翻空状态。'
@@ -1251,7 +1307,7 @@ export default function StrategyMarketPage() {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="eyebrow">Workspace Switch</div>
+                <div className="eyebrow">工作区切换</div>
                 <div className="mt-2 text-sm font-medium text-text-primary">当前工作区：{workspaceLabel}</div>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -1275,7 +1331,7 @@ export default function StrategyMarketPage() {
               href="/strategy-market/diagnostics"
               className="inline-flex rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-primary no-underline"
             >
-              核心链路验收
+              核心链路诊断
             </Link>
             <p className="mb-0 text-xs leading-6 text-text-secondary">{workspaceSummary}</p>
           </div>
@@ -1283,7 +1339,7 @@ export default function StrategyMarketPage() {
           <>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">Workspace Switch</div>
+                <div className="eyebrow">工作区切换</div>
                 <h2 className="mt-2 mb-0">当前工作区：{workspaceLabel}</h2>
                 <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">{workspaceSummary}</p>
               </div>
@@ -1304,7 +1360,7 @@ export default function StrategyMarketPage() {
                   href="/strategy-market/diagnostics"
                   className="inline-flex rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-text-primary no-underline"
                 >
-                  核心链路验收
+                  核心链路诊断
                 </Link>
               </div>
             </div>
@@ -1412,42 +1468,61 @@ export default function StrategyMarketPage() {
       ) : null}
 
       {workspace !== 'factory' ? (
-        <StrategyMarketCatalogSection
-          category={category}
-          setCategory={setCategory}
-          search={search}
-          setSearch={setSearch}
-          showFeatured={showFeatured}
-          setShowFeatured={setShowFeatured}
-          sortBy={sortBy}
-          setSortBy={setSortBy}
-          sortDir={sortDir}
-          toggleSortDir={() => setSortDir((value) => (value === 'desc' ? 'asc' : 'desc'))}
-          strategies={strategies}
-          activeCategoryLabel={activeCategoryLabel}
-          showStatusFilters={workspace === 'market'}
-          statusSegment={marketStatusSegment}
-          setStatusSegment={setMarketStatusSegment}
-          statusCounts={marketStatusCounts}
-          statusLabel={marketStatusLabel}
-          statusHelpText={marketStatusHelpText}
-          incubationStageFilter={incubationStageFilter}
-          setIncubationStageFilter={setIncubationStageFilter}
-          catalogTotalCount={marketCatalogStrategies.length}
-          featuredStrategies={featuredStrategies}
-          onAddToCart={(strategy: Strategy) => {
-            addToCart({ strategyId: strategy.id, name: strategy.name, weight: 0 });
-            setShowCart(true);
-          }}
-          onRuntimeAction={handleRuntimeAction}
-          showPersonalTestingBadge={workspace === 'mine'}
-          showResults={!showEmptyStrategyState}
-          emptyText={
-            workspace === 'market'
-              ? `当前“${marketStatusLabel} / ${incubationStageLabel}”筛选下暂无策略，请切换状态分层、孵化阶段或调整搜索条件。`
-              : `当前“${incubationStageLabel}”筛选下暂无策略。`
-          }
-        />
+        <div className="space-y-4">
+          <DataQualityBanner
+            trust={
+              workspace === 'market'
+                ? rankQ.trust
+                : workspace === 'favorites'
+                  ? favoritesQ.trust
+                  : myStrategiesQ.trust
+            }
+            title="策略榜单数据质量"
+            onRetry={() => {
+              if (workspace === 'market') void rankQ.refetch();
+              else if (workspace === 'favorites') void favoritesQ.refetch();
+              else void myStrategiesQ.refetch();
+            }}
+          />
+          <StrategyMarketCatalogSection
+            category={category}
+            setCategory={setCategory}
+            search={search}
+            setSearch={setSearch}
+            showFeatured={showFeatured}
+            setShowFeatured={setShowFeatured}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            sortDir={sortDir}
+            toggleSortDir={() => setSortDir((value) => (value === 'desc' ? 'asc' : 'desc'))}
+            strategies={strategies}
+            activeCategoryLabel={activeCategoryLabel}
+            showStatusFilters={workspace === 'market'}
+            statusSegment={marketStatusSegment}
+            setStatusSegment={setMarketStatusSegment}
+            statusCounts={marketStatusCounts}
+            statusLabel={marketStatusLabel}
+            statusHelpText={marketStatusHelpText}
+            incubationStageFilter={incubationStageFilter}
+            setIncubationStageFilter={setIncubationStageFilter}
+            catalogTotalCount={marketCatalogStrategies.length}
+            featuredStrategies={featuredStrategies}
+            onAddToCart={(strategy: Strategy) => {
+              addToCart({ strategyId: strategy.id, name: strategy.name, weight: 0 });
+              setShowCart(true);
+            }}
+            onRuntimeAction={handleRuntimeAction}
+            onDeletePersonalStrategy={handleDeletePersonalStrategy}
+            showDeletePersonalAction={workspace === 'mine'}
+            showPersonalTestingBadge={workspace === 'mine'}
+            showResults={!showEmptyStrategyState}
+            emptyText={
+              workspace === 'market'
+                ? `当前“${marketStatusLabel} / ${incubationStageLabel}”筛选下暂无策略，请切换状态分层、孵化阶段或调整搜索条件。`
+                : `当前“${incubationStageLabel}”筛选下暂无策略。`
+            }
+          />
+        </div>
       ) : null}
 
       {workspace === 'factory' ? (
@@ -1479,6 +1554,14 @@ export default function StrategyMarketPage() {
             lastDispatchId={lastDispatchId}
             isPending={dailySnapshotsQ.isPending || latestTopnQ.isPending || runTopnQ.isPending || dispatchStatusQ.isPending}
             errors={[dailySnapshotsQ.error, latestTopnQ.error, runTopnQ.error, dispatchStatusQ.error]}
+            onRetry={() => {
+              void Promise.allSettled([
+                dailySnapshotsQ.refetch(),
+                latestTopnQ.refetch(),
+                runTopnQ.refetch(),
+                dispatchStatusQ.refetch(),
+              ]);
+            }}
           />
 
           <StrategyFactoryVectorGovernancePanel
@@ -1488,6 +1571,13 @@ export default function StrategyMarketPage() {
             canViewOperatorPanels={canViewOperatorPanels}
             isPending={vectorHealthQ.isPending || vectorIndexesQ.isPending || vectorIndexSnapshotsFactoryQ.isPending}
             errors={[vectorHealthQ.error, vectorIndexesQ.error, vectorIndexSnapshotsFactoryQ.error]}
+            onRetry={() => {
+              void Promise.allSettled([
+                vectorHealthQ.refetch(),
+                vectorIndexesQ.refetch(),
+                vectorIndexSnapshotsFactoryQ.refetch(),
+              ]);
+            }}
             onReconcile={handleVectorReconcile}
             onRebuild={handleVectorRebuild}
             onCleanupDryRun={handleVectorCleanupDryRun}
@@ -1506,11 +1596,10 @@ export default function StrategyMarketPage() {
             <SectionCard className="mt-0">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <div className="eyebrow">Factory Details</div>
+                  <div className="eyebrow">工厂明细</div>
                   <h2 className="mt-2">工厂明细默认按需展开</h2>
                   <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                    联动观测、候选治理、retrain 队列和 run
-                    细节都属于慢接口，默认收起以保证工厂工作区先可用；需要排查时再展开。
+                    联动观测、候选治理、重训队列和运行记录细节都属于慢接口，默认收起以保证工厂工作区先可用；需要排查时再展开。
                   </p>
                 </div>
                 <button
@@ -1582,7 +1671,7 @@ export default function StrategyMarketPage() {
       {showEmptyStrategyState ? (
         workspace === 'favorites' && !userId ? (
           <SectionCard className="mt-0 p-4 sm:p-5">
-            <div className="eyebrow">Favorites Login</div>
+            <div className="eyebrow">收藏登录提示</div>
             <h2 className="mt-2">登录后才能查看我的收藏</h2>
             <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
               当前账号未登录，因此收藏列表为空。先登录，再把市场策略标记为收藏，后续才能在这里继续筛选和复制。
@@ -1590,7 +1679,7 @@ export default function StrategyMarketPage() {
           </SectionCard>
         ) : workspace === 'mine' && !userId ? (
           <SectionCard className="mt-0 p-4 sm:p-5">
-            <div className="eyebrow">My Strategies Login</div>
+            <div className="eyebrow">个人策略登录提示</div>
             <h2 className="mt-2">登录后才能查看我的策略</h2>
             <p className="mt-2 mb-0 text-sm leading-7 text-text-secondary">
               个人策略和 AI 优化、模拟盘测试都依赖当前用户身份。请先登录，再创建或复制你的个人策略。

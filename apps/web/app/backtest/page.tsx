@@ -116,7 +116,7 @@ function describeBacktestFailure(message: string | null): BacktestFailureReason 
 
 export default function BacktestPage() {
   const searchParams = useStableSearchParams();
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const from = searchParams.get('from');
   const [surfaceTab, setSurfaceTab] = useState<BacktestSurfaceTab>('results');
   const [resultTab, setResultTab] = useState<BacktestResultTab>('overview');
@@ -197,9 +197,12 @@ export default function BacktestPage() {
     try {
       const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, buildRunRequestBody());
       setRunResult(data ?? null);
+      const failureReason = data?.failureReason
+        ?? (data?.degraded ? describeBacktestFailure(data.fallbackReason ?? '回测运行失败') : null);
+      setRunFailure(failureReason);
       setSurfaceTab('results');
       setResultTab('overview');
-      if (data?.metrics?.totalReturn != null) {
+      if (!data?.degraded && data?.metrics?.totalReturn != null) {
         pushHistory({
           code: trimmedCode,
           strategy,
@@ -290,6 +293,7 @@ export default function BacktestPage() {
 
   // Build BacktestResult from run response
   const m: BacktestResult | undefined = useMemo(() => {
+    if (runResult?.degraded && runResult.failureReason) return undefined;
     if (!runResult?.metrics) return undefined;
     const rm = runResult.metrics;
     return {
@@ -477,8 +481,8 @@ export default function BacktestPage() {
   }, [dailyReturns]);
 
   const strategyLabel = STRATEGIES.find((item) => item.value === strategy)?.label ?? strategy;
-  const runStatusLabel = loading ? '运行中' : m ? '已生成结果' : '等待运行';
-  const runStatusVariant = loading ? 'warning' : m ? 'success' : 'neutral';
+  const runStatusLabel = loading ? '运行中' : runFailure || runResult?.degraded ? '运行失败' : m ? '已生成结果' : '等待运行';
+  const runStatusVariant = loading || runFailure || runResult?.degraded ? 'warning' : m ? 'success' : 'neutral';
   const dateRangeLabel = `${startDate || '-'} ~ ${endDate || '-'}`;
   const configurationSummary = showAdvanced
     ? `初始资金 ${fmtAmount(initialCapital)} · 手续费 ${fmtNum(commission * 100, 2)}% · 滑点 ${fmtNum(slippage * 100, 2)}%`
@@ -514,6 +518,25 @@ export default function BacktestPage() {
       return;
     }
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function submitBacktestConfigForm() {
+    if (typeof document === 'undefined') return;
+    const submit = () => {
+      const form = document.getElementById('backtest-config-form') as HTMLFormElement | null;
+      if (form) {
+        form.requestSubmit();
+        return true;
+      }
+      return false;
+    };
+    if (submit()) return;
+    setSurfaceTab('setup');
+    window.setTimeout(() => {
+      if (!submit()) {
+        setFormError('回测配置表单尚未挂载，请切到“配置与运行”后重试。');
+      }
+    }, 40);
   }
 
   const pageActions = useMemo(
@@ -619,10 +642,10 @@ export default function BacktestPage() {
       <SectionCard className="mb-4 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Workspace Layers</div>
+            <div className="eyebrow">回测流程</div>
             <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">回测任务切换</h3>
             <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-              默认只展开当前步骤。先配置并运行，再切换到结果、研究或历史，避免净值曲线、交易明细和批量结果同时平铺成长页。
+              先完成配置并运行，再进入结果解读、参数研究或历史对比，便于逐步判断策略是否值得继续推进。
             </p>
           </div>
           <Badge variant={hasAnyResultBlock ? 'info' : 'neutral'}>
@@ -650,6 +673,7 @@ export default function BacktestPage() {
         artifactId={runResult?.artifactId}
         from={from}
         onScrollToSection={scrollToSection}
+        onRunBacktest={submitBacktestConfigForm}
         trimmedCode={trimmedCode}
         strategyLabel={strategyLabel}
         startDate={startDate}
@@ -721,16 +745,17 @@ export default function BacktestPage() {
             costPresets={COST_PRESETS}
             onApplyCostPreset={applyCostPreset}
             configurationSummary={configurationSummary}
+            loading={loading}
             runBacktest={runBacktest}
           />
 
           <SectionCard className="p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">Reading Flow</div>
+                <div className="eyebrow">结果阅读</div>
                 <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">结果阅读顺序</h3>
                 <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-                  先看摘要，再看净值曲线，最后按需进入交易、历史和批量结果。长内容不再默认全部展开。
+                  先看摘要，再看净值曲线，最后按需进入交易明细、历史记录和批量结果。
                 </p>
               </div>
               <Badge variant={hasAnyResultBlock ? 'info' : 'neutral'}>{hasAnyResultBlock ? '已有结果' : '等待运行'}</Badge>
@@ -786,7 +811,7 @@ export default function BacktestPage() {
                   ) : (
                     <EmptyState
                       text="运行一次回测后，这里会先给出收益、回撤和胜率摘要。"
-                      hint="先看这组摘要，再进入图表或交易明细，会比直接拉长页面更容易判断结果。"
+                      hint="先用这组摘要判断结果质量，再进入图表或交易明细。"
                     />
                   )}
                 </SectionCard>
@@ -895,7 +920,7 @@ export default function BacktestPage() {
                   ) : (
                     <EmptyState
                       text="运行回测后，这里会固定展示策略净值与基准线。"
-                      hint="图表独立成页签后，不再把下方交易和诊断内容一起推成长页。"
+                      hint="图表会展示策略净值和基准走势，便于观察收益是否集中在少数区间。"
                     />
                   )}
                 </SectionCard>
@@ -1106,7 +1131,7 @@ export default function BacktestPage() {
           <SectionCard className="p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">Research Workflow</div>
+                <div className="eyebrow">研究流程</div>
                 <h3 className="mb-0 mt-2 text-xl font-semibold text-text-primary">参数优化与 Walk-Forward</h3>
                 <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
                   单次回测只告诉你这次跑得怎么样。参数优化和 walk-forward 才能回答它是不是稳定、是不是过拟合。

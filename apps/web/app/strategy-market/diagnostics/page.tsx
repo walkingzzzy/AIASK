@@ -102,7 +102,7 @@ export default function StrategyCoreChainDiagnosticsPage() {
   });
   const runStepApi = useApiMutation<Record<string, unknown>>({
     invalidates: [apiKeys.strategy()],
-    successToast: '链路动作已执行，正在刷新验收状态',
+    successToast: '链路动作已执行，正在刷新诊断状态',
     onSuccess: () => {
       void diagnosticsQ.refetch();
     },
@@ -134,8 +134,8 @@ export default function StrategyCoreChainDiagnosticsPage() {
       <SectionCard className="mt-0">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Core Chain Diagnostics</div>
-            <h1 className="mt-2 mb-0">策略核心链路验收</h1>
+            <div className="eyebrow">核心链路诊断</div>
+            <h1 className="mt-2 mb-0">策略核心链路诊断</h1>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge variant={summary ? statusVariant(summary.overall_status) : 'neutral'}>
                 {summary ? statusLabel(summary.overall_status) : '加载中'}
@@ -189,7 +189,7 @@ export default function StrategyCoreChainDiagnosticsPage() {
         </form>
       </SectionCard>
 
-      {diagnosticsQ.isPending ? <LoadingState text="加载核心链路验收状态..." /> : null}
+      {diagnosticsQ.isPending ? <LoadingState text="加载核心链路诊断状态..." /> : null}
       {diagnosticsQ.error ? <ErrorState text={diagnosticsQ.error} onRetry={() => diagnosticsQ.refetch()} /> : null}
 
       {diagnostics ? (
@@ -299,7 +299,7 @@ export default function StrategyCoreChainDiagnosticsPage() {
           <SectionCard>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="eyebrow">Current Result</div>
+                <div className="eyebrow">当前结果</div>
                 <h2 className="mt-2 mb-0">真实打通与断点</h2>
               </div>
               <Badge variant={summary?.fully_completed ? 'success' : 'info'}>

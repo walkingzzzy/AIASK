@@ -8,12 +8,12 @@ function createCacheStub() {
     resolveTtl: () => 60,
     getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
     set: async () => {
-      throw new Error('cache.set should not be called when summary generation fails');
+      throw new Error('cache.set should not be called when summary is degraded');
     },
   };
 }
 
-test('RiskService.getSummary fails hard when any required module fails', async () => {
+test('RiskService.getSummary returns a degraded summary when any required module fails', async () => {
   const calls = [];
   const service = new RiskService(
     {
@@ -31,17 +31,15 @@ test('RiskService.getSummary fails hard when any required module fails', async (
     createCacheStub(),
   );
 
-  await assert.rejects(
-    () => service.getSummary({ userId: 'u_demo', injectFail: 'stress' }),
-    (error) => {
-      const response = error.getResponse?.();
-      assert.equal(response?.code, 'RISK_SUMMARY_UNAVAILABLE');
-      assert.equal(response?.message, '风险汇总暂不可用');
-      assert.equal(response?.detail?.moduleStatus?.stress?.ok, false);
-      assert.match(String(response?.detail?.moduleStatus?.stress?.reason ?? ''), /injected failure/);
-      return true;
-    },
-  );
+  const response = await service.getSummary({ userId: 'u_demo', injectFail: 'stress' });
+
+  assert.equal(response.degraded, true);
+  assert.equal(response.stressResult, null);
+  assert.equal(response.varResult != null, true);
+  assert.equal(response.exposureResult != null, true);
+  assert.equal(response.moduleStatus.stress.ok, false);
+  assert.match(String(response.moduleStatus.stress.reason ?? ''), /injected failure/);
+  assert.equal(response.degradeReasons.length, 1);
 
   assert.equal(calls.filter(({ tool }) => tool === 'risk_manager').length, 2);
 });

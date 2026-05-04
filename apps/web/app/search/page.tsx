@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AskAiButton } from '@/components/ask-ai-button';
 import { useOnboarding } from '@/components/onboarding';
@@ -12,6 +12,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { useMobile } from '@/hooks/use-mobile';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
@@ -69,6 +70,10 @@ function readSearchItems(payload: unknown): Record<string, unknown>[] {
 
 export default function SearchPage() {
   const { completeStep } = useOnboarding();
+  const searchParams = useStableSearchParams();
+  const initialSemanticQuery = searchParams.get('q')?.trim() || searchParams.get('query')?.trim() || '';
+  const initialCode = searchParams.get('code')?.trim() || '';
+  const initialUrlAppliedRef = useRef(false);
   const hydrated = useHydrated();
   const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const compactLayout = hydrated ? compactLayoutDetected : true;
@@ -77,9 +82,9 @@ export default function SearchPage() {
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const setDockOpen = useCopilotStore((state) => state.setDockOpen);
   const setPendingInject = useCopilotStore((state) => state.setPendingInject);
-  const [tab, setTab] = useState<Tab>('similar');
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('');
-  const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<Tab>(() => (initialSemanticQuery ? 'semantic' : 'similar'));
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode(initialCode);
+  const [query, setQuery] = useState(initialSemanticQuery);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [queryPath, setQueryPath] = useState<string | null>(null);
   const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath, { critical: true });
@@ -101,6 +106,27 @@ export default function SearchPage() {
     if (p === queryPath) refetch();
     else setQueryPath(p);
   }, [query, queryPath, refetch, tab, trimmedCode, validate]);
+
+  useEffect(() => {
+    if (initialUrlAppliedRef.current) return;
+    initialUrlAppliedRef.current = true;
+    if (initialSemanticQuery) {
+      queueMicrotask(() => {
+        setTab('semantic');
+        setQuery(initialSemanticQuery);
+        setQueryError(null);
+        setQueryPath(`/search/semantic?query=${encodeURIComponent(initialSemanticQuery)}`);
+      });
+      return;
+    }
+    if (initialCode) {
+      queueMicrotask(() => {
+        setTab('similar');
+        setCode(initialCode);
+        setQueryPath(`/search/similar?code=${encodeURIComponent(initialCode)}`);
+      });
+    }
+  }, [initialCode, initialSemanticQuery, setCode]);
 
   const rows = useMemo(() => {
     const arr = readSearchItems(data);
@@ -506,7 +532,7 @@ export default function SearchPage() {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <div className="eyebrow">Search Canvas</div>
+              <div className="eyebrow">搜索输入</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">输入、搜索与结果阅读顺序</h2>
               {!compactLayout ? <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">{tabDescription}</p> : null}
             </div>
@@ -782,7 +808,7 @@ export default function SearchPage() {
   ) : (
     <div className="grid gap-4 xl:h-full xl:grid-rows-[auto_auto_minmax(0,1fr)]">
       <div className={PANEL_CLS}>
-        <div className="eyebrow">Workspace Summary</div>
+        <div className="eyebrow">搜索摘要</div>
         <h2 className="mb-0 mt-2 text-lg font-semibold text-text-primary">搜索工作区摘要</h2>
         <div className="mt-4 grid gap-3">
           <div className="metric-tile rounded-[24px] p-4">
@@ -872,7 +898,7 @@ export default function SearchPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Search Workspace</Badge>
+              <Badge variant="info">搜索工作台</Badge>
               <Badge variant="neutral">{activeTabLabel}</Badge>
               <Badge variant={rows.length > 0 ? 'success' : 'warning'}>
                 {rows.length > 0 ? `已返回 ${rows.length} 条结果` : '等待执行搜索'}
@@ -883,7 +909,7 @@ export default function SearchPage() {
             </h1>
             {!compactLayout ? (
               <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-                这次重构把搜索页从“单次查询入口”升级成连续工作台。输入、结果、下一步跳转和工作区摘要放在同一阅读动线上，减少找到标的后还要重新组织思路的切换成本。
+                这里把输入、结果、下一步跳转和工作区摘要放在同一条阅读线上，便于找到标的后直接进入研究或自选管理。
               </p>
             ) : null}
             <div className="mt-5 flex flex-wrap gap-2">

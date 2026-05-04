@@ -232,7 +232,7 @@ export default function SecurityPage() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="mt-0 text-sm font-semibold">交易二次确认</h3>
-            <p className="text-xs text-text-secondary mt-1">下单、撤单等敏感操作需要额外确认，已保存到用户偏好并可被页面实际消费</p>
+            <p className="text-xs text-text-secondary mt-1">下单、撤单等敏感操作需要额外确认；设置会保存到用户偏好，相关页面会按此执行。</p>
           </div>
           <span className="text-xs text-text-secondary">
             {savingKey ? '保存中...' : '自动保存'}

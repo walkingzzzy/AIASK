@@ -55,7 +55,9 @@ function notifySyncError(detail: string) {
   _lastErrorTs = now;
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('watchlist:sync-error', { detail }));
-    console.warn(`[Watchlist] 同步失败: ${detail}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(`[Watchlist] 同步失败: ${detail}`);
+    }
   }
 }
 
@@ -290,7 +292,6 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       } catch (error) {
         const detail = error instanceof Error ? error.message : '自选股同步失败';
         set({ syncing: false, syncError: detail });
-        throw error;
       } finally {
         _syncPromise = null;
       }

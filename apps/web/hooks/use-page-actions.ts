@@ -24,19 +24,20 @@ function buildMetaSignature(actions: PageActionDefinition[]) {
 export function usePageActions(actions: PageActionDefinition[]) {
   const setPageActions = useCopilotStore((state) => state.setPageActions);
   const actionsRef = useRef(new Map<string, PageActionDefinition>());
+  const metasRef = useRef<ReturnType<typeof buildPageActionMetas>>([]);
   const copilotActions = useMemo(
     () => actions.filter((action) => action.exposeToCopilot !== false),
     [actions],
   );
-
-  const metas = useMemo(() => buildPageActionMetas(copilotActions), [copilotActions]);
   const metaSignature = useMemo(() => buildMetaSignature(copilotActions), [copilotActions]);
 
   useEffect(() => {
     actionsRef.current = new Map(actions.map((action) => [action.id, action]));
-  }, [actions]);
+    metasRef.current = buildPageActionMetas(copilotActions);
+  }, [actions, copilotActions]);
 
   useEffect(() => {
+    const metas = metasRef.current;
     setPageActions(metas);
     const unregisters = metas.map((meta) =>
       pageActionBus.register({
@@ -55,7 +56,7 @@ export function usePageActions(actions: PageActionDefinition[]) {
       unregisters.forEach((dispose) => dispose());
       setPageActions([]);
     };
-  }, [metaSignature, metas, setPageActions]);
+  }, [metaSignature, setPageActions]);
 }
 
 function buildPageActionMetas(actions: PageActionDefinition[]) {

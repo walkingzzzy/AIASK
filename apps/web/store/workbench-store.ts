@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { authedFetch, extractApiErrorMessage, unwrapApiEnvelope } from '@/lib/api';
+import { sanitizeUserStockContext } from '@/lib/stock-code-utils';
 import type {
   WorkspaceLayout,
   WorkspaceLayoutPreset,
@@ -174,6 +175,7 @@ function ensureWorkspaceList(workspaces: WorkspaceRecord[]) {
   const normalized = workspaces.map((workspace) => ({
     ...workspace,
     layout: resolveWorkspaceLayout(workspace.layout),
+    context: sanitizeUserStockContext(workspace.context ?? {}),
   }));
   return normalized.length > 0 ? normalized : [createWorkspaceRecord()];
 }
@@ -247,6 +249,11 @@ async function requestWorkspaceSnapshot(
   method: 'GET' | 'PUT',
   body?: WorkspaceStateSnapshot,
 ): Promise<WorkspaceStateSnapshot | null> {
+  const logSyncFailure = (...args: unknown[]) => {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[workbench] workspace sync failed:', ...args);
+    }
+  };
   try {
     const response = await authedFetch(
       WORKSPACE_PATH,
@@ -261,19 +268,19 @@ async function requestWorkspaceSnapshot(
 
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      console.warn('[workbench] workspace sync failed:', extractApiErrorMessage(payload, `HTTP ${response.status}`));
+      logSyncFailure(extractApiErrorMessage(payload, `HTTP ${response.status}`));
       return null;
     }
 
     const unwrapped = unwrapApiEnvelope<WorkspaceStateSnapshot>(payload);
     if (unwrapped.errorMessage) {
-      console.warn('[workbench] workspace sync failed:', unwrapped.errorMessage);
+      logSyncFailure(unwrapped.errorMessage);
       return null;
     }
 
     return unwrapped.data && typeof unwrapped.data === 'object' ? (unwrapped.data as WorkspaceStateSnapshot) : null;
   } catch (error) {
-    console.warn('[workbench] workspace sync failed:', error instanceof Error ? error.message : String(error));
+    logSyncFailure(error instanceof Error ? error.message : String(error));
     return null;
   }
 }

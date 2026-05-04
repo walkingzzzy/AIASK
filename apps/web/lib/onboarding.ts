@@ -83,7 +83,7 @@ export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
     focus: '先确认你会从行情页找到标的、板块和分时，再决定是否进入研究或交易。',
     outcome: '知道系统里的“第一眼行情入口”在哪里。',
     actions: [
-      { label: '打开行情看板', href: '/market?code=000001&from=onboarding' },
+      { label: '打开行情看板', href: '/market?from=onboarding' },
       { label: '直接看上证指数', href: '/market?code=000001&tab=index&indexCode=000001&from=onboarding' },
     ],
     matchesPath: (pathname) => pathname.startsWith('/market'),
@@ -111,8 +111,8 @@ export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
     focus: '先确认个股研究入口和新闻切换，再决定是否需要去 AI 或策略模块继续深挖。',
     outcome: '知道“结论前的证据”主要从哪里看。',
     actions: [
-      { label: '打开研究页', href: '/research?code=600519&from=onboarding' },
-      { label: '查看市场新闻', href: '/research?code=600519&from=onboarding' },
+      { label: '打开研究页', href: '/research?from=onboarding' },
+      { label: '查看市场新闻', href: '/research?from=onboarding&tab=news' },
     ],
     matchesPath: (pathname) => pathname.startsWith('/research'),
   },
@@ -138,7 +138,7 @@ export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
     focus: '建议先载入示例单，再看订单、持仓、净值和账户侧栏。',
     outcome: '知道系统里的交易路径不只是表单，而是完整账户工作台。',
     actions: [
-      { label: '打开模拟交易', href: '/paper-trading?code=600519&from=onboarding' },
+      { label: '打开模拟交易', href: '/paper-trading?from=onboarding' },
     ],
     matchesPath: (pathname) => pathname.startsWith('/paper-trading'),
   },

@@ -1,4 +1,5 @@
 import { authedFetch, authedStreamFetch, buildApiError, rejectFallbackPayload } from './api';
+import { hasLoggedInHint } from './auth';
 import type { CopilotActionMeta, CopilotPageContext } from './copilot-types';
 import type { ChatToolTrace } from './tool-trace-types';
 
@@ -8,6 +9,8 @@ export type ChatEvent =
   | { type: 'tool_result'; name: string; result: unknown }
   | { type: 'tool_trace'; trace: ChatToolTrace }
   | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
+  | { type: 'heartbeat'; at: string; scope?: string }
+  | { type: 'final_fallback'; content: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -40,7 +43,156 @@ export type StreamChatOptions = {
   availableActions?: CopilotActionMeta[];
 };
 
+const CHAT_CONTEXT_TEXT_LIMIT = 600;
+const CHAT_CONTEXT_ARRAY_LIMIT = 8;
+const CHAT_CONTEXT_OBJECT_KEY_LIMIT = 24;
+const LLM_CONFIG_CACHE_TTL_MS = 30_000;
+let llmConfigCache: { value: LlmConfig | null; expiresAt: number } | null = null;
+let llmConfigPromise: Promise<LlmConfig | null> | null = null;
+
+function truncateContextText(value: string, limit = CHAT_CONTEXT_TEXT_LIMIT): string {
+  return value.length > limit ? `${value.slice(0, limit)}...` : value;
+}
+
+function compactContextValue(value: unknown, depth = 0): unknown {
+  if (value == null) return value;
+  if (typeof value === 'string') return truncateContextText(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (depth >= 3) return '[truncated]';
+  if (Array.isArray(value)) {
+    return value.slice(0, CHAT_CONTEXT_ARRAY_LIMIT).map((item) => compactContextValue(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>).slice(0, CHAT_CONTEXT_OBJECT_KEY_LIMIT)) {
+      result[key] = compactContextValue(nested, depth + 1);
+    }
+    return result;
+  }
+  return String(value);
+}
+
+function pickCompactRecord(record: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (record[key] !== undefined) result[key] = compactContextValue(record[key]);
+  }
+  return result;
+}
+
+function compactPersonalStrategyContext(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const compact = pickCompactRecord(record, [
+    'strategy_id',
+    'strategy_name',
+    'strategy_type',
+    'status',
+    'actor_id',
+    'actor_roles',
+    'personal_strategy',
+    'editable',
+    'source_strategy_id',
+    'owner_state',
+    'favorite_state',
+    'paper_session_state',
+    'mutation_guard',
+  ]);
+  const draft = record.draft_snapshot;
+  if (draft && typeof draft === 'object' && !Array.isArray(draft)) {
+    compact.draft_snapshot = pickCompactRecord(draft as Record<string, unknown>, [
+      'id',
+      'name',
+      'description',
+      'strategy_type',
+      'status',
+      'author_id',
+      'tags',
+      'factor_weights',
+      'target_symbols',
+    ]);
+  }
+  return compact;
+}
+
+function compactPageContextRaw(raw: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  const compact = pickCompactRecord(raw, [
+    'strategyId',
+    'emptyDetailContract',
+    'activeTab',
+    'factorySection',
+    'favorited',
+    'riskEvents',
+    'vectorProfiles',
+    'promotionReady',
+    'marketStatus',
+    'incubationStage',
+    'ownerState',
+    'paperSessionState',
+    'accountId',
+    'selectedCode',
+    'workspaceId',
+  ]);
+  const personalStrategyContext = compactPersonalStrategyContext(raw.personalStrategyContext);
+  if (personalStrategyContext) compact.personalStrategyContext = personalStrategyContext;
+  return Object.keys(compact).length ? compact : undefined;
+}
+
+function compactPageContextForChat(pageContext: CopilotPageContext | null | undefined): CopilotPageContext | null | undefined {
+  if (!pageContext) return pageContext;
+  return {
+    ...pageContext,
+    summary: truncateContextText(pageContext.summary, 1200),
+    tags: pageContext.tags?.slice(0, 12),
+    suggestions: pageContext.suggestions?.slice(0, 8).map((item) => truncateContextText(item, 240)),
+    recommendedNextActions: pageContext.recommendedNextActions?.slice(0, 8).map((item) => truncateContextText(item, 240)),
+    recommendedActions: pageContext.recommendedActions?.slice(0, 8),
+    recommendedLinks: pageContext.recommendedLinks?.slice(0, 8),
+    evidenceSummary: pageContext.evidenceSummary?.slice(0, 8).map((item) => truncateContextText(item, 320)),
+    riskNotes: pageContext.riskNotes?.slice(0, 8).map((item) => truncateContextText(item, 320)),
+    raw: compactPageContextRaw(pageContext.raw),
+  };
+}
+
 export async function getLlmConfig(): Promise<LlmConfig | null> {
+  const now = Date.now();
+  if (llmConfigCache && llmConfigCache.expiresAt > now) {
+    return llmConfigCache.value;
+  }
+  if (llmConfigPromise) return llmConfigPromise;
+  if (typeof window !== 'undefined' && !hasLoggedInHint()) {
+    return null;
+  }
+
+  llmConfigPromise = (async () => {
+    let value: LlmConfig | null = null;
+    const cacheUntil = Date.now() + LLM_CONFIG_CACHE_TTL_MS;
+    try {
+      const r = await authedFetch('/chat/config', { cache: 'no-store' }, { redirectOnUnauthorized: false });
+      if (r.ok) {
+        const d = await r.json().catch(() => null);
+        value = d?.data ?? null;
+      }
+    } catch {
+      value = null;
+    } finally {
+      llmConfigCache = { value, expiresAt: cacheUntil };
+      llmConfigPromise = null;
+    }
+    return value;
+  })();
+
+  return llmConfigPromise;
+}
+
+export function clearLlmConfigCache() {
+  llmConfigCache = null;
+  llmConfigPromise = null;
+}
+
+export async function getLlmConfigUncached(): Promise<LlmConfig | null> {
+  clearLlmConfigCache();
   try {
     const r = await authedFetch('/chat/config', { cache: 'no-store' }, { redirectOnUnauthorized: false });
     if (!r.ok) return null;
@@ -69,6 +221,7 @@ export async function saveLlmConfig(config: SaveLlmConfigInput): Promise<SaveLlm
   if (fallbackReason) {
     throw new Error(`AI 配置保存未完成: ${fallbackReason}`);
   }
+  clearLlmConfigCache();
   return (payload?.data ?? {}) as SaveLlmConfigResult;
 }
 
@@ -129,7 +282,7 @@ export async function streamChat(
       body: JSON.stringify({
         messages,
         mode: options?.mode,
-        pageContext: options?.pageContext,
+        pageContext: compactPageContextForChat(options?.pageContext),
         availableActions: options?.availableActions,
       }),
       signal,
@@ -153,6 +306,16 @@ export async function streamChat(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data: ')) return;
+    try {
+      const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
+      onEvent(event);
+    } catch {
+      // skip malformed SSE payloads
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -160,15 +323,11 @@ export async function streamChat(
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) continue;
-      try {
-        const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
-        onEvent(event);
-      } catch {
-        // skip malformed SSE payloads
-      }
-    }
+    lines.forEach(handleLine);
+  }
+
+  const tail = `${decoder.decode()}${buffer}`.trim();
+  if (tail) {
+    tail.split('\n').forEach(handleLine);
   }
 }

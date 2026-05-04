@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
@@ -98,7 +98,7 @@ function WorkbenchField({
 }
 
 export default function StrategyPage() {
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const [strategy, setStrategy] = useState('ma_cross');
   const [artifactId, setArtifactId] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('experiment');
@@ -106,7 +106,7 @@ export default function StrategyPage() {
   const [portfolioName, setPortfolioName] = useState('我的策略组合');
   const [holdingOp, setHoldingOp] = useState<HoldingOp>({
     portfolioId: '',
-    code: '600519',
+    code: '',
     shares: '100',
     costPrice: '1',
   });
@@ -153,6 +153,14 @@ export default function StrategyPage() {
     actionApi.error;
   const confirmPrefs = useMemo(() => readTransactionConfirmations(profileQ.data), [profileQ.data]);
 
+  useEffect(() => {
+    if (!trimmedCode) return;
+    const id = window.setTimeout(() => {
+      setHoldingOp((prev) => (prev.code ? prev : { ...prev, code: trimmedCode }));
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [trimmedCode]);
+
   async function runBacktest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
@@ -176,7 +184,7 @@ export default function StrategyPage() {
   function loadMetrics(id = artifactId) {
     const nextId = id.trim();
     if (!nextId) {
-      setFormError('请先提供 artifactId');
+      setFormError('请先提供回测制品 ID');
       return;
     }
     if (nextId !== artifactId) setArtifactId(nextId);
@@ -421,7 +429,7 @@ export default function StrategyPage() {
     ? currentPortfolioId !== '未绑定'
       ? '继续查看组合详情、优化或压力测试'
       : '继续创建组合，把试验结果落地'
-    : '先跑出第一份回测 Artifact';
+    : '先跑出第一份回测制品';
 
   const currentView = useMemo<Record<string, unknown>>(
     () => ({
@@ -440,7 +448,7 @@ export default function StrategyPage() {
     {
       id: 'strategy.open-experiment',
       label: '回到试验区',
-      description: '切回回测与 artifact 试验流程',
+      description: '切回回测与制品试验流程',
       keywords: ['回测', '试验'],
       scope: 'page' as const,
       pageKey: 'strategy',
@@ -503,29 +511,29 @@ export default function StrategyPage() {
     'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
   const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
   const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
-  const strategySummary = `当前视图 ${activeWorkspaceLabel}，当前标的 ${trimmedCode || '-'}，策略 ${strategy}，Artifact ${artifactId || '-'}，当前组合 ${currentPortfolioId}。`;
+  const strategySummary = `当前视图 ${activeWorkspaceLabel}，当前标的 ${trimmedCode || '-'}，策略 ${strategy}，回测制品 ${artifactId || '-'}，当前组合 ${currentPortfolioId}。`;
   const strategyResult = buildLocalResultContract({
     summary: strategySummary,
     availableViews: metrics || portfolioRows.length > 1 || stressScenarios.length > 0 ? ['compare', 'visual'] : [],
     pageActions: strategyPageActions,
     preferredActionIds: ['strategy.open-experiment', 'strategy.load-portfolios', 'strategy.open-risk'],
     recommendedLinks: [
-      { id: 'strategy-link-portfolio', label: '去组合页', href: `/portfolio?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-backtest', label: '去回测页', href: `/backtest?code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-paper', label: '去模拟盘', href: `/paper-trading?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
-      { id: 'strategy-link-assistant', label: '继续追问 Copilot', href: `/assistant?from=strategy&code=${encodeURIComponent(trimmedCode || '600519')}` },
+      { id: 'strategy-link-portfolio', label: '去组合页', href: trimmedCode ? `/portfolio?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/portfolio?from=strategy' },
+      { id: 'strategy-link-backtest', label: '去回测页', href: trimmedCode ? `/backtest?code=${encodeURIComponent(trimmedCode)}` : '/backtest' },
+      { id: 'strategy-link-paper', label: '去模拟盘', href: trimmedCode ? `/paper-trading?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/paper-trading?from=strategy' },
+      { id: 'strategy-link-assistant', label: '继续追问 Copilot', href: trimmedCode ? `/assistant?from=strategy&code=${encodeURIComponent(trimmedCode)}` : '/assistant?from=strategy' },
     ],
     evidence: [
       { label: '当前标的', value: trimmedCode || '-' },
       { label: '策略标识', value: strategy },
       { label: '当前视图', value: activeWorkspaceLabel },
-      { label: 'Artifact', value: artifactId || '-' },
+      { label: '回测制品', value: artifactId || '-' },
       { label: '组合数量', value: String(portfolioRows.length) },
       { label: '压力场景', value: String(stressScenarios.length) },
     ],
     riskNotes: [
       ...(error ? [error] : []),
-      ...(!artifactId ? ['当前还没有生成回测 Artifact。'] : []),
+      ...(!artifactId ? ['当前还没有生成回测制品。'] : []),
       ...(!holdingOp.portfolioId ? ['当前还没有绑定组合 ID，后续落地与风险分析会受限。'] : []),
       ...(riskData?.riskMetrics?.var95 != null && Number(riskData.riskMetrics.var95) < -0.1 ? ['组合 VaR(95%) 较高，进入执行前建议先复核风险暴露。'] : []),
     ],
@@ -536,7 +544,7 @@ export default function StrategyPage() {
       fallbackReason: [error].filter((item): item is string => Boolean(item)),
     },
     workbenchTask: defaultWorkbenchTask('strategy', `复查策略工作台 ${strategy}`, '/strategy', 'strategy-workspace-review', {
-      code: trimmedCode || '600519',
+      code: trimmedCode || null,
       strategy,
       artifactId,
       portfolioId: holdingOp.portfolioId || null,
@@ -554,12 +562,12 @@ export default function StrategyPage() {
       strategy,
       trimmedCode || '未输入标的',
       activeWorkspaceLabel,
-      artifactId ? '已生成 Artifact' : '待生成 Artifact',
+      artifactId ? '已生成回测制品' : '待生成回测制品',
     ],
     suggestions: [
       '总结当前策略工作台离真正落地还差哪一步',
       '如果要继续推进，先做回测、组合落地还是风险分析',
-      '解释当前 Artifact、组合和风控结果之间的衔接关系',
+      '解释当前回测制品、组合和风控结果之间的衔接关系',
     ],
     recommendedActions: strategyResult.recommendedActions ?? [],
     recommendedLinks: strategyResult.recommendedLinks ?? [],
@@ -583,7 +591,7 @@ export default function StrategyPage() {
         <div className="panel-soft rounded-[26px] p-4 sm:p-5">
           <div className="text-sm font-medium text-text-primary">运行新的回测</div>
           <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-            先确认标的和策略标识，再运行回测并保留 Artifact 供后续指标刷新。
+            先确认标的和策略标识，再运行回测并保留制品 ID 供后续指标刷新。
           </p>
           <form onSubmit={runBacktest} className="mt-4 grid gap-3 lg:grid-cols-[160px_220px_auto_auto] lg:items-end">
             <StockCodeInput
@@ -612,15 +620,15 @@ export default function StrategyPage() {
         <div className="panel-soft rounded-[26px] p-4 sm:p-5">
           <div className="text-sm font-medium text-text-primary">回测结果定位</div>
           <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
-            把最近一次回测生成的 Artifact 留在手边，后续刷新收益指标时不需要重新跑完整流程。
+            把最近一次回测生成的制品 ID 留在手边，后续刷新收益指标时不需要重新跑完整流程。
           </p>
           <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,260px)_auto] md:items-end">
             <WorkbenchField
               id="strategy-artifact-id"
-              label="Artifact ID"
+              label="制品 ID"
               value={artifactId}
               onChange={setArtifactId}
-              placeholder="粘贴或保留最近一次回测的 artifactId"
+              placeholder="粘贴或保留最近一次回测的制品 ID"
             />
             <div className="flex gap-2">
               <button type="button" onClick={() => loadMetrics()} className={heroSecondaryButtonCls}>
@@ -905,9 +913,9 @@ export default function StrategyPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Strategy Workspace</Badge>
+              <Badge variant="info">策略工作台</Badge>
               <Badge variant={artifactId ? 'success' : 'warning'}>
-                {artifactId ? '已形成回测产物' : '等待生成 Artifact'}
+                {artifactId ? '已形成回测制品' : '等待生成回测制品'}
               </Badge>
               <Badge variant={holdingOp.portfolioId ? 'success' : 'neutral'}>
                 {holdingOp.portfolioId ? `组合 ${holdingOp.portfolioId}` : '尚未绑定组合'}
@@ -918,7 +926,7 @@ export default function StrategyPage() {
               策略工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              默认只展开一个主任务。先跑回测形成 Artifact，再切到组合落地，最后进入优化和风控，不再把三段流程同时堆在一页里。
+              先跑回测形成可追踪制品，再切到组合落地，最后进入优化和风控，按阶段推进策略研究。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button type="button" onClick={() => setWorkspaceTab('experiment')} className={heroPrimaryButtonCls}>
@@ -936,7 +944,7 @@ export default function StrategyPage() {
                 当前视图 {activeWorkspaceLabel} ｜ 当前标的 {trimmedCode || '-'} ｜ 策略 {strategy}
               </div>
               <p className="mt-1 mb-0 text-xs leading-6 text-text-secondary">
-                Artifact {artifactId || '-'} ｜ 当前组合 {currentPortfolioId} ｜ 持仓 {detailHoldings.length} 条
+                回测制品 {artifactId || '-'} ｜ 当前组合 {currentPortfolioId} ｜ 持仓 {detailHoldings.length} 条
               </p>
             </div>
           </div>
@@ -947,7 +955,7 @@ export default function StrategyPage() {
             </summary>
             <div className="mt-4 space-y-3">
               <div className={noteCardCls}>当前标的：{trimmedCode || '未输入'} ｜ 策略：{strategy}</div>
-              <div className={noteCardCls}>Artifact：{artifactId || '尚未生成'} ｜ 组合：{currentPortfolioId}</div>
+              <div className={noteCardCls}>回测制品：{artifactId || '尚未生成'} ｜ 组合：{currentPortfolioId}</div>
               <div className={noteCardCls}>{nextStepLabel}</div>
             </div>
           </details>
@@ -956,16 +964,16 @@ export default function StrategyPage() {
 
       <ResponsiveResultWorkbench pageKey="strategy" title="策略结果工作台" result={strategyResult} />
 
-      {loading ? <LoadingState text="处理中..." /> : null}
+      {loading ? <LoadingState text="正在运行策略任务..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Workspace Flow</div>
+            <div className="eyebrow">策略流程</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">当前主任务</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              主区一次只展开一个阶段，避免试验、组合和风险内容在默认状态下连续堆叠。
+              按试验、落地和风控三个阶段切换，便于复查每一步的输入和输出。
             </p>
           </div>
           <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -987,7 +995,7 @@ export default function StrategyPage() {
       <div className="text-sm font-medium text-text-primary">摘要</div>
       <div className="mt-3 space-y-3 text-xs text-text-secondary">
         <div className={noteCardCls}>
-          Artifact：<span className="font-medium text-text-primary">{artifactId || '尚未生成'}</span>
+          回测制品：<span className="font-medium text-text-primary">{artifactId || '尚未生成'}</span>
         </div>
         <div className={noteCardCls}>
           当前组合：<span className="font-medium text-text-primary">{currentPortfolioId}</span>
@@ -1015,7 +1023,7 @@ export default function StrategyPage() {
 
   const mobileSummary = (
     <div className="panel-soft rounded-[24px] px-4 py-3 text-sm text-text-secondary">
-      {activeWorkspaceLabel} ｜ Artifact {artifactId || '-'} ｜ 组合 {currentPortfolioId}
+      {activeWorkspaceLabel} ｜ 回测制品 {artifactId || '-'} ｜ 组合 {currentPortfolioId}
     </div>
   );
 

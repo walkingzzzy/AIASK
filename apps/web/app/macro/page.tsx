@@ -222,12 +222,12 @@ export default function MacroPage() {
     return (
         <PageContainer>
             <LightOverviewHero
-                eyebrow="Macro Economics"
+                eyebrow="宏观数据"
                 title="宏观经济数据分析"
-                summary="全面追踪中国核心宏观经济指标及其长期趋势，默认先看当前指标摘要，再决定是否下钻到图表和数据流水表。"
+                summary="追踪中国核心宏观指标的历史走势。先看当前指标摘要，再按需要展开图表和数据明细。"
                 badges={(
                     <>
-                        <Badge variant="info">{qualityStatus}</Badge>
+                        <Badge variant="info">{qualityStatus === 'available' ? '数据可用' : qualityStatus}</Badge>
                         <Badge variant={degraded ? 'warning' : 'success'}>{degraded ? '存在降级链路' : '链路正常'}</Badge>
                         <Badge variant={cacheHit ? 'success' : 'neutral'}>{cacheHit ? '缓存命中' : '实时拉取'}</Badge>
                     </>
@@ -275,7 +275,7 @@ export default function MacroPage() {
 
             <CollapsibleSectionCard
                 title="常用入口与链路摘要"
-                summary="首屏只保留当前指标选择。高频切换入口、缓存状态和来源链路下沉到这一层，避免和主图表争抢首屏。"
+                summary="这里保留常用指标切换、缓存状态和来源链路，方便在数据为空或降级时快速排查。"
                 badge={<Badge variant="neutral">{macroRows.length} 条记录</Badge>}
             >
                 <div className="space-y-4">
@@ -321,7 +321,7 @@ export default function MacroPage() {
                 <div className="space-y-4">
                     <CollapsibleSectionCard
                         title={`${indicatorLabel} 历史趋势`}
-                        summary="默认先看一块主图表，确认趋势和变动方向。明细流水表单独折叠，避免首屏同时出现图表和长表。"
+                        summary="先通过主图确认趋势和变动方向；需要核对原始记录时，再展开明细流水表。"
                         defaultOpen
                         badge={<Badge variant="info">主结果</Badge>}
                     >
@@ -372,7 +372,7 @@ export default function MacroPage() {
 
                     <CollapsibleSectionCard
                         title="历史数据流水表"
-                        summary="长表只在需要核对结构化记录时再展开，不再默认和图表并排占满首屏。"
+                        summary="明细表用于核对结构化记录、报告期和增速字段，通常在图表出现异常时再查看。"
                         badge={<Badge variant="neutral">{macroRows.length} 条</Badge>}
                     >
                         <h3 className="flex items-center gap-2 text-md font-bold mb-4">

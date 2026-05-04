@@ -82,7 +82,7 @@ export default function PaperTradingHero({
       <>
         <section className="page-hero p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="info">Paper Trading Workspace</Badge>
+            <Badge variant="info">模拟交易工作台</Badge>
             <Badge variant={showAccountBootstrap ? 'warning' : 'success'}>
               {showAccountBootstrap ? '待建立交易轨迹' : '账户已就绪'}
             </Badge>
@@ -172,7 +172,7 @@ export default function PaperTradingHero({
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Paper Trading Workspace</Badge>
+              <Badge variant="info">模拟交易工作台</Badge>
               <Badge variant={showAccountBootstrap ? 'warning' : 'success'}>
                 {showAccountBootstrap ? '待建立交易轨迹' : '已有账户轨迹'}
               </Badge>
@@ -183,7 +183,7 @@ export default function PaperTradingHero({
               模拟交易工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这里把委托输入、账户状态和绩效观察收成一条连续交易链路。只有真实下单、真实撮合和真实账户变化才会驱动页面更新，不再提供示例委托来伪造完成态。
+              这里把委托输入、账户状态和绩效观察串成连续交易链路。只有真实下单、真实撮合和真实账户变化才会驱动页面更新，示例委托不会被当作完成态。
             </p>
             {linkedStrategyId || linkedStrategyName ? (
               <div className="mt-4 rounded-[24px] border border-white/45 bg-white/28 px-4 py-3 text-sm text-text-secondary shadow-[inset_0_1px_0_rgba(255,255,255,0.58)]">

@@ -50,7 +50,7 @@ export default function StockChartTab({ period, isFetching, candleData, orderBoo
       ) : (
         <EmptyState
           text="暂无 K 线数据"
-          hint="主图区已保留固定高度。切换股票或周期时，图表会在原位置刷新，不再把盘口和下方内容整体推移。"
+          hint="当前股票或周期暂时没有可绘制的 K 线。可以切换周期、重新查询，或回到行情页确认标的状态。"
         />
       )}
       {(orderBook.bids.length > 0 || orderBook.asks.length > 0) && (

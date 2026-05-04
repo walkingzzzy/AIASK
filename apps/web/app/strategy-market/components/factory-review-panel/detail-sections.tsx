@@ -353,7 +353,7 @@ export function RuntimeSection({
                       disabled={ackRuntimeAlertPending}
                       className="px-2 py-1 text-xs rounded border border-primary text-primary cursor-pointer disabled:opacity-50"
                     >
-                      {ackRuntimeAlertPending ? '处理中...' : '确认'}
+                      {ackRuntimeAlertPending ? '正在确认...' : '确认'}
                     </button>
                   );
                 },
@@ -394,7 +394,7 @@ export function RuntimeSection({
                       disabled={resolveRiskEventPending}
                       className="px-2 py-1 text-xs rounded border border-primary text-primary cursor-pointer disabled:opacity-50"
                     >
-                      {resolveRiskEventPending ? '处理中...' : '解决'}
+                      {resolveRiskEventPending ? '正在解决...' : '解决'}
                     </button>
                   );
                 },

@@ -35,6 +35,15 @@ type FactorMiningGenerationSectionProps = {
   generationEpisodeBlocked: Record<string, unknown>;
 };
 
+function displayWarmupStatus(value: unknown) {
+  const status = String(value ?? 'disabled');
+  if (status === 'disabled') return '未启用';
+  if (status === 'ready') return '已就绪';
+  if (status === 'completed') return '已完成';
+  if (status === 'failed') return '失败';
+  return status;
+}
+
 export default function FactorMiningGenerationSection({
   generationCodes,
   setGenerationCodes,
@@ -95,15 +104,15 @@ export default function FactorMiningGenerationSection({
           />
           <MiningField
             id="factor-mining-artifact-id"
-            label="自定义 artifact"
+            label="自定义制品 ID"
             value={generationArtifactId}
             onChange={setGenerationArtifactId}
             placeholder="可选"
           />
         </div>
         <div className="mt-3 grid gap-3 lg:grid-cols-[repeat(2,minmax(0,220px))_auto]">
-          <MiningCheckbox label="允许本地 fallback" checked={generationAllowFallback} onChange={setGenerationAllowFallback} />
-          <MiningCheckbox label="持久化 artifact" checked={generationPersistArtifact} onChange={setGenerationPersistArtifact} />
+          <MiningCheckbox label="允许本地备用执行" checked={generationAllowFallback} onChange={setGenerationAllowFallback} />
+          <MiningCheckbox label="持久化制品" checked={generationPersistArtifact} onChange={setGenerationPersistArtifact} />
           <div className="flex items-end">
             <button type="button" disabled={generationPending} onClick={onRun} className={`${factorMiningPrimaryButtonCls} w-full lg:w-auto`}>
               {generationPending ? '生成中...' : '生成候选'}
@@ -117,7 +126,7 @@ export default function FactorMiningGenerationSection({
       ) : generationData ? (
         <>
           <KpiGrid cols={6}>
-            <KpiCard title="artifact" value={String(generationRoot.artifact_id ?? '-')} />
+            <KpiCard title="制品" value={String(generationRoot.artifact_id ?? '-')} />
             <KpiCard title="保留候选" value={String(generationRoot.candidate_count ?? generationCandidates.length)} />
             <KpiCard title="生成模式" value={String(generationRoot.generation_mode ?? '-')} />
             <KpiCard title="去重前" value={String(generationRoot.pre_dedup_candidate_count ?? '-')} />
@@ -125,13 +134,13 @@ export default function FactorMiningGenerationSection({
             <KpiCard title="被拦截" value={String(generationDedupSummary.blocked_count ?? generationBlocked.length)} />
           </KpiGrid>
           <div className="mt-3 flex flex-wrap gap-2">
-            <BadgeValue value={generationRoot.fallback_used} trueText="已使用 fallback" falseText="LLM 主链成功" />
+            <BadgeValue value={generationRoot.fallback_used} trueText="已使用备用执行" falseText="LLM 主链成功" />
             <BadgeValue value={generationRoot.degraded} trueText="存在降级/警告" falseText="无降级" />
           </div>
           {renderWarnings(generationWarnings)}
           {Object.keys(generationEpisode).length > 0 ? (
             <div className={`${factorMiningPanelCls} mt-4`}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Research Episode</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">研究过程</div>
               <div className="mt-3 grid gap-3 xl:grid-cols-2">
                 <div className={factorMiningNoteCardCls}>
                   <div className="font-medium text-text-primary">主题</div>
@@ -144,17 +153,17 @@ export default function FactorMiningGenerationSection({
                 <div className={factorMiningNoteCardCls}>
                   <div className="font-medium text-text-primary">新颖度与记忆重叠</div>
                   <div className="mt-2 leading-6">
-                    平均 novelty {fmtNum(generationEpisodeNovelty.avg_novelty_score, 3)}，高新颖候选{' '}
+                    平均新颖度 {fmtNum(generationEpisodeNovelty.avg_novelty_score, 3)}，高新颖候选{' '}
                     {String(generationEpisodeNovelty.high_novelty_count ?? 0)} 个，记忆命中{' '}
                     {String(generationEpisodeMemory.matched_candidate_count ?? 0)} 个。
                   </div>
                 </div>
                 <div className={factorMiningNoteCardCls}>
-                  <div className="font-medium text-text-primary">Prompt 与 warmup</div>
+                  <div className="font-medium text-text-primary">提示词与预热</div>
                   <div className="mt-2 leading-6">
-                    Prompt 行数 {String(generationEpisodePrompt.row_count ?? 0)}，成功样例{' '}
-                    {String(generationEpisodePrompt.memory_success_examples ?? 0)} 条，warmup 状态{' '}
-                    {String(generationEpisodeWarmup.status ?? 'disabled')}。
+                    提示词行数 {String(generationEpisodePrompt.row_count ?? 0)}，成功样例{' '}
+                    {String(generationEpisodePrompt.memory_success_examples ?? 0)} 条，预热状态{' '}
+                    {displayWarmupStatus(generationEpisodeWarmup.status)}。
                   </div>
                 </div>
                 <div className={factorMiningNoteCardCls}>
@@ -165,7 +174,7 @@ export default function FactorMiningGenerationSection({
                   </div>
                 </div>
                 <div className={factorMiningNoteCardCls}>
-                  <div className="font-medium text-text-primary">Episode 标识</div>
+                  <div className="font-medium text-text-primary">研究过程标识</div>
                   <div className="mt-2 leading-6">{String(generationEpisode.episode_id ?? generationRoot.artifact_id ?? '-')}</div>
                 </div>
               </div>

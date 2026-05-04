@@ -399,4 +399,8 @@
             ON strategy_task_runs(task_name, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_sid
             ON strategy_task_runs(strategy_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_scope_status
+            ON strategy_task_runs(task_scope, status, started_at ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_task_key
+            ON strategy_task_runs(task_key, started_at DESC);
     """)

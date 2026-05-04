@@ -5,6 +5,7 @@ import type {
   ResultFreshness,
   ResultLink,
   ResultPlatformMeta,
+  ResultStatus,
   ResultSkillSuggestion,
   ResultStrategySuggestion,
   ResultView,
@@ -13,6 +14,7 @@ import type {
 
 type ResultContractInput = {
   summary: string;
+  status?: ResultStatus;
   availableViews?: ResultView[];
   recommendedActions?: ResultAction[];
   recommendedLinks?: ResultLink[];
@@ -155,6 +157,7 @@ export function buildResultContract(input: ResultContractInput): ResultContract 
   const summary = input.summary.trim();
   return {
     summary,
+    status: input.status ?? (input.platformMeta?.degraded ? 'degraded' : 'ready'),
     availableViews,
     recommendedActions: input.recommendedActions ?? [],
     recommendedLinks: input.recommendedLinks ?? [],

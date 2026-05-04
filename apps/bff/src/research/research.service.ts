@@ -12,6 +12,8 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
+import type { DataQuality } from '../common/data-quality';
+import { buildDataQuality } from '../common/data-quality';
 
 type ToolCallResult = {
   payload: unknown;
@@ -43,6 +45,7 @@ export type ResearchListDto = {
     cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
   };
   result_contract?: ResultContract | null;
+  data_quality?: DataQuality | null;
   contract_meta?: {
     reports: ResultContractMeta;
     notices: ResultContractMeta;
@@ -63,7 +66,7 @@ export class ResearchService {
     const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
     const { startDate, endDate } = this.resolveRange(options);
     const keyword = (options.keyword ?? '').trim();
-    const cacheKey = `research:list:${normalized}:${startDate}:${endDate}:${keyword.toLowerCase()}:${limit}`;
+    const cacheKey = `research:list:v2:${normalized}:${startDate}:${endDate}:${keyword.toLowerCase()}:${limit}`;
     const ttlSeconds = this.cacheService.resolveTtl('research.list', ResearchService.LIST_TTL_SECONDS);
     const cached = await this.cacheService.getWithMeta<ResearchListDto>(cacheKey);
     if (cached.value) {
@@ -76,28 +79,74 @@ export class ResearchService {
       };
     }
 
-    const reportsCall = await this.callWithArgs('get_stock_research', [{ code: normalized, limit }]);
-    const noticesCall = await this.callWithArgs('get_stock_notices', [{
-      code: normalized,
-      start_date: startDate,
-      end_date: endDate,
-      types: null,
-    }]);
+    const [reportsResult, noticesResult] = await Promise.allSettled([
+      this.callWithArgs('get_stock_research', [{ code: normalized, limit }]),
+      this.callWithArgs('get_stock_notices', [{
+        code: normalized,
+        start_date: startDate,
+        end_date: endDate,
+        types: null,
+      }]),
+    ]);
+    const reportsCall = reportsResult.status === 'fulfilled' ? reportsResult.value : null;
+    const noticesCall = noticesResult.status === 'fulfilled' ? noticesResult.value : null;
 
     const reports = this.filterItems(
-      this.normalizeItems(this.extractArray(reportsCall.payload), 'report'),
+      reportsCall ? this.normalizeItems(this.extractArray(reportsCall.payload), 'report') : [],
       startDate,
       endDate,
       keyword,
       limit,
     );
     const notices = this.filterItems(
-      this.normalizeItems(this.extractArray(noticesCall.payload), 'notice'),
+      noticesCall ? this.normalizeItems(this.extractArray(noticesCall.payload), 'notice') : [],
       startDate,
       endDate,
       keyword,
       limit,
     );
+    const totalCount = reports.length + notices.length;
+    const fetchedAt = new Date().toISOString();
+    const failedSources = [
+      reportsResult.status === 'rejected'
+        ? { name: 'get_stock_research', error: this.formatUpstreamError(reportsResult.reason) }
+        : null,
+      noticesResult.status === 'rejected'
+        ? { name: 'get_stock_notices', error: this.formatUpstreamError(noticesResult.reason) }
+        : null,
+    ].filter((item): item is { name: string; error: string } => item != null);
+    const emptyReason = `当前 ${startDate} 至 ${endDate} 窗口未命中研报或公告。`;
+    const unavailableReason = failedSources.length > 0
+      ? failedSources.map((source) => `${source.name}_unavailable: ${source.error}`).join('；')
+      : null;
+    const qualityStatus = failedSources.length > 0
+      ? (totalCount > 0 ? 'partial' : 'unavailable')
+      : (totalCount > 0 ? 'trusted' : 'empty');
+    const dataQuality = buildDataQuality({
+      status: qualityStatus,
+      reasons: failedSources.length > 0 ? failedSources.map((source) => `${source.name}_unavailable`) : (totalCount > 0 ? [] : ['research_window_empty']),
+      qualityFlags: [
+        ...(failedSources.length > 0 ? ['research_source_unavailable'] : []),
+        ...(totalCount === 0 && failedSources.length === 0 ? ['valid_empty'] : []),
+      ],
+      emptyReason: failedSources.length > 0 ? unavailableReason : (totalCount > 0 ? null : emptyReason),
+      sources: [
+        {
+          name: 'get_stock_research',
+          status: reportsResult.status === 'rejected' ? 'failed' : (reports.length > 0 ? 'trusted' : 'empty'),
+          freshness: fetchedAt,
+          sampleCount: reports.length,
+          error: reportsResult.status === 'rejected' ? this.formatUpstreamError(reportsResult.reason) : null,
+        },
+        {
+          name: 'get_stock_notices',
+          status: noticesResult.status === 'rejected' ? 'failed' : (notices.length > 0 ? 'trusted' : 'empty'),
+          freshness: fetchedAt,
+          sampleCount: notices.length,
+          error: noticesResult.status === 'rejected' ? this.formatUpstreamError(noticesResult.reason) : null,
+        },
+      ],
+    });
 
     const result: ResearchListDto = {
       code: normalized,
@@ -105,13 +154,16 @@ export class ResearchService {
       reports,
       notices,
       sourceTools: { reports: 'get_stock_research', notices: 'get_stock_notices' },
-      argsMatched: { reports: reportsCall.argsMatched, notices: noticesCall.argsMatched },
+      argsMatched: { reports: reportsCall?.argsMatched ?? {}, notices: noticesCall?.argsMatched ?? {} },
       meta: {
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
       result_contract: buildResultContract({
-        summary: `${normalized} 在 ${startDate} 至 ${endDate} 区间内命中 ${reports.length} 条研报、${notices.length} 条公告。`,
+        summary: failedSources.length > 0
+          ? `${normalized} 研报公告部分数据源不可用，当前保留 ${reports.length} 条研报、${notices.length} 条公告。`
+          : `${normalized} 在 ${startDate} 至 ${endDate} 区间内命中 ${reports.length} 条研报、${notices.length} 条公告。`,
+        status: failedSources.length > 0 ? (totalCount > 0 ? 'degraded' : 'unavailable') : (totalCount > 0 ? 'ready' : 'empty'),
         availableViews: ['summary', 'compare', 'next_step'],
         evidence: [
           { label: '股票代码', value: normalized },
@@ -119,13 +171,17 @@ export class ResearchService {
           { label: '公告数量', value: String(notices.length) },
           { label: '关键词', value: keyword || '未设置' },
         ],
-        riskNotes: reports.length + notices.length === 0 ? ['当前窗口未命中研报或公告，建议扩大时间范围或切换关键词。'] : [],
-        freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '资讯抓取时间'),
+        riskNotes: failedSources.length > 0
+          ? [unavailableReason ?? '研究数据源暂不可用，页面不按正常研究结果展示。']
+          : (totalCount === 0 ? [emptyReason, '建议扩大时间范围或切换关键词。'] : []),
+        freshness: extractFreshness({ meta: { fetchedAt } }, null, '资讯抓取时间'),
         platformMeta: extractPlatformMeta(
           {
             meta: {
-              fetchedAt: new Date().toISOString(),
+              fetchedAt,
               source_chain: ['get_stock_research', 'get_stock_notices'],
+              degraded: failedSources.length > 0,
+              fallback_reason: failedSources.map((source) => `${source.name}_unavailable`),
             },
           },
           {
@@ -135,7 +191,8 @@ export class ResearchService {
           },
         ),
       }),
-      contract_meta: {
+      data_quality: dataQuality,
+      contract_meta: reportsCall && noticesCall ? {
         reports: buildResultContractMeta({
           canonicalTool: reportsCall.canonicalTool,
           canonicalArgs: reportsCall.canonicalArgs,
@@ -148,7 +205,7 @@ export class ResearchService {
           argsMatched: noticesCall.argsMatched,
           aliasHits: noticesCall.aliasHits,
         }),
-      },
+      } : undefined,
     };
 
     await this.cacheService.set(cacheKey, result, ttlSeconds);
@@ -161,8 +218,54 @@ export class ResearchService {
   }
 
   async getStockNews(code: string, limit = 20) {
-    const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim(), limit }, { code: code.trim(), limit }];
-    const { payload } = await this.callWithArgs('get_stock_news', attempts);
+    const normalized = code.trim();
+    const attempts: Array<Record<string, unknown>> = [{ stock_code: normalized, limit }, { code: normalized, limit }];
+    let payload: unknown;
+    try {
+      ({ payload } = await this.callWithArgs('get_stock_news', attempts));
+    } catch (error) {
+      const detail = buildMcpTransportFailureDetail(this.mcpGatewayService.getTransportSnapshot(), {
+        acceptanceStatus: 'degraded',
+        path: '/research/stock-news',
+        upstream: this.extractUpstreamDetail(error),
+      });
+      const reason = this.formatUpstreamError(error);
+      return {
+        items: [],
+        count: 0,
+        degraded: true,
+        fallback_used: true,
+        fallback_reason: ['stock_news_unavailable', detail.transport.fallback_reason, reason].filter(Boolean),
+        message: '个股资讯暂时不可用，已降级为空结果',
+        detail,
+        transport: detail.transport,
+        result_contract: buildResultContract({
+          summary: `${normalized} 个股资讯暂时不可用，页面已保留为空列表并展示原因。`,
+          status: 'unavailable',
+          availableViews: ['summary', 'next_step'],
+          evidence: [
+            { label: '股票代码', value: normalized },
+            { label: '资讯数量', value: '0' },
+          ],
+          riskNotes: [reason],
+          freshness: { updatedAt: new Date().toISOString(), label: '资讯降级时间' },
+          platformMeta: {
+            sourceTool: 'get_stock_news',
+            referencePath: '/research/stock-news',
+            sourceChain: ['get_stock_news'],
+            degraded: true,
+            fallbackReason: ['stock_news_unavailable', reason],
+          },
+        }),
+        data_quality: buildDataQuality({
+          status: 'unavailable',
+          reasons: ['stock_news_unavailable', reason],
+          qualityFlags: ['stock_news_unavailable'],
+          emptyReason: '个股资讯上游暂时不可用',
+          sources: [{ name: 'get_stock_news', status: 'failed', error: reason, sampleCount: 0 }],
+        }),
+      };
+    }
     const list = this.asRecordArray(this.unwrapPayload(payload));
     return {
       items: list.map((item) => ({
@@ -365,5 +468,19 @@ export class ResearchService {
     return {
       message: error instanceof Error ? error.message : String(error),
     };
+  }
+
+  private formatUpstreamError(error: unknown): string {
+    const detail = this.extractUpstreamDetail(error);
+    if (detail && typeof detail === 'object') {
+      const record = detail as Record<string, unknown>;
+      const errorBody = record.error && typeof record.error === 'object'
+        ? record.error as Record<string, unknown>
+        : null;
+      const message = record.message ?? errorBody?.message ?? record.detail;
+      if (typeof message === 'string' && message.trim()) return message.trim();
+      if (typeof record.detail === 'string' && record.detail.trim()) return record.detail.trim();
+    }
+    return error instanceof Error ? error.message : String(error);
   }
 }

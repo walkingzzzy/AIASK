@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Throttle } from '@nestjs/throttler';
 import { PaperTradingService } from './paper-trading.service';
@@ -72,6 +72,12 @@ class PerformanceQueryDto {
 
 class TrustStatusQueryDto {
   @IsOptional() @IsString() account_id?: string;
+}
+
+class TestCleanupDto {
+  @IsString() account_id!: string;
+  @IsOptional() @IsString() test_run_id?: string;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() include_filled_positions?: boolean;
 }
 
 type Req_ = { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } };
@@ -147,6 +153,12 @@ export class PaperTradingController {
       body.order_id,
       requestIdempotencyKey(req, body),
     );
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Post('test-cleanup')
+  async testCleanup(@Body() body: TestCleanupDto, @Req() req: Req_) {
+    const data = await this.svc.testCleanup(userId(req), body);
     return { success: true, data, traceId: traceId(req) };
   }
 

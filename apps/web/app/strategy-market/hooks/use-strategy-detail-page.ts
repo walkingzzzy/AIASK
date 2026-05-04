@@ -78,7 +78,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const runIncubationSyncApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '模拟盘孵化同步已执行' });
   const runExecutionAuditAcceptanceApi = useApiMutation({
     invalidates: [apiKeys.strategy()],
-    successToast: '执行审计验收已重跑',
+    successToast: '执行审计校验已重跑',
   });
   const runRiskScanApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风控扫描已执行' });
   const riskRecoveryApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已发起恢复尝试' });
@@ -334,6 +334,23 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const highConfidenceQualityUiEnabled = Boolean(
     capabilitiesQ.data?.quality_ui_v2_enabled,
   );
+  const detailRecord = (detail ?? {}) as Record<string, unknown>;
+  const closureRecord = (closureReview ?? {}) as Record<string, unknown>;
+  const factoryReadDegraded = Boolean(
+    detailQ.trust.degraded
+    || closureReviewQ.trust.degraded
+    || detailRecord.degraded_detail
+    || detailRecord.degraded
+    || closureRecord.degraded,
+  );
+  const factoryReadDegradedReason = [
+    ...detailQ.trust.reasons,
+    ...closureReviewQ.trust.reasons,
+    String(detailRecord.degraded_reason ?? detailRecord.fallback_reason ?? closureRecord.degraded_reason ?? closureRecord.fallback_reason ?? '').trim(),
+  ].filter(Boolean).join('；') || null;
+  const blockFactoryWrite = () => {
+    window.alert(factoryReadDegradedReason || '策略详情存在降级读取，写入动作已暂停。');
+  };
 
   const allMetrics = useMemo(() => {
     if (!metrics.length) return null;
@@ -389,6 +406,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleRunIncubationPipeline() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await runIncubationPipelineApi.triggerAsync(
       `/strategy-market/${id}/incubation-pipeline/run`,
@@ -398,11 +416,13 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleRunIncubationSync() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await runIncubationSyncApi.triggerAsync(`/strategy-market/${id}/incubation-sync/run`, { method: 'POST' }, {});
   }
 
   async function handleRunExecutionAuditAcceptance() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await runExecutionAuditAcceptanceApi.triggerAsync(
       `/strategy-market/${id}/execution-audit/run`,
@@ -412,6 +432,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleRunRiskScan() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await runRiskScanApi.triggerAsync(
       `/strategy-market/${id}/risk-scan/run`,
@@ -421,11 +442,13 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleRiskRecovery() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await riskRecoveryApi.triggerAsync(`/strategy-market/${id}/risk-recovery`, { method: 'POST' }, { source: 'web_detail' });
   }
 
   async function handleRunRuntimeAlertDispatch() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     await runRuntimeAlertDispatchApi.triggerAsync(
       `/strategy-market/${id}/runtime-alerts/dispatch`,
@@ -435,6 +458,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleAckRuntimeAlert(alertId: number) {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!alertId) return;
     await ackRuntimeAlertApi.triggerAsync(
       `/strategy-market/runtime-alerts/${alertId}/ack`,
@@ -444,6 +468,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleSetRuntimeControl(controlMode: string) {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     const confirmed = window.confirm(`确认将运行控制模式设置为 ${controlMode}？`);
     if (!confirmed) return;
@@ -460,6 +485,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleResolveRiskEvent(eventId: number) {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!eventId) return;
     const confirmed = window.confirm(`确认解决风险事件 ${eventId}？`);
     if (!confirmed) return;
@@ -471,12 +497,14 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   async function handleRunRuntimeCycle() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     const confirmed = window.confirm('确认触发运行态闭环？');
     if (!confirmed) return;
     await runRuntimeCycleApi.triggerAsync('/strategy-market/runtime-cycle/run', { method: 'POST' }, {});
   }
 
   async function handleAiGenerateCandidate() {
+    if (factoryReadDegraded) return blockFactoryWrite();
     if (!id) return;
     const confirmed = window.confirm('确认围绕当前策略提交 AI 候选生成任务？');
     if (!confirmed) return;
@@ -495,7 +523,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }
 
   const factorySectionLoading: Record<FactoryReviewSection, boolean> = {
-    summary: closureReviewQ.isPending || (
+    summary: closureReviewQ.isPending || (useLegacyFactoryQueries && (
       reviewReportQ.isPending ||
       eventsQ.isPending ||
       incubationQ.isPending ||
@@ -503,8 +531,8 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       runtimeControlQ.isPending ||
       domainProjectionQ.isPending ||
       projectionSnapshotQ.isPending
-    ),
-    incubation: closureReviewQ.isPending || (
+    )),
+    incubation: closureReviewQ.isPending || (useLegacyFactoryQueries && (
       incubationQ.isPending ||
       executionAuditAcceptanceQ.isPending ||
       incubationMetricsQ.isPending ||
@@ -513,23 +541,23 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       paperNavQ.isPending ||
       incubationPipelineQ.isPending ||
       promotionReviewsQ.isPending
-    ),
-    runtime: closureReviewQ.isPending || (
+    )),
+    runtime: closureReviewQ.isPending || (useLegacyFactoryQueries && (
       runtimeControlQ.isPending ||
       riskEventsQ.isPending ||
       riskSnapshotsQ.isPending ||
       runtimeAlertsQ.isPending
-    ),
-    vectors: closureReviewQ.isPending || (
+    )),
+    vectors: closureReviewQ.isPending || (useLegacyFactoryQueries && (
       vectorProfilesQ.isPending ||
       similarProfilesQ.isPending ||
       vectorIndexSnapshotsQ.isPending
-    ),
-    experiments: closureReviewQ.isPending || (
+    )),
+    experiments: closureReviewQ.isPending || (useLegacyFactoryQueries && (
       aiExperimentsQ.isPending ||
       domainEventsQ.isPending ||
       taskRunsQ.isPending
-    ),
+    )),
   };
   const factoryLoading = factorySectionLoading[activeFactorySection];
 
@@ -583,6 +611,8 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     factoryPanelProps: {
       highConfidenceQualityUiEnabled,
       canViewOperatorPanels: Boolean(capabilitiesQ.data?.actor_permissions?.can_view_operator_panels),
+      readDegraded: factoryReadDegraded,
+      readDegradedReason: factoryReadDegradedReason,
       strategyIncubationSurface: strategy?.incubation_surface ?? null,
       paperContext: paperContextQ.data,
       report: latestQualityReport,

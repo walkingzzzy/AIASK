@@ -22,7 +22,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { EmptyState, ErrorState, PageStatusCard } from '@/components/status-state';
+import { DataQualityBanner, EmptyState, ErrorState, PageStatusCard } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
@@ -36,9 +36,11 @@ import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useMobile } from '@/hooks/use-mobile';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { normalizeStockCode } from '@/lib/stock-code-utils';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
-import type { ResultContract } from '@aiask/shared-types';
+import type { DataQuality, ResultContract } from '@aiask/shared-types';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -48,6 +50,7 @@ type ResearchData = {
   sourceTools?: Record<string, unknown>;
   meta?: CacheMeta;
   result_contract?: ResultContract | null;
+  data_quality?: DataQuality | null;
 };
 type Range = '7' | '30' | '90' | 'custom';
 type SavedResearchView = {
@@ -111,6 +114,8 @@ export default function ResearchPage() {
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const lastWorkspaceIdRef = useRef<string | null>(null);
   const restoredSavedViewRef = useRef(false);
+  const searchParams = useStableSearchParams();
+  const routeCode = normalizeStockCode(searchParams.get('code'));
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode(DEFAULT_RESEARCH_CODE);
   const [range, setRange] = useState<Range>('30');
   const [startDate, setStartDate] = useState('');
@@ -123,7 +128,7 @@ export default function ResearchPage() {
   const [listPath, setListPath] = useState<string | null>(null);
   const effectiveListPath = listPath ?? autoListPath;
 
-  const listQ = useApiQuery<ResearchData>(effectiveListPath, { critical: true });
+  const listQ = useApiQuery<ResearchData>(effectiveListPath, { critical: false });
   const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
   const [newsPath, setNewsPath] = useState<string | null>(null);
   const newsQ = useApiQuery<unknown>(newsPath, { critical: true });
@@ -149,7 +154,7 @@ export default function ResearchPage() {
     if (!savedView) return;
 
     const timer = window.setTimeout(() => {
-      if (typeof savedView.code === 'string' && savedView.code.trim()) {
+      if (!routeCode && typeof savedView.code === 'string' && savedView.code.trim()) {
         setCode(savedView.code.trim());
       }
       if (isValidRange(savedView.range)) {
@@ -167,17 +172,18 @@ export default function ResearchPage() {
       if (isValidNewsTab(savedView.newsTab)) {
         setNewsTab(savedView.newsTab);
       }
-      if (typeof savedView.listPath === 'string') {
+      if (!routeCode && typeof savedView.listPath === 'string') {
         setListPath(savedView.listPath);
-      } else if (savedView.listPath === null) {
+      } else if (!routeCode && savedView.listPath === null) {
         setListPath(null);
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [mounted, setCode]);
+  }, [mounted, routeCode, setCode]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
+    if (routeCode) return;
     const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
     lastWorkspaceIdRef.current = activeWorkspaceId;
     if (!workspaceChanged) return;
@@ -186,6 +192,7 @@ export default function ResearchPage() {
     return () => window.clearTimeout(timer);
   }, [
     activeWorkspaceId,
+    routeCode,
     setCode,
     workbenchContext.eventCode,
     workbenchContext.stockCode,
@@ -255,6 +262,28 @@ export default function ResearchPage() {
   const loading = listQ.isFetching;
   const error = formError || codeError || listQ.error;
   const showPrimaryEmptyState = !loading && !error && reports.length === 0 && notices.length === 0;
+  const hasResearchQuery = Boolean(resolvedCode && effectiveListPath && listQ.data);
+  const primaryDataUnavailable = hasResearchQuery
+    && listQ.trust.degraded
+    && listQ.trust.status !== 'empty'
+    && listQ.trust.status !== 'partial';
+  const primaryQualityReason = [
+    ...listQ.trust.reasons,
+    ...listQ.trust.qualityFlags,
+    listQ.trust.emptyReason,
+  ].map((item) => String(item ?? '').trim()).filter(Boolean).join('；');
+  const primaryEmptyTitle = primaryDataUnavailable
+    ? '研报公告数据暂不可用'
+    : hasResearchQuery ? '当前条件下未命中研报或公告' : '当前窗口还没有研究结果';
+  const primaryEmptyReason = hasResearchQuery
+    ? primaryDataUnavailable
+      ? primaryQualityReason || '研究数据源暂不可用，页面已停止按正常研报公告展示。'
+      : listQ.data?.data_quality?.empty_reason
+      || listQ.data?.result_contract?.riskNotes?.join('；')
+      || '上游已返回结果，但当前标的与时间窗口没有命中研报或公告。'
+    : '先确认股票代码和时间范围，再决定是否扩大窗口或切换资讯分组。';
+  const primaryEmptyLabel = primaryDataUnavailable ? '数据不可用' : hasResearchQuery ? '真实无数据' : '等待输入';
+  const primaryEmptyStatus = primaryDataUnavailable ? 'unavailable' : 'empty';
   const rangeLabel = range === 'custom' ? `${startDate || '-'} ~ ${endDate || '-'}` : `近 ${range} 天`;
   const newsTabLabel = NEWS_TABS.find((tab) => tab.key === newsTab)?.label ?? newsTab;
   const updatedAtLabel = mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-';
@@ -470,7 +499,7 @@ export default function ResearchPage() {
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Research Workspace</Badge>
+              <Badge variant="info">研究工作台</Badge>
               <Badge variant={resolvedCode ? 'success' : 'warning'}>
                 {resolvedCode ? `当前标的 ${resolvedCode}` : '等待选择标的'}
               </Badge>
@@ -481,7 +510,7 @@ export default function ResearchPage() {
               研究工作台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              先锁定标的和时间窗口，再决定看研报、公告还是资讯流，避免首屏先被结果摘要和长列表抢走注意力。
+              先锁定标的和时间窗口，再选择研报、公告或资讯流。页面会把命中结果、缓存状态和后续研究入口放在同一条动线上。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button
@@ -587,7 +616,7 @@ export default function ResearchPage() {
       <SectionCard className="mt-0 p-4 sm:p-5">
         <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
           <div>
-            <div className="eyebrow">Operation Workspace</div>
+            <div className="eyebrow">查询设置</div>
             <h2 className="mt-2 mb-0 text-xl font-semibold text-text-primary">先放宽或收紧范围，再进入正文</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
               如果默认结果较少，优先扩大时间范围或切到市场新闻，不用先手动重填一遍表单。研究页的重点是先定范围，再决定继续追研报、公告还是资讯流。
@@ -713,6 +742,8 @@ export default function ResearchPage() {
         更新：{updatedAtLabel} ｜ 抓取：{fetchedAtLabel} ｜ 缓存：{cacheText(cache)}
       </div>
 
+      <DataQualityBanner trust={listQ.trust} title="研报公告数据质量" onRetry={() => void listQ.refetch()} className="mt-3" />
+
       {!showPrimaryEmptyState || !compactLayout ? (
         <ProgressiveWorkbenchSection
           pageKey="research"
@@ -725,9 +756,10 @@ export default function ResearchPage() {
 
       {showPrimaryEmptyState ? (
         <PageStatusCard
-          status="empty"
-          title="当前窗口还没有研究结果"
-          reason="先确认股票代码和时间范围，再决定是否扩大窗口或切换资讯分组。"
+          status={primaryEmptyStatus}
+          statusLabel={primaryEmptyLabel}
+          title={primaryEmptyTitle}
+          reason={primaryEmptyReason}
           freshness={fetchedAtLabel}
           primaryAction={(
             <button
@@ -1082,7 +1114,7 @@ export default function ResearchPage() {
 
   const secondaryContent = (
     <SectionCard className="p-4 sm:p-5">
-      <div className="eyebrow">Research Summary</div>
+      <div className="eyebrow">研究摘要</div>
       <h3 className="mt-2 mb-0 text-lg font-semibold text-text-primary">研究工作区摘要</h3>
       <div className="mt-4 grid gap-3">
         <div className="metric-tile rounded-[24px] p-4">

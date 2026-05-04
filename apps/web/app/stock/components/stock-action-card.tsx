@@ -51,7 +51,7 @@ export default function StockActionCard({ actionCard, hasQuote }: StockActionCar
       ) : hasQuote ? (
         <EmptyState
           text="行动卡已预留完成。"
-          hint="当报价、情绪和估值信号汇总完成后，这里会给出下一步操作建议，不再把图表区整体向下挤。"
+          hint="当报价、情绪和估值信号汇总完成后，这里会给出下一步操作建议，并保持主图区域可读。"
           className="py-10"
         />
       ) : (

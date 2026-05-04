@@ -27,7 +27,7 @@ export function PortfolioListSection({
         <div>
           <h3 className="m-0 font-medium">组合列表</h3>
           <p className="mb-0 mt-2 text-sm text-text-secondary">
-            列表区承担“切换当前工作对象”的角色，点按一行就能把详情、加仓和分析统一切过去。
+            点按一行即可切换当前组合，并同步查看详情、加仓和分析入口。
           </p>
         </div>
       </div>

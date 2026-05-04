@@ -4,6 +4,7 @@ import {
   extractFreshness,
   extractPlatformMeta,
 } from '../common/result-contract';
+import { buildDataQuality } from '../common/data-quality';
 import { buildResultContractMeta } from '../common/tool-contracts';
 import type { ToolContractCallResult } from '../common/tool-contracts';
 import type {
@@ -30,6 +31,7 @@ type FundamentalServiceCtor = {
   HISTORY_TTL_SECONDS: number;
   CAPITAL_TTL_SECONDS: number;
   PEERS_TTL_SECONDS: number;
+  STOCK_INFO_TTL_SECONDS: number;
 };
 
 type StockInfoDto = {
@@ -41,6 +43,13 @@ type StockInfoDto = {
   floatShares: number | null;
   totalMarketCap: number | null;
   floatMarketCap: number | null;
+  degraded?: boolean;
+  fallbackSource?: string;
+  fallbackReason?: string;
+  meta?: {
+    fetchedAt: string;
+    cache: { hit: boolean; backend: CacheBackend; key: string; ttlSeconds: number };
+  };
 };
 
 type PeerFallbackDto = {
@@ -70,6 +79,7 @@ export type FundamentalServiceApiHost = {
     fields?: string[],
   ): Promise<Record<string, Record<string, unknown>> | null>;
   buildFinancialRecord(code: string): Promise<Record<string, unknown>>;
+  buildStockInfoFallbackFromDb(code: string): Promise<StockInfoDto | null>;
   buildPeerFallbackFromDb(code: string): Promise<PeerFallbackDto | null>;
   buildSyntheticHistory(code: string, days: number): Promise<FundamentalHistoryDto['points']>;
   callWithArgs(
@@ -113,8 +123,32 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
       { symbol: normalized },
     ];
 
-    const financialsCall = await service.callWithArgs('get_financials', attempts);
-    const valuationCall = await service.callWithArgs('get_valuation_metrics', attempts);
+    const fallbackCall = (canonicalTool: string, reason: string) => ({
+      payload: {},
+      argsMatched: { code: normalized, degraded: true, reason },
+      canonicalArgs: { code: normalized },
+      aliasHits: [],
+      canonicalTool,
+    });
+    const fallbackReasons: string[] = [];
+    let financialsCall: Awaited<ReturnType<FundamentalServiceApiHost['callWithArgs']>>;
+    let valuationCall: Awaited<ReturnType<FundamentalServiceApiHost['callWithArgs']>>;
+    try {
+      financialsCall = await service.callWithArgs('get_financials', attempts);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      fallbackReasons.push(`get_financials: ${reason}`);
+      service.logger.warn(`fundamental overview financials degraded for ${normalized}: ${reason}`);
+      financialsCall = fallbackCall('get_financials', reason);
+    }
+    try {
+      valuationCall = await service.callWithArgs('get_valuation_metrics', attempts);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      fallbackReasons.push(`get_valuation_metrics: ${reason}`);
+      service.logger.warn(`fundamental overview valuation degraded for ${normalized}: ${reason}`);
+      valuationCall = fallbackCall('get_valuation_metrics', reason);
+    }
     let valuation = service.normalizeValuation(valuationCall.payload);
 
     // Fallback 1: DB 直查 stocks 表补充 pe/pb/market_cap
@@ -133,6 +167,35 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
     }
 
     const financials = service.normalizeFinancials(financialsCall.payload);
+    const fetchedAt = new Date().toISOString();
+    const financialsFailed = financialsCall.argsMatched.degraded === true;
+    const valuationFailed = valuationCall.argsMatched.degraded === true;
+    const hasFinancials = Object.values(financials).some((value) => value != null);
+    const hasValuation = Object.values(valuation).some((value) => value != null);
+    const dataQuality = buildDataQuality({
+      status: fallbackReasons.length > 0
+        ? (hasFinancials || hasValuation ? 'partial' : 'unavailable')
+        : (hasFinancials || hasValuation ? 'trusted' : 'empty'),
+      reasons: fallbackReasons,
+      qualityFlags: fallbackReasons.length > 0 ? ['fundamental_source_unavailable'] : [],
+      emptyReason: !hasFinancials && !hasValuation ? '基本面与估值源均未返回可用字段。' : null,
+      sources: [
+        {
+          name: 'get_financials',
+          status: financialsFailed ? 'failed' : (hasFinancials ? 'trusted' : 'empty'),
+          freshness: fetchedAt,
+          sampleCount: hasFinancials ? 1 : 0,
+          error: financialsFailed ? String(financialsCall.argsMatched.reason ?? 'get_financials_unavailable') : null,
+        },
+        {
+          name: 'get_valuation_metrics',
+          status: valuationFailed ? 'failed' : (hasValuation ? 'trusted' : 'empty'),
+          freshness: fetchedAt,
+          sampleCount: hasValuation ? 1 : 0,
+          error: valuationFailed ? String(valuationCall.argsMatched.reason ?? 'get_valuation_metrics_unavailable') : null,
+        },
+      ],
+    });
     const result: FundamentalOverviewDto = {
       code: normalized,
       financials,
@@ -146,11 +209,23 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
         valuation: valuationCall.argsMatched,
       },
       meta: {
-        fetchedAt: new Date().toISOString(),
-        cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        fetchedAt,
+        cache: {
+          hit: false,
+          backend: 'none',
+          key: cacheKey,
+          ttlSeconds: fallbackReasons.length ? Math.min(ttlSeconds, 60) : ttlSeconds,
+        },
       },
+      degraded: fallbackReasons.length > 0,
+      fallbackReason: fallbackReasons.length ? Array.from(new Set(fallbackReasons)).join('; ') : undefined,
+      fallbackSource: fallbackReasons.length ? 'empty_mcp_envelope+db.stocks' : undefined,
+      data_quality: dataQuality,
       result_contract: buildResultContract({
         summary: `${normalized} 当前 ROE ${resultValue(financials.roe)}，PE ${resultValue(valuation.pe)}x，PB ${resultValue(valuation.pb)}x。`,
+        status: fallbackReasons.length > 0
+          ? (hasFinancials || hasValuation ? 'degraded' : 'unavailable')
+          : (hasFinancials || hasValuation ? 'ready' : 'empty'),
         availableViews: ['summary', 'compare', 'next_step'],
         evidence: [
           { label: '股票代码', value: normalized },
@@ -159,12 +234,15 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
           { label: 'PB', value: resultValue(valuation.pb) },
           { label: '市值', value: resultValue(valuation.marketCap) },
         ],
-        freshness: extractFreshness({ meta: { fetchedAt: new Date().toISOString() } }, null, '基本面抓取时间'),
+        riskNotes: fallbackReasons,
+        freshness: extractFreshness({ meta: { fetchedAt } }, null, '基本面抓取时间'),
         platformMeta: extractPlatformMeta(
           {
             meta: {
-              fetchedAt: new Date().toISOString(),
+              fetchedAt,
               source_chain: ['get_financials', 'get_valuation_metrics'],
+              degraded: fallbackReasons.length > 0,
+              fallback_reason: fallbackReasons,
             },
           },
           {
@@ -190,7 +268,7 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
       },
     };
 
-    await service.cacheService.set(cacheKey, result, ttlSeconds);
+    await service.cacheService.set(cacheKey, result, fallbackReasons.length ? Math.min(ttlSeconds, 60) : ttlSeconds);
     return result;
   }
 
@@ -472,19 +550,68 @@ export async function getPeers(service: FundamentalServiceApiHost, code: string)
   }
 
 export async function getStockInfo(service: FundamentalServiceApiHost, code: string): Promise<StockInfoDto> {
-    const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim() }, { code: code.trim() }];
-    const { payload } = await service.callWithArgs('get_stock_info', attempts);
-    const data = service.readRecord(service.unwrapRoot(payload));
-    return {
-      code: code.trim(),
-      name: String(data.name ?? ''),
-      industry: String(data.industry ?? ''),
-      listDate: String(data.listDate ?? data.list_date ?? ''),
-      totalShares: service.toNum(data.totalShares ?? data.total_shares),
-      floatShares: service.toNum(data.floatShares ?? data.float_shares),
-      totalMarketCap: service.toNum(data.totalMarketCap ?? data.total_market_cap),
-      floatMarketCap: service.toNum(data.floatMarketCap ?? data.float_market_cap),
-    };
+    const normalized = code.trim();
+    const cacheKey = `fundamental:stock-info:${normalized}`;
+    const ttlSeconds = service.cacheService.resolveTtl('fundamental.stock-info', service.constructor.STOCK_INFO_TTL_SECONDS);
+    const cached = await service.cacheService.getWithMeta<StockInfoDto>(cacheKey);
+    if (cached.value) {
+      return {
+        ...cached.value,
+        meta: {
+          ...cached.value.meta,
+          fetchedAt: cached.value.meta?.fetchedAt ?? new Date().toISOString(),
+          cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds },
+        },
+      };
+    }
+
+    const attempts: Array<Record<string, unknown>> = [{ stock_code: normalized }, { code: normalized }];
+    try {
+      const { payload } = await service.callWithArgs('get_stock_info', attempts);
+      const data = service.readRecord(service.unwrapRoot(payload));
+      const result: StockInfoDto = {
+        code: normalized,
+        name: String(data.name ?? ''),
+        industry: String(data.industry ?? ''),
+        listDate: String(data.listDate ?? data.list_date ?? ''),
+        totalShares: service.toNum(data.totalShares ?? data.total_shares),
+        floatShares: service.toNum(data.floatShares ?? data.float_shares),
+        totalMarketCap: service.toNum(data.totalMarketCap ?? data.total_market_cap),
+        floatMarketCap: service.toNum(data.floatMarketCap ?? data.float_market_cap),
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+      };
+      await service.cacheService.set(cacheKey, result, ttlSeconds);
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      service.logger.warn(`get_stock_info degraded for ${normalized}: ${reason}`);
+      const fallback = await service.buildStockInfoFallbackFromDb(normalized).catch((dbError) => {
+        service.logger.warn(`DB stock info fallback failed for ${normalized}: ${String(dbError)}`);
+        return null;
+      });
+      const result: StockInfoDto = {
+        code: normalized,
+        name: fallback?.name ?? '',
+        industry: fallback?.industry ?? '',
+        listDate: fallback?.listDate ?? '',
+        totalShares: fallback?.totalShares ?? null,
+        floatShares: fallback?.floatShares ?? null,
+        totalMarketCap: fallback?.totalMarketCap ?? null,
+        floatMarketCap: fallback?.floatMarketCap ?? null,
+        degraded: true,
+        fallbackSource: fallback?.fallbackSource ?? 'empty_stock_info_envelope',
+        fallbackReason: reason,
+        meta: {
+          fetchedAt: new Date().toISOString(),
+          cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+        },
+      };
+      await service.cacheService.set(cacheKey, result, Math.min(ttlSeconds, 60));
+      return result;
+    }
   }
 
 export async function getFinancialSnapshot(

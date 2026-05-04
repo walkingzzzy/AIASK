@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, PageContainer } from '@/components/ui';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
-import { ErrorState } from '@/components/status-state';
+import { DataQualityBanner, ErrorState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useHydrated } from '@/hooks/use-hydrated';
@@ -50,17 +50,19 @@ export default function StockPage() {
   const mobileOnlyDetected = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
   const compactLayout = hydrated ? compactLayoutDetected : true;
   const mobileOnly = hydrated ? mobileOnlyDetected : true;
-  const { code, setCode, codeError, validate, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, resolvedCode } = useStockCode();
   const [period, setPeriod] = useState<Period>('daily');
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
   const [infoTab, setInfoTab] = useState<StockInfoTab>('chart');
   const [wsQuotes, setWsQuotes] = useState<Record<string, Partial<NormalizedQuote>>>({});
+  const lastTechnicalFetchKey = useRef<string | null>(null);
 
   const activeCode = submittedCode ?? resolvedCode ?? null;
   const liveQuoteCode = activeCode;
 
   const quoteQ = useApiQuery<QuoteData>(activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null, {
+    critical: true,
     refetchInterval: tradingInterval(30_000),
     parse: (raw) => {
       const obj = ensureRecord(raw, '个股行情');
@@ -70,9 +72,13 @@ export default function StockPage() {
       return obj as QuoteData;
     },
   });
+  const klineEnabled = Boolean(activeCode && quoteQ.data);
   const klineQ = useApiQuery<KlineData>(
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}&limit=250` : null,
     {
+      critical: true,
+      enabled: klineEnabled,
+      timeoutMs: 30_000,
       parse: (raw) => {
         const obj = ensureRecord(raw, 'K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -83,9 +89,11 @@ export default function StockPage() {
     },
   );
   const techApi = useApiMutation<Record<string, unknown>>({
+    critical: true,
     parse: (raw) => ensureRecord(raw, '技术指标'),
   });
   const patternsApi = useApiMutation<Record<string, unknown>>({
+    critical: true,
     parse: (raw) => {
       const obj = ensureRecord(raw, '形态识别');
       if ('patterns' in obj && obj.patterns != null && !Array.isArray(obj.patterns)) {
@@ -94,29 +102,30 @@ export default function StockPage() {
       return obj;
     },
   });
+  const secondaryDataEnabled = Boolean(activeCode && quoteQ.data && klineQ.data);
   const sentimentQ = useApiQuery<Record<string, unknown>>(
     activeCode ? `/sentiment/stock?code=${encodeURIComponent(activeCode)}` : null,
-    { parse: (raw) => ensureRecord(raw, '个股情绪') },
+    { enabled: secondaryDataEnabled, parse: (raw) => ensureRecord(raw, '个股情绪') },
   );
   const fundFlowQ = useApiQuery<unknown>(
     activeCode ? `/fund-flow/stock?code=${encodeURIComponent(activeCode)}` : null,
-    { parse: (raw) => ensureRecordOrArray(raw, '个股资金流') },
+    { critical: true, enabled: secondaryDataEnabled, parse: (raw) => ensureRecordOrArray(raw, '个股资金流') },
   );
   const fundamentalQ = useApiQuery<unknown>(
     activeCode ? `/fundamental/overview?code=${encodeURIComponent(activeCode)}` : null,
-    { parse: (raw) => ensureRecord(raw, '个股基本面') },
+    { critical: true, enabled: secondaryDataEnabled, parse: (raw) => ensureRecord(raw, '个股基本面') },
   );
   const newsQ = useApiQuery<unknown>(
     activeCode ? `/research/stock-news?code=${encodeURIComponent(activeCode)}` : null,
-    { parse: (raw) => ensureRecordOrArray(raw, '个股资讯') },
+    { enabled: secondaryDataEnabled, parse: (raw) => ensureRecordOrArray(raw, '个股资讯') },
   );
   const orderBookQ = useApiQuery<unknown>(
     activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null,
-    { refetchInterval: tradingInterval(10_000), parse: (raw) => ensureRecord(raw, '个股盘口') },
+    { critical: true, enabled: secondaryDataEnabled, refetchInterval: tradingInterval(10_000), parse: (raw) => ensureRecord(raw, '个股盘口') },
   );
   const valuationQ = useApiQuery<unknown>(
     activeCode ? `/valuation/overview?code=${encodeURIComponent(activeCode)}` : null,
-    { parse: (raw) => ensureRecord(raw, '估值概览') },
+    { critical: true, enabled: secondaryDataEnabled, parse: (raw) => ensureRecord(raw, '估值概览') },
   );
 
   const handleWsQuote = useCallback((data: LiveQuoteData) => {
@@ -137,13 +146,19 @@ export default function StockPage() {
     patternsApi.trigger('/technical/patterns', { method: 'POST' }, { code: nextCode });
   }
 
-  const autoFetched = useRef(false);
   useEffect(() => {
-    if (!autoFetched.current && resolvedCode) {
-      autoFetched.current = true;
-      doFetch(resolvedCode);
+    if (infoTab !== 'tech' || !activeCode) return;
+    const fetchKey = `${activeCode}:${submittedPeriod}`;
+    if (lastTechnicalFetchKey.current === fetchKey) return;
+    lastTechnicalFetchKey.current = fetchKey;
+    doFetch(activeCode);
+  }, [activeCode, infoTab, submittedPeriod]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (infoTab !== 'tech') {
+      lastTechnicalFetchKey.current = null;
     }
-  }, [resolvedCode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [infoTab]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -164,7 +179,10 @@ export default function StockPage() {
       setSubmittedCode(nextCode);
       setSubmittedPeriod(nextPeriod);
     }
-    doFetch(nextCode);
+    if (infoTab === 'tech') {
+      lastTechnicalFetchKey.current = `${nextCode}:${nextPeriod}`;
+      doFetch(nextCode);
+    }
   }
 
   const candleData = useMemo(
@@ -346,7 +364,7 @@ export default function StockPage() {
       ? `${(((Number(quote.high) - Number(quote.low)) / Number(quote.prevClose)) * 100).toFixed(2)}%`
       : '-';
   const activeTabLabel = STOCK_INFO_TABS.find((item) => item.key === infoTab)?.label ?? 'K线图';
-  const currentFocusCode = contextCode || code.trim() || '600519';
+  const currentFocusCode = contextCode || code.trim() || '未选择标的';
   const refreshStatus = quoteQ.isFetching ? '数据刷新中' : quote ? '已同步最新报价' : '等待首次加载';
   const refreshTimeText = quoteQ.dataUpdatedAt
     ? new Date(quoteQ.dataUpdatedAt).toLocaleString('zh-CN', { hour12: false })
@@ -360,7 +378,7 @@ export default function StockPage() {
     : [
         '先输入代码并确认周期，再看报价和主图，首屏现在会优先保留关键指标与动作入口。',
         '技术面、估值、新闻和 AI 诊断都保留在同一页内，但建议顺着 tab 从左到右阅读。',
-        '第一次使用时优先跑 600519 之类的熟悉标的，更容易判断信号是否合理。',
+        '如果还没有关注标的，先从自选股、持仓或搜索结果中选择一个，再进入详情页判断信号。',
       ];
   const askAiSummary = quote ? `${quote.name}，现价 ${fmtNum(Number(quote.price), 2)}，涨跌幅 ${fmtPct(priceChangePct)}` : undefined;
 
@@ -464,7 +482,7 @@ export default function StockPage() {
             {quote ? `${quote.name} ${activeCode ?? ''}` : '个股详情'}
           </h1>
           <p className="mb-0 mt-3 max-w-3xl text-sm leading-6 text-text-secondary">
-            先确认代码和周期，再看报价快照与当前标签页。行动卡和更多跳转已下沉，不再占满默认首屏。
+            先确认代码和周期，再看报价快照与当前标签页。更多跳转和后续操作可在需要时展开，主图保持清晰可读。
           </p>
           <div className={`mt-4 grid gap-3 ${mobileOnly ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-4'}`}>
             <div className="metric-tile rounded-[24px] p-4">
@@ -482,7 +500,7 @@ export default function StockPage() {
                 <div className="metric-tile rounded-[24px] p-4">
                   <div className="metric-label">涨跌幅</div>
                   <div className={`mt-2 text-lg font-semibold ${chgColor}`}>{quote ? fmtPct(priceChangePct) : '-'}</div>
-                  <div className="mt-1 text-xs text-text-secondary">报价快照已并入首屏</div>
+                  <div className="mt-1 text-xs text-text-secondary">来自当前报价快照</div>
                 </div>
                 <div className="metric-tile rounded-[24px] p-4">
                   <div className="metric-label">当前振幅</div>
@@ -499,7 +517,7 @@ export default function StockPage() {
                 <div className="metric-tile rounded-[24px] p-4">
                   <div className="metric-label">涨跌幅</div>
                   <div className={`mt-2 text-lg font-semibold ${chgColor}`}>{quote ? fmtPct(priceChangePct) : '-'}</div>
-                  <div className="mt-1 text-xs text-text-secondary">报价快照已并入首屏</div>
+                  <div className="mt-1 text-xs text-text-secondary">来自当前报价快照</div>
                 </div>
                 <div className="metric-tile rounded-[24px] p-4">
                   <div className="metric-label">当前振幅</div>
@@ -548,6 +566,13 @@ export default function StockPage() {
       />
 
       {error ? <ErrorState text={error} /> : null}
+
+      <div className="space-y-2">
+        <DataQualityBanner trust={quoteQ.trust} title="个股报价数据质量" onRetry={() => void quoteQ.refetch()} />
+        <DataQualityBanner trust={klineQ.trust} title="个股K线数据质量" onRetry={() => void klineQ.refetch()} />
+        <DataQualityBanner trust={fundFlowQ.trust} title="个股资金流数据质量" onRetry={() => void fundFlowQ.refetch()} />
+        <DataQualityBanner trust={fundamentalQ.trust} title="个股基本面数据质量" onRetry={() => void fundamentalQ.refetch()} />
+      </div>
 
       {!compactLayout ? (
         <StockSnapshot

@@ -23,6 +23,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { EmptyState, ErrorState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -38,6 +39,7 @@ import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/da
 import { exportCSV } from '@/lib/export';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
+import { normalizeStockCode } from '@/lib/stock-code-utils';
 import type { ResultContract } from '@aiask/shared-types';
 
 type OverviewData = {
@@ -118,39 +120,53 @@ function flattenObj(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+function getExtraEndpoint(type: ExtraTab, code: string) {
+  if (type === 'history') return null;
+  if (type === 'info') return `/fundamental/stock-info?code=${code}`;
+  if (type === 'snapshot') return `/fundamental/financial-snapshot?code=${code}`;
+  return `/fundamental/f10?code=${code}`;
+}
+
 export default function FundamentalPage() {
   const hydrated = useHydrated();
+  const searchParams = useStableSearchParams();
+  const urlInitialCode = normalizeStockCode(searchParams.get('code'));
   const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const compactLayout = hydrated ? compactLayoutDetected : true;
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const [days, setDays] = useState(90);
   const [extraTab, setExtraTab] = useState<ExtraTab>('info');
   const [compactOverviewTab, setCompactOverviewTab] = useState<CompactOverviewTab>('valuation');
   const [showDetailedData, setShowDetailedData] = useState(false);
-  const [submittedCode, setSubmittedCode] = useState<string | null>(null);
+  const [submittedCode, setSubmittedCode] = useState<string | null>(() => urlInitialCode || null);
   const [submittedDays, setSubmittedDays] = useState<number>(90);
 
   // 自动查询：URL 或 Store 携带了有效代码时自动触发
-  const autoFetched = useRef(false);
+  const autoFetched = useRef(Boolean(urlInitialCode));
   useEffect(() => {
-    if (!autoFetched.current && resolvedCode) {
+    const autoCode = resolvedCode || trimmedCode;
+    if (!autoFetched.current && autoCode) {
       autoFetched.current = true;
-      const id = window.setTimeout(() => setSubmittedCode(resolvedCode), 0);
+      const id = window.setTimeout(() => setSubmittedCode(autoCode), 0);
       return () => window.clearTimeout(id);
     }
     return undefined;
-  }, [resolvedCode]);
+  }, [resolvedCode, trimmedCode]);
 
   const overviewQ = useApiQuery<OverviewData>(submittedCode ? `/fundamental/overview?code=${submittedCode}` : null, {
+    critical: true,
     parse: (raw) => ensureRecord(raw, '基本面概览') as OverviewData,
   });
   const historyQ = useApiQuery<HistoryData>(
     submittedCode ? `/fundamental/history?code=${submittedCode}&days=${submittedDays}` : null,
-    { parse: (raw) => ensureRecord(raw, '基本面历史') as HistoryData },
+    { critical: true, parse: (raw) => ensureRecord(raw, '基本面历史') as HistoryData },
   );
   const [extraPath, setExtraPath] = useState<string | null>(null);
+  const [autoFailedExtraPath, setAutoFailedExtraPath] = useState<string | null>(null);
+  const lastAutoExtraKeyRef = useRef<string | null>(null);
   const extraQ = useApiQuery<unknown>(extraPath, {
     parse: (raw) => ensureRecordOrArray(raw, '基本面扩展数据'),
+    retry: false,
   });
   const historyMut = useApiMutation<unknown>({
     parse: (raw) => ensureRecordOrArray(raw, '财务历史'),
@@ -172,23 +188,47 @@ export default function FundamentalPage() {
         },
       );
     } else {
-      const endpoint =
-        type === 'info'
-          ? `/fundamental/stock-info?code=${code}`
-          : type === 'snapshot'
-            ? `/fundamental/financial-snapshot?code=${code}`
-            : `/fundamental/f10?code=${code}`;
-      if (endpoint === extraPath) extraQ.refetch();
-      else setExtraPath(endpoint);
+      const endpoint = getExtraEndpoint(type as ExtraTab, code);
+      if (!endpoint) return;
+      if (endpoint === extraPath) {
+        setAutoFailedExtraPath(null);
+        extraQ.refetch();
+      } else {
+        setAutoFailedExtraPath(null);
+        setExtraPath(endpoint);
+      }
     }
   }, [extraPath, extraQ, historyMut, submittedCode]);
 
   // Auto-load extra tab data when switching tabs
   useEffect(() => {
     if (!submittedCode) return undefined;
-    const id = window.setTimeout(() => fetchExtra(extraTab, submittedCode), 0);
+    const endpoint = getExtraEndpoint(extraTab, submittedCode);
+    const autoKey = `${submittedCode}:${submittedDays}:${extraTab}:${endpoint ?? 'history'}`;
+    if (lastAutoExtraKeyRef.current === autoKey) return undefined;
+    if (endpoint && endpoint === extraPath) return undefined;
+    if (endpoint && endpoint === autoFailedExtraPath) {
+      lastAutoExtraKeyRef.current = autoKey;
+      return undefined;
+    }
+    const id = window.setTimeout(() => {
+      lastAutoExtraKeyRef.current = autoKey;
+      if (extraTab === 'history') {
+        fetchExtra(extraTab, submittedCode);
+      } else if (endpoint) {
+        setAutoFailedExtraPath(null);
+        setExtraPath(endpoint);
+      }
+    }, 0);
     return () => window.clearTimeout(id);
-  }, [extraTab, fetchExtra, submittedCode]);
+  }, [autoFailedExtraPath, extraPath, extraTab, fetchExtra, submittedCode, submittedDays]);
+
+  useEffect(() => {
+    if (!extraPath || !extraQ.error) return;
+
+    const id = window.setTimeout(() => setAutoFailedExtraPath(extraPath), 0);
+    return () => window.clearTimeout(id);
+  }, [extraPath, extraQ.error]);
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -386,7 +426,7 @@ export default function FundamentalPage() {
   return (
     <PageContainer narrow>
       <LightOverviewHero
-        eyebrow="Fundamental Workbench"
+        eyebrow="基本面工作台"
         title={compactLayout ? '基本面分析' : '基本面分析工作台'}
         summary={
           compactLayout
@@ -402,7 +442,7 @@ export default function FundamentalPage() {
           </>
         ) : (
           <>
-            <Badge variant="info">Fundamental Workbench</Badge>
+            <Badge variant="info">基本面工作台</Badge>
             <Badge variant={submittedCode ? 'success' : 'warning'}>
               {submittedCode ? `当前标的 ${submittedCode}` : '等待确认标的'}
             </Badge>
@@ -442,7 +482,27 @@ export default function FundamentalPage() {
             </p>
           </div>
         )}
-        metrics={compactLayout ? [] : [
+        metrics={compactLayout ? [
+          {
+            key: 'fundamental-valuation',
+            label: 'PE / PB',
+            value: `${fmtNum(valuation?.pe, 2)} / ${fmtNum(valuation?.pb, 2)}`,
+            hint: '估值快照',
+          },
+          {
+            key: 'fundamental-roe',
+            label: 'ROE / 资产负债率',
+            value: `${fmtNum(financials?.roe, 2)}% / ${fmtNum(financials?.debtRatio, 2)}%`,
+            hint: '财务快照',
+          },
+          {
+            key: 'fundamental-profit',
+            label: '净利润 / 营收',
+            value: `${fmtAmount(financials?.netProfit)} / ${fmtAmount(financials?.revenue)}`,
+            hint: '基本面概览',
+          },
+          { key: 'fundamental-missing', label: '关键缺口', value: String(missing.length), hint: missing.length ? missing.join('、') : '核心字段齐全' },
+        ] : [
           { key: 'fundamental-focus', label: '当前标的', value: focusCode || '-', hint: focusName || '等待名称解析' },
           { key: 'fundamental-update', label: '最近更新', value: updatedAt || '-', hint: freshness ? new Date(freshness).toLocaleString('zh-CN') : '待刷新' },
           { key: 'fundamental-missing', label: '关键缺口', value: String(missing.length), hint: missing.length ? missing.join('、') : '核心字段齐全' },
@@ -484,7 +544,7 @@ export default function FundamentalPage() {
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Analysis Setup</div>
+              <div className="eyebrow">查询设置</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">查询工作台</h2>
             {!compactLayout ? (
               <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
@@ -558,14 +618,14 @@ export default function FundamentalPage() {
       {compactLayout ? (
         <CollapsibleSectionCard
           title="估值、财务与历史走势"
-          summary="移动端只保留一个概览块，估值、财务和历史走势通过 tab 切换，不再把多个摘要同时堆在首屏。"
+          summary="估值、财务快照和历史走势通过标签切换。先看主摘要，再按需要展开细项。"
           className="mt-4"
           defaultOpen={false}
           badge={<Badge variant="info">主摘要</Badge>}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">Core Summary</div>
+              <div className="eyebrow">核心摘要</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">估值、财务与历史走势</h2>
             </div>
             <Badge variant="neutral">
@@ -666,7 +726,7 @@ export default function FundamentalPage() {
       ) : (
         <CollapsibleSectionCard
           title="估值与财务快照"
-          summary="桌面端首屏默认只展开一层快照，先确认估值与财务是否支持当前判断，再决定是否进入历史走势和详细资料。"
+          summary="先确认估值与财务是否支持当前判断，再决定是否进入历史走势和详细资料。"
           className="mt-4"
           defaultOpen
           badge={<Badge variant="info">主摘要</Badge>}
@@ -721,14 +781,14 @@ export default function FundamentalPage() {
       {!compactLayout ? (
         <CollapsibleSectionCard
           title={`历史估值走势（${days}天）`}
-          summary="历史图表改成次级下钻层，默认不和快照区同时展开，避免桌面端首屏出现双重点。"
+          summary="历史图表用于核对估值变化节奏。需要判断区间趋势时再展开查看。"
           className="mt-4"
           badge={<Badge variant="neutral">{points.length} 条点位</Badge>}
         >
         <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">History View</div>
+              <div className="eyebrow">历史走势</div>
               <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">历史估值走势（{days}天）</h2>
             </div>
             <div className="metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
@@ -771,8 +831,8 @@ export default function FundamentalPage() {
       ) : null}
       {compactLayout && !showDetailedData ? (
         <div className="mt-5 rounded-[24px] border border-white/45 bg-white/24 px-4 py-4 text-sm text-text-secondary shadow-[0_20px_44px_-30px_rgba(15,23,42,0.18)]">
-          <div className="font-medium text-text-primary">详细资料已下沉</div>
-          <div className="mt-2">F10、财务快照和财务历史不再默认占用首屏，需要时再展开。</div>
+          <div className="font-medium text-text-primary">详细资料</div>
+          <div className="mt-2">F10、财务快照和财务历史适合进一步核对，需要时再展开查看。</div>
           <button type="button" onClick={() => setShowDetailedData(true)} className={`${HERO_SECONDARY_BUTTON_CLS} mt-3`}>
             展开详细资料
           </button>
@@ -783,7 +843,7 @@ export default function FundamentalPage() {
           <div>
             <h2 className="mb-0 text-xl font-semibold text-text-primary">展开详细资料</h2>
             <p className="mb-0 mt-2 text-sm text-text-secondary">
-              F10、财务快照和财务历史属于深挖层，默认收起，先完成上面的摘要和历史判断再继续下钻。
+              F10、财务快照和财务历史用于深挖字段来源，建议先完成上面的摘要和历史判断再继续查看。
             </p>
           </div>
           <Badge variant="neutral">{activeExtraLabel}</Badge>
@@ -793,7 +853,7 @@ export default function FundamentalPage() {
             <div>
               <h3 className="mb-0 text-lg font-semibold text-text-primary">详细资料标签</h3>
               <p className="mt-1 text-sm text-text-secondary">
-                切换标签会自动抓取对应资料。适合先看“基本信息/财务快照”，再进入 F10 与财务历史做深挖。
+                切换标签会尝试加载对应资料；如果上游限流或暂时不可用，页面会保留当前降级态，需要手动刷新后再重试。
               </p>
             </div>
             <button
@@ -827,7 +887,7 @@ export default function FundamentalPage() {
                     return (
                       <EmptyState
                         text={`还没有加载${activeExtraLabel}`}
-                        hint="切换标签后会自动查询；如果结果为空，可以点击上方“刷新”再次尝试。"
+                        hint="切换标签后会尝试加载；如果结果为空或上游限流，可以点击上方“刷新当前资料”再次尝试。"
                       />
                     );
                   }

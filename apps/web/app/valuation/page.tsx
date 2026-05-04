@@ -78,7 +78,7 @@ export default function ValuationPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
   const [tab, setTab] = useState<Tab>('dcf');
   const [viewTab, setViewTab] = useState<ViewTab>('params');
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
+  const { code, setCode, codeError, setCodeError, validate, trimmedCode, resolvedCode } = useStockCode();
   const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
   const [discountRate, setDiscountRate] = useState('0.1');
   const [growthRate, setGrowthRate] = useState('0.05');
@@ -149,7 +149,11 @@ export default function ValuationPage() {
   }
 
   function runRecommendedValuation() {
-    const nextCode = trimmedCode || resolvedCode || '600519';
+    const nextCode = trimmedCode || resolvedCode || '';
+    if (!nextCode) {
+      setCodeError('请先选择你的关注股票，再运行推荐估值');
+      return;
+    }
     setCode(nextCode);
     setFormError(null);
 
@@ -282,7 +286,11 @@ export default function ValuationPage() {
       scope: 'page' as const,
       pageKey: 'valuation',
       run: () => {
-        window.location.href = `/stock?code=${encodeURIComponent(focusCode || '600519')}`;
+        if (!focusCode) {
+          setCodeError('请先选择你的关注股票，再打开个股详情');
+          return { message: '请先选择你的关注股票' };
+        }
+        window.location.href = `/stock?code=${encodeURIComponent(focusCode)}`;
         return { message: '已跳到个股详情' };
       },
     },
@@ -295,9 +303,9 @@ export default function ValuationPage() {
     pageActions,
     preferredActionIds: ['valuation.run-recommended', 'valuation.submit', 'valuation.open-stock'],
     recommendedLinks: [
-      { id: 'valuation-open-stock-link', label: '个股详情', href: `/stock?code=${encodeURIComponent(focusCode || '600519')}` },
-      { id: 'valuation-open-fundamental-link', label: '基本面', href: `/fundamental?code=${encodeURIComponent(focusCode || '600519')}` },
-      { id: 'valuation-open-research-link', label: '研究中心', href: `/research?code=${encodeURIComponent(focusCode || '600519')}` },
+      { id: 'valuation-open-stock-link', label: focusCode ? '个股详情' : '选择标的', href: focusCode ? `/stock?code=${encodeURIComponent(focusCode)}` : '/watchlist?from=valuation' },
+      { id: 'valuation-open-fundamental-link', label: '基本面', href: focusCode ? `/fundamental?code=${encodeURIComponent(focusCode)}` : '/fundamental' },
+      { id: 'valuation-open-research-link', label: '研究中心', href: focusCode ? `/research?code=${encodeURIComponent(focusCode)}` : '/research?from=valuation' },
       { id: 'valuation-open-risk-link', label: '风险中心', href: '/risk' },
     ],
     evidence: [
@@ -350,12 +358,12 @@ export default function ValuationPage() {
   return (
     <PageContainer>
       <LightOverviewHero
-        eyebrow="Valuation Workbench"
+        eyebrow="估值工作台"
         title="估值分析工作台"
-        summary={compactLayout ? '先选模型，再在参数和结果之间切换。' : '先选模型，再决定是继续调参数还是直接看结果。默认不再把说明、预设、配置和结果同时摊开。'}
+        summary={compactLayout ? '先选模型，再在参数和结果之间切换。' : '先选模型，再决定是继续调参数还是直接看结果。模型假设会随当前选择同步更新。'}
         badges={(
           <>
-            <Badge variant="info">Valuation Workbench</Badge>
+            <Badge variant="info">估值工作台</Badge>
             <Badge variant={focusCode ? 'success' : 'warning'}>
               {focusCode ? `当前标的 ${focusCode}` : '等待确认标的'}
             </Badge>
@@ -424,10 +432,10 @@ export default function ValuationPage() {
       <div className="panel-soft rounded-[28px] p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="eyebrow">Valuation Workspace</div>
+            <div className="eyebrow">估值模型</div>
             <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">模型与结果</h2>
             <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              先切模型，再决定当前是调参数还是读结果。这样横屏平板和移动端都不会在默认状态下堆满长内容。
+              先切换估值模型，再决定当前是调整参数还是阅读结果。不同模型的假设和适用场景会分开呈现。
             </p>
           </div>
         </div>

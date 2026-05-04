@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import ResponsiveResultWorkbench from '@/components/responsive-result-workbench';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
@@ -38,19 +38,19 @@ function eventBadgeVariant(value?: string | null) {
 export default function EventsPage() {
   const router = useRouter();
   const searchParams = useStableSearchParams();
+  const searchParamsKey = searchParams.toString();
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
-  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const addWorkbenchTask = useWorkbenchStore((state) => state.addTask);
-  const initialCode = searchParams.get('code') || workbenchContext.eventCode || workbenchContext.stockCode || '600519';
+  const urlCode = (searchParams.get('code') || '').trim();
+  const initialCode = (urlCode || workbenchContext.eventCode || workbenchContext.stockCode || '').trim();
   const { code, setCode, trimmedCode, validate, codeError } = useStockCode(initialCode);
   const [days, setDays] = useState<number>(() => {
     const raw = Number(searchParams.get('days') ?? 7);
     return Number.isFinite(raw) && raw > 0 ? raw : 7;
   });
   const [type, setType] = useState(searchParams.get('type') ?? 'all');
-  const lastWorkspaceIdRef = useRef<string | null>(null);
 
   const activeCode = useMemo(() => (/^\d{6}$/.test(trimmedCode) ? trimmedCode : ''), [trimmedCode]);
   const importantQ = useApiQuery<EventImportantResponse>(`/event/important?days=${days}&limit=10`);
@@ -59,40 +59,67 @@ export default function EventsPage() {
   const timelineQ = useApiQuery<EventTimelineResponse>(
     activeCode ? `/event/by-code?code=${encodeURIComponent(activeCode)}&limit=12` : null,
   );
+  const refetchImportantEvents = importantQ.refetch;
+  const refetchEventCalendar = calendarQ.refetch;
+  const refetchEventSubscriptions = subscriptionsQ.refetch;
+  const refetchEventTimeline = timelineQ.refetch;
   const subscriptionApi = useApiMutation<EventSubscriptionMutationResponse>({
     invalidates: [['api', 'event']],
   });
+  const replaceEventsUrl = useCallback(
+    (next: { code?: string; days?: number; type?: string }) => {
+      const nextCodeRaw = next.code !== undefined ? next.code.trim() : activeCode;
+      const nextCode = /^\d{6}$/.test(nextCodeRaw) ? nextCodeRaw : '';
+      const nextDays = next.days ?? days;
+      const nextType = next.type ?? type;
+      const params = new URLSearchParams(searchParamsKey);
+      if (nextCode) params.set('code', nextCode);
+      else params.delete('code');
+      params.set('days', String(nextDays));
+      params.set('type', nextType);
+      const nextQs = params.toString();
+      if (nextQs !== searchParamsKey) {
+        router.replace(`/events?${nextQs}`, { scroll: false });
+      }
+    },
+    [activeCode, days, router, searchParamsKey, type],
+  );
+  const setCodeWithUrlSync = useCallback(
+    (value: string) => {
+      setCode(value);
+      replaceEventsUrl({ code: value });
+    },
+    [replaceEventsUrl, setCode],
+  );
+  const setDaysWithUrlSync = useCallback((value: number) => {
+    setDays(value);
+    replaceEventsUrl({ days: value });
+  }, [replaceEventsUrl]);
+  const setTypeWithUrlSync = useCallback((value: string) => {
+    setType(value);
+    replaceEventsUrl({ type: value });
+  }, [replaceEventsUrl]);
 
   useEffect(() => {
     if (!workbenchHydrated) return;
-
-    const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
-    lastWorkspaceIdRef.current = activeWorkspaceId;
-    if (!workspaceChanged && searchParams.toString()) return;
-
-    const nextCode = workbenchContext.eventCode || workbenchContext.stockCode;
-    if (nextCode) setCode(nextCode);
-  }, [activeWorkspaceId, searchParams, setCode, workbenchContext, workbenchHydrated]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (activeCode) params.set('code', activeCode);
-    else params.delete('code');
-    params.set('days', String(days));
-    params.set('type', type);
-    const nextQs = params.toString();
-    if (nextQs !== searchParams.toString()) {
-      router.replace(`/events?${nextQs}`, { scroll: false });
+    if (activeCode) {
+      if (workbenchContext.eventCode === activeCode && workbenchContext.stockCode === activeCode) return;
+      updateWorkbenchContext({
+        eventCode: activeCode,
+        stockCode: activeCode,
+      });
+      return;
     }
-  }, [activeCode, days, router, searchParams, type]);
 
-  useEffect(() => {
-    if (!workbenchHydrated) return;
-    updateWorkbenchContext({
-      eventCode: activeCode || null,
-      stockCode: activeCode || null,
-    });
-  }, [activeCode, updateWorkbenchContext, workbenchHydrated]);
+    if (workbenchContext.eventCode == null) return;
+    updateWorkbenchContext({ eventCode: null });
+  }, [
+    activeCode,
+    updateWorkbenchContext,
+    workbenchContext.eventCode,
+    workbenchContext.stockCode,
+    workbenchHydrated,
+  ]);
 
   const subscriptions = subscriptionsQ.data?.items ?? [];
   const isSubscribed = Boolean(activeCode && subscriptions.some((item) => item.code === activeCode));
@@ -191,10 +218,10 @@ export default function EventsPage() {
         pageKey: 'events',
         run: async () => {
           await Promise.allSettled([
-            importantQ.refetch(),
-            calendarQ.refetch(),
-            subscriptionsQ.refetch(),
-            timelineQ.refetch(),
+            refetchImportantEvents(),
+            refetchEventCalendar(),
+            refetchEventSubscriptions(),
+            refetchEventTimeline(),
           ]);
           return { message: '已刷新事件数据' };
         },
@@ -272,15 +299,15 @@ export default function EventsPage() {
     ],
     [
       activeCode,
-      calendarQ,
-      importantQ,
       isSubscribed,
       openExecution,
       openResearch,
       openStock,
+      refetchEventCalendar,
+      refetchEventSubscriptions,
+      refetchEventTimeline,
+      refetchImportantEvents,
       subscribeCurrentCode,
-      subscriptionsQ,
-      timelineQ,
       unsubscribeCurrentCode,
     ],
   );
@@ -370,7 +397,7 @@ export default function EventsPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Event Workspace</Badge>
+              <Badge variant="info">事件工作台</Badge>
               <Badge variant="neutral">{activeTypeLabel}</Badge>
               <Badge variant={isSubscribed ? 'success' : 'neutral'}>
                 {isSubscribed ? '已订阅重点事件' : '未订阅当前标的'}
@@ -380,7 +407,7 @@ export default function EventsPage() {
               事件日历工作台
             </h1>
             <p className="mb-0 mt-3 hidden max-w-3xl text-sm leading-7 text-text-secondary sm:block sm:text-[15px]">
-              把市场事件、重点订阅和单一标的时间线收进同一块工作台。你可以先压缩观察窗口，再沿着研究页、执行中心和个股详情形成一条连续动作链。
+              集中查看市场事件、重点订阅和单一标的时间线。你可以先缩小观察窗口，再进入研究页、执行中心或个股详情继续处理。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <button
@@ -391,7 +418,7 @@ export default function EventsPage() {
                 data-action-testid="events-subscription-action"
                 className={`rounded-full px-4 py-2 text-sm shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${isSubscribed ? 'border border-glass-border bg-white/45 text-text-primary' : 'bg-primary text-white'}`}
               >
-                {subscriptionApi.isPending ? '处理中...' : isSubscribed ? '取消订阅当前股票事件' : '订阅当前股票事件'}
+                {subscriptionApi.isPending ? '正在更新订阅...' : isSubscribed ? '取消订阅当前股票事件' : '订阅当前股票事件'}
               </button>
               {activeCode ? (
                 <button
@@ -506,9 +533,9 @@ export default function EventsPage() {
         currentView={currentView}
         onApplyView={(snapshot) => {
           const payload = snapshot as Record<string, unknown>;
-          if (typeof payload.code === 'string') setCode(payload.code);
-          if (typeof payload.days === 'number' && payload.days > 0) setDays(payload.days);
-          if (typeof payload.type === 'string' && payload.type) setType(payload.type);
+          if (typeof payload.code === 'string') setCodeWithUrlSync(payload.code);
+          if (typeof payload.days === 'number' && payload.days > 0) setDaysWithUrlSync(payload.days);
+          if (typeof payload.type === 'string' && payload.type) setTypeWithUrlSync(payload.type);
         }}
         supportsPagePanels
         mobileSummaryMode="hidden"
@@ -527,14 +554,14 @@ export default function EventsPage() {
                       id="events-code"
                       label="股票代码"
                       value={code}
-                      onChange={setCode}
+                      onChange={setCodeWithUrlSync}
                       error={codeError}
                     />
                     <label className="flex flex-col gap-1 text-xs text-text-secondary">
                       <span>事件类型</span>
                       <select
                         value={type}
-                        onChange={(event) => setType(event.target.value)}
+                        onChange={(event) => setTypeWithUrlSync(event.target.value)}
                         className="rounded border border-border px-2 py-1.5 text-sm"
                       >
                         {EVENT_TYPES.map((item) => (
@@ -566,7 +593,7 @@ export default function EventsPage() {
                       <button
                         key={item}
                         type="button"
-                        onClick={() => setDays(item)}
+                        onClick={() => setDaysWithUrlSync(item)}
                         className={`rounded border px-3 py-1 text-xs ${days === item ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
                       >
                         {item} 天
@@ -617,7 +644,7 @@ export default function EventsPage() {
                 rowKey="id"
                 onRowClick={(row) => {
                   const nextCode = String(row.code ?? '').trim();
-                  if (nextCode) setCode(nextCode);
+                  if (nextCode) setCodeWithUrlSync(nextCode);
                 }}
                 columns={[
                   { key: 'rank', label: '序号' },
@@ -697,7 +724,7 @@ export default function EventsPage() {
                       key={item.code}
                       className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${activeCode === item.code ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
                     >
-                      <button type="button" onClick={() => setCode(item.code)} className="px-1">
+                      <button type="button" onClick={() => setCodeWithUrlSync(item.code)} className="px-1">
                         {item.code}
                         {item.name ? ` · ${item.name}` : ''}
                       </button>

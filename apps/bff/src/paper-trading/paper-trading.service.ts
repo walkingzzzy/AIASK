@@ -1,12 +1,15 @@
-import { BadGatewayException, HttpException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, HttpException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
 import type { PaperTradingTrustLevel, PaperTradingTrustState, PaperTradingTrustStatus } from '@aiask/shared-types';
 import { CommonCacheService } from '../common/cache.service';
+import { degradedDataQuality } from '../common/data-quality';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PaperTradingIdempotencyService } from './paper-trading-idempotency.service';
 
 @Injectable()
 export class PaperTradingService {
   private static readonly SUMMARY_TTL_SECONDS = 30;
+  private static readonly READ_TIMEOUT_MS = 4_000;
+  private static readonly UPDATE_PRICES_TIMEOUT_MS = 2_500;
   private readonly logger = new Logger(PaperTradingService.name);
 
   constructor(
@@ -15,12 +18,16 @@ export class PaperTradingService {
     private readonly cacheService: CommonCacheService,
   ) { }
 
-  private async call(action: string, params: Record<string, unknown> = {}) {
+  private async call(
+    action: string,
+    params: Record<string, unknown> = {},
+    options: { retryOnTransportError?: boolean; timeoutMs?: number } = {},
+  ) {
     try {
       const result = await this.mcp.callTool('paper_trading_manager', {
         action,
         params,
-      });
+      }, { retryOnTransportError: options.retryOnTransportError, timeoutMs: options.timeoutMs });
       return this.unwrapManagerResult(action, result);
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -34,25 +41,79 @@ export class PaperTradingService {
   }
 
   async listAccounts(userId: string) {
-    return this.call('list_accounts', { user_id: userId });
+    try {
+      return await this.call('list_accounts', { user_id: userId }, { timeoutMs: PaperTradingService.READ_TIMEOUT_MS });
+    } catch (error) {
+      return this.degradedRead('list_accounts', undefined, error, {
+        accounts: [],
+        count: 0,
+      });
+    }
   }
 
   async summary(userId: string, accountId?: string) {
     const cacheKey = `paper-trading:summary:${userId}:${accountId?.trim() || 'default'}`;
     const ttlSeconds = this.cacheService.resolveTtl('paper-trading.summary', PaperTradingService.SUMMARY_TTL_SECONDS);
-    const data = await this.call('summary', { user_id: userId, account_id: accountId });
-    if (data && typeof data === 'object') {
-      await this.cacheService.set(cacheKey, data, ttlSeconds);
+    try {
+      const data = await this.call('summary', { user_id: userId, account_id: accountId }, {
+        retryOnTransportError: true,
+        timeoutMs: PaperTradingService.READ_TIMEOUT_MS,
+      });
+      if (data && typeof data === 'object') {
+        await this.cacheService.set(cacheKey, data, ttlSeconds);
+      }
+      return data;
+    } catch (error) {
+      const id = accountId?.trim() || 'default';
+      return this.degradedRead('summary', id, error, {
+        account_id: id,
+        account: {
+          id,
+          account_id: id,
+          initial_capital: 100000,
+          current_capital: 100000,
+          total_value: 100000,
+          risk_rules: { max_position_pct: 0.3 },
+        },
+        positions_count: 0,
+        pending_orders_count: 0,
+        total_value: 100000,
+        total_return_pct: 0,
+        reconciliation: {
+          reconciled: false,
+          drift_detected: false,
+          reasons: ['paper trading summary degraded'],
+        },
+      });
     }
-    return data;
   }
 
   async positions(userId: string, accountId?: string) {
-    return this.call('positions', { user_id: userId, account_id: accountId });
+    try {
+      return await this.call('positions', { user_id: userId, account_id: accountId }, {
+        retryOnTransportError: true,
+        timeoutMs: PaperTradingService.READ_TIMEOUT_MS,
+      });
+    } catch (error) {
+      return this.degradedRead('positions', accountId, error, {
+        account_id: accountId || 'default',
+        positions: [],
+        count: 0,
+        reconciliation: {
+          reconciled: false,
+          drift_detected: false,
+          reasons: ['paper trading positions degraded'],
+        },
+      });
+    }
   }
 
   async orders(userId: string, accountId?: string) {
-    return this.call('orders', { user_id: userId, account_id: accountId });
+    try {
+      return await this.call('orders', { user_id: userId, account_id: accountId }, { timeoutMs: PaperTradingService.READ_TIMEOUT_MS });
+    } catch (error) {
+      return this.degradedOrderRead('orders', accountId, error);
+    }
   }
 
   async orderEvents(userId: string, params: {
@@ -62,7 +123,11 @@ export class PaperTradingService {
   }
 
   async pendingOrders(userId: string, accountId?: string) {
-    return this.call('pending_orders', { user_id: userId, account_id: accountId });
+    try {
+      return await this.call('pending_orders', { user_id: userId, account_id: accountId }, { timeoutMs: PaperTradingService.READ_TIMEOUT_MS });
+    } catch (error) {
+      return this.degradedOrderRead('pending_orders', accountId, error);
+    }
   }
 
   async reconcile(userId: string, params: {
@@ -99,12 +164,114 @@ export class PaperTradingService {
     });
   }
 
+  async testCleanup(
+    userId: string,
+    params: { account_id?: string; test_run_id?: string; include_filled_positions?: boolean } = {},
+  ) {
+    const accountId = String(params.account_id ?? '').trim();
+    if (!this.isSandboxAccount(accountId)) {
+      throw new BadRequestException({
+        success: false,
+        code: 'PAPER_TRADING_CLEANUP_FORBIDDEN',
+        message: '测试清理只允许 sandbox/test/demo/qa 模拟账户，不能作用于真实或默认账户',
+        detail: { account_id: accountId || null },
+      });
+    }
+
+    const pendingPayload = await this.pendingOrders(userId, accountId);
+    const pendingOrders = this.asRecordArray(this.asRecord(pendingPayload)?.orders ?? pendingPayload)
+      .filter((order) => this.matchesTestRun(order, params.test_run_id));
+    const cancelled: Array<{ order_id: string; result: unknown }> = [];
+    const failed: Array<{ order_id: string; error: string }> = [];
+
+    for (const order of pendingOrders) {
+      const orderId = String(order.order_id ?? order.id ?? '').trim();
+      if (!orderId) continue;
+      try {
+        const result = await this.cancelOrder(userId, orderId, `test-cleanup:${accountId}:${orderId}`);
+        cancelled.push({ order_id: orderId, result });
+      } catch (error) {
+        failed.push({ order_id: orderId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    let reconcile: unknown = null;
+    let filledCleanup: Record<string, unknown> | null = null;
+    if (params.include_filled_positions === true) {
+      try {
+        filledCleanup = await this.call('test_cleanup', {
+          user_id: userId,
+          account_id: accountId,
+          test_run_id: params.test_run_id,
+          include_filled_positions: true,
+          cancel_pending: false,
+        }) as Record<string, unknown>;
+      } catch (error) {
+        failed.push({ order_id: 'filled_positions', error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    try {
+      reconcile = await this.reconcile(userId, { account_id: accountId, force: true, refresh_prices: true });
+    } catch (error) {
+      failed.push({ order_id: 'reconcile', error: error instanceof Error ? error.message : String(error) });
+    }
+
+    return {
+      account_id: accountId,
+      test_run_id: params.test_run_id ?? null,
+      cancelled_count: cancelled.length,
+      filled_positions_count: Number(filledCleanup?.positions_reset_count ?? filledCleanup?.filled_positions_count ?? 0),
+      reset_trades_count: Number(filledCleanup?.trades_deleted_count ?? 0),
+      reset_nav_count: Number(filledCleanup?.nav_deleted_count ?? 0),
+      failed_count: failed.length,
+      cancelled,
+      filled_cleanup: filledCleanup,
+      failed,
+      reconcile,
+      limitations: [
+        params.include_filled_positions
+          ? 'cleanup 已在测试账户内重置持仓、成交和 NAV，并刷新对账'
+          : 'cleanup 只取消测试账户未成交挂单并刷新对账',
+        '仅 sandbox/test/demo/qa/playwright/paper-audit 账户允许重置已成交持仓；真实/default 账户继续拒绝',
+      ],
+    };
+  }
+
   async updatePrices(userId: string, accountId?: string) {
-    return this.call('update_prices', { user_id: userId, account_id: accountId });
+    try {
+      return await this.withLocalTimeout(
+        this.call('update_prices', { user_id: userId, account_id: accountId }, {
+          retryOnTransportError: true,
+          timeoutMs: PaperTradingService.UPDATE_PRICES_TIMEOUT_MS,
+        }),
+        PaperTradingService.UPDATE_PRICES_TIMEOUT_MS,
+        `paper_trading_manager.update_prices timed out after ${PaperTradingService.UPDATE_PRICES_TIMEOUT_MS}ms`,
+      );
+    } catch (error) {
+      return this.degradedRead('update_prices', accountId, error, {
+        refreshed: false,
+        updated_count: 0,
+        positions_updated: 0,
+        message: '持仓价格刷新暂不可用，已保留当前模拟盘快照',
+      });
+    }
   }
 
   async navHistory(userId: string, accountId?: string, limit?: number) {
-    return this.call('nav_history', { user_id: userId, account_id: accountId, limit: limit ?? 90 });
+    try {
+      return await this.call(
+        'nav_history',
+        { user_id: userId, account_id: accountId, limit: limit ?? 90 },
+        { timeoutMs: PaperTradingService.READ_TIMEOUT_MS },
+      );
+    } catch (error) {
+      return this.degradedRead('nav_history', accountId, error, {
+        account_id: accountId || 'default',
+        nav: [],
+        count: 0,
+      });
+    }
   }
 
   async performance(userId: string, accountId?: string, days = 30) {
@@ -167,11 +334,27 @@ export class PaperTradingService {
   }
 
   async matchingStatus() {
-    return this.call('matching_status');
+    try {
+      return await this.call('matching_status', {}, { timeoutMs: PaperTradingService.READ_TIMEOUT_MS });
+    } catch (error) {
+      return this.degradedRead('matching_status', undefined, error, {
+        status: 'degraded',
+        running: false,
+        ok: false,
+      });
+    }
   }
 
   async navStatus() {
-    return this.call('nav_status');
+    try {
+      return await this.call('nav_status', {}, { timeoutMs: PaperTradingService.READ_TIMEOUT_MS });
+    } catch (error) {
+      return this.degradedRead('nav_status', undefined, error, {
+        status: 'degraded',
+        running: false,
+        ok: false,
+      });
+    }
   }
 
   async trustStatus(userId: string, accountId?: string): Promise<PaperTradingTrustStatus> {
@@ -713,6 +896,76 @@ export class PaperTradingService {
     return result;
   }
 
+  private degradedOrderRead(action: 'orders' | 'pending_orders', accountId: string | undefined, error: unknown) {
+    return this.degradedRead(action, accountId, error, {
+      orders: [],
+      count: 0,
+    });
+  }
+
+  private degradedRead(action: string, accountId: string | undefined, error: unknown, fallback: Record<string, unknown>) {
+    if (!this.isDegradableReadError(error)) {
+      throw error;
+    }
+    const message = this.describeError(error);
+    this.logger.warn(`paper_trading_manager.${action} 降级 account=${accountId || 'default'}: ${message}`);
+    return {
+      account_id: accountId || 'default',
+      ...fallback,
+      degraded: true,
+      fallback_used: true,
+      section_errors: {
+        [action]: message,
+      },
+      fallback_reason: `paper_trading_manager.${action} 暂不可用，已返回降级数据避免页面阻塞`,
+      data_quality: degradedDataQuality(
+        `paper_trading_manager.${action}`,
+        message,
+        { qualityFlags: [`${action}_fallback_used`] },
+      ),
+    };
+  }
+
+  private isDegradableReadError(error: unknown) {
+    if (error instanceof HttpException) {
+      const status = error.getStatus();
+      if (status >= 500) return true;
+      if ((status === 404 || status === 422) && /账户不存在|account[^，。]*not found|not found/i.test(this.describeError(error))) {
+        return true;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private describeError(error: unknown) {
+    if (error instanceof HttpException) {
+      const response = error.getResponse();
+      if (typeof response === 'string') return response;
+      if (response && typeof response === 'object') {
+        const record = response as Record<string, unknown>;
+        const headline = String(record.message ?? record.error ?? error.message);
+        return record.detail ? `${headline}: ${String(record.detail)}` : headline;
+      }
+      return error.message;
+    }
+    return String(error instanceof Error ? error.message : error);
+  }
+
+  private async withLocalTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private unwrapToolEnvelope(action: string, result: unknown): Record<string, unknown> {
     if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
       throw new Error(result);
@@ -765,6 +1018,25 @@ export class PaperTradingService {
 
     if (!holdDays.length) return 0;
     return holdDays.reduce((sum, item) => sum + item, 0) / holdDays.length;
+  }
+
+  private isSandboxAccount(accountId: string) {
+    return /(sandbox|test|demo|paper-audit|playwright|qa)/i.test(accountId);
+  }
+
+  private matchesTestRun(order: Record<string, unknown>, testRunId?: string) {
+    const normalized = String(testRunId ?? '').trim();
+    if (!normalized) return true;
+    return [
+      order.test_run_id,
+      order.testRunId,
+      order.client_order_id,
+      order.clientOrderId,
+      order.idempotency_key,
+      order.idempotencyKey,
+      order.remark,
+      order.note,
+    ].some((value) => String(value ?? '').includes(normalized));
   }
 
   private toPerformanceWarning(scope: 'nav_history' | 'orders', error: unknown) {

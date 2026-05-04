@@ -37,7 +37,7 @@ export default function WorkspaceSplitLayout({
   className = '',
   collapseSecondaryBelow = RESPONSIVE_BREAKPOINTS.splitCollapse,
   defaultMobileTab = 'primary',
-  primaryLabel = '主画布',
+  primaryLabel = '工作区',
   secondaryLabel = '摘要',
   secondaryPanels,
   mobileSummary,

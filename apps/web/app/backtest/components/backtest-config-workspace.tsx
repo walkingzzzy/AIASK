@@ -5,6 +5,7 @@ import {
   backtestInputCls,
   backtestLabelCls,
   backtestNoteCardCls,
+  backtestPrimaryButtonCls,
 } from '@/app/backtest/components/backtest-panel-styles';
 
 type StrategyOption = { value: string; label: string };
@@ -46,6 +47,7 @@ type BacktestConfigWorkspaceProps = {
   costPresets: readonly CostPreset[];
   onApplyCostPreset: (preset: CostPreset) => void;
   configurationSummary: string;
+  loading: boolean;
   runBacktest: (event: FormEvent<HTMLFormElement>) => void;
 };
 
@@ -85,23 +87,24 @@ export default function BacktestConfigWorkspace({
   costPresets,
   onApplyCostPreset,
   configurationSummary,
+  loading,
   runBacktest,
 }: BacktestConfigWorkspaceProps) {
   return (
     <SectionCard className="p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Configuration Workspace</div>
+          <div className="eyebrow">配置步骤</div>
           <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">回测配置</h3>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-            按“基础参数 → 策略参数 → 成本假设”的顺序完成配置，减少首屏参数墙带来的理解成本，也让回测逻辑更容易被快速复查。
+            按“基础参数 → 策略参数 → 成本假设”的顺序完成配置，便于复查样本、交易规则和成本口径。
           </p>
         </div>
       </div>
 
       <form id="backtest-config-form" onSubmit={runBacktest} className="mt-4 grid gap-4 xl:grid-cols-3">
         <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-          <div className="eyebrow">Basic Setup</div>
+          <div className="eyebrow">基础参数</div>
           <div className="mt-4 grid gap-3">
             <StockCodeInput id="backtest-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
             <label htmlFor="backtest-strategy" className="grid gap-1">
@@ -148,7 +151,7 @@ export default function BacktestConfigWorkspace({
         </div>
 
         <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-          <div className="eyebrow">Strategy Setup</div>
+          <div className="eyebrow">策略参数</div>
           <div className="mt-4">
             {strategy === 'ma_cross' ? (
               <div className="grid gap-3 sm:grid-cols-2">
@@ -259,7 +262,7 @@ export default function BacktestConfigWorkspace({
         </div>
 
         <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-          <div className="eyebrow">Cost Setup</div>
+          <div className="eyebrow">成本假设</div>
           <div className="mt-4 flex flex-wrap gap-2">
             {costPresets.map((preset) => (
               <button key={preset.key} type="button" onClick={() => onApplyCostPreset(preset)} className={backtestChipButtonCls}>
@@ -319,6 +322,12 @@ export default function BacktestConfigWorkspace({
             </div>
           )}
           {showAdvanced ? <div className={`${backtestNoteCardCls} mt-4`}>{configurationSummary}</div> : null}
+        </div>
+
+        <div className="xl:col-span-3">
+          <button type="submit" disabled={loading} className={backtestPrimaryButtonCls}>
+            {loading ? '运行中...' : '运行当前配置'}
+          </button>
         </div>
       </form>
     </SectionCard>

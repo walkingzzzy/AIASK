@@ -11,6 +11,7 @@ import MarketQueryShell from '@/app/market/components/market-query-shell';
 import MarketSearchTab from '@/app/market/components/market-search-tab';
 import MarketTradeTab from '@/app/market/components/market-trade-tab';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
+import { DataQualityBanner } from '@/components/status-state';
 import { useOnboarding } from '@/components/onboarding';
 import { Badge, PageContainer } from '@/components/ui';
 import {
@@ -44,11 +45,11 @@ import {
 } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useToast } from '@/components/ui/toast';
-import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook, ResultContract } from '@aiask/shared-types';
+import type { CacheMeta, DataQuality, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook, ResultContract } from '@aiask/shared-types';
 
-type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
-type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
-type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null };
+type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null; data_quality?: DataQuality | null };
+type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null; data_quality?: DataQuality | null };
+type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta; result_contract?: ResultContract | null; data_quality?: DataQuality | null };
 export default function MarketPage() {
   const searchParams = useStableSearchParams();
   const requestedTab = searchParams.get('tab');
@@ -123,6 +124,7 @@ function MarketPageInner({
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}` : null,
     {
       critical: true,
+      timeoutMs: 30_000,
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -272,33 +274,43 @@ function MarketPageInner({
   }
 
   const limitUpQ = useApiQuery<unknown>(effectiveLimitUpPath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '涨停列表'),
   });
   const limitUpStatsQ = useApiQuery<unknown>(effectiveLimitUpStatsPath, {
+    critical: true,
     parse: (raw) => ensureRecord(raw, '涨停统计详情'),
   });
   const blocksQ = useApiQuery<unknown>(effectiveBlocksPath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '板块列表'),
   });
   const tradeQ = useApiQuery<unknown>(effectiveTradePath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '逐笔成交'),
   });
   const indexQuoteQ = useApiQuery<unknown>(effectiveIndexPath, {
+    critical: true,
     parse: (raw) => ensureRecord(raw, '指数行情'),
   });
   const minuteKlineQ = useApiQuery<unknown>(effectiveMinutePath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '分时K线'),
   });
   const searchQ = useApiQuery<unknown>(effectiveSearchPath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '股票搜索结果'),
   });
   const stockListQ = useApiQuery<unknown>(effectiveStockListPath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '股票列表'),
   });
   const blockStocksQ = useApiQuery<unknown>(effectiveBlockStocksPath, {
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '板块成分股'),
   });
   const batchQuotes = useApiMutation<unknown>({
+    critical: true,
     parse: (raw) => ensureRecordOrArray(raw, '批量行情'),
   });
 
@@ -632,7 +644,7 @@ function MarketPageInner({
         recommendedLinks: quickJumpLinks.map((item, index) => ({ id: `market-link-${index}`, label: item.label, href: item.href })),
         recommendedNextActions: [
           activeDisplayCode ? '先看当前标的主图和盘口，再决定要不要切换到板块或指数。' : '先锁定一个主标的或指数，再解释行情结果。',
-          tabErrorMessage ? '当前分页存在错误，优先重试当前视图，不要继续堆叠切换。' : '如果主图信息不足，再切换分时、板块或搜索视图。',
+          tabErrorMessage ? '当前分页存在错误，优先重试当前视图。' : '如果主图信息不足，再切换分时、板块或搜索视图。',
         ],
         evidence: marketEvidence,
         riskNotes: marketRiskNotes,
@@ -755,6 +767,12 @@ function MarketPageInner({
         activePeriodLabel={activePeriodLabel}
         freshnessLabel={freshnessLabel}
       />
+
+      <div className="space-y-2">
+        <DataQualityBanner trust={quoteQ.trust} title="行情报价数据质量" onRetry={() => void quoteQ.refetch()} />
+        <DataQualityBanner trust={klineQ.trust} title="K线数据质量" onRetry={() => void klineQ.refetch()} />
+        <DataQualityBanner trust={obQ.trust} title="盘口数据质量" onRetry={() => void obQ.refetch()} />
+      </div>
 
       <MarketMainWorkspace
         pageOffline={pageOffline}

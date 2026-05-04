@@ -6,11 +6,12 @@ import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { LoadingState, UnavailableState } from '@/components/status-state';
 import { AskAiButton } from '@/components/ask-ai-button';
 import ProgressiveWorkbenchSection from '@/components/progressive-workbench-section';
-import { PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
+import { Badge, PageContainer, KpiCard, KpiGrid, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
+import { useSlowFlag } from '@/hooks/use-slow-flag';
 import { extractObject, extractArray, fmtAmount } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
@@ -114,15 +115,25 @@ export default function HomePage() {
   const [detailTab, setDetailTab] = useState<HomeDetailsTab>('market');
   const [summaryTab, setSummaryTab] = useState<HomeSummaryTab>('market');
   const [showDashboardSettings, setShowDashboardSettings] = useState(false);
+  const [fullHomeExpanded, setFullHomeExpanded] = useState(false);
+  const [accountPrefetchEnabled, setAccountPrefetchEnabled] = useState(false);
   const liveRefetch = pageVisible ? poll : false;
   const lazyRefetch = pageVisible ? slowPoll : false;
 
   const user = useAuthStore((s) => s.user);
   const canLoadPersonalized = mounted && Boolean(user || hasLoggedInHint());
+  const canLoadAccountSummary =
+    canLoadPersonalized && (accountPrefetchEnabled || summaryTab === 'account' || (fullHomeExpanded && detailTab === 'personal'));
+  const canLoadMarketSecondary = mounted && fullHomeExpanded && detailTab === 'market';
+  const canLoadMarketDetails = mounted && fullHomeExpanded && detailTab === 'market';
+  const canLoadOperationsSummary =
+    canLoadPersonalized && (summaryTab === 'operations' || (fullHomeExpanded && detailTab === 'operations'));
+  const canLoadQuoteSnapshots = mounted && pageVisible && (summaryTab === 'account' || (fullHomeExpanded && detailTab === 'personal'));
 
   /* ── Data queries ─────────────────────────────────────────────── */
   const idxQ = useApiQuery<unknown>('/market/index-batch-quotes', {
     enabled: mounted,
+    critical: true,
     refetchInterval: liveRefetch,
     placeholderData: 'keepPrevious',
     body: { codes: INDEX_CODES },
@@ -130,15 +141,19 @@ export default function HomePage() {
     redirectOnUnauthorized: false,
   });
   const limitUpQ = useApiQuery<unknown>('/market/limit-up-stats', {
-    enabled: mounted,
+    enabled: canLoadMarketSecondary,
     refetchInterval: liveRefetch,
+    nonFatal: true,
+    timeoutMs: 30_000,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecord(r, '涨停统计'),
     redirectOnUnauthorized: false,
   });
   const northQ = useApiQuery<unknown>('/fund-flow/north', {
-    enabled: mounted,
+    enabled: canLoadMarketSecondary,
     refetchInterval: liveRefetch,
+    nonFatal: true,
+    timeoutMs: 30_000,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '北向资金'),
     redirectOnUnauthorized: false,
@@ -158,19 +173,21 @@ export default function HomePage() {
     critical: true,
   });
   const paperSumQ = useApiQuery<PaperTradingSummary>('/paper-trading/summary', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadAccountSummary,
     parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const paperPosQ = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', {
-    enabled: canLoadPersonalized,
+    enabled: canLoadAccountSummary,
     parse: normalizePaperPositionsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const newsQ = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', {
-    enabled: mounted,
+    enabled: canLoadMarketSecondary,
+    nonFatal: true,
+    timeoutMs: 30_000,
     parse: normalizeMarketNewsPayload,
     redirectOnUnauthorized: false,
   });
@@ -178,34 +195,38 @@ export default function HomePage() {
   const { visibility: dashboardVisibility, toggle: toggleDashboardModule } = useDashboardPrefs(mounted, profileQ);
 
   const sectorQ = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', {
-    enabled: mounted && dashboardVisibility.market,
+    enabled: canLoadMarketDetails && dashboardVisibility.market,
     refetchInterval: lazyRefetch,
+    nonFatal: true,
+    timeoutMs: 30_000,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块行情(首页)'),
     redirectOnUnauthorized: false,
   });
   const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', {
-    enabled: mounted && dashboardVisibility['fund-flow'],
+    enabled: canLoadMarketDetails && dashboardVisibility['fund-flow'],
     refetchInterval: lazyRefetch,
+    nonFatal: true,
+    timeoutMs: 30_000,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecordOrArray(r, '板块资金流(首页)'),
     redirectOnUnauthorized: false,
   });
   const alertsQ = useApiQuery<{ items?: AlertItem[] }>('/alerts/list?status=active', {
-    enabled: canLoadPersonalized && dashboardVisibility.alerts,
+    enabled: canLoadOperationsSummary && dashboardVisibility.alerts,
     parse: normalizeAlertsPayload,
     redirectOnUnauthorized: false,
     critical: true,
   });
   const riskQ = useApiQuery<unknown>('/risk/summary?lookbackDays=252', {
-    enabled: canLoadPersonalized && dashboardVisibility.risk,
+    enabled: canLoadOperationsSummary && dashboardVisibility.risk,
     parse: (r) => ensureRecord(r, '风险汇总(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
   });
 
   const strategySubsQ = useApiQuery<unknown>(user ? '/strategy-market/my-subscriptions' : null, {
-    enabled: mounted && dashboardVisibility.strategy && Boolean(user),
+    enabled: canLoadOperationsSummary && dashboardVisibility.strategy && Boolean(user),
     parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)'),
     redirectOnUnauthorized: false,
     critical: true,
@@ -232,7 +253,7 @@ export default function HomePage() {
     return Array.from(s);
   }, [watchlistItems, recentStocks]);
   const batchQ = useApiQuery<unknown>(quoteCodes.length > 0 ? '/market/batch-quotes' : null, {
-    enabled: mounted && pageVisible,
+    enabled: canLoadQuoteSnapshots,
     refetchInterval: lazyRefetch,
     body: { codes: quoteCodes },
     placeholderData: 'keepPrevious',
@@ -259,6 +280,13 @@ export default function HomePage() {
       document.removeEventListener('visibilitychange', onVis);
     };
   }, []);
+  useEffect(() => {
+    if (!mounted || !pageVisible) return;
+    const accountTimer = window.setTimeout(() => setAccountPrefetchEnabled(true), 1200);
+    return () => {
+      window.clearTimeout(accountTimer);
+    };
+  }, [mounted, pageVisible]);
   useEffect(() => {
     document.title = '首页 | AIASK';
     return () => {
@@ -294,9 +322,26 @@ export default function HomePage() {
   const fgRaw = extractObject(fearGreedQ.data);
   const fgObj =
     fgRaw.result && typeof fgRaw.result === 'object' ? extractObject(fgRaw.result as Record<string, unknown>) : fgRaw;
-  const fgValue = Number(fgObj.index ?? fgObj.value ?? fgObj.fear_greed_index ?? 50);
+  const rawFearGreedValue = Number(fgObj.index ?? fgObj.value ?? fgObj.fear_greed_index);
+  const fgValue = fearGreedQ.data && !fearGreedQ.error && !fearGreedQ.trust.degraded && Number.isFinite(rawFearGreedValue)
+    ? rawFearGreedValue
+    : null;
   const fgLabel =
-    fgValue <= 25 ? '极度恐惧' : fgValue <= 40 ? '恐惧' : fgValue <= 60 ? '中性' : fgValue <= 75 ? '贪婪' : '极度贪婪';
+    fgValue == null
+      ? canLoadMarketSecondary
+        ? '暂无数据'
+        : '待展开'
+      : fgValue <= 25
+        ? '极度恐惧'
+        : fgValue <= 40
+          ? '恐惧'
+          : fgValue <= 60
+            ? '中性'
+            : fgValue <= 75
+              ? '贪婪'
+              : '极度贪婪';
+  const fgDisplayValue = fgValue == null ? '-' : fgValue.toFixed(0);
+  const fgChartValue = fgValue;
   const sectors = useMemo(() => extractArray(sectorQ.data, 'blocks', 'items', 'data'), [sectorQ.data]);
   const sectorFlows = useMemo(() => {
     const raw = extractArray(sectorFlowQ.data, 'flows', 'items', 'data');
@@ -384,7 +429,9 @@ export default function HomePage() {
 
   /* ── Quick actions & anomalies ────────────────────────────────── */
   const latestNorthValue = Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0);
-  const latestNorthLabel = latestNorth ? fmtAmount(latestNorthValue) : '暂无数据';
+  const latestNorthLabel = latestNorth ? fmtAmount(latestNorthValue) : canLoadMarketSecondary ? '暂无数据' : '待展开';
+  const limitUpValue = luStats.totalLimitUp ?? luStats.total ?? luStats.count;
+  const limitUpLabel = limitUpValue == null ? (canLoadMarketSecondary ? '-' : '待展开') : String(limitUpValue);
 
   const marketAnomalies = useMemo<DashboardMarketAnomaly[]>(() => {
     const luCount = Number(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? 0);
@@ -475,7 +522,7 @@ export default function HomePage() {
       label: '北向资金',
       value: latestNorthLabel,
       hint: '增量资金参考',
-      tone: latestNorthValue >= 0 ? 'text-danger' : 'text-success',
+      tone: latestNorth ? (latestNorthValue >= 0 ? 'text-danger' : 'text-success') : 'text-text-secondary',
     },
   ];
   const heroEntryLinks = [
@@ -513,10 +560,58 @@ export default function HomePage() {
 
   const anomalyDegraded = Boolean(limitUpQ.error || sectorQ.error || sectorFlowQ.error || northQ.error);
   const nickname = String(profileQ.data?.nickname ?? user?.nickname ?? user?.username ?? '投资者');
-  const topSectorName = String(sectors[0]?.name ?? '暂无热点');
-  const topSectorChange = Number(sectors[0]?.avgChange ?? sectors[0]?.avg_change ?? sectors[0]?.change_pct ?? 0);
+  const topSector = sectors[0] ?? null;
+  const topSectorName = topSector ? String(topSector.name ?? '未知板块') : canLoadMarketDetails ? '暂无热点' : '待展开';
+  const topSectorChange = topSector ? Number(topSector.avgChange ?? topSector.avg_change ?? topSector.change_pct ?? 0) : null;
   const riskStatusLabel = riskEmpty ? '等待持仓' : riskDegraded ? '降级中' : riskQ.error ? '异常' : '正常';
   const moduleErrorCount = Object.values(moduleStatuses).filter((status) => status === 'error').length;
+  const homeCoreQueries = [
+    { query: idxQ, enabled: mounted },
+    { query: limitUpQ, enabled: canLoadMarketSecondary },
+    { query: northQ, enabled: canLoadMarketSecondary },
+    { query: healthQ, enabled: mounted },
+    { query: newsQ, enabled: canLoadMarketSecondary },
+  ];
+  const homeOptionalQueries = [
+    { query: fearGreedQ, enabled: mounted },
+    { query: sectorQ, enabled: canLoadMarketDetails && dashboardVisibility.market },
+    { query: sectorFlowQ, enabled: canLoadMarketDetails && dashboardVisibility['fund-flow'] },
+    { query: alertsQ, enabled: canLoadOperationsSummary && dashboardVisibility.alerts },
+    { query: riskQ, enabled: canLoadOperationsSummary && dashboardVisibility.risk },
+    { query: strategySubsQ, enabled: canLoadOperationsSummary && dashboardVisibility.strategy && Boolean(user) },
+    { query: batchQ, enabled: canLoadQuoteSnapshots && quoteCodes.length > 0 },
+    { query: paperSumQ, enabled: canLoadAccountSummary },
+    { query: paperPosQ, enabled: canLoadAccountSummary },
+  ];
+  const homeCoreLoadingCount = homeCoreQueries.filter(
+    ({ query, enabled }) => enabled && (query.isPending || (query.isFetching && !query.data)),
+  ).length;
+  const homeOptionalLoadingCount = homeOptionalQueries.filter(
+    ({ query, enabled }) => enabled && (query.isPending || (query.isFetching && !query.data)),
+  ).length;
+  const homeDegradedCount = [...homeCoreQueries, ...homeOptionalQueries].filter(
+    ({ query, enabled }) => enabled && Boolean(query.error),
+  ).length;
+  const homeCoreSlow = useSlowFlag(homeCoreLoadingCount > 0, 6000);
+  const homeOptionalSlow = useSlowFlag(homeOptionalLoadingCount > 0, 6000);
+  const homeStatusLabel =
+    homeCoreLoadingCount > 0 && homeCoreSlow
+      ? '核心接口加载较慢'
+      : homeCoreLoadingCount > 0
+      ? '核心数据加载中'
+      : homeDegradedCount > 0
+        ? '局部降级'
+        : homeOptionalLoadingCount > 0 && homeOptionalSlow
+          ? '非核心区加载较慢'
+          : homeOptionalLoadingCount > 0
+          ? '非核心区加载中'
+          : '核心数据已就绪';
+  const homeStatusVariant =
+    homeCoreLoadingCount > 0
+      ? 'warning'
+      : homeDegradedCount > 0
+        ? 'warning'
+        : 'success';
   const detailTabs = [
     { key: 'market', label: '市场深看' },
     { key: 'personal', label: '个人跟踪' },
@@ -546,12 +641,14 @@ export default function HomePage() {
           <>
             <Link
               href="/portfolio"
+              prefetch={false}
               className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline"
             >
               先建组合
             </Link>
             <Link
               href="/paper-trading"
+              prefetch={false}
               className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline"
             >
               去模拟盘
@@ -586,6 +683,7 @@ export default function HomePage() {
         emptyAction: (
           <Link
             href="/strategy-market?from=home"
+            prefetch={false}
             className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline"
           >
             去策略超市
@@ -620,6 +718,7 @@ export default function HomePage() {
         emptyAction: (
           <Link
             href="/alerts?from=home"
+            prefetch={false}
             className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline"
           >
             创建告警
@@ -745,7 +844,7 @@ export default function HomePage() {
         recommendedNextActions: [
           activeAlertCount > 0 ? '先处理活跃告警，再解释盘中异常。' : '先从市场摘要判断今天是否需要切入看盘链路。',
           watchlistCount > 0 ? '从首页直接打开重点自选股，避免在首页停留过久。' : '补齐第一组自选股，后续首页摘要才有持续价值。',
-          '需要结构化结论时再展开首页工作台，不让首屏被次级说明占满。',
+          '需要结构化结论时再展开首页工作台，先把注意力放在市场、自选和风险摘要上。',
         ],
         evidence: homeEvidence,
         riskNotes: homeRiskNotes,
@@ -813,7 +912,7 @@ export default function HomePage() {
           <div className="eyebrow">市场摘要</div>
           <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">今天市场在发生什么</h3>
         </div>
-        <Link href="/market" className={LINK_CHIP_CLS}>
+        <Link href="/market" prefetch={false} className={LINK_CHIP_CLS}>
           去行情页
         </Link>
       </div>
@@ -821,7 +920,7 @@ export default function HomePage() {
         <div className="metric-tile rounded-[22px] p-4">
           <div className="metric-label">情绪温度</div>
           <div className="mt-3 text-lg font-semibold text-text-primary">{fgLabel}</div>
-          <div className="mt-1 text-xs text-text-secondary">恐贪 {fgValue.toFixed(0)}</div>
+          <div className="mt-1 text-xs text-text-secondary">恐贪 {fgDisplayValue}</div>
         </div>
         <div className="metric-tile rounded-[22px] p-4">
           <div className="metric-label">北向资金</div>
@@ -833,16 +932,13 @@ export default function HomePage() {
         <div className="metric-tile rounded-[22px] p-4">
           <div className="metric-label">板块热点</div>
           <div className="mt-3 text-lg font-semibold text-text-primary">{topSectorName}</div>
-          <div className={`mt-1 text-xs ${topSectorChange >= 0 ? 'text-danger' : 'text-success'}`}>
-            {topSectorChange >= 0 ? '+' : ''}
-            {topSectorChange.toFixed(2)}%
+          <div className={`mt-1 text-xs ${topSectorChange == null || topSectorChange >= 0 ? 'text-danger' : 'text-success'}`}>
+            {topSectorChange == null ? '-' : `${topSectorChange >= 0 ? '+' : ''}${topSectorChange.toFixed(2)}%`}
           </div>
         </div>
         <div className="metric-tile rounded-[22px] p-4">
           <div className="metric-label">涨停家数</div>
-          <div className="mt-3 text-lg font-semibold text-text-primary">
-            {String(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? '-')}
-          </div>
+          <div className="mt-3 text-lg font-semibold text-text-primary">{limitUpLabel}</div>
           <div className="mt-1 text-xs text-text-secondary">情绪扩散速度参考</div>
         </div>
       </div>
@@ -853,6 +949,7 @@ export default function HomePage() {
             <Link
               key={`${item.code}-${item.name}`}
               href={`/market?tab=index&indexCode=${encodeURIComponent(String(item.code || ''))}`}
+              prefetch={false}
               className="rounded-[18px] border border-white/45 bg-white/24 px-3 py-3 text-sm no-underline text-inherit"
             >
               <div className="truncate font-medium text-text-primary">{String(item.name ?? item.code ?? '指数')}</div>
@@ -874,7 +971,7 @@ export default function HomePage() {
           <div className="eyebrow">账户摘要</div>
           <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">你的资产与跟踪重点</h3>
         </div>
-        <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+        <Link href="/paper-trading" prefetch={false} className={LINK_CHIP_CLS}>
           去模拟交易
         </Link>
       </div>
@@ -937,13 +1034,13 @@ export default function HomePage() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Link href="/watchlist" className={LINK_CHIP_CLS}>
+            <Link href="/watchlist" prefetch={false} className={LINK_CHIP_CLS}>
               管理自选股
             </Link>
-            <Link href={primaryStockCode ? `/stock?code=${encodeURIComponent(primaryStockCode)}` : '/stock'} className={LINK_CHIP_CLS}>
+            <Link href={primaryStockCode ? `/stock?code=${encodeURIComponent(primaryStockCode)}` : '/stock'} prefetch={false} className={LINK_CHIP_CLS}>
               打开重点个股
             </Link>
-            <Link href="/alerts?status=active" className={LINK_CHIP_CLS}>
+            <Link href="/alerts?status=active" prefetch={false} className={LINK_CHIP_CLS}>
               查看告警
             </Link>
           </div>
@@ -959,7 +1056,7 @@ export default function HomePage() {
           <div className="eyebrow">运行摘要</div>
           <h3 className="mb-0 mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">风险、策略与系统是否稳定</h3>
         </div>
-        <Link href="/risk?lookbackDays=252&from=home" className={LINK_CHIP_CLS}>
+        <Link href="/risk?lookbackDays=252&from=home" prefetch={false} className={LINK_CHIP_CLS}>
           去风险中心
         </Link>
       </div>
@@ -1021,17 +1118,17 @@ export default function HomePage() {
                 : '策略、风险和系统状态的完整内容已收进下方标签页。'}
             </div>
             <div className={NOTE_CARD_CLS}>
-              {healthQ.error ? '健康接口当前存在异常，可在下方运行与风险页继续排查。' : '健康状态、模块配置和系统细节不再默认占据首页首屏。'}
+              {healthQ.error ? '健康接口当前存在异常，可在下方运行与风险页继续排查。' : '健康状态、模块配置和系统细节可在下方标签页继续查看。'}
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Link href="/strategy-market?from=home" className={LINK_CHIP_CLS}>
+            <Link href="/strategy-market?from=home" prefetch={false} className={LINK_CHIP_CLS}>
               去策略超市
             </Link>
-            <Link href="/alerts?status=active&from=home" className={LINK_CHIP_CLS}>
+            <Link href="/alerts?status=active&from=home" prefetch={false} className={LINK_CHIP_CLS}>
               去告警中心
             </Link>
-            <Link href="/backtest?from=home" className={LINK_CHIP_CLS}>
+            <Link href="/backtest?from=home" prefetch={false} className={LINK_CHIP_CLS}>
               去回测分析
             </Link>
           </div>
@@ -1062,16 +1159,16 @@ export default function HomePage() {
               一个覆盖市场、研究、策略与交易的智能股票分析平台
             </h1>
             <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              AIASK 面向 A 股场景提供市场观察、研究分析、策略验证、模拟交易和风险管理的一体化能力。首页默认只保留平台介绍和少量核心摘要，详细的市场、自选、策略和系统模块都收进下方标签页与折叠区。
+              AIASK 面向 A 股场景提供市场观察、研究分析、策略验证、模拟交易和风险管理能力。首页先给出关键状态与常用入口，详细的市场、自选、策略和系统模块可在下方继续查看。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <Link href="/market?task=watchlist-scan&from=home" className={HERO_PRIMARY_BUTTON_CLS}>
+              <Link href="/market?task=watchlist-scan&from=home" prefetch={false} className={HERO_PRIMARY_BUTTON_CLS}>
                 进入行情看板
               </Link>
-              <Link href="/research?from=home" className={HERO_SECONDARY_BUTTON_CLS}>
+              <Link href="/research?from=home" prefetch={false} className={HERO_SECONDARY_BUTTON_CLS}>
                 查看研究中心
               </Link>
-              <Link href="/strategy-market?from=home" className={HERO_SECONDARY_BUTTON_CLS}>
+              <Link href="/strategy-market?from=home" prefetch={false} className={HERO_SECONDARY_BUTTON_CLS}>
                 浏览策略超市
               </Link>
               <AskAiButton
@@ -1139,6 +1236,7 @@ export default function HomePage() {
                     <Link
                       key={item.href}
                       href={item.href}
+                      prefetch={false}
                       className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit"
                     >
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm">
@@ -1175,6 +1273,7 @@ export default function HomePage() {
                           <Link
                             key={item.href}
                             href={item.href}
+                            prefetch={false}
                             className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit"
                           >
                             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm">
@@ -1202,13 +1301,13 @@ export default function HomePage() {
                   </div>
                 </details>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+                  <Link href="/paper-trading" prefetch={false} className={LINK_CHIP_CLS}>
                     去模拟交易
                   </Link>
-                  <Link href="/portfolio" className={LINK_CHIP_CLS}>
+                  <Link href="/portfolio" prefetch={false} className={LINK_CHIP_CLS}>
                     去组合管理
                   </Link>
-                  <Link href="/watchlist" className={LINK_CHIP_CLS}>
+                  <Link href="/watchlist" prefetch={false} className={LINK_CHIP_CLS}>
                     去自选股
                   </Link>
                 </div>
@@ -1234,6 +1333,7 @@ export default function HomePage() {
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={false}
                     className="metric-tile flex items-center gap-2 rounded-[18px] px-3 py-2.5 no-underline text-inherit transition hover:-translate-y-0.5"
                   >
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] border border-white/55 bg-white/42 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
@@ -1257,19 +1357,37 @@ export default function HomePage() {
               ))}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Link href="/paper-trading" className={LINK_CHIP_CLS}>
+              <Link href="/paper-trading" prefetch={false} className={LINK_CHIP_CLS}>
                 去模拟交易
               </Link>
-              <Link href="/portfolio" className={LINK_CHIP_CLS}>
+              <Link href="/portfolio" prefetch={false} className={LINK_CHIP_CLS}>
                 去组合管理
               </Link>
-              <Link href="/watchlist" className={LINK_CHIP_CLS}>
+              <Link href="/watchlist" prefetch={false} className={LINK_CHIP_CLS}>
                 去自选股
               </Link>
             </div>
             <div className="mt-3 text-xs text-text-secondary">当前时间 {displayDateStr || '等待同步'}</div>
           </div>
           )}
+        </div>
+      </section>
+
+      <section
+        data-testid="home-page-request-status"
+        className="rounded-[22px] border border-border bg-surface-alt/45 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)]"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-text-primary">页面数据状态</div>
+            <p className="mb-0 mt-1 text-xs leading-5 text-text-secondary">
+              核心接口加载 {homeCoreLoadingCount} 个，非核心接口加载 {homeOptionalLoadingCount} 个，局部异常 {homeDegradedCount} 个。
+              {homeCoreSlow || homeOptionalSlow
+                ? ' 可先使用已就绪模块；加载较慢的接口会保留局部提示，必要时进入对应页面手动刷新。'
+                : ' 导航取消请求不会作为页面错误展示。'}
+            </p>
+          </div>
+          <Badge variant={homeStatusVariant}>{homeStatusLabel}</Badge>
         </div>
       </section>
 
@@ -1282,13 +1400,13 @@ export default function HomePage() {
           <div>
             <div className="eyebrow">核心摘要</div>
             <h2 className="mb-0 mt-2 text-[1.75rem] font-semibold tracking-[-0.03em] text-text-primary">
-              首页默认只展示 3 块关键信息
+              先看 3 块关键信息
             </h2>
             <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
               先回答今天的市场状态、你的账户情况，以及当前需要注意的风险与运行状态。完整行情、自选、资讯和系统细节放到下面再展开。
             </p>
           </div>
-          <span className="text-xs text-text-secondary">其余模块已收纳到折叠区</span>
+          <span className="text-xs text-text-secondary">更多模块可继续展开查看</span>
         </div>
         <div className="grid gap-4 xl:grid-cols-3">
           {compactHome ? (
@@ -1309,18 +1427,18 @@ export default function HomePage() {
       </section>
 
       {/* ── 完整模块：标签页 + 折叠区 ── */}
-      <details className="group">
+      <details className="group" onToggle={(event) => setFullHomeExpanded(event.currentTarget.open)}>
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded-[16px] border border-border bg-surface px-4 py-3 text-sm font-medium text-text-secondary hover:bg-surface-alt">
           <span className="transition-transform group-open:rotate-90">▶</span>
-          <span>展开完整首页模块</span>
+          <span>查看完整首页模块</span>
         </summary>
         <div className="mt-3 space-y-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <div className="eyebrow">完整模块</div>
-              <h2 className="mb-0 mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-text-primary">把长内容放到这里再展开</h2>
+              <h2 className="mb-0 mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-text-primary">市场、自选、风险与系统模块</h2>
               <p className="mb-0 mt-2 max-w-3xl text-sm leading-7 text-text-secondary">
-                首页默认不再平铺完整仪表盘。需要时再切到对应标签查看详细市场、自选、风险和系统模块。
+                需要更完整的信息时，可切到对应标签查看市场、自选、风险和系统模块。
               </p>
             </div>
             <TabBar<HomeDetailsTab> tabs={detailTabs} active={detailTab} onChange={setDetailTab} />
@@ -1332,7 +1450,7 @@ export default function HomePage() {
                 mounted={mounted}
                 dateStr={displayDateStr}
                 lastUpdated={lastUpdated}
-                fgValue={fgValue}
+                fgValue={fgChartValue}
                 luStats={luStats}
                 latestNorth={latestNorth}
                 fmtAmount={fmtAmount}
@@ -1347,7 +1465,7 @@ export default function HomePage() {
                 dashboardVisibility={dashboardVisibility}
                 fmtAmount={fmtAmount}
                 fearGreedQ={fearGreedQ}
-                fgValue={fgValue}
+                fgValue={fgChartValue}
                 fgLabel={fgLabel}
                 sectorFlowQ={sectorFlowQ}
                 sectorFlows={sectorFlows}

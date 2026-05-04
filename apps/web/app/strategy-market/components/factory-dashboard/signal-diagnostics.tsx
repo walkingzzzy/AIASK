@@ -427,22 +427,22 @@ export function FactoryProviderDiagnosticsPanel({
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
           {hasGovernedBreakdown && (
             <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
-              <div className="text-xs font-medium text-text-primary">Governed Pool 子因子</div>
+              <div className="text-xs font-medium text-text-primary">治理池子因子</div>
               <div className="grid grid-cols-2 gap-3">
                 <FactoryMetric
-                  title="Blocked 比率"
+                  title="阻塞比率"
                   value={`${governedBlockedRatioLatest} / ${governedBlockedRatioMean}`}
                 />
                 <FactoryMetric
-                  title="Strict shortfall"
+                  title="严格缺口"
                   value={`${governedStrictShortfallLatest ?? '-'} / ${governedStrictShortfallMean == null ? '-' : formatFactoryMetricValue(governedStrictShortfallMean, 1)}`}
                 />
                 <FactoryMetric
-                  title="Blocked 候选"
+                  title="阻塞候选"
                   value={`${governedBlockedCandidateLatest ?? '-'} / ${governedBlockedCandidateMean == null ? '-' : formatFactoryMetricValue(governedBlockedCandidateMean, 1)}`}
                 />
                 <FactoryMetric
-                  title="Source 候选"
+                  title="来源候选"
                   value={toDisplayNumber(governedDiagnostics?.latest_governed_source_candidate_count) ?? '-'}
                 />
               </div>
@@ -657,15 +657,15 @@ export function FactoryProviderDiagnosticsPanel({
                   <div className="flex flex-wrap gap-2">
                     {blockingReasons.length > 0 ? <Badge variant="danger">存在阻断</Badge> : null}
                     {warningReasons.length > 0 ? <Badge variant="warning">存在预警</Badge> : null}
-                    {providerSuppressed ? <Badge variant="warning">Provider 抑制</Badge> : null}
-                    {providerCooldown ? <Badge variant="warning">Provider 冷却</Badge> : null}
+                    {providerSuppressed ? <Badge variant="warning">上游抑制</Badge> : null}
+                    {providerCooldown ? <Badge variant="warning">上游冷却</Badge> : null}
                   </div>
                   <div>阻断：{blockingReasons.join(' / ') || '-'}</div>
                   <div>预警：{warningReasons.join(' / ') || '-'}</div>
-                  <div>Governed / Debt：{governedBlockedRatio} / {evidenceDebtRatio}</div>
-                  <div>Provider 探针 / 请求：{providerAttemptCount} / {providerRealRequestCount}</div>
+                  <div>治理阻塞 / 证据负担：{governedBlockedRatio} / {evidenceDebtRatio}</div>
+                  <div>上游探针 / 请求：{providerAttemptCount} / {providerRealRequestCount}</div>
                   <div>
-                    Provider Skip / Failure / Effective：
+                    上游跳过 / 失败 / 有效：
                     {providerSkipRatio} / {providerFailureRatio} / {providerEffectiveRatio}
                   </div>
                   <div>原因：{reasons.join(' / ') || '-'}</div>

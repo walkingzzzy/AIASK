@@ -62,11 +62,35 @@ export class BacktestService {
 
   async run(input: RunBacktestInput): Promise<BacktestRunResponse> {
     const { normalized, requestedArtifactId, args } = this.buildRunArgs(input);
-    const payload = await this.callTool('backtest_manager', args);
+    const fallbackArtifactId = requestedArtifactId || `art_${String(normalized.code)}_${Date.now()}`;
+    let payload: unknown;
+    try {
+      payload = await this.callTool('backtest_manager', args);
+    } catch (error) {
+      const reason = this.errorMessage(error);
+      return {
+        artifactId: fallbackArtifactId,
+        sourceTool: 'backtest_manager' as const,
+        argsMatched: args,
+        result: { success: false, error: reason },
+        metrics: this.emptyMetrics(),
+        equity_curve: [],
+        dates: [],
+        trades: [],
+        profit_factor: null,
+        initial_capital: this.toNum(normalized.initial_capital),
+        final_capital: null,
+        failureReason: {
+          reasonCode: 'backtest_run_failed',
+          reason,
+        },
+        degraded: true,
+        fallbackReason: reason,
+      };
+    }
     const artifactId =
       this.pickString(payload, ['data.artifact_id', 'data.artifactId', 'artifact_id', 'artifactId']) ||
-      requestedArtifactId ||
-      `art_${normalized.code}_${Date.now()}`;
+      fallbackArtifactId;
 
     const engineResult = this.pickObject(payload, [
       'data.result.result',
@@ -257,7 +281,20 @@ export class BacktestService {
 
   async list(limit = 10) {
     const args = { action: 'list', kwargs: JSON.stringify({ limit: Math.min(Math.max(limit, 1), 100) }) };
-    const payload = await this.callTool('backtest_manager', args);
+    let payload: unknown;
+    try {
+      payload = await this.callTool('backtest_manager', args);
+    } catch (error) {
+      const reason = this.errorMessage(error);
+      return {
+        sourceTool: 'backtest_manager' as const,
+        argsMatched: args,
+        result: { success: false, error: reason },
+        items: [],
+        degraded: true,
+        fallbackReason: reason,
+      };
+    }
     return {
       sourceTool: 'backtest_manager' as const,
       argsMatched: args,
@@ -341,6 +378,31 @@ export class BacktestService {
       totalTrades: this.toNum(d.total_trades ?? d.totalTrades ?? d.trade_count ?? d.trades_count),
       profitFactor: this.toNum(d.profit_factor ?? d.profitFactor),
     };
+  }
+
+  private emptyMetrics(): BacktestMetricSnapshot {
+    return {
+      totalReturn: null,
+      sharpe: null,
+      maxDrawdown: null,
+      winRate: null,
+      totalTrades: null,
+      profitFactor: null,
+    };
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error && typeof error === 'object' && 'getResponse' in error) {
+      const response = (error as { getResponse?: () => unknown }).getResponse?.();
+      if (response && typeof response === 'object') {
+        const record = response as Record<string, unknown>;
+        const detail = record.detail ?? record.message ?? record.error;
+        if (typeof detail === 'string' && detail.trim()) return detail.trim();
+        if (Array.isArray(detail) && detail.length > 0) return detail.map(String).join('; ');
+      }
+      if (typeof response === 'string' && response.trim()) return response.trim();
+    }
+    return error instanceof Error ? error.message : String(error);
   }
 
   private toNum(v: unknown): number | null {

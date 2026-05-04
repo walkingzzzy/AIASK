@@ -2,6 +2,7 @@
 
 import { Badge, DataTable, SectionCard } from '@/components/ui';
 import { ErrorState, LoadingState } from '@/components/status-state';
+import { useSlowFlag } from '@/hooks/use-slow-flag';
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -38,6 +39,33 @@ function ErrorList({ errors }: { errors: Array<string | null> }) {
   );
 }
 
+function SlowAwareLoading({
+  active,
+  text,
+  onRetry,
+}: {
+  active: boolean;
+  text: string;
+  onRetry?: () => void;
+}) {
+  const slow = useSlowFlag(active, 6000);
+  if (!active) return null;
+  if (!slow) return <LoadingState text={text} />;
+  return (
+    <div className="mt-3 rounded-xl border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-text-secondary">
+      <div className="font-medium text-text-primary">加载较慢</div>
+      <p className="mb-0 mt-1 text-xs leading-5">
+        {text.replace('...', '')}仍在等待上游返回；已保留当前可用数据，页面其他区域不受影响。
+      </p>
+      {onRetry ? (
+        <button type="button" onClick={onRetry} className="mt-2 rounded-full border border-warning/30 px-3 py-1 text-xs text-warning">
+          手动刷新
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function StrategyFactoryRawArtifactsPanel({
   dailySnapshots,
   latestTopn,
@@ -47,6 +75,7 @@ export function StrategyFactoryRawArtifactsPanel({
   lastDispatchId,
   isPending,
   errors,
+  onRetry,
 }: {
   dailySnapshots: unknown;
   latestTopn: unknown;
@@ -56,6 +85,7 @@ export function StrategyFactoryRawArtifactsPanel({
   lastDispatchId: string | null;
   isPending: boolean;
   errors: Array<string | null>;
+  onRetry?: () => void;
 }) {
   const snapshotRows = compactRows(rowsFrom(dailySnapshots, 'items', 'snapshots', 'daily_snapshots'), 6);
   const latestRows = compactRows(rowsFrom(latestTopn, 'items', 'strategies', 'topn'), 8);
@@ -75,19 +105,19 @@ export function StrategyFactoryRawArtifactsPanel({
     <SectionCard className="mt-0" data-testid="strategy-factory-raw-artifacts-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Raw Artifacts</div>
+          <div className="eyebrow">原始制品</div>
           <h2 className="mt-2">工厂原始产物直读</h2>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-            日快照、TopN、run TopN 和最近 dispatch 状态直接从原始接口读取。
+            日快照、TopN、指定运行 TopN 和最近调度状态直接从原始接口读取。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Badge variant={snapshotRows.length ? 'success' : 'neutral'}>快照 {snapshotRows.length}</Badge>
           <Badge variant={latestRows.length ? 'success' : 'neutral'}>TopN {latestRows.length}</Badge>
-          <Badge variant={dispatchRows.length ? 'info' : 'neutral'}>Dispatch {lastDispatchId ? '已选择' : '未选择'}</Badge>
+          <Badge variant={dispatchRows.length ? 'info' : 'neutral'}>调度 {lastDispatchId ? '已选择' : '未选择'}</Badge>
         </div>
       </div>
-      {isPending ? <LoadingState text="加载工厂原始产物..." /> : null}
+      <SlowAwareLoading active={isPending} text="加载工厂原始产物..." onRetry={onRetry} />
       <ErrorList errors={errors} />
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <div>
@@ -99,12 +129,12 @@ export function StrategyFactoryRawArtifactsPanel({
           <DataTable rows={latestRows} pageSize={8} emptyText="暂无最新 TopN" />
         </div>
         <div>
-          <h3 className="mt-0 text-sm">Run TopN {expandedRunId ? `· ${expandedRunId}` : ''}</h3>
-          <DataTable rows={runRows} pageSize={8} emptyText="选择 run 后查看 TopN" />
+          <h3 className="mt-0 text-sm">指定运行 TopN {expandedRunId ? `· ${expandedRunId}` : ''}</h3>
+          <DataTable rows={runRows} pageSize={8} emptyText="选择运行记录后查看 TopN" />
         </div>
         <div>
-          <h3 className="mt-0 text-sm">Dispatch 状态</h3>
-          <DataTable rows={dispatchRows} pageSize={4} emptyText="还没有当前页面触发的 dispatch" />
+          <h3 className="mt-0 text-sm">调度状态</h3>
+          <DataTable rows={dispatchRows} pageSize={4} emptyText="还没有当前页面触发的调度" />
         </div>
       </div>
     </SectionCard>
@@ -118,6 +148,7 @@ export function StrategyFactoryVectorGovernancePanel({
   canViewOperatorPanels,
   isPending,
   errors,
+  onRetry,
   onReconcile,
   onRebuild,
   onCleanupDryRun,
@@ -131,6 +162,7 @@ export function StrategyFactoryVectorGovernancePanel({
   canViewOperatorPanels: boolean;
   isPending: boolean;
   errors: Array<string | null>;
+  onRetry?: () => void;
   onReconcile: () => void;
   onRebuild: () => void;
   onCleanupDryRun: () => void;
@@ -155,7 +187,7 @@ export function StrategyFactoryVectorGovernancePanel({
     <SectionCard className="mt-0" data-testid="strategy-factory-vector-governance-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="eyebrow">Vector Governance</div>
+          <div className="eyebrow">向量治理</div>
           <h2 className="mt-2">向量索引治理</h2>
           <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
             索引健康、索引注册表和快照在这里直读；维护动作只对管理员开放。
@@ -170,12 +202,12 @@ export function StrategyFactoryVectorGovernancePanel({
               {rebuildPending ? '重建中' : '重建索引'}
             </button>
             <button type="button" onClick={onCleanupDryRun} disabled={cleanupPending} className="action-chip cursor-pointer text-sm text-text-primary disabled:opacity-50">
-              {cleanupPending ? '检查中' : '清理 dry-run'}
+              {cleanupPending ? '检查中' : '演练清理'}
             </button>
           </div>
         ) : <Badge variant="neutral">只读</Badge>}
       </div>
-      {isPending ? <LoadingState text="加载向量治理状态..." /> : null}
+      <SlowAwareLoading active={isPending} text="加载向量治理状态..." onRetry={onRetry} />
       <ErrorList errors={errors} />
       <div className="mt-4 grid gap-4 xl:grid-cols-3">
         <div>
