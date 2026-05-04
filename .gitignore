@@ -73,12 +73,9 @@ output/
 /strategy-operator-*.png
 
 # Project cleanup outputs
-reports/
-artifacts/
-artifacts/audit-results/playwright/
-artifacts/audit-results/
-artifacts/responsive-audit/
-frontend-audit-report/
+/reports/
+/artifacts/
+/frontend-audit-report/
 packages/akshare-mcp/htmlcov/
 packages/akshare-mcp/cache/
 packages/akshare-mcp/logs/*.log
