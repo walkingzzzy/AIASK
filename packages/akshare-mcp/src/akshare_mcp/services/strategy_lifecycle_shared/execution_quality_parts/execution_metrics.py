@@ -4,6 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from akshare_mcp.services.strategy_lifecycle_shared.incubation import (
+    _GRADUATION_COVERAGE_RATIO,
+    _GRADUATION_PRIMARY_EFFECTIVE_N,
+    _MIN_COVERAGE_RATIO,
+    _MIN_PRIMARY_EFFECTIVE_N,
+)
 from .common import (
     _confidence_diagnostics_enabled,
     _safe_float,
@@ -90,6 +96,7 @@ def derive_signal_quality(
         neutral_count = _safe_int(metric_bucket_value(stats.get("neutral_count"), horizon), 0)
         forward_ic = metric_bucket_value(stats.get("forward_ic"), horizon)
         forward_sharpe = metric_bucket_value(stats.get("forward_sharpe"), horizon)
+        skill_trend = metric_bucket_value(stats.get("skill_trend"), horizon)
 
         if hit_rate_lcb is None and raw_hit_rate is not None:
             hit_rate_lcb = raw_hit_rate
@@ -121,6 +128,7 @@ def derive_signal_quality(
             "neutral_count": neutral_count,
             "forward_ic": forward_ic,
             "forward_sharpe": forward_sharpe,
+            "skill_trend": skill_trend,
         }
 
     primary = dict(by_horizon.get(str(primary_horizon)) or {})
@@ -159,6 +167,7 @@ def derive_signal_quality(
         "effective_n_method": str(stats.get("effective_n_method") or "overlap_adjusted_ess_v1"),
         "recent_window_days": _safe_int(stats.get("recent_window_days"), 20),
         "neutral_band_epsilon": _safe_float(stats.get("neutral_band_epsilon")),
+        "skill_trend_5d": _safe_float(primary.get("skill_trend")),
         "by_horizon": by_horizon,
     }
 
@@ -664,13 +673,13 @@ def _build_signal_quality_snapshot(signal_quality: Optional[dict[str, Any]]) -> 
     primary_skill_lcb = _safe_float(payload.get("primary_skill_lcb"))
     recent_primary_skill_lcb = _safe_float(payload.get("recent_primary_skill_lcb"))
     stability_gap = _safe_float(payload.get("stability_gap"))
-    if primary_effective_n < 20 or coverage_ratio < 0.25:
+    if primary_effective_n < _MIN_PRIMARY_EFFECTIVE_N or coverage_ratio < _MIN_COVERAGE_RATIO:
         status = "insufficient_evidence"
     elif primary_skill_lcb is None or primary_skill_lcb <= 0.0:
         status = "weak"
     elif (
-        primary_effective_n >= 60
-        and coverage_ratio >= 0.75
+        primary_effective_n >= _GRADUATION_PRIMARY_EFFECTIVE_N
+        and coverage_ratio >= _GRADUATION_COVERAGE_RATIO
         and (recent_primary_skill_lcb or 0.0) > 0.0
         and (stability_gap is None or stability_gap <= 0.05)
     ):

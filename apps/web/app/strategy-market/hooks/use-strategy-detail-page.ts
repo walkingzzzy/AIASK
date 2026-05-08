@@ -3,7 +3,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
-import { apiKeys } from '@/lib/query-keys';
 import type {
   CapabilityResponse,
   StrategyDetailResponse,
@@ -71,23 +70,23 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     userId ? '/strategy-market/my-favorites' : null,
     { enabled: Boolean(userId), staleTime: FACTORY_SECTION_STALE_TIME },
   );
-  const subscribeApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
-  const reviewApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '评价已提交' });
-  const rebuildProjectionApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '事件投影已重建' });
-  const runIncubationPipelineApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '孵化流水线已执行' });
-  const runIncubationSyncApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '模拟盘孵化同步已执行' });
+  const subscribeApi = useApiMutation({ effects: ['strategy.changed'] });
+  const reviewApi = useApiMutation({ effects: ['strategy.changed'], successToast: '评价已提交' });
+  const rebuildProjectionApi = useApiMutation({ effects: ['strategy.changed'], successToast: '事件投影已重建' });
+  const runIncubationPipelineApi = useApiMutation({ effects: ['strategy.changed'], successToast: '孵化流水线已执行' });
+  const runIncubationSyncApi = useApiMutation({ effects: ['strategy.changed'], successToast: '模拟盘孵化同步已执行' });
   const runExecutionAuditAcceptanceApi = useApiMutation({
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '执行审计校验已重跑',
   });
-  const runRiskScanApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风控扫描已执行' });
-  const riskRecoveryApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已发起恢复尝试' });
-  const runRuntimeAlertDispatchApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行告警已重新分发' });
-  const ackRuntimeAlertApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '告警已确认' });
-  const setRuntimeControlApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行控制已更新' });
-  const resolveRiskEventApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风险事件已解决' });
-  const runRuntimeCycleApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行闭环已触发' });
-  const aiGenerateCandidateApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: 'AI 候选生成任务已提交' });
+  const runRiskScanApi = useApiMutation({ effects: ['strategy.changed'], successToast: '风控扫描已执行' });
+  const riskRecoveryApi = useApiMutation({ effects: ['strategy.changed'], successToast: '已发起恢复尝试' });
+  const runRuntimeAlertDispatchApi = useApiMutation({ effects: ['strategy.changed'], successToast: '运行告警已重新分发' });
+  const ackRuntimeAlertApi = useApiMutation({ effects: ['strategy.changed'], successToast: '告警已确认' });
+  const setRuntimeControlApi = useApiMutation({ effects: ['strategy.changed'], successToast: '运行控制已更新' });
+  const resolveRiskEventApi = useApiMutation({ effects: ['strategy.changed'], successToast: '风险事件已解决' });
+  const runRuntimeCycleApi = useApiMutation({ effects: ['strategy.changed'], successToast: '运行闭环已触发' });
+  const aiGenerateCandidateApi = useApiMutation({ effects: ['strategy.changed'], successToast: 'AI 候选生成任务已提交' });
 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');

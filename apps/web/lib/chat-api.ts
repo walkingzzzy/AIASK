@@ -1,6 +1,6 @@
 import { authedFetch, authedStreamFetch, buildApiError, rejectFallbackPayload } from './api';
 import { hasLoggedInHint } from './auth';
-import type { CopilotActionMeta, CopilotPageContext } from './copilot-types';
+import type { CopilotActionMeta, CopilotFrontendContext, CopilotPageContext } from './copilot-types';
 import type { ChatToolTrace } from './tool-trace-types';
 
 export type ChatEvent =
@@ -40,6 +40,7 @@ export type ModelPreset = { provider: string; baseUrl: string; models: string[] 
 export type StreamChatOptions = {
   mode?: 'chat' | 'copilot' | 'assistant';
   pageContext?: CopilotPageContext | null;
+  frontendContext?: CopilotFrontendContext | null;
   availableActions?: CopilotActionMeta[];
 };
 
@@ -152,6 +153,52 @@ function compactPageContextForChat(pageContext: CopilotPageContext | null | unde
     evidenceSummary: pageContext.evidenceSummary?.slice(0, 8).map((item) => truncateContextText(item, 320)),
     riskNotes: pageContext.riskNotes?.slice(0, 8).map((item) => truncateContextText(item, 320)),
     raw: compactPageContextRaw(pageContext.raw),
+  };
+}
+
+function compactSurfaceRoute(route: CopilotFrontendContext['currentRoute']): CopilotFrontendContext['currentRoute'] {
+  if (!route) return route;
+  return {
+    ...route,
+    summary: truncateContextText(route.summary, 360),
+    primaryGoal: truncateContextText(route.primaryGoal, 240),
+    requiredInputs: route.requiredInputs?.slice(0, 5),
+    coreEntities: route.coreEntities?.slice(0, 6),
+    dataSources: route.dataSources?.slice(0, 6),
+    capabilities: route.capabilities?.slice(0, 6).map((item) => truncateContextText(item, 120)),
+    commonQuestions: route.commonQuestions?.slice(0, 5).map((item) => truncateContextText(item, 120)),
+    relatedPageKeys: route.relatedPageKeys?.slice(0, 8),
+    aliases: route.aliases?.slice(0, 8),
+  };
+}
+
+function compactFrontendContextForChat(
+  frontendContext: CopilotFrontendContext | null | undefined,
+): CopilotFrontendContext | null | undefined {
+  if (!frontendContext) return frontendContext;
+  return {
+    ...frontendContext,
+    appMap: {
+      modules: frontendContext.appMap.modules.slice(0, 12),
+      routes: frontendContext.appMap.routes.slice(0, 80).map((route) => ({
+        ...route,
+        summary: truncateContextText(route.summary, 180),
+        aliases: route.aliases?.slice(0, 6),
+      })),
+    },
+    currentRoute: compactSurfaceRoute(frontendContext.currentRoute),
+    relatedRoutes: frontendContext.relatedRoutes?.slice(0, 8).map((route) => compactSurfaceRoute(route)!),
+    taskFlow: frontendContext.taskFlow
+      ? {
+          ...frontendContext.taskFlow,
+          summary: truncateContextText(frontendContext.taskFlow.summary, 360),
+          steps: frontendContext.taskFlow.steps.slice(0, 8).map((step) => ({
+            ...step,
+            goal: truncateContextText(step.goal, 180),
+            requiredContext: step.requiredContext?.slice(0, 5),
+          })),
+        }
+      : undefined,
   };
 }
 
@@ -283,6 +330,7 @@ export async function streamChat(
         messages,
         mode: options?.mode,
         pageContext: compactPageContextForChat(options?.pageContext),
+        frontendContext: compactFrontendContextForChat(options?.frontendContext),
         availableActions: options?.availableActions,
       }),
       signal,

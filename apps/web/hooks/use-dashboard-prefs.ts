@@ -66,7 +66,11 @@ export type { DashboardModuleKey, ModuleVisibility };
 
 export function useDashboardPrefs(mounted: boolean, profileQ: { data: Record<string, unknown> | null | undefined }) {
   const [draftVisibility, setDraftVisibility] = useState<ModuleVisibility | null>(null);
-  const saveApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
+  const saveApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.profile.updated'],
+  });
   const profilePrefs = profileQ.data?.preferences;
   const profileObj = profilePrefs && typeof profilePrefs === 'object' ? profilePrefs as Record<string, unknown> : {};
   const profileDash = parseVis((profileObj.homeDashboard as Record<string, unknown> | undefined)?.visibility);

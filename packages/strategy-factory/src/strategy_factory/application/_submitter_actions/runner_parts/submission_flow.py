@@ -327,6 +327,12 @@
                 )
             except Exception as exc:
                 logger.warning("StrategySubmitter: validation report failed for %s: %s", candidate.get("strategy_type"), exc)
+            if _report_is_degraded(validation_report):
+                validation_report = _build_validation_report_fallback(
+                    candidate,
+                    dict(candidate.get("backtest_metrics") or candidate.get("backtest_result", {}).get("metrics") or {}),
+                    reason="validation_gateway_empty_or_degraded",
+                )
 
             risk_report = None
             try:
@@ -337,6 +343,12 @@
                 )
             except Exception as exc:
                 logger.warning("StrategySubmitter: risk report failed for %s: %s", candidate.get("strategy_type"), exc)
+            if _report_is_degraded(risk_report):
+                risk_report = _build_risk_report_fallback(
+                    candidate,
+                    dict(candidate.get("backtest_metrics") or candidate.get("backtest_result", {}).get("metrics") or {}),
+                    reason="risk_gateway_empty_or_degraded",
+                )
 
             return validation_report, risk_report
 

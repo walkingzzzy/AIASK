@@ -18,6 +18,7 @@ def build_quality_report(
     normalized_gate = normalize_quality_gate_result(quality_gate)
     validation = dict(validation_report or {})
     rating = validation.get("rating") or {}
+    risk = dict(risk_report or {})
     dedup = dict(dedup_report or {})
     backtest = dict(backtest_metrics or {})
     audit = dict(submission_audit or {})
@@ -146,6 +147,13 @@ def build_quality_report(
         "base_total_score",
         "total_score",
     )
+    validation_evidence_mode = str(validation.get("evidence_mode") or "formal_validation").strip() or "formal_validation"
+    risk_evidence_mode = str(risk.get("evidence_mode") or "formal_risk").strip() or "formal_risk"
+    report_degraded_reasons: list[str] = []
+    if validation.get("report_degraded") or validation.get("diagnostic_only"):
+        report_degraded_reasons.append(str(validation.get("degraded_reason") or "validation_report_degraded"))
+    if risk.get("report_degraded") or risk.get("diagnostic_only"):
+        report_degraded_reasons.append(str(risk.get("degraded_reason") or "risk_report_degraded"))
     semantic_summary_fields: dict[str, Any] = {}
     for field_name in (
         "evidence_chain",
@@ -241,6 +249,11 @@ def build_quality_report(
         "validation_total_score": validation_total_score,
         "raw_validation_total_score": raw_validation_total_score,
         "raw_validation_baseline_total_score": raw_validation_baseline_total_score,
+        "validation_report_available": bool(validation),
+        "risk_report_available": bool(risk),
+        "validation_evidence_mode": validation_evidence_mode,
+        "risk_evidence_mode": risk_evidence_mode,
+        "report_degraded_reasons": list(dict.fromkeys(report_degraded_reasons)),
         "review_source": review_source,
         "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
         "admission_stage": normalized_gate.get("admission_stage"),
@@ -337,7 +350,7 @@ def build_quality_report(
         "summary": summary,
         "quality_gate": normalized_gate,
         "validation_report": validation,
-        "risk_report": dict(risk_report or {}),
+        "risk_report": risk,
         "dedup_report": dedup,
         "backtest_metrics": backtest,
         "constraint_check": dict(backtest.get("constraint_check") or {}),

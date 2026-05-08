@@ -141,7 +141,7 @@ export function PortfolioDetailSection({
           value={detailObj.totalReturn != null ? fmtPct(Number(detailObj.totalReturn)) : null}
           change={detailObj.totalReturn != null ? Number(detailObj.totalReturn) : null}
         />
-        <KpiCard title="持仓数" value={detailHoldings.length || null} />
+        <KpiCard title="持仓数" value={detailHoldings.length} />
       </KpiGrid>
 
       {detailStrategies.length > 0 ? (

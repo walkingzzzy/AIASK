@@ -44,6 +44,7 @@ _VALID_STRATEGY_TYPES = frozenset({
     "momentum", "ma_cross", "rsi",
     "value_factor", "quality_factor", "growth_factor",
     "multi_factor", "macro_timing", "dsl_rule",
+    "topn_equity_portfolio",
     "volatility_breakout", "event_structure_breakout", "gap_fill", "mean_reversion_short",
     "sector_rotation", "north_capital_track", "margin_divergence",
 })
@@ -124,6 +125,12 @@ def gate_0_structural(candidate: dict) -> GateResult:
         reasons.append("missing_params")
     elif not isinstance(params, dict):
         reasons.append("params_not_dict")
+    elif strategy_type and strategy_type in _VALID_STRATEGY_TYPES and not has_executable_params(strategy_type, params):
+        missing_fields = missing_executable_fields(strategy_type, params)
+        if missing_fields:
+            reasons.append(f"missing_executable_params:{','.join(missing_fields)}")
+        else:
+            reasons.append("missing_executable_params")
 
     missing_trade_fields = [
         key for key in sorted(_REQUIRED_TRADE_FIELDS)

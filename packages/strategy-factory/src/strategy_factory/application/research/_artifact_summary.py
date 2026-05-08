@@ -19,6 +19,9 @@ def build_factor_research_summary(
     governed_source_candidate_count: int,
     governed_active_registry_candidate_count: int,
     governed_blocked_candidate_count: int,
+    governed_active_blocked_candidate_count: int,
+    governed_quarantined_candidate_count: int,
+    governed_governance_denominator: int,
     governed_blocked_ratio: float,
     governed_pending_candidate_count: int,
     governed_pending_ratio: float,
@@ -26,6 +29,7 @@ def build_factor_research_summary(
     governed_ineligible_ratio: float,
     governed_latest_candidate_at: str | None,
     governed_freshness_days: int | None,
+    governed_freshness_source: str | None,
     ranked_factors: list[dict[str, Any]],
     top_factor_names: list[str],
     top_candidate_names: list[str],
@@ -54,6 +58,7 @@ def build_factor_research_summary(
     lightweight_mock_fallback: bool,
     governed_exclusion_reason_counts: dict[str, Any],
     governed_blocking_reason_counts: dict[str, Any],
+    governed_active_blocking_reason_counts: dict[str, Any],
     governed_pending_reason_counts: dict[str, Any],
     governed_ineligible_reason_counts: dict[str, Any],
     governed_registry_summary: dict[str, Any],
@@ -78,6 +83,9 @@ def build_factor_research_summary(
         "governed_source_candidate_count": governed_source_candidate_count,
         "governed_active_registry_candidate_count": governed_active_registry_candidate_count,
         "governed_blocked_candidate_count": governed_blocked_candidate_count,
+        "governed_active_blocked_candidate_count": governed_active_blocked_candidate_count,
+        "governed_quarantined_candidate_count": governed_quarantined_candidate_count,
+        "governed_governance_denominator": governed_governance_denominator,
         "governed_blocked_ratio": governed_blocked_ratio,
         "governed_pending_candidate_count": governed_pending_candidate_count,
         "governed_pending_ratio": governed_pending_ratio,
@@ -85,6 +93,7 @@ def build_factor_research_summary(
         "governed_ineligible_ratio": governed_ineligible_ratio,
         "governed_latest_candidate_at": governed_latest_candidate_at,
         "governed_freshness_days": governed_freshness_days,
+        "governed_freshness_source": governed_freshness_source,
         "ranked_factor_count": len(ranked_factors),
         "top_factor_names": top_factor_names,
         "top_candidate_names": top_candidate_names,
@@ -149,6 +158,7 @@ def build_factor_research_summary(
         "lightweight_mock_fallback": lightweight_mock_fallback,
         "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
         "governed_blocking_reason_counts": governed_blocking_reason_counts,
+        "governed_active_blocking_reason_counts": governed_active_blocking_reason_counts,
         "governed_pending_reason_counts": governed_pending_reason_counts,
         "governed_ineligible_reason_counts": governed_ineligible_reason_counts,
         "governed_registry_stage_counts": dict(
@@ -183,8 +193,22 @@ def build_factor_research_summary(
         "lifecycle_feedback_input_available": bool(lifecycle_feedback_input.get("available")),
         "budget_feedback_available": bool(lifecycle_feedback_input.get("available")),
         "budget_feedback_family_count": int(budget_feedback_summary.get("family_count") or 0),
+        "budget_feedback_source_strategy_count": int(
+            budget_feedback_summary.get("source_strategy_count")
+            or budget_feedback_summary.get("strategy_count")
+            or 0
+        ),
         "budget_feedback_strategy_count": int(
             budget_feedback_summary.get("strategy_count") or 0
+        ),
+        "budget_feedback_eligible_strategy_count": int(
+            budget_feedback_summary.get("eligible_strategy_count") or 0
+        ),
+        "budget_feedback_pending_evidence_refresh_count": int(
+            budget_feedback_summary.get("pending_evidence_refresh_count") or 0
+        ),
+        "budget_feedback_pending_evidence_refresh_reason_counts": dict(
+            budget_feedback_summary.get("pending_evidence_refresh_reason_counts") or {}
         ),
         "budget_feedback_target_pool_scope_count": int(
             budget_feedback_summary.get("target_pool_scope_count") or 0
@@ -303,6 +327,15 @@ def build_factor_research_summary(
         ),
         "budget_feedback_evidence_debt_ratio": _safe_float(
             budget_feedback_summary.get("evidence_debt_ratio")
+        ),
+        "budget_feedback_fallback_evidence_strategy_count": int(
+            budget_feedback_summary.get("fallback_evidence_strategy_count") or 0
+        ),
+        "budget_feedback_feedback_evidence_augmented_count": int(
+            budget_feedback_summary.get("feedback_evidence_augmented_count") or 0
+        ),
+        "budget_feedback_fallback_evidence_mode_counts": dict(
+            budget_feedback_summary.get("fallback_evidence_mode_counts") or {}
         ),
         "search_route_action_counts": search_route_action_counts,
         "degraded": degraded,

@@ -104,6 +104,17 @@ export class SearchService {
         : `${options.taskLabel}“${options.queryLabel}”当前没有命中结果，建议调整关键词或切换搜索方式。`,
       availableViews: ['summary', 'next_step', ...(options.items.length > 1 ? (['compare'] as const) : [])],
       recommendedActions: [
+        primaryCode
+          ? {
+              id: 'search.open-stock-detail',
+              actionId: 'global.open-stock-detail',
+              label: '打开个股详情',
+              description: '直接进入当前优先股票的实时内容页。',
+              payload: {
+                code: primaryCode,
+              },
+            }
+          : null,
         {
           id: 'search.open-copilot-followup',
           actionId: 'search.open-copilot-followup',
@@ -114,7 +125,7 @@ export class SearchService {
             primaryCode: primaryCode || null,
           },
         },
-      ],
+      ].filter((item): item is NonNullable<typeof item> => item != null),
       recommendedLinks: [
         primaryCode
           ? {

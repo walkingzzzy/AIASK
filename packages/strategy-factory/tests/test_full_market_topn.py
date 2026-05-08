@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections import Counter
 
+from strategy_factory.application.quality_gates import gate_0_structural
 from strategy_factory.application.factory_market_views import (
     build_full_market_topn_payload,
     build_portfolio_candidate_from_topn,
     build_research_window_status,
 )
+from strategy_factory.domain.constants import BACKTEST_TYPE_THRESHOLDS, CATEGORY_MINIMUMS
 from strategy_factory.application.stock_strategy_matrix import StockStrategyMatrixPlanner
 
 
@@ -137,6 +139,19 @@ def test_build_portfolio_candidate_from_topn_creates_multi_stock_candidate():
     assert strategy["params"]["metadata"]["selection_source"] == "full_market_topn"
     assert strategy["params"]["metadata"]["score_contract_version"] == "strategy_factory.full_market_topn.v2"
     assert "selection_diagnostics_summary" in strategy["params"]["metadata"]
+
+
+def test_topn_equity_portfolio_is_registered_for_gate0_and_thresholds():
+    candidate = {
+        "strategy_type": "topn_equity_portfolio",
+        "params": {"target_symbols": ["600000", "600519"], "target_weights": {"600000": 0.5, "600519": 0.5}},
+    }
+
+    result = gate_0_structural(candidate)
+
+    assert "invalid_strategy_type:topn_equity_portfolio" not in result.reasons
+    assert "topn_equity_portfolio" in CATEGORY_MINIMUMS
+    assert "topn_equity_portfolio" in BACKTEST_TYPE_THRESHOLDS
 
 
 def test_build_full_market_topn_payload_marks_degraded_when_scores_do_not_separate():

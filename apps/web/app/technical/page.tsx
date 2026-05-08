@@ -24,6 +24,7 @@ import { LineChart, COLORS } from '@/components/charts';
 import { extractArray } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
+import { parseIndicatorPayload } from '@/lib/technical-display';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
@@ -58,45 +59,6 @@ const FIELD_CLS =
 
 type Tab = (typeof TABS)[number]['key'];
 type SubmittedPayload = Record<string, unknown>;
-
-function parseIndicators(raw: unknown) {
-  const obj = raw as Record<string, unknown> | null;
-  if (!obj || typeof obj !== 'object') {
-    return { series: [], summary: [] as { key: string; entries: [string, unknown][] }[] };
-  }
-
-  const series: { name: string; data: number[]; color: string }[] = [];
-  const summary: { key: string; entries: [string, unknown][] }[] = [];
-  let colorIndex = 0;
-
-  for (const [key, value] of Object.entries(obj)) {
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'number') {
-      series.push({
-        name: key.toUpperCase(),
-        data: value,
-        color: COLORS.series[colorIndex++ % COLORS.series.length],
-      });
-    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const inner = value as Record<string, unknown>;
-      let hasArrays = false;
-      for (const [subKey, subValue] of Object.entries(inner)) {
-        if (Array.isArray(subValue) && subValue.length > 0 && typeof subValue[0] === 'number') {
-          series.push({
-            name: `${key.toUpperCase()}_${subKey}`,
-            data: subValue,
-            color: COLORS.series[colorIndex++ % COLORS.series.length],
-          });
-          hasArrays = true;
-        }
-      }
-      if (!hasArrays) {
-        summary.push({ key: key.toUpperCase(), entries: Object.entries(inner) });
-      }
-    }
-  }
-
-  return { series, summary };
-}
 
 export default function TechnicalPage() {
   const compactLayout = useMobile(RESPONSIVE_BREAKPOINTS.splitCollapse);
@@ -221,7 +183,7 @@ export default function TechnicalPage() {
   const unwrapped = useMemo(() => (rawData ? unwrapToolPayload(rawData) : null), [rawData]);
   const { series: indicatorSeries, summary: indicatorSummary } = useMemo(() => {
     if (tab !== 'indicators' || !unwrapped) return { series: [], summary: [] };
-    return parseIndicators(unwrapped);
+    return parseIndicatorPayload(unwrapped, COLORS.series);
   }, [tab, unwrapped]);
   const rows = useMemo(() => {
     if (!unwrapped) return [];
@@ -606,7 +568,7 @@ export default function TechnicalPage() {
                 <DataTable
                   rows={indicatorSummary.map((item) => ({
                     indicator: item.key,
-                    summary: item.entries.map(([key, value]) => `${key}:${String(value)}`).join(' ｜ '),
+                    summary: item.entries.map(([key, value]) => `${key}:${value}`).join(' ｜ '),
                   }))}
                   columns={[
                     { key: 'indicator', label: '指标' },

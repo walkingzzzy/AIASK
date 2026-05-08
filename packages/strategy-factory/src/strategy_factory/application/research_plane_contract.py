@@ -50,6 +50,14 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _summary_value(summary: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        value = summary.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return default
+
+
 def _compact_list(values: Any, *, limit: int = 8) -> list[str]:
     items: list[str] = []
     for value in list(values or []):
@@ -289,6 +297,23 @@ def build_research_artifact(
         "governed_candidate_pool_active": bool(governed_pool_state.get("active")),
         "governed_candidate_pool_mode": summary.get("governed_candidate_pool_mode"),
         "governed_candidate_pool_provisional": bool(summary.get("governed_candidate_pool_provisional")),
+        "governed_latest_candidate_at": summary.get("governed_latest_candidate_at"),
+        "governed_freshness_days": summary.get("governed_freshness_days"),
+        "governed_freshness_source": summary.get("governed_freshness_source"),
+        "governed_blocked_candidate_count": _safe_int(summary.get("governed_blocked_candidate_count")),
+        "governed_active_blocked_candidate_count": _safe_int(
+            summary.get("governed_active_blocked_candidate_count")
+        ),
+        "governed_quarantined_candidate_count": _safe_int(
+            summary.get("governed_quarantined_candidate_count")
+        ),
+        "governed_governance_denominator": _safe_int(
+            summary.get("governed_governance_denominator")
+        ),
+        "governed_blocked_ratio": _safe_float(summary.get("governed_blocked_ratio")),
+        "governed_active_blocking_reason_counts": dict(
+            summary.get("governed_active_blocking_reason_counts") or {}
+        ),
         "governed_candidate_pool_provisional_spillover_policy_status": summary.get(
             "governed_candidate_pool_provisional_spillover_policy_status"
         ),
@@ -305,7 +330,19 @@ def build_research_artifact(
         "lifecycle_feedback_input_contract_version": lifecycle_feedback_input.get("contract_version"),
         "lifecycle_feedback_input_available": bool(lifecycle_feedback_input.get("available")),
         "lifecycle_feedback_family_count": _safe_int(summary.get("budget_feedback_family_count")),
+        "lifecycle_feedback_source_strategy_count": _safe_int(
+            summary.get("budget_feedback_source_strategy_count")
+        ),
         "lifecycle_feedback_strategy_count": _safe_int(summary.get("budget_feedback_strategy_count")),
+        "lifecycle_feedback_eligible_strategy_count": _safe_int(
+            summary.get("budget_feedback_eligible_strategy_count")
+        ),
+        "lifecycle_feedback_pending_evidence_refresh_count": _safe_int(
+            summary.get("budget_feedback_pending_evidence_refresh_count")
+        ),
+        "lifecycle_feedback_pending_evidence_refresh_reason_counts": dict(
+            summary.get("budget_feedback_pending_evidence_refresh_reason_counts") or {}
+        ),
         "lifecycle_feedback_target_pool_scope_count": _safe_int(
             summary.get("budget_feedback_target_pool_scope_count")
         ),
@@ -328,49 +365,49 @@ def build_research_artifact(
             summary.get("budget_feedback_promotion_review_status_counts") or {}
         ),
         "lifecycle_feedback_signal_count_total": _safe_int(
-            summary.get("budget_feedback_signal_count_total")
+            _summary_value(summary, "budget_feedback_signal_count_total", "signal_count_total")
         ),
         "lifecycle_feedback_zero_signal_strategy_count": _safe_int(
-            summary.get("budget_feedback_zero_signal_strategy_count")
+            _summary_value(summary, "budget_feedback_zero_signal_strategy_count", "zero_signal_strategy_count")
         ),
         "lifecycle_feedback_zero_signal_ratio": _safe_float(
-            summary.get("budget_feedback_zero_signal_ratio")
+            _summary_value(summary, "budget_feedback_zero_signal_ratio", "zero_signal_ratio")
         ),
         "lifecycle_feedback_low_signal_strategy_count": _safe_int(
-            summary.get("budget_feedback_low_signal_strategy_count")
+            _summary_value(summary, "budget_feedback_low_signal_strategy_count", "low_signal_strategy_count")
         ),
         "lifecycle_feedback_low_signal_ratio": _safe_float(
-            summary.get("budget_feedback_low_signal_ratio")
+            _summary_value(summary, "budget_feedback_low_signal_ratio", "low_signal_ratio")
         ),
         "lifecycle_feedback_observed_forward_window_count": _safe_int(
-            summary.get("budget_feedback_observed_forward_window_count")
+            _summary_value(summary, "budget_feedback_observed_forward_window_count", "observed_forward_window_count")
         ),
         "lifecycle_feedback_missing_forward_window_count": _safe_int(
-            summary.get("budget_feedback_missing_forward_window_count")
+            _summary_value(summary, "budget_feedback_missing_forward_window_count", "missing_forward_window_count")
         ),
         "lifecycle_feedback_expected_forward_window_count": _safe_int(
-            summary.get("budget_feedback_expected_forward_window_count")
+            _summary_value(summary, "budget_feedback_expected_forward_window_count", "expected_forward_window_count")
         ),
         "lifecycle_feedback_forward_window_coverage_ratio": _safe_float(
-            summary.get("budget_feedback_forward_window_coverage_ratio"),
+            _summary_value(summary, "budget_feedback_forward_window_coverage_ratio", "forward_window_coverage_ratio"),
             1.0,
         ),
         "lifecycle_feedback_promotion_ready_count": _safe_int(
-            summary.get("budget_feedback_promotion_ready_count")
+            _summary_value(summary, "budget_feedback_promotion_ready_count", "promotion_ready_count")
         ),
         "lifecycle_feedback_promotion_ready_ratio": _safe_float(
-            summary.get("budget_feedback_promotion_ready_ratio"),
+            _summary_value(summary, "budget_feedback_promotion_ready_ratio", "promotion_ready_ratio"),
             1.0,
         ),
         "lifecycle_feedback_promotion_review_coverage_ratio": _safe_float(
-            summary.get("budget_feedback_promotion_review_coverage_ratio"),
+            _summary_value(summary, "budget_feedback_promotion_review_coverage_ratio", "promotion_review_coverage_ratio"),
             1.0,
         ),
         "lifecycle_feedback_evidence_debt_strategy_count": _safe_int(
-            summary.get("budget_feedback_evidence_debt_strategy_count")
+            _summary_value(summary, "budget_feedback_evidence_debt_strategy_count", "evidence_debt_strategy_count")
         ),
         "lifecycle_feedback_evidence_debt_ratio": _safe_float(
-            summary.get("budget_feedback_evidence_debt_ratio")
+            _summary_value(summary, "budget_feedback_evidence_debt_ratio", "evidence_debt_ratio")
         ),
         "family_reward_table": dict(
             artifact.get("family_reward_table") or summary.get("family_reward_table") or {}
@@ -571,8 +608,8 @@ def build_research_plane_artifact(
     research_artifact = derived_research_artifact
     if bool(prebuilt_research_artifact.get("available")):
         research_artifact = {
-            **derived_research_artifact,
             **prebuilt_research_artifact,
+            **derived_research_artifact,
         }
         research_artifact["available"] = bool(
             prebuilt_research_artifact.get("available")

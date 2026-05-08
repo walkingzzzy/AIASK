@@ -20,6 +20,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { DataQualityBanner, ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
+import { classifyDataTrustForDisplay } from '@/lib/api';
 import { ensureRecord } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { StockLink } from '@/components/stock-link';
@@ -53,6 +54,8 @@ export default function SentimentPage() {
     parse: (raw) => ensureRecord(raw, '个股情绪'),
   });
   const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', {
+    nonFatal: true,
+    timeoutMs: 30_000,
     parse: (raw) => ensureRecord(raw, '恐贪指数'),
   });
 
@@ -67,13 +70,15 @@ export default function SentimentPage() {
   }
 
   const stockPayload = unwrapToolPayload(stockSentimentQ.data);
-  const stockScore = stockSentimentQ.trust.degraded ? null : ((stockPayload.score as number) ?? null);
+  const stockSentimentDisplay = classifyDataTrustForDisplay(stockSentimentQ.data, stockSentimentQ.trust);
+  const stockScore = stockSentimentDisplay.isBlocking ? null : ((stockPayload.score as number) ?? null);
   const stockSentiment = String(stockPayload.sentiment ?? '');
   const stockComponents = objToItems(stockPayload.components);
   const stockCode = String(stockPayload.code ?? resolvedCode ?? '');
 
   const fearGreedPayload = unwrapToolPayload(fearGreedQ.data);
-  const fearGreedIndex = fearGreedQ.trust.degraded
+  const fearGreedDisplay = classifyDataTrustForDisplay(fearGreedQ.data, fearGreedQ.trust);
+  const fearGreedIndex = fearGreedDisplay.isBlocking
     ? null
     : ((fearGreedPayload.index as number) ?? (fearGreedPayload.value as number) ?? null);
   const fearGreedLevel = String(fearGreedPayload.level ?? '');
@@ -188,7 +193,14 @@ export default function SentimentPage() {
     platformMeta: {
       sourceTool: 'sentiment',
       sourceChain: ['sentiment-stock', 'fear-greed'],
-      degraded: Boolean(stockSentimentQ.error || fearGreedQ.error || stockSentimentQ.trust.degraded || fearGreedQ.trust.degraded),
+      degraded: Boolean(
+        stockSentimentQ.error
+        || fearGreedQ.error
+        || stockSentimentDisplay.shouldShowQualityBanner
+        || fearGreedDisplay.shouldShowQualityBanner
+        || stockSentimentDisplay.isBlocking
+        || fearGreedDisplay.isBlocking,
+      ),
       fallbackReason: degradedReasons,
     },
     workbenchTask: defaultWorkbenchTask('sentiment', `复查情绪 ${focusCode}`, '/sentiment', 'sentiment-review', {

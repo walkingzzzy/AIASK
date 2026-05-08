@@ -72,6 +72,16 @@ def _safe_group_name(value, fallback: str) -> str:
     return text or fallback
 
 
+def _command_tag_rowcount(value: Any) -> int:
+    parts = str(value or "").split()
+    if not parts:
+        return 0
+    try:
+        return int(parts[-1])
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _ensure_group(conn, user_id: str, group_id: str, group_name: str | None = None, color: str | None = None) -> None:
     if group_id == DEFAULT_GROUP_ID:
         return
@@ -304,14 +314,43 @@ def register_watchlist_manager(mcp):
                 code = str(kwargs.get("code") or "").strip()
                 if not code:
                     return fail("需要提供 code 参数（股票代码）")
+                group_id = _safe_group_id(kwargs.get("group_id"))
 
                 async with db.acquire() as conn:
+                    if group_id == DEFAULT_GROUP_ID:
+                        await conn.execute(
+                            "DELETE FROM watchlist WHERE user_id = $1 AND code = $2",
+                            user_id,
+                            code,
+                        )
+                        return ok({"code": code, "group_id": group_id, "removed": True, "moved_to_default": False})
+
+                    moved = await conn.execute(
+                        """
+                        UPDATE watchlist
+                        SET group_id = $1, sort_order = 0
+                        WHERE user_id = $2 AND code = $3 AND group_id = $4
+                        """,
+                        DEFAULT_GROUP_ID,
+                        user_id,
+                        code,
+                        group_id,
+                    )
+                    if _command_tag_rowcount(moved) > 0:
+                        return ok({
+                            "code": code,
+                            "group_id": group_id,
+                            "removed": False,
+                            "moved_to_default": True,
+                            "target_group_id": DEFAULT_GROUP_ID,
+                        })
+
                     await conn.execute(
                         "DELETE FROM watchlist WHERE user_id = $1 AND code = $2",
                         user_id,
                         code,
                     )
-                return ok({"code": code, "removed": True})
+                return ok({"code": code, "group_id": group_id, "removed": True, "moved_to_default": False})
 
             if action == "reorder":
                 codes = _normalize_codes(kwargs.get("codes"))

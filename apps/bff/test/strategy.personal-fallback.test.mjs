@@ -80,6 +80,87 @@ test('StrategyMarketService.myStrategies falls back to local DB rows with owner 
   assert.equal(row.runtime_action_contract.state.editable, true);
 });
 
+test('StrategyMarketService.myStrategies filters non-personal manager rows from mine workspace', async () => {
+  const db = {
+    query: async () => ({ rows: [] }),
+  };
+  const service = createService(
+    db,
+    async () => ({
+      data: {
+        strategies: [
+          {
+            id: 'market-owned-1',
+            name: 'Owned Market Strategy',
+            author_id: 'user-1',
+            status: 'rejected',
+            tags: ['audit'],
+            owner_state: { owned: true, editable: true, personal_strategy: false },
+          },
+          strategyRow({
+            id: 'personal-2',
+            owner_state: { owned: true, editable: false, personal_strategy: false },
+          }),
+        ],
+        items: [
+          {
+            id: 'market-owned-1',
+            name: 'Owned Market Strategy',
+            author_id: 'user-1',
+            status: 'rejected',
+            tags: ['audit'],
+            owner_state: { owned: true, editable: true, personal_strategy: false },
+          },
+          strategyRow({
+            id: 'personal-2',
+            owner_state: { owned: true, editable: false, personal_strategy: false },
+          }),
+        ],
+        count: 2,
+      },
+    }),
+  );
+
+  const result = await service.myStrategies('user-1', 'user', { limit: 20 });
+  const row = result.items[0];
+
+  assert.equal(result.count, 1);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.strategies.length, 1);
+  assert.equal(row.id, 'personal-2');
+  assert.equal(row.owner_state.personal_strategy, true);
+  assert.equal(row.owner_state.editable, true);
+  assert.equal(row.runtime_action_contract.state.personal_strategy, true);
+  assert.equal(row.runtime_action_contract.state.editable, true);
+});
+
+test('StrategyMarketService.detail normalizes personal owner state from strategy tags after manager success', async () => {
+  const db = {
+    query: async () => ({ rows: [] }),
+  };
+  const service = createService(
+    db,
+    async () => ({
+      data: {
+        strategy: strategyRow({
+          id: 'personal-3',
+          owner_state: { owned: true, editable: false, personal_strategy: false },
+        }),
+        owner_state: { owned: true, editable: false, personal_strategy: false },
+        favorite_state: { available: true, favorited: false },
+        paper_session_state: { available: true, has_session: false },
+      },
+    }),
+  );
+
+  const result = await service.detail('personal-3', { userId: 'user-1', role: 'user' });
+
+  assert.equal(result.owner_state.personal_strategy, true);
+  assert.equal(result.owner_state.editable, true);
+  assert.equal(result.runtime_action_contract.state.personal_strategy, true);
+  assert.equal(result.runtime_action_contract.state.editable, true);
+});
+
 test('StrategyMarketService.forkStrategy uses DB fallback when strategy_manager is unavailable', async () => {
   let inserted = null;
   const db = {
@@ -181,4 +262,27 @@ test('StrategyMarketService.deletePersonalStrategy archives local mirror after m
   assert.equal(result.archived, true);
   assert.equal(result.local_mirror_archived, true);
   assert.deepEqual(updates[0], ['personal-1', 'user-1']);
+});
+
+test('StrategyMarketService.rank uses a longer timeout budget than generic read surfaces', async () => {
+  let capturedOptions = null;
+  const service = createService(
+    {},
+    async (_tool, _args, options) => {
+      capturedOptions = options;
+      return {
+        data: {
+          strategies: [],
+          count: 0,
+          limit: 1,
+          offset: 0,
+        },
+      };
+    },
+  );
+
+  const result = await service.rank({ status: 'all', limit: 1 });
+
+  assert.equal(result.count, 0);
+  assert.equal(capturedOptions?.timeoutMs, 15000);
 });

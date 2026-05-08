@@ -1,4 +1,6 @@
 
+import random
+
 
 class RuleStrategyGenerator:
     @staticmethod
@@ -14,6 +16,29 @@ class RuleStrategyGenerator:
             ][:4],
             'degraded': bool(factor_research.get('degraded')),
         }
+
+    @classmethod
+    def _jitter_params(cls, strategy_type: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Add random perturbation to strategy params for differentiation.
+
+        Each call produces a unique param set even for the same strategy type,
+        ensuring dedup and backtest cache keys can distinguish candidates.
+        """
+        jittered = {}
+        for key, value in params.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if isinstance(value, int):
+                    delta = max(2, int(abs(value) * 0.30 * random.random()))
+                    delta = random.randint(-delta, delta)
+                    jittered[key] = max(1, value + delta)
+                else:
+                    factor = 1.0 + (random.random() - 0.5) * 0.40
+                    jittered[key] = round(value * factor, 6)
+            elif isinstance(value, dict):
+                jittered[key] = cls._jitter_params(strategy_type, dict(value))
+            else:
+                jittered[key] = value
+        return jittered
 
     @classmethod
     def _build_rule_spec(
@@ -171,6 +196,7 @@ class RuleStrategyGenerator:
         template = templates.get(strategy_type)
         if template is None:
             return None
+        jittered_params = cls._jitter_params(strategy_type, dict(template['params']))
         template_contract = _rule_template_contract(strategy_type)
         semantic_contract_bundle = _build_rule_semantic_contract_bundle(
             strategy_type,
@@ -231,7 +257,7 @@ class RuleStrategyGenerator:
                 metadata[key] = deepcopy(value)
         return StrategySpec(
             strategy_type=strategy_type,
-            params=dict(template['params']),
+            params=jittered_params,
             name=str(template['name']),
             description=str(template['description']),
             tags=['rule', 'factor_research' if source == 'factor_research' else 'fear_greed'],

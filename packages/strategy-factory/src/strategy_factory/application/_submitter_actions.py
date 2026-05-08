@@ -77,6 +77,59 @@ def _compact_unique(values: Any, *, limit: int = 12) -> list[str]:
     return items
 
 
+def _report_is_degraded(report: Optional[dict[str, Any]]) -> bool:
+    payload = dict(report or {})
+    if not payload:
+        return True
+    if payload.get("report_degraded") or payload.get("diagnostic_only"):
+        return True
+    evidence_mode = str(payload.get("evidence_mode") or "").strip().lower()
+    return evidence_mode in {"backtest_derived_fallback", "backtest_metrics_proxy"}
+
+
+def _build_validation_report_fallback(candidate: dict, metrics: dict, *, reason: str) -> dict[str, Any]:
+    sharpe = float(metrics.get("sharpe_ratio") or metrics.get("post_cost_sharpe") or 0.0)
+    total_return = float(metrics.get("total_return") or 0.0)
+    max_drawdown = abs(float(metrics.get("max_drawdown") or 0.0))
+    score = max(0.0, min(100.0, 50.0 + sharpe * 18.0 + total_return * 80.0 - max_drawdown * 70.0))
+    grade = "B" if score >= 70 else ("C" if score >= 55 else "D")
+    return {
+        "rating": {"grade": grade, "total_score": round(score, 2), "recommendation": "review"},
+        "evidence_mode": "backtest_derived_fallback",
+        "diagnostic_only": True,
+        "report_degraded": True,
+        "degraded_reason": reason,
+        "strategy_type": candidate.get("strategy_type"),
+        "backtest_metric_refs": {
+            "sharpe_ratio": sharpe,
+            "total_return": total_return,
+            "max_drawdown": max_drawdown,
+            "trade_count": metrics.get("trade_count") or metrics.get("trades_count"),
+        },
+    }
+
+
+def _build_risk_report_fallback(candidate: dict, metrics: dict, *, reason: str) -> dict[str, Any]:
+    max_drawdown = abs(float(metrics.get("max_drawdown") or 0.0))
+    total_return = float(metrics.get("total_return") or 0.0)
+    stress = dict(metrics.get("stress_test_summary") or metrics.get("stress_summary") or {})
+    stress_loss = abs(float(stress.get("worst_loss_percent") or stress.get("max_loss_percent") or max_drawdown * 100.0))
+    var_proxy = round(max(max_drawdown, max(0.0, -total_return) * 0.65), 6)
+    risk_level = "high" if max_drawdown >= 0.35 or stress_loss >= 35 else ("medium" if max_drawdown >= 0.18 or stress_loss >= 18 else "low")
+    return {
+        "max_drawdown": max_drawdown,
+        "stress_loss_percent": round(stress_loss, 4),
+        "var_proxy": var_proxy,
+        "risk_level": risk_level,
+        "evidence_mode": "backtest_derived_fallback",
+        "diagnostic_only": True,
+        "report_degraded": True,
+        "degraded_reason": reason,
+        "strategy_type": candidate.get("strategy_type"),
+        "stress_test_summary": stress,
+    }
+
+
 def _candidate_trace_ids(candidate: dict[str, Any]) -> list[str]:
     trace_id = normalize_prediction_trace_id(
         candidate.get("prediction_trace_id"),

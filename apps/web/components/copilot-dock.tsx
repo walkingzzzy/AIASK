@@ -6,7 +6,10 @@ import type { CopilotPageContext, CopilotPageContextPatch } from '@/lib/copilot-
 import { pageActionBus } from '@/lib/page-action-bus';
 import { sanitizeReasoningDelta } from '@/lib/chat-safety';
 import { trackBehaviorEvent } from '@/lib/behavior-tracker';
+import { buildCopilotFrontendContext } from '@/lib/copilot-frontend-context';
 import { getLlmConfig, streamChat } from '@/lib/chat-api';
+import { useStablePathname } from '@/hooks/use-stable-pathname';
+import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import type { CopilotActionMeta } from '@/lib/copilot-types';
 import ChatMessage from '@/components/chat-message';
 import { useChatStore, type ChatActionBlock } from '@/store/chat-store';
@@ -190,6 +193,8 @@ export default function CopilotDock({
   const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
+  const pathname = useStablePathname() || '/';
+  const searchParams = useStableSearchParams();
 
   const [input, setInput] = useState('');
   const [streamPhase, setStreamPhase] = useState<CopilotStreamPhase>(null);
@@ -210,6 +215,15 @@ export default function CopilotDock({
   const effectivePageContext = useMemo(
     () => mergePageContext(pageContext, nextContextPatch),
     [nextContextPatch, pageContext],
+  );
+  const frontendContext = useMemo(
+    () => buildCopilotFrontendContext({
+      pathname,
+      search: searchParams.toString() ? `?${searchParams.toString()}` : '',
+      pageContext: effectivePageContext,
+      activeWorkspace,
+    }),
+    [activeWorkspace, effectivePageContext, pathname, searchParams],
   );
   const workspaceConversationId = activeWorkspace.context.copilotConversationId ?? '';
   const quickPrompts = useMemo(
@@ -487,6 +501,7 @@ export default function CopilotDock({
         {
           mode: variant === 'assistant' ? 'assistant' : variant === 'page' ? 'chat' : 'copilot',
           pageContext: effectivePageContext,
+          frontendContext,
           availableActions,
         },
       );

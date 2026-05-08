@@ -95,6 +95,15 @@ def build_factor_research_artifact_payload(
     governed_blocked_candidate_count = int(
         runtime_context.get("governed_blocked_candidate_count") or 0
     )
+    governed_active_blocked_candidate_count = int(
+        runtime_context.get("governed_active_blocked_candidate_count") or 0
+    )
+    governed_quarantined_candidate_count = int(
+        runtime_context.get("governed_quarantined_candidate_count") or 0
+    )
+    governed_governance_denominator = int(
+        runtime_context.get("governed_governance_denominator") or 0
+    )
     governed_pending_candidate_count = int(
         runtime_context.get("governed_pending_candidate_count") or 0
     )
@@ -109,6 +118,10 @@ def build_factor_research_artifact_payload(
         str(key): int(value or 0)
         for key, value in dict(runtime_context.get("governed_blocking_reason_counts") or {}).items()
     }
+    governed_active_blocking_reason_counts = {
+        str(key): int(value or 0)
+        for key, value in dict(runtime_context.get("governed_active_blocking_reason_counts") or {}).items()
+    }
     governed_pending_reason_counts = {
         str(key): int(value or 0)
         for key, value in dict(runtime_context.get("governed_pending_reason_counts") or {}).items()
@@ -119,6 +132,7 @@ def build_factor_research_artifact_payload(
     }
     governed_latest_candidate_at = runtime_context.get("governed_latest_candidate_at")
     governed_freshness_days = runtime_context.get("governed_freshness_days")
+    governed_freshness_source = runtime_context.get("governed_freshness_source")
     governed_blocked_ratio = builder_cls._safe_float(
         runtime_context.get("governed_blocked_ratio")
     )
@@ -417,6 +431,9 @@ def build_factor_research_artifact_payload(
             governed_source_candidate_count=governed_source_candidate_count,
             governed_active_registry_candidate_count=governed_active_registry_candidate_count,
             governed_blocked_candidate_count=governed_blocked_candidate_count,
+            governed_active_blocked_candidate_count=governed_active_blocked_candidate_count,
+            governed_quarantined_candidate_count=governed_quarantined_candidate_count,
+            governed_governance_denominator=governed_governance_denominator,
             governed_blocked_ratio=governed_blocked_ratio,
             governed_pending_candidate_count=governed_pending_candidate_count,
             governed_pending_ratio=governed_pending_ratio,
@@ -424,6 +441,7 @@ def build_factor_research_artifact_payload(
             governed_ineligible_ratio=governed_ineligible_ratio,
             governed_latest_candidate_at=governed_latest_candidate_at,
             governed_freshness_days=governed_freshness_days,
+            governed_freshness_source=governed_freshness_source,
             ranked_factors=ranked_factors,
             top_factor_names=top_factor_names,
             top_candidate_names=top_candidate_names,
@@ -454,6 +472,7 @@ def build_factor_research_artifact_payload(
             lightweight_mock_fallback=lightweight_mock_fallback,
             governed_exclusion_reason_counts=governed_exclusion_reason_counts,
             governed_blocking_reason_counts=governed_blocking_reason_counts,
+            governed_active_blocking_reason_counts=governed_active_blocking_reason_counts,
             governed_pending_reason_counts=governed_pending_reason_counts,
             governed_ineligible_reason_counts=governed_ineligible_reason_counts,
             governed_registry_summary=governed_registry_summary,

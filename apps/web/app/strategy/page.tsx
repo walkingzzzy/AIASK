@@ -127,7 +127,7 @@ export default function StrategyPage() {
   const optimizeApi = useApiMutation<OptData>();
   const riskAnalysisApi = useApiMutation<RiskData>();
   const stressTestApi = useApiMutation<StressData>();
-  const actionApi = useApiMutation<unknown>();
+  const actionApi = useApiMutation<unknown>({ effects: ['portfolio.changed'] });
 
   const loading =
     backtestApi.isPending ||
@@ -168,7 +168,7 @@ export default function StrategyPage() {
     try {
       const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, { code: trimmedCode, strategy });
       setArtifactId(String(data?.artifactId ?? ''));
-      setWorkspaceTab('experiment');
+      loadBacktests();
     } catch {
       /* captured */
     }
@@ -247,6 +247,9 @@ export default function StrategyPage() {
     const path = '/portfolio/list';
     if (path === portfolioListPath) portfolioListQ.refetch();
     else setPortfolioListPath(path);
+    const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(payload.portfolioId)}`;
+    if (detailPath === portfolioDetailPath) await portfolioDetailQ.refetch();
+    else setPortfolioDetailPath(detailPath);
   }
 
   async function addHolding() {
@@ -279,6 +282,9 @@ export default function StrategyPage() {
     const path = '/portfolio/list';
     if (path === portfolioListPath) portfolioListQ.refetch();
     else setPortfolioListPath(path);
+    const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(portfolioId)}`;
+    if (detailPath === portfolioDetailPath) await portfolioDetailQ.refetch();
+    else setPortfolioDetailPath(detailPath);
   }
 
   async function removeHolding() {
@@ -787,7 +793,7 @@ export default function StrategyPage() {
               value={detailObj.totalReturn != null ? fmtPct(Number(detailObj.totalReturn)) : null}
               change={detailObj.totalReturn != null ? Number(detailObj.totalReturn) : null}
             />
-            <KpiCard title="持仓数" value={detailHoldings.length || null} />
+            <KpiCard title="持仓数" value={detailHoldings.length} />
           </KpiGrid>
           {detailStrategies.length > 0 ? (
             <DataTable

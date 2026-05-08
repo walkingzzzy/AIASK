@@ -146,6 +146,17 @@ export class PortfolioController {
     return { success: true, data, traceId: String(traceId) };
   }
 
+  @Delete('delete')
+  async deletePortfolio(
+    @Query() query: PortfolioIdDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
+  ) {
+    const data = await this.portfolioService.delete(Number(query.portfolioId), this.userId(req));
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
   @Post('optimize')
   async optimize(
     @Body() body: PortfolioIdDto,

@@ -68,18 +68,32 @@ export class AdminService {
   }
 
   async getDeadLetters(): Promise<{ items: unknown[]; path?: string; count: number }> {
+    const fallbackPaths = ['.mcp_cache/dead_letters/kline_save_failures.jsonl', 'cache/dead_letters/kline_save_failures.jsonl'];
     try {
       const raw = await this.callToolWithTimeout('get_dead_letters', { limit: 20 });
       const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
       const records = Array.isArray(result.records) ? result.records : [];
+      const path = typeof result.path === 'string' && result.path.trim() ? result.path.trim() : fallbackPaths[0];
       const items = records.map((record, index) => this.normalizeDeadLetterRecord(record, index));
+      if (items.length > 0) {
+        return {
+          items,
+          path,
+          count: Number(result.count ?? items.length),
+        };
+      }
+      const fallback = await this.loadDeadLettersFromFiles([path, ...fallbackPaths]);
+      if (fallback.items.length > 0) {
+        return fallback;
+      }
       return {
-        items,
-        path: result.path as string | undefined,
-        count: Number(result.count ?? items.length),
+        items: [],
+        path,
+        count: Number(result.count ?? 0),
       };
     } catch {
-      return { items: [], count: 0 };
+      const fallback = await this.loadDeadLettersFromFiles(fallbackPaths);
+      return fallback.items.length > 0 ? fallback : { items: [], path: fallbackPaths[0], count: 0 };
     }
   }
 
@@ -140,13 +154,21 @@ export class AdminService {
   }
 
   async clearDeadLetters(): Promise<{ removed: number }> {
+    const snapshot = await this.getDeadLetters().catch(() => ({ items: [], count: 0, path: '.mcp_cache/dead_letters/kline_save_failures.jsonl' }));
+    let removed = 0;
     try {
       const raw = await this.callToolWithTimeout('clear_dead_letters', {});
       const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
-      return { removed: Number(result.removed ?? 0) };
+      removed = Number(result.removed ?? 0);
     } catch {
-      return { removed: 0 };
+      removed = 0;
     }
+    const localRemoved = await this.clearLocalDeadLetterFiles([
+      String(snapshot.path ?? '.mcp_cache/dead_letters/kline_save_failures.jsonl'),
+      '.mcp_cache/dead_letters/kline_save_failures.jsonl',
+      'cache/dead_letters/kline_save_failures.jsonl',
+    ]);
+    return { removed: Math.max(removed, localRemoved, Number(snapshot.count ?? 0)) };
   }
 
   async seedDeadLetters(count = 1): Promise<{ added: number; path: string }> {
@@ -263,12 +285,52 @@ export class AdminService {
     await writeFile(resolvedPath, `${kept.join('\n')}\n`, 'utf-8');
   }
 
+  private async loadDeadLettersFromFiles(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((item) => String(item ?? '').trim()).filter(Boolean)));
+    for (const path of uniquePaths) {
+      const resolvedPath = this.resolveDeadLetterPath(path);
+      if (!existsSync(resolvedPath)) continue;
+      const content = await readFile(resolvedPath, 'utf-8').catch(() => '');
+      const lines = content.split(/\r?\n/).filter((line) => line.trim());
+      if (lines.length === 0) continue;
+      const items = lines.flatMap((line, index) => {
+        try {
+          return [this.normalizeDeadLetterRecord(JSON.parse(line), index)];
+        } catch {
+          return [];
+        }
+      });
+      if (items.length > 0) {
+        return {
+          items,
+          path,
+          count: items.length,
+        };
+      }
+    }
+    return { items: [], path: uniquePaths[0], count: 0 };
+  }
+
+  private async clearLocalDeadLetterFiles(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((item) => String(item ?? '').trim()).filter(Boolean)));
+    let removed = 0;
+    for (const path of uniquePaths) {
+      const resolvedPath = this.resolveDeadLetterPath(path);
+      if (!existsSync(resolvedPath)) continue;
+      const content = await readFile(resolvedPath, 'utf-8').catch(() => '');
+      const count = content.split(/\r?\n/).filter((line) => line.trim()).length;
+      await rm(resolvedPath, { force: true });
+      removed += count;
+    }
+    return removed;
+  }
+
   private resolveDeadLetterPath(path: string) {
     if (isAbsolute(path)) return path;
 
     const candidates = [
-      resolve(process.cwd(), 'packages', 'akshare-mcp', path),
       resolve(process.cwd(), '..', '..', 'packages', 'akshare-mcp', path),
+      resolve(process.cwd(), 'packages', 'akshare-mcp', path),
       resolve(process.cwd(), path),
     ];
 

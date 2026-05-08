@@ -5,7 +5,7 @@
       "args": ["-m", "akshare_mcp.server"],
       "cwd": "/Users/mac/Desktop/股票/packages/akshare-mcp",
       "env": {
-        "TUSHARE_TOKEN": "ff5b45cb12cb409584f0e603a7b1773297c61d22aa281a811edc4f8a",
+        "TUSHARE_TOKEN": "79f34e3456c311b279f519fd68bb35306fcf7c3be08d6218c80c3f16",
         "TUSHARE_HTTP_URL": "http://api.tushare.pro",
         "TDX_ENABLED": "false",
         "DB_HOST": "localhost",

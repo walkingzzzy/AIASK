@@ -40,7 +40,9 @@ test('SearchService.semanticSearch returns result_contract metadata for the web 
   const response = await service.semanticSearch({ query: '白酒龙头', limit: 10 });
   assert.equal(response.result_contract?.platformMeta?.sourceTool, 'semantic_stock_search');
   assert.equal(response.result_contract?.workbenchTask?.kind, 'search-result');
-  assert.equal(response.result_contract?.recommendedActions?.[0]?.actionId, 'search.open-copilot-followup');
+  assert.equal(response.result_contract?.recommendedActions?.[0]?.actionId, 'global.open-stock-detail');
+  assert.equal(response.result_contract?.recommendedActions?.[0]?.payload?.code, '600519');
+  assert.equal(response.result_contract?.recommendedActions?.[1]?.actionId, 'search.open-copilot-followup');
   assert.match(response.result_contract?.recommendedLinks?.[0]?.href ?? '', /\/stock\?code=600519/);
   assert.match(
     response.result_contract?.recommendedLinks?.map((item) => item.label).join(' / ') ?? '',

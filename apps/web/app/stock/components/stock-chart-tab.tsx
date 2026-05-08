@@ -22,9 +22,10 @@ type StockChartTabProps = {
   isFetching: boolean;
   candleData: CandlePoint[];
   orderBook: NormalizedOrderBook;
+  emptyHint?: string | null;
 };
 
-export default function StockChartTab({ period, isFetching, candleData, orderBook }: StockChartTabProps) {
+export default function StockChartTab({ period, isFetching, candleData, orderBook, emptyHint }: StockChartTabProps) {
   const hydrated = useHydrated();
   const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
   const mobileOnlyDetected = useMobile(RESPONSIVE_BREAKPOINTS.mobile);
@@ -50,7 +51,7 @@ export default function StockChartTab({ period, isFetching, candleData, orderBoo
       ) : (
         <EmptyState
           text="暂无 K 线数据"
-          hint="当前股票或周期暂时没有可绘制的 K 线。可以切换周期、重新查询，或回到行情页确认标的状态。"
+          hint={emptyHint ?? '当前股票或周期暂时没有可绘制的 K 线。可以切换周期、重新查询，或回到行情页确认标的状态。'}
         />
       )}
       {(orderBook.bids.length > 0 || orderBook.asks.length > 0) && (

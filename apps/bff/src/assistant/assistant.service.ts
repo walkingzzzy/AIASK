@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 import {
@@ -107,22 +107,23 @@ export class AssistantService {
     } = {},
   ) {
     const stockCode = code.trim();
-    const payload = await this.mcp.callTool('analyze_stock_workflow', {
-      code: stockCode,
-      investment_style: options.investmentStyle ?? 'balanced',
-      include_kline: options.includeKline ?? true,
-      include_financials: options.includeFinancials ?? true,
-      include_decision: options.includeDecision ?? true,
-      kline_limit: options.klineLimit,
-      as_of: options.asOf,
-    });
+    let payload: unknown;
+    try {
+      payload = await this.mcp.callTool('analyze_stock_workflow', {
+        code: stockCode,
+        investment_style: options.investmentStyle ?? 'balanced',
+        include_kline: options.includeKline ?? true,
+        include_financials: options.includeFinancials ?? true,
+        include_decision: options.includeDecision ?? true,
+        kline_limit: options.klineLimit,
+        as_of: options.asOf,
+      });
+    } catch (error) {
+      return this.buildWorkflowUnavailableResult(stockCode, error);
+    }
     const toolError = this.extractToolError(payload);
     if (toolError) {
-      throw new BadGatewayException({
-        success: false,
-        message: 'MCP analyze_stock_workflow 调用失败',
-        detail: toolError,
-      });
+      return this.buildWorkflowUnavailableResult(stockCode, payload);
     }
     const card = this.normalizeWorkflowCard(payload);
     return {
@@ -301,6 +302,67 @@ export class AssistantService {
     };
   }
 
+  private buildWorkflowUnavailableResult(code: string, errorOrPayload: unknown) {
+    const fallbackReason = this.summarizeWorkflowFailure(errorOrPayload);
+    const fallbackSummary =
+      'AI 诊断暂时没有拿到完整结论，当前先保留实时行情、K 线、资金流和基本面，你可以先继续看这些内容，稍后再试一次。';
+    const raw = {
+      success: false,
+      data: {
+        workflow: 'analyze_stock_workflow',
+        code,
+        availability_status: 'unavailable',
+        recommendation_text: fallbackSummary,
+        summary: fallbackSummary,
+        message: fallbackReason,
+        risks: [fallbackReason],
+        steps: [],
+      },
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        degraded: true,
+        fallback_reason: [fallbackReason],
+        source_chain: ['workflow.analyze_stock'],
+      },
+    };
+    const card: DecisionCardDto = {
+      action: 'watch',
+      confidence: null,
+      summary: fallbackSummary,
+      reasons: ['当前个股页的实时数据仍可继续查看'],
+      executionPlan: [
+        '先看当前报价与 K 线位置',
+        '再结合资金流和基本面判断强弱',
+        '稍后重新运行 AI 诊断',
+      ],
+      risks: [fallbackReason],
+      dataProvenance: ['workflow.analyze_stock'],
+      complianceNotice: '本分析结果仅供参考，不构成投资建议。',
+    };
+    const resultContract = this.buildDecisionResultContract(card, raw, {
+      code,
+      sourceTool: 'analyze_stock_workflow',
+      taskLabel: '全方位综合体检',
+    });
+    return {
+      card,
+      raw,
+      result_contract: {
+        ...resultContract,
+        status: 'unavailable' as const,
+        platformMeta: {
+          ...extractPlatformMeta(raw, {
+            sourceTool: 'analyze_stock_workflow',
+            referencePath: '/assistant/analysis-workflow',
+            freshnessLabel: 'AI 诊断降级时间',
+          }),
+          degraded: true,
+          fallbackReason: [fallbackReason],
+        },
+      },
+    };
+  }
+
   private buildDecisionResultContract(
     card: DecisionCardDto,
     payload: unknown,
@@ -322,6 +384,17 @@ export class AssistantService {
       summary: card.summary || `${options.taskLabel}已生成，请继续查看下一步建议。`,
       availableViews: ['summary', 'next_step', ...(evidence.length > 2 ? (['visual'] as const) : [])],
       recommendedActions: [
+        options.code
+          ? {
+              id: 'assistant.open-stock-detail',
+              actionId: 'global.open-stock-detail',
+              label: '打开个股详情',
+              description: '直接进入当前股票的实时内容页。',
+              payload: {
+                code: options.code,
+              },
+            }
+          : null,
         {
           id: 'assistant.open-copilot-followup',
           actionId: 'assistant.open-copilot-followup',
@@ -332,7 +405,7 @@ export class AssistantService {
             sourceTool: options.sourceTool,
           },
         },
-      ],
+      ].filter((item): item is NonNullable<typeof item> => item != null),
       recommendedLinks: [
         options.code
           ? {
@@ -407,6 +480,17 @@ export class AssistantService {
         },
       },
     });
+  }
+
+  private summarizeWorkflowFailure(errorOrPayload: unknown) {
+    const detail =
+      this.extractToolError(errorOrPayload)
+      ?? (errorOrPayload instanceof Error ? errorOrPayload.message : this.toText(errorOrPayload))
+      ?? (errorOrPayload instanceof Error ? errorOrPayload.message : String(errorOrPayload ?? '').trim());
+    if (/timed?\s*out|timeout|request timed out|mcp error -32001/i.test(detail)) {
+      return 'AI 诊断服务当前响应较慢，本次未返回完整体检结论。';
+    }
+    return 'AI 诊断服务暂时不可用，本次未返回完整体检结论。';
   }
 
   private buildIndustryChainResultContract(

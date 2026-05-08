@@ -10,7 +10,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
-import { apiKeys } from '@/lib/query-keys';
+import { resolveNotificationFeedState } from '@/lib/runtime-display';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 
 type NotificationType = 'alert' | 'signal' | 'trade' | 'system' | 'news';
@@ -107,15 +107,15 @@ export default function NotificationsPage() {
     refetchInterval: 30000,
   });
   const markAllReadApi = useApiMutation<{ markedCount?: number }>({
-    invalidates: [[...apiKeys.notifications()]],
+    effects: ['notifications.changed'],
     successToast: '通知已全部标记为已读',
   });
   const markReadApi = useApiMutation<{ markedCount?: number }>({
-    invalidates: [[...apiKeys.notifications()]],
+    effects: ['notifications.changed'],
     successToast: false,
   });
   const deleteApi = useApiMutation<{ deletedCount?: number }>({
-    invalidates: [[...apiKeys.notifications()]],
+    effects: ['notifications.changed'],
     successToast: '通知已删除',
   });
 
@@ -132,6 +132,18 @@ export default function NotificationsPage() {
 
   const unreadCount = rawItems.filter((i) => !i.read).length;
   const actionError = markAllReadApi.error || markReadApi.error || deleteApi.error;
+  const notificationFeedState = useMemo(
+    () =>
+      resolveNotificationFeedState({
+        enabled: true,
+        itemsLength: items.length,
+        acceptanceStatus: listQ.acceptanceStatus,
+        serviceUnavailable: listQ.serviceUnavailable,
+        trustStatus: listQ.trust.status,
+        reachabilityStatus: listQ.serviceUnavailable ? 'offline' : 'online',
+      }),
+    [items.length, listQ.acceptanceStatus, listQ.serviceUnavailable, listQ.trust.status],
+  );
   const selectableIds = items.map((item) => item.id);
   const selectedCount = selectedIds.filter((id) => selectableIds.includes(id)).length;
   const allVisibleSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.includes(id));
@@ -152,7 +164,6 @@ export default function NotificationsPage() {
   const handleMarkAllRead = async () => {
     try {
       await markAllReadApi.triggerAsync('/notifications/mark-all-read', { method: 'POST' });
-      listQ.refetch();
     } catch {
       /* ignore */
     }
@@ -161,7 +172,6 @@ export default function NotificationsPage() {
   const handleMarkRead = async (ids: string[]) => {
     try {
       await markReadApi.triggerAsync('/notifications/mark-read', { method: 'POST' }, { ids });
-      listQ.refetch();
     } catch {
       /* ignore */
     }
@@ -170,7 +180,6 @@ export default function NotificationsPage() {
   const handleDelete = async (ids: string[]) => {
     try {
       await deleteApi.triggerAsync('/notifications/delete', { method: 'DELETE' }, { ids });
-      listQ.refetch();
     } catch {
       /* ignore */
     }
@@ -607,7 +616,23 @@ export default function NotificationsPage() {
           </div>
         </div>
 
-        {items.length === 0 ? (
+        {notificationFeedState === 'unavailable' ? (
+          <div className="mt-5 rounded-[28px] border border-dashed border-glass-border bg-white/28 p-6 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+            <p className="m-0 text-sm font-medium text-text-primary">通知服务暂不可用</p>
+            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+              当前无法从通知链路加载数据，请稍后刷新，或先检查告警与模拟交易链路是否可用。
+            </p>
+            {listQ.error ? <div className="mt-4 text-[11px] text-text-secondary/70">{listQ.error}</div> : null}
+          </div>
+        ) : notificationFeedState === 'degraded' && items.length === 0 ? (
+          <div className="mt-5 rounded-[28px] border border-dashed border-amber-200 bg-amber-50/70 p-6 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
+            <p className="m-0 text-sm font-medium text-text-primary">通知服务已降级</p>
+            <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+              当前仅拿到降级态结果，没有可靠通知可展示。请在服务恢复后重新检查。
+            </p>
+            {listQ.error ? <div className="mt-4 text-[11px] text-text-secondary/70">{listQ.error}</div> : null}
+          </div>
+        ) : items.length === 0 ? (
           <div className="mt-5 rounded-[28px] border border-dashed border-glass-border bg-white/28 p-6 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
             <p className="m-0 text-sm font-medium text-text-primary">
               暂无{activeType === 'all' ? '' : TYPE_LABELS[activeType]}通知
@@ -632,6 +657,11 @@ export default function NotificationsPage() {
           </div>
         ) : (
           <div className="mt-5 space-y-3">
+            {notificationFeedState === 'degraded' ? (
+              <div className="rounded-[20px] border border-amber-200 bg-amber-50/75 px-4 py-3 text-xs text-amber-700">
+                通知链路当前处于降级态，以下内容仅代表当前可用数据。
+              </div>
+            ) : null}
             {visibleItems.map((item) => renderNotificationCard(item))}
             {hiddenItems.length > 0 ? (
               <details className="rounded-[24px] border border-white/45 bg-white/20 p-4">

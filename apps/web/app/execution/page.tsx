@@ -104,7 +104,9 @@ export default function ExecutionPage() {
   const pendingQ = useApiQuery<PaperTradingPendingOrdersResponse>(
     accountId ? `/paper-trading/pending-orders?account_id=${encodeURIComponent(accountId)}` : null,
   );
-  const routeExecutionApi = useApiMutation<Record<string, unknown>>();
+  const routeExecutionApi = useApiMutation<Record<string, unknown>>({
+    effects: ['execution.changed'],
+  });
   const workbenchPath = useMemo(() => {
     const params = new URLSearchParams();
     if (submittedExecutionId) return null;

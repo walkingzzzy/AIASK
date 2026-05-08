@@ -22,6 +22,7 @@ from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_target_codes
 from ..domain.targets import _normalize_research_task_contract
+from ..domain.strategy_identity import has_executable_params, missing_executable_fields
 from ..infrastructure.mcp_services import get_strategy_dsl_compiler
 from .backtest_filter import build_target_quality_gate_summary
 from .candidate_contract import (
@@ -33,6 +34,15 @@ from .candidate_contract import (
     candidate_contract_value,
 )
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
+
+_REPRESENTATIVE_STOCK_FALLBACKS = [
+    "600519", "000858", "601318", "600036", "000333",
+    "002415", "600276", "601012", "300750", "000001",
+]
+
+
+def _representative_stock_universe() -> list[str]:
+    return list(dict.fromkeys([*list(REPRESENTATIVE_STOCKS or []), *_REPRESENTATIVE_STOCK_FALLBACKS]))
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +210,9 @@ def _resolve_gate_1_representative_count(candidate: dict, default_count: int) ->
     else:
         resolved = max(1, int(default_count or 1))
 
+    if not _is_bulk_stock_matrix_candidate(payload):
+        resolved = max(4, resolved)
+
     target_count = len(_extract_target_codes_from_payload(payload, limit=12))
     validation_focus = str(normalized_task.get("validation_focus") or "").strip().lower()
     target_alignment_contract = _build_target_alignment_contract(normalized_task, candidate=payload)
@@ -277,7 +290,7 @@ def _resolve_gate_1_codes(
         ordered.extend(code for code in codes if code not in ordered)
         return ordered
 
-    representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
+    representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", _representative_stock_universe()) or _representative_stock_universe())
     representative_count = _resolve_gate_1_representative_count(
         candidate,
         int(_compat_setting("GATE1_REPRESENTATIVE_COUNT", GATE1_REPRESENTATIVE_COUNT) or GATE1_REPRESENTATIVE_COUNT),
@@ -292,9 +305,8 @@ def _resolve_gate_1_codes(
         codes = list(prioritized_target_codes)
         code_source = "event_target_only"
     else:
-        codes = list(dict.fromkeys([*prioritized_target_codes, *padded_representatives]))[
-            : max(representative_count, len(prioritized_target_codes))
-        ]
+        selected_representatives = padded_representatives[:representative_count]
+        codes = list(dict.fromkeys([*prioritized_target_codes, *selected_representatives]))
         code_source = "candidate_target_symbols" if prioritized_target_codes else "representative_only"
     return codes, prioritized_target_codes, code_source, validation_focus, research_task
 

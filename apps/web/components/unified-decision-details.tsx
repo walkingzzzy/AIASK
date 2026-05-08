@@ -26,10 +26,11 @@ function asNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function pct(value: unknown, digits = 1): string {
+function pct(value: unknown, digits = 1, unit: 'ratio' | 'percent' | 'auto' = 'ratio'): string {
   const numeric = asNumber(value);
   if (numeric == null) return '-';
-  return `${(numeric * 100).toFixed(digits)}%`;
+  const normalized = unit === 'percent' ? numeric : unit === 'auto' ? (Math.abs(numeric) <= 1 ? numeric * 100 : numeric) : numeric * 100;
+  return `${normalized.toFixed(digits)}%`;
 }
 
 function compactList(value: unknown): string[] {
@@ -124,7 +125,7 @@ export default function UnifiedDecisionDetails({ details, legacyComparison }: Un
             <SignalPill label="现价" value={String(asNumber(stock.current_price) ?? '-')} tone="neutral" />
             <SignalPill label="流动性评分" value={String(asNumber(marketSnapshot.liquidity_score) ?? '-')} tone="warn" />
             <SignalPill label="主力净流入" value={String(asNumber(fundFlowSnapshot.main_net_inflow) ?? '-')} tone={asText(fundFlowSnapshot.flow_bias) === 'bullish' ? 'good' : 'danger'} />
-            <SignalPill label="北向持股占比" value={pct(fundFlowSnapshot.north_hold_ratio)} tone="neutral" />
+            <SignalPill label="北向持股占比" value={pct(fundFlowSnapshot.north_hold_ratio, 1, 'auto')} tone="neutral" />
           </div>
           <div className="mt-3 space-y-3">
             <div>

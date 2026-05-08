@@ -1,6 +1,7 @@
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
@@ -11,8 +12,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 FORWARD_DAYS = [1, 5, 10, 20]
-FORWARD_RETURN_BATCH_LIMIT = 2000
-FORWARD_RETURN_MAX_ROUNDS = 100
+FORWARD_RETURN_BATCH_LIMIT = int(os.getenv("STRATEGY_RUNTIME_FORWARD_RETURN_BATCH_LIMIT", "300") or 300)
+FORWARD_RETURN_MAX_ROUNDS = int(os.getenv("STRATEGY_RUNTIME_FORWARD_RETURN_MAX_ROUNDS", "5") or 5)
 RECENT_SIGNAL_EVENT_LIMIT = 8
 
 

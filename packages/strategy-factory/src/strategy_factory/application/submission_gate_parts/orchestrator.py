@@ -10,6 +10,14 @@ def _attach_admission_evaluations(
     backtest_metrics: Optional[dict] = None,
 ) -> dict[str, Any]:
     normalized_gate = normalize_quality_gate_result(gate)
+    formal_risk_validation_evidence_missing = bool(
+        dict(validation_report or {}).get("report_degraded")
+        or dict(validation_report or {}).get("diagnostic_only")
+        or str(dict(validation_report or {}).get("evidence_mode") or "").strip().lower() == "backtest_derived_fallback"
+        or dict(risk_report or {}).get("report_degraded")
+        or dict(risk_report or {}).get("diagnostic_only")
+        or str(dict(risk_report or {}).get("evidence_mode") or "").strip().lower() == "backtest_derived_fallback"
+    )
     materialized_backtest_metrics = _materialize_backtest_metrics_contract(backtest_metrics)
     attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized_gate)
     evaluations: dict[str, dict[str, Any]] = {}
@@ -135,6 +143,8 @@ def _attach_admission_evaluations(
             gate=normalized_gate,
         )
         stage_reasons = _merge_text_items(stage_result.get("reasons"), review_blockers)
+        if admission_level == "live" and formal_risk_validation_evidence_missing:
+            stage_reasons = _merge_text_items(stage_reasons, ["formal_risk_validation_evidence_missing"])
         stage_warnings = list(stage_result.get("warnings") or [])
         if research_protocol_available:
             if research_protocol_review_decision in {"revise", "reject"}:
@@ -203,7 +213,17 @@ def _attach_admission_evaluations(
         }
         evaluations["live"] = {
             "passed": False,
-            "reasons": _merge_text_items(base_reasons, ["trade_validation_audit_missing_for_live_admission"]),
+            "reasons": _merge_text_items(
+                base_reasons,
+                [
+                    "trade_validation_audit_missing_for_live_admission",
+                    *(
+                        ["formal_risk_validation_evidence_missing"]
+                        if formal_risk_validation_evidence_missing
+                        else []
+                    ),
+                ],
+            ),
             "warnings": list(base_warnings),
             "thresholds": dict((evaluations.get("live") or {}).get("thresholds") or {}),
         }
@@ -254,6 +274,7 @@ def _attach_admission_evaluations(
             "research_candidate_ready": research_candidate_ready,
             "incubation_candidate_ready": incubation_candidate_ready,
             "live_candidate_ready": live_candidate_ready,
+            "formal_risk_validation_evidence_missing": formal_risk_validation_evidence_missing,
             "admission_evaluations": evaluations,
             "admission_block_reasons": block_reasons,
             "research_only_due_to_trade_audit_gap": research_only_due_to_trade_audit_gap,

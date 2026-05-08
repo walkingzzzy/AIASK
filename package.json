@@ -26,6 +26,7 @@
   "verify:state-smoke": "node scripts/playwright-mcp-audit/run-state-smoke.mjs --output-dir artifacts/state-smoke",
     "audit:frontend-e2e": "node scripts/playwright-mcp-audit/run-platform-audit.mjs --output-dir artifacts/frontend-e2e-audit --enforce",
     "audit:frontend-report": "node scripts/playwright-mcp-audit/run-frontend-audit.mjs --output-dir frontend-audit-report",
+    "audit:data-quality": "node scripts/data-quality-diagnosis.mjs",
     "verify:frontend-platform": "npm run typecheck -w apps/web && npm run typecheck -w apps/bff && npm run build -w apps/web && npm run build -w apps/bff && npm run test:contracts -w apps/bff && npm run audit:frontend-e2e",
     "verify:security-boundaries": "npm run build -w apps/bff && node scripts/security-boundary-check.mjs",
     "verify:mcp-arg-boundaries": "npm run build -w apps/bff && node scripts/mcp-arg-boundary-check.mjs",

@@ -58,10 +58,13 @@ class _FakeIncubationGateway:
 
 
 class _FakeSubmitter:
-    def __init__(self) -> None:
+    def __init__(self, *, enable_backtest: bool = True) -> None:
         self.gateway = _FakeIncubationGateway()
         self.paper_calls: list[dict] = []
         self.live_calls: list[dict] = []
+        self.backtest_calls: list[dict] = []
+        self.backtest_metrics_by_period: dict[str, dict] = {}
+        self.enable_backtest = enable_backtest
 
     def _get_incubation_gateway(self):
         return self.gateway
@@ -79,6 +82,30 @@ class _FakeSubmitter:
                 "trace_context": dict(trace_context or {}),
             }
         )
+        return {"promotion_review_id": "promo-1", "final_status": "listed", "submission_action_completed": True}
+
+    async def _backtest_strategy(self, strategy: dict, *, start_date: str, end_date: str):
+        if not self.enable_backtest:
+            raise AssertionError("backtest should be disabled for this fake submitter")
+        self.backtest_calls.append({"strategy": dict(strategy), "start_date": start_date, "end_date": end_date})
+        return dict(self.backtest_metrics_by_period.get(start_date) or {"max_drawdown": 0.12, "sharpe_ratio": 0.4, "total_return": 0.03})
+
+
+class _FakeSubmitterWithoutBacktest:
+    def __init__(self) -> None:
+        self.gateway = _FakeIncubationGateway()
+        self.paper_calls: list[dict] = []
+        self.live_calls: list[dict] = []
+
+    def _get_incubation_gateway(self):
+        return self.gateway
+
+    async def _enqueue_paper_observation(self, db, strategy: dict, snapshot: dict):
+        self.paper_calls.append({"strategy": dict(strategy), "snapshot": dict(snapshot)})
+        return {"paper_account_id": "paper-observe-1", "paper_lane_ready": True}
+
+    async def _enqueue_live_ready_review(self, db, strategy: dict, snapshot: dict, gate: dict, *, trace_context=None):
+        self.live_calls.append({"strategy": dict(strategy), "snapshot": dict(snapshot), "gate": dict(gate), "trace_context": dict(trace_context or {})})
         return {"promotion_review_id": "promo-1", "final_status": "listed", "submission_action_completed": True}
 
 
@@ -161,6 +188,9 @@ def test_lifecycle_coordinator_formal_incubation_path_persists_snapshot_and_trac
     assert submitter.gateway.ensure_calls[0]["strategy"]["_closure_trace"]["correlation_id"] == "corr-1"
     assert submitter.gateway.pipeline_calls[0]["strategy"]["status"] == "incubating"
     assert vector_calls[0]["_closure_trace"]["factory_run_id"] == "factory-run-1"
+    assert len(submitter.backtest_calls) == 5
+    assert submitter.backtest_calls[0]["start_date"] == "2015-06-12"
+    assert submitter.backtest_calls[-1]["end_date"] == "2024-02-05"
     persisted_result = dict(db.updated_task_runs[-1]["result"] or {})
     assert persisted_result["incubation_pipeline"] == {
         "task_run_id": 77,
@@ -178,6 +208,87 @@ def test_lifecycle_coordinator_formal_incubation_path_persists_snapshot_and_trac
         "collection_name": "strategy_behavior",
     }
     assert persisted_result["vector_audit"] == {"score": 1}
+    assert persisted_result["stress_test_summary"] == {
+        "overall_verdict": "pass",
+        "failed_count": 0,
+        "total_scenarios": 5,
+        "evidence_mode": "historical_backtest",
+        "diagnostic_only": False,
+    }
+
+
+def test_lifecycle_coordinator_formal_incubation_stress_reject_blocks_side_effects(monkeypatch):
+    db = _FakeDb()
+    submitter = _FakeSubmitter()
+    submitter.backtest_metrics_by_period = {
+        "2015-06-12": {"max_drawdown": 0.55, "sharpe_ratio": -4.0, "total_return": -0.35},
+        "2016-01-04": {"max_drawdown": 0.50, "sharpe_ratio": -3.5, "total_return": -0.2},
+    }
+    coordinator = lifecycle_module.StrategyLifecycleCoordinator(submitter)
+    status_updates: list[dict] = []
+
+    async def _fake_update_strategy_status(db, strategy_id: str, status: str, **kwargs):
+        status_updates.append({"strategy_id": strategy_id, "status": status, "kwargs": dict(kwargs)})
+        return {"strategy_id": strategy_id, "status": status}
+
+    async def _unexpected_vector_profile(db, strategy: dict):
+        raise AssertionError("stress reject should not build vector profile")
+
+    monkeypatch.setattr(lifecycle_module, "_update_strategy_status", _fake_update_strategy_status)
+    monkeypatch.setattr(lifecycle_module, "build_strategy_vector_profile", _unexpected_vector_profile)
+
+    result = asyncio.run(
+        coordinator.execute(
+            db,
+            _make_request(lane="formal_incubation", passed=True),
+        )
+    )
+
+    assert result.final_status == "rejected"
+    assert [step.step for step in result.steps] == ["stress_test_gate"]
+    assert result.action_audit["submission_action_completed"] is False
+    assert result.action_audit["stress_gate_reason"] == "stress_test_rejected"
+    assert result.stress_test_summary["overall_verdict"] == "reject"
+    assert result.stress_test_summary["evidence_mode"] == "historical_backtest"
+    assert submitter.gateway.ensure_calls == []
+    assert submitter.gateway.pipeline_calls == []
+    assert status_updates == []
+    persisted_result = dict(db.updated_task_runs[-1]["result"] or {})
+    assert persisted_result["final_status"] == "rejected"
+    assert persisted_result["stress_test_summary"]["overall_verdict"] == "reject"
+
+
+def test_lifecycle_coordinator_formal_incubation_proxy_stress_review_blocks_side_effects(monkeypatch):
+    db = _FakeDb()
+    submitter = _FakeSubmitterWithoutBacktest()
+    coordinator = lifecycle_module.StrategyLifecycleCoordinator(submitter)
+
+    async def _fake_update_strategy_status(db, strategy_id: str, status: str, **kwargs):
+        return {"strategy_id": strategy_id, "status": status}
+
+    async def _unexpected_vector_profile(db, strategy: dict):
+        raise AssertionError("proxy stress review should not build vector profile")
+
+    monkeypatch.setattr(lifecycle_module, "_update_strategy_status", _fake_update_strategy_status)
+    monkeypatch.setattr(lifecycle_module, "build_strategy_vector_profile", _unexpected_vector_profile)
+
+    result = asyncio.run(
+        coordinator.execute(
+            db,
+            _make_request(lane="formal_incubation", passed=True),
+        )
+    )
+
+    assert result.final_status == "submitted"
+    assert [step.step for step in result.steps] == ["stress_test_gate"]
+    assert result.steps[0].status == "blocked"
+    assert result.action_audit["submission_action_completed"] is False
+    assert result.action_audit["stress_gate_reason"] == "stress_test_review_required"
+    assert result.stress_test_summary["overall_verdict"] == "review"
+    assert result.stress_test_summary["evidence_mode"] == "backtest_metrics_proxy"
+    assert result.stress_test_summary["diagnostic_only"] is True
+    assert submitter.gateway.ensure_calls == []
+    assert submitter.gateway.pipeline_calls == []
 
 
 def test_lifecycle_coordinator_observe_lane_skips_formal_pipeline(monkeypatch):

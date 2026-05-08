@@ -34,7 +34,7 @@ import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { cacheText } from '@/lib/api';
+import { cacheText, classifyDataTrustForDisplay } from '@/lib/api';
 import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import {
@@ -112,6 +112,8 @@ function MarketPageInner({
 
   const quoteQ = useApiQuery<QuoteData>(activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null, {
     critical: true,
+    timeoutMs: 20_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情报价');
       if ('quote' in obj && obj.quote != null && typeof obj.quote !== 'object') {
@@ -124,7 +126,8 @@ function MarketPageInner({
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}` : null,
     {
       critical: true,
-      timeoutMs: 30_000,
+      timeoutMs: 55_000,
+      placeholderData: 'keepPrevious',
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -136,6 +139,8 @@ function MarketPageInner({
   );
   const obQ = useApiQuery<ObData>(activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null, {
     critical: true,
+    timeoutMs: 20_000,
+    placeholderData: 'keepPrevious',
     parse: (raw) => {
       const obj = ensureRecord(raw, '行情盘口');
       if ('orderBook' in obj && obj.orderBook != null && typeof obj.orderBook !== 'object') {
@@ -356,6 +361,9 @@ function MarketPageInner({
   const quote = quoteQ.data;
   const kline = klineQ.data;
   const ob = obQ.data;
+  const quoteDisplay = classifyDataTrustForDisplay(quote, quoteQ.trust);
+  const klineDisplay = classifyDataTrustForDisplay(kline, klineQ.trust);
+  const obDisplay = classifyDataTrustForDisplay(ob, obQ.trust);
 
   const candles = useMemo(() => kline?.kline ?? [], [kline]);
   const obView = useMemo(() => ob?.orderBook ?? { bids: [], asks: [], timestamp: null }, [ob]);
@@ -475,6 +483,10 @@ function MarketPageInner({
   const pageOffline = quoteQ.error === '数据服务暂不可用' || tabError === '数据服务暂不可用';
   const quoteErrorMessage = quoteQ.error && quoteQ.error !== '数据服务暂不可用' ? quoteQ.error : null;
   const tabErrorMessage = tabError && tabError !== '数据服务暂不可用' ? tabError : null;
+  const klineEmptyHint = klineDisplay.isValidEmpty
+    ? klineDisplay.reasons.join('；') || 'K 线接口本次返回了契约化空结果，页面未把空图表当作真实走势。'
+    : null;
+  const klineBlockingReason = klineDisplay.isBlocking ? klineDisplay.blockingReason ?? 'K 线数据暂不可用' : null;
 
   function refreshLimitUpTab() {
     if (effectiveLimitUpPath) limitUpQ.refetch();
@@ -687,7 +699,14 @@ function MarketPageInner({
     riskNotes: marketResult.riskNotes ?? [],
     freshness: marketResult.freshness ?? null,
     dataFreshness: marketResult.freshness?.updatedAt ?? null,
-    degradedReason: [pageOffline ? '当前数据服务不可达' : null, quoteErrorMessage, tabErrorMessage].filter((item): item is string => Boolean(item)),
+    degradedReason: [
+      pageOffline ? '当前数据服务不可达' : null,
+      quoteErrorMessage,
+      tabErrorMessage,
+      quoteDisplay.isBlocking ? quoteDisplay.blockingReason : null,
+      klineBlockingReason,
+      obDisplay.isBlocking ? obDisplay.blockingReason : null,
+    ].filter((item): item is string => Boolean(item)),
     raw: {
       tab: activeTab,
       code: activeDisplayCode || null,
@@ -780,6 +799,7 @@ function MarketPageInner({
         tabErrorMessage={tabErrorMessage}
         activePeriodLabel={activePeriodLabel}
         chartDescription={chartDescription}
+        chartEmptyHint={klineEmptyHint ?? klineBlockingReason}
         activeTaskLabel={activeTaskLabel}
         activeChange={activeChange}
         activeChangeTone={activeChangeTone}

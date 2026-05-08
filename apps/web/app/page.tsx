@@ -13,6 +13,7 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useMobile } from '@/hooks/use-mobile';
 import { useSlowFlag } from '@/hooks/use-slow-flag';
 import { extractObject, extractArray, fmtAmount } from '@/lib/data-utils';
+import { classifyDataTrustForDisplay } from '@/lib/api';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { tradingInterval } from '@/lib/trading-hours';
@@ -161,6 +162,8 @@ export default function HomePage() {
   const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', {
     enabled: mounted,
     refetchInterval: liveRefetch,
+    nonFatal: true,
+    timeoutMs: 30_000,
     placeholderData: 'keepPrevious',
     parse: (r) => ensureRecord(r, '恐慌贪婪指数'),
     redirectOnUnauthorized: false,
@@ -323,7 +326,8 @@ export default function HomePage() {
   const fgObj =
     fgRaw.result && typeof fgRaw.result === 'object' ? extractObject(fgRaw.result as Record<string, unknown>) : fgRaw;
   const rawFearGreedValue = Number(fgObj.index ?? fgObj.value ?? fgObj.fear_greed_index);
-  const fgValue = fearGreedQ.data && !fearGreedQ.error && !fearGreedQ.trust.degraded && Number.isFinite(rawFearGreedValue)
+  const fearGreedDisplay = classifyDataTrustForDisplay(fearGreedQ.data, fearGreedQ.trust);
+  const fgValue = fearGreedQ.data && !fearGreedQ.error && !fearGreedDisplay.isBlocking && Number.isFinite(rawFearGreedValue)
     ? rawFearGreedValue
     : null;
   const fgLabel =

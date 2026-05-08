@@ -144,6 +144,18 @@ export class PortfolioService {
     };
   }
 
+  async delete(portfolioId: number, userId = 'default') {
+    const args = this.managerArgs('delete', { portfolio_id: portfolioId, user_id: userId });
+    const payload = await this.callTool('portfolio_manager', args);
+    return {
+      sourceTool: 'portfolio_manager' as const,
+      argsMatched: args,
+      portfolioId,
+      deleted: this.pickBoolean(payload, ['data.deleted', 'deleted']) ?? true,
+      result: payload,
+    };
+  }
+
   async optimize(portfolioId: number, userId = 'default') {
     const context = await this.loadPortfolioContext(portfolioId, userId);
     const args = {

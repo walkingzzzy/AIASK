@@ -5,6 +5,57 @@
             if parent_strategies is None and shared_generation_context.get('parent_strategies'):
                 parent_strategies = [dict(item or {}) for item in list(shared_generation_context.get('parent_strategies') or [])]
             requested_limit = max(1, min(int(limit or 3), 10))
+
+            def _materialize_specs(specs: list[StrategySpec], *, source: str) -> list[StrategySpec]:
+                out: list[StrategySpec] = []
+                for slot_index, spec in enumerate(list(specs or [])):
+                    metadata = dict(spec.metadata or {})
+                    target_symbols: list[str] = []
+                    for payload in (
+                        metadata.get('target_symbols'),
+                        dict(metadata.get('research_task') or {}).get('target_symbols'),
+                        dict(spec.params or {}).get('target_symbols'),
+                    ):
+                        if isinstance(payload, (list, tuple, set)):
+                            target_symbols.extend(str(item).strip() for item in payload if str(item).strip())
+                    spec.params = materialize_strategy_params(
+                        spec.strategy_type,
+                        dict(spec.params or {}),
+                        seed_context={
+                            'source': source,
+                            'snapshot_date': snapshot.get('date') or snapshot.get('snapshot_date') or snapshot.get('as_of'),
+                            'strategy_name': spec.name,
+                        },
+                        slot_index=slot_index,
+                        targets=list(dict.fromkeys(target_symbols)),
+                        variant_existing=True,
+                        refresh_signal_rule=True,
+                    )
+                    metadata['param_materialization_version'] = spec.params.get('param_materialization_version')
+                    metadata['strategy_instance_hash'] = spec.params.get('strategy_instance_hash')
+                    metadata['tested_object_hash'] = spec.params.get('tested_object_hash')
+                    spec.metadata = metadata
+                    out.append(spec)
+                return out
+
+            def _attach_materialization_report(report_payload: dict[str, Any], specs: list[StrategySpec]) -> None:
+                type_counts: dict[str, int] = {}
+                empty_param_candidate_count = 0
+                materialized_param_candidate_count = 0
+                for spec in list(specs or []):
+                    strategy_type = str(spec.strategy_type or 'unknown').strip().lower() or 'unknown'
+                    params = dict(spec.params or {})
+                    type_counts[strategy_type] = type_counts.get(strategy_type, 0) + 1
+                    if not params:
+                        empty_param_candidate_count += 1
+                    if params.get('strategy_instance_hash') and params.get('param_materialization_version'):
+                        materialized_param_candidate_count += 1
+                coverage_count = len(type_counts)
+                report_payload['strategy_type_counts'] = type_counts
+                report_payload['strategy_type_coverage_count'] = coverage_count
+                report_payload['empty_param_candidate_count'] = empty_param_candidate_count
+                report_payload['materialized_param_candidate_count'] = materialized_param_candidate_count
+                report_payload['coverage_target_met'] = coverage_count >= min(requested_limit, 8)
             history_summary = [
                 dict(item or {})
                 for item in list(shared_generation_context.get('history_summary') or [])
@@ -299,7 +350,7 @@
                     raise last_exc
 
             if frame is None or frame.empty:
-                selected = (external_specs or fallback_external_specs)[:limit]
+                selected = _materialize_specs((external_specs or fallback_external_specs)[:limit], source='no_market_frame_fallback')
                 generator_counts: dict[str, int] = {}
                 for spec in selected:
                     generator_type = str(spec.metadata.get('generator_type') or 'unknown')
@@ -309,6 +360,7 @@
                 report['external_provider']['selected_count'] = generator_counts.get('external_llm', 0)
                 report['local_generator']['status'] = 'skipped_no_market_frame'
                 report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
+                _attach_materialization_report(report, selected)
                 self.last_report = report
                 return selected
             local_specs: list[StrategySpec] = []
@@ -337,13 +389,25 @@
                                     'reject_reasons': list(candidate.get("_generator_precompile_reject_reasons") or []),
                                 }
                             )
-                    if len(local_specs) >= local_limit:
-                        break
+                type_counts: dict[str, int] = {}
+                for spec in local_specs:
+                    type_counts[spec.strategy_type] = type_counts.get(spec.strategy_type, 0) + 1
+                local_specs = _materialize_specs(
+                    sorted(
+                        local_specs,
+                        key=lambda spec: (
+                            type_counts.get(spec.strategy_type, 0),
+                            spec.strategy_type,
+                            json.dumps(spec.params or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ),
+                    )[:local_limit],
+                    source='local_generator',
+                )
                 report['local_generator']['status'] = 'succeeded' if local_specs else 'empty'
             else:
                 report['local_generator']['status'] = 'skipped_external_selected'
             if len(external_specs) >= limit:
-                selected = external_specs[:limit]
+                selected = _materialize_specs(external_specs[:limit], source='external_provider')
                 generator_counts: dict[str, int] = {}
                 for spec in selected:
                     generator_type = str(spec.metadata.get('generator_type') or 'unknown')
@@ -351,6 +415,7 @@
                 report['selected_count'] = len(selected)
                 report['selected_generators'] = generator_counts
                 report['external_provider']['selected_count'] = generator_counts.get('external_llm', 0)
+                _attach_materialization_report(report, selected)
                 self.last_report = report
                 return selected
             merged: list[StrategySpec] = []
@@ -369,6 +434,7 @@
                 merged.append(spec)
                 if len(merged) >= limit:
                     break
+            merged = _materialize_specs(merged, source='candidate_generation_merge')
             generator_counts: dict[str, int] = {}
             for spec in merged:
                 generator_type = str(spec.metadata.get('generator_type') or 'unknown')
@@ -382,5 +448,6 @@
                 report['pipeline_staged_provenance'] = pipeline_report.get('pipeline_provenance')
                 report['pipeline_staged_error'] = pipeline_report.get('pipeline_error')
             report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
+            _attach_materialization_report(report, merged)
             self.last_report = report
             return merged

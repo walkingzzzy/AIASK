@@ -113,7 +113,11 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const groups = useWatchlistStore((state) => state.groups);
-  const onboardingApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
+  const onboardingApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.profile.updated'],
+  });
 
   const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [ready, setReady] = useState(false);

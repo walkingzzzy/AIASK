@@ -14,7 +14,6 @@ import { usePageContext } from '@/hooks/use-page-context';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
 import { extractArray } from '@/lib/data-utils';
-import { apiKeys } from '@/lib/query-keys';
 import { ensureRecordOrArray } from '@/lib/query-parse';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
@@ -69,6 +68,7 @@ import { parseFactoryMarketViewResponse, parseStrategyCapabilityDiagnosticsRespo
 import { buildFactoryMarketViewModel } from './lib/factory-market-view-model';
 
 const RANKING_PAGE_LIMIT = 40;
+const STRATEGY_MARKET_RANKING_TIMEOUT_MS = 20_000;
 type StrategyWorkspace = 'market' | 'favorites' | 'mine' | 'factory';
 
 type HeroMetricTone = 'default' | 'success' | 'danger';
@@ -175,6 +175,7 @@ export default function StrategyMarketPage() {
     {
       enabled: isMarketWorkspace,
       critical: false,
+      timeoutMs: STRATEGY_MARKET_RANKING_TIMEOUT_MS,
       parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
     },
   );
@@ -220,7 +221,7 @@ export default function StrategyMarketPage() {
 
   const runFactoryApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '策略工厂请求已受理，结果会稍后同步到运行态面板',
   });
   const lastDispatchId = useMemo(() => {
@@ -257,37 +258,37 @@ export default function StrategyMarketPage() {
   );
   const vectorReconcileApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '向量索引对账已提交',
   });
   const vectorRebuildApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '向量索引重建已提交',
   });
   const vectorCleanupApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '向量演练清理已提交',
   });
   const aiGenerateApi = useApiMutation<Record<string, unknown>>({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: 'AI 策略生成已触发，结果会同步到工厂运行态与实验面板',
   });
   const createPersonalStrategyApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '个人策略草稿已创建',
   });
   const strategyRuntimeActionApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '策略动作已执行',
   });
   const deletePersonalStrategyApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '个人策略已删除',
   });
 

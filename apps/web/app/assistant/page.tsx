@@ -158,6 +158,17 @@ export default function AssistantPage() {
     () =>
       assistantResultSummary
         ? [
+            ...(contextStockCode
+              ? [{
+                  id: 'assistant.open-stock-detail',
+                  actionId: 'global.open-stock-detail',
+                  label: '打开个股详情',
+                  description: '直接打开当前股票的实时内容页。',
+                  payload: {
+                    code: contextStockCode,
+                  },
+                } satisfies ResultAction]
+              : []),
             {
               id: 'assistant.open-copilot-followup',
               actionId: 'assistant.open-copilot-followup',
@@ -166,7 +177,7 @@ export default function AssistantPage() {
             },
           ]
         : [],
-    [assistantResultSummary],
+    [assistantResultSummary, contextStockCode],
   );
   const assistantVisualContent = useMemo(() => {
     if (!result || typeof result !== 'object' || Array.isArray(result)) return null;

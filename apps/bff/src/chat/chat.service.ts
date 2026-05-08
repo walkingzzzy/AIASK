@@ -20,9 +20,11 @@ import {
 } from './tool-trace';
 import type {
   ChatEvent,
+  ChatFrontendContext,
   ChatMessageInput,
   ChatPageContext,
   ChatRequestPayload,
+  ChatSurfaceRoute,
   ClientActionDescriptor,
 } from './chat.protocol';
 
@@ -36,6 +38,12 @@ type ToolCallRecord = {
 type ClientActionExecutionIntent = {
   latestUserMessage: string;
   explicitActionExecution: boolean;
+  explicitStockDetailIntent: boolean;
+  stockDetailCode?: string;
+  explicitRouteIntent: boolean;
+  routePageKey?: string;
+  routeHref?: string;
+  routeCode?: string;
   explicitPersonalStrategyWrite: boolean;
   explicitSuggestionOnly: boolean;
   hasWritablePersonalStrategyActions: boolean;
@@ -46,6 +54,17 @@ const CLIENT_ACTION_TOOL_NAME = 'request_client_action';
 const FIRST_RESPONSE_TIMEOUT_MS = 45_000;
 const ROUND_TIMEOUT_MS = 75_000;
 const TOOL_HEARTBEAT_INTERVAL_MS = 10_000;
+const STOCK_CODE_RE = /^\d{6}$/;
+const WRITE_VERB_PATTERN = /(修改|改一下|更新|保存|落库|写入|应用|套用|提交|覆盖|替换|优化|执行优化|直接改|直接保存|帮我改|帮我更新|帮我保存|patch|update|save|apply|persist|optimi[sz]e|edit|change|rewrite)/i;
+const SUGGESTION_ONLY_PATTERN = /(只给建议|先给建议|先出建议|不要保存|先不要保存|不要落库|不落库|不要写入|不要自动执行|别自动执行|不要直接执行|别直接执行|只看建议|suggest only|advisory only|do not save|don't save|do not auto.?execute|don't auto.?execute|just suggest)/i;
+const ADVISORY_QUESTION_PATTERN = /(下一步|建议|说明|解释|是否|要不要|该不该|可以怎么|怎么做|怎么看|what|why|how|should|suggest|advice|explain)/i;
+const ACTION_EXECUTION_PATTERN = /(运行|执行|打开|跳转|刷新|切换|提交|保存|应用|删除|清理|点击|点一下|直接运行|直接执行|帮我运行|帮我执行|run|execute|open|navigate|refresh|switch|submit|save|apply|delete|cleanup|trigger|invoke)/i;
+const STOCK_REFERENCE_PATTERN = /(?:\b\d{6}\b|这支股票|这个股票|该股|个股|当前股票|当前标的|这只股票|股票详情|个股详情|详情页|行情页|实时行情)/i;
+const STOCK_CONTEXT_REFERENCE_PATTERN = /(这支股票|这个股票|该股|当前股票|当前标的|这只股票)/i;
+const STOCK_OPEN_PATTERN = /(打开|查看|进入|跳转|跳到|切到|点开|看盘|看下|看看|去)/i;
+const STOCK_ANALYSIS_PATTERN = /(分析|解读|研判|看看)/i;
+const ROUTE_EXECUTION_PATTERN = /(打开|进入|跳转|跳到|切到|切换到|带我去|带我到|去到|导航到|open|navigate|go to|switch to)/i;
+const NEXT_STEP_EXECUTION_PATTERN = /(带我去下一步|进入下一步|打开下一步|跳到下一步|去下一步|下一步页面|next step|go next)/i;
 
 @Injectable()
 export class ChatService {
@@ -61,8 +80,9 @@ export class ChatService {
   async *streamChat(userId: string, payload: ChatRequestPayload): AsyncGenerator<ChatEvent> {
     const messages = payload.messages ?? [];
     const pageContext = payload.pageContext ?? null;
+    const frontendContext = payload.frontendContext ?? null;
     const availableActions = payload.availableActions ?? [];
-    const clientActionIntent = this.analyzeClientActionIntent(messages, pageContext, availableActions);
+    const clientActionIntent = this.analyzeClientActionIntent(messages, pageContext, frontendContext, availableActions);
     const toolTrace = createChatToolTrace({
       mode: payload.mode,
       pageKey: pageContext?.pageKey,
@@ -88,7 +108,7 @@ export class ChatService {
 
     const conversationMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...this.buildCopilotContextMessages(payload.mode, pageContext, availableActions, clientActionIntent),
+      ...this.buildCopilotContextMessages(payload.mode, pageContext, frontendContext, availableActions, clientActionIntent),
       ...messages.map((message) => ({
         role: message.role,
         content: message.content,
@@ -697,16 +717,56 @@ export class ChatService {
   private buildCopilotContextMessages(
     mode: ChatRequestPayload['mode'],
     pageContext: ChatPageContext | null,
+    frontendContext: ChatFrontendContext | null,
     availableActions: ClientActionDescriptor[],
     clientActionIntent: ClientActionExecutionIntent,
   ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-    if (!pageContext && availableActions.length === 0 && mode !== 'copilot') {
+    if (!pageContext && !frontendContext && availableActions.length === 0 && mode !== 'copilot') {
       return [];
     }
 
     const lines: string[] = [];
     if (mode) {
       lines.push(`当前模式: ${mode}`);
+    }
+    if (frontendContext) {
+      lines.push('前端知识底座:');
+      lines.push(`- 当前路由: ${frontendContext.route}`);
+      if (frontendContext.currentRoute) {
+        const route = frontendContext.currentRoute;
+        lines.push(`- 当前页面模型: ${route.pageKey} / ${route.title} / ${route.module}`);
+        lines.push(`- 页面职责: ${route.summary}`);
+        lines.push(`- 页面目标: ${route.primaryGoal}`);
+        if (route.requiredInputs?.length) lines.push(`- 页面关键输入: ${route.requiredInputs.join(' / ')}`);
+        if (route.coreEntities?.length) lines.push(`- 核心对象: ${route.coreEntities.join(' / ')}`);
+        if (route.capabilities?.length) lines.push(`- 页面能力: ${route.capabilities.join('；')}`);
+        if (route.relatedPageKeys?.length) lines.push(`- 相关页面: ${route.relatedPageKeys.join(' / ')}`);
+      }
+      if (frontendContext.taskFlow) {
+        const flow = frontendContext.taskFlow;
+        const currentStep = flow.currentStepIndex != null ? flow.steps[flow.currentStepIndex] : undefined;
+        const nextStep = currentStep?.nextPageKey
+          ? flow.steps.find((step) => step.pageKey === currentStep.nextPageKey)
+          : flow.currentStepIndex != null
+            ? flow.steps[flow.currentStepIndex + 1]
+            : undefined;
+        lines.push(`- 当前任务流: ${flow.title}（${flow.summary}）`);
+        if (currentStep) lines.push(`- 当前步骤: ${currentStep.title}，目标: ${currentStep.goal}`);
+        if (nextStep) lines.push(`- 任务流下一页: ${nextStep.pageKey} / ${nextStep.title}，目标: ${nextStep.goal}`);
+      }
+      if (frontendContext.relatedRoutes?.length) {
+        lines.push(`- 相邻页面: ${frontendContext.relatedRoutes.slice(0, 6).map((route) => `${route.pageKey}:${route.title}`).join('；')}`);
+      }
+      if (frontendContext.workspaceContext) {
+        const ctx = frontendContext.workspaceContext;
+        lines.push(`- 工作区上下文: ${[
+          ctx.workspaceName ? `workspace=${ctx.workspaceName}` : '',
+          ctx.stockCode ? `stockCode=${ctx.stockCode}` : '',
+          ctx.sourcePage ? `sourcePage=${ctx.sourcePage}` : '',
+          ctx.taskType ? `taskType=${ctx.taskType}` : '',
+          ctx.resultType ? `resultType=${ctx.resultType}` : '',
+        ].filter(Boolean).join('，') || '无'}`);
+      }
     }
     if (pageContext) {
       lines.push('页面上下文:');
@@ -725,6 +785,20 @@ export class ChatService {
       if (pageContext.tags?.length) lines.push(`- 标签: ${pageContext.tags.join(' / ')}`);
       if (pageContext.suggestions?.length) lines.push(`- 建议问题: ${pageContext.suggestions.join('；')}`);
       if (pageContext.recommendedNextActions?.length) lines.push(`- 推荐下一步: ${pageContext.recommendedNextActions.join('；')}`);
+      if (pageContext.recommendedActions?.length) {
+        lines.push(`- 推荐动作: ${pageContext.recommendedActions.slice(0, 4).map((action) => {
+          const actionId = action.actionId ? `(${action.actionId})` : '';
+          const code = typeof action.payload?.code === 'string'
+            ? action.payload.code
+            : typeof action.payload?.stockCode === 'string'
+              ? action.payload.stockCode
+              : '';
+          return `${action.label}${actionId}${code ? ` [code=${code}]` : ''}`;
+        }).join('；')}`);
+      }
+      if (pageContext.recommendedLinks?.length) {
+        lines.push(`- 推荐链接: ${pageContext.recommendedLinks.slice(0, 4).map((link) => `${link.label} -> ${link.href}`).join('；')}`);
+      }
       if (pageContext.evidenceSummary?.length) lines.push(`- 证据摘要: ${pageContext.evidenceSummary.join('；')}`);
       if (pageContext.riskNotes?.length) lines.push(`- 风险提示: ${pageContext.riskNotes.join('；')}`);
       if (pageContext.dataFreshness) lines.push(`- 数据时效: ${pageContext.dataFreshness}`);
@@ -750,6 +824,15 @@ export class ChatService {
       lines.push('页面联动协议:');
       lines.push(`- 只有用户明确要求执行、运行、打开、跳转、刷新、切换、提交、保存、应用、删除或清理页面动作时，才调用 ${CLIENT_ACTION_TOOL_NAME} 并允许自动执行。`);
       lines.push('- 如果用户是纯咨询型地询问“下一步做什么/给建议/分析/总结/说明/是否应该”，必须先直接回答；可以建议可点击动作，但不能自动执行。用户明确要求运行动作后再总结结果时，按执行型意图处理。');
+      if (availableActions.some((action) => action.id === 'global.open-stock-detail')) {
+        lines.push('- 当用户明确要求打开、查看、进入某只股票或实时行情，且可解析出股票代码时，优先调用 `global.open-stock-detail`，不要退回 `global.open-search`。');
+        lines.push('- 如果用户说“打开这支股票/分析这支股票”，优先使用页面推荐动作、推荐链接或当前页面上下文里的股票代码。');
+      }
+      if (availableActions.some((action) => action.id === 'global.open-route')) {
+        lines.push('- 当用户明确要求打开、进入、切换到某个前端页面或“带我去下一步”时，优先调用 `global.open-route`，payload 必须使用前端知识底座里的 pageKey/href/code。');
+        lines.push('- 如果用户只是问“下一步怎么做/怎么分析/总结当前页面/给建议”，必须先回答任务流建议，不能自动跳转。');
+        lines.push('- 不允许编造未注册 URL；只能打开前端知识底座中出现的页面。');
+      }
       lines.push('- 没有合适动作时，必须明确说明当前页没有可执行动作，不能挂起或转去调用无关工具。');
       lines.push('- 回答当前页问题时，至少引用页面上下文中的具体事实，不要退化成泛 Copilot 话术。');
       lines.push('- `generate_update_suggestion` / `advisory` 只代表生成修改建议，不代表已经写库。');
@@ -824,7 +907,25 @@ export class ChatService {
     availableActions: ClientActionDescriptor[],
     clientActionIntent: ClientActionExecutionIntent,
   ): Extract<ChatEvent, { type: 'action' }> | null {
-    const actionId = typeof args.actionId === 'string' ? args.actionId.trim() : '';
+    const requestedActionId = typeof args.actionId === 'string' ? args.actionId.trim() : '';
+    const hasStockDetailAction = availableActions.some((action) => action.id === 'global.open-stock-detail');
+    const hasOpenRouteAction = availableActions.some((action) => action.id === 'global.open-route');
+    const payloadStockCode = this.extractStockCodeFromPayload(args.payload);
+    const messageStockCode = this.extractStockCodeFromText(clientActionIntent.latestUserMessage);
+    const hasResolvedStockDetailIntent = hasStockDetailAction && (
+      clientActionIntent.explicitStockDetailIntent
+      || this.hasExplicitStockDetailIntent(
+        clientActionIntent.latestUserMessage,
+        Boolean(payloadStockCode || clientActionIntent.stockDetailCode),
+        Boolean(messageStockCode),
+      )
+    );
+    const hasResolvedRouteIntent = hasOpenRouteAction && clientActionIntent.explicitRouteIntent;
+    const actionId = hasResolvedStockDetailIntent
+      ? 'global.open-stock-detail'
+      : hasResolvedRouteIntent
+        ? 'global.open-route'
+      : requestedActionId;
     if (!actionId) return null;
 
     const meta = availableActions.find((action) => action.id === actionId);
@@ -832,7 +933,8 @@ export class ChatService {
     const requestedAutoExecute = args.autoExecute === false ? false : undefined;
     const isStatefulPersonalStrategyAction = meta.mutationEffect === 'stateful'
       && (meta.strategyActionKind === 'persist_update' || meta.strategyActionKind === 'optimize');
-    const canAutoExecute = clientActionIntent.explicitActionExecution && !clientActionIntent.explicitSuggestionOnly;
+    const canAutoExecute = (clientActionIntent.explicitActionExecution || hasResolvedStockDetailIntent || hasResolvedRouteIntent)
+      && !clientActionIntent.explicitSuggestionOnly;
     const resolvedAutoExecute = isStatefulPersonalStrategyAction
       ? clientActionIntent.explicitPersonalStrategyWrite && requestedAutoExecute !== false
       : canAutoExecute && requestedAutoExecute !== false;
@@ -842,10 +944,8 @@ export class ChatService {
       actionId,
       label: meta.label,
       description: meta.description,
-      reason: typeof args.reason === 'string' ? args.reason : undefined,
-      payload: args.payload && typeof args.payload === 'object' && !Array.isArray(args.payload)
-        ? args.payload as Record<string, unknown>
-        : undefined,
+      reason: this.resolveClientActionReason(args.reason, requestedActionId, actionId),
+      payload: this.resolveClientActionPayload(args.payload, actionId, clientActionIntent),
       autoExecute: resolvedAutoExecute,
     };
   }
@@ -853,6 +953,7 @@ export class ChatService {
   private analyzeClientActionIntent(
     messages: ChatMessageInput[],
     pageContext: ChatPageContext | null,
+    frontendContext: ChatFrontendContext | null,
     availableActions: ClientActionDescriptor[],
   ): ClientActionExecutionIntent {
     const latestUserMessage = [...messages]
@@ -870,25 +971,177 @@ export class ChatService {
         || pageContext.objectType === 'personal_strategy'
       ),
     );
-    const writeVerbPattern = /(修改|改一下|更新|保存|落库|写入|应用|套用|提交|覆盖|替换|优化|执行优化|直接改|直接保存|帮我改|帮我更新|帮我保存|patch|update|save|apply|persist|optimi[sz]e|edit|change|rewrite)/i;
-    const suggestionOnlyPattern = /(只给建议|先给建议|先出建议|不要保存|先不要保存|不要落库|不落库|不要写入|不要自动执行|别自动执行|不要直接执行|别直接执行|只看建议|suggest only|advisory only|do not save|don't save|do not auto.?execute|don't auto.?execute|just suggest)/i;
-    const advisoryQuestionPattern = /(下一步|建议|说明|解释|是否|要不要|该不该|可以怎么|怎么做|怎么看|what|why|how|should|suggest|advice|explain)/i;
-    const actionExecutionPattern = /(运行|执行|打开|跳转|刷新|切换|提交|保存|应用|删除|清理|点击|点一下|直接运行|直接执行|帮我运行|帮我执行|run|execute|open|navigate|refresh|switch|submit|save|apply|delete|cleanup|trigger|invoke)/i;
-    const explicitActionExecution = actionExecutionPattern.test(latestUserMessage)
-      && !suggestionOnlyPattern.test(latestUserMessage)
-      && !advisoryQuestionPattern.test(latestUserMessage.replace(actionExecutionPattern, ''));
+    const hasOpenStockDetailAction = availableActions.some((action) => action.id === 'global.open-stock-detail');
+    const hasOpenRouteAction = availableActions.some((action) => action.id === 'global.open-route');
+    const messageStockCode = this.extractStockCodeFromText(latestUserMessage);
+    const pageContextStockCode = this.extractStockCodeFromPageContext(pageContext);
+    const frontendStockCode = this.extractStockCodeFromFrontendContext(frontendContext);
+    const stockDetailCode = messageStockCode || pageContextStockCode || frontendStockCode;
+    const explicitStockDetailIntent = hasOpenStockDetailAction
+      && this.hasExplicitStockDetailIntent(latestUserMessage, Boolean(stockDetailCode), Boolean(messageStockCode));
+    const routeIntent = hasOpenRouteAction
+      ? this.resolveRouteIntent(latestUserMessage, frontendContext, messageStockCode || pageContextStockCode || frontendStockCode)
+      : null;
+    const hasRouteIntent = Boolean(routeIntent);
+    const explicitActionExecution = (
+      ACTION_EXECUTION_PATTERN.test(latestUserMessage)
+      || explicitStockDetailIntent
+      || hasRouteIntent
+    )
+      && !SUGGESTION_ONLY_PATTERN.test(latestUserMessage)
+      && (hasRouteIntent || !ADVISORY_QUESTION_PATTERN.test(latestUserMessage.replace(ACTION_EXECUTION_PATTERN, '')));
     const explicitPersonalStrategyWrite = hasWritablePersonalStrategyActions
       && hasPersonalStrategyContext
-      && !suggestionOnlyPattern.test(latestUserMessage)
-      && !advisoryQuestionPattern.test(latestUserMessage)
-      && writeVerbPattern.test(latestUserMessage);
+      && !SUGGESTION_ONLY_PATTERN.test(latestUserMessage)
+      && !ADVISORY_QUESTION_PATTERN.test(latestUserMessage)
+      && WRITE_VERB_PATTERN.test(latestUserMessage);
 
     return {
       latestUserMessage,
       explicitActionExecution,
+      explicitStockDetailIntent,
+      stockDetailCode: stockDetailCode || undefined,
+      explicitRouteIntent: Boolean(routeIntent),
+      routePageKey: routeIntent?.pageKey,
+      routeHref: routeIntent?.href,
+      routeCode: routeIntent?.code,
       explicitPersonalStrategyWrite,
-      explicitSuggestionOnly: suggestionOnlyPattern.test(latestUserMessage),
+      explicitSuggestionOnly: SUGGESTION_ONLY_PATTERN.test(latestUserMessage),
       hasWritablePersonalStrategyActions,
+    };
+  }
+
+  private hasExplicitStockDetailIntent(message: string, hasCode: boolean, hasMessageCode: boolean): boolean {
+    if (!hasCode) return false;
+    if (SUGGESTION_ONLY_PATTERN.test(message) || ADVISORY_QUESTION_PATTERN.test(message)) return false;
+    if (!STOCK_REFERENCE_PATTERN.test(message)) return false;
+    return STOCK_OPEN_PATTERN.test(message)
+      || (STOCK_ANALYSIS_PATTERN.test(message) && (hasMessageCode || STOCK_CONTEXT_REFERENCE_PATTERN.test(message)));
+  }
+
+  private resolveClientActionReason(reason: unknown, requestedActionId: string, actionId: string): string | undefined {
+    if (typeof reason === 'string' && reason.trim()) return reason;
+    if (requestedActionId && requestedActionId !== actionId && actionId === 'global.open-stock-detail') {
+      return '已识别为明确个股内容打开意图，改为打开个股详情。';
+    }
+    return undefined;
+  }
+
+  private resolveClientActionPayload(
+    payload: unknown,
+    actionId: string,
+    clientActionIntent: ClientActionExecutionIntent,
+  ): Record<string, unknown> | undefined {
+    const basePayload = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? { ...(payload as Record<string, unknown>) }
+      : {};
+    if (actionId !== 'global.open-stock-detail') {
+      if (actionId === 'global.open-route') {
+        if (clientActionIntent.routePageKey) basePayload.pageKey = clientActionIntent.routePageKey;
+        if (clientActionIntent.routeHref) basePayload.href = clientActionIntent.routeHref;
+        if (clientActionIntent.routeCode) basePayload.code = clientActionIntent.routeCode;
+      }
+      return Object.keys(basePayload).length ? basePayload : undefined;
+    }
+
+    const code = this.extractStockCodeFromText(clientActionIntent.latestUserMessage)
+      || this.extractStockCodeFromPayload(basePayload)
+      || clientActionIntent.stockDetailCode
+      || '';
+    if (code) {
+      basePayload.code = code;
+    }
+    return Object.keys(basePayload).length ? basePayload : undefined;
+  }
+
+  private normalizeStockCode(value: unknown): string {
+    const code = String(value ?? '').trim();
+    return STOCK_CODE_RE.test(code) ? code : '';
+  }
+
+  private extractStockCodeFromText(text: string): string {
+    return this.normalizeStockCode(text.match(/\b(\d{6})\b/)?.[1]);
+  }
+
+  private extractStockCodeFromPayload(payload: unknown): string {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+    const record = payload as Record<string, unknown>;
+    return this.normalizeStockCode(record.code) || this.normalizeStockCode(record.stockCode);
+  }
+
+  private extractStockCodeFromHref(href: unknown): string {
+    if (typeof href !== 'string' || !href.trim()) return '';
+    try {
+      const url = new URL(href, 'http://aiask.local');
+      return this.normalizeStockCode(url.searchParams.get('code'));
+    } catch {
+      return this.normalizeStockCode(href.match(/[?&]code=(\d{6})(?:&|$)/)?.[1]);
+    }
+  }
+
+  private extractStockCodeFromPageContext(pageContext: ChatPageContext | null): string {
+    if (!pageContext) return '';
+    for (const action of pageContext.recommendedActions ?? []) {
+      const code = this.extractStockCodeFromPayload(action.payload);
+      if (code) return code;
+    }
+    for (const link of pageContext.recommendedLinks ?? []) {
+      const code = this.extractStockCodeFromHref(link.href);
+      if (code) return code;
+    }
+    return this.normalizeStockCode(pageContext.selectedCode) || this.normalizeStockCode(pageContext.stockCode);
+  }
+
+  private extractStockCodeFromFrontendContext(frontendContext: ChatFrontendContext | null): string {
+    return this.normalizeStockCode(frontendContext?.workspaceContext?.stockCode);
+  }
+
+  private normalizeIntentText(value: string) {
+    return value.toLowerCase().replace(/\s+/g, '');
+  }
+
+  private routeMatchesMessage(message: string, route: ChatFrontendContext['appMap']['routes'][number] | ChatSurfaceRoute) {
+    const normalized = this.normalizeIntentText(message);
+    const names = [
+      route.pageKey,
+      route.title,
+      route.path,
+      ...(route.aliases ?? []),
+    ].filter(Boolean).map((item) => this.normalizeIntentText(String(item)));
+    return names.some((name) => name && normalized.includes(name));
+  }
+
+  private resolveNextFlowRoute(frontendContext: ChatFrontendContext | null) {
+    const flow = frontendContext?.taskFlow;
+    if (!flow) return null;
+    const currentIndex = flow.currentStepIndex ?? -1;
+    const currentStep = currentIndex >= 0 ? flow.steps[currentIndex] : undefined;
+    const nextPageKey = currentStep?.nextPageKey ?? flow.steps[currentIndex + 1]?.pageKey;
+    if (!nextPageKey) return null;
+    return frontendContext.appMap.routes.find((route) => route.pageKey === nextPageKey)
+      ?? frontendContext.relatedRoutes?.find((route) => route.pageKey === nextPageKey)
+      ?? null;
+  }
+
+  private resolveRouteIntent(message: string, frontendContext: ChatFrontendContext | null, stockCode: string) {
+    if (!frontendContext) return null;
+    if (SUGGESTION_ONLY_PATTERN.test(message)) return null;
+    const isNextStepIntent = NEXT_STEP_EXECUTION_PATTERN.test(message);
+    if (!isNextStepIntent && !ROUTE_EXECUTION_PATTERN.test(message)) return null;
+
+    const matchedRoute = isNextStepIntent
+      ? this.resolveNextFlowRoute(frontendContext)
+      : [
+          ...(frontendContext.relatedRoutes ?? []),
+          ...(frontendContext.currentRoute ? [frontendContext.currentRoute] : []),
+          ...frontendContext.appMap.routes,
+        ].find((route) => this.routeMatchesMessage(message, route));
+    if (!matchedRoute) return null;
+    const href = matchedRoute.path.includes('[') ? undefined : matchedRoute.path;
+    return {
+      pageKey: matchedRoute.pageKey,
+      href,
+      code: this.normalizeStockCode(stockCode) || undefined,
     };
   }
 

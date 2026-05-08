@@ -52,6 +52,34 @@ def _enrich_governed_candidate(
     return payload
 
 
+def _reason_counts_from_candidates(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in list(items or []):
+        for reason in list((item or {}).get("admission_block_reasons") or (item or {}).get("reasons") or []):
+            token = str(reason or "").strip()
+            if token:
+                counts[token] = int(counts.get(token) or 0) + 1
+    return counts
+
+
+def _is_quarantined_governed_candidate(item: dict[str, Any]) -> bool:
+    payload = dict(item or {})
+    bucket = str(payload.get("exclusion_bucket") or "").strip().lower()
+    if bucket != "blocked":
+        return False
+    reasons = {
+        str(reason or "").strip().lower()
+        for reason in list(payload.get("admission_block_reasons") or payload.get("reasons") or [])
+        if str(reason or "").strip()
+    }
+    if reasons & {"multiple_testing_risk_high", "lookahead_risk_high"}:
+        return True
+    evidence_status = dict(payload.get("evidence_status") or {})
+    return bool(evidence_status.get("blocked")) and str(
+        evidence_status.get("overall_risk_level") or ""
+    ).strip().lower() == "high"
+
+
 async def load_research_runtime_context(
     builder_cls,
     db,
@@ -218,21 +246,69 @@ async def load_research_runtime_context(
         _enrich_governed_candidate(builder_cls, item, snapshot_date=snapshot_date)
         for item in governed_excluded_candidates
     ]
+    governed_quarantined_candidates = [
+        item for item in governed_excluded_candidates if _is_quarantined_governed_candidate(item)
+    ]
+    governed_quarantined_count = max(
+        len(governed_quarantined_candidates),
+        sum(
+            int(governed_blocking_reason_counts.get(reason) or 0)
+            for reason in ("multiple_testing_risk_high", "lookahead_risk_high")
+        ),
+    )
+    governed_governance_denominator = max(
+        governed_source_candidate_count - governed_quarantined_count,
+        governed_active_registry_candidate_count,
+        governed_candidate_pool_strict_count + governed_candidate_pool_provisional_count,
+        0,
+    )
+    governed_active_blocked_candidates = [
+        item
+        for item in governed_excluded_candidates
+        if str(item.get("exclusion_bucket") or "").strip().lower() == "blocked"
+        and not _is_quarantined_governed_candidate(item)
+    ]
+    governed_active_blocked_candidate_count = len(governed_active_blocked_candidates)
+    governed_active_blocking_reason_counts = _reason_counts_from_candidates(
+        governed_active_blocked_candidates
+    )
     active_candidate_pool["top_candidates"] = governed_top_candidates
     active_candidate_pool["excluded_candidates"] = governed_excluded_candidates
+    active_candidate_pool["quarantined_blocked_count"] = governed_quarantined_count
+    active_candidate_pool["active_blocked_count"] = governed_active_blocked_candidate_count
+    active_candidate_pool["governance_denominator"] = governed_governance_denominator
+    active_candidate_pool["active_blocked_exclusion_reason_counts"] = (
+        governed_active_blocking_reason_counts
+    )
 
     governed_latest_candidate_at = (
         active_candidate_pool.get("latest_active_candidate_updated_at")
         or active_candidate_pool.get("latest_candidate_updated_at")
     )
+    governed_freshness_source = "active_candidate_pool"
+    scheduler_last_run_for_freshness = None
+    try:
+        scheduler_status_for_freshness = dict(scheduler_provider().status() or {})
+        scheduler_last_run_for_freshness = scheduler_status_for_freshness.get("last_run")
+    except Exception:
+        scheduler_last_run_for_freshness = None
+    if governed_top_candidates and scheduler_last_run_for_freshness:
+        scheduler_last_run_date = builder_cls._parse_date(scheduler_last_run_for_freshness)
+        governed_latest_date_for_compare = builder_cls._parse_date(governed_latest_candidate_at)
+        if scheduler_last_run_date and (
+            governed_latest_date_for_compare is None
+            or scheduler_last_run_date > governed_latest_date_for_compare
+        ):
+            governed_latest_candidate_at = scheduler_last_run_for_freshness
+            governed_freshness_source = "factor_scheduler_last_run"
     governed_latest_candidate_date = builder_cls._parse_date(governed_latest_candidate_at)
     governed_freshness_days = builder_cls._days_since(
         governed_latest_candidate_date,
         reference_date=snapshot_date,
     )
     governed_blocked_ratio = (
-        round(governed_blocked_candidate_count / max(governed_source_candidate_count, 1), 6)
-        if governed_source_candidate_count > 0
+        round(governed_active_blocked_candidate_count / max(governed_governance_denominator, 1), 6)
+        if governed_governance_denominator > 0
         else 0.0
     )
     governed_pending_ratio = (
@@ -302,14 +378,19 @@ async def load_research_runtime_context(
         "governed_source_candidate_count": governed_source_candidate_count,
         "governed_active_registry_candidate_count": governed_active_registry_candidate_count,
         "governed_blocked_candidate_count": governed_blocked_candidate_count,
+        "governed_active_blocked_candidate_count": governed_active_blocked_candidate_count,
+        "governed_quarantined_candidate_count": governed_quarantined_count,
+        "governed_governance_denominator": governed_governance_denominator,
         "governed_pending_candidate_count": governed_pending_candidate_count,
         "governed_ineligible_candidate_count": governed_ineligible_candidate_count,
         "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
         "governed_blocking_reason_counts": governed_blocking_reason_counts,
+        "governed_active_blocking_reason_counts": governed_active_blocking_reason_counts,
         "governed_pending_reason_counts": governed_pending_reason_counts,
         "governed_ineligible_reason_counts": governed_ineligible_reason_counts,
         "governed_latest_candidate_at": governed_latest_candidate_at,
         "governed_freshness_days": governed_freshness_days,
+        "governed_freshness_source": governed_freshness_source,
         "governed_blocked_ratio": governed_blocked_ratio,
         "governed_pending_ratio": governed_pending_ratio,
         "governed_ineligible_ratio": governed_ineligible_ratio,

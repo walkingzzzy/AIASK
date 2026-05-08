@@ -23,6 +23,7 @@ from .spawn_policy_registry import (
     get_spawn_policy_version,
 )
 from .targets import _normalize_target_codes
+from .strategy_identity import materialize_strategy_params, has_executable_params
 
 from strategy_factory._fragment_loader import exec_block as _exec_block
 

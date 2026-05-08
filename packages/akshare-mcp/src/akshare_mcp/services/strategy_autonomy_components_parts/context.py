@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
 from datetime import date
 from typing import Any, Optional
@@ -18,6 +19,12 @@ def _apply_resolved_candidate_envelope(candidate: Optional[dict[str, Any]]) -> d
     from strategy_factory.application.candidate_contract import apply_resolved_candidate_envelope
 
     return apply_resolved_candidate_envelope(candidate)
+
+
+def _materialize_strategy_params(*args, **kwargs) -> dict[str, Any]:
+    from strategy_factory.domain.strategy_identity import materialize_strategy_params
+
+    return materialize_strategy_params(*args, **kwargs)
 
 from .artifact_registry import register_experiment
 from .strategy_generators import LLMProxyStrategyGenerator, RuleStrategyGenerator
@@ -139,6 +146,74 @@ class CandidateGenerationService:
             if task.get(key) not in (None, "", [], {}):
                 return True
         return False
+
+    @classmethod
+    def _target_symbols_for_materialization(cls, spec: StrategySpec, research_task: Optional[dict[str, Any]]) -> list[str]:
+        targets: list[str] = []
+        metadata = dict(spec.metadata or {})
+        params = dict(spec.params or {})
+        for payload in (
+            params.get("target_symbols"),
+            params.get("requested_target_symbols"),
+            params.get("stock_pool"),
+            metadata.get("target_symbols"),
+            metadata.get("requested_target_symbols"),
+            metadata.get("stock_pool"),
+            dict(metadata.get("research_task") or {}).get("target_symbols"),
+            dict(metadata.get("research_task") or {}).get("stock_pool"),
+            dict(research_task or {}).get("target_symbols"),
+            dict(research_task or {}).get("stock_pool"),
+        ):
+            if isinstance(payload, dict):
+                for key in ("symbols", "target_symbols", "codes", "constituents"):
+                    for item in list(payload.get(key) or []):
+                        token = str(item or "").strip()
+                        if token and token not in targets:
+                            targets.append(token)
+                code = str(payload.get("code") or "").strip()
+                if code and code not in targets:
+                    targets.append(code)
+            elif isinstance(payload, (list, tuple, set)):
+                for item in payload:
+                    token = str(item or "").strip()
+                    if token and token not in targets:
+                        targets.append(token)
+        return targets
+
+    @classmethod
+    def _materialize_spec_params(
+        cls,
+        spec: StrategySpec,
+        *,
+        source: str,
+        snapshot: dict[str, Any],
+        research_task: Optional[dict[str, Any]],
+        slot_index: int,
+    ) -> StrategySpec:
+        metadata = dict(spec.metadata or {})
+        targets = cls._target_symbols_for_materialization(spec, research_task)
+        params = _materialize_strategy_params(
+            spec.strategy_type,
+            dict(spec.params or {}),
+            seed_context={
+                "source": source,
+                "task_source": cls._task_source(research_task),
+                "task_id": dict(research_task or {}).get("task_id") or dict(research_task or {}).get("task_key"),
+                "snapshot_date": snapshot.get("date") or snapshot.get("snapshot_date") or snapshot.get("as_of"),
+                "strategy_name": spec.name,
+            },
+            slot_index=slot_index,
+            targets=targets,
+            variant_existing=True,
+            refresh_signal_rule=True,
+        )
+        metadata["param_materialization_version"] = params.get("param_materialization_version")
+        metadata["strategy_instance_hash"] = params.get("strategy_instance_hash")
+        metadata["tested_object_hash"] = params.get("tested_object_hash")
+        metadata["candidate_contract_hash"] = params.get("candidate_contract_hash")
+        spec.params = params
+        spec.metadata = metadata
+        return spec
 
     @classmethod
     def _bulk_llm_enabled(cls) -> bool:
@@ -287,12 +362,112 @@ class CandidateGenerationService:
                 {"fear_threshold": 40, "greed_threshold": 60, "lookback": 15},
                 {"fear_threshold": 45, "greed_threshold": 65, "lookback": 20},
             ],
+            "event_structure_breakout": [
+                {"breakout_window": 10, "breakout_buffer_pct": 0.001, "contraction_window": 4, "contraction_max_range_ratio": 0.05, "volume_window": 6, "breakout_volume_ratio_min": 1.0, "max_hold_bars": 6},
+                {"breakout_window": 12, "breakout_buffer_pct": 0.002, "contraction_window": 5, "contraction_max_range_ratio": 0.06, "volume_window": 8, "breakout_volume_ratio_min": 1.2, "max_hold_bars": 8},
+                {"breakout_window": 15, "breakout_buffer_pct": 0.003, "contraction_window": 7, "contraction_max_range_ratio": 0.07, "volume_window": 10, "breakout_volume_ratio_min": 1.5, "max_hold_bars": 10},
+            ],
+            "topn_equity_portfolio": [
+                {"top_n": 10, "rebalance_days": 5, "lookback": 15, "sector_cap": 0.30},
+                {"top_n": 20, "rebalance_days": 10, "lookback": 20, "sector_cap": 0.25},
+                {"top_n": 30, "rebalance_days": 20, "lookback": 30, "sector_cap": 0.20},
+            ],
         }
         options = list(variants.get(strategy_type) or [])
         if not options:
             return dict(base_params or {})
         selected = dict(options[variant_index % len(options)])
         return {**dict(base_params or {}), **selected}
+
+    @classmethod
+    def _jitter_variant_params(cls, params: dict[str, Any]) -> dict[str, Any]:
+        """Add random perturbation to variant params for uniqueness."""
+        jittered = {}
+        for key, value in params.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if isinstance(value, int):
+                    delta = max(2, int(abs(value) * 0.30 * random.random()))
+                    delta = random.randint(-delta, delta)
+                    jittered[key] = max(1, value + delta)
+                else:
+                    factor = 1.0 + (random.random() - 0.5) * 0.40
+                    jittered[key] = round(value * factor, 6)
+            elif isinstance(value, dict):
+                jittered[key] = cls._jitter_variant_params(dict(value))
+            else:
+                jittered[key] = value
+        return jittered
+
+    @classmethod
+    def _rank_specs_for_coverage(cls, specs: list[StrategySpec], *, limit: int) -> list[StrategySpec]:
+        """Prefer type/target/param diversity before slicing to the requested limit."""
+        requested = max(1, int(limit or 1))
+        remaining = list(specs or [])
+        selected: list[StrategySpec] = []
+        selected_types: set[str] = set()
+        selected_targets: set[str] = set()
+        selected_param_hashes: set[str] = set()
+
+        def spec_targets(spec: StrategySpec) -> set[str]:
+            metadata = dict(spec.metadata or {})
+            params = dict(spec.params or {})
+            targets: set[str] = set()
+
+            def visit(value: Any) -> None:
+                if isinstance(value, dict):
+                    for key in ("symbols", "target_symbols", "codes", "constituents", "symbol", "code"):
+                        visit(value.get(key))
+                    return
+                if isinstance(value, (list, tuple, set)):
+                    for item in value:
+                        visit(item)
+                    return
+                token = str(value or "").strip()
+                if token:
+                    targets.add(token)
+
+            for value in (
+                params.get("target_symbols"),
+                params.get("stock_pool"),
+                metadata.get("target_symbols"),
+                metadata.get("stock_pool"),
+                dict(metadata.get("research_task") or {}).get("target_symbols"),
+                dict(metadata.get("research_task") or {}).get("stock_pool"),
+            ):
+                visit(value)
+            return targets
+
+        while remaining and len(selected) < requested:
+            def score(spec: StrategySpec) -> tuple[int, int, int, int]:
+                strategy_type = str(spec.strategy_type or "").strip().lower()
+                params = dict(spec.params or {})
+                param_hash = str(
+                    params.get("strategy_instance_hash")
+                    or params.get("tested_object_hash")
+                    or json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+                )
+                targets = spec_targets(spec)
+                return (
+                    1 if strategy_type not in selected_types else 0,
+                    1 if param_hash not in selected_param_hashes else 0,
+                    len(targets - selected_targets),
+                    -len(selected),
+                )
+
+            best_index = max(range(len(remaining)), key=lambda idx: score(remaining[idx]))
+            spec = remaining.pop(best_index)
+            selected.append(spec)
+            selected_types.add(str(spec.strategy_type or "").strip().lower())
+            selected_targets.update(spec_targets(spec))
+            params = dict(spec.params or {})
+            selected_param_hashes.add(
+                str(
+                    params.get("strategy_instance_hash")
+                    or params.get("tested_object_hash")
+                    or json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+                )
+            )
+        return selected
 
     @classmethod
     def _expand_bulk_rule_specs(
@@ -323,6 +498,8 @@ class CandidateGenerationService:
                 base_params=dict(base_spec.params or {}),
                 variant_index=variant_index,
             )
+            # Add random jitter so every candidate has unique params
+            params = cls._jitter_variant_params(params)
             key = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
             if key in seen:
                 continue
@@ -576,7 +753,7 @@ class CandidateGenerationService:
             for parent in parents[:2]:
                 evolved_specs.extend(await self.optimizer.evolve(db, parent, limit=2))
 
-        merged_specs: list[StrategySpec] = []
+        candidate_pool: list[StrategySpec] = []
         seen = set()
         prioritized_specs = (
             [*llm_specs, *replay_specs, *evolved_specs, *rule_specs]
@@ -586,13 +763,19 @@ class CandidateGenerationService:
         for spec in prioritized_specs:
             if research_task and not dict(spec.metadata or {}).get("research_task"):
                 spec.metadata = {**dict(spec.metadata or {}), "research_task": research_task}
+            spec = self._materialize_spec_params(
+                spec,
+                source="autonomy_candidate_generation",
+                snapshot=snapshot,
+                research_task=research_task,
+                slot_index=len(candidate_pool),
+            )
             key = (spec.strategy_type, json.dumps(spec.params or {}, sort_keys=True, ensure_ascii=False, default=str))
             if key in seen:
                 continue
             seen.add(key)
-            merged_specs.append(spec)
-            if len(merged_specs) >= effective_limit:
-                break
+            candidate_pool.append(spec)
+        merged_specs = self._rank_specs_for_coverage(candidate_pool, limit=effective_limit)
 
         return {
             "parents": parents,
@@ -600,6 +783,7 @@ class CandidateGenerationService:
             "llm_specs": llm_specs,
             "replay_specs": replay_specs,
             "evolved_specs": evolved_specs,
+            "candidate_pool_specs": candidate_pool,
             "merged_specs": merged_specs,
             "llm_report": llm_report,
         }

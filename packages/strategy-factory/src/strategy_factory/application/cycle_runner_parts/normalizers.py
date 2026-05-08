@@ -176,6 +176,48 @@
                 "lifecycle_feedback_promotion_review_status_counts": dict(
                     research_artifact.get("lifecycle_feedback_promotion_review_status_counts") or {}
                 ),
+                "lifecycle_feedback_signal_count_total": int(
+                    research_artifact.get("lifecycle_feedback_signal_count_total") or 0
+                ),
+                "lifecycle_feedback_zero_signal_strategy_count": int(
+                    research_artifact.get("lifecycle_feedback_zero_signal_strategy_count") or 0
+                ),
+                "lifecycle_feedback_zero_signal_ratio": research_artifact.get(
+                    "lifecycle_feedback_zero_signal_ratio"
+                ),
+                "lifecycle_feedback_low_signal_strategy_count": int(
+                    research_artifact.get("lifecycle_feedback_low_signal_strategy_count") or 0
+                ),
+                "lifecycle_feedback_low_signal_ratio": research_artifact.get(
+                    "lifecycle_feedback_low_signal_ratio"
+                ),
+                "lifecycle_feedback_observed_forward_window_count": int(
+                    research_artifact.get("lifecycle_feedback_observed_forward_window_count") or 0
+                ),
+                "lifecycle_feedback_missing_forward_window_count": int(
+                    research_artifact.get("lifecycle_feedback_missing_forward_window_count") or 0
+                ),
+                "lifecycle_feedback_expected_forward_window_count": int(
+                    research_artifact.get("lifecycle_feedback_expected_forward_window_count") or 0
+                ),
+                "lifecycle_feedback_forward_window_coverage_ratio": research_artifact.get(
+                    "lifecycle_feedback_forward_window_coverage_ratio"
+                ),
+                "lifecycle_feedback_promotion_ready_count": int(
+                    research_artifact.get("lifecycle_feedback_promotion_ready_count") or 0
+                ),
+                "lifecycle_feedback_promotion_ready_ratio": research_artifact.get(
+                    "lifecycle_feedback_promotion_ready_ratio"
+                ),
+                "lifecycle_feedback_promotion_review_coverage_ratio": research_artifact.get(
+                    "lifecycle_feedback_promotion_review_coverage_ratio"
+                ),
+                "lifecycle_feedback_evidence_debt_strategy_count": int(
+                    research_artifact.get("lifecycle_feedback_evidence_debt_strategy_count") or 0
+                ),
+                "lifecycle_feedback_evidence_debt_ratio": research_artifact.get(
+                    "lifecycle_feedback_evidence_debt_ratio"
+                ),
             }
         )
         return payload
@@ -364,6 +406,13 @@
                     "hard_block_enabled": is_factory_readiness_hard_block_enabled(),
                     "readiness_score": 0.0,
                     "can_proceed": False,
+                    "generation_can_proceed": False,
+                    "generation_blockers": ["runtime_disabled"],
+                    "generation_blocker_count": 1,
+                    "production_can_proceed": False,
+                    "production_blockers": ["runtime_disabled"],
+                    "production_blocker_count": 1,
+                    "readiness_mode": "generation_blocked",
                     "warnings": [],
                     "warning_count": 0,
                     "blockers": ["runtime_disabled"],
@@ -426,6 +475,12 @@
                 ),
                 "factory_readiness_score": 0.0,
                 "factory_readiness_can_proceed": False,
+                "factory_generation_can_proceed": False,
+                "factory_generation_blockers": ["runtime_disabled"],
+                "factory_production_can_proceed": False,
+                "factory_production_blockers": ["runtime_disabled"],
+                "factory_readiness_mode": "generation_blocked",
+                "submission_mode": "skipped_due_to_generation_readiness",
                 "factory_readiness_blocker_count": 1,
                 "factory_readiness_warning_count": 0,
                 "skip_reason": readiness_authority.get("skip_reason"),
@@ -548,8 +603,18 @@
                         "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                         "freshness_days": factor_summary.get("freshness_days"),
                         "governed_freshness_days": factor_summary.get("governed_freshness_days"),
+                        "governed_freshness_source": factor_summary.get("governed_freshness_source"),
                         "governed_blocked_ratio": factor_summary.get("governed_blocked_ratio"),
                         "governed_latest_candidate_at": factor_summary.get("governed_latest_candidate_at"),
+                        "governed_active_blocked_candidate_count": int(
+                            factor_summary.get("governed_active_blocked_candidate_count") or 0
+                        ),
+                        "governed_quarantined_candidate_count": int(
+                            factor_summary.get("governed_quarantined_candidate_count") or 0
+                        ),
+                        "governed_governance_denominator": int(
+                            factor_summary.get("governed_governance_denominator") or 0
+                        ),
                         "latest_factor_date": factor_summary.get("latest_factor_date"),
                         "scheduler_recent_success": bool(factor_summary.get("scheduler_recent_success")),
                         "scheduler_llm_validation_status": factor_summary.get("scheduler_llm_validation_status"),
@@ -559,6 +624,9 @@
                         "quality_flags": list(factor_summary.get("quality_flags") or []),
                         "governed_blocking_reason_counts": dict(
                             factor_summary.get("governed_blocking_reason_counts") or {}
+                        ),
+                        "governed_active_blocking_reason_counts": dict(
+                            factor_summary.get("governed_active_blocking_reason_counts") or {}
                         ),
                         "governed_pending_reason_counts": dict(
                             factor_summary.get("governed_pending_reason_counts") or {}
@@ -658,6 +726,13 @@
 
             readiness = self._build_factory_readiness(snapshot, snapshot.get("factor_research"))
             snapshot["factory_readiness"] = readiness
+            generation_can_proceed = bool(
+                readiness.get("generation_can_proceed", readiness.get("can_proceed"))
+            )
+            production_can_proceed = bool(
+                readiness.get("production_can_proceed", readiness.get("can_proceed"))
+            )
+            production_read_only = bool(self._context.read_only or not production_can_proceed)
             readiness_status = StageStatus.COMPLETED
             readiness_event_status = str(readiness.get("event_status") or "").strip().lower()
             readiness_refresh_status = str(readiness.get("factor_refresh_status") or "").strip().lower()
@@ -671,9 +746,9 @@
                 )
                 or readiness_event_status in {"partial", "failed", "fallback", "error"}
             )
-            if not bool(readiness.get("can_proceed")):
+            if not generation_can_proceed:
                 readiness_status = StageStatus.FAILED
-            elif readiness_degraded:
+            elif readiness_degraded or not production_can_proceed:
                 readiness_status = StageStatus.PARTIAL
             results["stages"]["readiness"] = scheduler._with_stage_meta(
                 "readiness",
@@ -702,7 +777,7 @@
             if snapshot_persist_failure is not None:
                 persistence_failures.append(snapshot_persist_failure)
 
-            if not bool(readiness.get("can_proceed")):
+            if not generation_can_proceed:
                 elapsed = (scheduler._now() - start).total_seconds()
                 factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
                 factor_refresh_summary = dict((snapshot.get("factor_research") or {}).get("freshness_repair") or {})
@@ -737,6 +812,12 @@
                     ),
                     "factory_readiness_score": readiness.get("readiness_score"),
                     "factory_readiness_can_proceed": False,
+                    "factory_generation_can_proceed": False,
+                    "factory_generation_blockers": list(readiness.get("generation_blockers") or []),
+                    "factory_production_can_proceed": bool(readiness.get("production_can_proceed")),
+                    "factory_production_blockers": list(readiness.get("production_blockers") or []),
+                    "factory_readiness_mode": readiness.get("readiness_mode"),
+                    "submission_mode": "skipped_due_to_generation_readiness",
                     "factory_readiness_blocker_count": readiness.get("blocker_count", 0),
                     "factory_readiness_warning_count": readiness.get("warning_count", 0),
                     "factor_source_mode": readiness.get("factor_source_mode"),
@@ -867,13 +948,22 @@
                 candidates,
                 snapshot,
                 db,
-                read_only=bool(self._context.read_only),
+                read_only=production_read_only,
             )
             passed = list(pipeline_run.passed or [])
             unique = list(pipeline_run.unique or [])
             quality_gate_report = dict(pipeline_run.quality_gate_report or {})
             backtest_report = dict(pipeline_run.backtest_report or {})
             submit_result = dict(pipeline_run.submit_result or {})
+            if production_read_only:
+                submit_result.setdefault("read_only", True)
+                submit_result.setdefault("diagnostic_only", True)
+                if not production_can_proceed:
+                    submit_result.setdefault("submission_mode", "read_only_due_to_readiness")
+                    submit_result.setdefault(
+                        "production_blockers",
+                        list(readiness.get("production_blockers") or []),
+                    )
 
             backtest_summary = backtest_report.get("summary") or {}
             results["stages"]["quality_gate"] = scheduler._with_stage_meta(
@@ -921,7 +1011,11 @@
             )
 
             elapsed = (scheduler._now() - start).total_seconds()
-            results["status"] = FactoryRunStatus.SUCCESS.value
+            results["status"] = (
+                FactoryRunStatus.PARTIAL.value
+                if not production_can_proceed
+                else FactoryRunStatus.SUCCESS.value
+            )
             results["completed_at"] = scheduler._now().isoformat()
             results["elapsed_seconds"] = round(elapsed, 1)
             autonomy_summary = results.get("stages", {}).get("autonomy") or {}
@@ -969,6 +1063,9 @@
                 vector_summary=vector_summary,
                 elapsed=elapsed,
             )
+            if not production_can_proceed:
+                results["summary"]["submission_mode"] = "read_only_due_to_readiness"
+                results["summary"]["read_only"] = True
             results["research_window"] = build_research_window_status(results["summary"])
             results["summary"]["research_window"] = dict(results.get("research_window") or {})
             if full_market_topn:

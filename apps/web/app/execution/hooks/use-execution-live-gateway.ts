@@ -103,6 +103,7 @@ export function useExecutionLiveGateway({
   });
 
   const liveSubmitApi = useApiMutation<LiveTradingSubmitOrderResponse>({
+    effects: ['execution.changed'],
     onSuccess: (payload) => {
       const orderId = String(payload.order?.order_id ?? '').trim();
       if (orderId) {
@@ -121,6 +122,7 @@ export function useExecutionLiveGateway({
     },
   });
   const liveCancelApi = useApiMutation<LiveTradingCancelOrderResponse>({
+    effects: ['execution.changed'],
     onSuccess: () => {
       if (liveGatewayReady) {
         void liveOrdersQ.refetch();
@@ -133,8 +135,11 @@ export function useExecutionLiveGateway({
       }
     },
   });
-  const liveMirrorApi = useApiMutation<LiveTradingMirrorToPaperResponse>();
+  const liveMirrorApi = useApiMutation<LiveTradingMirrorToPaperResponse>({
+    effects: ['execution.changed', 'paper-trading.changed'],
+  });
   const liveSyncEventsApi = useApiMutation<LiveTradingSyncOrderEventsResponse>({
+    effects: ['execution.changed'],
     onSuccess: () => {
       if (submittedLiveOrderId.trim()) {
         void liveOrderEventsQ.refetch();

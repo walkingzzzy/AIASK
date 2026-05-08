@@ -390,17 +390,37 @@
             payload JSONB DEFAULT '{}'::jsonb,
             result JSONB DEFAULT '{}'::jsonb,
             error TEXT,
+            lease_owner TEXT,
+            lease_until TIMESTAMPTZ,
+            heartbeat_at TIMESTAMPTZ,
+            attempt_count INTEGER DEFAULT 0,
+            max_attempts INTEGER DEFAULT 3,
+            last_claimed_at TIMESTAMPTZ,
             started_at TIMESTAMPTZ DEFAULT NOW(),
             completed_at TIMESTAMPTZ
         );
         ALTER TABLE strategy_task_runs
             ADD COLUMN IF NOT EXISTS strategy_id TEXT REFERENCES strategies(id) ON DELETE CASCADE;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS lease_owner TEXT;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS attempt_count INTEGER DEFAULT 0;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3;
+        ALTER TABLE strategy_task_runs
+            ADD COLUMN IF NOT EXISTS last_claimed_at TIMESTAMPTZ;
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_name
             ON strategy_task_runs(task_name, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_sid
             ON strategy_task_runs(strategy_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_scope_status
             ON strategy_task_runs(task_scope, status, started_at ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_lease
+            ON strategy_task_runs(task_scope, status, lease_until ASC, started_at ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_task_key
             ON strategy_task_runs(task_key, started_at DESC);
     """)

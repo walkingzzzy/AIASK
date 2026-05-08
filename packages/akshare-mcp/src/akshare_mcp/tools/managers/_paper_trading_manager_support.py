@@ -5,6 +5,7 @@ import json
 import uuid
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from ...storage import get_db
 from ...utils import ok, fail
 from ...services.cost_model import build_cost_model
@@ -15,6 +16,7 @@ from ...services.trade_audit_writer import (
 from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
+_MARKET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 # 默认风控规则
 DEFAULT_RISK_RULES = {
@@ -303,6 +305,7 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
         if account:
             async with db.acquire() as conn:
                 await _sync_account_from_ledger(conn, account_id)
+                await _upsert_paper_nav_snapshot(conn, account_id)
         return []
 
     try:
@@ -353,6 +356,7 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
             market_value_sum += market_value
 
         await _sync_account_from_ledger(conn, account_id)
+        await _upsert_paper_nav_snapshot(conn, account_id)
 
     return refreshed_positions
 
@@ -413,6 +417,58 @@ async def _sync_account_from_ledger(conn, account_id: str) -> dict:
         'current_capital': current_capital,
         'market_value': float(market_value or 0.0),
         'total_value': total_value,
+    }
+
+
+def _current_market_nav_date():
+    return datetime.now(_MARKET_TIMEZONE).date()
+
+
+async def _upsert_paper_nav_snapshot(conn, account_id: str, *, nav_date=None) -> dict | None:
+    account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id = $1", account_id)
+    if not account:
+        return None
+
+    positions = await conn.fetch("SELECT * FROM paper_positions WHERE account_id=$1", account_id)
+    has_position_activity = len(positions) > 0
+    has_trade_activity = bool(
+        await conn.fetchrow("SELECT 1 AS has_trade FROM paper_trades WHERE account_id=$1 LIMIT 1", account_id)
+    )
+    if not has_position_activity and not has_trade_activity:
+        return None
+
+    nav_date = nav_date or _current_market_nav_date()
+    cash = float(account.get('current_capital') or 0.0)
+    market_value = sum(float(row.get('market_value') or 0.0) for row in positions)
+    total_value = cash + market_value
+
+    prev = await conn.fetchrow(
+        "SELECT total_value FROM paper_nav WHERE account_id=$1 AND nav_date<$2 ORDER BY nav_date DESC LIMIT 1",
+        account_id,
+        nav_date,
+    )
+    prev_total = float(prev.get('total_value') or 0.0) if prev else float(account.get('initial_capital') or total_value)
+    daily_return = (total_value - prev_total) / prev_total if prev_total > 0 else 0.0
+
+    await conn.execute(
+        """INSERT INTO paper_nav (account_id, nav_date, total_value, cash, market_value, daily_return, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,NOW())
+           ON CONFLICT (account_id, nav_date) DO UPDATE
+           SET total_value=$3, cash=$4, market_value=$5, daily_return=$6""",
+        account_id,
+        nav_date,
+        total_value,
+        cash,
+        market_value,
+        daily_return,
+    )
+    return {
+        'account_id': account_id,
+        'nav_date': nav_date,
+        'total_value': total_value,
+        'cash': cash,
+        'market_value': market_value,
+        'daily_return': daily_return,
     }
 
 
@@ -590,6 +646,8 @@ async def _reconcile_account_state(db, account_id: str, *, refresh_prices: bool 
         if force or reasons:
             await _persist_reconciled_positions(conn, account_id, rebuilt_rows)
         ledger_snapshot = await _sync_account_from_ledger(conn, account_id)
+        if refresh_prices:
+            await _upsert_paper_nav_snapshot(conn, account_id)
         after_cash = float(ledger_snapshot.get('current_capital') or 0.0)
         after_total_value = float(ledger_snapshot.get('total_value') or 0.0)
         if abs(before_cash - after_cash) > 0.01:
@@ -842,6 +900,7 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
         capital_delta = amount - commission
 
     await _sync_account_from_ledger(conn, account_id)
+    await _upsert_paper_nav_snapshot(conn, account_id)
     await _record_trade_position_fill(
         conn,
         position_id=linked_position_id,

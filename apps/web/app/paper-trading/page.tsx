@@ -21,7 +21,6 @@ import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
-import { apiKeys } from '@/lib/query-keys';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
@@ -252,7 +251,6 @@ export default function PaperTradingPage() {
     { enabled: canLoadAccountQueries },
   );
   const trustStatusQ = useApiQuery<PaperTradingTrustStatus>('/paper-trading/trust-status' + qs, {
-    placeholderData: 'keepPrevious',
     nonFatal: true,
     enabled: canLoadAccountQueries,
   });
@@ -264,28 +262,30 @@ export default function PaperTradingPage() {
   const [useComplianceCheck, setUseComplianceCheck] = useState(false);
   const [urgentExecution, setUrgentExecution] = useState(false);
   const complianceApi = useApiMutation<CompliancePayload>();
-  const routeExecutionApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
+  const routeExecutionApi = useApiMutation<Record<string, unknown>>({
+    effects: ['paper-trading.changed'],
+  });
   const refreshPricesApi = useApiMutation<Record<string, unknown>>({
-    invalidates: [[...apiKeys.paper()]],
+    effects: ['paper-trading.changed'],
     successToast: false,
   });
   const reconcileApi = useApiMutation<Record<string, unknown>>({
-    invalidates: [[...apiKeys.paper()]],
+    effects: ['paper-trading.changed'],
     successToast: false,
   });
   const cleanupApi = useApiMutation<Record<string, unknown>>({
-    invalidates: [[...apiKeys.paper()]],
+    effects: ['paper-trading.changed'],
     successToast: '测试账户已清理',
   });
   const autoRefreshPricesApi = useApiMutation<Record<string, unknown>>({
-    invalidates: [[...apiKeys.paper()]],
+    effects: ['paper-trading.changed'],
     successToast: false,
     errorToast: false,
   });
 
   // 2 write mutations — invalidate all paper queries on success
-  const placeApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
-  const cancelApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
+  const placeApi = useApiMutation<Record<string, unknown>>({ effects: ['paper-trading.changed'] });
+  const cancelApi = useApiMutation<Record<string, unknown>>({ effects: ['paper-trading.changed'] });
 
   const refreshPaperData = useCallback(async () => {
     const tasks = [

@@ -337,6 +337,9 @@
         semantic_match_priority: Optional[tuple[int, int, int, int, float, float]] = None
         suspicious: List[dict] = []
         candidate_params = self._normalize_params(candidate.get("params"))
+        candidate_identity = structural_identity(candidate)
+        candidate_strategy_hash = str(candidate.get("strategy_instance_hash") or candidate_params.get("strategy_instance_hash") or candidate_identity.get("strategy_instance_hash") or "").strip()
+        candidate_tested_hash = str(candidate.get("tested_object_hash") or candidate_params.get("tested_object_hash") or candidate_identity.get("tested_object_hash") or "").strip()
         metrics = {
             "scanned_count": 0,
             "coarse_candidate_count": 0,
@@ -344,10 +347,55 @@
             "coarse_target_hit_count": 0,
             "vector_candidate_count": 0,
             "vector_candidate_trimmed_count": 0,
+            "structural_hash_checks": 0,
+            "structural_hash_duplicates": 0,
+            "param_similarity_unreliable": not has_executable_params(candidate.get("strategy_type"), candidate_params),
         }
         for existing_item in existing:
             metrics["scanned_count"] += 1
             existing_params = self._normalize_params(existing_item.get("params"))
+            existing_identity = structural_identity(existing_item)
+            existing_strategy_hash = str(existing_item.get("strategy_instance_hash") or existing_params.get("strategy_instance_hash") or existing_identity.get("strategy_instance_hash") or "").strip()
+            existing_tested_hash = str(existing_item.get("tested_object_hash") or existing_params.get("tested_object_hash") or existing_identity.get("tested_object_hash") or "").strip()
+            metrics["structural_hash_checks"] += 1
+            if candidate_strategy_hash and candidate_strategy_hash == existing_strategy_hash:
+                metrics["structural_hash_duplicates"] += 1
+                return {
+                    "duplicate": True,
+                    "duplicate_level": "persisted_hash",
+                    "match_type": "structural_hash",
+                    "refresh_mode": None,
+                    "reason": "strategy_instance_hash matches an existing persisted strategy",
+                    "threshold": self.THRESHOLD,
+                    "vector_threshold": self.VECTOR_THRESHOLD,
+                    "vector_checked": False,
+                    "fallback_dedup_mode": "structural_hash",
+                    "param_similarity_unreliable": bool(metrics.get("param_similarity_unreliable")),
+                    "strategy_instance_hash": candidate_strategy_hash,
+                    "tested_object_hash": candidate_tested_hash,
+                    "matched_strategy_id": existing_item.get("id"),
+                    "matched_name": existing_item.get("name") or existing_item.get("strategy_type"),
+                    "matched_status": existing_item.get("status"),
+                }, metrics
+            if candidate_tested_hash and candidate_tested_hash == existing_tested_hash:
+                metrics["structural_hash_duplicates"] += 1
+                return {
+                    "duplicate": True,
+                    "duplicate_level": "persisted_hash",
+                    "match_type": "structural_hash",
+                    "refresh_mode": None,
+                    "reason": "tested_object_hash matches an existing persisted strategy",
+                    "threshold": self.THRESHOLD,
+                    "vector_threshold": self.VECTOR_THRESHOLD,
+                    "vector_checked": False,
+                    "fallback_dedup_mode": "structural_hash",
+                    "param_similarity_unreliable": bool(metrics.get("param_similarity_unreliable")),
+                    "strategy_instance_hash": candidate_strategy_hash,
+                    "tested_object_hash": candidate_tested_hash,
+                    "matched_strategy_id": existing_item.get("id"),
+                    "matched_name": existing_item.get("name") or existing_item.get("strategy_type"),
+                    "matched_status": existing_item.get("status"),
+                }, metrics
             param_similarity = self._param_sim(candidate_params, existing_params)
             target_overlap = self._target_overlap(candidate, existing_item)
             material_target_divergence = self._has_material_target_divergence(candidate, existing_item, target_overlap)
@@ -534,6 +582,8 @@
             "effective_similarity": round((vector_detail or best_match or {}).get("effective_similarity", 0.0), 4),
             "vector_similarity": round((vector_detail or {}).get("similarity", 0.0), 4),
             "vector_backend": (vector_detail or {}).get("backend"),
+            "fallback_dedup_mode": "structural_hash" if not vector_detail else None,
+            "param_similarity_unreliable": bool(metrics.get("param_similarity_unreliable")),
             "matched_strategy_id": (vector_detail or best_match or {}).get("matched_strategy_id"),
             "matched_name": (vector_detail or best_match or {}).get("matched_name"),
             "matched_status": (vector_detail or best_match or {}).get("matched_status"),

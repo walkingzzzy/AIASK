@@ -442,6 +442,10 @@ async def load_budget_feedback(
 ) -> dict[str, Any]:
     seed_feedback_root = extract_feedback_root(snapshot.get("family_gate_feedback") or {})
     strategy_rows = await builder_cls._list_feedback_source_strategies(db)
+    eligible_strategy_count = 0
+    pending_evidence_refresh_count = 0
+    pending_evidence_refresh_strategy_ids: list[str] = []
+    pending_evidence_refresh_reason_counts: dict[str, int] = {}
     aggregate_root: dict[str, dict[str, Any]] = {}
     runtime_alert_total = 0
     runtime_risk_total = 0
@@ -457,7 +461,7 @@ async def load_budget_feedback(
             db,
             "list_strategy_incubation_metrics",
             strategy_id,
-            limit=1,
+            limit=30,
             default=[],
         )
         latest_metric = dict((list(latest_metric_rows or []) or [None])[0] or {})
@@ -511,7 +515,47 @@ async def load_budget_feedback(
         paper_hit_ratio = builder_cls._safe_float(latest_metric.get("hit_rate_5d"))
         if latest_metric.get("hit_rate_5d") is None:
             paper_hit_ratio = 0.5
-        evidence_overview = await builder_cls._load_feedback_evidence_overview(db, strategy)
+        evidence_overview = await builder_cls._load_feedback_evidence_overview(
+            db,
+            strategy,
+            metric_rows=[dict(item or {}) for item in list(latest_metric_rows or [])],
+        )
+        overview_total_signals = int(evidence_overview.get("total_signals") or 0)
+        has_metric_rows = bool(list(latest_metric_rows or []))
+        has_quality_evidence = bool(
+            evidence_overview.get("validation_grade")
+            or evidence_overview.get("raw_validation_grade")
+            or evidence_overview.get("validation_total_score") is not None
+            or evidence_overview.get("raw_validation_total_score") is not None
+            or evidence_overview.get("strict_incubation_ready") is not None
+            or evidence_overview.get("live_candidate_ready") is not None
+        )
+        normalized_status = normalize_text(strategy.get("status"))
+        params = dict(strategy.get("params") or {})
+        incubation_budget = dict(params.get("incubation_budget") or {})
+        track = normalize_text(
+            incubation_budget.get("track")
+            or strategy.get("incubation_budget_track")
+            or strategy.get("submission_lane")
+        )
+        pending_reason = None
+        if (
+            normalized_status == "submitted"
+            and track in {"formal_incubation", "observe_incubation", "live_ready_review"}
+            and overview_total_signals <= 0
+            and not has_metric_rows
+            and not has_quality_evidence
+            and not review_payload
+        ):
+            pending_reason = "submitted_runtime_evidence_pending"
+        if pending_reason:
+            pending_evidence_refresh_count += 1
+            pending_evidence_refresh_strategy_ids.append(strategy_id)
+            pending_evidence_refresh_reason_counts[pending_reason] = int(
+                pending_evidence_refresh_reason_counts.get(pending_reason) or 0
+            ) + 1
+            continue
+        eligible_strategy_count += 1
         metric_metadata = dict(latest_metric.get("metadata") or {})
         signal_quality = dict(
             metric_metadata.get("signal_quality")
@@ -669,7 +713,12 @@ async def load_budget_feedback(
             "summary": {
                 "family_count": len(merged_root),
                 "seeded_family_count": len(seed_feedback_root),
-                "strategy_count": len(strategy_rows),
+                "source_strategy_count": len(strategy_rows),
+                "strategy_count": eligible_strategy_count,
+                "eligible_strategy_count": eligible_strategy_count,
+                "pending_evidence_refresh_count": pending_evidence_refresh_count,
+                "pending_evidence_refresh_strategy_ids": pending_evidence_refresh_strategy_ids[:20],
+                "pending_evidence_refresh_reason_counts": pending_evidence_refresh_reason_counts,
                 "runtime_alert_count": runtime_alert_total,
                 "runtime_risk_event_count": runtime_risk_total,
                 "promotion_review_count": promotion_review_total,
@@ -677,6 +726,30 @@ async def load_budget_feedback(
                 "promotion_review_recommendation_counts": (
                     promotion_review_recommendation_counts
                 ),
+                "fallback_evidence_strategy_count": sum(
+                    int((bucket or {}).get("fallback_evidence_strategy_count") or 0)
+                    for bucket in finalized_root.values()
+                    if isinstance(bucket, dict)
+                ),
+                "feedback_evidence_augmented_count": sum(
+                    int((bucket or {}).get("feedback_evidence_augmented_count") or 0)
+                    for bucket in finalized_root.values()
+                    if isinstance(bucket, dict)
+                ),
+                "fallback_evidence_mode_counts": {
+                    key: sum(
+                        int(dict((bucket or {}).get("fallback_evidence_mode_counts") or {}).get(key) or 0)
+                        for bucket in finalized_root.values()
+                        if isinstance(bucket, dict)
+                    )
+                    for key in set().union(
+                        *[
+                            set(dict((bucket or {}).get("fallback_evidence_mode_counts") or {}).keys())
+                            for bucket in finalized_root.values()
+                            if isinstance(bucket, dict)
+                        ]
+                    )
+                } if finalized_root else {},
                 "target_pool_scope_count": target_pool_scope_count,
                 "holding_bucket_scope_count": holding_bucket_scope_count,
                 "generator_mode_scope_count": generator_mode_scope_count,

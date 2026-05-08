@@ -7,7 +7,6 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
-import { apiKeys } from '@/lib/query-keys';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
@@ -68,8 +67,8 @@ export default function AlertsPage() {
 
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const listQ = useApiQuery<ListData>(`/alerts/list?status=${encodeURIComponent(status)}`, { critical: true });
-  const createApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
-  const deleteApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
+  const createApi = useApiMutation<unknown>({ effects: ['alerts.changed'] });
+  const deleteApi = useApiMutation<unknown>({ effects: ['alerts.changed'] });
 
   const loading = listQ.isFetching || createApi.isPending || deleteApi.isPending;
   const error = listQ.error || createApi.error || deleteApi.error;

@@ -32,6 +32,7 @@ from .expanded_factory_strategies import (
     SectorRotationStrategy,
     NorthCapitalTrackStrategy,
     MarginDivergenceStrategy,
+    TopNEquityPortfolioStrategy,
 )
 
 # 自动注册内置策略
@@ -51,6 +52,7 @@ for _s in [
     SectorRotationStrategy,
     NorthCapitalTrackStrategy,
     MarginDivergenceStrategy,
+    TopNEquityPortfolioStrategy,
 ]:
     StrategyRegistry.register(_s)
 
@@ -75,5 +77,5 @@ __all__ = [
     'ValueFactorStrategy', 'QualityFactorStrategy', 'GrowthFactorStrategy',
     'MultiFactorStrategy', 'MacroTimingStrategy',
     'VolatilityBreakoutStrategy', 'EventStructureBreakoutStrategy', 'GapFillStrategy', 'MeanReversionShortStrategy',
-    'SectorRotationStrategy', 'NorthCapitalTrackStrategy', 'MarginDivergenceStrategy',
+    'SectorRotationStrategy', 'NorthCapitalTrackStrategy', 'MarginDivergenceStrategy', 'TopNEquityPortfolioStrategy',
 ]

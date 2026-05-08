@@ -41,6 +41,7 @@ type StockDetailTabsProps = {
   submittedPeriod: Period;
   klineFetching: boolean;
   candleData: CandlePoint[];
+  klineEmptyHint?: string | null;
   orderBook: NormalizedOrderBook;
   technicalData: unknown;
   patternData: unknown;
@@ -50,6 +51,7 @@ type StockDetailTabsProps = {
   fundFlowItems: StockFundFlowEntry[];
   fundFlowFetching: boolean;
   hasFundFlowResponse: boolean;
+  fundFlowHasDatedSamples: boolean;
   fundamental: StockFundamentalOverview | null;
   fundamentalFetching: boolean;
   hasFundamentalResponse: boolean;
@@ -69,6 +71,7 @@ export default function StockDetailTabs({
   submittedPeriod,
   klineFetching,
   candleData,
+  klineEmptyHint,
   orderBook,
   technicalData,
   patternData,
@@ -78,6 +81,7 @@ export default function StockDetailTabs({
   fundFlowItems,
   fundFlowFetching,
   hasFundFlowResponse,
+  fundFlowHasDatedSamples,
   fundamental,
   fundamentalFetching,
   hasFundamentalResponse,
@@ -130,7 +134,13 @@ export default function StockDetailTabs({
       </div>
 
       {infoTab === 'chart' ? (
-        <StockChartTab period={submittedPeriod} isFetching={klineFetching} candleData={candleData} orderBook={orderBook} />
+        <StockChartTab
+          period={submittedPeriod}
+          isFetching={klineFetching}
+          candleData={candleData}
+          emptyHint={klineEmptyHint}
+          orderBook={orderBook}
+        />
       ) : null}
       {infoTab === 'tech' ? (
         <StockTechnicalTab
@@ -146,6 +156,7 @@ export default function StockDetailTabs({
           fundFlowItems={fundFlowItems}
           isFetching={fundFlowFetching}
           hasResponse={hasFundFlowResponse}
+          hasDatedSamples={fundFlowHasDatedSamples}
         />
       ) : null}
       {infoTab === 'basic' ? (

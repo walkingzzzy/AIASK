@@ -38,7 +38,7 @@ REPRESENTATIVE_STOCKS: List[str] = (
 CATEGORY_MINIMUMS = {
     "momentum": 3, "ma_cross": 3, "rsi": 3,
     "value_factor": 3, "quality_factor": 3, "growth_factor": 3,
-    "multi_factor": 3, "macro_timing": 3,
+    "multi_factor": 3, "macro_timing": 3, "topn_equity_portfolio": 1,
     "volatility_breakout": 1, "event_structure_breakout": 1, "gap_fill": 1, "mean_reversion_short": 1,
     "sector_rotation": 1, "north_capital_track": 1, "margin_divergence": 1,
 }
@@ -280,6 +280,47 @@ DEPRECATION_THRESHOLDS = {
     "sharpe_negative": 0.0,
     "mdd_critical": 0.30,
 }
+
+# ── 淘汰阈值（常量化，替代 elimination.py 中硬编码）─────────────────
+ELIMINATION_DEFAULT_THRESHOLDS: Dict[str, float] = {
+    "max_drawdown_max": 0.30,
+    "sharpe_min": 0.0,
+    "win_rate_min": 0.30,
+    "hit_rate_5d_min": 0.30,
+    "var_percent_max": 4.0,
+    "cvar_percent_max": 6.0,
+    "stress_loss_percent_min": -25.0,
+}
+
+ELIMINATION_THRESHOLDS_BY_STRATEGY_TYPE: Dict[str, dict] = {
+    "default": dict(ELIMINATION_DEFAULT_THRESHOLDS),
+    "intraday": {
+        "max_drawdown_max": 0.15,
+        "win_rate_min": 0.35,
+        "var_percent_max": 3.0,
+    },
+    "long_term_value": {
+        "max_drawdown_max": 0.40,
+        "win_rate_min": 0.25,
+        "var_percent_max": 6.0,
+    },
+    "event_driven": {
+        "win_rate_min": 0.40,
+        "hit_rate_5d_min": 0.35,
+    },
+}
+
+# ── 策略类型风险画像（独立于恐贪环境映射）─────────────────────────
+STRATEGY_TYPE_RISK_PROFILES: Dict[str, dict] = {
+    "volatility_breakout": {"expected_max_drawdown": 0.22, "expected_annual_volatility": 0.32},
+    "event_structure_breakout": {"expected_max_drawdown": 0.25, "expected_annual_volatility": 0.30},
+    "gap_fill": {"expected_max_drawdown": 0.18, "expected_annual_volatility": 0.25},
+    "mean_reversion_short": {"expected_max_drawdown": 0.20, "expected_annual_volatility": 0.28},
+    "sector_rotation": {"expected_max_drawdown": 0.25, "expected_annual_volatility": 0.26},
+    "north_capital_track": {"expected_max_drawdown": 0.22, "expected_annual_volatility": 0.24},
+    "margin_divergence": {"expected_max_drawdown": 0.20, "expected_annual_volatility": 0.27},
+}
+# ─────────────────────────────────────────────────────────────────────
 
 
 def _env_names(name: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -645,11 +686,11 @@ ELIMINATION_CONCURRENCY = _env_int("STRATEGY_FACTORY_ELIMINATION_CONCURRENCY", 8
 
 # --- 分级门禁 (Phase 2) ---
 # Gate-1 快速筛选：通过后进入 Gate-2 的比例
-GATE1_PASS_RATIO: float = _env_float("STRATEGY_FACTORY_GATE1_PASS_RATIO", 0.45, minimum=0.0, maximum=1.0)
+GATE1_PASS_RATIO: float = _env_float("STRATEGY_FACTORY_GATE1_PASS_RATIO", 0.65, minimum=0.0, maximum=1.0)
 # Gate-1 快速筛选的宽松 Sharpe 下限
-GATE1_SHARPE_MIN: float = _env_float("STRATEGY_FACTORY_GATE1_SHARPE_MIN", 0.15, minimum=-5.0, maximum=10.0)
+GATE1_SHARPE_MIN: float = _env_float("STRATEGY_FACTORY_GATE1_SHARPE_MIN", 0.05, minimum=-5.0, maximum=10.0)
 # Gate-1 使用的代表性股票数量
-GATE1_REPRESENTATIVE_COUNT: int = _env_int("STRATEGY_FACTORY_GATE1_REPRESENTATIVE_COUNT", 2, minimum=1, maximum=5)
+GATE1_REPRESENTATIVE_COUNT: int = _env_int("STRATEGY_FACTORY_GATE1_REPRESENTATIVE_COUNT", 4, minimum=1, maximum=8)
 
 # --- LLM fan-out (Phase 2) ---
 LLM_FAN_OUT_COUNT: int = _env_int("STRATEGY_FACTORY_LLM_FAN_OUT_COUNT", 2, minimum=1, maximum=4)
@@ -697,6 +738,7 @@ BACKTEST_TYPE_THRESHOLDS: Dict[str, dict] = {
     "growth_factor": {"sharpe_min": 0.32, "mdd_max": 0.34, "trades_min": 4},
     "multi_factor": {"sharpe_min": 0.30, "mdd_max": 0.30, "trades_min": 4},
     "macro_timing": {"sharpe_min": 0.20, "mdd_max": 0.28, "trades_min": 2},
+    "topn_equity_portfolio": {"sharpe_min": 0.15, "mdd_max": 0.35, "trades_min": 3},
     "volatility_breakout": {"sharpe_min": 0.32, "mdd_max": 0.35, "trades_min": 4},
     "event_structure_breakout": {"sharpe_min": 0.34, "mdd_max": 0.30, "trades_min": 4},
     "gap_fill": {"sharpe_min": 0.22, "mdd_max": 0.36, "trades_min": 4},

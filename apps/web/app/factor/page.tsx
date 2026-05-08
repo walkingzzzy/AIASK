@@ -204,23 +204,34 @@ export default function FactorPage() {
     return true;
   }
 
+  function syncResearchInputs(name: string, codes: string) {
+    const nextName = name.trim() || 'momentum';
+    const nextCodes = codes.trim();
+    setCalcName(nextName);
+    setCalcCodes(nextCodes);
+    setIcName(nextName);
+    setIcCodes(nextCodes);
+    setBtName(nextName);
+    setBtCodes(nextCodes);
+    setOosName(nextName);
+    setOosCodes(nextCodes);
+    setRobName(nextName);
+    setRobCodes(nextCodes);
+  }
+
   function runRecommendedResearchSample() {
     setFormError(null);
+    setStageTab('foundation');
+    setFoundationTab('calculate');
     if (!validateCodes(calcCodes)) {
+      scrollToSection('factor-calculate');
       setFormError(`请先输入来自自选、持仓或当前研究目标的股票池。示例格式：${EXAMPLE_FACTOR_CODES}`);
       return;
     }
-    setStageTab('foundation');
-    setFoundationTab('calculate');
     const recommendedFactorName = 'momentum';
     const recommendedCodes = calcCodes;
     const stockCodes = splitCodes(recommendedCodes);
-    setCalcName(recommendedFactorName);
-    setCalcCodes(recommendedCodes);
-    setIcName(recommendedFactorName);
-    setIcCodes(recommendedCodes);
-    setBtName(recommendedFactorName);
-    setBtCodes(recommendedCodes);
+    syncResearchInputs(recommendedFactorName, recommendedCodes);
     if (libPath) libQ.refetch();
     else setLibPath('/factor/library');
     calcMut.trigger(
@@ -678,12 +689,15 @@ export default function FactorPage() {
                 setStageTab('foundation');
                 setFoundationTab('calculate');
                 if (!validateCodes(calcCodes)) return;
+                const nextName = calcName.trim() || 'momentum';
+                const nextCodes = calcCodes.trim();
+                syncResearchInputs(nextName, nextCodes);
                 calcMut.trigger(
                   '/factor/calculate',
                   { method: 'POST' },
                   {
-                    factor_name: calcName.trim(),
-                    stock_codes: splitCodes(calcCodes),
+                    factor_name: nextName,
+                    stock_codes: splitCodes(nextCodes),
                   },
                 );
               }}
@@ -762,12 +776,15 @@ export default function FactorPage() {
                 setStageTab('foundation');
                 setFoundationTab('ic');
                 if (!validateCodes(icCodes)) return;
+                const nextName = icName.trim() || 'momentum';
+                const nextCodes = icCodes.trim();
+                syncResearchInputs(nextName, nextCodes);
                 icMut.trigger(
                   '/factor/ic',
                   { method: 'POST' },
                   {
-                    factor_name: icName.trim(),
-                    stock_codes: splitCodes(icCodes),
+                    factor_name: nextName,
+                    stock_codes: splitCodes(nextCodes),
                   },
                 );
               }}
@@ -852,12 +869,15 @@ export default function FactorPage() {
                 setStageTab('validation');
                 setValidationTab('backtest');
                 if (!validateCodes(btCodes)) return;
+                const nextName = btName.trim() || 'momentum';
+                const nextCodes = btCodes.trim();
+                syncResearchInputs(nextName, nextCodes);
                 btMut.trigger(
                   '/factor/backtest',
                   { method: 'POST' },
                   {
-                    factor_name: btName.trim(),
-                    stock_codes: splitCodes(btCodes),
+                    factor_name: nextName,
+                    stock_codes: splitCodes(nextCodes),
                   },
                 );
               }}
@@ -954,12 +974,15 @@ export default function FactorPage() {
                 setStageTab('validation');
                 setValidationTab('oos');
                 if (!validateCodes(oosCodes)) return;
+                const nextName = oosName.trim() || 'momentum';
+                const nextCodes = oosCodes.trim();
+                syncResearchInputs(nextName, nextCodes);
                 oosMut.trigger(
                   '/factor/validate-oos',
                   { method: 'POST' },
                   {
-                    factor_name: oosName.trim(),
-                    stock_codes: splitCodes(oosCodes),
+                    factor_name: nextName,
+                    stock_codes: splitCodes(nextCodes),
                   },
                 );
               }}
@@ -1074,12 +1097,15 @@ export default function FactorPage() {
                 setStageTab('validation');
                 setValidationTab('robustness');
                 if (!validateCodes(robCodes)) return;
+                const nextName = robName.trim() || 'momentum';
+                const nextCodes = robCodes.trim();
+                syncResearchInputs(nextName, nextCodes);
                 robMut.trigger(
                   '/factor/robustness-check',
                   { method: 'POST' },
                   {
-                    factor_name: robName.trim(),
-                    stock_codes: splitCodes(robCodes),
+                    factor_name: nextName,
+                    stock_codes: splitCodes(nextCodes),
                   },
                 );
               }}

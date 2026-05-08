@@ -8,6 +8,16 @@ export type ClientStrategyActionKind =
   | 'generate_update_suggestion'
   | 'persist_update';
 export type ClientActionEffect = 'readonly' | 'advisory' | 'stateful';
+export type FrontendSurfaceModule =
+  | 'market'
+  | 'research'
+  | 'strategy'
+  | 'trade'
+  | 'ai'
+  | 'workspace'
+  | 'admin'
+  | 'settings'
+  | 'system';
 
 export type ChatMessageInput = {
   role: 'user' | 'assistant' | 'system';
@@ -41,6 +51,60 @@ export type ChatPageContext = {
   raw?: Record<string, unknown>;
 };
 
+export type ChatSurfaceRoute = {
+  pageKey: string;
+  path: string;
+  module: FrontendSurfaceModule;
+  title: string;
+  summary: string;
+  primaryGoal: string;
+  requiredInputs?: string[];
+  coreEntities?: string[];
+  dataSources?: string[];
+  capabilities?: string[];
+  commonQuestions?: string[];
+  relatedPageKeys?: string[];
+  aliases?: string[];
+  stockAware?: boolean;
+  codeParam?: string;
+  adminOnly?: boolean;
+  public?: boolean;
+};
+
+export type ChatTaskFlow = {
+  id: string;
+  title: string;
+  summary: string;
+  currentStepIndex?: number;
+  steps: Array<{
+    pageKey: string;
+    title: string;
+    goal: string;
+    requiredContext?: string[];
+    nextPageKey?: string;
+  }>;
+};
+
+export type ChatFrontendContext = {
+  generatedAt: number;
+  route: string;
+  appMap: {
+    modules: Array<{ module: FrontendSurfaceModule; title: string; pageKeys: string[] }>;
+    routes: Array<Pick<ChatSurfaceRoute, 'pageKey' | 'path' | 'module' | 'title' | 'summary' | 'aliases' | 'stockAware' | 'adminOnly'>>;
+  };
+  currentRoute?: ChatSurfaceRoute;
+  relatedRoutes?: ChatSurfaceRoute[];
+  taskFlow?: ChatTaskFlow;
+  workspaceContext?: {
+    workspaceId?: string;
+    workspaceName?: string;
+    stockCode?: string;
+    sourcePage?: string;
+    taskType?: string;
+    resultType?: string;
+  };
+};
+
 export type ClientActionDescriptor = {
   id: string;
   label: string;
@@ -56,6 +120,7 @@ export type ChatRequestPayload = {
   messages: ChatMessageInput[];
   mode?: ChatMode;
   pageContext?: ChatPageContext | null;
+  frontendContext?: ChatFrontendContext | null;
   availableActions?: ClientActionDescriptor[];
 };
 

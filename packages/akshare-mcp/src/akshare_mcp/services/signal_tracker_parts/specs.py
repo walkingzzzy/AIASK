@@ -76,10 +76,19 @@ class SignalTracker:
                 merged.append(strategy)
         return merged
 
-    async def _load_runtime_submitted_strategies(self, db, *, limit: int = 200) -> list[dict]:
+    @staticmethod
+    def _submitted_runtime_limit(default: int = 30) -> int:
+        raw = os.getenv("STRATEGY_RUNTIME_SUBMITTED_LIMIT", str(default))
+        try:
+            return max(1, min(int(raw or default), 200))
+        except (TypeError, ValueError):
+            return default
+
+    async def _load_runtime_submitted_strategies(self, db, *, limit: int | None = None) -> list[dict]:
         if not hasattr(db, "list_strategies"):
             return []
-        rows = await db.list_strategies("submitted", limit=limit)
+        effective_limit = self._submitted_runtime_limit() if limit is None else max(1, min(int(limit or 30), 200))
+        rows = await db.list_strategies("submitted", limit=effective_limit)
         if not rows:
             return []
         get_quality_report = getattr(db, "get_strategy_quality_report", None)
@@ -290,7 +299,7 @@ class SignalTracker:
                 active_strategies.extend(rows)
             submitted_runtime_strategies = await self._load_runtime_submitted_strategies(
                 db,
-                limit=200,
+                limit=self._submitted_runtime_limit(),
             )
             strategies = self._merge_unique_strategies(
                 active_strategies,

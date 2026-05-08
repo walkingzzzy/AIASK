@@ -52,6 +52,78 @@ export type CopilotPageContext = {
   updatedAt: number;
 };
 
+export type CopilotSurfaceModule =
+  | 'market'
+  | 'research'
+  | 'strategy'
+  | 'trade'
+  | 'ai'
+  | 'workspace'
+  | 'admin'
+  | 'settings'
+  | 'system';
+
+export type CopilotSurfaceRoute = {
+  pageKey: string;
+  path: string;
+  module: CopilotSurfaceModule;
+  title: string;
+  summary: string;
+  primaryGoal: string;
+  requiredInputs?: string[];
+  coreEntities?: string[];
+  dataSources?: string[];
+  capabilities?: string[];
+  commonQuestions?: string[];
+  relatedPageKeys?: string[];
+  aliases?: string[];
+  stockAware?: boolean;
+  codeParam?: string;
+  adminOnly?: boolean;
+  public?: boolean;
+};
+
+export type CopilotTaskFlowStep = {
+  pageKey: string;
+  title: string;
+  goal: string;
+  requiredContext?: string[];
+  nextPageKey?: string;
+};
+
+export type CopilotTaskFlow = {
+  id: string;
+  title: string;
+  summary: string;
+  steps: CopilotTaskFlowStep[];
+};
+
+export type CopilotFrontendContext = {
+  generatedAt: number;
+  route: string;
+  appMap: {
+    modules: Array<{ module: CopilotSurfaceModule; title: string; pageKeys: string[] }>;
+    routes: Array<Pick<CopilotSurfaceRoute, 'pageKey' | 'path' | 'module' | 'title' | 'summary' | 'aliases' | 'stockAware' | 'adminOnly'>>;
+  };
+  currentRoute?: CopilotSurfaceRoute;
+  relatedRoutes?: CopilotSurfaceRoute[];
+  taskFlow?: CopilotTaskFlow & { currentStepIndex?: number };
+  workspaceContext?: {
+    workspaceId?: string;
+    workspaceName?: string;
+    stockCode?: string;
+    sourcePage?: string;
+    taskType?: string;
+    resultType?: string;
+  };
+};
+
+export type CopilotRouteActionPayload = {
+  pageKey?: string;
+  href?: string;
+  code?: string;
+};
+
 export type CopilotPageContextPatch = Partial<
   Pick<
     CopilotPageContext,

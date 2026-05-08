@@ -214,6 +214,17 @@
         kind: str = "signal_trigger",
         extras: Optional[dict] = None,
     ) -> dict:
+        extras_payload = dict(extras or {})
+        target_symbols = _normalize_target_codes(
+            [
+                extras_payload.get("target_symbols"),
+                extras_payload.get("requested_target_symbols"),
+                extras_payload.get("stock_pool"),
+                dict(extras_payload.get("research_task") or {}).get("target_symbols"),
+                dict(extras_payload.get("research_task") or {}).get("stock_pool"),
+            ],
+            limit=20,
+        )
         generation_reason = StrategySpawner._build_generation_reason(
             source=source,
             reason=reason,
@@ -222,15 +233,48 @@
             quota_fill=quota_fill,
             kind=kind,
         )
+        seed_context = {
+            "source": source,
+            "reason": reason,
+            "kind": kind,
+            "generation_reason": generation_reason,
+            "snapshot_date": extras_payload.get("snapshot_date") or extras_payload.get("as_of") or extras_payload.get("date"),
+            "quota_fill": quota_fill or {},
+            "trigger_signal": trigger_signal or {},
+        }
+        slot_index = int((quota_fill or {}).get("slot_index") or extras_payload.get("slot_index") or 0)
+        jittered_params = materialize_strategy_params(
+            strategy_type,
+            params or {},
+            seed_context=seed_context,
+            slot_index=slot_index,
+            targets=target_symbols,
+            variant_existing=True,
+            refresh_signal_rule=True,
+        )
+        parameter_source = str((params or {}).get("parameter_source") or "").strip() or jittered_params.get("parameter_source")
+        jittered_params["parameter_source"] = parameter_source
         payload = {
             "strategy_type": strategy_type,
-            "params": params,
+            "params": jittered_params,
             "spawn_reason": reason,
             "generation_reason": generation_reason,
             "trigger_signal": generation_reason["trigger_signal"],
             "trigger_thresholds": generation_reason["trigger_thresholds"],
             "quota_fill": quota_fill,
+            "parameter_source": parameter_source,
+            "strategy_instance_hash": jittered_params.get("strategy_instance_hash"),
+            "tested_object_hash": jittered_params.get("tested_object_hash"),
+            "candidate_contract_hash": jittered_params.get("candidate_contract_hash"),
         }
-        if extras:
-            payload.update(dict(extras))
+        if extras_payload:
+            payload.update(extras_payload)
+            payload["params"] = {
+                **dict(payload.get("params") or {}),
+                **{
+                    key: value
+                    for key, value in extras_payload.items()
+                    if key in {"target_symbols", "stock_pool", "requested_target_symbols"}
+                },
+            }
         return payload

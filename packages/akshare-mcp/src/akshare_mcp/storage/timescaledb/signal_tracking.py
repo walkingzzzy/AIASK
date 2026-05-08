@@ -70,6 +70,90 @@ def _resolve_recent_cutoff(latest_signal_date: Optional[date], lookback_days: Op
     return latest_signal_date - timedelta(days=max(days - 1, 0))
 
 
+def _calc_skill_trend(
+    records: List[Dict[str, Any]],
+    horizon: int,
+    *,
+    eps: float = DEFAULT_SIGNAL_STATS_NEUTRAL_EPS,
+    min_buckets: int = 5,
+    bucket_size: int = 10,
+) -> Optional[float]:
+    """纯 Python 最小二乘计算 skill trend（rolling hit rate 的线性回归斜率）.
+
+    按 signal_date 排序后分批计算每批的 skill (hit_rate_lcb - null_hit_rate),
+    然后对批索引做线性回归。负斜率表示预测能力在衰减。
+
+    Args:
+        records: 带 signal_date/signal/actual_return 的记录列表
+        horizon: 前向天数（用于重叠调整 effective_n）
+        eps: 中性带阈值
+        min_buckets: 最少批次数（不足则返回 None）
+        bucket_size: 每批最少样本量
+    """
+    if len(records) < bucket_size * min_buckets:
+        return None
+
+    # 按 signal_date 排序
+    sorted_records = sorted(
+        records,
+        key=lambda r: (
+            r.get("signal_date", date.min)
+            if isinstance(r.get("signal_date"), date)
+            else date.min
+        ),
+    )
+
+    # 分批计算 skill
+    skills: list[float] = []
+    n = len(sorted_records)
+    step = max(bucket_size, n // (min_buckets * 2))
+
+    for i in range(0, n - bucket_size + 1, step):
+        batch = sorted_records[i : i + bucket_size]
+        signals_arr = np.array([float(row.get("signal") or 0.0) for row in batch])
+        returns_arr = np.array([float(row.get("actual_return") or 0.0) for row in batch])
+        directed = signals_arr * returns_arr
+        hit_mask = directed > eps
+        miss_mask = directed < -eps
+        hit_count = int(np.sum(hit_mask))
+        miss_count = int(np.sum(miss_mask))
+        sample_count = hit_count + miss_count
+
+        if sample_count < 5:
+            continue
+
+        raw_hit_rate = hit_count / sample_count
+        effective_n = _conservative_effective_n(sample_count, horizon)
+        hit_rate_lcb = _wilson_lower_bound(raw_hit_rate, min(float(sample_count), float(effective_n)))
+
+        decisive_signals = signals_arr[hit_mask | miss_mask]
+        decisive_returns = returns_arr[hit_mask | miss_mask]
+        p_long = float(np.mean(decisive_signals > 0))
+        p_up = float(np.mean(decisive_returns > eps))
+        null_hit_rate = _clamp_probability((p_long * p_up) + ((1.0 - p_long) * (1.0 - p_up)))
+
+        if hit_rate_lcb is not None and null_hit_rate is not None:
+            skills.append(float(hit_rate_lcb) - float(null_hit_rate))
+
+    if len(skills) < min_buckets:
+        return None
+
+    # 纯 Python 最小二乘线性回归
+    x = [float(i) for i in range(len(skills))]
+    n_pts = len(x)
+    sum_x = sum(x)
+    sum_y = sum(skills)
+    sum_xy = sum(xi * yi for xi, yi in zip(x, skills))
+    sum_x2 = sum(xi * xi for xi in x)
+
+    denominator = n_pts * sum_x2 - sum_x * sum_x
+    if denominator <= 0:
+        return 0.0
+
+    slope = (n_pts * sum_xy - sum_x * sum_y) / denominator
+    return round(float(slope), 6)
+
+
 def _calc_bucket_stats(
     records: List[Dict[str, Any]],
     horizon: int,
@@ -575,6 +659,7 @@ class SignalTrackingMixin:
             "recent_miss_count": {},
             "forward_ic": {},
             "forward_sharpe": {},
+            "skill_trend": {},
             "by_horizon": {},
             "total_signals": raw_signal_count,
             "raw_signal_count": raw_signal_count,
@@ -646,6 +731,9 @@ class SignalTrackingMixin:
             result["recent_miss_count"][fd] = int(bucket["recent_miss_count"] or 0)
             result["forward_ic"][fd] = _round_metric(bucket["forward_ic"])
             result["forward_sharpe"][fd] = _round_metric(bucket["forward_sharpe"])
+            result["skill_trend"][fd] = _round_metric(
+                _calc_skill_trend(records, fd, eps=neutral_eps)
+            )
             result["by_horizon"][str(fd)] = {
                 "hit_rate": result["hit_rate"][fd],
                 "hit_rate_lcb": result["hit_rate_lcb"][fd],
@@ -665,6 +753,7 @@ class SignalTrackingMixin:
                 "recent_neutral_count": result["recent_neutral_count"][fd],
                 "forward_ic": result["forward_ic"][fd],
                 "forward_sharpe": result["forward_sharpe"][fd],
+                "skill_trend": result["skill_trend"][fd],
             }
 
         return result

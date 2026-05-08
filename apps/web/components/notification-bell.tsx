@@ -6,7 +6,8 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useBffAvailability } from '@/lib/bff-availability';
 import { hasLoggedInHint } from '@/lib/auth';
-import { apiKeys } from '@/lib/query-keys';
+import { getDataEffectEventName } from '@/lib/data-effects';
+import { resolveNotificationFeedState } from '@/lib/runtime-display';
 import { useAlertSubscription } from '@/lib/ws';
 
 type NotificationItem = {
@@ -64,7 +65,6 @@ export function NotificationBell() {
     staleTime: 30000,
     redirectOnUnauthorized: false,
     nonFatal: true,
-    fallbackData: { count: 0 },
   });
   const recentQ = useApiQuery<unknown>(
     notificationsEnabled && open && pageVisible && bffAvailability.reachable ? '/notifications/list?limit=10' : null,
@@ -74,11 +74,10 @@ export function NotificationBell() {
       staleTime: 30000,
       redirectOnUnauthorized: false,
       nonFatal: true,
-      fallbackData: { items: [] },
     },
   );
   const markAllReadApi = useApiMutation<{ markedCount?: number }>({
-    invalidates: [[...apiKeys.notifications()]],
+    effects: ['notifications.changed'],
     successToast: false,
   });
 
@@ -98,6 +97,21 @@ export function NotificationBell() {
     onAlert: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
     onWarn: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
   });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleNotificationsChanged = () => {
+      setPendingUnreadEvents([]);
+      setMarkAllReadAt(null);
+      void unreadQ.refetch();
+      if (open) {
+        void recentQ.refetch();
+      }
+    };
+    const eventName = getDataEffectEventName('notifications.changed');
+    window.addEventListener(eventName, handleNotificationsChanged);
+    return () => window.removeEventListener(eventName, handleNotificationsChanged);
+  }, [open, recentQ, unreadQ]);
 
   const items = useMemo(() => {
     const root = readRecord(recentQ.data);
@@ -127,6 +141,25 @@ export function NotificationBell() {
       return normalized;
     });
   }, [markAllReadAt, recentQ.data]);
+  const recentFeedState = useMemo(
+    () =>
+      resolveNotificationFeedState({
+        enabled: notificationsEnabled,
+        itemsLength: items.length,
+        acceptanceStatus: recentQ.acceptanceStatus,
+        serviceUnavailable: recentQ.serviceUnavailable,
+        trustStatus: recentQ.trust.status,
+        reachabilityStatus: bffAvailability.status,
+      }),
+    [
+      bffAvailability.status,
+      items.length,
+      notificationsEnabled,
+      recentQ.acceptanceStatus,
+      recentQ.serviceUnavailable,
+      recentQ.trust.status,
+    ],
+  );
 
   const handleOpen = () => {
     setOpen(!open);
@@ -182,10 +215,25 @@ export function NotificationBell() {
               </div>
             </div>
 
-            {items.length === 0 ? (
+            {recentFeedState === 'unavailable' ? (
+              <div className="px-4 py-8 text-center text-sm">
+                <div className="font-medium text-text-primary">通知服务暂不可用</div>
+                <div className="mt-2 text-text-secondary">当前无法连接通知数据源，请稍后重试。</div>
+              </div>
+            ) : recentFeedState === 'empty' ? (
               <div className="px-4 py-8 text-center text-text-secondary text-sm">暂无通知</div>
+            ) : recentFeedState === 'degraded' && items.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm">
+                <div className="font-medium text-text-primary">通知服务已降级</div>
+                <div className="mt-2 text-text-secondary">当前没有可展示的可靠通知，请稍后刷新。</div>
+              </div>
             ) : (
               <div>
+                {recentFeedState === 'degraded' ? (
+                  <div className="border-b border-glass-border bg-amber-50/80 px-3 py-2 text-xs text-amber-700">
+                    通知链路已降级，当前仅展示可用消息。
+                  </div>
+                ) : null}
                 {items.map((item) => (
                   <div
                     key={item.id}

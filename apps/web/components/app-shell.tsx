@@ -10,16 +10,26 @@ import { useMobile } from '@/hooks/use-mobile';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
+import { useBffAvailability } from '@/lib/bff-availability';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { describeActionableElement, ensureBehaviorSessionId, flushBehaviorEvents, resolveBehaviorPageKey, trackBehaviorEvent } from '@/lib/behavior-tracker';
 import { useTheme } from '@/hooks/use-theme';
 import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
+import { getDataEffectEventName } from '@/lib/data-effects';
 import { pageActionBus, type PageActionDefinition } from '@/lib/page-action-bus';
 import { isPublicPathname } from '@/lib/public-routes';
 import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
+import { resolveRealtimeDisplayStatus } from '@/lib/runtime-display';
 import { normalizeStockCode, trustedUserStockCode } from '@/lib/stock-code-utils';
+import {
+  buildCopilotHref,
+  getCopilotSurfaceByPageKey,
+  getCopilotSurfaceByPath,
+  isCopilotRouteAllowedHref,
+} from '@/lib/copilot-surface-registry';
 import { useAuthStore, type User } from '@/store/auth-store';
 import { useCopilotStore } from '@/store/copilot-store';
+import { useStockContext } from '@/store/stock-context';
 import { resolveWorkspaceLayout, selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type NavItem = { href: string; label: string };
@@ -155,6 +165,14 @@ function buildHref(basePath: string, stockCode: string) {
   return `${basePath}?code=${encodeURIComponent(stockCode)}`;
 }
 
+function parseLocalHref(href: string) {
+  try {
+    return new URL(href, 'http://aiask.local');
+  } catch {
+    return null;
+  }
+}
+
 function getTourAttr(href: string) {
   return TOUR_ATTRS[href];
 }
@@ -252,7 +270,9 @@ function ThemeToggle() {
 function WsIndicator() {
   const status = useWsStatus();
   const hydrated = useHydrated();
-  const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.reconnecting;
+  const bffAvailability = useBffAvailability();
+  const displayStatus = resolveRealtimeDisplayStatus(status, bffAvailability.status);
+  const { color, label } = hydrated ? WS_STATUS_MAP[displayStatus] : WS_STATUS_MAP.reconnecting;
 
   return (
     <span
@@ -378,10 +398,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const createWorkspace = useWorkbenchStore((state) => state.createWorkspace);
   const updateLayout = useWorkbenchStore((state) => state.updateLayout);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const lastSyncedAt = useWorkbenchStore((state) => state.lastSyncedAt);
   const dockOpen = useCopilotStore((state) => state.dockOpen);
+  const copilotPageContext = useCopilotStore((state) => state.pageContext);
   const setDockOpen = useCopilotStore((state) => state.setDockOpen);
   const setGlobalActions = useCopilotStore((state) => state.setGlobalActions);
+  const recentStockCode = useStockContext((state) => state.code);
+  const setStockContext = useStockContext((state) => state.setStock);
   const pageVisitRef = useRef<{ route: string; pageKey: string; enteredAt: number; label: string } | null>(null);
 
   const activeWorkspace = useMemo(
@@ -393,6 +417,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
     ? trustedUserStockCode(activeWorkspace.context.stockCode, activeWorkspace.context.stockConfirmedAt)
     : '';
   const routeStockCode = hydrated ? normalizeStockCode(searchParams.get('code')) : '';
+  const copilotStockCode = hydrated
+    ? normalizeStockCode(copilotPageContext?.selectedCode) || normalizeStockCode(copilotPageContext?.stockCode)
+    : '';
+  const recentStockContextCode = hydrated ? normalizeStockCode(recentStockCode) : '';
   const effectiveStockCode = routeStockCode || currentStockCode;
   const isStrategyMarketPage = pathname === '/strategy-market' || pathname.startsWith('/strategy-market/');
   const shellWorkspaceName = isStrategyMarketPage ? '策略工作区' : activeWorkspace.name;
@@ -424,6 +452,32 @@ export default function AppShell({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, [isAuthPage, setUser, user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || isAuthPage) return;
+    const syncUser = () => {
+      if (!hasLoggedInHint()) return;
+      probeAuthSession<{ authenticated?: boolean; user?: User }>()
+        .then((data) => {
+          if (data?.authenticated && data.user) {
+            setUser(data.user);
+            return;
+          }
+          if (!data?.authenticated) {
+            logout();
+          }
+        })
+        .catch(() => {});
+    };
+    const profileEvent = getDataEffectEventName('auth.profile.updated');
+    const securityEvent = getDataEffectEventName('auth.security.updated');
+    window.addEventListener(profileEvent, syncUser);
+    window.addEventListener(securityEvent, syncUser);
+    return () => {
+      window.removeEventListener(profileEvent, syncUser);
+      window.removeEventListener(securityEvent, syncUser);
+    };
+  }, [isAuthPage, logout, setUser]);
 
   useEffect(() => {
     if (dockOpen && !layout.dockVisible) {
@@ -464,6 +518,94 @@ export default function AppShell({ children }: { children: ReactNode }) {
         run: () => {
           router.push('/search');
           return { message: '已打开智能搜索' };
+        },
+      },
+      {
+        id: 'global.open-stock-detail',
+        label: '打开个股详情',
+        description: '跳转到指定股票的实时内容页',
+        keywords: ['打开', '查看', '进入', '个股详情', '实时行情', '股票详情', '分析股票', 'stock'],
+        scope: 'global',
+        mutationEffect: 'readonly' as const,
+        run: (payload) => {
+          const payloadCode = normalizeStockCode(payload?.code) || normalizeStockCode(payload?.stockCode);
+          const nextCode = payloadCode || routeStockCode || copilotStockCode || currentStockCode || recentStockContextCode;
+          if (!nextCode) {
+            return { message: '缺少有效股票代码' };
+          }
+          const confirmedAt = new Date().toISOString();
+          updateWorkbenchContext({
+            stockCode: nextCode,
+            eventCode: nextCode,
+            stockConfirmedAt: confirmedAt,
+            sourcePage: 'stock',
+            taskType: 'stock-detail',
+            resultType: 'stock-detail',
+          });
+          setStockContext(nextCode);
+          router.push(`/stock?code=${encodeURIComponent(nextCode)}`);
+          return { message: `已打开 ${nextCode} 个股详情` };
+        },
+      },
+      {
+        id: 'global.open-route',
+        label: '打开前端页面',
+        description: '按前端知识底座打开已注册的安全页面',
+        keywords: ['打开页面', '进入页面', '切换页面', '跳转页面', '下一步', '去', 'route', 'navigate'],
+        scope: 'global',
+        mutationEffect: 'readonly' as const,
+        run: (payload) => {
+          const payloadPageKey = typeof payload?.pageKey === 'string' ? payload.pageKey.trim() : '';
+          const payloadHref = typeof payload?.href === 'string' ? payload.href.trim() : '';
+          const payloadCode = normalizeStockCode(payload?.code) || normalizeStockCode(payload?.stockCode);
+          const payloadUrl = payloadHref ? parseLocalHref(payloadHref) : null;
+          const routeFromPageKey = getCopilotSurfaceByPageKey(payloadPageKey);
+          const routeFromHref = payloadUrl ? getCopilotSurfaceByPath(payloadUrl.pathname) : undefined;
+          const route = routeFromPageKey ?? routeFromHref;
+          if (!route || route.public) {
+            return { message: '未找到已注册的安全页面' };
+          }
+          if (route.path.includes('[')) {
+            if (!payloadHref || !isCopilotRouteAllowedHref(payloadHref)) {
+              return { message: '动态详情页缺少安全链接，无法自动打开' };
+            }
+            const url = payloadUrl;
+            if (!url) return { message: '动态详情页链接无效，无法自动打开' };
+            router.push(`${url.pathname}${url.search}`);
+            return { message: `已打开 ${route.title}` };
+          }
+
+          const nextCode = payloadCode || routeStockCode || copilotStockCode || currentStockCode || recentStockContextCode;
+          if (route.stockAware && route.requiredInputs?.includes('stockCode') && !nextCode) {
+            return { message: `${route.title} 缺少有效股票代码` };
+          }
+          const href = payloadHref && isCopilotRouteAllowedHref(payloadHref)
+            ? (() => {
+                const url = payloadUrl;
+                if (!url) return '';
+                if (route.stockAware && nextCode) {
+                  url.searchParams.set(route.codeParam ?? 'code', nextCode);
+                }
+                return `${url.pathname}${url.search}`;
+              })()
+            : buildCopilotHref(route, route.stockAware ? nextCode : undefined);
+          if (!href) {
+            return { message: '无法生成安全跳转链接' };
+          }
+          if (route.stockAware && nextCode) {
+            const confirmedAt = new Date().toISOString();
+            updateWorkbenchContext({
+              stockCode: nextCode,
+              eventCode: nextCode,
+              stockConfirmedAt: confirmedAt,
+              sourcePage: route.pageKey,
+              taskType: route.pageKey,
+              resultType: route.pageKey,
+            });
+            setStockContext(nextCode);
+          }
+          router.push(href);
+          return { message: `已打开 ${route.title}` };
         },
       },
       {
@@ -513,7 +655,21 @@ export default function AppShell({ children }: { children: ReactNode }) {
         },
       },
     ],
-    [createWorkspace, layout.navCollapsed, router, setDockOpen, showOverlayDock, showPersistentDock, updateLayout],
+    [
+      copilotStockCode,
+      createWorkspace,
+      currentStockCode,
+      layout.navCollapsed,
+      recentStockContextCode,
+      routeStockCode,
+      router,
+      setDockOpen,
+      setStockContext,
+      showOverlayDock,
+      showPersistentDock,
+      updateLayout,
+      updateWorkbenchContext,
+    ],
   );
 
   useEffect(() => {

@@ -149,7 +149,22 @@ def normalize_feedback_input_contract(
         **summary_payload,
         "family_count": family_count,
         "seeded_family_count": int(summary_payload.get("seeded_family_count") or family_count),
+        "source_strategy_count": int(
+            summary_payload.get("source_strategy_count")
+            or summary_payload.get("strategy_count")
+            or 0
+        ),
         "strategy_count": int(summary_payload.get("strategy_count") or 0),
+        "eligible_strategy_count": int(summary_payload.get("eligible_strategy_count") or 0),
+        "pending_evidence_refresh_count": int(
+            summary_payload.get("pending_evidence_refresh_count") or 0
+        ),
+        "pending_evidence_refresh_strategy_ids": list(
+            summary_payload.get("pending_evidence_refresh_strategy_ids") or []
+        )[:20],
+        "pending_evidence_refresh_reason_counts": _merge_feedback_count_maps(
+            summary_payload.get("pending_evidence_refresh_reason_counts")
+        ),
         "runtime_alert_count": int(summary_payload.get("runtime_alert_count") or 0),
         "runtime_risk_event_count": int(summary_payload.get("runtime_risk_event_count") or 0),
         "signal_count_total": int(
@@ -187,6 +202,25 @@ def normalize_feedback_input_contract(
         "promotion_review_count": int(
             summary_payload.get("promotion_review_count")
             or _sum_feedback_metric(feedback_root, metric_name="promotion_review_count")
+        ),
+        "fallback_evidence_strategy_count": int(
+            summary_payload.get("fallback_evidence_strategy_count")
+            or _sum_feedback_metric(feedback_root, metric_name="fallback_evidence_strategy_count")
+        ),
+        "feedback_evidence_augmented_count": int(
+            summary_payload.get("feedback_evidence_augmented_count")
+            or _sum_feedback_metric(feedback_root, metric_name="feedback_evidence_augmented_count")
+        ),
+        "fallback_evidence_mode_counts": (
+            _merge_feedback_count_maps(summary_payload.get("fallback_evidence_mode_counts"))
+            if dict(summary_payload.get("fallback_evidence_mode_counts") or {})
+            else _merge_feedback_count_maps(
+                *[
+                    dict(bucket.get("fallback_evidence_mode_counts") or {})
+                    for bucket in feedback_root.values()
+                    if isinstance(bucket, dict)
+                ]
+            )
         ),
         "target_pool_scope_count": target_pool_scope_count,
         "generator_mode_scope_count": generator_mode_scope_count,

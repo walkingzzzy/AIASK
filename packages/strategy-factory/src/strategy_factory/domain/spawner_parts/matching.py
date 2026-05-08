@@ -42,6 +42,7 @@
         "sector_rotation": 4,
         "north_capital_track": 3,
         "margin_divergence": 3,
+        "topn_equity_portfolio": 20,
     }
     _SNAPSHOT_TARGET_FAMILY_ALIASES = {
         "momentum": ("momentum", "ma_cross", "growth_factor"),

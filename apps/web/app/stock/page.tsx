@@ -11,6 +11,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { classifyDataTrustForDisplay, type DataTrust } from '@/lib/api';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
@@ -44,6 +45,57 @@ import type {
 type QuoteData = MarketQuoteResponseDto;
 type KlineData = MarketKlineResponseDto;
 
+const KLINE_FALLBACK_REASON_RE = /total_timeout_exceeded|using db\.get_klines/i;
+const KLINE_DEDUP_REASON_RE = /^K线已去重 \d+ 条同日重复记录$/;
+const KLINE_VOLUME_REASON_RE = /^K线成交量已统一为手，转换 \d+ 条记录$/;
+const KLINE_TURNOVER_REASON_RE = /^K线忽略 \d+ 条疑似换手率的 turnover 字段$/;
+
+function sanitizeStockKlineTrust(trust: DataTrust | null | undefined, hasUsableData: boolean) {
+  if (!trust?.degraded || !hasUsableData) return trust;
+  const hasFallback = trust.reasons.some((reason) => KLINE_FALLBACK_REASON_RE.test(reason));
+  const hasCleanup = trust.reasons.some(
+    (reason) => KLINE_DEDUP_REASON_RE.test(reason) || KLINE_VOLUME_REASON_RE.test(reason) || KLINE_TURNOVER_REASON_RE.test(reason),
+  );
+  if (!hasFallback && !hasCleanup) return trust;
+  const remainingReasons = trust.reasons.filter(
+    (reason) =>
+      !KLINE_FALLBACK_REASON_RE.test(reason)
+      && !KLINE_DEDUP_REASON_RE.test(reason)
+      && !KLINE_VOLUME_REASON_RE.test(reason)
+      && !KLINE_TURNOVER_REASON_RE.test(reason),
+  );
+  return {
+    ...trust,
+    reasons: [
+      hasFallback ? 'K 线主链路响应较慢，已自动切换到备用历史数据，图表仍可继续查看。' : '',
+      hasCleanup ? '已自动清洗重复交易日并统一成交量单位。' : '',
+      ...remainingReasons,
+    ].filter(Boolean),
+    qualityFlags: [],
+  };
+}
+
+function sanitizeStockFundFlowTrust(trust: DataTrust | null | undefined) {
+  if (!trust?.degraded) return trust;
+  const onlyMissingDates =
+    trust.status === 'partial'
+    && trust.reasons.length > 0
+    && trust.reasons.every((reason) => /资金流数据缺少交易日期/.test(reason))
+    && trust.qualityFlags.every((flag) => flag === 'fund_flow_date_missing');
+  return onlyMissingDates ? null : trust;
+}
+
+function formatStockBlockingError(error: string | null) {
+  if (!error) return null;
+  if (/quote_unavailable|实时行情|market\/quote|关键数据不可用/i.test(error)) {
+    return '实时行情暂时不可用，未拿到可验证报价。请稍后重试或检查行情数据服务。';
+  }
+  if (/请求超时|timeout|request timed out/i.test(error)) {
+    return '行情请求响应较慢，本次未拿到完整数据。请稍后重试。';
+  }
+  return error.replace(/\s+@\s+\/[^\s]+(?:\s+\(traceId:[^)]+\))?$/i, '');
+}
+
 export default function StockPage() {
   const hydrated = useHydrated();
   const compactLayoutDetected = useMobile(RESPONSIVE_BREAKPOINTS.dockOverlay);
@@ -63,6 +115,8 @@ export default function StockPage() {
 
   const quoteQ = useApiQuery<QuoteData>(activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null, {
     critical: true,
+    timeoutMs: 20_000,
+    placeholderData: 'keepPrevious',
     refetchInterval: tradingInterval(30_000),
     parse: (raw) => {
       const obj = ensureRecord(raw, '个股行情');
@@ -76,9 +130,9 @@ export default function StockPage() {
   const klineQ = useApiQuery<KlineData>(
     activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}&limit=250` : null,
     {
-      critical: true,
       enabled: klineEnabled,
-      timeoutMs: 30_000,
+      nonFatal: true,
+      timeoutMs: 55_000,
       parse: (raw) => {
         const obj = ensureRecord(raw, 'K线');
         if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
@@ -102,14 +156,14 @@ export default function StockPage() {
       return obj;
     },
   });
-  const secondaryDataEnabled = Boolean(activeCode && quoteQ.data && klineQ.data);
+  const secondaryDataEnabled = Boolean(activeCode && quoteQ.data);
   const sentimentQ = useApiQuery<Record<string, unknown>>(
     activeCode ? `/sentiment/stock?code=${encodeURIComponent(activeCode)}` : null,
-    { enabled: secondaryDataEnabled, parse: (raw) => ensureRecord(raw, '个股情绪') },
+    { enabled: secondaryDataEnabled, nonFatal: true, parse: (raw) => ensureRecord(raw, '个股情绪') },
   );
   const fundFlowQ = useApiQuery<unknown>(
     activeCode ? `/fund-flow/stock?code=${encodeURIComponent(activeCode)}` : null,
-    { critical: true, enabled: secondaryDataEnabled, parse: (raw) => ensureRecordOrArray(raw, '个股资金流') },
+    { enabled: secondaryDataEnabled, nonFatal: true, parse: (raw) => ensureRecordOrArray(raw, '个股资金流') },
   );
   const fundamentalQ = useApiQuery<unknown>(
     activeCode ? `/fundamental/overview?code=${encodeURIComponent(activeCode)}` : null,
@@ -121,7 +175,14 @@ export default function StockPage() {
   );
   const orderBookQ = useApiQuery<unknown>(
     activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null,
-    { critical: true, enabled: secondaryDataEnabled, refetchInterval: tradingInterval(10_000), parse: (raw) => ensureRecord(raw, '个股盘口') },
+    {
+      critical: true,
+      enabled: secondaryDataEnabled,
+      timeoutMs: 20_000,
+      placeholderData: 'keepPrevious',
+      refetchInterval: tradingInterval(10_000),
+      parse: (raw) => ensureRecord(raw, '个股盘口'),
+    },
   );
   const valuationQ = useApiQuery<unknown>(
     activeCode ? `/valuation/overview?code=${encodeURIComponent(activeCode)}` : null,
@@ -216,22 +277,41 @@ export default function StockPage() {
     hasRequested &&
     ((!hasQuoteData && (quoteQ.isPending || quoteQ.isFetching)) ||
       (!hasQuoteData && !hasKlineData && (klineQ.isPending || klineQ.isFetching)));
-  const error =
-    quoteQ.error || klineQ.error || sentimentQ.error || fundFlowQ.error || fundamentalQ.error || newsQ.error;
+  const error = formatStockBlockingError(quoteQ.error);
 
   const contextCode = useMemo(() => String(quote?.code ?? activeCode ?? '').trim(), [activeCode, quote?.code]);
   const sentimentPayload = useMemo(() => unwrapToolPayload(sentimentQ.data), [sentimentQ.data]);
   const sentimentScore = Number(sentimentPayload.score ?? sentimentPayload.sentiment_score ?? 0);
 
   const fundFlowItems = useMemo(() => extractArray(fundFlowQ.data, 'flows') as StockFundFlowEntry[], [fundFlowQ.data]);
-  const fundFlowChart = useMemo(
-    () =>
-      fundFlowItems.slice(-20).map((item) => ({
-        label: String(item.date ?? '').slice(5),
-        value: Number(item.netInflow ?? item.net_inflow ?? 0),
-      })),
+  const fundFlowHasDatedSamples = useMemo(
+    () => fundFlowItems.some((item) => String(item.date ?? '').trim().length > 0),
     [fundFlowItems],
   );
+  const fundFlowChart = useMemo(
+    () =>
+      fundFlowItems.slice(-20).map((item, index) => {
+        const rawDate = String(item.date ?? '').trim();
+        return {
+          label: rawDate ? rawDate.slice(5) : `样本${index + 1}`,
+          value: Number(item.netInflow ?? item.net_inflow ?? 0),
+        };
+      }),
+    [fundFlowItems],
+  );
+  const stockKlineTrust = useMemo(
+    () => sanitizeStockKlineTrust(klineQ.trust, candleData.length > 0),
+    [candleData.length, klineQ.trust],
+  );
+  const stockFundFlowTrust = useMemo(() => sanitizeStockFundFlowTrust(fundFlowQ.trust), [fundFlowQ.trust]);
+  const quoteDisplay = classifyDataTrustForDisplay(quoteQ.data, quoteQ.trust);
+  const klineDisplay = classifyDataTrustForDisplay(klineQ.data, stockKlineTrust);
+  const fundFlowDisplay = classifyDataTrustForDisplay(fundFlowQ.data, stockFundFlowTrust);
+  const klineEmptyHint = klineDisplay.isValidEmpty
+    ? klineDisplay.reasons.join('；') || 'K 线接口本次返回了契约化空结果，页面未把空图表当作真实走势。'
+    : klineDisplay.isBlocking
+      ? klineDisplay.blockingReason ?? 'K 线数据暂不可用'
+      : null;
   const fundamentalObj = useMemo(
     () => extractObject(fundamentalQ.data) as StockFundamentalOverview | null,
     [fundamentalQ.data],
@@ -405,8 +485,11 @@ export default function StockPage() {
   const stockRiskNotes = useMemo(() => {
     const notes = actionCard?.reasons?.slice(0, 2) ?? [];
     if (!hasQuoteData) notes.push('当前报价尚未加载，建议先刷新行情后再解读信号。');
+    if (quoteDisplay.isBlocking && quoteDisplay.blockingReason) notes.push(quoteDisplay.blockingReason);
+    if (klineDisplay.isBlocking && klineDisplay.blockingReason) notes.push(klineDisplay.blockingReason);
+    if (fundFlowDisplay.shouldShowQualityBanner) notes.push(...fundFlowDisplay.reasons.slice(0, 2));
     return notes;
-  }, [actionCard?.reasons, hasQuoteData]);
+  }, [actionCard?.reasons, fundFlowDisplay, hasQuoteData, klineDisplay, quoteDisplay]);
   const stockResult = buildLocalResultContract({
     summary: stockSummary,
     pageActions,
@@ -569,8 +652,8 @@ export default function StockPage() {
 
       <div className="space-y-2">
         <DataQualityBanner trust={quoteQ.trust} title="个股报价数据质量" onRetry={() => void quoteQ.refetch()} />
-        <DataQualityBanner trust={klineQ.trust} title="个股K线数据质量" onRetry={() => void klineQ.refetch()} />
-        <DataQualityBanner trust={fundFlowQ.trust} title="个股资金流数据质量" onRetry={() => void fundFlowQ.refetch()} />
+        <DataQualityBanner trust={stockKlineTrust} title="个股K线数据质量" onRetry={() => void klineQ.refetch()} />
+        <DataQualityBanner trust={stockFundFlowTrust} title="个股资金流数据质量" onRetry={() => void fundFlowQ.refetch()} />
         <DataQualityBanner trust={fundamentalQ.trust} title="个股基本面数据质量" onRetry={() => void fundamentalQ.refetch()} />
       </div>
 
@@ -604,6 +687,7 @@ export default function StockPage() {
         submittedPeriod={submittedPeriod}
         klineFetching={klineQ.isFetching}
         candleData={candleData}
+        klineEmptyHint={klineEmptyHint}
         orderBook={orderBook}
         technicalData={techApi.data}
         patternData={patternsApi.data}
@@ -613,6 +697,7 @@ export default function StockPage() {
         fundFlowItems={fundFlowItems}
         fundFlowFetching={fundFlowQ.isFetching}
         hasFundFlowResponse={Boolean(fundFlowQ.data)}
+        fundFlowHasDatedSamples={fundFlowHasDatedSamples}
         fundamental={fundamentalObj}
         fundamentalFetching={fundamentalQ.isFetching}
         hasFundamentalResponse={Boolean(fundamentalQ.data)}

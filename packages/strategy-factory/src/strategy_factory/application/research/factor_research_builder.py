@@ -218,20 +218,33 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
     def _fallback_feedback_evidence_overview(
         cls,
         signal_stats: dict[str, Any] | None = None,
+        *,
+        metric_rows: list[dict[str, Any]] | None = None,
+        quality_report: dict[str, Any] | None = None,
+        degraded_reason: str | None = None,
     ) -> dict[str, Any]:
-        return fallback_feedback_evidence_overview(cls, signal_stats)
+        return fallback_feedback_evidence_overview(
+            cls,
+            signal_stats,
+            metric_rows=metric_rows,
+            quality_report=quality_report,
+            degraded_reason=degraded_reason,
+        )
 
     @classmethod
     async def _load_feedback_evidence_overview(
         cls,
         db,
         strategy: dict[str, Any],
+        *,
+        metric_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return await load_feedback_evidence_overview(
             cls,
             db,
             strategy,
             lifecycle_runtime_provider=get_strategy_lifecycle_shared_runtime,
+            metric_rows=metric_rows,
         )
 
     @classmethod

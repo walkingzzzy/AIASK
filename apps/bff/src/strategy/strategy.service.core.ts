@@ -62,6 +62,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly FACTORY_RUNS_TTL = 60;
   private static readonly FACTORY_RUN_DETAIL_TTL = 60;
   private static readonly READ_SURFACE_TIMEOUT_MS = 4_500;
+  private static readonly RANKING_READ_TIMEOUT_MS = Math.max(
+    StrategyMarketService.READ_SURFACE_TIMEOUT_MS,
+    Number(process.env.STRATEGY_RANKING_TIMEOUT_MS ?? '15000'),
+  );
   private static readonly DETAIL_FALLBACK_TIMEOUT_MS = 800;
   private static readonly FACTORY_MARKET_FAST_TIMEOUT_MS = 3_500;
   private static readonly FACTORY_MARKET_DETAIL_TIMEOUT_MS = 5_000;
@@ -485,10 +489,9 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const existingOwnerState = this.asRecord(strategy.owner_state);
     const existingFavoriteState = this.asRecord(strategy.favorite_state);
     const existingPaperSessionState = this.asRecord(strategy.paper_session_state);
-    const personalStrategy =
-      typeof existingOwnerState.personal_strategy === 'boolean'
-        ? existingOwnerState.personal_strategy
-        : this.isPersonalStrategyRecord(strategy);
+    const personalStrategy = Boolean(
+      existingOwnerState.personal_strategy === true || this.isPersonalStrategyRecord(strategy),
+    );
     const owned =
       typeof existingOwnerState.owned === 'boolean'
         ? existingOwnerState.owned
@@ -523,6 +526,49 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       ...existingPaperSessionState,
     };
     return { ownerState, favoriteState, paperSessionState };
+  }
+
+  private normalizeStrategySurfaceState<T>(
+    strategyLike: T,
+    actor?: { userId?: string | null; role?: string | null },
+  ): T {
+    const strategy = this.asRecord(strategyLike);
+    const strategyId = String(strategy.id ?? strategy.strategy_id ?? '').trim();
+    if (!strategyId) return strategyLike;
+    const surface = this.buildLocalStrategySurfaceState(strategy, actor);
+    return {
+      ...(strategyLike as object),
+      owner_state: surface.ownerState,
+      favorite_state: surface.favoriteState,
+      paper_session_state: surface.paperSessionState,
+    } as T;
+  }
+
+  private normalizeMyStrategiesPayload<T>(
+    payload: T,
+    actor: { userId?: string | null; role?: string | null },
+  ): T {
+    const record = this.asRecord(payload);
+    if (Object.keys(record).length === 0) return payload;
+
+    const normalizeRows = (rows: unknown[]) =>
+      rows
+        .map((row) => this.normalizeStrategySurfaceState(row, actor))
+        .filter((row) => this.isPersonalStrategyRecord(this.asRecord(row)))
+        .map((row) => this.withRuntimeActionContract(row, actor));
+
+    const normalizedStrategies = Array.isArray(record.strategies) ? normalizeRows(record.strategies) : null;
+    const normalizedItems = Array.isArray(record.items)
+      ? normalizeRows(record.items)
+      : normalizedStrategies;
+    const derivedCount = Math.max(normalizedStrategies?.length ?? 0, normalizedItems?.length ?? 0);
+
+    return {
+      ...(record as object),
+      ...(normalizedStrategies ? { strategies: normalizedStrategies } : {}),
+      ...(normalizedItems ? { items: normalizedItems } : {}),
+      count: derivedCount,
+    } as T;
   }
 
   private isPersonalStrategyRecord(strategy: Record<string, unknown>) {
@@ -835,10 +881,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const favoriteState = this.asRecord(input.favoriteState);
     const paperSessionState = this.asRecord(input.paperSessionState);
     const authorId = String(ownerState.author_id ?? strategy.author_id ?? '').trim();
-    const personalStrategy =
-      typeof ownerState.personal_strategy === 'boolean'
-        ? ownerState.personal_strategy
-        : this.isPersonalStrategyRecord(strategy);
+    const personalStrategy = Boolean(ownerState.personal_strategy === true || this.isPersonalStrategyRecord(strategy));
     const owned =
       typeof ownerState.owned === 'boolean'
         ? ownerState.owned
@@ -1365,7 +1408,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       const data = await this.call(
         'rank',
         { status: params.status || 'visible', ...params },
-        { timeoutMs: StrategyMarketService.READ_SURFACE_TIMEOUT_MS },
+        { timeoutMs: StrategyMarketService.RANKING_READ_TIMEOUT_MS },
       );
       const annotated = this.annotateRankingDataQuality(data);
       this.rememberStrategySummaries(annotated);
@@ -2549,20 +2592,27 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
           detail: 'detail response missing strategy.id',
         });
       }
+      const surface = this.buildLocalStrategySurfaceState(strategy, actor);
       const contract = this.buildRuntimeActionContract({
         strategy,
         actor,
-        ownerState: this.asRecord(detail.owner_state),
-        favoriteState: this.asRecord(detail.favorite_state),
-        paperSessionState: this.asRecord(detail.paper_session_state),
+        ownerState: surface.ownerState,
+        favoriteState: surface.favoriteState,
+        paperSessionState: surface.paperSessionState,
       });
       const detailWithActions = {
         ...detail,
         strategy: {
           ...strategy,
+          owner_state: surface.ownerState,
+          favorite_state: surface.favoriteState,
+          paper_session_state: surface.paperSessionState,
           runtime_action_contract: contract,
           runtime_actions: contract.actions,
         },
+        owner_state: surface.ownerState,
+        favorite_state: surface.favoriteState,
+        paper_session_state: surface.paperSessionState,
         runtime_action_contract: contract,
         runtime_actions: contract.actions,
       };
@@ -2938,7 +2988,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     params: { include_archived?: boolean; limit?: number; offset?: number } = {},
   ) {
     try {
-      return this.withRuntimeActionContracts(await this.call('my_strategies', {
+      return this.normalizeMyStrategiesPayload(await this.call('my_strategies', {
         ...this.managerActorParams({ actorId, role }),
         include_archived: params.include_archived,
         limit: params.limit,
@@ -2954,7 +3004,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         StrategyMarketService.DETAIL_FALLBACK_TIMEOUT_MS,
         `my strategies fallback timed out after ${StrategyMarketService.DETAIL_FALLBACK_TIMEOUT_MS}ms`,
       );
-      return this.withRuntimeActionContracts({
+      return this.normalizeMyStrategiesPayload({
         ...fallback,
         local_fallback_used: true,
         upstream_error: this.describeError(error),

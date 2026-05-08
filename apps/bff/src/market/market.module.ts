@@ -4,9 +4,10 @@ import { MarketService } from './market.service';
 import { MarketScheduler } from './market.scheduler';
 import { McpGatewayModule } from '../mcp-gateway/mcp-gateway.module';
 import { WsModule } from '../ws/ws.module';
+import { DbModule } from '../db/db.module';
 
 @Module({
-  imports: [McpGatewayModule, forwardRef(() => WsModule)],
+  imports: [McpGatewayModule, DbModule, forwardRef(() => WsModule)],
   controllers: [MarketController],
   providers: [MarketService, MarketScheduler],
   exports: [MarketService, MarketScheduler],

@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { authedFetch, buildApiError, rejectFallbackPayload, unwrapApiEnvelope } from '@/lib/api';
+import { dispatchFrontendDataEffects, getInvalidateKeysForEffects, type FrontendDataEffect } from '@/lib/data-effects';
 import { useToast } from '@/components/ui/toast';
 import type { Envelope } from '@aiask/shared-types';
 
@@ -13,6 +14,8 @@ type FetchOptions = {
 type UseApiMutationOptions<TData> = {
   /** 成功后自动 invalidate 的 query key 列表 */
   invalidates?: readonly (readonly unknown[] | unknown[])[];
+  /** 声明式跨模块刷新效果 */
+  effects?: readonly FrontendDataEffect[];
   /** 成功回调 */
   onSuccess?: (data: TData) => void;
   /** 成功时 toast 文案（传 false 禁用） */
@@ -34,6 +37,8 @@ type UseApiMutationOptions<TData> = {
 export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<TData> = {}) {
   const qc = useQueryClient();
   const { toast } = useToast();
+
+  const effectInvalidateKeys = getInvalidateKeysForEffects(options.effects);
 
   const mutation = useMutation<TData, Error, { path: string; options?: FetchOptions; body?: unknown }>({
     mutationFn: async ({ path, options: fetchOpts, body }) => {
@@ -83,10 +88,22 @@ export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<T
       }
       return rawData as TData;
     },
-    onSuccess: (result) => {
-      if (options.invalidates) {
-        options.invalidates.forEach((key) => qc.invalidateQueries({ queryKey: [...key] }));
+    onSuccess: async (result, variables) => {
+      const invalidateKeyMap = new Map<string, readonly unknown[]>();
+      for (const key of [...(options.invalidates ?? []), ...effectInvalidateKeys]) {
+        const normalized = [...key];
+        invalidateKeyMap.set(JSON.stringify(normalized), normalized);
       }
+      if (invalidateKeyMap.size > 0) {
+        await Promise.all(
+          [...invalidateKeyMap.values()].map((key) => qc.invalidateQueries({ queryKey: [...key] })),
+        );
+      }
+      dispatchFrontendDataEffects(options.effects, (effect) => ({
+        effect,
+        path: variables.path,
+        data: result,
+      }));
       if (options.successToast) toast(options.successToast, 'success');
       options.onSuccess?.(result);
     },

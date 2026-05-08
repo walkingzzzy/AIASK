@@ -23,6 +23,7 @@ def _get_strategy_factory_imports():
         preferred_strategy_types_for_factor,
     )
     from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
+    from strategy_factory.domain.strategy_identity import materialize_strategy_params
     from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
@@ -35,6 +36,7 @@ def _get_strategy_factory_imports():
         "apply_target_symbol_policy": _apply_target_symbol_policy,
         "normalize_research_task_contract": _normalize_research_task_contract,
         "validate_precompile_candidate_contract": validate_precompile_candidate_contract,
+        "materialize_strategy_params": materialize_strategy_params,
     }
 
 
@@ -64,6 +66,7 @@ def __getattr__(name):
         "_apply_target_symbol_policy": "apply_target_symbol_policy",
         "_normalize_research_task_contract": "normalize_research_task_contract",
         "validate_precompile_candidate_contract": "validate_precompile_candidate_contract",
+        "materialize_strategy_params": "materialize_strategy_params",
     }
     if name in _map:
         return _sf()[_map[name]]
@@ -78,6 +81,7 @@ preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor
 _apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
 _normalize_research_task_contract = _sf()["normalize_research_task_contract"]
 validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_contract"]
+materialize_strategy_params = _sf()["materialize_strategy_params"]
 
 from .llm_alpha import LLMAlphaMiner
 from .data_pipeline import normalize_klines

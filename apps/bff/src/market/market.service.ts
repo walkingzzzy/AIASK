@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Optional } from '@nestjs/common';
 import type {
   MarketKlinePeriod,
   MarketKlineResponseDto,
@@ -11,6 +11,7 @@ import type {
 } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import { DbService } from '../db/db.service';
 import {
   buildResultContract,
   extractFreshness,
@@ -33,6 +34,7 @@ export class MarketService {
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
     private readonly cacheService: CommonCacheService,
+    @Optional() private readonly dbService?: DbService,
   ) {}
 
   async getQuote(code: string): Promise<MarketQuoteResponseDto> {
@@ -57,7 +59,7 @@ export class MarketService {
       call = await this.callWithArgs('get_realtime_quote', attempts);
     } catch (error) {
       const fetchedAt = new Date().toISOString();
-      const reason = this.describeError(error);
+      const reason = this.summarizeQuoteFailure(error);
       return {
         quote: {
           symbol: stockCode,
@@ -173,14 +175,66 @@ export class MarketService {
       };
     }
 
-    const attempts: ToolArgs[] = [{ code: normalized, period: klinePeriod, limit: klineLimit, start_date: '', end_date: '', adjust: '' }];
+    const attempts: ToolArgs[] = [{ code: normalized, period: klinePeriod, limit: klineLimit }];
 
     let call: Awaited<ReturnType<MarketService['callWithArgs']>>;
     try {
-      call = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
+      call = await this.callWithArgs('get_kline', attempts, 'get_kline_data', {
+        timeoutMs: 20_000,
+        retryOnTransportError: false,
+      });
     } catch (error) {
       const fetchedAt = new Date().toISOString();
       const reason = this.describeError(error);
+      const dbRows = await this.loadKlineFromDb(normalized, klinePeriod, klineLimit).catch(() => []);
+      if (dbRows.length > 0) {
+        const fallbackReason = this.summarizeKlineFallbackReasons([reason]);
+        const { points: kline, qualityWarnings } = this.normalizeKlineWithQuality(dbRows, klineLimit);
+        const stalenessWarnings = this.buildKlineStalenessWarnings(kline);
+        const platformMeta = {
+          sourceTool: 'db.get_klines',
+          referencePath: '/market/kline',
+          sourceChain: ['get_kline', 'get_kline_data', 'db.get_klines'],
+          degraded: true,
+          fallbackReason: fallbackReason.length > 0 ? fallbackReason : ['K 线上游响应较慢，已使用本地历史数据。'],
+          freshnessLabel: 'K线抓取时间',
+        };
+        const riskNotes = uniqueQualityReasons([platformMeta.fallbackReason, qualityWarnings, stalenessWarnings]);
+        const result: MarketKlineResponseDto = {
+          kline,
+          tool: 'get_kline_data',
+          argsTried: attempts,
+          argsMatched: { code: normalized, period: klinePeriod, limit: klineLimit, fallback: 'db.get_klines' },
+          meta: {
+            fetchedAt,
+            cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+          },
+          result_contract: buildResultContract({
+            summary: `${normalized} ${klinePeriod} K 线已从本地历史数据加载，共 ${kline.length} 根。`,
+            status: 'degraded',
+            availableViews: ['summary', 'visual', 'next_step'],
+            evidence: [
+              { label: '标的', value: normalized },
+              { label: '周期', value: klinePeriod },
+              { label: '样本数', value: String(kline.length) },
+              { label: '最新日期', value: kline.at(-1)?.date || '-' },
+            ],
+            riskNotes,
+            freshness: { updatedAt: fetchedAt, label: 'K线抓取时间' },
+            platformMeta,
+          }),
+          contract_meta: buildResultContractMeta({
+            canonicalTool: 'db.get_klines',
+            canonicalArgs: { code: normalized, period: klinePeriod, limit: klineLimit },
+            argsMatched: { code: normalized, period: klinePeriod, limit: klineLimit },
+            aliasHits: [],
+          }),
+          data_quality: this.buildKlineQuality('db.get_klines', kline.length, [...qualityWarnings, ...stalenessWarnings], platformMeta),
+        };
+        await this.cacheService.set(cacheKey, result, Math.min(ttlSeconds, 60));
+        return result;
+      }
+      const displayReason = this.summarizeKlineUnavailableReason(reason);
       return {
         kline: [],
         tool: 'get_kline_data',
@@ -191,7 +245,7 @@ export class MarketService {
           cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
         },
         result_contract: buildResultContract({
-          summary: `${normalized} ${klinePeriod} K 线暂时不可用，页面已展示上游原因，未把空图表当作真实 K 线。`,
+          summary: `${normalized} ${klinePeriod} K 线暂时不可用，页面已展示降级说明，未把空图表当作真实 K 线。`,
           status: 'unavailable',
           availableViews: ['summary', 'next_step'],
           evidence: [
@@ -199,14 +253,14 @@ export class MarketService {
             { label: '周期', value: klinePeriod },
             { label: '样本数', value: '0' },
           ],
-          riskNotes: [reason],
+          riskNotes: [displayReason],
           freshness: { updatedAt: fetchedAt, label: 'K线降级时间' },
           platformMeta: {
             sourceTool: 'get_kline_data',
             referencePath: '/market/kline',
             sourceChain: ['get_kline_data', 'get_kline'],
             degraded: true,
-            fallbackReason: ['kline_unavailable', reason],
+            fallbackReason: [displayReason],
           },
         }),
         contract_meta: buildResultContractMeta({
@@ -215,7 +269,7 @@ export class MarketService {
           argsMatched: {},
           aliasHits: [],
         }),
-        data_quality: unavailableDataQuality('get_kline_data', reason, {
+        data_quality: unavailableDataQuality('get_kline_data', displayReason, {
           emptyReason: 'K线行情上游暂时不可用，未返回可验证交易日数据',
           qualityFlags: ['kline_unavailable'],
         }),
@@ -229,12 +283,15 @@ export class MarketService {
       referencePath: '/market/kline',
       freshnessLabel: 'K线抓取时间',
     });
-    const fallbackReason = rawPlatformMeta.fallbackReason ?? [];
+    const fallbackReason = this.summarizeKlineFallbackReasons(rawPlatformMeta.fallbackReason ?? []);
     const platformMeta = {
       ...rawPlatformMeta,
       degraded: fallbackReason.length > 0,
       fallbackReason,
     };
+    const klineStatus = kline.length <= 0 ? 'empty' : platformMeta.degraded ? 'degraded' : 'ready';
+    const stalenessWarnings = this.buildKlineStalenessWarnings(kline);
+    const riskNotes = uniqueQualityReasons([fallbackReason, qualityWarnings, stalenessWarnings]);
     const result: MarketKlineResponseDto = {
       kline,
       tool: 'get_kline_data',
@@ -245,16 +302,18 @@ export class MarketService {
         cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
       },
       result_contract: buildResultContract({
-        summary: `${normalized} ${klinePeriod} K 线已加载，共 ${kline.length} 根。`,
-        status: qualityWarnings.length > 0 || platformMeta.degraded ? 'degraded' : 'ready',
-        availableViews: ['summary', 'visual', 'next_step'],
+        summary: kline.length > 0
+          ? `${normalized} ${klinePeriod} K 线已加载，共 ${kline.length} 根。`
+          : `${normalized} ${klinePeriod} K 线返回空结果，页面不会把空图表当作真实走势。`,
+        status: klineStatus,
+        availableViews: kline.length > 0 ? ['summary', 'visual', 'next_step'] : ['summary', 'next_step'],
         evidence: [
           { label: '标的', value: normalized },
           { label: '周期', value: klinePeriod },
           { label: '样本数', value: String(kline.length) },
           { label: '最新日期', value: kline.at(-1)?.date || '-' },
         ],
-        riskNotes: qualityWarnings,
+        riskNotes,
         freshness: extractFreshness(payload, fetchedAt, 'K线抓取时间'),
         platformMeta,
       }),
@@ -264,7 +323,7 @@ export class MarketService {
         argsMatched,
         aliasHits,
       }),
-      data_quality: this.buildKlineQuality(canonicalTool, kline.length, qualityWarnings, platformMeta),
+      data_quality: this.buildKlineQuality(canonicalTool, kline.length, [...qualityWarnings, ...stalenessWarnings], platformMeta),
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -292,7 +351,7 @@ export class MarketService {
       call = await this.callWithArgs('get_order_book', attempts);
     } catch (error) {
       const fetchedAt = new Date().toISOString();
-      const reason = this.describeError(error);
+      const reason = this.summarizeOrderBookFailure(error);
       return {
         orderBook: {
           symbol: normalized,
@@ -785,15 +844,73 @@ export class MarketService {
         sources: [{ name: sourceName, status: 'empty', sampleCount: 0 }],
       });
     }
-    if (platformMeta.degraded || qualityWarnings.length > 0) {
+    if (platformMeta.degraded) {
       return buildDataQuality({
-        status: platformMeta.degraded ? 'degraded' : 'partial',
-        reasons: reasons.length > 0 ? reasons : ['kline_quality_degraded'],
-        qualityFlags: qualityWarnings,
-        sources: [{ name: sourceName, status: platformMeta.degraded ? 'degraded' : 'partial', sampleCount }],
+        status: 'partial',
+        reasons: reasons.length > 0 ? reasons : ['K 线使用备用数据源，当前样本仍可查看'],
+        sources: [{ name: sourceName, status: 'partial', sampleCount }],
+      });
+    }
+    const unresolvedWarnings = qualityWarnings.filter((warning) => !this.isKlineNormalizationWarning(warning));
+    if (unresolvedWarnings.length > 0) {
+      return buildDataQuality({
+        status: 'partial',
+        reasons: unresolvedWarnings,
+        sources: [{ name: sourceName, status: 'partial', sampleCount }],
       });
     }
     return trustedDataQuality(sourceName, sampleCount);
+  }
+
+  private summarizeKlineFallbackReasons(reasons: string[]) {
+    return uniqueQualityReasons(reasons.map((reason) => {
+      if (/total_timeout_exceeded|using db\.get_klines|after total timeout|request timed out|timeout/i.test(reason)) {
+        return 'K 线实时主链路响应较慢，已自动切换到备用历史数据。';
+      }
+      return reason;
+    }));
+  }
+
+  private summarizeKlineUnavailableReason(reason: string) {
+    if (/total_timeout_exceeded|after total timeout|request timed out|timeout|mcp error -32001/i.test(reason)) {
+      return 'K 线实时主链路响应较慢，且本地历史数据暂未命中；本次未返回可验证交易日数据。';
+    }
+    return 'K 线行情上游暂时不可用，本次未返回可验证交易日数据。';
+  }
+
+  private summarizeQuoteFailure(error: unknown) {
+    const reason = this.describeError(error);
+    if (/request timed out|timeout|mcp error -32001/i.test(reason)) {
+      return '实时行情服务当前响应较慢，本次未返回可验证报价。';
+    }
+    return '实时行情服务暂时不可用，本次未返回可验证报价。';
+  }
+
+  private summarizeOrderBookFailure(error: unknown) {
+    const reason = this.describeError(error);
+    if (/request timed out|timeout|mcp error -32001/i.test(reason)) {
+      return '盘口服务当前响应较慢，本次未返回可验证盘口数据。';
+    }
+    return '盘口服务暂时不可用，本次未返回可验证盘口数据。';
+  }
+
+  private isKlineNormalizationWarning(reason: string) {
+    return /^K线已去重 \d+ 条同日重复记录$/.test(reason)
+      || /^K线成交量已统一为手，转换 \d+ 条记录$/.test(reason)
+      || /^K线忽略 \d+ 条疑似换手率的 turnover 字段$/.test(reason);
+  }
+
+  private buildKlineStalenessWarnings(points: NormalizedKlinePoint[]) {
+    const latestDate = points.at(-1)?.date?.slice(0, 10);
+    if (!latestDate) return [];
+    const latestTime = new Date(`${latestDate}T00:00:00.000Z`).getTime();
+    if (!Number.isFinite(latestTime)) return [];
+    const now = Date.now();
+    const ageDays = Math.floor((now - latestTime) / 86400000);
+    if (ageDays > 10) {
+      return [`K 线备用历史数据最新交易日为 ${latestDate}，可能滞后于实时行情。`];
+    }
+    return [];
   }
 
   private normalizeKlineWithQuality(
@@ -860,6 +977,112 @@ export class MarketService {
       .sort((a, b) => a.date.localeCompare(b.date))
       .slice(-Math.max(1, Math.min(limit, MarketService.MAX_KLINE_LIMIT)));
     return { points, qualityWarnings };
+  }
+
+  private async loadKlineFromDb(code: string, period: MarketKlinePeriod, limit: number): Promise<Record<string, unknown>[]> {
+    if (!this.dbService?.enabled) return [];
+    const rowLimit = period === 'daily'
+      ? limit
+      : Math.min(Math.max(limit * (period === 'weekly' ? 7 : 31), limit), 5000);
+    const result = await this.dbService.query<{
+      time: Date | string;
+      code: string;
+      open: number | string;
+      high: number | string;
+      low: number | string;
+      close: number | string;
+      volume: number | string;
+      amount: number | string | null;
+      turnover: number | string | null;
+      change_pct: number | string | null;
+    }>(
+      `SELECT time, code, open, high, low, close, volume, amount, turnover, change_pct
+         FROM (
+           SELECT time, code, open, high, low, close, volume, amount, turnover, change_pct
+            FROM kline_1d
+            WHERE code = $1
+            ORDER BY time DESC
+            LIMIT $2
+         ) recent_bars
+        ORDER BY time ASC`,
+      [code, rowLimit],
+    );
+    const dailyRows = result.rows.map((row) => ({
+      date: this.formatDbKlineDate(row.time),
+      code: row.code,
+      open: this.toNum(row.open),
+      high: this.toNum(row.high),
+      low: this.toNum(row.low),
+      close: this.toNum(row.close),
+      volume: this.toNum(row.volume),
+      amount: this.toNum(row.amount),
+      turnover: this.toNum(row.turnover),
+      change_pct: this.toNum(row.change_pct),
+      source: 'timescaledb',
+    }));
+    const normalizedDailyRows = this.normalizeKlineWithQuality(dailyRows, rowLimit).points.map((point) => ({
+      ...point,
+      amount: point.turnover ?? null,
+      source: 'timescaledb',
+    }));
+    if (period === 'daily') {
+      return normalizedDailyRows.slice(-limit);
+    }
+    return this.aggregateDbKlineRows(normalizedDailyRows, period).slice(-limit);
+  }
+
+  private aggregateDbKlineRows(rows: Record<string, unknown>[], period: Exclude<MarketKlinePeriod, 'daily'>) {
+    const grouped = new Map<string, Record<string, unknown>[]>();
+    for (const row of rows) {
+      const date = String(row.date ?? '').slice(0, 10);
+      if (!date) continue;
+      const key = period === 'weekly' ? this.isoWeekKey(date) : date.slice(0, 7);
+      const group = grouped.get(key) ?? [];
+      group.push(row);
+      grouped.set(key, group);
+    }
+    return Array.from(grouped.values()).map((group) => {
+      const sorted = group.slice().sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')));
+      const first = sorted[0] ?? {};
+      const last = sorted.at(-1) ?? {};
+      const highs = sorted.map((row) => this.toNum(row.high)).filter((value): value is number => value != null);
+      const lows = sorted.map((row) => this.toNum(row.low)).filter((value): value is number => value != null);
+      const sum = (field: string) => {
+        const values = sorted.map((row) => this.toNum(row[field])).filter((value): value is number => value != null);
+        return values.length > 0 ? values.reduce((total, value) => total + value, 0) : null;
+      };
+      const amount = sum('amount') ?? sum('turnover');
+      return {
+        date: String(last.date ?? ''),
+        code: String(last.code ?? first.code ?? ''),
+        open: this.toNum(first.open),
+        high: highs.length > 0 ? Math.max(...highs) : null,
+        low: lows.length > 0 ? Math.min(...lows) : null,
+        close: this.toNum(last.close),
+        volume: sum('volume'),
+        amount,
+        turnover: amount,
+        source: 'timescaledb',
+        period,
+      };
+    });
+  }
+
+  private isoWeekKey(dateText: string) {
+    const date = new Date(`${dateText}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) return dateText;
+    const day = date.getUTCDay() || 7;
+    date.setUTCDate(date.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  }
+
+  private formatDbKlineDate(value: Date | string): string {
+    if (value instanceof Date) {
+      return value.toISOString().slice(0, 10);
+    }
+    return String(value ?? '').slice(0, 10);
   }
 
   private toFinite(value: unknown): number | null {
@@ -944,12 +1167,16 @@ export class MarketService {
     primaryTool: string,
     attempts: Array<Record<string, unknown>>,
     fallbackTool?: string,
+    options: { timeoutMs?: number; retryOnTransportError?: boolean } = {},
   ) {
     const result = await callToolWithContract(
       primaryTool,
       attempts,
       async (name, args) => {
-        const payload = await this.mcpGatewayService.callTool(name, args, { retryOnTransportError: true });
+        const payload = await this.mcpGatewayService.callTool(name, args, {
+          retryOnTransportError: options.retryOnTransportError ?? true,
+          timeoutMs: options.timeoutMs,
+        });
         const toolError = this.extractToolError(payload);
         if (toolError) {
           throw new Error(toolError);

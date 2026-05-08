@@ -146,13 +146,23 @@ function skillTaskLabel(task: string) {
   return labels[value] ?? value.replace(/[_-]+/g, ' ');
 }
 
+function hasSearchResidualStockContext(context: ReturnType<typeof selectActiveWorkspace>['context']) {
+  if (!context.stockCode || !context.stockConfirmedAt) return false;
+  return context.sourcePage === 'search'
+    || context.taskType === 'similar_search'
+    || context.taskType === 'semantic_search'
+    || context.taskType === 'kline_search'
+    || context.resultType === 'search-result';
+}
+
 function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>['context']) {
   const payload: Record<string, unknown> = {};
+  const useConfirmedStockDetailContext = hasSearchResidualStockContext(context);
   if (context.stockCode) {
     payload.code = context.stockCode;
     payload.stock_code = context.stockCode;
   }
-  if (context.eventCode) payload.event_code = context.eventCode;
+  if (context.eventCode || useConfirmedStockDetailContext) payload.event_code = context.eventCode || context.stockCode;
   if (context.accountId) payload.account_id = context.accountId;
   if (context.portfolioId) payload.portfolio_id = context.portfolioId;
   if (context.executionId) payload.execution_id = context.executionId;
@@ -161,9 +171,15 @@ function buildWorkspacePayload(context: ReturnType<typeof selectActiveWorkspace>
   if (typeof context.days === 'number' && context.days > 0) payload.days = context.days;
   if (typeof context.lookbackDays === 'number' && context.lookbackDays > 0)
     payload.lookback_days = context.lookbackDays;
-  if (context.sourcePage) payload.source_page = context.sourcePage;
-  if (context.taskType) payload.task_type = context.taskType;
-  if (context.resultType) payload.result_type = context.resultType;
+  if (useConfirmedStockDetailContext) {
+    payload.source_page = 'stock';
+    payload.task_type = 'stock-detail';
+    payload.result_type = 'stock-detail';
+  } else {
+    if (context.sourcePage) payload.source_page = context.sourcePage;
+    if (context.taskType) payload.task_type = context.taskType;
+    if (context.resultType) payload.result_type = context.resultType;
+  }
   return payload;
 }
 

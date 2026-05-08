@@ -21,6 +21,7 @@ from ..domain.constants import (
     BACKTEST_CODE_CONCURRENCY,
     BACKTEST_DEFAULT_THRESHOLDS,
     FACTORY_SUBMISSION_MIN_BACKTEST_TRADES,
+    GATE1_REPRESENTATIVE_COUNT,
     BACKTEST_TYPE_THRESHOLDS,
     REPRESENTATIVE_STOCKS,
 )
@@ -28,6 +29,7 @@ from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_target_codes
 from ..domain.targets import _normalize_research_task_contract
+from ..domain.strategy_identity import materialize_strategy_params, structural_identity, executable_param_payload, target_payload
 from ..infrastructure.mcp_services import get_backtest_engine_class
 from .candidate_contract import (
     apply_resolved_candidate_envelope,
@@ -40,6 +42,15 @@ from .runtime import get_strategy_factory_package as _runtime_get_strategy_facto
 
 
 logger = logging.getLogger(__name__)
+
+_REPRESENTATIVE_STOCK_FALLBACKS = [
+    "600519", "000858", "601318", "600036", "000333",
+    "002415", "600276", "601012", "300750", "000001",
+]
+
+
+def _representative_stock_universe() -> list[str]:
+    return list(dict.fromkeys([*list(REPRESENTATIVE_STOCKS or []), *_REPRESENTATIVE_STOCK_FALLBACKS]))
 
 def _compat_setting(name: str, default: Any) -> Any:
     return default

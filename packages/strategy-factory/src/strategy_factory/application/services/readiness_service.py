@@ -22,6 +22,14 @@ from ...domain.constants import (
 READINESS_CONTRACT_VERSION = "strategy_factory.readiness.v1"
 READINESS_AUTHORITY_CONTRACT_VERSION = "strategy_factory.readiness.authority.v1"
 
+_GENERATION_HARD_BLOCKER_CODES = {
+    "snapshot_completion_too_low",
+    "governed_candidate_pool_required",
+    "governed_candidate_pool_missing_after_scheduler_success",
+    "governed_candidate_pool_unavailable_after_refresh",
+    "factor_research_stale",
+}
+
 
 def _dedupe_reason_codes(values: list[str] | None = None) -> list[str]:
     codes: list[str] = []
@@ -271,36 +279,63 @@ class ReadinessService:
         budget_feedback_strategy_count = int(
             factor_summary.get("budget_feedback_strategy_count") or 0
         )
+        budget_feedback_source_strategy_count = int(
+            factor_summary.get("budget_feedback_source_strategy_count")
+            or factor_summary.get("lifecycle_feedback_source_strategy_count")
+            or budget_feedback_strategy_count
+            or 0
+        )
+        budget_feedback_pending_evidence_refresh_count = int(
+            factor_summary.get("budget_feedback_pending_evidence_refresh_count")
+            or factor_summary.get("lifecycle_feedback_pending_evidence_refresh_count")
+            or 0
+        )
         budget_feedback_zero_signal_strategy_count = int(
-            factor_summary.get("budget_feedback_zero_signal_strategy_count") or 0
+            factor_summary.get("budget_feedback_zero_signal_strategy_count")
+            or factor_summary.get("lifecycle_feedback_zero_signal_strategy_count")
+            or 0
         )
         budget_feedback_zero_signal_ratio = self._safe_float(
-            factor_summary.get("budget_feedback_zero_signal_ratio"),
+            factor_summary.get("budget_feedback_zero_signal_ratio")
+            if factor_summary.get("budget_feedback_zero_signal_ratio") is not None
+            else factor_summary.get("lifecycle_feedback_zero_signal_ratio"),
             default=0.0,
         )
         budget_feedback_forward_window_coverage_ratio = self._safe_float(
-            factor_summary.get("budget_feedback_forward_window_coverage_ratio"),
+            factor_summary.get("budget_feedback_forward_window_coverage_ratio")
+            if factor_summary.get("budget_feedback_forward_window_coverage_ratio") is not None
+            else factor_summary.get("lifecycle_feedback_forward_window_coverage_ratio"),
             default=1.0,
         )
         budget_feedback_promotion_ready_count = int(
-            factor_summary.get("budget_feedback_promotion_ready_count") or 0
+            factor_summary.get("budget_feedback_promotion_ready_count")
+            or factor_summary.get("lifecycle_feedback_promotion_ready_count")
+            or 0
         )
         budget_feedback_promotion_ready_ratio = self._safe_float(
-            factor_summary.get("budget_feedback_promotion_ready_ratio"),
+            factor_summary.get("budget_feedback_promotion_ready_ratio")
+            if factor_summary.get("budget_feedback_promotion_ready_ratio") is not None
+            else factor_summary.get("lifecycle_feedback_promotion_ready_ratio"),
             default=1.0,
         )
         budget_feedback_promotion_review_count = int(
             factor_summary.get("budget_feedback_promotion_review_count") or 0
         )
         budget_feedback_promotion_review_coverage_ratio = self._safe_float(
-            factor_summary.get("budget_feedback_promotion_review_coverage_ratio"),
+            factor_summary.get("budget_feedback_promotion_review_coverage_ratio")
+            if factor_summary.get("budget_feedback_promotion_review_coverage_ratio") is not None
+            else factor_summary.get("lifecycle_feedback_promotion_review_coverage_ratio"),
             default=1.0,
         )
         budget_feedback_evidence_debt_strategy_count = int(
-            factor_summary.get("budget_feedback_evidence_debt_strategy_count") or 0
+            factor_summary.get("budget_feedback_evidence_debt_strategy_count")
+            or factor_summary.get("lifecycle_feedback_evidence_debt_strategy_count")
+            or 0
         )
         budget_feedback_evidence_debt_ratio = self._safe_float(
-            factor_summary.get("budget_feedback_evidence_debt_ratio"),
+            factor_summary.get("budget_feedback_evidence_debt_ratio")
+            if factor_summary.get("budget_feedback_evidence_debt_ratio") is not None
+            else factor_summary.get("lifecycle_feedback_evidence_debt_ratio"),
             default=0.0,
         )
         feedback_generator_mode_control_mode_counts = dict(
@@ -545,14 +580,31 @@ class ReadinessService:
             score -= 0.08
 
         score = max(min(round(score, 4), 1.0), 0.0)
-        can_proceed = not critical_blockers and (
+        generation_blockers = _dedupe_reason_codes(
+            list(critical_blockers)
+            + [
+                code
+                for code in blockers
+                if code in _GENERATION_HARD_BLOCKER_CODES
+            ]
+        )
+        generation_can_proceed = not generation_blockers
+        production_can_proceed = not critical_blockers and (
             not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
         )
+        can_proceed = production_can_proceed
         effective_blocking_reason_codes = (
             blockers
             if blockers
             else (warnings if (not can_proceed and score < FACTORY_READINESS_MIN_SCORE) else [])
         )
+        production_blockers = _dedupe_reason_codes(effective_blocking_reason_codes)
+        if not generation_can_proceed:
+            readiness_mode = "generation_blocked"
+        elif not production_can_proceed:
+            readiness_mode = "generation_allowed_production_blocked"
+        else:
+            readiness_mode = "production_allowed"
         authority = build_readiness_authority(
             can_proceed=can_proceed,
             hard_gate_enabled=hard_block,
@@ -576,6 +628,13 @@ class ReadinessService:
             "min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
             "readiness_score": score,
             "can_proceed": can_proceed,
+            "generation_can_proceed": generation_can_proceed,
+            "generation_blockers": generation_blockers,
+            "generation_blocker_count": len(generation_blockers),
+            "production_can_proceed": production_can_proceed,
+            "production_blockers": production_blockers,
+            "production_blocker_count": len(production_blockers),
+            "readiness_mode": readiness_mode,
             "warnings": warnings,
             "warning_count": len(warnings),
             "blockers": blockers,
@@ -612,6 +671,13 @@ class ReadinessService:
             "governed_candidate_pool_provisional_pending_count": governed_candidate_pool_provisional_pending_count,
             "governed_candidate_pool_strict_shortfall_count": governed_candidate_pool_strict_shortfall_count,
             "budget_feedback_strategy_count": budget_feedback_strategy_count,
+            "budget_feedback_source_strategy_count": budget_feedback_source_strategy_count,
+            "budget_feedback_pending_evidence_refresh_count": budget_feedback_pending_evidence_refresh_count,
+            "budget_feedback_pending_evidence_refresh_reason_counts": dict(
+                factor_summary.get("budget_feedback_pending_evidence_refresh_reason_counts")
+                or factor_summary.get("lifecycle_feedback_pending_evidence_refresh_reason_counts")
+                or {}
+            ),
             "budget_feedback_zero_signal_strategy_count": budget_feedback_zero_signal_strategy_count,
             "budget_feedback_zero_signal_ratio": budget_feedback_zero_signal_ratio,
             "budget_feedback_forward_window_coverage_ratio": budget_feedback_forward_window_coverage_ratio,

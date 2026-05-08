@@ -90,6 +90,9 @@
             out.append(self._make("macro_timing", {"fear_threshold": 24, "greed_threshold": 74, "lookback": 36}, f"波动率{volatility}，高精度宏观择时", source="volatility", trigger_signal={"field": "fg_components.volatility", "value": volatility}, trigger_thresholds=[self._threshold("fg_components.volatility", "<", 35, volatility, "波动率阈值")], extras=self._high_precision_candidate_fields(preferred_regime="panic_repair_with_volatility_stabilization", avoid_regime="mid_regime_whipsaw", holding_rationale="只有在高波动后恐慌修复且波动结构开始稳定时才入场，避免宏观噪声来回打脸。", failure_mode={"primary_failure_mode": "regime_whipsaw", "secondary_failure_mode": "late_entry_after_volatility_spike"}, max_position_pct=0.14, capacity_bucket="mid", min_days=6, max_days=24, entry_bias="panic_repair_after_regime_confirmation", exit_bias="greed_extreme_or_regime_break")))
         elif volatility > 65:
             out.append(self._make("ma_cross", {"short_period": 3, "long_period": 15}, f"波动率{volatility}，低波动短周期均线", source="volatility", trigger_signal={"field": "fg_components.volatility", "value": volatility}, trigger_thresholds=[self._threshold("fg_components.volatility", ">", 65, volatility, "波动率阈值")]))
+        else:
+            out.append(self._make("volatility_breakout", {"lookback": 20, "threshold": 0.02}, f"波动率{volatility}，中性波动突破", source="volatility", trigger_signal={"field": "fg_components.volatility", "value": volatility}, trigger_thresholds=[self._threshold("fg_components.volatility", ">=", 35, volatility, "波动率下界"), self._threshold("fg_components.volatility", "<=", 65, volatility, "波动率上界")]))
+            out.append(self._make("rsi", {"rsi_period": 12, "oversold": 18, "overbought": 64}, f"波动率{volatility}，中性RSI反转", source="volatility", trigger_signal={"field": "fg_components.volatility", "value": volatility}, trigger_thresholds=[self._threshold("fg_components.volatility", ">=", 35, volatility, "波动率下界"), self._threshold("fg_components.volatility", "<=", 65, volatility, "波动率上界")]))
         return out
 
     def _from_event_driven(self, snapshot: dict) -> List[dict]:
@@ -285,11 +288,17 @@
             return []
         parameter_registry = ParameterDistributionRegistry.from_snapshot(snapshot)
 
+        target_coverage = 12 if SPAWNER_TARGET_TOTAL >= 16 else 8
+        all_types_by_debt = sorted(
+            CATEGORY_MINIMUMS.keys(),
+            key=lambda strategy_type: (int(current_counts.get(strategy_type) or 0), strategy_type),
+        )
         preferred_types = list(
             dict.fromkeys(
                 [
                     *self._coverage_fill_priority(current_candidates),
                     *self._preferred_fill_types(snapshot, current_counts),
+                    *all_types_by_debt,
                 ]
             )
         )
@@ -304,8 +313,6 @@
         fill_counts: Dict[str, int] = {}
 
         def maybe_add(strategy_type: str, preferred_rank: int) -> bool:
-            if strategy_type == "momentum":
-                return False
             event_prefilter = {}
             event_anchor: dict[str, Any] = {}
             if strategy_type == "event_structure_breakout":
@@ -320,7 +327,8 @@
                 if not event_prefilter.get("passed"):
                     return False
             current = int(current_counts.get(strategy_type) or 0) + int(fill_counts.get(strategy_type) or 0)
-            desired_generated_count = 1 if preferred_rank > 2 else 2
+            current_type_coverage = len({*current_counts.keys(), *fill_counts.keys()})
+            desired_generated_count = 1 if current_type_coverage < target_coverage else (1 if preferred_rank > 2 else 2)
             generation_cap = self._local_generation_cap(strategy_type)
             if generation_cap is not None:
                 desired_generated_count = min(desired_generated_count, generation_cap)
@@ -424,7 +432,7 @@
             fill_counts[strategy_type] = slot_index
             return True
 
-        for pass_index in range(2):
+        for pass_index in range(3):
             for preferred_rank, strategy_type in enumerate(preferred_types, 1):
                 if len(out) >= fill_budget:
                     break

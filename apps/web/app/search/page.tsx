@@ -276,6 +276,17 @@ export default function SearchPage() {
     () =>
       rows.length > 0
         ? [
+            ...(primaryCode
+              ? [{
+                  id: 'search.open-stock-detail',
+                  actionId: 'global.open-stock-detail',
+                  label: '打开个股详情',
+                  description: '直接打开当前优先股票的实时内容页。',
+                  payload: {
+                    code: primaryCode,
+                  },
+                } satisfies ResultAction]
+              : []),
             {
               id: 'search.open-copilot-followup',
               actionId: 'search.open-copilot-followup',
@@ -284,7 +295,7 @@ export default function SearchPage() {
             },
           ]
         : [],
-    [rows.length],
+    [primaryCode, rows.length],
   );
   const searchCompareContent = useMemo(() => {
     if (rows.length < 2) return null;

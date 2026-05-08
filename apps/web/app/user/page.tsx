@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
-import { authedFetch, extractApiErrorMessage, fmt } from '@/lib/api';
+import { fmt } from '@/lib/api';
 import { PageContainer, KpiCard, KpiGrid, DataTable, Badge, Skeleton } from '@/components/ui';
+import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useMobile } from '@/hooks/use-mobile';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
@@ -46,6 +47,11 @@ export default function UserPage() {
   });
   const tradingQ = useApiQuery<unknown>('/paper-trading/summary');
   const portfolioQ = useApiQuery<unknown>('/portfolio/list');
+  const saveProfileApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.profile.updated'],
+  });
 
   const user: UserInfo | null = profileQ.data
     ? {
@@ -63,16 +69,7 @@ export default function UserPage() {
     setSaving(true);
     setSaveError(null);
     try {
-      const response = await authedFetch('/auth/profile', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ riskLevel }),
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(extractApiErrorMessage(payload, '保存失败'));
-      }
-      profileQ.refetch();
+      await saveProfileApi.triggerAsync('/auth/profile', { method: 'POST' }, { riskLevel });
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败');
     } finally {

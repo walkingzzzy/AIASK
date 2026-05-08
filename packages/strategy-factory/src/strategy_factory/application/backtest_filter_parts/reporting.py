@@ -206,7 +206,7 @@
             or research_task.get("validation_focus")
             or "target_plus_representative"
         ).strip().lower()
-        representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
+        representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", _representative_stock_universe()) or _representative_stock_universe())
         representative_codes = [code for code in representative_stocks if code not in target_codes]
         has_explicit_research_task = _has_explicit_research_task(candidate)
 
@@ -222,7 +222,8 @@
             evaluated_codes = list(dict.fromkeys([*target_codes, *representative_stocks]))
             code_source = "target_plus_representative"
         else:
-            selected_representatives = representative_codes[:2] if target_codes else representative_stocks[:2]
+            representative_count = max(4, int(_compat_setting("GATE1_REPRESENTATIVE_COUNT", GATE1_REPRESENTATIVE_COUNT) or GATE1_REPRESENTATIVE_COUNT))
+            selected_representatives = representative_codes[:representative_count] if target_codes else representative_stocks[:representative_count]
             evaluated_codes = list(dict.fromkeys([*target_codes, *selected_representatives]))
             code_source = "candidate_target_plus_representative" if target_codes else "representative_only"
         return evaluated_codes, target_codes, representative_codes, code_source, validation_focus

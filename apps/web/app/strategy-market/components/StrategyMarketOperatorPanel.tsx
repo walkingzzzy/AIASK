@@ -13,7 +13,6 @@ import { Badge, SectionCard } from '@/components/ui';
 import { DataQualityBanner, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { apiKeys } from '@/lib/query-keys';
 
 type OperatorAction = {
   action: StrategyManagerAction;
@@ -238,7 +237,7 @@ export function StrategyMarketOperatorPanel({
   );
   const operatorJobApi = useApiMutation<StrategyOperatorJobRecord>({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '运营任务已提交，可在任务队列查看状态',
     onSuccess: (record) => {
       setLastJobId(record.job.job_id);
@@ -246,7 +245,7 @@ export function StrategyMarketOperatorPanel({
   });
   const factorSchedulerApi = useApiMutation<McpJobAcceptedResponse>({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: 'MCP 因子治理任务已提交',
     onSuccess: (record) => {
       setLastMcpJobId(record.job.job_id);

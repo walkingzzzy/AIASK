@@ -12,7 +12,7 @@ import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 export function CartDrawer({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const { items, removeStrategy, setWeight, clear } = useCartStore();
-  const createApi = useApiMutation();
+  const createApi = useApiMutation({ effects: ['portfolio.changed'] });
   const hasLoginHint = hasLoggedInHint();
   const profileQ = useApiQuery<Record<string, unknown>>(hasLoginHint ? '/auth/profile' : null, {
     enabled: hasLoginHint,

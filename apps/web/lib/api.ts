@@ -14,6 +14,18 @@ export type DataTrust = {
   sources: Array<Record<string, unknown>>;
   emptyReason?: string;
 };
+export type DataDisplayDisposition = 'trusted' | 'partial-valid' | 'degraded-valid' | 'valid-empty' | 'blocking';
+export type DataDisplayDecision = {
+  disposition: DataDisplayDisposition;
+  status: DataTrustStatus;
+  canRenderData: boolean;
+  shouldShowQualityBanner: boolean;
+  isBlocking: boolean;
+  isValidEmpty: boolean;
+  sampleCount: number;
+  reasons: string[];
+  blockingReason?: string;
+};
 
 export class ApiError extends Error {
   status?: number;
@@ -319,6 +331,73 @@ function hasBusinessValue(value: unknown, seen = new Set<unknown>(), depth = 0):
   return ['data', 'result'].some((key) => hasBusinessValue(value[key], seen, depth + 1));
 }
 
+function trustSampleCount(trust: DataTrust | null | undefined): number {
+  if (!trust) return 0;
+  return trust.sources.reduce((max, source) => {
+    const raw = source.sampleCount ?? source.sample_count;
+    const count = Number(raw);
+    return Number.isFinite(count) && count > max ? count : max;
+  }, 0);
+}
+
+function deriveBusinessSampleCount(value: unknown, seen = new Set<unknown>(), depth = 0): number {
+  if (value == null || value === '') return 0;
+  if (Array.isArray(value)) return value.length;
+  if (!isRecord(value) || seen.has(value) || depth > 6) return value == null ? 0 : 1;
+  seen.add(value);
+
+  const directCount = Number(value.sampleCount ?? value.sample_count ?? value.count ?? value.totalCount ?? value.total_count);
+  if (Number.isFinite(directCount) && directCount > 0) return directCount;
+
+  const arrayKeys = [
+    'kline',
+    'points',
+    'reports',
+    'notices',
+    'items',
+    'blocks',
+    'stocks',
+    'flows',
+    'trades',
+    'quotes',
+    'news',
+    'data',
+    'result',
+  ];
+  for (const key of arrayKeys) {
+    const nested = value[key];
+    if (Array.isArray(nested)) return nested.length;
+  }
+
+  if (isRecord(value.quote)) {
+    const quote = value.quote;
+    return [quote.price, quote.last, quote.changePercent, quote.change_pct, quote.volume]
+      .some((item) => item != null && item !== '')
+      ? 1
+      : 0;
+  }
+  if (isRecord(value.orderBook)) {
+    const orderBook = value.orderBook;
+    return (Array.isArray(orderBook.bids) ? orderBook.bids.length : 0)
+      + (Array.isArray(orderBook.asks) ? orderBook.asks.length : 0);
+  }
+
+  let nestedMax = 0;
+  for (const [key, nested] of Object.entries(value)) {
+    if (TRUST_META_KEYS.has(key)) continue;
+    if (nested == null || nested === '') continue;
+    const count = deriveBusinessSampleCount(nested, seen, depth + 1);
+    if (count > nestedMax) nestedMax = count;
+  }
+  if (nestedMax > 0) return nestedMax;
+
+  return Object.entries(value).some(
+    ([key, nested]) => !TRUST_META_KEYS.has(key) && nested != null && nested !== '',
+  )
+    ? 1
+    : 0;
+}
+
 function isEmptyShell(value: unknown): boolean {
   if (Array.isArray(value)) return false;
   if (!isRecord(value)) return false;
@@ -339,14 +418,17 @@ function describeFallbackRecord(record: Record<string, unknown>, path: string[])
   const isResultContractMeta = pathKey.includes('result_contract.platformMeta');
   const trust = readDataQuality(record);
   const acceptsPartialTrust = trust?.status === 'partial';
+  const sampleCount = trustSampleCount(trust);
+  const hasSamplesOrBusinessValue = sampleCount > 0 || hasBusinessValue(record);
   if (trust?.degraded && trust.status !== 'partial') {
+    if (trust.status === 'degraded' && hasSamplesOrBusinessValue) return null;
     return compactReasons(trust.reasons, trust.qualityFlags, trust.emptyReason).join('；')
       || `数据质量状态为 ${trust.status}`;
   }
   if (record.success === false || record.ok === false) {
     return compactReason(record.error ?? record.message) || '上游返回失败状态';
   }
-  if (record.degraded === true && !acceptsPartialTrust && !isResultContractMeta) {
+  if (record.degraded === true && !acceptsPartialTrust && !isResultContractMeta && !hasBusinessValue(record)) {
     return compactReason(
       record.message
         ?? record.fallback_reason
@@ -355,19 +437,19 @@ function describeFallbackRecord(record: Record<string, unknown>, path: string[])
         ?? record.degradedReason,
     ) || '上游能力暂不可用';
   }
-  if (record.fallback_used === true || record.local_fallback_used === true) {
+  if ((record.fallback_used === true || record.local_fallback_used === true) && !hasBusinessValue(record)) {
     return compactReason(record.fallback_reason ?? record.fallbackReason ?? record.message) || '上游能力已回退，不接受降级结果';
   }
   if (record.fallback && typeof record.fallback === 'object') {
     const fallback = record.fallback as Record<string, unknown>;
-    if (fallback.used === true) {
+    if (fallback.used === true && !hasBusinessValue(record)) {
       return compactReason(fallback.reason) || '上游能力已回退，不接受降级结果';
     }
   }
   const fallbackReason = compactReason(record.fallback_reason ?? record.fallbackReason);
-  if (fallbackReason && !acceptsPartialTrust && !isResultContractMeta) return fallbackReason;
+  if (fallbackReason && !acceptsPartialTrust && !isResultContractMeta && !hasBusinessValue(record)) return fallbackReason;
   const degradedReason = compactReason(record.degraded_reason ?? record.degradedReason);
-  if (degradedReason && !acceptsPartialTrust && !isResultContractMeta) return degradedReason;
+  if (degradedReason && !acceptsPartialTrust && !isResultContractMeta && !hasBusinessValue(record)) return degradedReason;
   const sectionErrors = compactReason(record.section_errors);
   if (sectionErrors) return sectionErrors;
   const message = compactReason(record.message);
@@ -400,11 +482,115 @@ function findFallbackReason(value: unknown, seen = new Set<unknown>(), depth = 0
   return null;
 }
 
-export function rejectFallbackPayload(payload: unknown): string | null {
+export function rejectFallbackPayload(payload: unknown, options: { allowEmpty?: boolean } = {}): string | null {
   const reason = findFallbackReason(payload);
+  if (reason && options.allowEmpty && findDataTrust(payload)?.status === 'empty') return null;
   if (reason) return reason;
   if (isEmptyShell(payload)) return '上游返回空壳数据';
   return null;
+}
+
+export function classifyDataTrustForDisplay(payload: unknown, trustOverride?: DataTrust | null): DataDisplayDecision {
+  const trust = trustOverride ?? extractDataTrust(payload);
+  const fallbackReason = rejectFallbackPayload(payload, { allowEmpty: true });
+  const sampleCount = Math.max(trustSampleCount(trust), deriveBusinessSampleCount(payload));
+  const reasons = compactReasons(trust.reasons, trust.qualityFlags, trust.emptyReason, fallbackReason);
+  const status = trust.status;
+  const emptyShell = trust.qualityFlags.includes('empty_shell') || /空壳/.test(String(fallbackReason ?? ''));
+  const blockingReason =
+    fallbackReason
+    || reasons[0]
+    || (status === 'unavailable' ? '上游数据源不可用' : status === 'conflict' ? '上游数据源存在冲突' : undefined);
+
+  if (emptyShell || fallbackReason || status === 'unavailable' || status === 'conflict') {
+    return {
+      disposition: 'blocking',
+      status,
+      canRenderData: false,
+      shouldShowQualityBanner: false,
+      isBlocking: true,
+      isValidEmpty: false,
+      sampleCount,
+      reasons,
+      blockingReason,
+    };
+  }
+
+  if (status === 'empty') {
+    return {
+      disposition: 'valid-empty',
+      status,
+      canRenderData: false,
+      shouldShowQualityBanner: false,
+      isBlocking: false,
+      isValidEmpty: true,
+      sampleCount: 0,
+      reasons,
+    };
+  }
+
+  if (status === 'partial') {
+    if (sampleCount > 0) {
+      return {
+        disposition: 'partial-valid',
+        status,
+        canRenderData: true,
+        shouldShowQualityBanner: true,
+        isBlocking: false,
+        isValidEmpty: false,
+        sampleCount,
+        reasons,
+      };
+    }
+    return {
+      disposition: 'blocking',
+      status,
+      canRenderData: false,
+      shouldShowQualityBanner: false,
+      isBlocking: true,
+      isValidEmpty: false,
+      sampleCount,
+      reasons,
+      blockingReason: blockingReason ?? '部分可用数据未包含有效业务样本',
+    };
+  }
+
+  if (status === 'degraded') {
+    if (sampleCount > 0) {
+      return {
+        disposition: 'degraded-valid',
+        status,
+        canRenderData: true,
+        shouldShowQualityBanner: true,
+        isBlocking: false,
+        isValidEmpty: false,
+        sampleCount,
+        reasons,
+      };
+    }
+    return {
+      disposition: 'blocking',
+      status,
+      canRenderData: false,
+      shouldShowQualityBanner: false,
+      isBlocking: true,
+      isValidEmpty: false,
+      sampleCount,
+      reasons,
+      blockingReason: blockingReason ?? '降级结果未包含有效业务样本',
+    };
+  }
+
+  return {
+    disposition: 'trusted',
+    status,
+    canRenderData: payload != null,
+    shouldShowQualityBanner: false,
+    isBlocking: false,
+    isValidEmpty: false,
+    sampleCount,
+    reasons,
+  };
 }
 
 function findDataTrust(value: unknown, seen = new Set<unknown>(), depth = 0): DataTrust | null {

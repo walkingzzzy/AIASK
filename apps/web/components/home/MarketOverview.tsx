@@ -4,7 +4,7 @@ import { SectionCard, KpiCard, KpiGrid, Skeleton, SkeletonCard } from '@/compone
 import { DataQualityBanner, ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { isTradingHours } from '@/lib/trading-hours';
-import type { DataTrust } from '@/lib/api';
+import { classifyDataTrustForDisplay, type DataTrust } from '@/lib/api';
 import Link from 'next/link';
 import type { DashboardQuoteSnapshot } from '@aiask/shared-types';
 
@@ -187,7 +187,8 @@ function SectorHeatmap({
   sectors,
 }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'sectorQ' | 'sectors'>) {
   if (!dashboardVisibility['market']) return null;
-  const unavailable = Boolean(sectorQ.trust?.degraded);
+  const display = classifyDataTrustForDisplay(sectorQ.data, sectorQ.trust);
+  const unavailable = display.isBlocking;
   return (
     <SectionCard className="min-h-[220px]">
       <div className="mb-4 flex items-end justify-between gap-3">

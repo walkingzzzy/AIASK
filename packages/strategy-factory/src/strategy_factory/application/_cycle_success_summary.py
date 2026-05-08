@@ -11,6 +11,28 @@ from typing import Any
 from .services.readiness_service import resolve_governed_pool_state
 
 
+def _summary_value(summary: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        value = summary.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return default
+
+
+def _summary_int(summary: dict[str, Any], *keys: str, default: int = 0) -> int:
+    try:
+        return int(_summary_value(summary, *keys, default=default) or 0)
+    except Exception:
+        return int(default)
+
+
+def _summary_float(summary: dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    try:
+        return float(_summary_value(summary, *keys, default=default))
+    except Exception:
+        return float(default)
+
+
 def _build_autonomy_task_briefs(autonomy_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -91,8 +113,25 @@ def build_success_run_summary(
         ),
         "factory_readiness_score": readiness_summary.get("readiness_score"),
         "factory_readiness_can_proceed": readiness_summary.get("can_proceed"),
+        "factory_generation_can_proceed": readiness_summary.get(
+            "generation_can_proceed",
+            readiness_summary.get("can_proceed"),
+        ),
+        "factory_generation_blockers": list(readiness_summary.get("generation_blockers") or []),
+        "factory_production_can_proceed": readiness_summary.get(
+            "production_can_proceed",
+            readiness_summary.get("can_proceed"),
+        ),
+        "factory_production_blockers": list(readiness_summary.get("production_blockers") or []),
+        "factory_readiness_mode": readiness_summary.get("readiness_mode"),
         "factory_readiness_blocker_count": readiness_summary.get("blocker_count", 0),
         "factory_readiness_warning_count": readiness_summary.get("warning_count", 0),
+        "submission_mode": (
+            "read_only_due_to_readiness"
+            if readiness_summary.get("production_can_proceed") is False
+            and readiness_summary.get("generation_can_proceed", True)
+            else "normal"
+        ),
         "fear_greed": snapshot.get("fear_greed_index"),
         "listed_count": snapshot.get("listed_count", 0),
         "snapshot_degraded": bool(snapshot.get("degraded")),
@@ -315,6 +354,15 @@ def build_success_run_summary(
         "governed_blocked_candidate_count": int(
             factor_research_summary.get("governed_blocked_candidate_count") or 0
         ),
+        "governed_active_blocked_candidate_count": int(
+            factor_research_summary.get("governed_active_blocked_candidate_count") or 0
+        ),
+        "governed_quarantined_candidate_count": int(
+            factor_research_summary.get("governed_quarantined_candidate_count") or 0
+        ),
+        "governed_governance_denominator": int(
+            factor_research_summary.get("governed_governance_denominator") or 0
+        ),
         "governed_blocked_ratio": factor_research_summary.get("governed_blocked_ratio"),
         "governed_pending_candidate_count": int(
             factor_research_summary.get("governed_pending_candidate_count") or 0
@@ -326,11 +374,15 @@ def build_success_run_summary(
         "governed_ineligible_ratio": factor_research_summary.get("governed_ineligible_ratio"),
         "governed_latest_candidate_at": factor_research_summary.get("governed_latest_candidate_at"),
         "governed_freshness_days": factor_research_summary.get("governed_freshness_days"),
+        "governed_freshness_source": factor_research_summary.get("governed_freshness_source"),
         "governed_exclusion_reason_counts": dict(
             factor_research_summary.get("governed_exclusion_reason_counts") or {}
         ),
         "governed_blocking_reason_counts": dict(
             factor_research_summary.get("governed_blocking_reason_counts") or {}
+        ),
+        "governed_active_blocking_reason_counts": dict(
+            factor_research_summary.get("governed_active_blocking_reason_counts") or {}
         ),
         "governed_pending_reason_counts": dict(
             factor_research_summary.get("governed_pending_reason_counts") or {}
@@ -425,8 +477,22 @@ def build_success_run_summary(
         "budget_feedback_family_count": int(
             factor_research_summary.get("budget_feedback_family_count") or 0
         ),
+        "budget_feedback_source_strategy_count": int(
+            factor_research_summary.get("budget_feedback_source_strategy_count")
+            or factor_research_summary.get("budget_feedback_strategy_count")
+            or 0
+        ),
         "budget_feedback_strategy_count": int(
             factor_research_summary.get("budget_feedback_strategy_count") or 0
+        ),
+        "budget_feedback_eligible_strategy_count": int(
+            factor_research_summary.get("budget_feedback_eligible_strategy_count") or 0
+        ),
+        "budget_feedback_pending_evidence_refresh_count": int(
+            factor_research_summary.get("budget_feedback_pending_evidence_refresh_count") or 0
+        ),
+        "budget_feedback_pending_evidence_refresh_reason_counts": dict(
+            factor_research_summary.get("budget_feedback_pending_evidence_refresh_reason_counts") or {}
         ),
         "budget_feedback_target_pool_scope_count": int(
             factor_research_summary.get("budget_feedback_target_pool_scope_count") or 0
@@ -485,46 +551,64 @@ def build_success_run_summary(
             or 0
         ),
         "budget_feedback_signal_count_total": int(
-            factor_research_summary.get("budget_feedback_signal_count_total") or 0
+            _summary_int(factor_research_summary, "budget_feedback_signal_count_total", "lifecycle_feedback_signal_count_total")
         ),
         "budget_feedback_zero_signal_strategy_count": int(
-            factor_research_summary.get("budget_feedback_zero_signal_strategy_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_zero_signal_strategy_count", "lifecycle_feedback_zero_signal_strategy_count")
         ),
-        "budget_feedback_zero_signal_ratio": float(
-            factor_research_summary.get("budget_feedback_zero_signal_ratio") or 0.0
+        "budget_feedback_zero_signal_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_zero_signal_ratio",
+            "lifecycle_feedback_zero_signal_ratio",
+            default=0.0,
         ),
         "budget_feedback_low_signal_strategy_count": int(
-            factor_research_summary.get("budget_feedback_low_signal_strategy_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_low_signal_strategy_count", "lifecycle_feedback_low_signal_strategy_count")
         ),
-        "budget_feedback_low_signal_ratio": float(
-            factor_research_summary.get("budget_feedback_low_signal_ratio") or 0.0
+        "budget_feedback_low_signal_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_low_signal_ratio",
+            "lifecycle_feedback_low_signal_ratio",
+            default=0.0,
         ),
         "budget_feedback_observed_forward_window_count": int(
-            factor_research_summary.get("budget_feedback_observed_forward_window_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_observed_forward_window_count", "lifecycle_feedback_observed_forward_window_count")
         ),
         "budget_feedback_missing_forward_window_count": int(
-            factor_research_summary.get("budget_feedback_missing_forward_window_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_missing_forward_window_count", "lifecycle_feedback_missing_forward_window_count")
         ),
         "budget_feedback_expected_forward_window_count": int(
-            factor_research_summary.get("budget_feedback_expected_forward_window_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_expected_forward_window_count", "lifecycle_feedback_expected_forward_window_count")
         ),
-        "budget_feedback_forward_window_coverage_ratio": float(
-            factor_research_summary.get("budget_feedback_forward_window_coverage_ratio") or 1.0
+        "budget_feedback_forward_window_coverage_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_forward_window_coverage_ratio",
+            "lifecycle_feedback_forward_window_coverage_ratio",
+            default=1.0,
         ),
         "budget_feedback_promotion_ready_count": int(
-            factor_research_summary.get("budget_feedback_promotion_ready_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_promotion_ready_count", "lifecycle_feedback_promotion_ready_count")
         ),
-        "budget_feedback_promotion_ready_ratio": float(
-            factor_research_summary.get("budget_feedback_promotion_ready_ratio") or 1.0
+        "budget_feedback_promotion_ready_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_promotion_ready_ratio",
+            "lifecycle_feedback_promotion_ready_ratio",
+            default=1.0,
         ),
-        "budget_feedback_promotion_review_coverage_ratio": float(
-            factor_research_summary.get("budget_feedback_promotion_review_coverage_ratio") or 1.0
+        "budget_feedback_promotion_review_coverage_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_promotion_review_coverage_ratio",
+            "lifecycle_feedback_promotion_review_coverage_ratio",
+            default=1.0,
         ),
         "budget_feedback_evidence_debt_strategy_count": int(
-            factor_research_summary.get("budget_feedback_evidence_debt_strategy_count") or 0
+            _summary_int(factor_research_summary, "budget_feedback_evidence_debt_strategy_count", "lifecycle_feedback_evidence_debt_strategy_count")
         ),
-        "budget_feedback_evidence_debt_ratio": float(
-            factor_research_summary.get("budget_feedback_evidence_debt_ratio") or 0.0
+        "budget_feedback_evidence_debt_ratio": _summary_float(
+            factor_research_summary,
+            "budget_feedback_evidence_debt_ratio",
+            "lifecycle_feedback_evidence_debt_ratio",
+            default=0.0,
         ),
         "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
         "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),

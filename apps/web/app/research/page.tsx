@@ -25,7 +25,7 @@ import { useStockCode } from '@/hooks/use-stock-code';
 import { DataQualityBanner, EmptyState, ErrorState, PageStatusCard } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
-import { fmt, cacheText, type CacheMeta } from '@/lib/api';
+import { classifyDataTrustForDisplay, fmt, cacheText, type CacheMeta } from '@/lib/api';
 import {
   buildLocalResultContract,
   defaultWorkbenchTask,
@@ -263,10 +263,9 @@ export default function ResearchPage() {
   const error = formError || codeError || listQ.error;
   const showPrimaryEmptyState = !loading && !error && reports.length === 0 && notices.length === 0;
   const hasResearchQuery = Boolean(resolvedCode && effectiveListPath && listQ.data);
+  const listDisplay = classifyDataTrustForDisplay(listQ.data, listQ.trust);
   const primaryDataUnavailable = hasResearchQuery
-    && listQ.trust.degraded
-    && listQ.trust.status !== 'empty'
-    && listQ.trust.status !== 'partial';
+    && listDisplay.isBlocking;
   const primaryQualityReason = [
     ...listQ.trust.reasons,
     ...listQ.trust.qualityFlags,
@@ -280,6 +279,7 @@ export default function ResearchPage() {
       ? primaryQualityReason || '研究数据源暂不可用，页面已停止按正常研报公告展示。'
       : listQ.data?.data_quality?.empty_reason
       || listQ.data?.result_contract?.riskNotes?.join('；')
+      || listDisplay.reasons.join('；')
       || '上游已返回结果，但当前标的与时间窗口没有命中研报或公告。'
     : '先确认股票代码和时间范围，再决定是否扩大窗口或切换资讯分组。';
   const primaryEmptyLabel = primaryDataUnavailable ? '数据不可用' : hasResearchQuery ? '真实无数据' : '等待输入';

@@ -11,7 +11,7 @@ import {
   buildResultContractMeta,
   callToolWithContract,
 } from '../common/tool-contracts';
-import { buildDataQuality, degradedDataQuality, trustedDataQuality } from '../common/data-quality';
+import { buildDataQuality, degradedDataQuality, trustedDataQuality, unavailableDataQuality } from '../common/data-quality';
 
 export type NormalizedFlowItem = {
   date: string; name: string; netInflow: number | null; mainInflow: number | null;
@@ -41,7 +41,13 @@ export class FundFlowService {
 
     const attempts: Array<Record<string, unknown>> = [{ code: stockCode }];
 
-    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = await this.callWithArgs('get_stock_fund_flow', attempts);
+    let call: Awaited<ReturnType<FundFlowService['callWithArgs']>>;
+    try {
+      call = await this.callWithArgs('get_stock_fund_flow', attempts);
+    } catch (error) {
+      return this.buildStockFundFlowUnavailableResult(stockCode, cacheKey, ttlSeconds, error);
+    }
+    const { payload, argsMatched, canonicalArgs, aliasHits, canonicalTool } = call;
     const root = this.unwrapPayload(payload);
     const data = this.asRecord(root);
     // MCP returns a single flat object, not an array — wrap it
@@ -337,7 +343,17 @@ export class FundFlowService {
       '净额',
     ]) ?? mainNet;
     return {
-      date: String(item.date ?? item.trade_date ?? item.Date ?? options.fallbackDate ?? ''),
+      date: String(
+        item.date
+        ?? item.trade_date
+        ?? item.tradeDate
+        ?? item.Date
+        ?? item['交易日期']
+        ?? item['日期']
+        ?? item['时间']
+        ?? options.fallbackDate
+        ?? '',
+      ),
       name: String(item.name ?? item.sector_name ?? item.concept_name ?? item.block_name ?? item.industry ?? ''),
       changePercent: this.pickNum(item, [
         'changePercent',
@@ -431,6 +447,74 @@ export class FundFlowService {
       sources: [{ name: sourceName, status: 'empty', sampleCount: 0 }],
       qualityFlags: [`${sourceName}_empty_result`],
     });
+  }
+
+  private buildStockFundFlowUnavailableResult(
+    stockCode: string,
+    cacheKey: string,
+    ttlSeconds: number,
+    error: unknown,
+  ) {
+    const detail = buildMcpTransportFailureDetail(this.mcp.getTransportSnapshot(), {
+      acceptanceStatus: 'degraded',
+      path: '/fund-flow/stock',
+      upstream: this.extractUpstreamDetail(error),
+    });
+    const fetchedAt = new Date().toISOString();
+    const reason = this.summarizeFundFlowFailure(error);
+    return {
+      data: { flows: [] },
+      meta: { fetchedAt, cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      degraded: true,
+      message: `${stockCode} 个股资金流暂时不可用，页面已保留为空结果并展示原因。`,
+      fallback_reason: ['stock_fund_flow_unavailable', detail.transport.fallback_reason].filter(Boolean),
+      fallback_used: true,
+      result_contract: buildResultContract({
+        summary: `${stockCode} 个股资金流暂时不可用，页面不会把空资金流当作真实结果。`,
+        status: 'unavailable',
+        availableViews: ['summary', 'next_step'],
+        evidence: [
+          { label: '股票代码', value: stockCode },
+          { label: '样本数', value: '0' },
+        ],
+        riskNotes: [reason],
+        freshness: { updatedAt: fetchedAt, label: '资金流降级时间' },
+        platformMeta: {
+          sourceTool: 'get_stock_fund_flow',
+          referencePath: '/fund-flow/stock',
+          sourceChain: ['get_stock_fund_flow'],
+          degraded: true,
+          fallbackReason: [reason],
+          freshnessLabel: '资金流降级时间',
+        },
+      }),
+      contract_meta: buildResultContractMeta({
+        canonicalTool: 'get_stock_fund_flow',
+        canonicalArgs: { code: stockCode },
+        argsMatched: {},
+        aliasHits: [],
+      }),
+      data_quality: unavailableDataQuality('get_stock_fund_flow', reason, {
+        emptyReason: '个股资金流上游暂时不可用，未返回可验证资金流样本',
+        qualityFlags: ['stock_fund_flow_unavailable'],
+      }),
+      detail,
+      transport: detail.transport,
+    };
+  }
+
+  private summarizeFundFlowFailure(error: unknown) {
+    const detail = this.extractUpstreamDetail(error);
+    const detailRecord = this.asRecord(detail);
+    const message = [
+      detailRecord.message,
+      detailRecord.detail,
+      error instanceof Error ? error.message : String(error),
+    ].map((item) => String(item ?? '').trim()).filter(Boolean).join('；');
+    if (/timed?\s*out|timeout|request timed out|mcp error -32001/i.test(message)) {
+      return '资金流服务当前响应较慢，本次未返回完整样本。';
+    }
+    return '资金流服务暂时不可用，本次未返回可验证样本。';
   }
 
   private async callWithArgs(primaryTool: string, attempts: Array<Record<string, unknown>>) {

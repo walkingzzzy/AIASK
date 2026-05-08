@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from .common import _safe_float, _safe_int, _string
 from .confidence import evaluate_execution_audit_gate
+
+# ── 样本量分层晋级常量（可通过环境变量覆盖）─────────────────────────────
+_MIN_PRIMARY_EFFECTIVE_N: int = max(
+    10, int(os.getenv("INCUBATION_MIN_PRIMARY_EFFECTIVE_N", "30") or "30")
+)
+_MIN_COVERAGE_RATIO: float = max(
+    0.10, min(1.0, float(os.getenv("INCUBATION_MIN_COVERAGE_RATIO", "0.35") or "0.35"))
+)
+_GRADUATION_PRIMARY_EFFECTIVE_N: int = max(
+    20, int(os.getenv("INCUBATION_GRADUATION_PRIMARY_EFFECTIVE_N", "70") or "70")
+)
+_GRADUATION_SECONDARY_EFFECTIVE_N: int = max(
+    10, int(os.getenv("INCUBATION_GRADUATION_SECONDARY_EFFECTIVE_N", "35") or "35")
+)
+_GRADUATION_COVERAGE_RATIO: float = max(
+    0.25, min(1.0, float(os.getenv("INCUBATION_GRADUATION_COVERAGE_RATIO", "0.80") or "0.80"))
+)
+# ── Skill trend 衰减阈值 ───────────────────────────────────────────────
+_SKILL_TREND_CRITICAL: float = -0.010   # 每期衰减超过 1% → 降级
+_SKILL_TREND_WARNING: float = -0.005    # 每期衰减超过 0.5% → 预警
+# ─────────────────────────────────────────────────────────────────────────
 
 def resolve_incubation_pipeline_stage(
     signal_quality: Optional[dict],
@@ -28,19 +50,19 @@ def resolve_incubation_pipeline_stage(
     coverage_ratio = _safe_float(quality.get("coverage_ratio")) or 0.0
     stability_gap = _safe_float(quality.get("stability_gap"))
 
-    if primary_effective_n < 20 or coverage_ratio < 0.25:
+    if primary_effective_n < _MIN_PRIMARY_EFFECTIVE_N or coverage_ratio < _MIN_COVERAGE_RATIO:
         signal_stage_without_execution_gate = "warmup"
     elif (recent_primary_skill_lcb is not None and recent_primary_skill_lcb < -0.03) or (
         stability_gap is not None and stability_gap > 0.10
     ) or open_risk_count >= 3:
         signal_stage_without_execution_gate = "failed"
     elif (
-        primary_effective_n >= 60
-        and secondary_effective_n >= 30
+        primary_effective_n >= _GRADUATION_PRIMARY_EFFECTIVE_N
+        and secondary_effective_n >= _GRADUATION_SECONDARY_EFFECTIVE_N
         and (primary_skill_lcb or 0.0) > 0.0
         and (secondary_skill_lcb or 0.0) > 0.0
         and (recent_primary_skill_lcb or 0.0) > 0.0
-        and coverage_ratio >= 0.75
+        and coverage_ratio >= _GRADUATION_COVERAGE_RATIO
         and (stability_gap is None or stability_gap <= 0.05)
         and open_risk_count == 0
     ):
@@ -58,6 +80,16 @@ def resolve_incubation_pipeline_stage(
 
     if signal_stage_without_execution_gate == "warmup":
         return "warmup"
+
+    # ── Skill trend 衰减降级 (Gap 2) ────────────────────────────────
+    skill_trend_5d = _safe_float(quality.get("skill_trend_5d"))
+    if (
+        skill_trend_5d is not None
+        and skill_trend_5d < _SKILL_TREND_CRITICAL
+        and signal_stage_without_execution_gate in {"candidate", "graduation_ready"}
+    ):
+        signal_stage_without_execution_gate = "observe"
+    # ─────────────────────────────────────────────────────────────────
 
     gate_status = execution_audit_gate_status
     if not gate_status:

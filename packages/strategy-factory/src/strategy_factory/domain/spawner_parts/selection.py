@@ -214,6 +214,8 @@
     ) -> dict:
         source_counts: Dict[str, int] = {}
         strategy_type_counts: Dict[str, int] = {}
+        empty_param_candidate_count = 0
+        materialized_param_candidate_count = 0
         quota_fill_count = 0
         signal_trigger_count = 0
         threshold_hit_count = 0
@@ -227,9 +229,14 @@
             generation_reason = candidate.get("generation_reason") or {}
             source = str(generation_reason.get("source") or "unknown")
             strategy_type = str(candidate.get("strategy_type") or "unknown")
+            params = dict(candidate.get("params") or {})
             parameter_source = str(candidate.get("parameter_source") or "").strip()
             source_counts[source] = source_counts.get(source, 0) + 1
             strategy_type_counts[strategy_type] = strategy_type_counts.get(strategy_type, 0) + 1
+            if not has_executable_params(strategy_type, params):
+                empty_param_candidate_count += 1
+            if params.get("strategy_instance_hash") and params.get("param_materialization_version"):
+                materialized_param_candidate_count += 1
             if parameter_source:
                 parameter_source_counts[parameter_source] = parameter_source_counts.get(parameter_source, 0) + 1
             threshold_hit_count += len(candidate.get("trigger_thresholds") or [])
@@ -259,12 +266,21 @@
         )
         trend_cluster_count = StrategySpawner._trend_cluster_count(candidates)
         diversification_debt = StrategySpawner._diversification_debt(candidates)
+        coverage_target = 12 if SPAWNER_TARGET_TOTAL >= 16 else 8
+        strategy_type_coverage_count = len(strategy_type_counts)
+        dominant_type_count = max(strategy_type_counts.values()) if strategy_type_counts else 0
+        single_type_dominance_ratio = round(dominant_type_count / len(candidates), 4) if candidates else 0.0
         return {
             "summary": {
                 "policy_version": get_spawn_policy_version(),
                 "candidate_count": len(candidates),
                 "source_counts": source_counts,
                 "strategy_type_counts": strategy_type_counts,
+                "strategy_type_coverage_count": strategy_type_coverage_count,
+                "single_type_dominance_ratio": single_type_dominance_ratio,
+                "empty_param_candidate_count": empty_param_candidate_count,
+                "materialized_param_candidate_count": materialized_param_candidate_count,
+                "coverage_target_met": strategy_type_coverage_count >= coverage_target,
                 "quota_fill_count": quota_fill_count,
                 "signal_trigger_count": signal_trigger_count,
                 "threshold_hit_count": threshold_hit_count,

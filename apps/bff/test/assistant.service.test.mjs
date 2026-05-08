@@ -9,7 +9,7 @@ const cacheStub = {
   set: async () => {},
 };
 
-test('AssistantService.analyzeWorkflow surfaces MCP failure instead of fabricating a workflow card', async () => {
+test('AssistantService.analyzeWorkflow degrades gracefully when MCP returns a failed workflow payload', async () => {
   const service = new AssistantService(
     {
       callTool: async (tool) => {
@@ -20,15 +20,30 @@ test('AssistantService.analyzeWorkflow surfaces MCP failure instead of fabricati
     cacheStub,
   );
 
-  await assert.rejects(
-    () => service.analyzeWorkflow('600519'),
-    (error) => {
-      const response = error.getResponse?.();
-      assert.equal(response?.message, 'MCP analyze_stock_workflow 调用失败');
-      assert.match(String(response?.detail ?? ''), /workflow offline/);
-      return true;
+  const response = await service.analyzeWorkflow('600519');
+  assert.equal(response.card?.action, 'watch');
+  assert.match(response.card?.summary ?? '', /AI 诊断暂时没有拿到完整结论/);
+  assert.equal(response.raw?.data?.availability_status, 'unavailable');
+  assert.equal(response.result_contract?.status, 'unavailable');
+  assert.equal(response.result_contract?.recommendedActions?.[0]?.actionId, 'global.open-stock-detail');
+});
+
+test('AssistantService.analyzeWorkflow degrades gracefully when MCP transport times out', async () => {
+  const service = new AssistantService(
+    {
+      callTool: async (tool) => {
+        assert.equal(tool, 'analyze_stock_workflow');
+        throw new Error('MCP error -32001: Request timed out');
+      },
     },
+    cacheStub,
   );
+
+  const response = await service.analyzeWorkflow('600519');
+  assert.equal(response.card?.action, 'watch');
+  assert.match(response.card?.summary ?? '', /AI 诊断暂时没有拿到完整结论/);
+  assert.equal(response.raw?.data?.availability_status, 'unavailable');
+  assert.match(response.result_contract?.platformMeta?.fallbackReason?.join(' / ') ?? '', /响应较慢/);
 });
 
 test('AssistantService.shouldBuy emits additive result_contract for unified result workbench', async () => {
@@ -55,7 +70,9 @@ test('AssistantService.shouldBuy emits additive result_contract for unified resu
   assert.equal(response.result_contract?.platformMeta?.sourceTool, 'should_i_buy');
   assert.equal(response.result_contract?.workbenchTask?.kind, 'assistant-result');
   assert.equal(response.result_contract?.skillSuggestions?.length, 3);
-  assert.equal(response.result_contract?.recommendedActions?.[0]?.actionId, 'assistant.open-copilot-followup');
+  assert.equal(response.result_contract?.recommendedActions?.[0]?.actionId, 'global.open-stock-detail');
+  assert.equal(response.result_contract?.recommendedActions?.[0]?.payload?.code, '600519');
+  assert.equal(response.result_contract?.recommendedActions?.[1]?.actionId, 'assistant.open-copilot-followup');
   assert.match(
     response.result_contract?.recommendedLinks?.map((item) => item.label).join(' / ') ?? '',
     /去工厂运行态/,

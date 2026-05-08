@@ -8,7 +8,6 @@ import { ErrorState, LoadingState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStableSearchParams } from '@/hooks/use-stable-search-params';
-import { apiKeys } from '@/lib/query-keys';
 import { parseCoreChainAcceptanceResponse } from '../lib/contracts';
 import type {
   StrategyCoreChainAcceptanceResponse,
@@ -101,7 +100,7 @@ export default function StrategyCoreChainDiagnosticsPage() {
     refetchInterval: 30000,
   });
   const runStepApi = useApiMutation<Record<string, unknown>>({
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '链路动作已执行，正在刷新诊断状态',
     onSuccess: () => {
       void diagnosticsQ.refetch();

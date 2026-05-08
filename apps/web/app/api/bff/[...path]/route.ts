@@ -7,6 +7,7 @@ const HOP_BY_HOP_HEADERS = new Set([
   'keep-alive',
   'transfer-encoding',
 ]);
+const UPSTREAM_TIMEOUT_MS = 65_000;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,6 +56,11 @@ function jsonResponse(status: number, body: Record<string, unknown>) {
   return Response.json(body, { status });
 }
 
+function isStreamingPath(pathSegments: string[]) {
+  const path = `/${pathSegments.join('/')}`;
+  return path === '/chat/completions';
+}
+
 async function proxy(request: Request, context: { params: { path?: string[] } }) {
   const pathSegments = context.params.path ?? [];
   const upstreamUrl = buildUpstreamUrl(request.url, pathSegments);
@@ -63,6 +69,11 @@ async function proxy(request: Request, context: { params: { path?: string[] } })
     method === 'GET' || method === 'HEAD'
       ? undefined
       : Buffer.from(await request.arrayBuffer());
+  const streaming = isStreamingPath(pathSegments);
+  const upstreamController = streaming ? null : new AbortController();
+  const upstreamTimer = upstreamController
+    ? setTimeout(() => upstreamController.abort(new DOMException('BFF upstream timeout', 'AbortError')), UPSTREAM_TIMEOUT_MS)
+    : null;
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -71,7 +82,7 @@ async function proxy(request: Request, context: { params: { path?: string[] } })
       body,
       cache: 'no-store',
       redirect: 'manual',
-      signal: request.signal,
+      signal: streaming ? request.signal : upstreamController?.signal,
     });
 
     const headers = copyResponseHeaders(upstream);
@@ -91,8 +102,19 @@ async function proxy(request: Request, context: { params: { path?: string[] } })
       headers,
     });
   } catch (error) {
-    if (request.signal.aborted || isAbortLikeError(error)) {
+    if (streaming && (request.signal.aborted || isAbortLikeError(error))) {
       return new Response(null, { status: 499, statusText: 'Client Closed Request' });
+    }
+    if (upstreamController?.signal.aborted) {
+      return jsonResponse(504, {
+        success: false,
+        acceptanceStatus: 'degraded',
+        error: {
+          code: 'BFF_PROXY_UPSTREAM_TIMEOUT',
+          message: 'BFF 代理等待上游服务响应较慢，请稍后重试',
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      });
     }
     return jsonResponse(503, {
       success: false,
@@ -102,6 +124,8 @@ async function proxy(request: Request, context: { params: { path?: string[] } })
         detail: error instanceof Error ? error.message : String(error),
       },
     });
+  } finally {
+    if (upstreamTimer) clearTimeout(upstreamTimer);
   }
 }
 

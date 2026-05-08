@@ -17,10 +17,11 @@ class _FakeAcquire:
 
 
 class _FakePaperConn:
-    def __init__(self, *, account: dict, positions: list[dict], trades: list[dict]):
+    def __init__(self, *, account: dict, positions: list[dict], trades: list[dict], nav_rows: list[dict] | None = None):
         self.account = dict(account)
         self.positions = [dict(item) for item in positions]
         self.trades = [dict(item) for item in trades]
+        self.nav_rows = [dict(item) for item in (nav_rows or [])]
 
     def _find_position(self, account_id: str, code: str):
         for row in self.positions:
@@ -36,6 +37,19 @@ class _FakePaperConn:
             account_id, code = args
             row = self._find_position(account_id, code)
             return dict(row) if row else None
+        if "SELECT 1 AS has_trade FROM paper_trades" in query:
+            account_id = args[0]
+            has_trade = any(str(row.get("account_id")) == str(account_id) for row in self.trades)
+            return {"has_trade": 1} if has_trade else None
+        if "SELECT total_value FROM paper_nav" in query:
+            account_id, nav_date = args
+            rows = [
+                dict(row)
+                for row in self.nav_rows
+                if str(row.get("account_id")) == str(account_id) and row.get("nav_date") < nav_date
+            ]
+            rows.sort(key=lambda item: item.get("nav_date"))
+            return rows[-1] if rows else None
         return None
 
     async def fetch(self, query: str, *args):
@@ -155,6 +169,22 @@ class _FakePaperConn:
                 self.account["current_capital"] = float(current_capital)
                 self.account["total_value"] = float(total_value)
             return
+        if "INSERT INTO paper_nav" in query:
+            account_id, nav_date, total_value, cash, market_value, daily_return = args[:6]
+            payload = {
+                "account_id": account_id,
+                "nav_date": nav_date,
+                "total_value": float(total_value),
+                "cash": float(cash),
+                "market_value": float(market_value),
+                "daily_return": float(daily_return),
+            }
+            for row in self.nav_rows:
+                if str(row.get("account_id")) == str(account_id) and row.get("nav_date") == nav_date:
+                    row.update(payload)
+                    return
+            self.nav_rows.append(payload)
+            return
         return
 
 
@@ -220,6 +250,7 @@ def test_reconcile_account_state_repairs_position_and_cash_drift():
     assert conn.positions[0]["quantity"] == 100
     assert conn.positions[0]["cost_price"] == 10.0
     assert conn.positions[0]["current_price"] == 12.0
+    assert conn.nav_rows == []
 
 
 def test_reconcile_account_state_keeps_consistent_snapshot_without_repair():
@@ -274,6 +305,7 @@ def test_reconcile_account_state_keeps_consistent_snapshot_without_repair():
     assert conn.account["total_value"] == 100200.0
     assert len(conn.positions) == 1
     assert conn.positions[0]["quantity"] == 100
+    assert conn.nav_rows == []
 
 
 def test_reconcile_account_state_refresh_prices_detects_valuation_drift(monkeypatch):
@@ -333,6 +365,11 @@ def test_reconcile_account_state_refresh_prices_detects_valuation_drift(monkeypa
     assert len(conn.positions) == 1
     assert conn.positions[0]["current_price"] == 11.0
     assert conn.positions[0]["market_value"] == 1100.0
+    assert len(conn.nav_rows) == 1
+    assert conn.nav_rows[0]["account_id"] == "acc-1"
+    assert conn.nav_rows[0]["total_value"] == 100100.0
+    assert conn.nav_rows[0]["cash"] == 99000.0
+    assert conn.nav_rows[0]["market_value"] == 1100.0
 
 
 def test_fill_order_recomputes_cash_from_trade_ledger(monkeypatch):
@@ -376,3 +413,8 @@ def test_fill_order_recomputes_cash_from_trade_ledger(monkeypatch):
     assert conn.positions[0]["stock_code"] == "600519"
     assert conn.positions[0]["quantity"] == 100
     assert conn.positions[0]["cost_price"] == 10.0
+    assert len(conn.nav_rows) == 1
+    assert conn.nav_rows[0]["account_id"] == "acc-1"
+    assert conn.nav_rows[0]["total_value"] == 100000.0
+    assert conn.nav_rows[0]["cash"] == 99000.0
+    assert conn.nav_rows[0]["market_value"] == 1000.0

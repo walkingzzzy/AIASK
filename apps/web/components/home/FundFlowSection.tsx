@@ -4,7 +4,7 @@ import { SectionCard, KpiCard, KpiGrid, Skeleton, SkeletonCard } from '@/compone
 import { GaugeChart, BarChart, COLORS } from '@/components/charts';
 import { DataQualityBanner, ErrorState, EmptyState } from '@/components/status-state';
 import { fmtPct } from '@/lib/data-utils';
-import type { DataTrust } from '@/lib/api';
+import { classifyDataTrustForDisplay, type DataTrust } from '@/lib/api';
 import Link from 'next/link';
 
 /* ------------------------------------------------------------------ */
@@ -40,10 +40,14 @@ export interface FundFlowSectionProps {
 
 export function FundFlowSection(props: FundFlowSectionProps) {
   const { dashboardVisibility, fmtAmount, fearGreedQ, fgValue, fgLabel, sectorFlowQ, sectorFlows, limitUpQ, luStats, northQ, latestNorth, northFlows } = props;
-  const fearGreedUnavailable = Boolean(fearGreedQ.trust?.degraded);
-  const sectorFlowUnavailable = Boolean(sectorFlowQ.trust?.degraded);
-  const limitUpUnavailable = Boolean(limitUpQ.trust?.degraded);
-  const northUnavailable = Boolean(northQ.trust?.degraded);
+  const fearGreedDisplay = classifyDataTrustForDisplay(fearGreedQ.data, fearGreedQ.trust);
+  const sectorFlowDisplay = classifyDataTrustForDisplay(sectorFlowQ.data, sectorFlowQ.trust);
+  const limitUpDisplay = classifyDataTrustForDisplay(limitUpQ.data, limitUpQ.trust);
+  const northDisplay = classifyDataTrustForDisplay(northQ.data, northQ.trust);
+  const fearGreedUnavailable = fearGreedDisplay.isBlocking;
+  const sectorFlowUnavailable = sectorFlowDisplay.isBlocking;
+  const limitUpUnavailable = limitUpDisplay.isBlocking;
+  const northUnavailable = northDisplay.isBlocking;
   const hasLimitUpStats = [luStats.totalLimitUp, luStats.total, luStats.count, luStats.firstBoard, luStats.first_board, luStats.successRate, luStats.success_rate]
     .some((value) => value != null && value !== '');
 

@@ -49,6 +49,24 @@ class _ReplayDb:
         return rows
 
 
+class _MultiCodeReplayDb:
+    async def get_signals(self, strategy_id: str, start_date=None, end_date=None, limit: int = 100):
+        return []
+
+    async def get_klines(self, code: str, start_date=None, end_date=None, limit=None):
+        rows_by_code = {
+            "600000": [
+                {"date": "2026-04-17", "close": 10.0},
+                {"date": "2026-04-18", "close": 10.5},
+            ],
+            "600519": [
+                {"date": "2026-04-20", "close": 1200.0},
+                {"date": "2026-04-21", "close": 1210.0},
+            ],
+        }
+        return rows_by_code.get(code, [])
+
+
 class _RecordingReplayService(StrategyIncubationService):
     def __init__(self):
         super().__init__()
@@ -135,6 +153,34 @@ def test_replay_strategy_history_replays_market_days_in_chronological_order():
     assert result["orders_filled"] == 3
     assert result["start_date"] == "2026-04-17"
     assert result["end_date"] == "2026-04-21"
+
+
+def test_replay_strategy_history_unions_market_days_from_multiple_target_codes():
+    service = _RecordingReplayService()
+    db = _MultiCodeReplayDb()
+    strategy = {
+        "id": "strategy-replay",
+        "target_symbols": ["600000", "600519"],
+    }
+
+    result = asyncio.run(
+        service.replay_strategy_history(
+            db,
+            strategy,
+            start_date=date(2026, 4, 17),
+            end_date=date(2026, 4, 21),
+            include_market_days=True,
+            run_acceptance=False,
+        )
+    )
+
+    assert service.replayed_dates == [
+        date(2026, 4, 17),
+        date(2026, 4, 18),
+        date(2026, 4, 20),
+        date(2026, 4, 21),
+    ]
+    assert result["replayed_days"] == 4
 
 
 def test_replay_strategy_history_can_force_close_open_positions_at_window_end():

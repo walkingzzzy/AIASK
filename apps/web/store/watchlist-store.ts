@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ensureBffAvailability } from '@/lib/bff-availability';
 import { hasLoggedInHint } from '@/lib/auth';
 import { authedFetch, buildApiError, rejectFallbackPayload } from '@/lib/api';
+import { dispatchFrontendDataEffects } from '@/lib/data-effects';
 
 export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
@@ -175,6 +176,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     });
     if (synced == null) return;
     await get().syncFromServer(true);
+    dispatchFrontendDataEffects(['watchlist.changed']);
   },
 
   remove: async (code, groupId) => {
@@ -198,6 +200,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
 
     if (results.some((result) => result == null)) return;
     await get().syncFromServer(true);
+    dispatchFrontendDataEffects(['watchlist.changed']);
   },
 
   toggle: async (code, name) => {
@@ -214,6 +217,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     if (created == null) return null;
     const createdId = readCreatedGroupId(created, id);
     await get().syncFromServer(true);
+    dispatchFrontendDataEffects(['watchlist.changed']);
     return createdId;
   },
 
@@ -229,6 +233,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       );
       if (deleted == null) return;
       await get().syncFromServer(true);
+      dispatchFrontendDataEffects(['watchlist.changed']);
     }
   },
 
@@ -236,6 +241,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     const next = get().groups.map((g, i) => (i === 0 ? { ...g, items: [] } : g));
     saveLocal(next);
     set({ groups: next });
+    dispatchFrontendDataEffects(['watchlist.changed']);
   },
 
   syncFromServer: async (force = false) => {

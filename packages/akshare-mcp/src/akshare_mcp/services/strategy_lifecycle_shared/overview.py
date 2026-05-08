@@ -33,6 +33,10 @@ from .execution_quality import (
     derive_signal_quality,
 )
 from .incubation import (
+    _GRADUATION_COVERAGE_RATIO,
+    _GRADUATION_PRIMARY_EFFECTIVE_N,
+    _GRADUATION_SECONDARY_EFFECTIVE_N,
+    _MIN_PRIMARY_EFFECTIVE_N,
     _coerce_date,
     get_latest_quality_report,
     resolve_incubation_action_plan,
@@ -49,6 +53,7 @@ from .prediction_trace import (
     _extract_semantic_lineage,
     _load_prediction_trace_entity_chain,
 )
+from akshare_mcp.services.signal_trade_attribution import build_attribution_summary
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +506,13 @@ async def build_incubation_overview(
         validation_grade=validation_grade,
         quality_report=quality_report,
     )
+    # ── 信号-交易归因 (Gap 5) ──────────────────────────────────────
+    trade_attribution = None
+    try:
+        trade_attribution = await build_attribution_summary(db, strategy["id"])
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────
     runtime_playbook_provenance = _extract_runtime_playbook_provenance(strategy)
     semantic_lineage = _extract_semantic_lineage(strategy)
     execution_lineage = await _build_execution_lineage(db, strategy["id"])
@@ -586,8 +598,8 @@ async def build_incubation_overview(
         risk_flags.append(f"Sharpe {sharpe:.2f} < 0")
     if mdd > DEPRECATION_THRESHOLDS["mdd_critical"]:
         risk_flags.append(f"\u6700\u5927\u56de\u64a4 {mdd:.1%} > {DEPRECATION_THRESHOLDS['mdd_critical']:.0%}")
-    if primary_effective_n < 20:
-        message = f"\u4e3b\u7a97\u53e3{primary_horizon}D\u6709\u6548\u6837\u672c {primary_effective_n} < 20"
+    if primary_effective_n < _MIN_PRIMARY_EFFECTIVE_N:
+        message = f"\u4e3b\u7a97\u53e3{primary_horizon}D\u6709\u6548\u6837\u672c {primary_effective_n} < {_MIN_PRIMARY_EFFECTIVE_N}"
         if high_precision_stage_override:
             risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
         else:
@@ -648,8 +660,8 @@ async def build_incubation_overview(
             continue
         period_blockers: list[str] = []
         period_risk_flags: list[str] = []
-        if days == primary_horizon and primary_effective_n < 20:
-            message = f"{label}\u6709\u6548\u6837\u672c {effective_n} < 20"
+        if days == primary_horizon and primary_effective_n < _MIN_PRIMARY_EFFECTIVE_N:
+            message = f"{label}\u6709\u6548\u6837\u672c {effective_n} < {_MIN_PRIMARY_EFFECTIVE_N}"
             if high_precision_stage_override:
                 period_risk_flags.append(f"{message}\uff08high_precision \u517c\u5bb9\u89c2\u5bdf\u9879\uff09")
             else:
@@ -718,12 +730,12 @@ async def build_incubation_overview(
         strict_live_alignment_status = "unknown"
 
     promotion_ready = (
-        primary_effective_n >= 60
-        and secondary_effective_n >= 30
+        primary_effective_n >= _GRADUATION_PRIMARY_EFFECTIVE_N
+        and secondary_effective_n >= _GRADUATION_SECONDARY_EFFECTIVE_N
         and (primary_skill_lcb or 0.0) > 0.0
         and (secondary_skill_lcb or 0.0) > 0.0
         and (recent_primary_skill_lcb or 0.0) > 0.0
-        and coverage_ratio >= 0.75
+        and coverage_ratio >= _GRADUATION_COVERAGE_RATIO
         and (stability_gap is None or stability_gap <= 0.05)
         and execution_hard_gate_passed
         and risk_hard_gate_status == "passed"
@@ -932,6 +944,7 @@ async def build_incubation_overview(
         "runtime_control_mode": action_plan.get("runtime_control_mode"),
         "revision_required": bool(action_plan.get("revision_required")),
         "cleanup_recommended": bool(action_plan.get("cleanup_recommended")),
+        "trade_attribution": trade_attribution,
     }
     result["as_of"] = date.today().isoformat()
     result["recomputed"] = True

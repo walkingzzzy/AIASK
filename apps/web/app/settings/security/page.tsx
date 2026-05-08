@@ -27,9 +27,21 @@ export default function SecurityPage() {
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const statusQ = useApiQuery<Record<string, unknown>>('/auth/2fa/status');
   const setupApi = useApiMutation<TotpSetup>({ successToast: false, errorToast: false });
-  const verifyApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
-  const disableApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
-  const preferencesApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
+  const verifyApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.security.updated'],
+  });
+  const disableApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.security.updated'],
+  });
+  const preferencesApi = useApiMutation<Record<string, unknown>>({
+    successToast: false,
+    errorToast: false,
+    effects: ['auth.security.updated'],
+  });
 
   const [totpSetup, setTotpSetup] = useState<TotpSetup | null>(null);
   const [verifyCode, setVerifyCode] = useState('');
@@ -70,7 +82,6 @@ export default function SecurityPage() {
       await verifyApi.triggerAsync('/auth/2fa/verify', { method: 'POST' }, { code: verifyCode });
       setTotpSetup(null);
       setMessage({ type: 'success', text: '双因素认证已启用' });
-      await Promise.all([statusQ.refetch(), profileQ.refetch()]);
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : '验证码错误' });
     } finally {
@@ -84,7 +95,6 @@ export default function SecurityPage() {
       await disableApi.triggerAsync('/auth/2fa/disable', { method: 'POST' });
       setTotpSetup(null);
       setMessage({ type: 'success', text: '双因素认证已关闭' });
-      await Promise.all([statusQ.refetch(), profileQ.refetch()]);
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : '关闭 2FA 失败' });
     }
@@ -104,7 +114,6 @@ export default function SecurityPage() {
         },
       });
       setMessage({ type: 'success', text: `已保存“${TRANSACTION_CONFIRM_ITEMS.find((item) => item.key === key)?.label ?? '交易确认'}”设置` });
-      await profileQ.refetch();
     } catch (error) {
       setTransactionConfirmations(previous);
       setMessage({ type: 'error', text: error instanceof Error ? error.message : '保存设置失败' });

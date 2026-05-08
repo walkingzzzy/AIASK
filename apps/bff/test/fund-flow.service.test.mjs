@@ -76,3 +76,106 @@ test('FundFlowService.getSectorFundFlow keeps price change separate from fund-fl
   assert.equal(flows[1].netInflow, null);
   assert.equal(flows[1].mainInflow, null);
 });
+
+test('FundFlowService.getStockFundFlow preserves values when upstream omits trade date', async () => {
+  const service = new FundFlowService(
+    {
+      callTool: async (tool) => {
+        assert.equal(tool, 'get_stock_fund_flow');
+        return {
+          success: true,
+          data: {
+            name: '华工科技',
+            net_inflow: 26000000,
+            main_net_inflow: 12000000,
+            small_net_inflow: -3000000,
+          },
+        };
+      },
+      getTransportSnapshot: () => ({}),
+    },
+    {
+      resolveTtl: (_scope, fallbackSeconds) => fallbackSeconds,
+      getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
+      set: async () => {},
+    },
+  );
+
+  const response = await service.getStockFundFlow('000988');
+  const flows = response.data.flows;
+
+  assert.equal(flows.length, 1);
+  assert.equal(flows[0].date, '');
+  assert.equal(flows[0].netInflow, 26000000);
+  assert.equal(flows[0].mainInflow, 12000000);
+  assert.equal(response.result_contract?.status, 'ready');
+  assert.equal(response.data_quality?.status, 'partial');
+  assert.deepEqual(response.data_quality?.quality_flags, ['fund_flow_date_missing']);
+});
+
+test('FundFlowService.getStockFundFlow recognizes Chinese trade-date fields', async () => {
+  const service = new FundFlowService(
+    {
+      callTool: async (tool) => {
+        assert.equal(tool, 'get_stock_fund_flow');
+        return {
+          success: true,
+          data: [
+            {
+              name: '华工科技',
+              交易日期: '2026-04-30',
+              净流入: 26000000,
+              主力净流入: 12000000,
+            },
+          ],
+        };
+      },
+      getTransportSnapshot: () => ({}),
+    },
+    {
+      resolveTtl: (_scope, fallbackSeconds) => fallbackSeconds,
+      getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
+      set: async () => {},
+    },
+  );
+
+  const response = await service.getStockFundFlow('000988');
+  const flows = response.data.flows;
+
+  assert.equal(flows[0].date, '2026-04-30');
+  assert.equal(response.data_quality?.status, 'trusted');
+});
+
+test('FundFlowService.getStockFundFlow returns structured unavailable result on upstream failure', async () => {
+  const service = new FundFlowService(
+    {
+      callTool: async (tool) => {
+        assert.equal(tool, 'get_stock_fund_flow');
+        throw new Error('MCP error -32001: Request timed out');
+      },
+      getTransportSnapshot: () => ({
+        requestedTransport: 'auto',
+        transportKind: 'stdio',
+        degraded: true,
+        fallbackReason: 'streamable_http_connect_failed',
+        sourceChain: ['streamable-http', 'stdio'],
+        endpoint: null,
+        lastError: 'connect ECONNREFUSED 127.0.0.1:8000',
+        healthyConnections: 1,
+        dedicatedConnections: 0,
+      }),
+    },
+    {
+      resolveTtl: (_scope, fallbackSeconds) => fallbackSeconds,
+      getWithMeta: async () => ({ value: null, meta: { backend: 'none' } }),
+      set: async () => {},
+    },
+  );
+
+  const response = await service.getStockFundFlow('000988');
+
+  assert.equal(response.result_contract?.status, 'unavailable');
+  assert.equal(response.data_quality?.status, 'unavailable');
+  assert.deepEqual(response.data.flows, []);
+  assert.match(response.result_contract?.riskNotes?.join(' / ') ?? '', /响应较慢/);
+});

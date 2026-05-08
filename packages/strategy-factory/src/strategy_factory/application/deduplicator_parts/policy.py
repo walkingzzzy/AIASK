@@ -127,11 +127,37 @@
         vector_candidate_count = 0
         vector_candidate_trimmed_count = 0
         intra_batch_checks = 0
+        structural_hash_checks = 0
+        structural_hash_duplicates = 0
+        intra_batch_duplicate_count = 0
+        persisted_hash_duplicate_count = 0
+        seen_strategy_hashes: dict[str, dict] = {}
 
         for candidate, persisted_detail, persisted_metrics in analyzed_candidates:
             strategy_type = self._normalize_strategy_type(candidate.get("strategy_type"))
             metrics = dict(persisted_metrics or {})
             detail = dict(persisted_detail or {})
+            identity = structural_identity(candidate)
+            strategy_hash = str(candidate.get("strategy_instance_hash") or dict(candidate.get("params") or {}).get("strategy_instance_hash") or identity.get("strategy_instance_hash") or "").strip()
+            structural_hash_checks += 1
+            if strategy_hash and strategy_hash in seen_strategy_hashes:
+                detail = {
+                    "duplicate": True,
+                    "duplicate_level": "intra_batch_hash",
+                    "match_type": "structural_hash",
+                    "refresh_mode": None,
+                    "reason": "strategy_instance_hash duplicates another candidate in the same batch",
+                    "threshold": self.THRESHOLD,
+                    "vector_threshold": self.VECTOR_THRESHOLD,
+                    "vector_checked": False,
+                    "fallback_dedup_mode": "structural_hash",
+                    "strategy_instance_hash": strategy_hash,
+                    "matched_name": seen_strategy_hashes[strategy_hash].get("name") or seen_strategy_hashes[strategy_hash].get("strategy_type"),
+                }
+                intra_batch_duplicate_count += 1
+                structural_hash_duplicates += 1
+            elif strategy_hash:
+                seen_strategy_hashes[strategy_hash] = candidate
             intra_bucket = [item for item in unique if self._normalize_strategy_type(item.get("strategy_type")) == strategy_type]
             if intra_bucket and not detail.get("duplicate"):
                 intra_batch_checks += 1
@@ -145,8 +171,12 @@
             coarse_target_hit_count += int(metrics.get("coarse_target_hit_count") or 0)
             vector_candidate_count += int(metrics.get("vector_candidate_count") or 0)
             vector_candidate_trimmed_count += int(metrics.get("vector_candidate_trimmed_count") or 0)
+            structural_hash_checks += int(metrics.get("structural_hash_checks") or 0)
+            structural_hash_duplicates += int(metrics.get("structural_hash_duplicates") or 0)
             if detail.get("vector_checked"):
                 vector_checks += 1
+            if str(detail.get("duplicate_level") or "") == "persisted_hash":
+                persisted_hash_duplicate_count += 1
             if detail.get("duplicate"):
                 dropped.append({**candidate})
                 continue
@@ -199,6 +229,12 @@
                 "vector_checks": vector_checks,
                 "vector_candidate_count": vector_candidate_count,
                 "vector_candidate_trimmed_count": vector_candidate_trimmed_count,
+                "pgvector_available": bool(self._vector_gateway is not None or self._vector_engine is not None),
+                "fallback_dedup_mode": "structural_hash" if vector_checks == 0 else None,
+                "structural_hash_checks": structural_hash_checks,
+                "structural_hash_duplicates": structural_hash_duplicates,
+                "intra_batch_duplicate_count": intra_batch_duplicate_count,
+                "persisted_hash_duplicate_count": persisted_hash_duplicate_count,
                 "candidate_analysis_concurrency": max(1, int(_compat_setting("DEDUP_CONCURRENCY", DEDUP_CONCURRENCY) or 1)),
                 "persisted_existing_phase_count": len(analyzed_candidates),
                 "intra_batch_check_count": intra_batch_checks,

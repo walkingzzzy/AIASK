@@ -172,11 +172,12 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
     const valuationFailed = valuationCall.argsMatched.degraded === true;
     const hasFinancials = Object.values(financials).some((value) => value != null);
     const hasValuation = Object.values(valuation).some((value) => value != null);
+    const displayFallbackReasons = summarizeFundamentalFallbackReasons(fallbackReasons);
     const dataQuality = buildDataQuality({
       status: fallbackReasons.length > 0
         ? (hasFinancials || hasValuation ? 'partial' : 'unavailable')
         : (hasFinancials || hasValuation ? 'trusted' : 'empty'),
-      reasons: fallbackReasons,
+      reasons: displayFallbackReasons,
       qualityFlags: fallbackReasons.length > 0 ? ['fundamental_source_unavailable'] : [],
       emptyReason: !hasFinancials && !hasValuation ? '基本面与估值源均未返回可用字段。' : null,
       sources: [
@@ -234,7 +235,7 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
           { label: 'PB', value: resultValue(valuation.pb) },
           { label: '市值', value: resultValue(valuation.marketCap) },
         ],
-        riskNotes: fallbackReasons,
+        riskNotes: displayFallbackReasons,
         freshness: extractFreshness({ meta: { fetchedAt } }, null, '基本面抓取时间'),
         platformMeta: extractPlatformMeta(
           {
@@ -242,7 +243,7 @@ export async function getOverview(service: FundamentalServiceApiHost, code: stri
               fetchedAt,
               source_chain: ['get_financials', 'get_valuation_metrics'],
               degraded: fallbackReasons.length > 0,
-              fallback_reason: fallbackReasons,
+              fallback_reason: displayFallbackReasons,
             },
           },
           {
@@ -812,4 +813,27 @@ function resultValue(value: unknown): string {
     return '-';
   }
   return String(value);
+}
+
+function summarizeFundamentalFallbackReasons(reasons: string[]) {
+  return Array.from(
+    new Set(
+      reasons
+        .map((reason) => {
+          if (/get_financials/i.test(reason)) {
+            return /timed?\s*out|timeout|request timed out/i.test(reason)
+              ? '财务指标源响应较慢，已保留其它可用基本面字段。'
+              : '财务指标源暂时不可用，已保留其它可用基本面字段。';
+          }
+          if (/get_valuation_metrics/i.test(reason)) {
+            return /timed?\s*out|timeout|request timed out/i.test(reason)
+              ? '估值指标源响应较慢，已保留其它可用估值字段。'
+              : '估值指标源暂时不可用，已保留其它可用估值字段。';
+          }
+          return reason;
+        })
+        .map((reason) => reason.trim())
+        .filter(Boolean),
+    ),
+  );
 }

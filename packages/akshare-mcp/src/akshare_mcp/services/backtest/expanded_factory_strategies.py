@@ -887,6 +887,65 @@ class MarginDivergenceStrategy(IStrategy):
         return signals
 
 
+class TopNEquityPortfolioStrategy(IStrategy):
+    """Executable proxy for factory top-N equity portfolios.
+
+    The portfolio engine still handles allocation across names. This runtime
+    supplies a conservative rebalance/exit mask so top-N candidates are not
+    whitelisted-only shells during Gate-1 and Gate-2 diagnostics.
+    """
+
+    def __init__(self, rebalance_days: int = 20, lookback: int = 20):
+        self.rebalance_days = rebalance_days
+        self.lookback = lookback
+
+    @classmethod
+    def name(cls) -> str:
+        return "topn_equity_portfolio"
+
+    @classmethod
+    def description(cls) -> str:
+        return "Top-N 股票组合策略：按固定频率重平衡目标权重，并用趋势弱化作为退出代理"
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return {"rebalance_days": self.rebalance_days, "lookback": self.lookback}
+
+    def set_parameters(self, params: Dict[str, Any]) -> None:
+        rebalance_rule = dict(params.get("rebalance_rule") or {})
+        self.rebalance_days = max(
+            3,
+            int(
+                params.get("rebalance_days")
+                or params.get("frequency_days")
+                or rebalance_rule.get("frequency_days")
+                or self.rebalance_days
+            ),
+        )
+        self.lookback = max(5, int(params.get("lookback", self.lookback) or self.lookback))
+
+    def generate_signals(self, closes: np.ndarray, volumes: Optional[np.ndarray] = None) -> np.ndarray:
+        signals = np.zeros(len(closes), dtype=np.int8)
+        if len(closes) < max(self.lookback, self.rebalance_days) + 2:
+            return signals
+        moving_average = _rolling_mean(closes, self.lookback)
+        in_position = False
+        for i in range(self.lookback, len(closes)):
+            if not np.isfinite(moving_average[i]) or moving_average[i] <= 0 or closes[i] <= 0:
+                continue
+            rebalance_due = (i - self.lookback) % self.rebalance_days == 0
+            trend_ok = float(closes[i]) >= float(moving_average[i]) * 0.97
+            trend_broken = float(closes[i]) < float(moving_average[i]) * 0.92
+            if not in_position and rebalance_due and trend_ok:
+                signals[i] = 1
+                in_position = True
+            elif in_position and (trend_broken or rebalance_due):
+                signals[i] = -1
+                in_position = False
+        if in_position and len(closes) >= 2:
+            signals[-2] = -1
+        return signals
+
+
 __all__ = [
     "VolatilityBreakoutStrategy",
     "GapFillStrategy",
@@ -894,4 +953,5 @@ __all__ = [
     "SectorRotationStrategy",
     "NorthCapitalTrackStrategy",
     "MarginDivergenceStrategy",
+    "TopNEquityPortfolioStrategy",
 ]

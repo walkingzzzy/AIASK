@@ -40,6 +40,7 @@ type MarketMainWorkspaceProps = {
   tabErrorMessage: string | null;
   activePeriodLabel: string;
   chartDescription: string;
+  chartEmptyHint?: string | null;
   activeTaskLabel: string;
   activeChange: number;
   activeChangeTone: string;
@@ -58,6 +59,7 @@ export default function MarketMainWorkspace({
   tabErrorMessage,
   activePeriodLabel,
   chartDescription,
+  chartEmptyHint,
   activeTaskLabel,
   activeChange,
   activeChangeTone,
@@ -137,7 +139,7 @@ export default function MarketMainWorkspace({
                   variant="full"
                   className="w-full border-white/70 bg-white/44"
                   text="当前还没有可展示的 K 线"
-                  hint="请先输入并查询一只真实标的，或切换到指数、板块等无需个股代码的视图。"
+                  hint={chartEmptyHint ?? '请先输入并查询一只真实标的，或切换到指数、板块等无需个股代码的视图。'}
                   action={
                     <>
                       <button

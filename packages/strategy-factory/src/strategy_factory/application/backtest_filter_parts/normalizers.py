@@ -161,33 +161,35 @@
         strategy_type = str(candidate.get("strategy_type") or "unknown").strip().lower() or "unknown"
         research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
         evaluated_codes, target_codes, representative_codes, code_source, validation_focus = self._resolve_backtest_plan(candidate)
+        params = dict(candidate.get("params") or {})
+        identity = structural_identity(candidate)
+        if not params.get("strategy_instance_hash") or not params.get("tested_object_hash"):
+            params = materialize_strategy_params(
+                strategy_type,
+                params,
+                seed_context={"source": "backtest_filter_identity", "validation_focus": validation_focus},
+                slot_index=0,
+                targets=target_codes or _extract_target_codes_from_payload(candidate, limit=20),
+            )
+            candidate["params"] = params
+            identity = structural_identity({**candidate, "params": params})
+            candidate["strategy_instance_hash"] = params.get("strategy_instance_hash")
+            candidate["tested_object_hash"] = params.get("tested_object_hash")
+            candidate["candidate_contract_hash"] = params.get("candidate_contract_hash")
         contract_hash = build_candidate_contract_hash(candidate)
-        sanitized_params = dict(candidate.get("params") or {})
-        for key in (
-            "candidate_contract_hash",
-            "candidate_contract_snapshot",
-            "candidate_identity_signature",
-            "candidate_lineage_contract",
-            "dsl_signature",
-            "entry_exit_signature",
-            "execution_contract_hash",
-            "factor_signature",
-            "logic_signature",
-            "legacy_identity_partial",
-            "resolved_candidate_envelope",
-            "tested_object_hash",
-            "tested_object_backfill_incomplete",
-            "research_task",
-            "requested_target_symbols",
-            "target_symbols",
-            "stock_pool",
-            "had_explicit_research_task",
-        ):
-            sanitized_params.pop(key, None)
+        sanitized_params = executable_param_payload(strategy_type, params)
+        targets = target_payload(candidate, params)
         signature_payload = {
             "candidate_contract_hash": contract_hash,
+            "candidate_contract_hash_param": params.get("candidate_contract_hash"),
+            "strategy_instance_hash": params.get("strategy_instance_hash") or identity.get("strategy_instance_hash"),
+            "tested_object_hash": params.get("tested_object_hash") or identity.get("tested_object_hash"),
+            "param_fingerprint": params.get("param_fingerprint") or identity.get("param_fingerprint"),
+            "target_fingerprint": params.get("target_fingerprint") or identity.get("target_fingerprint"),
+            "logic_fingerprint": params.get("logic_fingerprint") or identity.get("logic_fingerprint"),
             "strategy_type": strategy_type,
             "params": sanitized_params,
+            "target_identity": targets,
             "research_task": research_task,
             "target_codes": target_codes,
             "representative_codes": representative_codes,
@@ -244,10 +246,21 @@
     @staticmethod
     def _annotate_shared_result(candidate: dict, result: dict, *, key: str, reused: bool, reuse_count: int) -> dict:
         payload = deepcopy(dict(result or {}))
+        params = dict(candidate.get("params") or {})
         payload["constraint_check"] = dict(candidate.get("constraint_check") or payload.get("constraint_check") or {})
         payload["shared_result_key"] = key
         payload["shared_result_reused"] = bool(reused)
         payload["shared_result_reuse_count"] = max(0, int(reuse_count or 0))
+        payload["strategy_instance_hash"] = params.get("strategy_instance_hash") or candidate.get("strategy_instance_hash")
+        payload["tested_object_hash"] = params.get("tested_object_hash") or candidate.get("tested_object_hash")
+        payload["cache_identity_fields"] = {
+            "strategy_instance_hash": payload.get("strategy_instance_hash"),
+            "tested_object_hash": payload.get("tested_object_hash"),
+            "candidate_contract_hash": params.get("candidate_contract_hash") or candidate.get("candidate_contract_hash"),
+            "param_fingerprint": params.get("param_fingerprint"),
+            "target_fingerprint": params.get("target_fingerprint"),
+            "logic_fingerprint": params.get("logic_fingerprint"),
+        }
         return payload
 
     def _apply_result_to_candidate(

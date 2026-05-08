@@ -73,9 +73,17 @@ export default function SettingsPage() {
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { critical: true });
   const logsQ = useApiQuery<Record<string, unknown>>(tab === 'security' ? '/audit/my-logs?limit=30' : null, { critical: true });
   const sessionsQ = useApiQuery<Record<string, unknown>>(tab === 'sessions' ? '/auth/sessions' : null, { critical: true });
-  const profileApi = useApiMutation<Record<string, unknown>>({ successToast: '个人资料已保存', critical: true });
+  const profileApi = useApiMutation<Record<string, unknown>>({
+    successToast: '个人资料已保存',
+    critical: true,
+    effects: ['auth.profile.updated'],
+  });
   const passwordApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
-  const revokeApi = useApiMutation<Record<string, unknown>>({ successToast: '会话已吊销', critical: true });
+  const revokeApi = useApiMutation<Record<string, unknown>>({
+    successToast: '会话已吊销',
+    critical: true,
+    effects: ['auth.sessions.changed'],
+  });
   const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
   const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false, critical: true });
 
@@ -162,7 +170,6 @@ export default function SettingsPage() {
       avatarUrl: String(profile.avatarUrl ?? existing.avatarUrl ?? payload.avatarUrl),
       preferences: readRecord(profile.preferences ?? existing.preferences),
     });
-    profileQ.refetch();
   }
 
   async function changePassword() {
@@ -208,7 +215,6 @@ export default function SettingsPage() {
 
   async function revokeSession(sessionId: string) {
     await revokeApi.triggerAsync('/auth/sessions/revoke', { method: 'POST' }, { sessionId });
-    await sessionsQ.refetch();
   }
 
   if (tab === 'account' && profileQ.isPending && !profileQ.data) {

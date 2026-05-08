@@ -48,6 +48,8 @@ export type UseApiQueryOptions<TData> = {
   critical?: boolean;
   /** 额外业务校验，返回错误文案则视为失败 */
   reject?: (raw: unknown) => string | null;
+  /** 关键查询中允许契约化空结果作为正常 EmptyState 展示 */
+  allowEmpty?: boolean;
   /** 覆盖 React Query retry；默认沿用全局配置 */
   retry?: boolean | number | ((failureCount: number, error: Error) => boolean);
   /** 覆盖默认请求超时；<=0 表示仅使用 React Query signal */
@@ -73,6 +75,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
     nonFatal = false,
     critical = false,
     reject,
+    allowEmpty = false,
     retry,
     timeoutMs,
   } = options;
@@ -120,7 +123,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
           resp = await authedFetch(path!, init, { redirectOnUnauthorized });
         } catch (error) {
           if (timedOut && isAbortLikeError(error)) {
-            throw new Error(`请求超时: ${requestTimeoutMs}ms @ ${path}`);
+            throw new Error(`服务响应较慢，已超过 ${Math.round(requestTimeoutMs / 1000)} 秒；可稍后刷新或重试 @ ${path}`);
           }
           throw error;
         }
@@ -140,7 +143,7 @@ export function useApiQuery<TData = unknown>(path: string | null, options: UseAp
         }
         const rawData = unwrapped.data;
         if (critical) {
-          const fallbackReason = rejectFallbackPayload(rawData);
+          const fallbackReason = rejectFallbackPayload(rawData, { allowEmpty });
           if (fallbackReason) {
             throw new Error(`关键数据不可用: ${fallbackReason} @ ${path}${trace}`);
           }

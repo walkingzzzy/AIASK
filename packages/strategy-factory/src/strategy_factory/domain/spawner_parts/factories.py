@@ -99,8 +99,8 @@
         signal_candidates += self._expand_signal_variants(snapshot, signal_candidates)
         quota_candidates = self._fill_gaps(snapshot, signal_candidates)
         candidates = [
-            self._apply_snapshot_target_alignment(candidate, snapshot)
-            for candidate in [*signal_candidates, *quota_candidates]
+            self._materialize_candidate_identity(self._apply_snapshot_target_alignment(candidate, snapshot), snapshot, idx)
+            for idx, candidate in enumerate([*signal_candidates, *quota_candidates])
         ]
         self.last_report = self._build_spawn_report(
             candidates,
@@ -111,6 +111,44 @@
             source_budget_weights=source_budget_weights,
         )
         return candidates
+
+    @classmethod
+    def _materialize_candidate_identity(cls, candidate: dict, snapshot: dict, slot_index: int) -> dict:
+        item = dict(candidate or {})
+        strategy_type = str(item.get("strategy_type") or "").strip().lower()
+        if not strategy_type:
+            return item
+        targets = _normalize_target_codes(
+            [
+                item.get("target_symbols"),
+                item.get("requested_target_symbols"),
+                item.get("stock_pool"),
+                dict(item.get("research_task") or {}).get("target_symbols"),
+                dict(item.get("research_task") or {}).get("stock_pool"),
+            ],
+            limit=20,
+        )
+        seed_context = {
+            "snapshot_date": dict(snapshot or {}).get("date") or dict(snapshot or {}).get("snapshot_date") or dict(snapshot or {}).get("as_of"),
+            "source": dict(item.get("generation_reason") or {}).get("source") or item.get("parameter_source"),
+            "spawn_reason": item.get("spawn_reason"),
+            "generation_reason": dict(item.get("generation_reason") or {}),
+        }
+        params = materialize_strategy_params(
+            strategy_type,
+            dict(item.get("params") or {}),
+            seed_context=seed_context,
+            slot_index=slot_index,
+            targets=targets,
+            variant_existing=True,
+            refresh_signal_rule=True,
+        )
+        item["params"] = params
+        item["strategy_instance_hash"] = params.get("strategy_instance_hash")
+        item["tested_object_hash"] = params.get("tested_object_hash")
+        item["candidate_contract_hash"] = params.get("candidate_contract_hash")
+        item["parameter_source"] = params.get("parameter_source")
+        return item
 
     def _build_signal_batches(self, snapshot: dict) -> Dict[str, List[dict]]:
         return {
@@ -268,6 +306,7 @@
         event_ready = StrategySpawner._event_research_ready(snapshot)
         has_historical_distribution = ParameterDistributionRegistry.from_snapshot(snapshot).has_any_distribution()
         target_total = SPAWNER_TARGET_TOTAL
+        target_coverage = 12 if SPAWNER_TARGET_TOTAL >= 16 else 8
         if completion_ratio < 1.0:
             target_total = min(target_total, max(4, int(round(SPAWNER_TARGET_TOTAL * 0.75))))
         budget = max(0, target_total - max(0, int(signal_candidate_count or 0)))
@@ -276,8 +315,8 @@
                 return 0
             return min(budget, SPAWNER_EVENT_FILL_BUDGET_MAX)
         if signal_candidate_count <= 0 and not has_historical_distribution:
-            return min(budget, 1)
-        return min(budget, SPAWNER_FILL_BUDGET_MAX)
+            return min(budget, max(1, target_coverage))
+        return min(budget, max(SPAWNER_FILL_BUDGET_MAX, target_coverage))
 
     @staticmethod
     def _signal_expansion_budget(snapshot: dict, signal_candidate_count: int) -> int:
@@ -422,4 +461,8 @@
         else:
             out.append(self._make("ma_cross", {"short_period": 5, "long_period": 20}, f"恐贪{fear_greed}，中性标准均线", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
             out.append(self._make("momentum", {"lookback": 20, "threshold": 0.02}, f"恐贪{fear_greed}，中性标准动量", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
+            out.append(self._make("volatility_breakout", {"lookback": 20, "threshold": 0.022}, f"恐贪{fear_greed}，中性波动突破", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
+            out.append(self._make("quality_factor", {"lookback": 72, "buy_quantile": 0.82, "sell_quantile": 0.18}, f"恐贪{fear_greed}，中性质量精选", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
+            out.append(self._make("sector_rotation", {"lookback": 20, "factor_weights": {"momentum": 0.45, "quality": 0.30, "value": 0.25}}, f"恐贪{fear_greed}，中性行业轮动", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
+            out.append(self._make("north_capital_track", {"lookback": 15, "threshold": 0.015}, f"恐贪{fear_greed}，中性北向跟踪", source="fear_greed", trigger_signal={"field": "fear_greed_index", "value": fear_greed, "level": "neutral"}, trigger_thresholds=[self._threshold("fear_greed_index", ">=", 30, fear_greed, "恐贪下界"), self._threshold("fear_greed_index", "<=", 70, fear_greed, "恐贪上界")]))
         return out

@@ -16,6 +16,7 @@ from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.constants import DEDUP_CONCURRENCY
 from ..domain.strategy_profile import infer_candidate_strategy_profile
 from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
+from ..domain.strategy_identity import structural_identity, has_executable_params
 
 if TYPE_CHECKING:
     from ..api.contracts import VectorSearchGateway

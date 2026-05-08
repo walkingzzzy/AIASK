@@ -11,7 +11,6 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import type { CopilotActionPayload } from '@/lib/copilot-types';
-import { apiKeys } from '@/lib/query-keys';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import {
   DETAIL_TABS,
@@ -141,14 +140,14 @@ export default function StrategyDetailPage() {
   const editTagsRef = useRef<HTMLInputElement | null>(null);
   const editParamsTextRef = useRef<HTMLTextAreaElement | null>(null);
   const editFactorWeightsTextRef = useRef<HTMLTextAreaElement | null>(null);
-  const updateStrategyApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '个人策略已更新' });
-  const forkStrategyApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已复制为我的策略' });
+  const updateStrategyApi = useApiMutation({ effects: ['strategy.changed'], successToast: '个人策略已更新' });
+  const forkStrategyApi = useApiMutation({ effects: ['strategy.changed'], successToast: '已复制为我的策略' });
   const aiSuggestionApi = useApiMutation<PersonalStrategySuggestionResponse>({ successToast: 'AI 修改建议已生成' });
-  const aiOptimizeApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: 'AI 优化已完成' });
-  const paperSessionApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
+  const aiOptimizeApi = useApiMutation({ effects: ['strategy.changed'], successToast: 'AI 优化已完成' });
+  const paperSessionApi = useApiMutation({ effects: ['strategy.changed'] });
   const deletePersonalStrategyApi = useApiMutation({
     critical: true,
-    invalidates: [apiKeys.strategy()],
+    effects: ['strategy.changed'],
     successToast: '个人策略已删除',
   });
   const personalStrategyContextQ = useApiQuery<PersonalStrategyContextResponse>(

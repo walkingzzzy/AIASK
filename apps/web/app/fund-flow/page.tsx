@@ -10,6 +10,7 @@ import { useMobile } from '@/hooks/use-mobile';
 import { RESPONSIVE_BREAKPOINTS } from '@/lib/responsive-layout';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { DataQualityBanner, ErrorState, LoadingState } from '@/components/status-state';
+import { classifyDataTrustForDisplay } from '@/lib/api';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import FundFlowHero from '@/app/fund-flow/components/fund-flow-hero';
 import FundFlowTabPanels from '@/app/fund-flow/components/fund-flow-tab-panels';
@@ -34,7 +35,7 @@ export default function FundFlowPage() {
 
   const effectiveStockPath = stockPath ?? autoStockPath;
 
-  const strictRead = { critical: true, retry: false, timeoutMs: 15_000 };
+  const strictRead = { critical: true, allowEmpty: true, retry: false, timeoutMs: 30_000 };
   const stockQ = useApiQuery<unknown>(effectiveStockPath, strictRead);
   const sectorQ = useApiQuery<unknown>(sectorPath, strictRead);
   const conceptQ = useApiQuery<unknown>(conceptPath, strictRead);
@@ -69,6 +70,8 @@ export default function FundFlowPage() {
   };
   const loading = tabLoading[tab];
   const error = tabError[tab];
+  const marginDisplay = classifyDataTrustForDisplay(marginQ.data, marginQ.trust);
+  const northHoldingDisplay = classifyDataTrustForDisplay(northHoldingQ.data, northHoldingQ.trust);
   const activeQuery = tab === 'stock'
     ? stockQ
     : tab === 'sector'
@@ -80,10 +83,11 @@ export default function FundFlowPage() {
           : tab === 'dragon'
             ? dragonQ
             : tab === 'margin'
-              ? (marginQ.trust.degraded ? marginQ : marginRankQ)
+              ? (marginDisplay.isBlocking ? marginQ : marginRankQ)
               : tab === 'block-trades'
                 ? blockTradesQ
-                : (northHoldingQ.trust.degraded ? northHoldingQ : northTopQ);
+                : (northHoldingDisplay.isBlocking ? northHoldingQ : northTopQ);
+  const activeDisplay = classifyDataTrustForDisplay(activeQuery.data, activeQuery.trust);
   const activeTabLabel = FUND_FLOW_TABS.find((item) => item.key === tab)?.label ?? '资金流向';
   const activeCode = trimmedCode || resolvedCode || '';
   const activeCodeLabel = activeCode || '未选择标的';
@@ -92,6 +96,8 @@ export default function FundFlowPage() {
     ? '加载中'
     : error
       ? '需重试'
+      : activeDisplay.isBlocking
+        ? '不可用'
       : trustStatus === 'partial'
         ? '部分降级'
         : trustStatus === 'degraded'
@@ -245,7 +251,7 @@ export default function FundFlowPage() {
     platformMeta: {
       sourceTool: 'fund-flow',
       sourceChain: ['fund-flow', tab],
-      degraded: Boolean(error) || activeQuery.trust.degraded,
+      degraded: Boolean(error) || activeDisplay.isBlocking || activeDisplay.shouldShowQualityBanner,
       fallbackReason: error ? [error] : degradedReasons.length ? degradedReasons : undefined,
     },
     workbenchTask: defaultWorkbenchTask(
@@ -287,7 +293,7 @@ export default function FundFlowPage() {
     <PageContainer className="app-theme-market">
       <FundFlowHero
         activeTabLabel={activeTabLabel}
-        hasError={Boolean(error) || activeQuery.trust.degraded}
+        hasError={Boolean(error) || activeDisplay.isBlocking}
         loading={loading}
         tabStatusLabel={tabStatusLabel}
         activeCodeLabel={activeCodeLabel}

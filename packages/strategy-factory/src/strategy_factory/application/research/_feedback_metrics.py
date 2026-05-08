@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date, datetime
 from typing import Any, List
 
 from .._budget_feedback import normalize_text, resolve_feedback_metrics
@@ -422,11 +423,168 @@ def resolve_promotion_review_outcome(
     return status, recommendation
 
 
+def _safe_int_value(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _parse_metric_date(value: Any) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for parser in (
+        date.fromisoformat,
+        lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")).date(),
+    ):
+        try:
+            return parser(raw)
+        except Exception:
+            continue
+    return None
+
+
+def _quality_report_summary_flags(quality_report: dict[str, Any] | None) -> dict[str, Any]:
+    report = dict(quality_report or {})
+    summary = dict(report.get("summary") or {})
+    gate = dict(report.get("quality_gate") or {})
+    validation = dict(report.get("validation_report") or {})
+    rating = dict(validation.get("rating") or {})
+
+    def _first(*keys: str) -> Any:
+        for key in keys:
+            for source in (summary, gate, report, rating):
+                value = source.get(key)
+                if value not in (None, "", [], {}):
+                    return value
+        return None
+
+    return {
+        "validation_grade": _first("validation_grade", "grade"),
+        "raw_validation_grade": _first("raw_validation_grade", "grade"),
+        "validation_total_score": _first("validation_total_score", "total_score"),
+        "raw_validation_total_score": _first("raw_validation_total_score", "total_score"),
+        "strict_incubation_ready": _first("strict_incubation_ready"),
+        "live_candidate_ready": _first("live_candidate_ready"),
+        "report_degraded": bool(
+            report.get("report_degraded")
+            or validation.get("report_degraded")
+            or validation.get("diagnostic_only")
+        ),
+        "evidence_mode": (
+            str(
+                report.get("evidence_mode")
+                or summary.get("validation_evidence_mode")
+                or validation.get("evidence_mode")
+                or ""
+            ).strip()
+            or None
+        ),
+    }
+
+
+def _derive_metric_row_evidence(
+    builder_cls,
+    metric_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    rows = [dict(item or {}) for item in list(metric_rows or []) if isinstance(item, dict)]
+    if not rows:
+        return {}
+    dated_rows = [(_parse_metric_date(row.get("metric_date")), row) for row in rows]
+    dates = [item_date for item_date, _row in dated_rows if item_date is not None]
+    span_days = (max(dates) - min(dates)).days + 1 if dates else len(rows)
+    observed_forward_days: set[int] = set()
+    if any(row.get("daily_return") is not None or row.get("nav") is not None for row in rows):
+        observed_forward_days.add(1)
+    if any(
+        row.get(field) is not None
+        for row in rows
+        for field in (
+            "hit_rate_5d",
+            "hit_rate_lcb_5d",
+            "skill_lcb_5d",
+            "effective_n_5d",
+            "forward_ic_5d",
+            "forward_sharpe_5d",
+        )
+    ):
+        observed_forward_days.add(5)
+    for days in builder_cls.EVIDENCE_FORWARD_WINDOWS:
+        if days in observed_forward_days:
+            continue
+        if span_days >= int(days) and len(rows) >= min(int(days), 5):
+            observed_forward_days.add(int(days))
+
+    latest = rows[0]
+    max_total_signals = max(_safe_int_value(row.get("total_signals")) for row in rows)
+    total_trade_like_events = max(
+        _safe_int_value(row.get("total_trades"))
+        or _safe_int_value(row.get("total_orders"))
+        for row in rows
+    )
+    metric_sample_count = max(len(rows), max_total_signals, total_trade_like_events)
+    effective_n_5d = _safe_int_value(latest.get("effective_n_5d"), metric_sample_count)
+    hit_rate_5d = builder_cls._safe_float(latest.get("hit_rate_5d"), 0.5)
+    skill_lcb_5d = latest.get("skill_lcb_5d")
+    if skill_lcb_5d is None and latest.get("hit_rate_lcb_5d") is not None:
+        skill_lcb_5d = builder_cls._safe_float(latest.get("hit_rate_lcb_5d")) - 0.5
+
+    by_horizon: dict[str, dict[str, Any]] = {}
+    for days in builder_cls.EVIDENCE_FORWARD_WINDOWS:
+        if int(days) == 5:
+            sample_count = max(metric_sample_count, effective_n_5d)
+            by_horizon[str(days)] = {
+                "horizon": int(days),
+                "hit_rate": hit_rate_5d if latest.get("hit_rate_5d") is not None else None,
+                "hit_rate_lcb": latest.get("hit_rate_lcb_5d"),
+                "skill_lcb": skill_lcb_5d,
+                "recent_hit_rate": latest.get("recent_hit_rate_5d"),
+                "recent_skill_lcb": latest.get("recent_skill_lcb_5d") if latest.get("recent_skill_lcb_5d") is not None else skill_lcb_5d,
+                "stability_gap": latest.get("stability_gap_5d"),
+                "sample_count": sample_count,
+                "effective_n": effective_n_5d,
+                "forward_ic": latest.get("forward_ic_5d"),
+                "forward_sharpe": latest.get("forward_sharpe_5d"),
+            }
+        else:
+            sample_count = metric_sample_count if int(days) in observed_forward_days else 0
+            by_horizon[str(days)] = {
+                "horizon": int(days),
+                "sample_count": sample_count,
+                "effective_n": min(sample_count, max(1, int(sample_count / max(int(days), 1)))) if sample_count else 0,
+                "hit_rate": None,
+                "skill_lcb": None,
+                "recent_skill_lcb": None,
+                "forward_ic": None,
+                "forward_sharpe": None,
+            }
+
+    return {
+        "metric_row_count": len(rows),
+        "metric_span_days": span_days,
+        "total_signals": metric_sample_count,
+        "observed_forward_days": sorted(day for day in observed_forward_days if day in builder_cls.EVIDENCE_FORWARD_WINDOWS),
+        "by_horizon": by_horizon,
+        "primary_skill_lcb": skill_lcb_5d,
+        "recent_primary_skill_lcb": latest.get("recent_skill_lcb_5d") if latest.get("recent_skill_lcb_5d") is not None else skill_lcb_5d,
+        "stability_gap": latest.get("stability_gap_5d"),
+    }
+
+
 def fallback_feedback_evidence_overview(
     builder_cls,
     signal_stats: dict[str, Any] | None = None,
+    *,
+    metric_rows: list[dict[str, Any]] | None = None,
+    quality_report: dict[str, Any] | None = None,
+    degraded_reason: str | None = None,
 ) -> dict[str, Any]:
     payload = dict(signal_stats or {})
+    metric_evidence = _derive_metric_row_evidence(builder_cls, metric_rows)
+    quality_flags = _quality_report_summary_flags(quality_report)
     observed_forward_days: list[int] = []
     for days in builder_cls.EVIDENCE_FORWARD_WINDOWS:
         day_key = str(days)
@@ -437,12 +595,21 @@ def fallback_feedback_evidence_overview(
         )
         if has_signal:
             observed_forward_days.append(days)
-    total_signals = builder_cls._safe_int(payload.get("total_signals"))
+    observed_forward_days = list(
+        dict.fromkeys([*observed_forward_days, *list(metric_evidence.get("observed_forward_days") or [])])
+    )
+    total_signals = max(
+        builder_cls._safe_int(payload.get("total_signals")),
+        _safe_int_value(metric_evidence.get("total_signals")),
+    )
     minimum_signal_count = 10
     missing_forward_days = [
         days for days in builder_cls.EVIDENCE_FORWARD_WINDOWS if days not in observed_forward_days
     ]
-    promotion_ready = total_signals >= minimum_signal_count and not missing_forward_days
+    quality_ready = bool(quality_flags.get("strict_incubation_ready")) or bool(
+        quality_flags.get("live_candidate_ready")
+    )
+    promotion_ready = bool(quality_ready or (total_signals >= minimum_signal_count and not missing_forward_days))
     primary_horizon = 5 if 5 in builder_cls.EVIDENCE_FORWARD_WINDOWS else builder_cls.EVIDENCE_FORWARD_WINDOWS[0]
 
     def _resolve_metric(metric_name: str, *, fallback: float | None = None) -> float | None:
@@ -461,16 +628,41 @@ def fallback_feedback_evidence_overview(
         if builder_cls.EVIDENCE_FORWARD_WINDOWS
         else 0.0
     )
+    metric_by_horizon = dict(metric_evidence.get("by_horizon") or {})
+    primary_metric_bucket = dict(metric_by_horizon.get(str(primary_horizon)) or {})
     signal_quality = {
         "primary_horizon": primary_horizon,
         "coverage_ratio": coverage_ratio,
-        "primary_skill_lcb": _resolve_metric("skill_lcb", fallback=0.0),
+        "primary_skill_lcb": _resolve_metric(
+            "skill_lcb",
+            fallback=primary_metric_bucket.get("skill_lcb") if primary_metric_bucket else 0.0,
+        ),
         "recent_primary_skill_lcb": _resolve_metric(
             "recent_skill_lcb",
-            fallback=_resolve_metric("skill_lcb", fallback=0.0),
+            fallback=primary_metric_bucket.get("recent_skill_lcb") if primary_metric_bucket else _resolve_metric("skill_lcb", fallback=0.0),
         ),
-        "stability_gap": _resolve_metric("stability_gap", fallback=0.0),
+        "stability_gap": _resolve_metric(
+            "stability_gap",
+            fallback=primary_metric_bucket.get("stability_gap") if primary_metric_bucket else 0.0,
+        ),
+        "by_horizon": metric_by_horizon,
     }
+    evidence_mode = "signal_stats"
+    diagnostic_only = False
+    report_degraded = False
+    if metric_evidence and not payload:
+        evidence_mode = "incubation_metric_proxy"
+        diagnostic_only = True
+        report_degraded = True
+    elif metric_evidence and total_signals > builder_cls._safe_int(payload.get("total_signals")):
+        evidence_mode = "signal_stats_with_incubation_metric_proxy"
+        diagnostic_only = True
+        report_degraded = True
+    if quality_flags.get("report_degraded"):
+        diagnostic_only = True
+        report_degraded = True
+    if quality_flags.get("evidence_mode") and evidence_mode == "signal_stats":
+        evidence_mode = str(quality_flags.get("evidence_mode"))
     return {
         "total_signals": total_signals,
         "minimum_signal_count": minimum_signal_count,
@@ -482,9 +674,50 @@ def fallback_feedback_evidence_overview(
         "stability_gap": signal_quality.get("stability_gap"),
         "coverage_ratio": coverage_ratio,
         "signal_quality": signal_quality,
+        "validation_grade": quality_flags.get("validation_grade"),
+        "raw_validation_grade": quality_flags.get("raw_validation_grade"),
+        "validation_total_score": quality_flags.get("validation_total_score"),
+        "raw_validation_total_score": quality_flags.get("raw_validation_total_score"),
+        "strict_incubation_ready": quality_flags.get("strict_incubation_ready"),
+        "live_candidate_ready": quality_flags.get("live_candidate_ready"),
+        "evidence_mode": evidence_mode,
+        "diagnostic_only": diagnostic_only,
+        "report_degraded": report_degraded,
+        "degraded_reason": degraded_reason or ("incubation_metric_proxy" if report_degraded else None),
+        "metric_row_count": int(metric_evidence.get("metric_row_count") or 0),
+        "metric_span_days": int(metric_evidence.get("metric_span_days") or 0),
         "blockers": [],
         "risk_flags": [],
     }
+
+
+async def _load_latest_quality_report(db, strategy_id: str) -> dict[str, Any]:
+    for method_name, args in (
+        ("list_strategy_quality_reports", (strategy_id,)),
+        ("get_latest_strategy_quality_report", (strategy_id,)),
+        ("get_strategy_quality_report", (strategy_id,)),
+    ):
+        method = getattr(db, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            if method_name == "list_strategy_quality_reports":
+                rows = await method(*args, limit=1)
+                return dict((list(rows or []) or [{}])[0] or {})
+            return dict(await method(*args) or {})
+        except Exception:
+            continue
+    return {}
+
+
+def _overview_needs_metric_fallback(overview: dict[str, Any]) -> bool:
+    payload = dict(overview or {})
+    return (
+        _safe_int_value(payload.get("total_signals")) <= 0
+        or not list(payload.get("observed_forward_days") or [])
+        or _safe_int_value(payload.get("metric_row_count")) <= 0
+        and bool(payload.get("diagnostic_only"))
+    )
 
 
 async def load_feedback_evidence_overview(
@@ -493,6 +726,7 @@ async def load_feedback_evidence_overview(
     strategy: dict[str, Any],
     *,
     lifecycle_runtime_provider,
+    metric_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     strategy_id = str((strategy or {}).get("id") or "").strip()
     if not strategy_id:
@@ -500,21 +734,69 @@ async def load_feedback_evidence_overview(
 
     lifecycle_runtime = lifecycle_runtime_provider()
     build_overview = getattr(lifecycle_runtime, "build_incubation_overview", None)
-    if callable(build_overview):
-        try:
-            overview = await build_overview(db, strategy)
-            if isinstance(overview, dict) and overview:
-                return overview
-        except Exception:
-            pass
-
     signal_stats = await _call_optional_async(
         db,
         "get_signal_stats",
         strategy_id,
         default={},
     )
-    return fallback_feedback_evidence_overview(builder_cls, signal_stats)
+    quality_report = await _load_latest_quality_report(db, strategy_id)
+    if callable(build_overview):
+        try:
+            overview = await build_overview(db, strategy)
+            if isinstance(overview, dict) and overview:
+                if not _overview_needs_metric_fallback(overview) or not metric_rows:
+                    return overview
+                fallback = fallback_feedback_evidence_overview(
+                    builder_cls,
+                    signal_stats,
+                    metric_rows=metric_rows,
+                    quality_report=quality_report,
+                    degraded_reason="incubation_overview_missing_signal_evidence",
+                )
+                merged = dict(overview)
+                for key in (
+                    "total_signals",
+                    "observed_forward_days",
+                    "missing_forward_days",
+                    "coverage_ratio",
+                    "promotion_ready",
+                    "skill_lcb",
+                    "recent_skill_lcb",
+                    "stability_gap",
+                    "signal_quality",
+                    "validation_grade",
+                    "raw_validation_grade",
+                    "validation_total_score",
+                    "raw_validation_total_score",
+                    "strict_incubation_ready",
+                    "live_candidate_ready",
+                    "evidence_mode",
+                    "diagnostic_only",
+                    "report_degraded",
+                    "degraded_reason",
+                    "metric_row_count",
+                    "metric_span_days",
+                ):
+                    value = fallback.get(key)
+                    if value not in (None, "", [], {}):
+                        if key in {"total_signals", "metric_row_count", "metric_span_days"}:
+                            merged[key] = max(_safe_int_value(merged.get(key)), _safe_int_value(value))
+                        elif key in {"observed_forward_days"}:
+                            merged[key] = list(dict.fromkeys([*list(merged.get(key) or []), *list(value or [])]))
+                        else:
+                            merged[key] = value
+                merged["feedback_evidence_augmented"] = True
+                return merged
+        except Exception:
+            pass
+    return fallback_feedback_evidence_overview(
+        builder_cls,
+        signal_stats,
+        metric_rows=metric_rows,
+        quality_report=quality_report,
+        degraded_reason="incubation_overview_unavailable",
+    )
 
 
 def accumulate_feedback_bucket(
@@ -587,6 +869,18 @@ def accumulate_feedback_bucket(
     if total_signals <= 0:
         accumulator["zero_signal_strategy_count"] = int(
             accumulator.get("zero_signal_strategy_count") or 0
+        ) + 1
+    if overview.get("diagnostic_only") or overview.get("report_degraded"):
+        accumulator["fallback_evidence_strategy_count"] = int(
+            accumulator.get("fallback_evidence_strategy_count") or 0
+        ) + 1
+        mode = normalize_text(overview.get("evidence_mode")) or "unknown"
+        evidence_mode_counts = dict(accumulator.get("fallback_evidence_mode_counts") or {})
+        evidence_mode_counts[mode] = int(evidence_mode_counts.get(mode) or 0) + 1
+        accumulator["fallback_evidence_mode_counts"] = evidence_mode_counts
+    if overview.get("feedback_evidence_augmented"):
+        accumulator["feedback_evidence_augmented_count"] = int(
+            accumulator.get("feedback_evidence_augmented_count") or 0
         ) + 1
     if total_signals < minimum_signal_count:
         accumulator["low_signal_strategy_count"] = int(
@@ -709,6 +1003,19 @@ def finalize_feedback_bucket(builder_cls, accumulator: dict[str, Any]) -> dict[s
         0,
         int(payload.get("evidence_debt_strategy_count") or 0),
     )
+    fallback_evidence_strategy_count = max(
+        0,
+        int(payload.get("fallback_evidence_strategy_count") or 0),
+    )
+    feedback_evidence_augmented_count = max(
+        0,
+        int(payload.get("feedback_evidence_augmented_count") or 0),
+    )
+    fallback_evidence_mode_counts = {
+        normalize_text(key): int(value or 0)
+        for key, value in dict(payload.get("fallback_evidence_mode_counts") or {}).items()
+        if normalize_text(key)
+    }
     promotion_review_status_counts = {
         normalize_text(key): int(value or 0)
         for key, value in dict(payload.get("promotion_review_status_counts") or {}).items()
@@ -782,6 +1089,9 @@ def finalize_feedback_bucket(builder_cls, accumulator: dict[str, Any]) -> dict[s
         "promotion_review_coverage_ratio": promotion_review_coverage_ratio,
         "evidence_debt_strategy_count": evidence_debt_strategy_count,
         "evidence_debt_ratio": evidence_debt_ratio,
+        "fallback_evidence_strategy_count": fallback_evidence_strategy_count,
+        "feedback_evidence_augmented_count": feedback_evidence_augmented_count,
+        "fallback_evidence_mode_counts": fallback_evidence_mode_counts,
         "raw_validation_a_rate": round(
             int(raw_validation_grade_distribution.get("A") or 0) / strategy_count,
             4,

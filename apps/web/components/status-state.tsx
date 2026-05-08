@@ -52,10 +52,14 @@ export function DataQualityBanner({
   onRetry?: () => void;
   className?: string;
 }) {
-  if (!trust || !trust.degraded) return null;
-  const reasons = [...trust.reasons, ...trust.qualityFlags, trust.emptyReason]
+  if (!trust || !trust.degraded || trust.status === 'empty') return null;
+  const userReasons = [...trust.reasons, trust.emptyReason]
     .map((item) => String(item ?? '').trim())
-    .filter((item, index, list) => item.length > 0 && list.indexOf(item) === index)
+    .filter((item, index, list) => item.length > 0 && list.indexOf(item) === index);
+  const fallbackFlags = trust.qualityFlags
+    .map((item) => String(item ?? '').trim())
+    .filter((item, index, list) => item.length > 0 && list.indexOf(item) === index);
+  const reasons = (userReasons.length > 0 ? userReasons : fallbackFlags)
     .slice(0, 4);
   const sourceText = trust.sources.length > 0
     ? trust.sources
@@ -70,7 +74,7 @@ export function DataQualityBanner({
         <div className="min-w-0">
           <div className="text-xs font-semibold text-warning">{title} · {trust.status}</div>
           <div className="mt-1 text-xs leading-5 text-text-secondary">
-            {reasons.length > 0 ? reasons.join('；') : '上游返回了非可信或不完整数据，页面已停止按正常结果展示。'}
+            {reasons.length > 0 ? reasons.join('；') : '当前结果带有质量提示，请结合来源和样本范围解读。'}
           </div>
           {sourceText ? <div className="mt-1 text-[11px] text-text-muted">来源：{sourceText}</div> : null}
         </div>

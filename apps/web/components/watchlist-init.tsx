@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useStablePathname } from '@/hooks/use-stable-pathname';
 import { useBffAvailability } from '@/lib/bff-availability';
+import { getDataEffectEventName } from '@/lib/data-effects';
 import { useWatchlistStore } from '@/store/watchlist-store';
 import { hasLoggedInHint } from '@/lib/auth';
 import { isPublicPathname } from '@/lib/public-routes';
@@ -25,6 +26,19 @@ export function WatchlistInit() {
       void syncFromServer();
     }
   }, [bffAvailability.reachable, pathname, synced, syncFromServer]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleWatchlistChanged = () => {
+      if (isPublicPathname(pathname)) return;
+      if (!hasLoggedInHint()) return;
+      if (!bffAvailability.reachable) return;
+      void syncFromServer(true);
+    };
+    const eventName = getDataEffectEventName('watchlist.changed');
+    window.addEventListener(eventName, handleWatchlistChanged);
+    return () => window.removeEventListener(eventName, handleWatchlistChanged);
+  }, [bffAvailability.reachable, pathname, syncFromServer]);
 
   return null;
 }

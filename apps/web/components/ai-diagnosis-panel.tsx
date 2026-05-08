@@ -5,11 +5,13 @@ import { Badge } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 
 type DiagnosisResult = {
+    state: 'ready' | 'unavailable';
     recommendation: 'buy' | 'hold' | 'sell' | string;
     confidence: number | null;
     summary: string;
     factors: { name: string; signal: 'bullish' | 'bearish' | 'neutral'; detail: string }[];
     riskLevel: 'low' | 'medium' | 'high';
+    unavailableReason?: string | null;
 };
 
 const SIGNAL_COLORS = {
@@ -31,12 +33,50 @@ function normalizeConfidence(value: unknown): number | null {
     return Math.max(0, Math.min(100, percent));
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function toTextArray(value: unknown): string[] {
+    if (Array.isArray(value)) return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+    if (typeof value === 'string') return value.split(/[;；\n]/).map((item) => item.trim()).filter(Boolean);
+    return [];
+}
+
 function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
-    const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
-    const card = data.card && typeof data.card === 'object' ? data.card as Record<string, unknown> : null;
-    const raw = data.raw && typeof data.raw === 'object' ? data.raw as Record<string, unknown> : null;
-    const rawData = raw?.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : raw;
-    const summaryInfo = rawData?.summary && typeof rawData.summary === 'object' ? rawData.summary as Record<string, unknown> : null;
+    const data = asRecord(payload);
+    const card = asRecord(data.card);
+    const raw = asRecord(data.raw);
+    const rawData = asRecord(raw.data);
+    const resultContract = asRecord(data.result_contract);
+    const summaryInfo = asRecord(rawData.summary);
+    const platformMeta = asRecord(resultContract.platformMeta);
+    const availabilityStatus = String(
+        rawData.availability_status
+        ?? rawData.status
+        ?? resultContract.status
+        ?? '',
+    ).trim().toLowerCase();
+    const fallbackReason = [
+        ...toTextArray(platformMeta.fallbackReason),
+        ...toTextArray(rawData.risks),
+        String(rawData.message ?? '').trim(),
+    ].find(Boolean) ?? null;
+    if (availabilityStatus === 'unavailable') {
+        return {
+            state: 'unavailable',
+            recommendation: 'hold',
+            confidence: null,
+            summary: String(
+                rawData.recommendation_text
+                ?? card.summary
+                ?? 'AI 诊断暂时不可用，请稍后再试。',
+            ),
+            factors: [],
+            riskLevel: 'medium',
+            unavailableReason: fallbackReason,
+        };
+    }
     const rawRecommendation = String(
         card?.action ??
         rawData?.recommendation ??
@@ -121,6 +161,7 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
     const riskLevel = riskCount >= 5 ? 'high' : riskCount >= 2 ? 'medium' : 'low';
 
     return {
+        state: 'ready',
         recommendation: normalizedRecommendation,
         confidence,
         summary: String(
@@ -132,7 +173,16 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
         ),
         factors: factors.length > 0 ? factors : workflowFactors,
         riskLevel,
+        unavailableReason: null,
     };
+}
+
+function summarizeDiagnosisError(error: string | null) {
+    if (!error) return 'AI 诊断暂时不可用，请稍后再试。';
+    if (/timed?\s*out|timeout|request timed out|mcp error -32001/i.test(error)) {
+        return 'AI 诊断服务当前响应较慢，请稍后再试。';
+    }
+    return 'AI 诊断暂时不可用，请稍后再试。';
 }
 
 export function AIDiagnosisPanel({ code }: { code: string }) {
@@ -181,14 +231,38 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
 
     if (diagnosisApi.error) {
         return (
-            <div className="text-center py-6">
-                <p className="text-danger text-sm mb-2">诊断失败: {diagnosisApi.error}</p>
-                <button onClick={() => { diagnosisApi.reset(); void runDiagnosis(); }} className="text-xs text-primary cursor-pointer hover:underline">重试</button>
+            <div className="surface-card rounded-lg p-4 text-center">
+                <p className="text-sm font-medium text-text-primary">{summarizeDiagnosisError(diagnosisApi.error)}</p>
+                <p className="mt-2 text-xs text-text-secondary">当前个股页的行情、K 线、资金流和基本面仍可继续查看。</p>
+                <button onClick={() => { diagnosisApi.reset(); void runDiagnosis(); }} className="mt-3 text-xs text-primary cursor-pointer hover:underline">重试</button>
             </div>
         );
     }
 
     if (!result) return null;
+
+    if (result.state === 'unavailable') {
+        return (
+            <div className="surface-card rounded-lg p-4">
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <p className="text-sm font-semibold text-text-primary">AI 诊断暂时不可用</p>
+                        <p className="mt-1 text-sm leading-relaxed text-text-secondary">{result.summary}</p>
+                    </div>
+                    <Badge variant="warning">稍后再试</Badge>
+                </div>
+                {result.unavailableReason ? (
+                    <p className="mt-3 text-xs text-text-muted">{result.unavailableReason}</p>
+                ) : null}
+                <div className="mt-3 flex items-center justify-between gap-3">
+                    <p className="text-xs text-text-secondary">当前个股页的行情、K 线、资金流和基本面仍可继续查看。</p>
+                    <button onClick={runDiagnosis} className="text-xs text-primary cursor-pointer hover:underline">
+                        重试
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     const recStyle = REC_STYLES[result.recommendation] || REC_STYLES.hold;
 

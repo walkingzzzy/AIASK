@@ -506,12 +506,19 @@
         payload = dict(run or {})
         started_at = self._coerce_timestamp(payload.get("started_at"))
         completed_at = self._coerce_timestamp(payload.get("completed_at"))
+        lease_until = self._coerce_timestamp(payload.get("lease_until"))
+        heartbeat_at = self._coerce_timestamp(payload.get("heartbeat_at"))
+        last_claimed_at = self._coerce_timestamp(payload.get("last_claimed_at"))
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO strategy_task_runs
-                    (strategy_id, task_name, task_scope, task_key, status, trace_id, payload, result, error, started_at, completed_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, COALESCE($10::timestamptz, NOW()), $11::timestamptz)
+                    (strategy_id, task_name, task_scope, task_key, status, trace_id,
+                     payload, result, error, lease_owner, lease_until, heartbeat_at,
+                     attempt_count, max_attempts, last_claimed_at, started_at, completed_at)
+                VALUES ($1, $2, $3, $4, $5, $6,
+                        $7::jsonb, $8::jsonb, $9, $10, $11::timestamptz, $12::timestamptz,
+                        $13, $14, $15::timestamptz, COALESCE($16::timestamptz, NOW()), $17::timestamptz)
                 RETURNING *
                 """,
                 payload.get("strategy_id"),
@@ -523,6 +530,12 @@
                 json.dumps(payload.get("payload") or {}, ensure_ascii=False, default=str),
                 self._encode_task_run_result_json(payload.get("result") or {}),
                 payload.get("error"),
+                payload.get("lease_owner"),
+                lease_until,
+                heartbeat_at,
+                int(payload.get("attempt_count") or 0),
+                int(payload.get("max_attempts") or 3),
+                last_claimed_at,
                 started_at,
                 completed_at,
             )
@@ -535,15 +548,37 @@
         result: Optional[dict] = None,
         error: Optional[str] = None,
         completed_at=None,
+        lease_owner: Any = None,
+        lease_until: Any = None,
+        heartbeat_at: Any = None,
+        attempt_count: Any = None,
+        max_attempts: Any = None,
+        last_claimed_at: Any = None,
+        clear_lease: bool = False,
     ) -> Optional[dict]:
         completed_at_value = self._coerce_timestamp(completed_at)
+        lease_until_value = self._coerce_timestamp(lease_until)
+        heartbeat_at_value = self._coerce_timestamp(heartbeat_at)
+        last_claimed_at_value = self._coerce_timestamp(last_claimed_at)
+        attempt_count_value = int(attempt_count) if attempt_count is not None else None
+        max_attempts_value = int(max_attempts) if max_attempts is not None else None
         result_json = self._encode_task_run_result_json(result)
         sql = """
             UPDATE strategy_task_runs
             SET status = COALESCE($2, status),
                 result = CASE WHEN $3::jsonb IS NULL THEN result ELSE $3::jsonb END,
                 error = COALESCE($4, error),
-                completed_at = COALESCE($5::timestamptz, completed_at, NOW())
+                completed_at = CASE
+                    WHEN $5::timestamptz IS NOT NULL THEN $5::timestamptz
+                    WHEN $2 = ANY($13::text[]) THEN COALESCE(completed_at, NOW())
+                    ELSE completed_at
+                END,
+                lease_owner = CASE WHEN $12 THEN NULL ELSE COALESCE($6, lease_owner) END,
+                lease_until = CASE WHEN $12 THEN NULL ELSE COALESCE($7::timestamptz, lease_until) END,
+                heartbeat_at = COALESCE($8::timestamptz, heartbeat_at),
+                attempt_count = COALESCE($9, attempt_count),
+                max_attempts = COALESCE($10, max_attempts),
+                last_claimed_at = COALESCE($11::timestamptz, last_claimed_at)
             WHERE id = $1
             RETURNING *
             """
@@ -557,6 +592,21 @@
                         result_json,
                         error,
                         completed_at_value,
+                        lease_owner,
+                        lease_until_value,
+                        heartbeat_at_value,
+                        attempt_count_value,
+                        max_attempts_value,
+                        last_claimed_at_value,
+                        bool(clear_lease),
+                        [
+                            "completed",
+                            "failed",
+                            "failed_timeout",
+                            "retryable_timeout",
+                            "retryable_failure",
+                            "cancelled",
+                        ],
                         timeout=60.0,
                     )
                 if not row:
@@ -612,17 +662,30 @@
         *,
         task_scope: str,
         task_names: Optional[List[str]] = None,
+        lease_owner: Optional[str] = None,
+        lease_seconds: int = 300,
     ) -> Optional[dict]:
         names = [str(item).strip() for item in list(task_names or []) if str(item).strip()]
+        owner = str(lease_owner or "").strip() or None
+        lease_seconds = max(30, min(int(lease_seconds or 300), 24 * 3600))
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 WITH next_run AS (
                     SELECT id
                     FROM strategy_task_runs
-                    WHERE status = 'queued'
-                      AND task_scope = $1
+                    WHERE task_scope = $1
                       AND (COALESCE(array_length($2::text[], 1), 0) = 0 OR task_name = ANY($2::text[]))
+                      AND (
+                        status = 'queued'
+                        OR status IN ('retryable_timeout', 'retryable_failure')
+                        OR (
+                            status = 'running'
+                            AND COALESCE(lease_until, started_at + INTERVAL '30 minutes') < NOW()
+                            AND COALESCE(attempt_count, 0) < COALESCE(max_attempts, 3)
+                        )
+                      )
+                      AND COALESCE(attempt_count, 0) < COALESCE(max_attempts, 3)
                     ORDER BY started_at ASC, id ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
@@ -631,15 +694,110 @@
                 SET status = 'running',
                     started_at = NOW(),
                     completed_at = NULL,
-                    error = NULL
+                    error = NULL,
+                    lease_owner = $3,
+                    lease_until = NOW() + ($4::int * INTERVAL '1 second'),
+                    heartbeat_at = NOW(),
+                    last_claimed_at = NOW(),
+                    attempt_count = COALESCE(target.attempt_count, 0) + 1
                 FROM next_run
                 WHERE target.id = next_run.id
                 RETURNING target.*
                 """,
                 task_scope,
                 names,
+                owner,
+                lease_seconds,
             )
         return self._decode_task_run(dict(row)) if row else None
+
+    async def heartbeat_strategy_task_run(
+        self,
+        run_id: int,
+        *,
+        lease_owner: Optional[str] = None,
+        lease_seconds: int = 300,
+    ) -> Optional[dict]:
+        owner = str(lease_owner or "").strip() or None
+        lease_seconds = max(30, min(int(lease_seconds or 300), 24 * 3600))
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE strategy_task_runs
+                SET heartbeat_at = NOW(),
+                    lease_owner = COALESCE($2, lease_owner),
+                    lease_until = NOW() + ($3::int * INTERVAL '1 second')
+                WHERE id = $1
+                  AND status = 'running'
+                  AND ($2::text IS NULL OR lease_owner IS NULL OR lease_owner = $2)
+                RETURNING *
+                """,
+                int(run_id),
+                owner,
+                lease_seconds,
+            )
+        return self._decode_task_run(dict(row)) if row else None
+
+    async def get_strategy_task_queue_stats(
+        self,
+        *,
+        task_scope: Optional[str] = None,
+        task_names: Optional[List[str]] = None,
+    ) -> dict:
+        names = [str(item).strip() for item in list(task_names or []) if str(item).strip()]
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT task_name,
+                       status,
+                       COUNT(*)::int AS count,
+                       EXTRACT(EPOCH FROM MAX(NOW() - started_at))::double precision AS max_age_seconds,
+                       EXTRACT(EPOCH FROM MIN(started_at))::double precision AS oldest_started_epoch
+                FROM strategy_task_runs
+                WHERE ($1::text IS NULL OR task_scope = $1)
+                  AND (COALESCE(array_length($2::text[], 1), 0) = 0 OR task_name = ANY($2::text[]))
+                  AND status IN ('queued', 'running', 'retryable_timeout', 'retryable_failure')
+                GROUP BY task_name, status
+                ORDER BY task_name ASC, status ASC
+                """,
+                task_scope,
+                names,
+            )
+            stale_rows = await conn.fetch(
+                """
+                SELECT task_name, COUNT(*)::int AS count
+                FROM strategy_task_runs
+                WHERE ($1::text IS NULL OR task_scope = $1)
+                  AND (COALESCE(array_length($2::text[], 1), 0) = 0 OR task_name = ANY($2::text[]))
+                  AND status = 'running'
+                  AND COALESCE(lease_until, started_at + INTERVAL '30 minutes') < NOW()
+                GROUP BY task_name
+                """,
+                task_scope,
+                names,
+            )
+        by_task: dict[str, dict[str, int]] = {}
+        max_age_by_task: dict[str, float] = {}
+        for row in rows:
+            task_name = str(row.get("task_name") or "unknown")
+            status = str(row.get("status") or "unknown")
+            count = int(row.get("count") or 0)
+            by_task.setdefault(task_name, {})[status] = count
+            max_age_by_task[task_name] = max(max_age_by_task.get(task_name, 0.0), float(row.get("max_age_seconds") or 0.0))
+        stale_running_by_task = {
+            str(row.get("task_name") or "unknown"): int(row.get("count") or 0)
+            for row in stale_rows
+        }
+        return {
+            "task_scope": task_scope,
+            "task_names": names,
+            "queue_depth_by_task": by_task,
+            "max_age_seconds_by_task": max_age_by_task,
+            "stale_running_by_task": stale_running_by_task,
+            "queued_total": sum(int(statuses.get("queued") or 0) for statuses in by_task.values()),
+            "running_total": sum(int(statuses.get("running") or 0) for statuses in by_task.values()),
+            "stale_running_total": sum(stale_running_by_task.values()),
+        }
 
     # ------------------------------------------------------------------
     # factory runs

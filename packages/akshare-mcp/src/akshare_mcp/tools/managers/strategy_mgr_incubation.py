@@ -146,6 +146,62 @@ async def handle_incubation_pipeline_run(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip() or None
     from ...services.incubation_pipeline import get_strategy_incubation_pipeline_service
     service = get_strategy_incubation_pipeline_service()
+
+    # Auto-replay history for strategies with insufficient metrics before pipeline evaluation
+    replay_summary = None
+    auto_replay = bool(params.get("auto_replay_history", True))
+    if auto_replay and not sid:
+        try:
+            from ...services.incubation import get_strategy_incubation_service
+            from datetime import date as _date
+
+            statuses_for_replay = params.get("statuses") or ['incubating']
+            if isinstance(statuses_for_replay, str):
+                statuses_for_replay = [item.strip() for item in statuses_for_replay.split(',') if item.strip()]
+            if 'submitted' in statuses_for_replay:
+                replay_limit = min(max(int(params.get("replay_batch_limit", 10)), 1), 50)
+                submitted_strategies = []
+                for status in ['submitted', 'incubating']:
+                    if status not in statuses_for_replay:
+                        continue
+                    for strategy in await db.list_strategies(status, limit=replay_limit * 2):
+                        if strategy['id'] in {s['id'] for s in submitted_strategies}:
+                            continue
+                        # Check if strategy needs replay (< 30 metrics)
+                        existing_metrics = await db.list_strategy_incubation_metrics(
+                            str(strategy['id']),
+                            limit=30,
+                        ) if hasattr(db, 'list_strategy_incubation_metrics') else []
+                        metric_count = len(existing_metrics)
+                        if metric_count < 30:
+                            submitted_strategies.append(strategy)
+                        if len(submitted_strategies) >= replay_limit:
+                            break
+                if submitted_strategies:
+                    incubation_service = get_strategy_incubation_service()
+                    replay_summary = await incubation_service.replay_strategies_history(
+                        db,
+                        submitted_strategies,
+                        start_date=None,
+                        end_date=_date.today(),
+                        include_market_days=True,
+                        max_dates=min(max(int(params.get("replay_max_dates", 80)), 30), 250),
+                        force_close_open_positions=True,
+                        run_acceptance=True,
+                    )
+                    # Strip large daily_results to avoid JSONB overflow in task_runs
+                    replay_summary.pop('daily_results', None)
+                    for item in (replay_summary.get('items') or []):
+                        item.pop('daily_results', None)
+                    logger.info(
+                        "Auto-replay completed: %d strategies, %d days, %d metrics",
+                        replay_summary.get('count', 0),
+                        replay_summary.get('replayed_days', 0),
+                        replay_summary.get('metrics_recorded', 0),
+                    )
+        except Exception as exc:
+            logger.warning("Auto-replay history failed (non-fatal): %s", exc)
+
     if sid:
         strategy = await db.get_strategy(sid)
         if not strategy:
@@ -167,4 +223,6 @@ async def handle_incubation_pipeline_run(db, params: dict) -> dict:
         source=str(params.get("source") or "strategy_manager"),
         auto_apply_review=bool(params.get("auto_apply_review", True)),
     )
+    if replay_summary:
+        result['auto_replay'] = replay_summary
     return ok(result)

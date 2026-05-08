@@ -4,7 +4,7 @@ import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
 import { PreferencesService } from '../auth/preferences.service';
-import type { ChatMode } from './chat.protocol';
+import type { ChatMode, ChatRequestPayload } from './chat.protocol';
 import { probeCompatibleBaseUrl } from './llm-compat';
 
 class SaveLlmConfigDto {
@@ -24,6 +24,21 @@ class ChatMessageDto {
   @IsString() @MaxLength(32000) content!: string;
 }
 
+class ResultActionDto {
+  @IsString() id!: string;
+  @IsString() label!: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() @IsString() actionId?: string;
+  @IsOptional() @IsObject() payload?: Record<string, unknown>;
+}
+
+class ResultLinkDto {
+  @IsString() id!: string;
+  @IsString() label!: string;
+  @IsString() href!: string;
+  @IsOptional() @IsString() description?: string;
+}
+
 class ChatCompletionsDto {
   @IsArray()
   @ArrayMaxSize(100)
@@ -41,10 +56,64 @@ class ChatCompletionsDto {
   pageContext?: ChatPageContextDto | null;
 
   @IsOptional()
+  @ValidateNested()
+  @Type(() => ChatFrontendContextDto)
+  frontendContext?: ChatFrontendContextDto | null;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ClientActionDescriptorDto)
   availableActions?: ClientActionDescriptorDto[];
+}
+
+class ChatSurfaceRouteDto {
+  @IsString() pageKey!: string;
+  @IsString() path!: string;
+  @IsString() module!: string;
+  @IsString() title!: string;
+  @IsString() summary!: string;
+  @IsString() primaryGoal!: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) requiredInputs?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) coreEntities?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) dataSources?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) capabilities?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) commonQuestions?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) relatedPageKeys?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) aliases?: string[];
+  @IsOptional() stockAware?: boolean;
+  @IsOptional() @IsString() codeParam?: string;
+  @IsOptional() adminOnly?: boolean;
+  @IsOptional() public?: boolean;
+}
+
+class ChatTaskFlowStepDto {
+  @IsString() pageKey!: string;
+  @IsString() title!: string;
+  @IsString() goal!: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) requiredContext?: string[];
+  @IsOptional() @IsString() nextPageKey?: string;
+}
+
+class ChatTaskFlowDto {
+  @IsString() id!: string;
+  @IsString() title!: string;
+  @IsString() summary!: string;
+  @IsOptional() currentStepIndex?: number;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ChatTaskFlowStepDto)
+  steps!: ChatTaskFlowStepDto[];
+}
+
+class ChatFrontendContextDto {
+  generatedAt!: number;
+  @IsString() route!: string;
+  @IsObject() appMap!: Record<string, unknown>;
+  @IsOptional() @ValidateNested() @Type(() => ChatSurfaceRouteDto) currentRoute?: ChatSurfaceRouteDto;
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ChatSurfaceRouteDto) relatedRoutes?: ChatSurfaceRouteDto[];
+  @IsOptional() @ValidateNested() @Type(() => ChatTaskFlowDto) taskFlow?: ChatTaskFlowDto;
+  @IsOptional() @IsObject() workspaceContext?: Record<string, unknown>;
 }
 
 class ChatPageContextDto {
@@ -64,6 +133,8 @@ class ChatPageContextDto {
   @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) suggestions?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) recommendedNextActions?: string[];
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ResultActionDto) recommendedActions?: ResultActionDto[];
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ResultLinkDto) recommendedLinks?: ResultLinkDto[];
   @IsOptional() @IsArray() @IsString({ each: true }) evidenceSummary?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) riskNotes?: string[];
   @IsOptional() @IsString() dataFreshness?: string | null;
@@ -242,7 +313,7 @@ export class ChatController {
     res.on('close', markDisconnected);
 
     try {
-      for await (const event of this.chatService.streamChat(userId, body)) {
+      for await (const event of this.chatService.streamChat(userId, body as ChatRequestPayload)) {
         if (clientDisconnected || res.writableEnded || res.destroyed) {
           break;
         }

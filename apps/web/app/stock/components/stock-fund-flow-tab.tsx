@@ -8,6 +8,7 @@ type StockFundFlowTabProps = {
   fundFlowItems: StockFundFlowEntry[];
   isFetching: boolean;
   hasResponse: boolean;
+  hasDatedSamples: boolean;
 };
 
 export default function StockFundFlowTab({
@@ -15,12 +16,16 @@ export default function StockFundFlowTab({
   fundFlowItems,
   isFetching,
   hasResponse,
+  hasDatedSamples,
 }: StockFundFlowTabProps) {
   const latest = fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown> | undefined;
 
   return (
     <SectionCard tabAttached className="p-4 sm:p-5">
-      <h3 className="mt-0">资金流向（近20日）</h3>
+      <h3 className="mt-0">{hasDatedSamples ? '资金流向（近20日）' : '资金流向（最近样本）'}</h3>
+      {!hasDatedSamples && fundFlowItems.length > 0 ? (
+        <p className="mt-1 text-xs text-text-secondary">当前来源未附交易日期，图表按最近样本顺序展示。</p>
+      ) : null}
       {fundFlowChart.length > 0 ? (
         <BarChart items={fundFlowChart} height={300} yAxisName="净流入" colorByValue />
       ) : (

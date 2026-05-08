@@ -100,6 +100,8 @@ class LifecycleTransitionResult:
     paper_action: dict[str, Any] = field(default_factory=dict)
     live_review_action: dict[str, Any] = field(default_factory=dict)
     action_refs: dict[str, Any] = field(default_factory=dict)
+    stress_test_summary: Optional[dict[str, Any]] = None
+    strategy_doc: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -117,6 +119,8 @@ class LifecycleTransitionResult:
             "paper_action": dict(self.paper_action or {}),
             "live_review_action": dict(self.live_review_action or {}),
             "action_refs": dict(self.action_refs or {}),
+            "stress_test_summary": self.stress_test_summary,
+            "strategy_doc": self.strategy_doc,
         }
         if self.execution_audit_snapshot:
             payload["execution_audit_snapshot_id"] = self.execution_audit_snapshot.get("snapshot_id")
@@ -212,6 +216,11 @@ class LifecycleTransitionResult:
                     "promotion_review_recommendation",
                     "promotion_review_score",
                 ),
+            )
+        if self.stress_test_summary:
+            payload["stress_test_summary"] = _compact_mapping(
+                self.stress_test_summary,
+                ("overall_verdict", "failed_count", "total_scenarios", "evidence_mode", "diagnostic_only"),
             )
         return payload
 
@@ -509,46 +518,100 @@ class StrategyLifecycleCoordinator:
                 "formal_incubation": "quality_gate_provisional_passed" if request.gate.get("provisional_pass") else "quality_gate_passed",
             }.get(lane, "incubation_budget_deferred_queue")
             if lane == "formal_incubation":
-                result.final_status = "incubating"
-                step, _ = await self._step("status_transition", _status_update("incubating", queue_reason))
-                any_step_failed = any_step_failed or step.status != "success"
-                result.steps.append(step)
-                incubation_gateway = self._submitter._get_incubation_gateway()
-                step, result.incubation_binding = await self._step(
-                    "ensure_incubation_account",
-                    incubation_gateway.ensure_account(
-                        db,
+                try:
+                    from ..services.stress_test import run_stress_test_simple
+
+                    backtest_fn = getattr(self._submitter, "_backtest_strategy", None)
+                    stress_result = await run_stress_test_simple(
                         enriched_data,
-                        source_run_id=trace_context.get("snapshot_date"),
-                    ),
-                )
-                any_step_failed = any_step_failed or step.status != "success"
-                result.steps.append(step)
-                step, result.incubation_pipeline = await self._step(
-                    "run_incubation_pipeline",
-                    incubation_gateway.run_pipeline(
-                        db,
-                        {**enriched_data, "status": "incubating"},
-                        source=trace_context.get("source_action"),
-                        auto_apply_review=False,
-                    ),
-                    retryable=True,
-                )
-                any_step_failed = any_step_failed or step.status != "success"
-                result.steps.append(step)
-                step, result.vector_profile = await self._step(
-                    "build_vector_profile",
-                    build_strategy_vector_profile(db, enriched_data),
-                    retryable=True,
-                )
-                any_step_failed = any_step_failed or step.status != "success"
-                result.steps.append(step)
-                result.vector_audit = dict((result.vector_profile or {}).get("metadata") or {}).get("audit") or {}
-                result.action_audit = {
-                    **dict(request.submission_action or {}),
-                    "paper_account_id": ((result.incubation_binding or {}).get("account") or {}).get("id"),
-                    "submission_action_completed": True,
-                }
+                        backtest_metrics=request.backtest_metrics,
+                        backtest_fn=backtest_fn if callable(backtest_fn) else None,
+                    )
+                    result.stress_test_summary = stress_result.to_dict()
+                except Exception as exc:
+                    result.stress_test_summary = {
+                        "strategy_id": request.strategy_id,
+                        "overall_verdict": "review",
+                        "failed_count": 0,
+                        "total_scenarios": 0,
+                        "evidence_mode": "unavailable",
+                        "diagnostic_only": True,
+                        "error": str(exc),
+                    }
+
+                stress_verdict = _string((result.stress_test_summary or {}).get("overall_verdict")) or "review"
+                if stress_verdict in {"review", "reject"}:
+                    result.final_status = "rejected" if stress_verdict == "reject" else "submitted"
+                    gate_reason = "stress_test_rejected" if stress_verdict == "reject" else "stress_test_review_required"
+                    step = LifecycleTransitionStepResult(
+                        step="stress_test_gate",
+                        status="failed" if stress_verdict == "reject" else "blocked",
+                        detail={
+                            "verdict": stress_verdict,
+                            "failed_scenarios": (result.stress_test_summary or {}).get("failed_count"),
+                            "total_scenarios": (result.stress_test_summary or {}).get("total_scenarios"),
+                            "evidence_mode": (result.stress_test_summary or {}).get("evidence_mode"),
+                            "diagnostic_only": bool((result.stress_test_summary or {}).get("diagnostic_only")),
+                        },
+                        error=gate_reason,
+                    )
+                    result.steps.append(step)
+                    any_step_failed = True
+                    result.action_audit = {
+                        **dict(request.submission_action or {}),
+                        "submission_action_completed": False,
+                        "final_status": result.final_status,
+                        "stress_test_summary": result.stress_test_summary,
+                        "stress_gate_reason": gate_reason,
+                    }
+                else:
+                    result.action_audit = {
+                        **dict(request.submission_action or {}),
+                        "stress_test_summary": result.stress_test_summary,
+                    }
+
+                if stress_verdict == "pass":
+                    result.final_status = "incubating"
+                    step, _ = await self._step("status_transition", _status_update("incubating", queue_reason))
+                    any_step_failed = any_step_failed or step.status != "success"
+                    result.steps.append(step)
+                    incubation_gateway = self._submitter._get_incubation_gateway()
+                    step, result.incubation_binding = await self._step(
+                        "ensure_incubation_account",
+                        incubation_gateway.ensure_account(
+                            db,
+                            enriched_data,
+                            source_run_id=trace_context.get("snapshot_date"),
+                        ),
+                    )
+                    any_step_failed = any_step_failed or step.status != "success"
+                    result.steps.append(step)
+                    step, result.incubation_pipeline = await self._step(
+                        "run_incubation_pipeline",
+                        incubation_gateway.run_pipeline(
+                            db,
+                            {**enriched_data, "status": "incubating"},
+                            source=trace_context.get("source_action"),
+                            auto_apply_review=False,
+                        ),
+                        retryable=True,
+                    )
+                    any_step_failed = any_step_failed or step.status != "success"
+                    result.steps.append(step)
+                    step, result.vector_profile = await self._step(
+                        "build_vector_profile",
+                        build_strategy_vector_profile(db, enriched_data),
+                        retryable=True,
+                    )
+                    any_step_failed = any_step_failed or step.status != "success"
+                    result.steps.append(step)
+                    result.vector_audit = dict((result.vector_profile or {}).get("metadata") or {}).get("audit") or {}
+                    result.action_audit = {
+                        **dict(result.action_audit or request.submission_action or {}),
+                        "paper_account_id": ((result.incubation_binding or {}).get("account") or {}).get("id"),
+                        "submission_action_completed": True,
+                        "stress_test_summary": result.stress_test_summary,
+                    }
             elif lane == "live_ready_review":
                 result.final_status = "submitted"
                 step, _ = await self._step("status_transition", _status_update("submitted", queue_reason))
@@ -683,6 +746,18 @@ class StrategyLifecycleCoordinator:
             )
             result.action_refs["closure_snapshot_id"] = overview_payload.get("closure_snapshot_id")
             result.action_refs["closure_review_as_of"] = closure_review.get("as_of")
+        # ── 策略说明书生成 (Gap 8) ──────────────────────────────────
+        try:
+            from ..services.strategy_doc_generator import generate_strategy_document
+            result.strategy_doc = await generate_strategy_document(
+                llm_client=None,  # fallback 模式，不阻断
+                strategy=enriched_data,
+                backtest_metrics=request.backtest_metrics,
+                signal_quality=dict(request.quality_report.get("signal_quality") or {}),
+            )
+        except Exception:
+            pass
+        # ────────────────────────────────────────────────────────────
         await self._finish_task_run(
             db,
             lifecycle_task_run,

@@ -15,7 +15,6 @@ import { useStockCode } from '@/hooks/use-stock-code';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
-import { apiKeys } from '@/lib/query-keys';
 import { buildLocalResultContract, defaultWorkbenchTask, evidenceToSummary } from '@/lib/result-workbench';
 import { useCartStore } from '@/store/cart-store';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
@@ -59,7 +58,7 @@ export default function PortfolioPage() {
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newCapital, setNewCapital] = useState('1000000');
-  const createApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.portfolio()]] });
+  const createApi = useApiMutation<unknown>({ effects: ['portfolio.changed'] });
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
 
   const {
@@ -71,7 +70,7 @@ export default function PortfolioPage() {
   } = useStockCode();
   const [holdShares, setHoldShares] = useState('100');
   const [holdCost, setHoldCost] = useState('');
-  const addHoldingApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.portfolio()]] });
+  const addHoldingApi = useApiMutation<unknown>({ effects: ['portfolio.changed'] });
 
   const listQ = useApiQuery<unknown>('/portfolio/list', {
     parse: (raw) => ensureRecordOrArray(raw, '组合列表'),

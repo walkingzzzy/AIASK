@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+# ── 模拟盘观察期硬门禁常量（可通过环境变量覆盖）─────────────────────────
+INCUBATION_MIN_OBSERVED_DAYS: int = max(
+    5,
+    int(os.getenv("INCUBATION_MIN_OBSERVED_DAYS", "20") or "20"),
+)
+INCUBATION_MIN_TRADE_DAYS: int = max(
+    3,
+    int(os.getenv("INCUBATION_MIN_TRADE_DAYS", "10") or "10"),
+)
+# ─────────────────────────────────────────────────────────────────────────
 
 
 class StrategyIncubationPipelineService:
@@ -79,6 +91,7 @@ class StrategyIncubationPipelineService:
         # Fix #10: 从 strategy_lifecycle_shared 导入，避免循环依赖
         from .governance_monitor import GovernanceMonitor
         from .governance_persistence import persist_governance_report_snapshot
+        from .strategy_crowding import check_strategy_crowding_for_promotion
         from .strategy_lifecycle_shared import (
             build_incubation_overview as _build_incubation_overview,
             resolve_incubation_pipeline_stage as _resolve_incubation_pipeline_stage,
@@ -141,6 +154,14 @@ class StrategyIncubationPipelineService:
         governance_status = str(governance_report.overall_status or 'unknown')
         governance_issues = list(governance_report.issues or [])
 
+        # ── 策略拥挤度检查 (Gap 3) ──────────────────────────────────
+        crowding_report = None
+        try:
+            crowding_report = await check_strategy_crowding_for_promotion(db, strategy)
+        except Exception:
+            pass
+        # ────────────────────────────────────────────────────────────
+
         if str(strategy.get('status') or '') == 'listed':
             pipeline_stage = 'promoted'
             pipeline_status = 'listed'
@@ -195,6 +216,54 @@ class StrategyIncubationPipelineService:
             elif pipeline_stage == 'promoted':
                 pipeline_status = 'blocked'
                 next_action = 'resolve_governance_critical'
+
+        # ── 模拟盘观察期硬门禁 (Gap 7) ──────────────────────────────
+        observation_gate_reasons: list[str] = []
+        if pipeline_stage == 'graduation_ready':
+            if observed_days < INCUBATION_MIN_OBSERVED_DAYS:
+                observation_gate_reasons.append(
+                    f"insufficient_observation_days:{observed_days}/{INCUBATION_MIN_OBSERVED_DAYS}"
+                )
+            if trade_days < INCUBATION_MIN_TRADE_DAYS:
+                observation_gate_reasons.append(
+                    f"insufficient_trade_days:{trade_days}/{INCUBATION_MIN_TRADE_DAYS}"
+                )
+            if observation_gate_reasons:
+                pipeline_stage = 'candidate'
+                pipeline_status = 'candidate'
+                next_action = 'accumulate_observation_evidence'
+                gate_reasons.extend(
+                    item for item in observation_gate_reasons if item not in gate_reasons
+                )
+                gate_status = pipeline_stage
+        # ───────────────────────────────────────────────────────────
+
+        # ── 拥挤度硬门禁 (Gap 3) ────────────────────────────────
+        crowding_blocked = False
+        if crowding_report and crowding_report.get('recommendation') == 'reject':
+            gate_reasons.append(
+                f"crowding:reject_{crowding_report.get('crowding_risk')}_risk_"
+                f"avg_corr_{crowding_report.get('avg_correlation', 0):.3f}"
+            )
+            crowding_blocked = True
+            if pipeline_stage == 'graduation_ready':
+                pipeline_stage = 'candidate'
+                pipeline_status = 'candidate'
+                next_action = 'resolve_crowding_risk'
+                gate_status = pipeline_stage
+        elif crowding_report and crowding_report.get('recommendation') == 'review':
+            gate_reasons.append(
+                f"crowding:review_{crowding_report.get('crowding_risk')}_risk"
+            )
+            crowding_blocked = True
+            # review = 需要人工复核，降级以阻断 auto_review
+            if pipeline_stage == 'graduation_ready':
+                pipeline_stage = 'candidate'
+                pipeline_status = 'candidate'
+                next_action = 'crowding_review_required'
+                gate_status = pipeline_stage
+        # ─────────────────────────────────────────────────────────
+
         priority_score = self._readiness_score(
             latest_metric=latest_metric,
             overview=overview,
@@ -225,7 +294,12 @@ class StrategyIncubationPipelineService:
                 'execution_hard_gate_passed': bool(overview.get('execution_hard_gate_passed')),
                 'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
                 'governance_status': governance_status,
-                'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'} and governance_status != 'critical',
+                'passed': (
+                    pipeline_stage in {'candidate', 'graduation_ready', 'promoted'}
+                    and overview.get('risk_hard_gate_status') in {None, '', 'passed'}
+                    and governance_status != 'critical'
+                    and not crowding_blocked
+                ),
                 'reasons': list(gate_reasons),
             },
             'next_action': next_action,
@@ -233,6 +307,7 @@ class StrategyIncubationPipelineService:
             'auto_promoted': False,
             'blockers': list(overview.get('blockers') or []),
             'risk_flags': list(overview.get('risk_flags') or []),
+            'crowding_report': crowding_report,
             'summary': {
                 'strategy_status': strategy.get('status'),
                 'promotion_ready': bool(overview.get('promotion_ready')),
@@ -255,12 +330,20 @@ class StrategyIncubationPipelineService:
                 'governance_report_id': governance_snapshot.get('id'),
                 'governance_status': governance_status,
                 'governance_issues': governance_issues,
+                'crowding_risk': (crowding_report or {}).get('crowding_risk'),
+                'crowding_recommendation': (crowding_report or {}).get('recommendation'),
+                'crowding_avg_correlation': (crowding_report or {}).get('avg_correlation'),
                 'hard_gate_result': {
                     'pipeline_stage': pipeline_stage,
                     'execution_audit_gate_status': overview.get('execution_audit_gate_status'),
                     'risk_hard_gate_status': overview.get('risk_hard_gate_status'),
                     'governance_status': governance_status,
-                    'passed': pipeline_stage in {'candidate', 'graduation_ready', 'promoted'} and overview.get('risk_hard_gate_status') in {None, '', 'passed'} and governance_status != 'critical',
+                    'passed': (
+                        pipeline_stage in {'candidate', 'graduation_ready', 'promoted'}
+                        and overview.get('risk_hard_gate_status') in {None, '', 'passed'}
+                        and governance_status != 'critical'
+                        and not crowding_blocked
+                    ),
                     'reasons': list(gate_reasons),
                 },
             },

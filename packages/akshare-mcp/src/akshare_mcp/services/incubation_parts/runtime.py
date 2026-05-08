@@ -251,7 +251,7 @@
                         if str(item.get('code') or '').strip()
                     }
                 )
-            for code in candidate_codes[:3]:
+            for code in candidate_codes[:8]:
                 try:
                     klines = await db.get_klines(
                         code,
@@ -278,7 +278,6 @@
                         kline_dates.append(trade_date)
                 if kline_dates:
                     replay_dates.update(kline_dates)
-                    break
 
         ordered = sorted(
             trade_date

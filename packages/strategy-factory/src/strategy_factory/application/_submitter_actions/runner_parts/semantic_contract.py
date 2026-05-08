@@ -123,6 +123,7 @@
             risk_report = None
             if gate_a_override is None:
                 validation_report, risk_report = await self._evaluate_reports(candidate, db)
+                formal_evidence_missing = bool(_report_is_degraded(validation_report) or _report_is_degraded(risk_report))
                 gate = await run_submission_quality_gate(
                     db,
                     {**data, "status": existing_status if refresh_existing else "submitted"},
@@ -135,6 +136,13 @@
                     },
                     incubation_budget_track=str(candidate.get("incubation_budget", {}).get("track") or "formal_incubation"),
                 )
+                if formal_evidence_missing:
+                    live_eval = dict((gate.get("admission_evaluations") or {}).get("live") or {})
+                    live_eval["passed"] = False
+                    live_eval["reasons"] = list(dict.fromkeys([*list(live_eval.get("reasons") or []), "formal_risk_validation_evidence_missing"]))
+                    gate["admission_evaluations"] = {**dict(gate.get("admission_evaluations") or {}), "live": live_eval}
+                    gate["live_candidate_ready"] = False
+                    gate["formal_risk_validation_evidence_missing"] = True
             else:
                 gate = dict(gate_a_override)
             gate = self._apply_factory_submission_policy(
