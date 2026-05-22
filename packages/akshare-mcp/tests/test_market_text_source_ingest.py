@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import asyncio
+
+from akshare_mcp.services.market_text_source_ingest import run_market_text_source_ingest
+from akshare_mcp.storage import close_db, get_db
+from akshare_mcp.tools.managers._data_sync_manager_support_core import _build_schedule_params
+from akshare_mcp.tools.managers._data_sync_manager_support_sync import (
+    _sync_market_text_source_ingest_now,
+)
+
+
+def test_market_text_source_ingest_vectorizes_public_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "market_text.sqlite3"))
+    monkeypatch.setenv("STRATEGY_EMBEDDING_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_EMBEDDING_PROVIDER", "hash_fallback")
+    monkeypatch.setenv("STRATEGY_EMBEDDING_HASH_DIMENSIONS", "256")
+
+    import akshare_mcp.services.market_text_source_ingest as ingest_mod
+
+    def fake_news(limit: int):
+        return [
+            {
+                "doc_uid": "mock-news-1",
+                "title": "央行释放流动性",
+                "summary": "公开新闻摘要，讨论社融和货币政策。",
+                "content": "央行释放流动性 公开新闻摘要，讨论社融和货币政策。",
+                "date": "2026-05-14",
+                "source": "mock_news",
+                "url": "https://example.com/news/1",
+            }
+        ][:limit]
+
+    def fake_notice_head(start_iso: str, end_iso: str, max_items: int = 20):
+        return [
+            {
+                "code": "000001",
+                "title": "平安银行:年度股东会决议公告",
+                "type": "股东会",
+                "date": "2026-05-14",
+                "url": "https://data.eastmoney.com/notices/detail/000001/mock.html",
+            }
+        ][:max_items]
+
+    def fake_stock_notices(**kwargs):
+        return {
+            "success": True,
+            "data": {
+                "events": [
+                    {
+                        "code": kwargs.get("stock_code") or "000001",
+                        "title": "平安银行:风险提示公告",
+                        "type": "风险提示",
+                        "date": "2026-05-14",
+                        "url": "https://data.eastmoney.com/notices/detail/000001/mock-risk.html",
+                    }
+                ]
+            },
+        }
+
+    def fake_research_reports(**kwargs):
+        return {
+            "success": True,
+            "data": {
+                "reports": [
+                    {
+                        "title": "平安银行研报:资产质量改善",
+                        "institution": "Mock Securities",
+                        "rating": "买入",
+                        "summary": "公开研报摘要，讨论资产质量和利润增长。",
+                        "date": "2026-05-14",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(ingest_mod, "fetch_eastmoney_finance_news", fake_news)
+    monkeypatch.setattr("akshare_mcp.tools.news.notices.fetch_market_notice_head", fake_notice_head)
+    monkeypatch.setattr("akshare_mcp.tools.news.notices.get_stock_notices", fake_stock_notices)
+    monkeypatch.setattr("akshare_mcp.tools.news.research.get_research_reports", fake_research_reports)
+
+    async def _run() -> None:
+        db = get_db()
+        try:
+            await db.initialize()
+            from akshare_mcp.services.text_embedding import close_strategy_text_embedding_service
+
+            await close_strategy_text_embedding_service()
+            async with db.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO stocks (stock_code, stock_name, market, market_cap)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (stock_code) DO UPDATE SET
+                        stock_name = EXCLUDED.stock_name,
+                        market = EXCLUDED.market,
+                        market_cap = EXCLUDED.market_cap
+                    """,
+                    "000001",
+                    "平安银行",
+                    "A",
+                    100.0,
+                )
+
+            result = await run_market_text_source_ingest(
+                db,
+                stock_codes=["000001"],
+                news_limit=1,
+                notice_limit=1,
+                code_notice_limit=1,
+                code_notice_code_limit=1,
+                research_code_limit=1,
+                research_per_code=1,
+                build_snapshot=True,
+                activate_snapshot=True,
+            )
+            assert result["totals"]["errors"] == 0
+            assert result["saved"]["news"]["embedded_chunks"] == 1
+            assert result["saved"]["notice_head"]["embedded_chunks"] == 1
+            assert result["saved"]["code_notices"]["embedded_chunks"] == 1
+            assert result["saved"]["research"]["embedded_chunks"] == 1
+            assert {item["collection_name"] for item in result["snapshots"]} == {
+                "market_doc_chunks__news",
+                "market_doc_chunks__notice",
+                "market_doc_chunks__research",
+            }
+
+            async with db.acquire() as conn:
+                docs = await conn.fetchval("SELECT COUNT(*) FROM market_documents")
+                fts_rows = await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks_fts")
+                profiles = await conn.fetchval(
+                    "SELECT COUNT(*) FROM vector_profiles WHERE collection_name LIKE 'market_doc_chunks__%'"
+                )
+                dims = await conn.fetch(
+                    """
+                    SELECT DISTINCT vector_dim
+                    FROM vector_profiles
+                    WHERE collection_name LIKE 'market_doc_chunks__%'
+                    """
+                )
+                active = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM vector_index_snapshots
+                    WHERE collection_name LIKE 'market_doc_chunks__%' AND status = 'active'
+                    """
+                )
+            assert docs == 4
+            assert fts_rows == 4
+            assert profiles == 4
+            assert {int(row["vector_dim"]) for row in dims} == {256}
+            assert active == 3
+        finally:
+            await close_db()
+
+    asyncio.run(_run())
+
+
+def test_data_sync_market_text_source_ingest_task_and_schedule_params(tmp_path, monkeypatch):
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "market_text_sync.sqlite3"))
+    monkeypatch.setenv("STRATEGY_EMBEDDING_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_EMBEDDING_PROVIDER", "hash_fallback")
+    monkeypatch.setenv("STRATEGY_EMBEDDING_HASH_DIMENSIONS", "256")
+
+    import akshare_mcp.services.market_text_source_ingest as ingest_mod
+
+    monkeypatch.setattr(
+        ingest_mod,
+        "fetch_eastmoney_finance_news",
+        lambda limit: [
+            {
+                "doc_uid": "mock-sync-news-1",
+                "title": "市场日更新闻",
+                "summary": "用于 data_sync_manager 调度测试。",
+                "content": "市场日更新闻 用于 data_sync_manager 调度测试。",
+                "date": "2026-05-14",
+                "source": "mock_news",
+            }
+        ],
+    )
+
+    async def _run() -> None:
+        db = get_db()
+        try:
+            await db.initialize()
+            from akshare_mcp.services.text_embedding import close_strategy_text_embedding_service
+
+            await close_strategy_text_embedding_service()
+            result = await _sync_market_text_source_ingest_now(
+                {
+                    "doc_types": ["news"],
+                    "news_limit": 1,
+                    "notice_limit": 0,
+                    "research_code_limit": 0,
+                    "build_snapshot": True,
+                    "activate_snapshot": True,
+                }
+            )
+            assert result["success"] == 1
+            assert result["ingest"]["saved"]["news"]["embedded_chunks"] == 1
+            assert "market_text_source_ingest" in result["message"]
+
+            params = _build_schedule_params(
+                "market_text_source_ingest",
+                {
+                    "doc_types": ["news", "notice", "research"],
+                    "news_limit": 50,
+                    "build_snapshot": True,
+                },
+                [],
+            )
+            assert params["doc_types"] == ["news", "notice", "research"]
+            assert params["news_limit"] == 50
+            assert params["build_snapshot"] is True
+        finally:
+            await close_db()
+
+    asyncio.run(_run())

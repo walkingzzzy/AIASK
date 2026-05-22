@@ -1,0 +1,137 @@
+- generic [ref=e3] [box=0,0,1689,1233]:
+  - complementary [ref=e4] [box=0,0,270,1233]:
+    - generic [ref=e5] [box=0,0,269,66]:
+      - img [ref=e7] [box=23,25,18,18]
+      - generic [ref=e9] [box=60,16,140,35]:
+        - strong [ref=e10] [box=60,16,140,18]: AIASK
+        - generic [ref=e11] [box=60,36,140,15]: Agent Command Center
+      - img [ref=e12] [box=240,26,15,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,80,237,38]:
+      - img [ref=e15] [box=83,91,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,132,269,666]:
+      - generic [ref=e17] [box=10,132,249,22]:
+        - img [ref=e18] [box=16,133,13,13]
+        - generic [ref=e23] [box=182,132,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,157,249,34]:
+        - img [ref=e25] [box=20,166,16,16]
+        - generic [ref=e28] [box=46,166,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,194,249,34]:
+        - img [ref=e30] [box=20,203,16,16]
+        - generic [ref=e32] [box=46,203,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,231,249,34]:
+        - img [ref=e34] [box=20,240,16,16]
+        - generic [ref=e46] [box=46,240,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,268,249,34]:
+        - img [ref=e48] [box=20,277,16,16]
+        - generic [ref=e52] [box=46,277,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,305,249,34]:
+        - img [ref=e54] [box=20,314,16,16]
+        - generic [ref=e66] [box=46,314,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,342,249,34]:
+        - img [ref=e68] [box=20,351,16,16]
+        - generic [ref=e72] [box=46,351,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,379,249,34]:
+        - img [ref=e74] [box=20,388,16,16]
+        - generic [ref=e78] [box=46,388,79,16]: Automation
+      - button "Strategy Factory" [ref=e79] [cursor=pointer] [box=10,416,249,34]:
+        - img [ref=e80] [box=20,425,16,16]
+        - generic [ref=e82] [box=46,425,107,16]: Strategy Factory
+      - button "Factor Factory" [ref=e83] [cursor=pointer] [box=10,453,249,34]:
+        - img [ref=e84] [box=20,462,16,16]
+        - generic [ref=e86] [box=46,462,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,490,249,34]:
+        - img [ref=e88] [box=20,499,16,16]
+        - generic [ref=e90] [box=46,499,70,16]: Incubation
+      - button "Local User" [ref=e91] [cursor=pointer] [box=10,527,249,34]:
+        - img [ref=e92] [box=20,536,16,16]
+        - generic [ref=e95] [box=46,536,67,16]: Local User
+      - button "Tools" [ref=e96] [cursor=pointer] [box=10,564,249,34]:
+        - img [ref=e97] [box=20,573,16,16]
+        - generic [ref=e99] [box=46,573,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,601,249,34]:
+        - img [ref=e101] [box=20,610,16,16]
+        - generic [ref=e111] [box=46,610,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,638,249,34]:
+        - img [ref=e113] [box=20,647,16,16]
+        - generic [ref=e115] [box=46,647,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,675,249,34]:
+        - img [ref=e117] [box=20,684,16,16]
+        - generic [ref=e119] [box=46,684,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,712,249,34]:
+        - img [ref=e121] [box=20,721,16,16]
+        - generic [ref=e124] [box=46,721,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,749,249,34]:
+        - img [ref=e126] [box=20,758,16,16]
+        - generic [ref=e129] [box=46,758,53,16]: Settings
+    - generic [ref=e130] [box=0,798,269,336]:
+      - generic [ref=e131] [box=10,812,249,22]:
+        - generic [ref=e132] [box=16,812,54,14]: Threads
+        - generic [ref=e133] [box=247,814,6,11]: "0"
+      - paragraph [ref=e135] [box=10,847,249,20]: Recent tasks will appear here.
+    - generic [ref=e136] [box=0,1134,269,99]:
+      - generic "AIASK_ONLINE" [ref=e289] [box=16,1147,120,24]:
+        - img [ref=e290] [box=25,1153,13,13]
+        - text: AIASK_ONLINE
+      - generic [ref=e142] [box=16,1179,237,15]: 20 tools
+      - generic [ref=e143] [box=16,1202,237,15]: Hermes full off
+  - main [ref=e144] [box=270,0,1419,1233]:
+    - generic [ref=e297] [box=270,0,1419,1233]:
+      - generic [ref=e298] [box=270,0,1419,82]:
+        - generic [ref=e299] [box=296,16,157,49]:
+          - text: Capability Workbench
+          - heading "Runtime review" [level=1] [ref=e300] [box=296,40,157,25]
+        - generic [ref=e301] [box=1159,24,504,34]:
+          - generic "Gated live backend" [ref=e302] [box=1159,29,146,23]:
+            - img [ref=e303] [box=1168,34,13,13]
+            - text: Gated live backend
+          - generic "code parity complete, live pending" [ref=e305] [box=1315,29,243,23]:
+            - img [ref=e306] [box=1324,34,13,13]
+            - text: code parity complete, live pending
+          - button "Refresh capability review" [ref=e308] [cursor=pointer] [box=1568,24,95,34]:
+            - img [ref=e309] [box=1580,34,14,14]
+            - text: Refresh
+      - generic [ref=e314] [box=270,82,1419,53]:
+        - button "Overview" [ref=e315] [cursor=pointer] [box=288,92,100,32]:
+          - img [ref=e316] [box=298,101,15,15]
+          - text: Overview
+        - button "Connectors" [active] [pressed] [ref=e318] [cursor=pointer] [box=394,92,112,32]:
+          - img [ref=e319] [box=404,101,15,15]
+          - text: Connectors
+        - button "Hermes" [ref=e325] [cursor=pointer] [box=511,92,90,32]:
+          - img [ref=e326] [box=521,101,15,15]
+          - text: Hermes
+        - button "MCP" [ref=e336] [cursor=pointer] [box=607,92,71,32]:
+          - img [ref=e337] [box=617,101,15,15]
+          - text: MCP
+        - button "Strategy Factory" [ref=e349] [cursor=pointer] [box=684,92,142,32]:
+          - img [ref=e350] [box=694,101,15,15]
+          - text: Strategy Factory
+        - button "Incubation" [ref=e352] [cursor=pointer] [box=832,92,108,32]:
+          - img [ref=e353] [box=842,101,15,15]
+          - text: Incubation
+        - button "Skills" [ref=e355] [cursor=pointer] [box=946,92,74,32]:
+          - img [ref=e356] [box=956,101,15,15]
+          - text: Skills
+        - button "Plugins" [ref=e360] [cursor=pointer] [box=1026,92,87,32]:
+          - img [ref=e361] [box=1036,101,15,15]
+          - text: Plugins
+        - button "AI Tests" [ref=e363] [cursor=pointer] [box=1120,92,90,32]:
+          - img [ref=e364] [box=1130,101,15,15]
+          - text: AI Tests
+      - generic [ref=e599] [box=390,157,1180,191]:
+        - generic [ref=e600] [box=390,157,1180,115]:
+          - generic [ref=e601] [box=407,174,708,81]:
+            - img [ref=e602] [box=407,174,20,20]
+            - text: Connectors
+            - heading "Application bindings and integrations" [level=2] [ref=e608] [box=407,202,708,25]
+            - paragraph [ref=e609] [box=407,235,708,20]: Inspect financial applications, messaging platforms, MCP servers, and native plugin connections from one surface.
+          - generic [ref=e610] [box=1389,174,164,34]:
+            - generic "AIASK_HTTP_503" [ref=e611] [box=1389,174,122,34]:
+              - img [ref=e612] [box=1398,185,13,13]
+              - text: AIASK_HTTP_503
+            - button "Refresh connectors" [ref=e614] [cursor=pointer] [box=1519,174,34,34]:
+              - img [ref=e615] [box=1528,183,16,16]
+        - generic [ref=e620] [box=390,286,1180,63]:
+          - generic [ref=e621] [box=401,309,277,17]: Control access is required to inspect connectors.
+          - paragraph [ref=e622] [box=686,309,361,17]: Set the Agent control token in Settings, then refresh this panel.

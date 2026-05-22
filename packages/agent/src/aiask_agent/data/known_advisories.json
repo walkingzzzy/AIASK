@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "description": "AIASK static dependency advisory ledger. Manually curated, offline. Used by agent_security_scan dependency_advisory action to flag known-bad versions of common Python packages without contacting the network.",
+  "last_reviewed": "2026-05-20",
+  "advisories": [
+    {
+      "package": "requests",
+      "vulnerable_versions": ["<2.32.0"],
+      "advisory_id": "GHSA-9wx4-h78v-vm56",
+      "severity": "medium",
+      "summary": "Requests Session sends Proxy-Authorization header to destination on redirect.",
+      "fixed_in": "2.32.0"
+    },
+    {
+      "package": "urllib3",
+      "vulnerable_versions": ["<1.26.18", ">=2.0.0,<2.0.7"],
+      "advisory_id": "GHSA-g4mx-q9vg-27p4",
+      "severity": "medium",
+      "summary": "urllib3 Cookie header leaks across redirects to different host.",
+      "fixed_in": "1.26.18 / 2.0.7"
+    },
+    {
+      "package": "aiohttp",
+      "vulnerable_versions": ["<3.9.4"],
+      "advisory_id": "GHSA-7gpw-8wmc-pm8g",
+      "severity": "high",
+      "summary": "aiohttp static file route path traversal.",
+      "fixed_in": "3.9.4"
+    },
+    {
+      "package": "cryptography",
+      "vulnerable_versions": ["<42.0.4"],
+      "advisory_id": "GHSA-3ww4-gg4f-jr7f",
+      "severity": "medium",
+      "summary": "cryptography NULL pointer dereference in PKCS12 loading.",
+      "fixed_in": "42.0.4"
+    },
+    {
+      "package": "pillow",
+      "vulnerable_versions": ["<10.3.0"],
+      "advisory_id": "GHSA-44wm-f244-xhp3",
+      "severity": "high",
+      "summary": "Pillow buffer overflow when processing crafted images.",
+      "fixed_in": "10.3.0"
+    },
+    {
+      "package": "pyyaml",
+      "vulnerable_versions": ["<5.4"],
+      "advisory_id": "GHSA-8q59-q68h-6hv4",
+      "severity": "high",
+      "summary": "PyYAML yaml.load arbitrary code execution prior to safe_load default.",
+      "fixed_in": "5.4"
+    },
+    {
+      "package": "jinja2",
+      "vulnerable_versions": ["<3.1.4"],
+      "advisory_id": "GHSA-h75v-3vvj-5mfj",
+      "severity": "medium",
+      "summary": "Jinja2 xmlattr filter accepts non-attribute keys leading to XSS.",
+      "fixed_in": "3.1.4"
+    },
+    {
+      "package": "sqlalchemy",
+      "vulnerable_versions": ["<2.0.0"],
+      "advisory_id": "AIASK-EOL-SQLA1",
+      "severity": "low",
+      "summary": "SQLAlchemy 1.x is in maintenance-only mode; AIASK targets 2.x.",
+      "fixed_in": "2.0.0",
+      "category": "eol"
+    },
+    {
+      "package": "fastapi",
+      "vulnerable_versions": ["<0.109.1"],
+      "advisory_id": "GHSA-qf9m-vfgh-m389",
+      "severity": "medium",
+      "summary": "FastAPI ReDoS in form parsing.",
+      "fixed_in": "0.109.1"
+    },
+    {
+      "package": "starlette",
+      "vulnerable_versions": ["<0.36.2"],
+      "advisory_id": "GHSA-93gm-qmq6-w238",
+      "severity": "medium",
+      "summary": "Starlette MultiPartParser unbounded memory.",
+      "fixed_in": "0.36.2"
+    },
+    {
+      "package": "pydantic",
+      "vulnerable_versions": ["<1.10.13", ">=2.0.0,<2.4.0"],
+      "advisory_id": "GHSA-mr82-8j83-vxmv",
+      "severity": "medium",
+      "summary": "Pydantic regex DoS in email validation.",
+      "fixed_in": "1.10.13 / 2.4.0"
+    },
+    {
+      "package": "numpy",
+      "vulnerable_versions": ["<1.22.0"],
+      "advisory_id": "AIASK-EOL-NUMPY121",
+      "severity": "low",
+      "summary": "NumPy <1.22 is end-of-life; security patches no longer published.",
+      "fixed_in": "1.22.0",
+      "category": "eol"
+    },
+    {
+      "package": "pandas",
+      "vulnerable_versions": ["<2.0.0"],
+      "advisory_id": "AIASK-EOL-PANDAS1",
+      "severity": "low",
+      "summary": "pandas 1.x is end-of-life; AIASK financial pipelines target 2.x.",
+      "fixed_in": "2.0.0",
+      "category": "eol"
+    },
+    {
+      "package": "scipy",
+      "vulnerable_versions": ["<1.10.0"],
+      "advisory_id": "AIASK-EOL-SCIPY19",
+      "severity": "low",
+      "summary": "scipy <1.10 is end-of-life; upgrade for wheel + security parity.",
+      "fixed_in": "1.10.0",
+      "category": "eol"
+    },
+    {
+      "package": "openssl",
+      "vulnerable_versions": ["<3.0.13"],
+      "advisory_id": "AIASK-OPENSSL-3013",
+      "severity": "high",
+      "summary": "OpenSSL <3.0.13 contains multiple CVEs; ensure embedded runtime is rebuilt.",
+      "fixed_in": "3.0.13"
+    },
+    {
+      "package": "anthropic",
+      "vulnerable_versions": ["<0.34.0"],
+      "advisory_id": "AIASK-ANTHROPIC-LEGACY",
+      "severity": "low",
+      "summary": "anthropic SDK <0.34 lacks tool_use streaming guards expected by AIASK.",
+      "fixed_in": "0.34.0",
+      "category": "compatibility"
+    },
+    {
+      "package": "openai",
+      "vulnerable_versions": ["<1.30.0"],
+      "advisory_id": "AIASK-OPENAI-LEGACY",
+      "severity": "low",
+      "summary": "openai SDK <1.30 lacks Responses API; AIASK assumes new client.",
+      "fixed_in": "1.30.0",
+      "category": "compatibility"
+    },
+    {
+      "package": "httpx",
+      "vulnerable_versions": ["<0.27.0"],
+      "advisory_id": "AIASK-HTTPX-LEGACY",
+      "severity": "low",
+      "summary": "httpx <0.27 missing trust_env defaults relied on by AIASK fetcher.",
+      "fixed_in": "0.27.0",
+      "category": "compatibility"
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+- generic [ref=e3] [box=0,0,980,760]:
+  - complementary [ref=e4] [box=0,-19,210,760]:
+    - generic [ref=e5] [box=0,-19,209,66]:
+      - img [ref=e7] [box=20,6,18,18]
+      - generic [ref=e9] [box=55,-10,118,50]:
+        - strong [ref=e10] [box=55,-10,118,18]: AIASK
+        - generic [ref=e11] [box=55,10,118,30]: Agent Command Center
+      - img [ref=e12] [box=182,7,13,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,61,177,34]:
+      - img [ref=e15] [box=53,70,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,109,209,666]:
+      - generic [ref=e17] [box=10,109,189,22]:
+        - img [ref=e18] [box=16,110,13,13]
+        - generic [ref=e23] [box=122,109,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,134,189,34]:
+        - img [ref=e25] [box=20,143,16,16]
+        - generic [ref=e28] [box=46,143,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,171,189,34]:
+        - img [ref=e30] [box=20,180,16,16]
+        - generic [ref=e32] [box=46,180,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,208,189,34]:
+        - img [ref=e34] [box=20,217,16,16]
+        - generic [ref=e46] [box=46,217,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,245,189,34]:
+        - img [ref=e48] [box=20,254,16,16]
+        - generic [ref=e52] [box=46,254,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,282,189,34]:
+        - img [ref=e54] [box=20,291,16,16]
+        - generic [ref=e66] [box=46,291,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,319,189,34]:
+        - img [ref=e68] [box=20,328,16,16]
+        - generic [ref=e72] [box=46,328,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,356,189,34]:
+        - img [ref=e74] [box=20,365,16,16]
+        - generic [ref=e78] [box=46,365,79,16]: Automation
+      - button "Strategy Factory" [ref=e79] [cursor=pointer] [box=10,393,189,34]:
+        - img [ref=e80] [box=20,402,16,16]
+        - generic [ref=e82] [box=46,402,107,16]: Strategy Factory
+      - button "Factor Factory" [active] [ref=e83] [cursor=pointer] [box=10,430,189,34]:
+        - img [ref=e84] [box=20,439,16,16]
+        - generic [ref=e86] [box=46,439,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,467,189,34]:
+        - img [ref=e88] [box=20,476,16,16]
+        - generic [ref=e90] [box=46,476,70,16]: Incubation
+      - button "Local User" [ref=e91] [cursor=pointer] [box=10,504,189,34]:
+        - img [ref=e92] [box=20,513,16,16]
+        - generic [ref=e95] [box=46,513,67,16]: Local User
+      - button "Tools" [ref=e96] [cursor=pointer] [box=10,541,189,34]:
+        - img [ref=e97] [box=20,550,16,16]
+        - generic [ref=e99] [box=46,550,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,578,189,34]:
+        - img [ref=e101] [box=20,587,16,16]
+        - generic [ref=e111] [box=46,587,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,615,189,34]:
+        - img [ref=e113] [box=20,624,16,16]
+        - generic [ref=e115] [box=46,624,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,652,189,34]:
+        - img [ref=e117] [box=20,661,16,16]
+        - generic [ref=e119] [box=46,661,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,689,189,34]:
+        - img [ref=e121] [box=20,698,16,16]
+        - generic [ref=e124] [box=46,698,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,726,189,34]:
+        - img [ref=e126] [box=20,735,16,16]
+        - generic [ref=e129] [box=46,735,53,16]: Settings
+    - generic [ref=e130] [box=0,775,209,28]:
+      - generic [ref=e131] [box=10,789,189,22]:
+        - generic [ref=e132] [box=16,789,54,14]: Threads
+        - generic [ref=e133] [box=187,791,6,11]: "0"
+      - paragraph [ref=e134] [box=10,824,182,39]: Recent tasks will appear here.
+    - generic [ref=e135] [box=0,803,209,99]:
+      - generic "AIASK_ONLINE" [ref=e391] [box=16,816,120,24]:
+        - img [ref=e392] [box=25,822,13,13]
+        - text: AIASK_ONLINE
+      - generic [ref=e139] [box=16,848,177,15]: 13 tools
+      - generic [ref=e140] [box=16,871,177,15]: Hermes full ready
+  - main [ref=e141] [box=210,-19,770,760]:
+    - generic [ref=e1240] [box=210,-19,770,760]:
+      - generic [ref=e1242] [box=236,-3,232,49]:
+        - text: Factor Factory
+        - heading "Mining and active pool" [level=1] [ref=e1243] [box=236,21,232,25]
+      - generic [ref=e1245] [box=232,85,711,1617]:
+        - generic [ref=e1246] [box=232,85,711,155]:
+          - generic [ref=e1247] [box=249,102,390,121]:
+            - text: Factor Mining Factory
+            - heading "Factor pool, engine health, and approved mining cycles" [level=2] [ref=e1248] [box=249,126,390,50]
+            - paragraph [ref=e1249] [box=249,184,390,39]: Run and maintenance controls create durable approval intents. Confirmed execution stays inside the Agent facade.
+          - generic [ref=e1250] [box=657,102,269,34]:
+            - generic "FACTOR_FACTORY_LOADED" [ref=e1251] [box=657,108,164,23]:
+              - img [ref=e1252] [box=666,113,13,13]
+              - text: FACTOR_FACTORY_LOADED
+            - button "Refresh" [ref=e1255] [cursor=pointer] [box=831,102,95,34]:
+              - img [ref=e1256] [box=843,112,14,14]
+              - text: Refresh
+        - generic [ref=e1261] [box=232,254,711,39]:
+          - img [ref=e1262] [box=243,266,15,15]
+          - text: Control token is required to create factor factory approval intents.
+        - generic [ref=e1265] [box=232,307,711,301]:
+          - generic [ref=e1266] [box=232,307,711,69]:
+            - text: Status
+            - strong [ref=e1267] [box=243,344,689,21]: ready
+          - generic [ref=e1268] [box=232,384,711,69]:
+            - text: Pool size
+            - strong [ref=e1269] [box=243,421,689,21]: "3"
+          - generic [ref=e1270] [box=232,461,711,69]:
+            - text: Runs
+            - strong [ref=e1271] [box=243,498,689,21]: "7"
+          - generic [ref=e1272] [box=232,539,711,69]:
+            - text: Active factors
+            - strong [ref=e1273] [box=243,576,689,21]: "1"
+        - generic [ref=e1274] [box=232,634,711,834]:
+          - article [ref=e1275] [box=232,634,711,382]:
+            - generic [ref=e1276] [box=247,649,681,43]:
+              - generic [ref=e1277] [box=247,649,145,43]:
+                - text: Approved action
+                - heading "Mining cycle intent" [level=3] [ref=e1278] [box=247,673,145,19]
+              - img [ref=e1279] [box=910,649,18,18]
+            - generic [ref=e1283] [box=247,704,681,84]:
+              - generic [ref=e1284] [box=247,704,681,15]: Codes
+              - textbox "Codes" [ref=e1285] [box=247,726,681,62]: 600519, 000001, 000858
+            - generic [ref=e1286] [box=247,801,681,58]:
+              - generic [ref=e1287] [box=247,801,681,15]: Engines
+              - textbox "Engines" [ref=e1288] [box=247,823,681,36]: llm_primary, gp_classic, rule_seed
+            - generic [ref=e1289] [box=247,872,681,71]:
+              - generic [ref=e1290] [box=247,872,336,58]:
+                - generic [ref=e1291] [box=247,872,336,15]: Candidates
+                - textbox "Candidates" [ref=e1292] [box=247,894,336,36]: "10"
+              - generic [ref=e1293] [box=593,872,336,58]:
+                - generic [ref=e1294] [box=593,872,336,15]: Generations
+                - textbox "Generations" [ref=e1295] [box=593,894,336,36]: "2"
+            - generic [ref=e1296] [box=247,955,681,34]:
+              - button "Create run intent" [disabled] [ref=e1297] [box=247,955,158,34]:
+                - img [ref=e1298] [box=259,964,15,15]
+                - text: Create run intent
+              - button "Maintenance intent" [disabled] [ref=e1300] [box=415,955,174,34]:
+                - img [ref=e1301] [box=427,965,14,14]
+                - text: Maintenance intent
+          - article [ref=e1303] [box=232,1028,711,440]:
+            - generic [ref=e1304] [box=247,1043,681,43]:
+              - generic [ref=e1305] [box=247,1043,173,43]:
+                - text: Health
+                - heading "Engine and pool status" [level=3] [ref=e1306] [box=247,1067,173,19]
+              - generic "ready" [ref=e1307] [box=861,1043,67,23]:
+                - img [ref=e1308] [box=870,1048,13,13]
+                - text: ready
+            - generic [ref=e1311] [box=247,1098,681,120]:
+              - generic [ref=e1312] [box=260,1111,96,16]: Initialized
+              - strong [ref=e1313] [box=368,1111,547,16]: "true"
+              - generic [ref=e1314] [box=260,1137,96,16]: Loaded
+              - strong [ref=e1315] [box=368,1137,547,16]: "true"
+              - generic [ref=e1316] [box=260,1163,96,16]: Promoted
+              - strong [ref=e1317] [box=368,1163,547,16]: "1"
+              - generic [ref=e1318] [box=260,1189,96,16]: Quarantine
+              - strong [ref=e1319] [box=368,1189,547,16]: "0"
+            - generic [ref=e1320] [box=247,1230,681,223]: "{ \"engineHealth\": { \"llm_primary\": { \"status\": \"ready\" } }, \"poolHealth\": { \"active_promoted_count\": 1, \"quarantine_count\": 0 } }"
+        - generic [ref=e1321] [box=232,1482,711,168]:
+          - generic [ref=e1322] [box=247,1497,681,43]:
+            - generic [ref=e1323] [box=247,1497,86,43]:
+              - generic [ref=e1324] [box=247,1503,54,13]: 1 factors
+              - heading "Active pool" [level=3] [ref=e1325] [box=247,1521,86,19]
+            - generic "ready" [ref=e1326] [box=861,1497,67,23]:
+              - img [ref=e1327] [box=870,1502,13,13]
+              - text: ready
+          - article [ref=e1331] [box=247,1552,681,83]:
+            - strong [ref=e1332] [box=258,1563,659,16]: 20d momentum
+            - generic [ref=e1333] [box=258,1584,659,17]: momentum
+            - paragraph [ref=e1334] [box=258,1606,659,17]: "0.73"
+        - group [ref=e1335] [box=232,1664,711,38]:
+          - generic "Raw factor factory data" [ref=e1336] [cursor=pointer] [box=233,1665,709,36]

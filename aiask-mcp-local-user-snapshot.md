@@ -1,0 +1,142 @@
+- generic [ref=e3] [box=0,0,980,760]:
+  - complementary [ref=e4] [box=0,-19,210,760]:
+    - generic [ref=e5] [box=0,-19,209,66]:
+      - img [ref=e7] [box=20,6,18,18]
+      - generic [ref=e9] [box=55,-10,118,50]:
+        - strong [ref=e10] [box=55,-10,118,18]: AIASK
+        - generic [ref=e11] [box=55,10,118,30]: Agent Command Center
+      - img [ref=e12] [box=182,7,13,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,61,177,34]:
+      - img [ref=e15] [box=53,70,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,109,209,666]:
+      - generic [ref=e17] [box=10,109,189,22]:
+        - img [ref=e18] [box=16,110,13,13]
+        - generic [ref=e23] [box=122,109,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,134,189,34]:
+        - img [ref=e25] [box=20,143,16,16]
+        - generic [ref=e28] [box=46,143,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,171,189,34]:
+        - img [ref=e30] [box=20,180,16,16]
+        - generic [ref=e32] [box=46,180,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,208,189,34]:
+        - img [ref=e34] [box=20,217,16,16]
+        - generic [ref=e46] [box=46,217,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,245,189,34]:
+        - img [ref=e48] [box=20,254,16,16]
+        - generic [ref=e52] [box=46,254,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,282,189,34]:
+        - img [ref=e54] [box=20,291,16,16]
+        - generic [ref=e66] [box=46,291,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,319,189,34]:
+        - img [ref=e68] [box=20,328,16,16]
+        - generic [ref=e72] [box=46,328,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,356,189,34]:
+        - img [ref=e74] [box=20,365,16,16]
+        - generic [ref=e78] [box=46,365,79,16]: Automation
+      - button "Strategy Factory" [ref=e79] [cursor=pointer] [box=10,393,189,34]:
+        - img [ref=e80] [box=20,402,16,16]
+        - generic [ref=e82] [box=46,402,107,16]: Strategy Factory
+      - button "Factor Factory" [ref=e83] [cursor=pointer] [box=10,430,189,34]:
+        - img [ref=e84] [box=20,439,16,16]
+        - generic [ref=e86] [box=46,439,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,467,189,34]:
+        - img [ref=e88] [box=20,476,16,16]
+        - generic [ref=e90] [box=46,476,70,16]: Incubation
+      - button "Local User" [active] [ref=e91] [cursor=pointer] [box=10,504,189,34]:
+        - img [ref=e92] [box=20,513,16,16]
+        - generic [ref=e95] [box=46,513,67,16]: Local User
+      - button "Tools" [ref=e96] [cursor=pointer] [box=10,541,189,34]:
+        - img [ref=e97] [box=20,550,16,16]
+        - generic [ref=e99] [box=46,550,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,578,189,34]:
+        - img [ref=e101] [box=20,587,16,16]
+        - generic [ref=e111] [box=46,587,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,615,189,34]:
+        - img [ref=e113] [box=20,624,16,16]
+        - generic [ref=e115] [box=46,624,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,652,189,34]:
+        - img [ref=e117] [box=20,661,16,16]
+        - generic [ref=e119] [box=46,661,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,689,189,34]:
+        - img [ref=e121] [box=20,698,16,16]
+        - generic [ref=e124] [box=46,698,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,726,189,34]:
+        - img [ref=e126] [box=20,735,16,16]
+        - generic [ref=e129] [box=46,735,53,16]: Settings
+    - generic [ref=e130] [box=0,775,209,28]:
+      - generic [ref=e131] [box=10,789,189,22]:
+        - generic [ref=e132] [box=16,789,54,14]: Threads
+        - generic [ref=e133] [box=187,791,6,11]: "0"
+      - paragraph [ref=e134] [box=10,824,182,39]: Recent tasks will appear here.
+    - generic [ref=e135] [box=0,803,209,99]:
+      - generic "AIASK_ONLINE" [ref=e391] [box=16,816,120,24]:
+        - img [ref=e392] [box=25,822,13,13]
+        - text: AIASK_ONLINE
+      - generic [ref=e139] [box=16,848,177,15]: 13 tools
+      - generic [ref=e140] [box=16,871,177,15]: Hermes full ready
+  - main [ref=e141] [box=210,-19,770,760]:
+    - generic [ref=e1486] [box=210,-19,770,760]:
+      - generic [ref=e1487] [box=210,-19,770,82]:
+        - generic [ref=e1488] [box=236,-3,277,49]:
+          - text: Local User
+          - heading "Profile and local data scope" [level=1] [ref=e1489] [box=236,21,277,25]
+        - generic [ref=e1490] [box=691,5,263,34]:
+          - generic "LOCAL_PROFILE_LOADED" [ref=e1491] [box=691,10,158,23]:
+            - img [ref=e1492] [box=700,15,13,13]
+            - text: LOCAL_PROFILE_LOADED
+          - button "Refresh" [ref=e1495] [cursor=pointer] [box=859,5,95,34]:
+            - img [ref=e1496] [box=871,15,14,14]
+            - text: Refresh
+      - generic [ref=e1502] [box=232,85,711,828]:
+        - generic [ref=e1503] [box=232,85,711,130]:
+          - generic [ref=e1504] [box=249,102,638,96]:
+            - text: local-e2e
+            - heading "E2E Local Operator" [level=2] [ref=e1505] [box=249,126,638,25]
+            - paragraph [ref=e1506] [box=249,159,638,39]: Local profile is a desktop and Agent state scope. It is not a remote account, and secrets are not stored in the profile.
+          - img [ref=e1507] [box=905,102,21,24]
+        - generic [ref=e1510] [box=232,229,711,536]:
+          - generic [ref=e1511] [box=232,229,711,379]:
+            - generic [ref=e1512] [box=247,244,681,43]:
+              - generic [ref=e1513] [box=247,244,102,43]:
+                - text: Profile
+                - heading "Local identity" [level=3] [ref=e1514] [box=247,268,102,19]
+              - generic "ready" [ref=e1515] [box=861,244,67,23]:
+                - img [ref=e1516] [box=870,249,13,13]
+                - text: ready
+            - generic [ref=e1519] [box=247,299,681,58]:
+              - generic [ref=e1520] [box=247,299,681,15]: User ID
+              - textbox "User ID" [ref=e1521] [box=247,321,681,36]: local-e2e
+            - generic [ref=e1522] [box=247,370,681,58]:
+              - generic [ref=e1523] [box=247,370,681,15]: Profile name
+              - textbox "Profile name" [ref=e1524] [box=247,392,681,36]: E2E Local Operator
+            - button "Save profile" [ref=e1525] [cursor=pointer] [box=247,441,124,34]:
+              - img [ref=e1526] [box=259,451,15,15]
+              - text: Save profile
+            - generic [ref=e1530] [box=247,487,681,94]:
+              - generic [ref=e1531] [box=260,500,96,16]: Storage
+              - strong [ref=e1532] [box=368,500,547,16]: sqlite
+              - generic [ref=e1533] [box=260,526,96,16]: Path
+              - strong [ref=e1534] [box=368,526,547,16]: /tmp/aiask-agent-state.sqlite3
+              - generic [ref=e1535] [box=260,552,96,16]: Updated
+              - strong [ref=e1536] [box=368,552,547,16]: 2026-05-21T08:00:00.000Z
+          - generic [ref=e1537] [box=232,620,711,145]:
+            - generic [ref=e1538] [box=247,635,681,43]:
+              - generic [ref=e1539] [box=247,635,118,43]:
+                - generic [ref=e1540] [box=247,641,61,13]: 1 sessions
+                - heading "Recent sessions" [level=3] [ref=e1541] [box=247,659,118,19]
+              - generic "ready" [ref=e1542] [box=861,635,67,23]:
+                - img [ref=e1543] [box=870,640,13,13]
+                - text: ready
+            - article [ref=e1547] [box=247,690,681,60]:
+              - strong [ref=e1548] [box=258,701,659,16]: E2E session
+              - generic [ref=e1549] [box=258,722,659,17]: 2026-05-21T08:00:00.000Z
+        - generic [ref=e1550] [box=232,779,711,81]:
+          - generic [ref=e1551] [box=247,794,681,34]:
+            - textbox "Search local sessions, responses, and memory" [ref=e1552] [box=247,794,584,34]
+            - button "Search" [disabled] [ref=e1553] [box=839,794,89,34]:
+              - img [ref=e1554] [box=851,804,14,14]
+              - text: Search
+          - paragraph [ref=e1558] [box=247,828,681,17]: Search results will appear here.
+        - group [ref=e1559] [box=232,875,711,38]:
+          - generic "Raw local profile data" [ref=e1560] [cursor=pointer] [box=233,876,709,36]

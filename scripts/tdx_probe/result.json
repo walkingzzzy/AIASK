@@ -1,0 +1,757 @@
+{
+  "00_initialize": {
+    "ok": true,
+    "elapsed_sec": 0.012,
+    "sample": null,
+    "raw_type": "NoneType",
+    "raw_len": null
+  },
+  "01_get_trading_dates_recent10": {
+    "ok": true,
+    "elapsed_sec": 0.012,
+    "sample": [
+      "20260507",
+      "20260508",
+      "20260511",
+      "<+7 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 10
+  },
+  "02_get_stock_list_5_all_a": {
+    "ok": true,
+    "elapsed_sec": 0.064,
+    "sample": [
+      {
+        "Code": "000001.SZ",
+        "Name": "平安银行"
+      },
+      {
+        "Code": "000002.SZ",
+        "Name": "万 科Ａ"
+      },
+      {
+        "Code": "000004.SZ",
+        "Name": "*ST国华"
+      },
+      "<+5522 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 5525
+  },
+  "03_get_stock_list_23_hs300": {
+    "ok": true,
+    "elapsed_sec": 0.012,
+    "sample": [
+      {
+        "Code": "000001.SZ",
+        "Name": "平安银行"
+      },
+      {
+        "Code": "000002.SZ",
+        "Name": "万 科Ａ"
+      },
+      {
+        "Code": "000063.SZ",
+        "Name": "中兴通讯"
+      },
+      "<+297 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 300
+  },
+  "04_get_stock_list_24_zz500": {
+    "ok": true,
+    "elapsed_sec": 0.013,
+    "sample": [
+      {
+        "Code": "000009.SZ",
+        "Name": "中国宝安"
+      },
+      {
+        "Code": "000021.SZ",
+        "Name": "深科技"
+      },
+      {
+        "Code": "000027.SZ",
+        "Name": "深圳能源"
+      },
+      "<+497 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 500
+  },
+  "05_get_stock_list_25_zz1000": {
+    "ok": true,
+    "elapsed_sec": 0.017,
+    "sample": [
+      {
+        "Code": "000012.SZ",
+        "Name": "南 玻Ａ"
+      },
+      {
+        "Code": "000019.SZ",
+        "Name": "深粮控股"
+      },
+      {
+        "Code": "000028.SZ",
+        "Name": "国药一致"
+      },
+      "<+997 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 1000
+  },
+  "06_get_stock_list_28_a500": {
+    "ok": true,
+    "elapsed_sec": 0.012,
+    "sample": [
+      {
+        "Code": "000001.SZ",
+        "Name": "平安银行"
+      },
+      {
+        "Code": "000002.SZ",
+        "Name": "万 科Ａ"
+      },
+      {
+        "Code": "000009.SZ",
+        "Name": "中国宝安"
+      },
+      "<+497 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 500
+  },
+  "07_get_stock_list_31_etf": {
+    "ok": true,
+    "elapsed_sec": 0.021,
+    "sample": [
+      {
+        "Code": "159001.SZ",
+        "Name": "货币ETF易方达"
+      },
+      {
+        "Code": "159003.SZ",
+        "Name": "招商快线ETF"
+      },
+      {
+        "Code": "159005.SZ",
+        "Name": "快钱ETF汇添富"
+      },
+      "<+1575 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 1578
+  },
+  "08_get_stock_list_32_kzz": {
+    "ok": true,
+    "elapsed_sec": 0.013,
+    "sample": [
+      {
+        "Code": "123054.SZ",
+        "Name": "思特转债"
+      },
+      {
+        "Code": "123059.SZ",
+        "Name": "银信转债"
+      },
+      {
+        "Code": "123061.SZ",
+        "Name": "航新转债"
+      },
+      "<+341 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 344
+  },
+  "09_get_stock_list_51_cyb": {
+    "ok": true,
+    "elapsed_sec": 0.02,
+    "sample": [
+      {
+        "Code": "300001.SZ",
+        "Name": "特锐德"
+      },
+      {
+        "Code": "300002.SZ",
+        "Name": "神州泰岳"
+      },
+      {
+        "Code": "300003.SZ",
+        "Name": "乐普医疗"
+      },
+      "<+1395 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 1398
+  },
+  "10_get_stock_list_52_kcb": {
+    "ok": true,
+    "elapsed_sec": 0.016,
+    "sample": [
+      {
+        "Code": "688001.SH",
+        "Name": "华兴源创"
+      },
+      {
+        "Code": "688002.SH",
+        "Name": "睿创微纳"
+      },
+      {
+        "Code": "688003.SH",
+        "Name": "天准科技"
+      },
+      "<+607 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 610
+  },
+  "11_get_stock_list_53_bj": {
+    "ok": true,
+    "elapsed_sec": 0.014,
+    "sample": [
+      {
+        "Code": "920000.BJ",
+        "Name": "安徽凤凰"
+      },
+      {
+        "Code": "920001.BJ",
+        "Name": "纬达光电"
+      },
+      {
+        "Code": "920002.BJ",
+        "Name": "万达轴承"
+      },
+      "<+314 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 317
+  },
+  "12_get_stock_list_16_research_l1": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": [
+      {
+        "Code": "881001.SH",
+        "Name": "煤炭"
+      },
+      {
+        "Code": "881006.SH",
+        "Name": "石油"
+      },
+      {
+        "Code": "881015.SH",
+        "Name": "化工"
+      },
+      "<+27 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 30
+  },
+  "20_get_sector_list": {
+    "ok": true,
+    "elapsed_sec": 0.013,
+    "sample": [
+      {
+        "Code": "880081.SH",
+        "Name": "轮动趋势"
+      },
+      {
+        "Code": "880082.SH",
+        "Name": "板块趋势"
+      },
+      {
+        "Code": "880201.SH",
+        "Name": "黑龙江"
+      },
+      "<+583 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 586
+  },
+  "21_get_user_sector": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": [],
+    "raw_type": "list",
+    "raw_len": 0
+  },
+  "22_get_stock_list_in_sector_industry_first": {
+    "ok": true,
+    "elapsed_sec": 3.036,
+    "sample": {
+      "block": "881001.SH",
+      "members": [
+        "000552.SZ",
+        "000571.SZ",
+        "000723.SZ",
+        "<+17 more>"
+      ]
+    },
+    "raw_type": "dict",
+    "raw_len": 2
+  },
+  "30_get_market_data_daily_5": {
+    "ok": false,
+    "elapsed_sec": 0.035,
+    "error": "TypeError: keys must be str, int, float, bool or None, not Timestamp",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\walking\\Desktop\\aiask\\scripts\\tdx_probe\\probe_tdx_all.py\", line 101, in section\n    log_lines.append(f\"  sample: {json.dumps(sample, ensure_ascii=False)[:1500]}\")\n                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\__init__.py\", line 238, in dumps\n    **kw).encode(obj)\n          ^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 200, in encode\n    chunks = self.iterencode(o, _one_shot=True)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 258, in iterencode\n    return _iterencode(o, 0)\n           ^^^^^^^^^^^^^^^^^\nTypeError: keys must be str, int, float, bool or None, not Timestamp\n"
+  },
+  "31_get_market_data_5min_3": {
+    "ok": false,
+    "elapsed_sec": 0.014,
+    "error": "TypeError: keys must be str, int, float, bool or None, not Timestamp",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\walking\\Desktop\\aiask\\scripts\\tdx_probe\\probe_tdx_all.py\", line 101, in section\n    log_lines.append(f\"  sample: {json.dumps(sample, ensure_ascii=False)[:1500]}\")\n                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\__init__.py\", line 238, in dumps\n    **kw).encode(obj)\n          ^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 200, in encode\n    chunks = self.iterencode(o, _one_shot=True)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 258, in iterencode\n    return _iterencode(o, 0)\n           ^^^^^^^^^^^^^^^^^\nTypeError: keys must be str, int, float, bool or None, not Timestamp\n"
+  },
+  "32_get_market_data_weekly_3": {
+    "ok": false,
+    "elapsed_sec": 0.041,
+    "error": "TypeError: keys must be str, int, float, bool or None, not Timestamp",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\walking\\Desktop\\aiask\\scripts\\tdx_probe\\probe_tdx_all.py\", line 101, in section\n    log_lines.append(f\"  sample: {json.dumps(sample, ensure_ascii=False)[:1500]}\")\n                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\__init__.py\", line 238, in dumps\n    **kw).encode(obj)\n          ^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 200, in encode\n    chunks = self.iterencode(o, _one_shot=True)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 258, in iterencode\n    return _iterencode(o, 0)\n           ^^^^^^^^^^^^^^^^^\nTypeError: keys must be str, int, float, bool or None, not Timestamp\n"
+  },
+  "33_get_market_snapshot_one": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": {
+      "ItemNum": "2913",
+      "LastClose": "1324.30",
+      "Open": "1321.00",
+      "Max": "1332.99",
+      "Min": "1315.36",
+      "Now": "1315.51",
+      "Volume": "35652",
+      "NowVol": "3",
+      "Amount": "471478.16",
+      "Inside": "18839",
+      "Outside": "16813",
+      "TickDiff": "0.01",
+      "InOutFlag": "1",
+      "Jjjz": "0.00",
+      "Buyp": [
+        "1315.50",
+        "0.00",
+        "0.00",
+        "<+2 more>"
+      ],
+      "Buyv": [
+        "2",
+        "0",
+        "0",
+        "<+2 more>"
+      ],
+      "Sellp": [
+        "1315.51",
+        "0.00",
+        "0.00",
+        "<+2 more>"
+      ],
+      "Sellv": [
+        "15",
+        "0",
+        "0",
+        "<+2 more>"
+      ],
+      "UpHome": "0",
+      "DownHome": "0",
+      "__more_keys__": 6
+    },
+    "raw_type": "dict",
+    "raw_len": 26
+  },
+  "34_get_more_info_one": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": {
+      "MainBusiness": "",
+      "SafeValue": "-1",
+      "ShineValue": "-1",
+      "ShapeValue": "70207",
+      "TPFlag": "0",
+      "ZTPrice": "1456.73",
+      "DTPrice": "1191.87",
+      "HqDate": "20260520",
+      "fHSL": "0.28",
+      "fLianB": "1.06",
+      "Wtb": "-24.32",
+      "Zsz": "16473.74",
+      "Ltsz": "16473.74",
+      "vzangsu": "0.63",
+      "Fzhsl": "0.01",
+      "FzAmo": "2473.01",
+      "VOpenZAF": "0.00",
+      "ZAF": "-0.66",
+      "ZAFYesterday": "0.10",
+      "ZAFPre2D": "-0.75",
+      "__more_keys__": 68
+    },
+    "raw_type": "dict",
+    "raw_len": 88
+  },
+  "35_get_stock_info_one": {
+    "ok": true,
+    "elapsed_sec": 0.011,
+    "sample": {
+      "Name": "贵州茅台",
+      "Unit": "100",
+      "VolBase": "219.43",
+      "MinPrice": "0.01",
+      "XsFlag": "2",
+      "Fz": [
+        "570",
+        "690",
+        "780",
+        "<+5 more>"
+      ],
+      "DelayMin": "0",
+      "QHVolBaseRate": "0",
+      "HKVolBaseRate": "0",
+      "BelongHS300": "1",
+      "BelongHasKQZ": "0",
+      "BelongRZRQ": "1",
+      "BelongHSGT": "1",
+      "IsHKGP": "0",
+      "IsQH": "0",
+      "IsQQ": "0",
+      "IsSTGP": "0",
+      "IsQuitGP": "0",
+      "TodayDRFlag": "0",
+      "HSStockKind": "1",
+      "__more_keys__": 43
+    },
+    "raw_type": "dict",
+    "raw_len": 63
+  },
+  "36_get_relation_one": {
+    "ok": true,
+    "elapsed_sec": 0.048,
+    "sample": [
+      {
+        "BlockCode": "881130.SH",
+        "BlockName": "酿酒",
+        "BlockType": "行业",
+        "GPNume": "37"
+      },
+      {
+        "BlockCode": "880229.SH",
+        "BlockName": "贵州板块",
+        "BlockType": "地区",
+        "GPNume": "34"
+      },
+      {
+        "BlockCode": "880515.SH",
+        "BlockName": "通达信88",
+        "BlockType": "概念",
+        "GPNume": "88"
+      },
+      "<+42 more>"
+    ],
+    "raw_type": "list",
+    "raw_len": 45
+  },
+  "37_get_divid_factors": {
+    "ok": false,
+    "elapsed_sec": 0.018,
+    "error": "TypeError: keys must be str, int, float, bool or None, not Timestamp",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\walking\\Desktop\\aiask\\scripts\\tdx_probe\\probe_tdx_all.py\", line 101, in section\n    log_lines.append(f\"  sample: {json.dumps(sample, ensure_ascii=False)[:1500]}\")\n                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\__init__.py\", line 238, in dumps\n    **kw).encode(obj)\n          ^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 200, in encode\n    chunks = self.iterencode(o, _one_shot=True)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\Python311\\Lib\\json\\encoder.py\", line 258, in iterencode\n    return _iterencode(o, 0)\n           ^^^^^^^^^^^^^^^^^\nTypeError: keys must be str, int, float, bool or None, not Timestamp\n"
+  },
+  "38_get_ipo_info_today_and_after": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": [
+      {
+        "SetCode": "2",
+        "Code": "920218",
+        "Name": "新天力",
+        "SGDate": "20260520",
+        "SGPrice": "12.19",
+        "SGCode": "920218",
+        "MaxSG": "105.38",
+        "PE_Issue": "14.99"
+      }
+    ],
+    "raw_type": "list",
+    "raw_len": 1
+  },
+  "39_get_gb_info_two_dates": {
+    "ok": true,
+    "elapsed_sec": 0.008,
+    "sample": [
+      {
+        "Date": 20240101,
+        "Ltgb": 1256197760.0,
+        "Zgb": 1256197760.0
+      },
+      {
+        "Date": 20250601,
+        "Ltgb": 1256197760.0,
+        "Zgb": 1256197760.0
+      }
+    ],
+    "raw_type": "list",
+    "raw_len": 2
+  },
+  "40_get_financial_data_5fields": {
+    "ok": true,
+    "elapsed_sec": 0.022,
+    "sample": {},
+    "raw_type": "dict",
+    "raw_len": 0
+  },
+  "41_get_financial_data_by_date_latest": {
+    "ok": true,
+    "elapsed_sec": 3.034,
+    "sample": {
+      "600519.SH": {
+        "FN1": "--",
+        "FN197": "--",
+        "FN210": "--",
+        "FN6": "--"
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 1
+  },
+  "42_get_gp_one_data_consensus": {
+    "ok": true,
+    "elapsed_sec": 0.01,
+    "sample": {
+      "600519.SH": {
+        "GO1": "31.39",
+        "GO11": "17862742.00",
+        "GO2": "7150.00",
+        "GO20": "31.65",
+        "GO23": "21.07",
+        "GO29": "1362.00",
+        "GO3": "1790.09",
+        "GO33": "125227.02",
+        "GO35": "0.00",
+        "GO42": "36611288.00",
+        "GO5": "68.35",
+        "GO8": "8559088.00"
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 1
+  },
+  "50_get_gpjy_value_lhb_rzrq_hgt_dz": {
+    "ok": true,
+    "elapsed_sec": 0.01,
+    "sample": {
+      "600519.SH": null
+    },
+    "raw_type": "dict",
+    "raw_len": 1
+  },
+  "51_get_gpjy_value_by_date_latest": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "sample": {
+      "600519.SH": {
+        "GP01": [
+          "--",
+          "--"
+        ],
+        "GP03": [
+          "--",
+          "--"
+        ],
+        "GP06": [
+          "--",
+          "--"
+        ],
+        "GP16": [
+          "--",
+          "--"
+        ],
+        "GP21": [
+          "--",
+          "--"
+        ]
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 1
+  },
+  "60_get_bkjy_value_industry": {
+    "ok": true,
+    "elapsed_sec": 0.03,
+    "sample": {
+      "block": "880081.SH",
+      "data": {
+        "880081.SH": {
+          "BK12": [
+            {
+              "Date": "20260520",
+              "Value": [
+                "0.00",
+                "0.00"
+              ]
+            }
+          ],
+          "BK9": [
+            {
+              "Date": "20260520",
+              "Value": [
+                "0.00",
+                "2.00"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 2
+  },
+  "61_get_bkjy_value_by_date_latest": {
+    "ok": true,
+    "elapsed_sec": 0.012,
+    "sample": {
+      "880660.SH": {
+        "BK10": [
+          "--",
+          "--"
+        ],
+        "BK11": [
+          "--",
+          "--"
+        ],
+        "BK16": [
+          "--",
+          "--"
+        ],
+        "BK5": [
+          "--",
+          "--"
+        ],
+        "BK6": [
+          "--",
+          "--"
+        ]
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 1
+  },
+  "70_get_scjy_value_market_wide": {
+    "ok": true,
+    "elapsed_sec": 0.014,
+    "sample": null,
+    "raw_type": "NoneType",
+    "raw_len": null
+  },
+  "71_get_scjy_value_by_date_latest": {
+    "ok": true,
+    "elapsed_sec": 0.013,
+    "sample": {
+      "SC01": [
+        "--",
+        "--"
+      ],
+      "SC02": [
+        "--",
+        "--"
+      ],
+      "SC03": [
+        "--",
+        "--"
+      ],
+      "SC11": [
+        "--",
+        "--"
+      ],
+      "SC20": [
+        "--",
+        "--"
+      ]
+    },
+    "raw_type": "dict",
+    "raw_len": 5
+  },
+  "80_get_kzz_info": {
+    "ok": true,
+    "elapsed_sec": 0.011,
+    "sample": {},
+    "raw_type": "dict",
+    "raw_len": 0
+  },
+  "81_get_trackzs_etf_info": {
+    "ok": true,
+    "elapsed_sec": 3.04,
+    "sample": {},
+    "raw_type": "dict",
+    "raw_len": 0
+  },
+  "90_formula_zb_macd": {
+    "ok": true,
+    "elapsed_sec": 3.044,
+    "sample": {
+      "ErrorId": "0",
+      "Value": {
+        "DEA": [
+          "0.000000",
+          "0.017871",
+          "0.005923",
+          "<+17 more>"
+        ],
+        "DIF": [
+          "0.000000",
+          "0.089355",
+          "-0.041870",
+          "<+17 more>"
+        ],
+        "MACD": [
+          "0.000000",
+          "0.142969",
+          "-0.095586",
+          "<+17 more>"
+        ]
+      }
+    },
+    "raw_type": "dict",
+    "raw_len": 2
+  },
+  "91_formula_process_mul_zb_macd_3stocks": {
+    "ok": true,
+    "elapsed_sec": 0.039,
+    "sample": {
+      "000001.SZ": {
+        "DEA": [
+          "-0.01"
+        ],
+        "DIF": [
+          "-0.07"
+        ],
+        "MACD": [
+          "-0.12"
+        ]
+      },
+      "600519.SH": {
+        "DEA": [
+          "-26.03"
+        ],
+        "DIF": [
+          "-31.09"
+        ],
+        "MACD": [
+          "-10.13"
+        ]
+      },
+      "688318.SH": {
+        "DEA": [
+          "2.87"
+        ],
+        "DIF": [
+          "2.62"
+        ],
+        "MACD": [
+          "-0.48"
+        ]
+      },
+      "ErrorId": "0"
+    },
+    "raw_type": "dict",
+    "raw_len": 4
+  }
+}

@@ -1,0 +1,50 @@
+[project]
+name = "aiask-agent"
+version = "0.1.0"
+description = "AIASK financial agent runtime"
+requires-python = ">=3.12"
+dependencies = [
+    "akshare-mcp",
+    "strategy-factory",
+    "openai>=1.0.0",
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0", "pytest-asyncio>=0.25.0"]
+browser = ["playwright>=1.40.0"]
+tui = ["textual>=0.80.0"]
+terminal-backends = ["docker>=7.0.0", "asyncssh>=2.14.0", "modal>=0.64.0", "daytona>=0.21.0"]
+gateway-platforms = ["discord.py>=2.3.0", "slack-sdk>=3.26.0", "matrix-nio>=0.24.0", "twilio>=9.0.0"]
+rl-atropos = ["wandb>=0.16.0", "tinker>=0.1.0", "atroposlib>=0.1.0"]
+full-hermes-native = [
+    "textual>=0.80.0",
+    "docker>=7.0.0",
+    "asyncssh>=2.14.0",
+    "modal>=0.64.0",
+    "daytona>=0.21.0",
+    "discord.py>=2.3.0",
+    "slack-sdk>=3.26.0",
+    "matrix-nio>=0.24.0",
+    "twilio>=9.0.0",
+    "wandb>=0.16.0",
+    "tinker>=0.1.0",
+    "atroposlib>=0.1.0",
+]
+
+[project.scripts]
+aiask-agent = "aiask_agent.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiask_agent"]
+
+[tool.uv.sources]
+akshare-mcp = { path = "../akshare-mcp", editable = true }
+strategy-factory = { path = "../strategy-factory", editable = true }

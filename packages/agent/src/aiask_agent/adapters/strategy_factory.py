@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+DEFAULT_SQLITE_PATH = Path.home() / ".aiask" / "akshare_mcp.sqlite3"
+SQLITE_ENV_KEYS = ("AKSHARE_MCP_SQLITE_PATH", "AIASK_SQLITE_PATH", "SQLITE_BUSY_TIMEOUT_MS", "SQLITE_JOURNAL_MODE")
+
+
+def _missing_factory_dependency(exc: BaseException) -> dict[str, Any]:
+    missing_name = getattr(exc, "name", None)
+    dependency = "strategy_factory" if missing_name == "strategy_factory" else "akshare_mcp"
+    error_code = "MISSING_STRATEGY_FACTORY" if dependency == "strategy_factory" else "MISSING_AKSHARE_MCP"
+    return {
+        "success": False,
+        "data": {
+            "configured": False,
+            "dependency": dependency,
+            "detail": str(exc),
+        },
+        "error": str(exc),
+        "error_code": error_code,
+    }
+
+
+def _looks_like_database_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    markers = (
+        "database",
+        "sqlite",
+        "database is locked",
+        "unable to open database file",
+        "sqlalchemy",
+        "connection refused",
+        "could not connect",
+        "connection timed out",
+        "timeout expired",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _database_config_status() -> tuple[bool, list[str]]:
+    configured = [key for key in SQLITE_ENV_KEYS if str(os.getenv(key) or "").strip()]
+    return True, configured or ["default"]
+
+
+def _sqlite_status() -> dict[str, Any]:
+    path = Path(os.getenv("AKSHARE_MCP_SQLITE_PATH") or os.getenv("AIASK_SQLITE_PATH") or DEFAULT_SQLITE_PATH).expanduser()
+    configured, sources = _database_config_status()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.parent / ".aiask_sqlite_write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        writable = True
+    except Exception:
+        writable = False
+    return {
+        "database_backend": "sqlite",
+        "database_path": str(path),
+        "database_configured": configured,
+        "database_writable": writable,
+        "database_config_sources": sources,
+    }
+
+
+def _looks_like_database_recovery(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    markers = (
+        "database is locked",
+        "sqlite_busy",
+        "busy",
+        "database system is in recovery mode",
+        "the database system is in recovery mode",
+        "recovery mode",
+        "database is starting up",
+        "database system is starting up",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _unavailable_factory(exc: BaseException) -> dict[str, Any]:
+    database = _sqlite_status()
+    database_configured = bool(database.get("database_configured"))
+    if _looks_like_database_recovery(exc):
+        error_code = "STRATEGY_FACTORY_DATABASE_RECOVERY"
+    elif isinstance(exc, TimeoutError | asyncio.TimeoutError):
+        error_code = "STRATEGY_FACTORY_TIMEOUT"
+    elif database_configured and _looks_like_database_error(exc):
+        error_code = "STRATEGY_FACTORY_DATABASE_UNAVAILABLE"
+    else:
+        error_code = "STRATEGY_FACTORY_UNAVAILABLE"
+    return {
+        "success": False,
+        "data": {
+            "configured": False,
+            "dependency": "strategy_factory",
+            **database,
+            "detail": str(exc),
+        },
+        "error": str(exc),
+        "error_code": error_code,
+    }
+
+
+def _ensure_monorepo_paths() -> None:
+    for parent in Path(__file__).resolve().parents:
+        candidates = [
+            parent / "aiask-quant-core" / "src",
+            parent / "akshare-mcp" / "src",
+            parent / "strategy-factory" / "src",
+        ]
+        added = False
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            path = str(candidate)
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            added = True
+        if added:
+            return
+
+
+async def _call_db_facade(
+    handler_loader: Callable[[], Callable[[Any, dict[str, Any]], Any]],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        _ensure_monorepo_paths()
+        from akshare_mcp.storage import get_db
+    except ModuleNotFoundError as exc:
+        return _missing_factory_dependency(exc)
+
+    try:
+        call_params = dict(params or {})
+        timeout = float(call_params.pop("_timeout_seconds", os.getenv("AIASK_STRATEGY_FACTORY_TOOL_TIMEOUT", "15")))
+        db = get_db()
+        await db.initialize()
+        handler = handler_loader()
+        return await asyncio.wait_for(handler(db, call_params), timeout=timeout)
+    except TimeoutError as exc:
+        return _unavailable_factory(exc)
+    except asyncio.TimeoutError as exc:
+        return _unavailable_factory(exc)
+    except ModuleNotFoundError as exc:
+        return _missing_factory_dependency(exc)
+    except Exception as exc:
+        return _unavailable_factory(exc)
+
+
+def _load_factory_status_handler():
+    from akshare_mcp.tools.managers.strategy_mgr_lifecycle import handle_factory_status
+
+    return handle_factory_status
+
+
+def _load_factory_runs_handler():
+    from akshare_mcp.tools.managers.strategy_mgr_lifecycle import handle_factory_runs
+
+    return handle_factory_runs
+
+
+def _load_promotion_reviews_handler():
+    from akshare_mcp.tools.managers.strategy_mgr_runtime import handle_promotion_reviews
+
+    return handle_promotion_reviews
+
+
+def _load_domain_events_handler():
+    from akshare_mcp.tools.managers.strategy_mgr_runtime import handle_domain_events
+
+    return handle_domain_events
+
+
+def _load_factory_dispatch_handler():
+    from akshare_mcp.tools.managers.strategy_mgr_lifecycle import handle_factory_dispatch_run
+
+    return handle_factory_dispatch_run
+
+
+async def factory_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    result = await _call_db_facade(_load_factory_status_handler, arguments)
+    return _read_only_fallback("factory_status", result)
+
+
+async def factory_runs(arguments: dict[str, Any]) -> dict[str, Any]:
+    result = await _call_db_facade(_load_factory_runs_handler, arguments)
+    return _read_only_fallback("factory_runs", result)
+
+
+async def strategy_review_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
+    params = dict(arguments or {})
+    if params.get("strategy_id") and not params.get("id"):
+        params["id"] = params["strategy_id"]
+    return await _call_db_facade(_load_promotion_reviews_handler, params)
+
+
+async def strategy_domain_events(arguments: dict[str, Any]) -> dict[str, Any]:
+    params = dict(arguments or {})
+    raw_limit = params.get("limit")
+    try:
+        limit_int = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit_int = 50
+    params["limit"] = max(1, min(limit_int, 200))
+    result = await _call_db_facade(_load_domain_events_handler, params)
+    return _read_only_fallback("domain_events", result)
+
+
+async def incubation_factory_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Read-only adapter to the incubation factory runner status."""
+    try:
+        _ensure_monorepo_paths()
+        from akshare_mcp.services.incubation_factory import (
+            get_incubation_factory_runner,
+        )
+    except ModuleNotFoundError as exc:
+        return _missing_factory_dependency(exc)
+
+    try:
+        runner = get_incubation_factory_runner()
+        snapshot = runner.status() if runner is not None else {}
+    except Exception as exc:
+        return _unavailable_factory(exc)
+
+    return {
+        "success": True,
+        "data": dict(snapshot or {}),
+        "error": None,
+        "meta": {
+            "tool": "agent_incubation_factory_status",
+            "side_effect": {
+                "level": "read_only",
+                "confirmation_required": False,
+                "idempotent": True,
+            },
+        },
+    }
+
+
+async def execute_confirmed_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized = str(action or "").strip()
+    if normalized in {"factory_run_once", "factory_dispatch_run"}:
+        return await _call_db_facade(_load_factory_dispatch_handler, dict(params or {}))
+    return {
+        "success": False,
+        "data": {
+            "action": normalized,
+            "execution_owner": "external_service",
+            "detail": "Agent confirmed Strategy Factory actions no longer execute in-process.",
+        },
+        "error": f"Strategy Factory action must be handled by the owning service: {normalized}",
+        "error_code": "STRATEGY_FACTORY_EXTERNAL_RUNNER_REQUIRED",
+    }
+
+
+def _read_only_fallback(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("success") is not False:
+        return result
+    error_code = str(result.get("error_code") or "")
+    if error_code not in {
+        "STRATEGY_FACTORY_TIMEOUT",
+        "STRATEGY_FACTORY_DATABASE_RECOVERY",
+        "STRATEGY_FACTORY_DATABASE_UNAVAILABLE",
+        "STRATEGY_FACTORY_UNAVAILABLE",
+    }:
+        return result
+    data = dict(result.get("data") or {})
+    database = _sqlite_status()
+    database_ready = bool(database.get("database_configured") and database.get("database_writable"))
+    data.update(
+        {
+            "configured": database_ready,
+            "status": "partial" if database_ready else "unconfigured",
+            "fallback": True,
+            "action": action,
+            **database,
+        }
+    )
+    if action == "factory_runs":
+        data.setdefault("runs", [])
+    return {**result, "data": data}

@@ -1,0 +1,417 @@
+
+========= 00_initialize  ok=True  type=NoneType  len=None =========
+null
+
+========= 10_kline_daily_real  ok=True  type=dict  len=9 =========
+{
+  "fields": [
+    "VolInStock",
+    "Low",
+    "High",
+    "<+5 more>"
+  ],
+  "VolInStock": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12        0.0\n2026-05-13        0.0\n2026-05-14        0.0"
+  },
+  "Low": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12    1350.50\n2026-05-13    1338.00\n2026-05-14    1335.18"
+  },
+  "High": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12    1363.58\n2026-05-13    1358.60\n2026-05-14    1369.06"
+  },
+  "Close": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12    1354.55\n2026-05-13    1344.09\n2026-05-14    1342.17"
+  },
+  "ForwardFactor": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12        0.0\n2026-05-13        0.0\n2026-05-14        0.0"
+  },
+  "Open": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12     1362.0\n2026-05-13     1354.5\n2026-05-14     1338.0"
+  },
+  "Amount": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12  688630.50\n2026-05-13  765325.75\n2026-05-14  742859.25"
+  },
+  "Volume": {
+    "shape": [
+      5,
+      1
+    ],
+    "head": "            600519.SH\n2026-05-12  5083743.0\n2026-05-13  5696787.0\n2026-05-14  5524434.0"
+  }
+}
+
+========= 11_divid_factors_real  ok=True  type=dict  len=4 =========
+{
+  "shape": [
+    12,
+    5
+  ],
+  "columns": [
+    "Type",
+    "Bonus",
+    "AllotPrice",
+    "<+2 more>"
+  ],
+  "head": "           Type   Bonus  AllotPrice  ShareBonus  Allotment\nDate                                                      \n2018-06-15    1  109.99         0.0         0.0        0.0\n2019-06-28    1  145.39         0.0         0.0        0.0\n2020-06-24    1  170.25         0.0         0.0        0.0\n2021-06-25    1  192.93         0.0         0.0        0.0\n2022-06-30    1  216.75         0.0         0.0        0.0",
+  "tail": "           Type   Bonus  AllotPrice  ShareBonus  Allotment\nDate                                                      \n2025-06-26    1  276.73         0.0         0.0        0.0\n2025-12-19    1  239.57         0.0         0.0        0.0"
+}
+
+========= 20_stock_info_finance_fields  ok=True  type=dict  len=63 =========
+{
+  "Name": "平安银行",
+  "Unit": "100",
+  "VolBase": "3956.66",
+  "MinPrice": "0.01",
+  "XsFlag": "2",
+  "Fz": [
+    "570",
+    "690",
+    "780",
+    "<+5 more>"
+  ],
+  "DelayMin": "0",
+  "QHVolBaseRate": "0",
+  "HKVolBaseRate": "0",
+  "BelongHS300": "1",
+  "BelongHasKQZ": "0",
+  "BelongRZRQ": "1",
+  "BelongHSGT": "1",
+  "IsHKGP": "0",
+  "IsQH": "0",
+  "IsQQ": "0",
+  "IsSTGP": "0",
+  "IsQuitGP": "0",
+  "TodayDRFlag": "0",
+  "HSStockKind": "1",
+  "__more_keys__": 43
+}
+
+========= 21_financial_data_history_2023  ok=True  type=dict  len=0 =========
+{}
+
+========= 22_financial_data_by_date_latest_q  ok=True  type=dict  len=1 =========
+{
+  "600519.SH": {
+    "FN1": "--",
+    "FN197": "--",
+    "FN210": "--",
+    "FN230": "--",
+    "FN232": "--",
+    "FN6": "--"
+  }
+}
+
+========= 30_gpjy_full_2024  ok=True  type=dict  len=2 =========
+{
+  "GP25": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "915.00",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "915.00",
+          "0.00"
+        ]
+      }
+    ]
+  },
+  "GP36": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ]
+  }
+}
+
+========= 40_bkjy_full_2024  ok=True  type=dict  len=4 =========
+{
+  "BK12": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "2.00",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "2.00",
+          "0.00"
+        ]
+      }
+    ]
+  },
+  "BK13": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ]
+  },
+  "BK17": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "24484.05",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "24484.05",
+          "0.00"
+        ]
+      }
+    ]
+  },
+  "BK9": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "21.00",
+          "12.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "21.00",
+          "12.00"
+        ]
+      }
+    ]
+  }
+}
+
+========= 50_scjy_full_2024  ok=True  type=dict  len=2 =========
+{
+  "SC25": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "100.08",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "100.08",
+          "0.00"
+        ]
+      }
+    ]
+  },
+  "SC36": {
+    "len": 1,
+    "non_empty_first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ],
+    "all_dashes": false,
+    "first": [
+      {
+        "Date": "20260518",
+        "Value": [
+          "0.00",
+          "0.00"
+        ]
+      }
+    ]
+  }
+}
+
+========= 60_kzz_info_active  ok=True  type=dict  len=3 =========
+{
+  "tested_code": "123054.SZ",
+  "tested_name": "思特转债",
+  "info": {
+    "SetCode": "0",
+    "KZZCode": "123054",
+    "HSCode": "300608",
+    "ZGPrice": "9.880",
+    "CurRate": "3.000",
+    "RestScope": "8966.140",
+    "PutBack": "6.920",
+    "ForceRedeem": "12.840",
+    "ZGDate": "20201216",
+    "EndPrice": "115.000",
+    "EndDate": "20260529",
+    "ZGRate": "66.915",
+    "RealValue": "0.000",
+    "ExpireYield": "0.000",
+    "KZZScore": "AA-",
+    "HSScore": "AA-",
+    "RedeemDate": "20260528",
+    "RedeemPrice": "102.900",
+    "PutDate": "0",
+    "PutPrice": "0.000",
+    "__more_keys__": 5
+  }
+}
+
+========= 61_trackzs_etf_variants  ok=True  type=dict  len=6 =========
+{
+  "000300.SH": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  },
+  "000016.SH": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  },
+  "000905.SH": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  },
+  "000852.SH": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  },
+  "881001.SH": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  },
+  "950162.CSI": {
+    "type": "dict",
+    "len": 0,
+    "sample": {}
+  }
+}
+
+========= 70_gp_one_data_full  ok=True  type=dict  len=1 =========
+{
+  "600519.SH": {
+    "GO1": "31.39",
+    "GO10": "9644772.00",
+    "GO11": "17862742.00",
+    "GO12": "18809174.00",
+    "GO13": "19901350.00",
+    "GO14": "11908790.00",
+    "GO15": "12600197.00",
+    "GO16": "13400568.00",
+    "GO17": "218.56",
+    "GO18": "242.14",
+    "GO19": "266.89",
+    "GO2": "7150.00",
+    "GO20": "31.65",
+    "GO21": "30.48",
+    "GO22": "29.81",
+    "GO23": "21.11",
+    "GO24": "19.92",
+    "GO25": "18.76",
+    "GO26": "0.00",
+    "GO27": "0.00",
+    "__more_keys__": 27
+  }
+}
+
+========= 80_download_file_news  ok=True  type=str  len=51 =========
+"{\"ErrorId\":\"0\",\"Msg\":\"下载最新舆情信息文件成功。\",\"run_id\":\"1\"}\n"
+
+========= 81_download_file_overview  ok=True  type=str  len=51 =========
+"{\"ErrorId\":\"0\",\"Msg\":\"下载股票综合信息文件成功。\",\"run_id\":\"1\"}\n"
+
+========= 90_macro_hg_cpi  ok=True  type=dict  len=0 =========
+{}

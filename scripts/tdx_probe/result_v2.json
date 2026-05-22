@@ -1,0 +1,479 @@
+{
+  "00_initialize": {
+    "ok": true,
+    "elapsed_sec": 0.013,
+    "raw_type": "NoneType",
+    "raw_len": null,
+    "sample": null
+  },
+  "10_kline_daily_real": {
+    "ok": true,
+    "elapsed_sec": 0.021,
+    "raw_type": "dict",
+    "raw_len": 9,
+    "sample": {
+      "fields": [
+        "Open",
+        "Amount",
+        "ForwardFactor",
+        "<+5 more>"
+      ],
+      "Open": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14    1338.00\n2026-05-15    1335.15\n2026-05-18    1336.00"
+      },
+      "Amount": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14  742859.25\n2026-05-15  774936.69\n2026-05-18  659498.38"
+      },
+      "ForwardFactor": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14        0.0\n2026-05-15        0.0\n2026-05-18        0.0"
+      },
+      "Low": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14    1335.18\n2026-05-15    1327.11\n2026-05-18    1319.61"
+      },
+      "Close": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14    1342.17\n2026-05-15    1332.95\n2026-05-18    1323.00"
+      },
+      "VolInStock": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14        0.0\n2026-05-15        0.0\n2026-05-18        0.0"
+      },
+      "Volume": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14  5524434.0\n2026-05-15  5818365.0\n2026-05-18  4966097.0"
+      },
+      "High": {
+        "shape": [
+          5,
+          1
+        ],
+        "head": "            600519.SH\n2026-05-14    1369.06\n2026-05-15    1339.28\n2026-05-18    1342.68"
+      }
+    }
+  },
+  "11_divid_factors_real": {
+    "ok": true,
+    "elapsed_sec": 0.018,
+    "raw_type": "dict",
+    "raw_len": 4,
+    "sample": {
+      "shape": [
+        12,
+        5
+      ],
+      "columns": [
+        "Type",
+        "Bonus",
+        "AllotPrice",
+        "<+2 more>"
+      ],
+      "head": "           Type   Bonus  AllotPrice  ShareBonus  Allotment\nDate                                                      \n2018-06-15    1  109.99         0.0         0.0        0.0\n2019-06-28    1  145.39         0.0         0.0        0.0\n2020-06-24    1  170.25         0.0         0.0        0.0\n2021-06-25    1  192.93         0.0         0.0        0.0\n2022-06-30    1  216.75         0.0         0.0        0.0",
+      "tail": "           Type   Bonus  AllotPrice  ShareBonus  Allotment\nDate                                                      \n2025-06-26    1  276.73         0.0         0.0        0.0\n2025-12-19    1  239.57         0.0         0.0        0.0"
+    }
+  },
+  "20_stock_info_finance_fields": {
+    "ok": true,
+    "elapsed_sec": 0.008,
+    "raw_type": "dict",
+    "raw_len": 63,
+    "sample": {
+      "Name": "平安银行",
+      "Unit": "100",
+      "VolBase": "3697.50",
+      "MinPrice": "0.01",
+      "XsFlag": "2",
+      "Fz": [
+        "570",
+        "690",
+        "780",
+        "<+5 more>"
+      ],
+      "DelayMin": "0",
+      "QHVolBaseRate": "0",
+      "HKVolBaseRate": "0",
+      "BelongHS300": "1",
+      "BelongHasKQZ": "0",
+      "BelongRZRQ": "1",
+      "BelongHSGT": "1",
+      "IsHKGP": "0",
+      "IsQH": "0",
+      "IsQQ": "0",
+      "IsSTGP": "0",
+      "IsQuitGP": "0",
+      "TodayDRFlag": "0",
+      "HSStockKind": "1",
+      "__more_keys__": 43
+    }
+  },
+  "21_financial_data_history_2023": {
+    "ok": true,
+    "elapsed_sec": 0.011,
+    "raw_type": "dict",
+    "raw_len": 0,
+    "sample": {}
+  },
+  "22_financial_data_by_date_latest_q": {
+    "ok": true,
+    "elapsed_sec": 3.029,
+    "raw_type": "dict",
+    "raw_len": 1,
+    "sample": {
+      "600519.SH": {
+        "FN1": "--",
+        "FN197": "--",
+        "FN210": "--",
+        "FN230": "--",
+        "FN232": "--",
+        "FN6": "--"
+      }
+    }
+  },
+  "30_gpjy_full_2024": {
+    "ok": true,
+    "elapsed_sec": 0.015,
+    "raw_type": "dict",
+    "raw_len": 2,
+    "sample": {
+      "GP25": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "421.00",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "421.00",
+              "0.00"
+            ]
+          }
+        ]
+      },
+      "GP36": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "40_bkjy_full_2024": {
+    "ok": true,
+    "elapsed_sec": 0.026,
+    "raw_type": "dict",
+    "raw_len": 4,
+    "sample": {
+      "BK12": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ]
+      },
+      "BK13": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ]
+      },
+      "BK17": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "16638.30",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "16638.30",
+              "0.00"
+            ]
+          }
+        ]
+      },
+      "BK9": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "13.00",
+              "21.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "13.00",
+              "21.00"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "50_scjy_full_2024": {
+    "ok": true,
+    "elapsed_sec": 0.018,
+    "raw_type": "dict",
+    "raw_len": 2,
+    "sample": {
+      "SC25": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "99.73",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "99.73",
+              "0.00"
+            ]
+          }
+        ]
+      },
+      "SC36": {
+        "len": 1,
+        "non_empty_first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ],
+        "all_dashes": false,
+        "first": [
+          {
+            "Date": "20260520",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "60_kzz_info_active": {
+    "ok": true,
+    "elapsed_sec": 0.032,
+    "raw_type": "dict",
+    "raw_len": 3,
+    "sample": {
+      "tested_code": "123054.SZ",
+      "tested_name": "思特转债",
+      "info": {
+        "SetCode": "0",
+        "KZZCode": "123054",
+        "HSCode": "300608",
+        "ZGPrice": "9.880",
+        "CurRate": "3.000",
+        "RestScope": "8224.490",
+        "PutBack": "6.920",
+        "ForceRedeem": "12.840",
+        "ZGDate": "20201216",
+        "EndPrice": "115.000",
+        "EndDate": "20260529",
+        "ZGRate": "69.651",
+        "RealValue": "0.000",
+        "ExpireYield": "0.000",
+        "KZZScore": "AA-",
+        "HSScore": "AA-",
+        "RedeemDate": "20260528",
+        "RedeemPrice": "102.900",
+        "PutDate": "0",
+        "PutPrice": "0.000",
+        "__more_keys__": 5
+      }
+    }
+  },
+  "61_trackzs_etf_variants": {
+    "ok": true,
+    "elapsed_sec": 15.192,
+    "raw_type": "dict",
+    "raw_len": 6,
+    "sample": {
+      "000300.SH": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      },
+      "000016.SH": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      },
+      "000905.SH": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      },
+      "000852.SH": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      },
+      "881001.SH": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      },
+      "950162.CSI": {
+        "type": "dict",
+        "len": 0,
+        "sample": {}
+      }
+    }
+  },
+  "70_gp_one_data_full": {
+    "ok": true,
+    "elapsed_sec": 3.042,
+    "raw_type": "dict",
+    "raw_len": 1,
+    "sample": {
+      "600519.SH": {
+        "GO1": "31.39",
+        "GO10": "9638809.00",
+        "GO11": "17862742.00",
+        "GO12": "18809174.00",
+        "GO13": "19901350.00",
+        "GO14": "11908752.00",
+        "GO15": "12596935.00",
+        "GO16": "13394372.00",
+        "GO17": "218.54",
+        "GO18": "242.12",
+        "GO19": "266.85",
+        "GO2": "7150.00",
+        "GO20": "31.65",
+        "GO21": "30.48",
+        "GO22": "29.81",
+        "GO23": "21.07",
+        "GO24": "19.89",
+        "GO25": "18.74",
+        "GO26": "0.00",
+        "GO27": "0.00",
+        "__more_keys__": 27
+      }
+    }
+  },
+  "80_download_file_news": {
+    "ok": true,
+    "elapsed_sec": 0.374,
+    "raw_type": "str",
+    "raw_len": 51,
+    "sample": "{\"ErrorId\":\"0\",\"Msg\":\"下载最新舆情信息文件成功。\",\"run_id\":\"2\"}\n"
+  },
+  "81_download_file_overview": {
+    "ok": true,
+    "elapsed_sec": 0.909,
+    "raw_type": "str",
+    "raw_len": 51,
+    "sample": "{\"ErrorId\":\"0\",\"Msg\":\"下载股票综合信息文件成功。\",\"run_id\":\"2\"}\n"
+  },
+  "90_macro_hg_cpi": {
+    "ok": true,
+    "elapsed_sec": 0.009,
+    "raw_type": "dict",
+    "raw_len": 0,
+    "sample": {}
+  }
+}

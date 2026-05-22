@@ -1,0 +1,342 @@
+# TDX Data Quality Report
+
+- Generated: 2026-05-20T14:22:20.878110
+- Executed probes: 209
+- Real-data probes: 177
+- Empty/placeholder/zero probes: 24
+- Error payload/exception probes: 8
+- Not-run probes: 24
+
+## Quality By Category
+
+- `bond_etf`: {"real_data": 6, "empty": 6}
+- `calendar`: {"real_data": 1}
+- `corporate_action`: {"real_data": 7, "empty": 1}
+- `documented_only`: {"not_implemented": 6}
+- `download_file`: {"real_data": 3}
+- `financial_fields`: {"placeholder_only": 4, "empty": 1, "real_data": 4}
+- `formula`: {"real_data": 8}
+- `kline`: {"real_data": 82, "error_payload": 8}
+- `macro`: {"empty": 3}
+- `more_info`: {"real_data": 9}
+- `relation`: {"real_data": 4}
+- `sector`: {"real_data": 2}
+- `side_effect_api`: {"skipped_side_effect": 17}
+- `snapshot`: {"real_data": 9}
+- `stock_info`: {"real_data": 7}
+- `stock_lists`: {"real_data": 35, "empty": 6}
+- `subscription`: {"empty": 1}
+- `system`: {"empty": 1}
+- `trading_read`: {"skipped_missing_env": 1}
+- `watchlist`: {"empty": 1}
+
+## Real Data Cases
+
+- `calendar/trading_dates_SH_2024_to_now_recent50`
+- `stock_lists/user_watchlist_0`
+- `stock_lists/all_a_5`
+- `stock_lists/sh_components_6`
+- `stock_lists/sh_main_7`
+- `stock_lists/sz_main_8`
+- `stock_lists/key_indexes_9`
+- `stock_lists/all_blocks_10`
+- `stock_lists/default_industry_11`
+- `stock_lists/concept_blocks_12`
+- `stock_lists/style_blocks_13`
+- `stock_lists/region_blocks_14`
+- `stock_lists/industry_concept_15`
+- `stock_lists/research_l1_16`
+- `stock_lists/research_l2_17`
+- `stock_lists/research_l3_18`
+- `stock_lists/with_h_21`
+- `stock_lists/with_convertible_bond_22`
+- `stock_lists/hs300_23`
+- `stock_lists/zz500_24`
+- `stock_lists/zz1000_25`
+- `stock_lists/gz2000_26`
+- `stock_lists/zz2000_27`
+- `stock_lists/a500_28`
+- `stock_lists/reits_30`
+- `stock_lists/etf_31`
+- `stock_lists/convertible_bond_32`
+- `stock_lists/lof_33`
+- `stock_lists/tradeable_fund_34`
+- `stock_lists/hs_fund_35`
+- `stock_lists/t0_fund_36`
+- `stock_lists/financial_enterprise_49`
+- `stock_lists/hs_a_50`
+- `stock_lists/chinext_51`
+- `stock_lists/star_52`
+- `stock_lists/bj_53`
+- `sector/sector_list_all`
+- `sector/sector_members_881002.SH`
+- `kline/stock_600519_1m`
+- `kline/stock_600519_5m`
+- `kline/stock_600519_15m`
+- `kline/stock_600519_30m`
+- `kline/stock_600519_1h`
+- `kline/stock_600519_1d`
+- `kline/stock_600519_1w`
+- `kline/stock_600519_1mon`
+- `kline/stock_600519_1q`
+- `kline/stock_600519_1y`
+- `kline/stock_000001_1m`
+- `kline/stock_000001_5m`
+- `kline/stock_000001_15m`
+- `kline/stock_000001_30m`
+- `kline/stock_000001_1h`
+- `kline/stock_000001_1d`
+- `kline/stock_000001_1w`
+- `kline/stock_000001_1mon`
+- `kline/stock_000001_1q`
+- `kline/stock_000001_1y`
+- `kline/bj_920000_1m`
+- `kline/bj_920000_5m`
+- `kline/bj_920000_15m`
+- `kline/bj_920000_30m`
+- `kline/bj_920000_1h`
+- `kline/bj_920000_1d`
+- `kline/bj_920000_1w`
+- `kline/bj_920000_1mon`
+- `kline/bj_920000_1q`
+- `kline/bj_920000_1y`
+- `kline/index_999999_1m`
+- `kline/index_999999_5m`
+- `kline/index_999999_15m`
+- `kline/index_999999_30m`
+- `kline/index_999999_1h`
+- `kline/index_999999_1d`
+- `kline/index_999999_1w`
+- `kline/index_999999_1mon`
+- `kline/index_999999_1q`
+- `kline/index_999999_1y`
+- `kline/index_399001_1m`
+- `kline/index_399001_5m`
+- `kline/index_399001_15m`
+- `kline/index_399001_30m`
+- `kline/index_399001_1h`
+- `kline/index_399001_1d`
+- `kline/index_399001_1w`
+- `kline/index_399001_1mon`
+- `kline/index_399001_1q`
+- `kline/index_399001_1y`
+- `kline/etf_510300_1m`
+- `kline/etf_510300_5m`
+- `kline/etf_510300_15m`
+- `kline/etf_510300_30m`
+- `kline/etf_510300_1h`
+- `kline/etf_510300_1d`
+- `kline/etf_510300_1w`
+- `kline/etf_510300_1mon`
+- `kline/etf_510300_1q`
+- `kline/etf_510300_1y`
+- `kline/bond_123054_1m`
+- `kline/bond_123054_5m`
+- `kline/bond_123054_15m`
+- `kline/bond_123054_30m`
+- `kline/bond_123054_1h`
+- `kline/bond_123054_1d`
+- `kline/bond_123054_1w`
+- `kline/bond_123054_1mon`
+- `kline/bond_123054_1q`
+- `kline/bond_123054_1y`
+- `kline/sector_881001_1m`
+- `kline/sector_881001_5m`
+- `kline/sector_881001_15m`
+- `kline/sector_881001_30m`
+- `kline/sector_881001_1h`
+- `kline/sector_881001_1d`
+- `kline/sector_881001_1w`
+- `kline/sector_881001_1mon`
+- `kline/sector_881001_1q`
+- `kline/sector_881001_1y`
+- `kline/multi_stock_daily_ohlcv`
+- `kline/multi_index_daily_ohlcv`
+- `snapshot/snapshot_600519.SH`
+- `more_info/more_info_600519.SH`
+- `snapshot/snapshot_000001.SZ`
+- `more_info/more_info_000001.SZ`
+- `snapshot/snapshot_688318.SH`
+- `more_info/more_info_688318.SH`
+- `snapshot/snapshot_920000.BJ`
+- `more_info/more_info_920000.BJ`
+- `snapshot/snapshot_999999.SH`
+- `more_info/more_info_999999.SH`
+- `snapshot/snapshot_399001.SZ`
+- `more_info/more_info_399001.SZ`
+- `snapshot/snapshot_159001.SZ`
+- `more_info/more_info_159001.SZ`
+- `snapshot/snapshot_510300.SH`
+- `more_info/more_info_510300.SH`
+- `snapshot/snapshot_881002.SH`
+- `more_info/more_info_881002.SH`
+- `stock_info/stock_info_600519.SH`
+- `stock_info/stock_info_000001.SZ`
+- `stock_info/stock_info_688318.SH`
+- `stock_info/stock_info_920000.BJ`
+- `stock_info/stock_info_159001.SZ`
+- `stock_info/stock_info_510300.SH`
+- `stock_info/stock_info_881002.SH`
+- `corporate_action/divid_600519.SH`
+- `corporate_action/divid_000001.SZ`
+- `corporate_action/divid_688318.SH`
+- `corporate_action/divid_920000.BJ`
+- `corporate_action/divid_510300.SH`
+- `corporate_action/gb_info_600519_dates`
+- `corporate_action/ipo_today_after`
+- `relation/relation_600519.SH`
+- `relation/relation_000001.SZ`
+- `relation/relation_688318.SH`
+- `relation/relation_920000.BJ`
+- `financial_fields/GO_600519_all`
+- `financial_fields/GP_history_600519_all`
+- `financial_fields/BK_history_881002.SH_all`
+- `financial_fields/SC_history_all`
+- `bond_etf/convertible_bond_list_for_info`
+- `bond_etf/kzz_info_123054.SZ`
+- `bond_etf/kzz_info_123059.SZ`
+- `bond_etf/kzz_info_123061.SZ`
+- `bond_etf/kzz_info_123064.SZ`
+- `bond_etf/kzz_info_123065.SZ`
+- `download_file/top10_holder_600519_20241231`
+- `download_file/latest_news_600519`
+- `download_file/stock_overview_600519`
+- `formula/formula_set_data_info_600519`
+- `formula/formula_get_data`
+- `formula/formula_zb_MACD`
+- `formula/formula_zb_CCI`
+- `formula/formula_xg_UPN`
+- `formula/formula_exp_CCI`
+- `formula/formula_process_mul_zb_MACD`
+- `formula/formula_process_mul_xg_UPN`
+
+## Empty / Placeholder / Zero Cases
+
+- `system/initialize`: empty (None)
+- `stock_lists/positions_1`: empty (len == 0)
+- `stock_lists/etf_tracked_index_91`: empty (len == 0)
+- `stock_lists/futures_main_92`: empty (len == 0)
+- `stock_lists/domestic_futures_101`: empty (len == 0)
+- `stock_lists/hk_102`: empty (len == 0)
+- `stock_lists/us_103`: empty (len == 0)
+- `watchlist/user_sector_list`: empty (len == 0)
+- `subscription/current_subscribe_list`: empty (len == 0)
+- `corporate_action/divid_123054.SZ`: empty (empty DataFrame)
+- `financial_fields/FN_by_date_600519_all`: placeholder_only (all values are placeholders)
+- `financial_fields/FN_history_600519_all`: empty (len == 0)
+- `financial_fields/GP_by_date_600519_all`: placeholder_only (all values are placeholders)
+- `financial_fields/BK_by_date_881002.SH_all`: placeholder_only (all values are placeholders)
+- `financial_fields/SC_by_date_all`: placeholder_only (all values are placeholders)
+- `bond_etf/trackzs_etf_000300.SH`: empty (len == 0)
+- `bond_etf/trackzs_etf_000016.SH`: empty (len == 0)
+- `bond_etf/trackzs_etf_000905.SH`: empty (len == 0)
+- `bond_etf/trackzs_etf_000852.SH`: empty (len == 0)
+- `bond_etf/trackzs_etf_881001.SH`: empty (len == 0)
+- `bond_etf/trackzs_etf_950162.CSI`: empty (len == 0)
+- `macro/macro_kline_280002.HG`: empty (len == 0)
+- `macro/macro_kline_280001.HG`: empty (len == 0)
+- `macro/macro_kline_880001.HG`: empty (len == 0)
+
+## Error Cases
+
+- `kline/stock_600519_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/stock_000001_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/bj_920000_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/index_999999_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/index_399001_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/etf_510300_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/bond_123054_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+- `kline/sector_881001_tick`: error_payload (周期格式错误：tick（支持['5m', '15m', '30m', '1h', '1d', '1w', '1mon', '1m', '10m', '45d', '1q', '1y']）)
+
+## Field-Level Quality
+
+### FN_by_date
+- `placeholder_only` (584): ['FN1', 'FN2', 'FN3', 'FN4', 'FN5', 'FN6', 'FN7', 'FN8', 'FN9', 'FN10', 'FN11', 'FN12', 'FN13', 'FN14', 'FN15', 'FN16', 'FN17', 'FN18', 'FN19', 'FN20', 'FN21', 'FN22', 'FN23', 'FN24', 'FN25', 'FN26', 'FN27', 'FN28', 'FN29', 'FN30', 'FN31', 'FN32', 'FN33', 'FN34', 'FN35', 'FN36', 'FN37', 'FN38', 'FN39', 'FN40', 'FN41', 'FN42', 'FN43', 'FN44', 'FN45', 'FN46', 'FN47', 'FN48', 'FN49', 'FN50', 'FN51', 'FN52', 'FN53', 'FN54', 'FN55', 'FN56', 'FN57', 'FN58', 'FN59', 'FN60', 'FN61', 'FN62', 'FN63', 'FN64', 'FN65', 'FN66', 'FN67', 'FN68', 'FN69', 'FN70', 'FN71', 'FN72', 'FN73', 'FN74', 'FN75', 'FN76', 'FN77', 'FN78', 'FN79', 'FN80']
+### FN_history
+- No fields returned.
+### GO
+- `real_data` (33): ['GO1', 'GO2', 'GO3', 'GO4', 'GO5', 'GO6', 'GO7', 'GO8', 'GO9', 'GO10', 'GO11', 'GO12', 'GO13', 'GO14', 'GO15', 'GO16', 'GO17', 'GO18', 'GO19', 'GO20', 'GO21', 'GO22', 'GO23', 'GO24', 'GO25', 'GO29', 'GO30', 'GO31', 'GO32', 'GO33', 'GO34', 'GO42', 'GO43']
+- `zero_only` (14): ['GO26', 'GO27', 'GO28', 'GO35', 'GO36', 'GO37', 'GO38', 'GO39', 'GO40', 'GO41', 'GO44', 'GO45', 'GO46', 'GO47']
+### GP_history
+- `real_data` (2): ['GP25', 'GP36']
+### GP_by_date
+- `placeholder_only` (46): ['GP01', 'GP02', 'GP03', 'GP04', 'GP05', 'GP06', 'GP07', 'GP08', 'GP09', 'GP10', 'GP11', 'GP12', 'GP13', 'GP14', 'GP15', 'GP16', 'GP17', 'GP18', 'GP19', 'GP20', 'GP21', 'GP22', 'GP23', 'GP24', 'GP25', 'GP26', 'GP27', 'GP28', 'GP29', 'GP30', 'GP31', 'GP32', 'GP33', 'GP34', 'GP35', 'GP36', 'GP37', 'GP38', 'GP39', 'GP40', 'GP41', 'GP42', 'GP43', 'GP44', 'GP45', 'GP46']
+### BK_history
+- `real_data` (4): ['BK9', 'BK12', 'BK13', 'BK17']
+### BK_by_date
+- `placeholder_only` (15): ['BK5', 'BK6', 'BK7', 'BK8', 'BK9', 'BK10', 'BK11', 'BK12', 'BK13', 'BK14', 'BK15', 'BK16', 'BK17', 'BK18', 'BK19']
+### SC_history
+- `real_data` (2): ['SC25', 'SC36']
+### SC_by_date
+- `placeholder_only` (42): ['SC01', 'SC02', 'SC03', 'SC04', 'SC05', 'SC06', 'SC07', 'SC08', 'SC09', 'SC10', 'SC11', 'SC12', 'SC13', 'SC14', 'SC15', 'SC16', 'SC17', 'SC18', 'SC19', 'SC20', 'SC21', 'SC22', 'SC23', 'SC24', 'SC25', 'SC26', 'SC27', 'SC28', 'SC29', 'SC30', 'SC31', 'SC32', 'SC33', 'SC34', 'SC35', 'SC36', 'SC37', 'SC38', 'SC39', 'SC40', 'SC41', 'SC42']
+
+## Stock List Summary
+
+- `user_watchlist_0` market `0`: quality=real_data, count=1
+- `positions_1` market `1`: quality=empty, count=0
+- `all_a_5` market `5`: quality=real_data, count=5525
+- `sh_components_6` market `6`: quality=real_data, count=2213
+- `sh_main_7` market `7`: quality=real_data, count=1705
+- `sz_main_8` market `8`: quality=real_data, count=1495
+- `key_indexes_9` market `9`: quality=real_data, count=100
+- `all_blocks_10` market `10`: quality=real_data, count=586
+- `default_industry_11` market `11`: quality=real_data, count=127
+- `concept_blocks_12` market `12`: quality=real_data, count=269
+- `style_blocks_13` market `13`: quality=real_data, count=158
+- `region_blocks_14` market `14`: quality=real_data, count=32
+- `industry_concept_15` market `15`: quality=real_data, count=396
+- `research_l1_16` market `16`: quality=real_data, count=30
+- `research_l2_17` market `17`: quality=real_data, count=127
+- `research_l3_18` market `18`: quality=real_data, count=344
+- `with_h_21` market `21`: quality=real_data, count=189
+- `with_convertible_bond_22` market `22`: quality=real_data, count=333
+- `hs300_23` market `23`: quality=real_data, count=300
+- `zz500_24` market `24`: quality=real_data, count=500
+- `zz1000_25` market `25`: quality=real_data, count=1000
+- `gz2000_26` market `26`: quality=real_data, count=2000
+- `zz2000_27` market `27`: quality=real_data, count=2000
+- `a500_28` market `28`: quality=real_data, count=500
+- `reits_30` market `30`: quality=real_data, count=87
+- `etf_31` market `31`: quality=real_data, count=1578
+- `convertible_bond_32` market `32`: quality=real_data, count=344
+- `lof_33` market `33`: quality=real_data, count=465
+- `tradeable_fund_34` market `34`: quality=real_data, count=2130
+- `hs_fund_35` market `35`: quality=real_data, count=2343
+- `t0_fund_36` market `36`: quality=real_data, count=376
+- `financial_enterprise_49` market `49`: quality=real_data, count=101
+- `hs_a_50` market `50`: quality=real_data, count=5208
+- `chinext_51` market `51`: quality=real_data, count=1398
+- `star_52` market `52`: quality=real_data, count=610
+- `bj_53` market `53`: quality=real_data, count=317
+- `etf_tracked_index_91` market `91`: quality=empty, count=0
+- `futures_main_92` market `92`: quality=empty, count=0
+- `domestic_futures_101` market `101`: quality=empty, count=0
+- `hk_102` market `102`: quality=empty, count=0
+- `us_103` market `103`: quality=empty, count=0
+
+## Not Run
+
+- `trading_read/stock_account/query_stock_asset/query_stock_orders/query_stock_positions`: skipped_missing_env (Set TDX_PROBE_ACCOUNT to test account read APIs; not run to avoid exposing account data.)
+- `side_effect_api/order_stock`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/cancel_order_stock`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/create_sector`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/delete_sector`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/rename_sector`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/clear_sector`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/send_user_block`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/send_message`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/send_warn`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/send_file`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/send_bt_data`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/print_to_tdx`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/exec_to_tdx`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/refresh_cache`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/refresh_kline`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/subscribe_hq`: skipped_side_effect (Not executed during data-source quality test.)
+- `side_effect_api/unsubscribe_hq`: skipped_side_effect (Not executed during data-source quality test.)
+- `documented_only/get_full_tick`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)
+- `documented_only/get_real_time_data`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)
+- `documented_only/get_report_data`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)
+- `documented_only/get_gb_info_by_date`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)
+- `documented_only/get_benchmark_data`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)
+- `documented_only/get_valid_stock_codes`: not_implemented (Mentioned in docs/examples but absent from local tqcenter.py.)

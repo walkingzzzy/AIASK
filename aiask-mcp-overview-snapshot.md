@@ -1,0 +1,144 @@
+- generic [ref=e3] [box=0,0,980,760]:
+  - complementary [ref=e4] [box=0,0,210,760]:
+    - generic [ref=e5] [box=0,0,209,66]:
+      - img [ref=e7] [box=20,25,18,18]
+      - generic [ref=e9] [box=55,9,118,50]:
+        - strong [ref=e10] [box=55,9,118,18]: AIASK
+        - generic [ref=e11] [box=55,29,118,30]: Agent Command Center
+      - img [ref=e12] [box=182,26,13,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,80,177,34]:
+      - img [ref=e15] [box=53,89,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,128,209,666]:
+      - generic [ref=e17] [box=10,128,189,22]:
+        - img [ref=e18] [box=16,129,13,13]
+        - generic [ref=e23] [box=122,128,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,153,189,34]:
+        - img [ref=e25] [box=20,162,16,16]
+        - generic [ref=e28] [box=46,162,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,190,189,34]:
+        - img [ref=e30] [box=20,199,16,16]
+        - generic [ref=e32] [box=46,199,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,227,189,34]:
+        - img [ref=e34] [box=20,236,16,16]
+        - generic [ref=e46] [box=46,236,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,264,189,34]:
+        - img [ref=e48] [box=20,273,16,16]
+        - generic [ref=e52] [box=46,273,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,301,189,34]:
+        - img [ref=e54] [box=20,310,16,16]
+        - generic [ref=e66] [box=46,310,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,338,189,34]:
+        - img [ref=e68] [box=20,347,16,16]
+        - generic [ref=e72] [box=46,347,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,375,189,34]:
+        - img [ref=e74] [box=20,384,16,16]
+        - generic [ref=e78] [box=46,384,79,16]: Automation
+      - button "Strategy Factory" [ref=e79] [cursor=pointer] [box=10,412,189,34]:
+        - img [ref=e80] [box=20,421,16,16]
+        - generic [ref=e82] [box=46,421,107,16]: Strategy Factory
+      - button "Factor Factory" [ref=e83] [cursor=pointer] [box=10,449,189,34]:
+        - img [ref=e84] [box=20,458,16,16]
+        - generic [ref=e86] [box=46,458,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,486,189,34]:
+        - img [ref=e88] [box=20,495,16,16]
+        - generic [ref=e90] [box=46,495,70,16]: Incubation
+      - button "Local User" [ref=e91] [cursor=pointer] [box=10,523,189,34]:
+        - img [ref=e92] [box=20,532,16,16]
+        - generic [ref=e95] [box=46,532,67,16]: Local User
+      - button "Tools" [ref=e96] [cursor=pointer] [box=10,560,189,34]:
+        - img [ref=e97] [box=20,569,16,16]
+        - generic [ref=e99] [box=46,569,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,597,189,34]:
+        - img [ref=e101] [box=20,606,16,16]
+        - generic [ref=e111] [box=46,606,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,634,189,34]:
+        - img [ref=e113] [box=20,643,16,16]
+        - generic [ref=e115] [box=46,643,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,671,189,34]:
+        - img [ref=e117] [box=20,680,16,16]
+        - generic [ref=e119] [box=46,680,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,708,189,34]:
+        - img [ref=e121] [box=20,717,16,16]
+        - generic [ref=e124] [box=46,717,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,745,189,34]:
+        - img [ref=e126] [box=20,754,16,16]
+        - generic [ref=e129] [box=46,754,53,16]: Settings
+    - generic [ref=e130] [box=0,794,209,28]:
+      - generic [ref=e131] [box=10,808,189,22]:
+        - generic [ref=e132] [box=16,808,54,14]: Threads
+        - generic [ref=e133] [box=187,810,6,11]: "0"
+      - paragraph [ref=e134] [box=10,843,182,39]: Recent tasks will appear here.
+    - generic [ref=e135] [box=0,822,209,99]:
+      - generic "AIASK_DISCONNECTED" [ref=e136] [box=16,835,166,24]:
+        - img [ref=e137] [box=25,841,13,13]
+        - text: AIASK_DISCONNECTED
+      - generic [ref=e139] [box=16,867,177,15]: 0 tools
+      - generic [ref=e140] [box=16,890,177,15]: Hermes full off
+  - main [ref=e141] [box=210,0,770,760]:
+    - generic [ref=e142] [box=210,0,770,760]:
+      - generic [ref=e143] [box=210,0,770,82]:
+        - generic [ref=e144] [box=236,16,263,49]:
+          - text: Overview
+          - heading "Unified command console" [level=1] [ref=e145] [box=236,40,263,25]
+        - generic [ref=e146] [box=721,24,233,34]:
+          - generic "OVERVIEW_LOADED" [ref=e147] [box=721,29,128,23]:
+            - img [ref=e148] [box=730,34,13,13]
+            - text: OVERVIEW_LOADED
+          - button "Refresh" [ref=e151] [cursor=pointer] [box=859,24,95,34]:
+            - img [ref=e152] [box=871,34,14,14]
+            - text: Refresh
+      - generic [ref=e158] [box=232,104,711,1928]:
+        - generic [ref=e159] [box=232,104,711,130]:
+          - generic [ref=e160] [box=249,121,516,96]:
+            - text: http://127.0.0.1:8767
+            - heading "E2E Local Operator" [level=2] [ref=e161] [box=249,145,516,25]
+            - paragraph [ref=e162] [box=249,178,516,39]: Agent, model providers, databases, MCP, skills, automation, and the three factories are shown as one operator surface.
+          - generic [ref=e163] [box=783,121,143,54]:
+            - generic "offline" [ref=e164] [box=847,121,79,23]
+            - generic "control gated" [ref=e167] [box=810,152,116,23]
+        - generic [ref=e170] [box=232,248,711,301]:
+          - generic [ref=e171] [box=232,248,711,69]:
+            - text: Agent
+            - strong [ref=e172] [box=243,285,689,21]: offline
+          - generic [ref=e173] [box=232,325,711,69]:
+            - text: LLM
+            - strong [ref=e174] [box=243,362,689,21]: openai
+          - generic [ref=e175] [box=232,402,711,69]:
+            - text: Database
+            - strong [ref=e176] [box=243,439,689,21]: partial
+          - generic [ref=e177] [box=232,480,711,69]:
+            - text: Jobs
+            - strong [ref=e178] [box=243,517,689,21]: "1"
+        - generic [ref=e179] [box=232,575,711,597]:
+          - article [ref=e180] [box=232,575,711,191]:
+            - generic [ref=e181] [box=247,590,681,43]
+            - generic [ref=e187] [box=247,645,681,94]
+          - article [ref=e194] [box=232,778,711,191]:
+            - generic [ref=e195] [box=247,793,681,43]
+            - generic [ref=e210] [box=247,848,681,94]
+          - article [ref=e217] [box=232,981,711,191]:
+            - generic [ref=e218] [box=247,996,681,43]
+            - generic [ref=e225] [box=247,1051,681,94]
+        - generic [ref=e232] [box=232,1186,711,488]:
+          - article [ref=e233] [box=232,1186,711,155]:
+            - generic [ref=e234] [box=247,1201,681,43]
+            - generic "ready" [ref=e239] [box=247,1256,68,24]
+            - paragraph [ref=e243] [box=247,1293,681,20]: Recent runs and review snapshots are available from the dedicated factory page.
+          - article [ref=e244] [box=232,1352,711,155]:
+            - generic [ref=e245] [box=247,1367,681,43]
+            - generic "ready" [ref=e250] [box=247,1422,68,24]
+            - paragraph [ref=e254] [box=247,1459,681,20]: 1 active factors in the desktop snapshot.
+          - article [ref=e255] [box=232,1519,711,155]:
+            - generic [ref=e256] [box=247,1534,681,43]
+            - generic "review linked" [ref=e261] [box=247,1589,110,24]
+            - paragraph [ref=e265] [box=247,1626,681,20]: Lifecycle events and hit-rate reports are shown in the incubation page.
+        - generic [ref=e266] [box=232,1687,711,292]:
+          - article [ref=e267] [box=232,1687,711,178]:
+            - generic [ref=e268] [box=247,1702,681,43]
+            - article [ref=e276] [box=247,1757,681,93]
+          - article [ref=e283] [box=232,1877,711,102]:
+            - generic [ref=e284] [box=247,1892,681,43]
+            - paragraph [ref=e292] [box=247,1947,681,17]: Skills are gated until control access is available.
+        - group [ref=e293] [box=232,1994,711,38]:
+          - generic "Raw overview snapshot" [ref=e294] [cursor=pointer] [box=233,1995,709,36]

@@ -1,0 +1,157 @@
+- generic [ref=e3] [box=0,0,980,760]:
+  - complementary [ref=e4] [box=0,-19,210,760]:
+    - generic [ref=e5] [box=0,-19,209,66]:
+      - img [ref=e7] [box=20,6,18,18]
+      - generic [ref=e9] [box=55,-10,118,50]:
+        - strong [ref=e10] [box=55,-10,118,18]: AIASK
+        - generic [ref=e11] [box=55,10,118,30]: Agent Command Center
+      - img [ref=e12] [box=182,7,13,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,61,177,34]:
+      - img [ref=e15] [box=53,70,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,109,209,666]:
+      - generic [ref=e17] [box=10,109,189,22]:
+        - img [ref=e18] [box=16,110,13,13]
+        - generic [ref=e23] [box=122,109,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,134,189,34]:
+        - img [ref=e25] [box=20,143,16,16]
+        - generic [ref=e28] [box=46,143,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,171,189,34]:
+        - img [ref=e30] [box=20,180,16,16]
+        - generic [ref=e32] [box=46,180,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,208,189,34]:
+        - img [ref=e34] [box=20,217,16,16]
+        - generic [ref=e46] [box=46,217,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,245,189,34]:
+        - img [ref=e48] [box=20,254,16,16]
+        - generic [ref=e52] [box=46,254,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,282,189,34]:
+        - img [ref=e54] [box=20,291,16,16]
+        - generic [ref=e66] [box=46,291,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,319,189,34]:
+        - img [ref=e68] [box=20,328,16,16]
+        - generic [ref=e72] [box=46,328,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,356,189,34]:
+        - img [ref=e74] [box=20,365,16,16]
+        - generic [ref=e78] [box=46,365,79,16]: Automation
+      - button "Strategy Factory" [ref=e79] [cursor=pointer] [box=10,393,189,34]:
+        - img [ref=e80] [box=20,402,16,16]
+        - generic [ref=e82] [box=46,402,107,16]: Strategy Factory
+      - button "Factor Factory" [ref=e83] [cursor=pointer] [box=10,430,189,34]:
+        - img [ref=e84] [box=20,439,16,16]
+        - generic [ref=e86] [box=46,439,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,467,189,34]:
+        - img [ref=e88] [box=20,476,16,16]
+        - generic [ref=e90] [box=46,476,70,16]: Incubation
+      - button "Local User" [ref=e91] [cursor=pointer] [box=10,504,189,34]:
+        - img [ref=e92] [box=20,513,16,16]
+        - generic [ref=e95] [box=46,513,67,16]: Local User
+      - button "Tools" [active] [ref=e96] [cursor=pointer] [box=10,541,189,34]:
+        - img [ref=e97] [box=20,550,16,16]
+        - generic [ref=e99] [box=46,550,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,578,189,34]:
+        - img [ref=e101] [box=20,587,16,16]
+        - generic [ref=e111] [box=46,587,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,615,189,34]:
+        - img [ref=e113] [box=20,624,16,16]
+        - generic [ref=e115] [box=46,624,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,652,189,34]:
+        - img [ref=e117] [box=20,661,16,16]
+        - generic [ref=e119] [box=46,661,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,689,189,34]:
+        - img [ref=e121] [box=20,698,16,16]
+        - generic [ref=e124] [box=46,698,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,726,189,34]:
+        - img [ref=e126] [box=20,735,16,16]
+        - generic [ref=e129] [box=46,735,53,16]: Settings
+    - generic [ref=e130] [box=0,775,209,28]:
+      - generic [ref=e131] [box=10,789,189,22]:
+        - generic [ref=e132] [box=16,789,54,14]: Threads
+        - generic [ref=e133] [box=187,791,6,11]: "0"
+      - paragraph [ref=e134] [box=10,824,182,39]: Recent tasks will appear here.
+    - generic [ref=e135] [box=0,803,209,99]:
+      - generic "AIASK_ONLINE" [ref=e391] [box=16,816,120,24]:
+        - img [ref=e392] [box=25,822,13,13]
+        - text: AIASK_ONLINE
+      - generic [ref=e139] [box=16,848,177,15]: 13 tools
+      - generic [ref=e140] [box=16,871,177,15]: Hermes full ready
+  - main [ref=e141] [box=210,-19,770,760]:
+    - generic [ref=e1563] [box=210,-19,770,760]:
+      - generic [ref=e1565] [box=226,-3,178,50]:
+        - text: Tools
+        - heading "Available actions" [level=2] [ref=e1566] [box=226,21,178,26]
+      - generic [ref=e1567] [box=226,61,738,36]:
+        - img [ref=e1568] [box=237,72,15,15]
+        - textbox [ref=e1571] [box=260,62,693,34]:
+          - /placeholder: Search tools
+      - generic [ref=e1572] [box=226,105,738,72]:
+        - combobox [ref=e1573] [box=226,105,365,32]:
+          - option "all categories" [selected] [box=0,0,0,0]
+          - option "governance" [box=0,0,0,0]
+          - option "integration" [box=0,0,0,0]
+          - option "memory" [box=0,0,0,0]
+          - option "quant" [box=0,0,0,0]
+          - option "system" [box=0,0,0,0]
+        - combobox [ref=e1574] [box=599,105,365,32]:
+          - option "all status" [selected] [box=0,0,0,0]
+          - option "gated" [box=0,0,0,0]
+          - option "ready" [box=0,0,0,0]
+        - combobox [ref=e1575] [box=226,145,365,32]:
+          - option "all side effects" [selected] [box=0,0,0,0]
+          - option "read_only" [box=0,0,0,0]
+          - option "stateful" [box=0,0,0,0]
+      - generic [ref=e1576] [box=226,189,738,510]:
+        - article [ref=e1577] [box=226,189,738,78]:
+          - generic [ref=e1578] [box=238,200,714,32]:
+            - generic [ref=e1579] [box=238,200,96,32]:
+              - strong [ref=e1580] [box=238,200,96,14]: agent_terminal
+              - generic [ref=e1581] [box=238,218,96,14]: system / ready
+            - generic "read_only" [ref=e1582] [box=861,200,91,24]:
+              - img [ref=e1583] [box=870,206,13,13]
+              - text: read_only
+          - paragraph [ref=e1586] [box=238,239,714,17]: Mock terminal metadata
+        - article [ref=e1587] [box=226,275,738,78]:
+          - generic [ref=e1588] [box=238,286,714,32]:
+            - generic [ref=e1589] [box=238,286,137,32]:
+              - strong [ref=e1590] [box=238,286,137,14]: agent_factory_status
+              - generic [ref=e1591] [box=238,304,137,14]: quant / ready
+            - generic "read_only" [ref=e1592] [box=861,286,91,24]:
+              - img [ref=e1593] [box=870,292,13,13]
+              - text: read_only
+          - paragraph [ref=e1596] [box=238,325,714,17]: Mock factory status
+        - article [ref=e1597] [box=226,362,738,78]:
+          - generic [ref=e1598] [box=238,373,714,32]:
+            - generic [ref=e1599] [box=238,373,110,32]:
+              - strong [ref=e1600] [box=238,373,110,14]: agent_mcp_manage
+              - generic [ref=e1601] [box=238,391,110,14]: integration / gated
+            - generic "stateful" [ref=e1602] [box=873,373,79,24]:
+              - img [ref=e1603] [box=882,378,13,13]
+              - text: stateful
+          - paragraph [ref=e1605] [box=238,412,714,17]: Mock MCP management
+        - article [ref=e1606] [box=226,448,738,78]:
+          - generic [ref=e1607] [box=238,459,714,32]:
+            - generic [ref=e1608] [box=238,459,144,32]:
+              - strong [ref=e1609] [box=238,459,144,14]: agent_quant_data_gate
+              - generic [ref=e1610] [box=238,477,144,14]: quant / ready
+            - generic "read_only" [ref=e1611] [box=861,459,91,24]:
+              - img [ref=e1612] [box=870,465,13,13]
+              - text: read_only
+          - paragraph [ref=e1615] [box=238,498,714,17]: Mock data gate
+        - article [ref=e1616] [box=226,535,738,78]:
+          - generic [ref=e1617] [box=238,546,714,32]:
+            - generic [ref=e1618] [box=238,546,131,32]:
+              - strong [ref=e1619] [box=238,546,131,14]: agent_memory_search
+              - generic [ref=e1620] [box=238,564,131,14]: memory / ready
+            - generic "read_only" [ref=e1621] [box=861,546,91,24]:
+              - img [ref=e1622] [box=870,551,13,13]
+              - text: read_only
+          - paragraph [ref=e1625] [box=238,585,714,17]: Mock memory search
+        - article [ref=e1626] [box=226,621,738,78]:
+          - generic [ref=e1627] [box=238,632,714,32]:
+            - generic [ref=e1628] [box=238,632,179,32]:
+              - strong [ref=e1629] [box=238,632,179,14]: agent_action_intent_create
+              - generic [ref=e1630] [box=238,650,179,14]: governance / ready
+            - generic "stateful" [ref=e1631] [box=873,632,79,24]:
+              - img [ref=e1632] [box=882,637,13,13]
+              - text: stateful
+          - paragraph [ref=e1634] [box=238,671,714,17]: Mock approval intent

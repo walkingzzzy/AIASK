@@ -1,0 +1,212 @@
+- generic [ref=e3] [box=0,0,980,760]:
+  - complementary [ref=e4] [box=0,-19,210,760]:
+    - generic [ref=e5] [box=0,-19,209,66]:
+      - img [ref=e7] [box=20,6,18,18]
+      - generic [ref=e9] [box=55,-10,118,50]:
+        - strong [ref=e10] [box=55,-10,118,18]: AIASK
+        - generic [ref=e11] [box=55,10,118,30]: Agent Command Center
+      - img [ref=e12] [box=182,7,13,15]
+    - button "New Thread" [ref=e14] [cursor=pointer] [box=16,61,177,34]:
+      - img [ref=e15] [box=53,70,16,16]
+      - text: New Thread
+    - navigation [ref=e16] [box=0,109,209,666]:
+      - generic [ref=e17] [box=10,109,189,22]:
+        - img [ref=e18] [box=16,110,13,13]
+        - generic [ref=e23] [box=122,109,71,14]: Workspace
+      - button "Overview" [ref=e24] [cursor=pointer] [box=10,134,189,34]:
+        - img [ref=e25] [box=20,143,16,16]
+        - generic [ref=e28] [box=46,143,62,16]: Overview
+      - button "Agent" [ref=e29] [cursor=pointer] [box=10,171,189,34]:
+        - img [ref=e30] [box=20,180,16,16]
+        - generic [ref=e32] [box=46,180,40,16]: Agent
+      - button "Models" [ref=e33] [cursor=pointer] [box=10,208,189,34]:
+        - img [ref=e34] [box=20,217,16,16]
+        - generic [ref=e46] [box=46,217,48,16]: Models
+      - button "Data & Sync" [ref=e47] [cursor=pointer] [box=10,245,189,34]:
+        - img [ref=e48] [box=20,254,16,16]
+        - generic [ref=e52] [box=46,254,80,16]: Data & Sync
+      - button "MCP" [ref=e53] [cursor=pointer] [box=10,282,189,34]:
+        - img [ref=e54] [box=20,291,16,16]
+        - generic [ref=e66] [box=46,291,31,16]: MCP
+      - button "Skills" [ref=e67] [cursor=pointer] [box=10,319,189,34]:
+        - img [ref=e68] [box=20,328,16,16]
+        - generic [ref=e72] [box=46,328,34,16]: Skills
+      - button "Automation" [ref=e73] [cursor=pointer] [box=10,356,189,34]:
+        - img [ref=e74] [box=20,365,16,16]
+        - generic [ref=e78] [box=46,365,79,16]: Automation
+      - button "Strategy Factory" [active] [ref=e79] [cursor=pointer] [box=10,393,189,34]:
+        - img [ref=e80] [box=20,402,16,16]
+        - generic [ref=e82] [box=46,402,107,16]: Strategy Factory
+      - button "Factor Factory" [ref=e83] [cursor=pointer] [box=10,430,189,34]:
+        - img [ref=e84] [box=20,439,16,16]
+        - generic [ref=e86] [box=46,439,93,16]: Factor Factory
+      - button "Incubation" [ref=e87] [cursor=pointer] [box=10,467,189,34]:
+        - img [ref=e88] [box=20,476,16,16]
+        - generic [ref=e90] [box=46,476,70,16]: Incubation
+      - button "Local User" [ref=e91] [cursor=pointer] [box=10,504,189,34]:
+        - img [ref=e92] [box=20,513,16,16]
+        - generic [ref=e95] [box=46,513,67,16]: Local User
+      - button "Tools" [ref=e96] [cursor=pointer] [box=10,541,189,34]:
+        - img [ref=e97] [box=20,550,16,16]
+        - generic [ref=e99] [box=46,550,34,16]: Tools
+      - button "Capabilities" [ref=e100] [cursor=pointer] [box=10,578,189,34]:
+        - img [ref=e101] [box=20,587,16,16]
+        - generic [ref=e111] [box=46,587,76,16]: Capabilities
+      - button "Event Console" [ref=e112] [cursor=pointer] [box=10,615,189,34]:
+        - img [ref=e113] [box=20,624,16,16]
+        - generic [ref=e115] [box=46,624,92,16]: Event Console
+      - button "Diagnostics" [ref=e116] [cursor=pointer] [box=10,652,189,34]:
+        - img [ref=e117] [box=20,661,16,16]
+        - generic [ref=e119] [box=46,661,76,16]: Diagnostics
+      - button "Agent Status" [ref=e120] [cursor=pointer] [box=10,689,189,34]:
+        - img [ref=e121] [box=20,698,16,16]
+        - generic [ref=e124] [box=46,698,84,16]: Agent Status
+      - button "Settings" [ref=e125] [cursor=pointer] [box=10,726,189,34]:
+        - img [ref=e126] [box=20,735,16,16]
+        - generic [ref=e129] [box=46,735,53,16]: Settings
+    - generic [ref=e130] [box=0,775,209,28]:
+      - generic [ref=e131] [box=10,789,189,22]:
+        - generic [ref=e132] [box=16,789,54,14]: Threads
+        - generic [ref=e133] [box=187,791,6,11]: "0"
+      - paragraph [ref=e134] [box=10,824,182,39]: Recent tasks will appear here.
+    - generic [ref=e135] [box=0,803,209,99]:
+      - generic "AIASK_ONLINE" [ref=e391] [box=16,816,120,24]:
+        - img [ref=e392] [box=25,822,13,13]
+        - text: AIASK_ONLINE
+      - generic [ref=e139] [box=16,848,177,15]: 13 tools
+      - generic [ref=e140] [box=16,871,177,15]: Hermes full ready
+  - main [ref=e141] [box=210,-19,770,760]:
+    - generic [ref=e1067] [box=210,-19,770,760]:
+      - generic [ref=e1068] [box=210,-19,770,82]:
+        - generic [ref=e1069] [box=236,-3,157,49]:
+          - text: Capability Workbench
+          - heading "Runtime review" [level=1] [ref=e1070] [box=236,21,157,25]
+        - generic [ref=e1071] [box=486,5,468,34]:
+          - generic "Mock fixture" [ref=e1072] [box=486,10,110,23]:
+            - img [ref=e1073] [box=495,15,13,13]
+            - text: Mock fixture
+          - generic "code parity complete, live pending" [ref=e1075] [box=606,10,243,23]:
+            - img [ref=e1076] [box=615,15,13,13]
+            - text: code parity complete, live pending
+          - button "Refresh capability review" [ref=e1078] [cursor=pointer] [box=859,5,95,34]:
+            - img [ref=e1079] [box=871,15,14,14]
+            - text: Refresh
+      - generic [ref=e1084] [box=210,63,770,68]:
+        - button "Overview" [ref=e1085] [cursor=pointer] [box=228,73,100,32]:
+          - img [ref=e1086] [box=238,82,15,15]
+          - text: Overview
+        - button "Connectors" [ref=e1088] [cursor=pointer] [box=334,73,112,32]:
+          - img [ref=e1089] [box=344,82,15,15]
+          - text: Connectors
+        - button "Hermes" [ref=e1095] [cursor=pointer] [box=451,73,90,32]:
+          - img [ref=e1096] [box=461,82,15,15]
+          - text: Hermes
+        - button "MCP" [ref=e1106] [cursor=pointer] [box=547,73,71,32]:
+          - img [ref=e1107] [box=557,82,15,15]
+          - text: MCP
+        - button "Strategy Factory" [pressed] [ref=e1119] [cursor=pointer] [box=624,73,142,32]:
+          - img [ref=e1120] [box=634,82,15,15]
+          - text: Strategy Factory
+        - button "Incubation" [ref=e1122] [cursor=pointer] [box=772,73,108,32]:
+          - img [ref=e1123] [box=782,82,15,15]
+          - text: Incubation
+        - button "Skills" [ref=e1125] [cursor=pointer] [box=886,73,74,32]:
+          - img [ref=e1126] [box=896,82,15,15]
+          - text: Skills
+        - button "Plugins" [ref=e1130] [cursor=pointer] [box=966,73,87,32]:
+          - img [ref=e1131] [box=976,82,15,15]
+          - text: Plugins
+        - button "AI Tests" [ref=e1133] [cursor=pointer] [box=1060,73,90,32]:
+          - img [ref=e1134] [box=1070,82,15,15]
+          - text: AI Tests
+      - generic [ref=e1147] [box=232,153,711,1275]:
+        - generic [ref=e1148] [box=232,153,711,130]:
+          - generic [ref=e1149] [box=249,170,555,96]:
+            - text: Strategy Factory
+            - heading "Scheduler, runs, promotion reviews" [level=2] [ref=e1150] [box=249,194,555,25]
+            - paragraph [ref=e1151] [box=249,227,555,39]: Read-only status is always safe. Mutating actions continue through durable approval intents.
+          - generic "implemented" [ref=e1152] [box=822,170,104,23]:
+            - img [ref=e1153] [box=831,175,13,13]
+            - text: implemented
+        - generic [ref=e1156] [box=232,297,711,39]: Control token is required before factory action intents can be created from the desktop.
+        - generic [ref=e1157] [box=232,350,711,119]:
+          - generic [ref=e1158] [box=247,365,681,43]:
+            - generic [ref=e1159] [box=247,365,127,43]:
+              - text: Approved operation
+              - heading "Factory run once" [level=3] [ref=e1160] [box=247,389,127,19]
+            - generic "NO_INTENT" [ref=e1161] [box=837,365,91,23]:
+              - img [ref=e1162] [box=846,370,13,13]
+              - text: NO_INTENT
+          - button "Create run intent" [disabled] [ref=e1164] [box=247,420,158,34]:
+            - img [ref=e1165] [box=259,429,15,15]
+            - text: Create run intent
+        - generic [ref=e1167] [box=232,483,711,945]:
+          - article [ref=e1168] [box=232,483,711,307]:
+            - generic [ref=e1169] [box=247,498,681,43]:
+              - generic [ref=e1170] [box=247,498,107,43]:
+                - text: strategy_factory
+                - heading "Factory Status" [level=3] [ref=e1171] [box=247,522,107,19]
+              - generic "implemented" [ref=e1172] [box=824,498,104,23]:
+                - img [ref=e1173] [box=833,503,13,13]
+                - text: implemented
+            - generic [ref=e1176] [box=247,553,681,172]:
+              - generic [ref=e1177] [box=260,566,96,16]: Success
+              - strong [ref=e1178] [box=368,566,547,16]: "true"
+              - generic [ref=e1179] [box=260,592,96,16]: Configured
+              - strong [ref=e1180] [box=368,592,547,16]: "true"
+              - generic [ref=e1181] [box=260,618,96,16]: Database
+              - strong [ref=e1182] [box=368,618,547,16]: "-"
+              - generic [ref=e1183] [box=260,644,96,16]: DB backend
+              - strong [ref=e1184] [box=368,644,547,16]: sqlite
+              - generic [ref=e1185] [box=260,670,96,16]: DB path
+              - strong [ref=e1186] [box=368,670,547,16]: "-"
+              - generic [ref=e1187] [box=260,696,96,16]: Error
+              - strong [ref=e1188] [box=368,696,547,16]: "-"
+            - group [ref=e1189] [box=247,737,681,38]:
+              - generic "Raw Factory Status" [ref=e1190] [cursor=pointer] [box=248,738,679,36]
+          - article [ref=e1191] [box=232,802,711,307]:
+            - generic [ref=e1192] [box=247,817,681,43]:
+              - generic [ref=e1193] [box=247,817,97,43]:
+                - text: strategy_factory
+                - heading "Recent Runs" [level=3] [ref=e1194] [box=247,841,97,19]
+              - generic "implemented" [ref=e1195] [box=824,817,104,23]:
+                - img [ref=e1196] [box=833,822,13,13]
+                - text: implemented
+            - generic [ref=e1199] [box=247,872,681,172]:
+              - generic [ref=e1200] [box=260,885,96,16]: Success
+              - strong [ref=e1201] [box=368,885,547,16]: "true"
+              - generic [ref=e1202] [box=260,911,96,16]: Configured
+              - strong [ref=e1203] [box=368,911,547,16]: "true"
+              - generic [ref=e1204] [box=260,937,96,16]: Database
+              - strong [ref=e1205] [box=368,937,547,16]: "-"
+              - generic [ref=e1206] [box=260,963,96,16]: DB backend
+              - strong [ref=e1207] [box=368,963,547,16]: sqlite
+              - generic [ref=e1208] [box=260,989,96,16]: DB path
+              - strong [ref=e1209] [box=368,989,547,16]: "-"
+              - generic [ref=e1210] [box=260,1015,96,16]: Error
+              - strong [ref=e1211] [box=368,1015,547,16]: "-"
+            - group [ref=e1212] [box=247,1056,681,38]:
+              - generic "Raw Recent Runs" [ref=e1213] [cursor=pointer] [box=248,1057,679,36]
+          - article [ref=e1214] [box=232,1121,711,307]:
+            - generic [ref=e1215] [box=247,1136,681,43]:
+              - generic [ref=e1216] [box=247,1136,128,43]:
+                - text: strategy_factory
+                - heading "Review Snapshot" [level=3] [ref=e1217] [box=247,1160,128,19]
+              - generic "implemented" [ref=e1218] [box=824,1136,104,23]:
+                - img [ref=e1219] [box=833,1141,13,13]
+                - text: implemented
+            - generic [ref=e1222] [box=247,1191,681,172]:
+              - generic [ref=e1223] [box=260,1204,96,16]: Success
+              - strong [ref=e1224] [box=368,1204,547,16]: "true"
+              - generic [ref=e1225] [box=260,1230,96,16]: Configured
+              - strong [ref=e1226] [box=368,1230,547,16]: "true"
+              - generic [ref=e1227] [box=260,1256,96,16]: Database
+              - strong [ref=e1228] [box=368,1256,547,16]: "-"
+              - generic [ref=e1229] [box=260,1282,96,16]: DB backend
+              - strong [ref=e1230] [box=368,1282,547,16]: sqlite
+              - generic [ref=e1231] [box=260,1308,96,16]: DB path
+              - strong [ref=e1232] [box=368,1308,547,16]: "-"
+              - generic [ref=e1233] [box=260,1334,96,16]: Error
+              - strong [ref=e1234] [box=368,1334,547,16]: "-"
+            - group [ref=e1235] [box=247,1375,681,38]:
+              - generic "Raw Review Snapshot" [ref=e1236] [cursor=pointer] [box=248,1376,679,36]

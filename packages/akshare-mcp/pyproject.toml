@@ -1,0 +1,46 @@
+[project]
+name = "akshare-mcp"
+version = "2.0.0"
+description = "AKShare MCP Server v2 - 完整的A股量化分析服务"
+requires-python = ">=3.12"
+dependencies = [
+    "aiask-quant-core",
+    "mcp>=1.0.0",
+    "anyio>=4.0.0",
+    "pandas>=2.0.0",
+    "tushare>=1.4.0",
+    "pydantic>=2.0.0",
+    # 性能优化依赖
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "numba>=0.59.0",
+    # 生产级数据质量 / conformal 依赖
+    "great_expectations>=1.16.0",
+    "mapie>=1.3.0",
+    # 技术分析依赖
+    "pandas-ta>=0.3.14",
+    "TA-Lib>=0.4.28",
+    "strategy-factory",
+]
+
+[project.optional-dependencies]
+parallel = ["ray[default]>=2.9.0"]
+legacy = [
+    "baostock>=0.8.8",
+    "efinance>=0.5.5",
+]
+
+[project.scripts]
+akshare-mcp = "akshare_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/akshare_mcp"]
+
+[tool.uv.sources]
+aiask-quant-core = { path = "../aiask-quant-core", editable = true }
+strategy-factory = { path = "../strategy-factory", editable = true }
