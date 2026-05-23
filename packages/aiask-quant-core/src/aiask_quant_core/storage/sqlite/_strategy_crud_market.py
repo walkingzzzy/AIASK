@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from .strategy_factory_json_budget import bounded_json_text, strategy_json_field_max_bytes
+
 
 class _StrategyCrudMarketMixin:
         async def _get_market_data_quality_gate(
@@ -160,7 +162,11 @@ class _StrategyCrudMarketMixin:
                     json.dumps(data.get("fg_components") or {}, ensure_ascii=False, default=str),
                     json.dumps(data.get("factor_ic") or {}, ensure_ascii=False, default=str),
                     json.dumps(data.get("factor_ic_trend") or {}, ensure_ascii=False, default=str),
-                    json.dumps(data.get("factor_research") or {}, ensure_ascii=False, default=str),
+                    bounded_json_text(
+                        "daily_snapshot_history.factor_research",
+                        data.get("factor_research") or {},
+                        max_bytes=strategy_json_field_max_bytes(),
+                    ),
                     data.get("north_fund_3d_net"),
                     data.get("margin_5d_change_pct"),
                     json.dumps(data.get("hot_sectors") or [], ensure_ascii=False, default=str),

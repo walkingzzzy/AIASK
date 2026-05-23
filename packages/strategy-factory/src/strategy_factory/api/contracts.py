@@ -533,6 +533,16 @@ class StrategyFactoryRepository(Protocol):
     ) -> list[Mapping[str, Any]]: ...
 
 
+try:
+    from aiask_quant_core.storage.contracts import (
+        StrategyFactoryRepository as _SharedStrategyFactoryRepository,
+    )
+except ModuleNotFoundError:
+    pass
+else:
+    StrategyFactoryRepository = _SharedStrategyFactoryRepository
+
+
 @runtime_checkable
 class VectorSearchGateway(Protocol):
     """Gateway for vector-pattern lookup used by dedup/vector layers."""

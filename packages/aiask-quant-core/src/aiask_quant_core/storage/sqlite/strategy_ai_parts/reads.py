@@ -4,18 +4,18 @@
     def _generation_experiment_field_max_bytes() -> int:
         raw = str(os.getenv("STRATEGY_GENERATION_EXPERIMENT_FIELD_MAX_BYTES") or "").strip()
         try:
-            value = int(raw) if raw else 1024 * 1024
+            value = int(raw) if raw else strategy_json_field_max_bytes()
         except Exception:
-            value = 1024 * 1024
+            value = strategy_json_field_max_bytes()
         return max(4096, value)
 
     @staticmethod
     def _task_run_result_max_bytes() -> int:
         raw = str(os.getenv("STRATEGY_TASK_RUN_RESULT_MAX_BYTES") or "").strip()
         try:
-            value = int(raw) if raw else 8 * 1024 * 1024
+            value = int(raw) if raw else strategy_json_field_max_bytes()
         except Exception:
-            value = 8 * 1024 * 1024
+            value = strategy_json_field_max_bytes()
         return max(4096, value)
 
     @staticmethod
@@ -24,15 +24,114 @@
         env_name = f"STRATEGY_FACTORY_RUN_{normalized.upper()}_MAX_BYTES"
         raw = str(os.getenv(env_name) or os.getenv("STRATEGY_FACTORY_RUN_FIELD_MAX_BYTES") or "").strip()
         defaults = {
-            "summary": 2 * 1024 * 1024,
-            "stages": 2 * 1024 * 1024,
-            "snapshot_summary": 1024 * 1024,
+            "summary": 64 * 1024,
+            "stages": 128 * 1024,
+            "snapshot_summary": 64 * 1024,
         }
         try:
             value = int(raw) if raw else defaults.get(normalized, 1024 * 1024)
         except Exception:
             value = defaults.get(normalized, 1024 * 1024)
         return max(4096, value)
+
+    @staticmethod
+    def _factory_artifact_payload_max_bytes() -> int:
+        raw = str(os.getenv("STRATEGY_FACTORY_ARTIFACT_PAYLOAD_MAX_BYTES") or "").strip()
+        try:
+            value = int(raw) if raw else strategy_json_field_max_bytes()
+        except Exception:
+            value = strategy_json_field_max_bytes()
+        return max(4096, value)
+
+    @staticmethod
+    def _large_json_collection_keys() -> set[str]:
+        return {
+            "passed_candidates",
+            "failed_candidates",
+            "trades",
+            "fills",
+            "orders",
+            "positions",
+            "round_trip_positions",
+            "equity_curve",
+            "cash_curve",
+            "gross_exposure_curve",
+            "net_exposure_curve",
+            "component_metrics",
+            "event_window_metrics",
+            "raw_events",
+            "samples",
+            "klines",
+            "ohlcv",
+        }
+
+    @classmethod
+    def _json_field_size_bytes(cls, value: Any) -> int:
+        try:
+            return len(json.dumps(value or {}, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            return 0
+
+    @classmethod
+    def _large_json_node_summary(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return {
+                "storage_mode": "dropped_large_payload",
+                "node_type": "dict",
+                "key_count": len(value),
+                "keys": sorted(str(key) for key in list(value.keys())[:24]),
+                "size_bytes": cls._json_field_size_bytes(value),
+            }
+        if isinstance(value, (list, tuple)):
+            return {
+                "storage_mode": "dropped_large_payload",
+                "node_type": "list",
+                "item_count": len(value),
+                "size_bytes": cls._json_field_size_bytes(value),
+            }
+        return {
+            "storage_mode": "dropped_large_payload",
+            "node_type": type(value).__name__,
+            "size_bytes": cls._json_field_size_bytes(value),
+        }
+
+    @classmethod
+    def _scrub_storage_json(cls, value: Any, *, depth: int = 0) -> Any:
+        if value in (None, "", [], {}):
+            return {} if isinstance(value, dict) else [] if isinstance(value, list) else value
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if depth >= 4:
+            return cls._large_json_node_summary(value)
+        if isinstance(value, dict):
+            compact: dict[str, Any] = {}
+            heavy_keys = cls._large_json_collection_keys()
+            for raw_key, item in value.items():
+                key = str(raw_key)
+                if item in (None, "", [], {}):
+                    continue
+                if key in heavy_keys and isinstance(item, (dict, list, tuple)):
+                    compact[f"{key}_summary"] = cls._large_json_node_summary(item)
+                    continue
+                if key in {"passed", "failed", "candidates", "results", "items"} and isinstance(item, list):
+                    compact[f"{key}_summary"] = cls._large_json_node_summary(item)
+                    continue
+                compact[key] = cls._scrub_storage_json(item, depth=depth + 1)
+            return compact
+        if isinstance(value, (list, tuple)):
+            values = list(value)
+            preview = [
+                cls._scrub_storage_json(item, depth=depth + 1)
+                for item in values[:12]
+            ]
+            if len(values) > 12:
+                preview.append({"truncated_item_count": len(values) - 12})
+            return preview
+        return str(value)
+
+    @classmethod
+    def _encode_bounded_storage_json(cls, field_name: str, value: Any, *, max_bytes: int) -> str:
+        return bounded_json_text(field_name, value or {}, max_bytes=max_bytes)
 
     @staticmethod
     def _compact_mapping(value: Any, *, keys: tuple[str, ...]) -> dict[str, Any]:

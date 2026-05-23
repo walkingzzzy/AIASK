@@ -19,7 +19,11 @@
                 payload.get("symbol"),
                 evidence_type,
                 float(payload.get("weight") or 0.0),
-                json.dumps(payload.get("evidence_payload") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_task_evidence.evidence_payload",
+                    payload.get("evidence_payload") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
             )
         return self._decode_factory_task_evidence(dict(row))
 

@@ -24,10 +24,11 @@ class _VectorUnifiedDocsMixin:
             normalized_query_text = self._normalize_hybrid_query_text(query_text)
             if normalized_query_text and not query_embedding:
                 try:
-                    from ...services.text_embedding import get_strategy_text_embedding_service
+                    from aiask_quant_core.storage.runtime_hooks import get_text_embedding_service_factory
 
-                    service = get_strategy_text_embedding_service()
-                    if service.is_enabled():
+                    service_factory = get_text_embedding_service_factory()
+                    service = service_factory() if callable(service_factory) else None
+                    if service is not None and service.is_enabled():
                         query_embedding = await service.embed_text(normalized_query_text)
                 except Exception:
                     query_embedding = None

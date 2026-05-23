@@ -8,6 +8,8 @@ import os
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
+from .compact_contracts import COMPACT_ARTIFACT_MAX_BYTES, bounded_payload
+
 
 FACTORY_ENGINE_VERSION = "strategy_factory.v2"
 FACTORY_EXECUTION_MODE_ENV = "STRATEGY_FACTORY_EXECUTION_MODE"
@@ -122,17 +124,23 @@ def build_run_artifacts(result: Mapping[str, Any] | None) -> list[dict[str, Any]
     artifacts: list[dict[str, Any]] = []
 
     def _append(artifact_type: FactoryArtifactType, payload: Any, *, version: Any = None) -> None:
-        data = dict(payload or {})
+        raw_data = dict(payload or {})
+        data = bounded_payload(
+            raw_data,
+            field_name=f"strategy_factory_run_artifacts.{artifact_type.value}",
+            max_bytes=COMPACT_ARTIFACT_MAX_BYTES,
+        )
         if not data:
             return
         artifact_version = str(version or data.get("contract_version") or data.get("version") or "").strip() or "1"
+        storage_mode = str(data.get("storage_mode") or "inline_compact_json").strip() or "inline_compact_json"
         artifacts.append(
             {
                 "artifact_type": artifact_type.value,
                 "artifact_version": artifact_version,
                 "payload_json": data,
                 "payload_hash": _stable_hash(data),
-                "storage_mode": "inline_json",
+                "storage_mode": storage_mode,
             }
         )
 
@@ -149,14 +157,6 @@ def build_run_artifacts(result: Mapping[str, Any] | None) -> list[dict[str, Any]
     _append(
         FactoryArtifactType.EVIDENCE_ARTIFACT,
         dict(research_plane.get("evidence_artifact") or {}),
-    )
-    _append(
-        FactoryArtifactType.QUALITY_GATE,
-        dict(raw.get("quality_gate") or raw.get("gate_report") or {}),
-    )
-    _append(
-        FactoryArtifactType.BACKTEST_REPORT,
-        dict(raw.get("backtest_report") or {}),
     )
     _append(
         FactoryArtifactType.SUBMISSION_AUDIT,

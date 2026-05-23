@@ -34,8 +34,8 @@ async def _maybe_await(result: Any):
     return result
 
 
-class MCPStrategyFactoryRepositoryAdapter:
-    """Thin wrapper that exposes the current aggregate db surface as a typed repository."""
+class StrategyFactoryRepositoryAdapter:
+    """Thin wrapper that exposes an aggregate DB surface as a typed repository."""
 
     def __init__(self, db: Any):
         self._db = db
@@ -495,9 +495,9 @@ class MCPRuntimeAdapters:
 
 
 def adapt_repository(db: Any) -> StrategyFactoryRepository:
-    if isinstance(db, MCPStrategyFactoryRepositoryAdapter):
+    if isinstance(db, StrategyFactoryRepositoryAdapter):
         return db
-    return MCPStrategyFactoryRepositoryAdapter(db)
+    return StrategyFactoryRepositoryAdapter(db)
 
 
 def build_mcp_runtime_adapters(
@@ -523,6 +523,9 @@ def build_mcp_runtime_adapters(
     )
 
 
+MCPStrategyFactoryRepositoryAdapter = StrategyFactoryRepositoryAdapter
+
+
 __all__ = [
     "MCPAutonomyGatewayImpl",
     "MCPFactorResearchGatewayImpl",
@@ -532,6 +535,7 @@ __all__ = [
     "MCPStrategyFactoryRepositoryAdapter",
     "MCPValidationGatewayImpl",
     "MCPVectorSearchGatewayImpl",
+    "StrategyFactoryRepositoryAdapter",
     "adapt_repository",
     "build_mcp_runtime_adapters",
 ]

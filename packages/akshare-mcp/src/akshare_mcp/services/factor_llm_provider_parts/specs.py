@@ -187,11 +187,25 @@ class FactorLLMProvider:
         self._last_error_type = exc.__class__.__name__
         self._last_error = self._error_text(exc)
 
+    @staticmethod
+    def _openai_compatible_api_base(base_url: str) -> str:
+        base = str(base_url or "").rstrip("/")
+        if not base:
+            return base
+        lowered = base.lower()
+        if lowered.endswith(("/chat/completions", "/responses")):
+            return base
+        remainder = base.split("://", 1)[1] if "://" in base else base
+        path = remainder.split("/", 1)[1] if "/" in remainder else ""
+        if not path:
+            return f"{base}/v1"
+        return base
+
     def _endpoint(self) -> str:
         base = self.config.base_url.rstrip("/")
         if base.endswith("/chat/completions"):
             return base
-        return f"{base}/chat/completions"
+        return f"{self._openai_compatible_api_base(base)}/chat/completions"
 
     def _timeout(self) -> httpx.Timeout:
         timeout_sec = max(float(self.config.timeout_sec or 45.0), 5.0)
@@ -428,9 +442,7 @@ class FactorLLMProvider:
         error_text = self._error_text(exc).lower()
         if "missing extractable content" in error_text:
             return True
-        if "text/event-stream" not in content_type:
-            return False
-        return False
+        return "text/event-stream" in content_type
 
     async def _stream_parse_response_payload(
         self,

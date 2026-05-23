@@ -892,8 +892,8 @@
             )
             passed = list(pipeline_run.passed or [])
             unique = list(pipeline_run.unique or [])
-            quality_gate_report = dict(pipeline_run.quality_gate_report or {})
-            backtest_report = dict(pipeline_run.backtest_report or {})
+            quality_gate_report = compact_quality_gate_report(pipeline_run.quality_gate_report or {})
+            backtest_report = compact_backtest_report(pipeline_run.backtest_report or {})
             submit_result = dict(pipeline_run.submit_result or {})
 
             backtest_summary = backtest_report.get("summary") or {}

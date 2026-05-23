@@ -11,7 +11,7 @@ sqlite_python-specific DDL (vector columns) is gated by the ``sqlite_python_enab
 
 import logging
 
-from akshare_mcp._fragment_loader import exec_block as _exec_block
+from aiask_quant_core._fragment_loader import exec_block as _exec_block
 
 logger = logging.getLogger(__name__)
 

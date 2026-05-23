@@ -17,6 +17,7 @@ from .factory_execution import (
     build_run_artifacts,
     build_run_header,
 )
+from .compact_contracts import compact_backtest_report, compact_quality_gate_report
 from .governance_plane_contract import build_governance_plane_artifact
 from .research.runner import ResearchPlaneRunner
 from .services.candidate_pipeline import CandidatePipeline

@@ -17,6 +17,7 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "MCPVectorSearchGatewayImpl": (".mcp_adapters", "MCPVectorSearchGatewayImpl"),
     "adapt_repository": (".mcp_adapters", "adapt_repository"),
     "build_mcp_runtime_adapters": (".mcp_adapters", "build_mcp_runtime_adapters"),
+    "StrategyFactoryRepositoryAdapter": (".mcp_adapters", "StrategyFactoryRepositoryAdapter"),
     "build_strategy_vector_profile": (".mcp_services", "build_strategy_vector_profile"),
     "get_autonomy_lifecycle_runtime": (".mcp_services", "get_autonomy_lifecycle_runtime"),
     "get_backtest_engine_class": (".mcp_services", "get_backtest_engine_class"),

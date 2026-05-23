@@ -43,6 +43,8 @@
             # 多阶段 pipeline 路径
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
+            suppress_post_pipeline_fallback = False
+            post_pipeline_suppression_reason: Optional[str] = None
             pipeline_run_timeout_sec: Optional[float] = None
             pipeline_mode, _pipeline_factory = _resolve_pipeline_runtime_symbols()
             pipeline_disabled_by_scheduler = bool((research_task or {}).get('disable_pipeline_staged'))
@@ -129,30 +131,59 @@
                     pipeline_fallback_counts = dict(pipeline_report.get('pipeline_fallback_counts') or {})
                     pipeline_stage_reasons = dict(pipeline_report.get('pipeline_stage_fallback_reasons') or {})
                     invalid_stage_ids = list(pipeline_report.get('pipeline_invalid_output_stage_ids') or [])
+                    provider_output_format_failed = _pipeline_report_has_provider_output_format_failure(pipeline_report)
                     empty_reason = (
                         'invalid_output:' + ','.join(invalid_stage_ids)
                         if invalid_stage_ids
                         else 'no_executable_specs'
                     )
                     _pipeline_fallback_reason = f'returned_empty:{empty_reason}'
-                    logger.info(
-                        'Pipeline staged mode returned no specs, falling back to monolithic; '
-                        'reason=%s stage_reasons=%s fallback_counts=%s',
-                        empty_reason,
-                        pipeline_stage_reasons,
-                        pipeline_fallback_counts,
-                    )
+                    allow_empty_monolithic_fallback = str(
+                        os.getenv('STRATEGY_FACTORY_ALLOW_PIPELINE_EMPTY_MONOLITHIC_FALLBACK', '0') or '0'
+                    ).strip().lower() in {'1', 'true', 'yes', 'on'}
+                    if provider_output_format_failed:
+                        suppress_post_pipeline_fallback = True
+                        post_pipeline_suppression_reason = 'provider_output_format_failure'
+                        logger.warning(
+                            'Pipeline staged mode returned no specs after provider output format failure; '
+                            'suppressing monolithic/local fallback. reason=%s stage_reasons=%s fallback_counts=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                        )
+                    elif not allow_empty_monolithic_fallback:
+                        suppress_post_pipeline_fallback = True
+                        post_pipeline_suppression_reason = 'staged_pipeline_empty'
+                        logger.warning(
+                            'Pipeline staged mode returned no specs; suppressing monolithic/local fallback. '
+                            'reason=%s stage_reasons=%s fallback_counts=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                        )
+                    else:
+                        logger.info(
+                            'Pipeline staged mode returned no specs, falling back to monolithic; '
+                            'reason=%s stage_reasons=%s fallback_counts=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                        )
                 except asyncio.TimeoutError as exc:
                     _pipeline_fallback_reason = 'pipeline_timeout'
                     skip_monolithic_external_provider = True
+                    suppress_post_pipeline_fallback = True
+                    post_pipeline_suppression_reason = 'pipeline_timeout'
                     logger.warning(
-                        'Pipeline staged mode timed out after %.1fs, falling back to local-only path: %s',
+                        'Pipeline staged mode timed out after %.1fs; suppressing monolithic/local fallback: %s',
                         float(pipeline_run_timeout_sec or 0.0),
                         exc,
                     )
                 except Exception as exc:
                     _pipeline_fallback_reason = f'{type(exc).__name__}: {exc}'
-                    logger.warning('Pipeline staged mode failed: %s, falling back to monolithic', exc)
+                    suppress_post_pipeline_fallback = True
+                    post_pipeline_suppression_reason = 'pipeline_exception'
+                    logger.warning('Pipeline staged mode failed: %s; suppressing monolithic/local fallback', exc)
 
             frame = recovered_target_frame
             frame_source = (
@@ -214,9 +245,38 @@
                 ),
                 'pipeline_staged_provenance': pipeline_report.get('pipeline_provenance'),
                 'pipeline_staged_error': pipeline_report.get('pipeline_error'),
+                'post_pipeline_fallback_suppressed': bool(suppress_post_pipeline_fallback),
+                'post_pipeline_suppression_reason': post_pipeline_suppression_reason,
             }
             external_specs: list[StrategySpec] = []
             fallback_external_specs: list[StrategySpec] = []
+            if suppress_post_pipeline_fallback:
+                if post_pipeline_suppression_reason == 'provider_output_format_failure':
+                    status = 'failed_output_format'
+                    error_type = 'ProviderOutputFormatFailure'
+                    error_text = 'staged pipeline provider output format failed; monolithic/local fallback suppressed for this task'
+                elif post_pipeline_suppression_reason == 'pipeline_timeout':
+                    status = 'skipped_after_pipeline_timeout'
+                    error_type = 'PipelineTimeout'
+                    error_text = 'staged pipeline timed out; monolithic/local fallback suppressed for this task'
+                elif post_pipeline_suppression_reason == 'pipeline_exception':
+                    status = 'failed'
+                    error_type = 'PipelineFailure'
+                    error_text = 'staged pipeline failed; monolithic/local fallback suppressed for this task'
+                else:
+                    status = 'non_executable'
+                    error_type = 'NoExecutableCandidates'
+                    error_text = 'staged pipeline returned no executable specs; monolithic/local fallback suppressed for this task'
+                report['external_provider']['status'] = status
+                report['external_provider']['last_error_type'] = error_type
+                report['external_provider']['last_error'] = error_text
+                report['external_provider']['monolithic_fallback_suppressed'] = True
+                report['external_provider']['local_fallback_suppressed'] = True
+                report['local_generator']['status'] = 'skipped_after_pipeline_failure'
+                report['local_generator']['local_fallback_suppressed'] = True
+                report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
+                self.last_report = report
+                return []
             if skip_monolithic_external_provider:
                 report['external_provider']['status'] = 'skipped_after_pipeline_timeout'
                 report['external_provider']['last_error_type'] = 'PipelineTimeout'

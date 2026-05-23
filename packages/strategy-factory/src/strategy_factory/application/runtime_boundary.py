@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from aiask_quant_core.storage.contracts import REQUIRED_REPOSITORY_METHODS
+
 
 RUNTIME_BOUNDARY_CONTRACT_VERSION = "strategy_factory.runtime_boundary.v1"
 
@@ -17,44 +19,6 @@ REQUIRED_RUNTIME_ADAPTERS: tuple[str, ...] = (
     "validation",
     "risk",
 )
-
-REQUIRED_REPOSITORY_METHODS: tuple[str, ...] = (
-    "get_klines",
-    "get_limit_up_stats",
-    "get_factor_ic_history",
-    "count_strategies_by_type",
-    "save_daily_snapshot",
-    "list_strategies",
-    "get_strategy",
-    "get_strategy_metrics",
-    "get_signal_stats",
-    "save_strategy",
-    "save_strategy_quality_report",
-    "update_strategy_status",
-    "save_strategy_lineage",
-    "save_strategy_metrics",
-    "save_elimination_log",
-    "get_strategy_generation_experiment",
-    "save_strategy_generation_experiment",
-    "save_factory_task_evidence",
-    "save_strategy_candidate_evidence",
-    "save_strategy_signal_evidence",
-    "save_strategy_task_run",
-    "update_strategy_task_run",
-    "list_stock_universe",
-    "list_factory_event_clusters",
-    "save_factory_theme_definition",
-    "save_strategy_factory_run",
-    "list_strategy_factory_runs",
-    "get_strategy_factory_run",
-    "get_latest_strategy_factory_run",
-    "save_strategy_factory_run_artifact",
-    "list_strategy_factory_run_artifacts",
-    "create_strategy_factory_dispatch",
-    "update_strategy_factory_dispatch",
-    "get_strategy_factory_dispatch",
-)
-
 
 @dataclass(frozen=True)
 class RuntimeBoundaryReport:

@@ -237,13 +237,7 @@
             if order_id and order_id not in trades_by_order_id:
                 trades_by_order_id[order_id] = dict(trade)
 
-        try:
-            from strategy_factory.api.semantic_contract import (
-                build_signal_evidence_records,
-            )
-        except Exception as exc:
-            build_signal_evidence_records = None
-            logger.warning("native signal evidence backfill import failed: %s", exc)
+        build_signal_evidence_records = get_signal_evidence_builder()
 
         strategy_cache: dict[str, Optional[dict]] = {}
         strategy_semantic_status_cache: dict[str, dict] = {}
@@ -829,8 +823,9 @@
         return blocker_details
 
     async def get_strategy_trade_audit_summary(self, strategy_id: str) -> dict:
-        from ...services.strategy_lifecycle_shared import evaluate_execution_audit_gate
-
+        evaluate_execution_audit_gate = (
+            get_execution_audit_gate_evaluator() or _fallback_execution_audit_gate
+        )
         await self.backfill_trade_position_links(strategy_id)
         strategy = await self.get_strategy(strategy_id)
         strategy_type = _string((strategy or {}).get("strategy_type")) or None
@@ -1365,47 +1360,45 @@
         if strategy_filter and hasattr(self, "get_latest_execution_audit_snapshot"):
             snapshot = await self.get_latest_execution_audit_snapshot(strategy_filter)
             if hasattr(self, "upsert_execution_audit_snapshot"):
+                snapshot_builder = get_execution_audit_snapshot_builder()
                 try:
-                    from akshare_mcp.services.strategy_lifecycle_shared.execution_audit_snapshot import (
-                        build_execution_audit_snapshot_payload,
-                    )
-
-                    persisted_snapshot = await self.upsert_execution_audit_snapshot(
-                        build_execution_audit_snapshot_payload(
-                            strategy_id=strategy_filter,
-                            verification=verification_result,
-                            acceptance=dict((snapshot or {}).get("acceptance") or {}),
-                            audit_summary=audit_summary,
-                            verdict_status=_string(
-                                dict(audit_summary or {}).get("execution_audit_gate_status")
-                            ) or "missing",
-                            verdict_reasons=list(
-                                dict(audit_summary or {}).get("execution_audit_gate_reasons")
-                                or []
-                            ),
-                            execution_hard_gate_passed=bool(
-                                dict(audit_summary or {}).get("audit_ready_for_hard_gate")
-                            ),
-                            as_of=date.today().isoformat(),
-                            factory_run_id=_string((snapshot or {}).get("factory_run_id")) or None,
-                            correlation_id=_string((snapshot or {}).get("correlation_id"))
-                            or strategy_filter,
-                            trace_id=_string((snapshot or {}).get("trace_id")) or None,
-                            submission_lane=_string((snapshot or {}).get("submission_lane"))
-                            or None,
-                            parent_task_run_id=_string(
-                                (snapshot or {}).get("parent_task_run_id")
-                            ) or None,
-                            source_action="execution_audit_verification",
-                            metadata={
-                                "verification_status": status,
-                                "recommendation_count": len(recommendations),
-                                "lineage_status": lineage_status,
-                            },
+                    if callable(snapshot_builder):
+                        persisted_snapshot = await self.upsert_execution_audit_snapshot(
+                            snapshot_builder(
+                                strategy_id=strategy_filter,
+                                verification=verification_result,
+                                acceptance=dict((snapshot or {}).get("acceptance") or {}),
+                                audit_summary=audit_summary,
+                                verdict_status=_string(
+                                    dict(audit_summary or {}).get("execution_audit_gate_status")
+                                ) or "missing",
+                                verdict_reasons=list(
+                                    dict(audit_summary or {}).get("execution_audit_gate_reasons")
+                                    or []
+                                ),
+                                execution_hard_gate_passed=bool(
+                                    dict(audit_summary or {}).get("audit_ready_for_hard_gate")
+                                ),
+                                as_of=date.today().isoformat(),
+                                factory_run_id=_string((snapshot or {}).get("factory_run_id")) or None,
+                                correlation_id=_string((snapshot or {}).get("correlation_id"))
+                                or strategy_filter,
+                                trace_id=_string((snapshot or {}).get("trace_id")) or None,
+                                submission_lane=_string((snapshot or {}).get("submission_lane"))
+                                or None,
+                                parent_task_run_id=_string(
+                                    (snapshot or {}).get("parent_task_run_id")
+                                ) or None,
+                                source_action="execution_audit_verification",
+                                metadata={
+                                    "verification_status": status,
+                                    "recommendation_count": len(recommendations),
+                                    "lineage_status": lineage_status,
+                                },
+                            )
                         )
-                    )
-                    if persisted_snapshot:
-                        snapshot = persisted_snapshot
+                        if persisted_snapshot:
+                            snapshot = persisted_snapshot
                 except Exception as exc:
                     logger.warning(
                         "execution audit verification snapshot persist failed for %s: %s",
@@ -1783,33 +1776,33 @@
             ),
         }
         if strategy_filter and hasattr(self, "upsert_execution_audit_snapshot"):
+            snapshot_builder = get_execution_audit_snapshot_builder()
+            snapshot_metadata = get_execution_audit_snapshot_metadata()
             try:
-                from akshare_mcp.services.strategy_lifecycle_shared.execution_audit_snapshot import (
-                    build_execution_audit_snapshot_payload,
-                    with_execution_audit_snapshot_metadata,
-                )
-
-                snapshot = await self.upsert_execution_audit_snapshot(
-                    build_execution_audit_snapshot_payload(
-                        strategy_id=strategy_filter,
-                        verification=verification,
-                        acceptance=result,
-                        audit_summary=audit_summary,
-                        verdict_status=_string(audit_summary.get("execution_audit_gate_status")) or "missing",
-                        verdict_reasons=list(audit_summary.get("execution_audit_gate_reasons") or []),
-                        execution_hard_gate_passed=bool(
-                            audit_summary.get("audit_ready_for_hard_gate")
-                        ),
-                        as_of=date.today().isoformat(),
-                        correlation_id=_string(strategy_filter),
-                        source_action="execution_audit_acceptance",
-                        metadata={
-                            "acceptance_status": status,
-                            "backfill_executed": bool(backfill),
-                            "gap_categories": list(gap_categories),
-                        },
+                if callable(snapshot_builder):
+                    snapshot = await self.upsert_execution_audit_snapshot(
+                        snapshot_builder(
+                            strategy_id=strategy_filter,
+                            verification=verification,
+                            acceptance=result,
+                            audit_summary=audit_summary,
+                            verdict_status=_string(audit_summary.get("execution_audit_gate_status")) or "missing",
+                            verdict_reasons=list(audit_summary.get("execution_audit_gate_reasons") or []),
+                            execution_hard_gate_passed=bool(
+                                audit_summary.get("audit_ready_for_hard_gate")
+                            ),
+                            as_of=date.today().isoformat(),
+                            correlation_id=_string(strategy_filter),
+                            source_action="execution_audit_acceptance",
+                            metadata={
+                                "acceptance_status": status,
+                                "backfill_executed": bool(backfill),
+                                "gap_categories": list(gap_categories),
+                            },
+                        )
                     )
-                )
+                else:
+                    snapshot = None
             except Exception as exc:
                 logger.warning(
                     "execution audit acceptance snapshot persist failed for %s: %s",
@@ -1822,10 +1815,8 @@
                 result["as_of"] = snapshot.get("as_of")
                 result["correlation_id"] = snapshot.get("correlation_id")
                 result["factory_run_id"] = snapshot.get("factory_run_id")
-                result = with_execution_audit_snapshot_metadata(
-                    result,
-                    snapshot=snapshot,
-                )
+                if callable(snapshot_metadata):
+                    result = snapshot_metadata(result, snapshot=snapshot)
         return result
 
     async def list_strategy_incubation_metrics(

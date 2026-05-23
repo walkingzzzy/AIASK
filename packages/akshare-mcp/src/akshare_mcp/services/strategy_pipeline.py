@@ -145,6 +145,83 @@ def _stage_result_fallback_reason(stage_result: StageResult) -> str:
     return "fallback"
 
 
+_PROVIDER_OUTPUT_FORMAT_ERROR_TYPES = {
+    "jsondecodeerror",
+    "providercompatibilityerror",
+    "strategyllmresponseparseerror",
+}
+
+
+def _is_provider_output_format_failure(
+    *,
+    error_type: Optional[str],
+    error_text: Optional[str],
+    metrics: Optional[dict[str, Any]],
+) -> bool:
+    payload = dict(metrics or {})
+    tokens = {
+        str(error_type or "").strip().lower(),
+        str(payload.get("last_error_type") or "").strip().lower(),
+        str(payload.get("error_type") or "").strip().lower(),
+    }
+    for attempt in list(payload.get("attempts") or []):
+        if isinstance(attempt, dict):
+            tokens.add(str(attempt.get("error_type") or "").strip().lower())
+            tokens.add(str(attempt.get("last_error_type") or "").strip().lower())
+    if any(token in _PROVIDER_OUTPUT_FORMAT_ERROR_TYPES for token in tokens if token):
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            error_text,
+            payload.get("last_error"),
+            payload.get("error"),
+            payload.get("content_preview"),
+            payload.get("raw_text_preview"),
+        )
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "response body is not valid json",
+            "response content is not valid json",
+            "response content missing json payload",
+            "response missing extractable content",
+            "content-type=text/html",
+        )
+    )
+
+
+def _provider_output_format_failure_result(
+    *,
+    stage_id: str,
+    started: float,
+    prompt_chars: int,
+    llm_error: str,
+    llm_error_type: Optional[str],
+    llm_error_metrics: dict[str, Any],
+) -> StageResult:
+    metrics = {
+        "stage_id": stage_id,
+        "status": llm_error_metrics.get("status") or "failed",
+        **dict(llm_error_metrics or {}),
+        "local_fallback_suppressed": True,
+        "suppression_reason": "provider_output_format_failure",
+    }
+    return StageResult(
+        stage_id=stage_id,
+        output={},
+        used_fallback=False,
+        llm_attempted=True,
+        prompt_chars=prompt_chars,
+        elapsed_sec=time.perf_counter() - started,
+        error=f"llm output format failed for {stage_id}",
+        llm_error=llm_error,
+        llm_error_type=llm_error_type,
+        llm_error_metrics=metrics,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pipeline result
 # ---------------------------------------------------------------------------
@@ -458,6 +535,24 @@ class MultiStageStrategyPipeline:
                         else "RecentTimeoutCooldown"
                     )
                 log_fn = logger.info if llm_error_metrics.get("status") == "cooldown_skip" else logger.warning
+                if _is_provider_output_format_failure(
+                    error_type=llm_error_type,
+                    error_text=llm_error,
+                    metrics=llm_error_metrics,
+                ):
+                    logger.warning(
+                        "Stage %s LLM output format failed after repair/retry; suppressing local fallback: %s",
+                        stage_id,
+                        exc,
+                    )
+                    return _provider_output_format_failure_result(
+                        stage_id=stage_id,
+                        started=started,
+                        prompt_chars=prompt_chars,
+                        llm_error=llm_error,
+                        llm_error_type=llm_error_type,
+                        llm_error_metrics=llm_error_metrics,
+                    )
                 log_fn("Stage %s LLM call failed: %s, falling back", stage_id, exc)
             except Exception as exc:
                 llm_error = str(exc)
@@ -476,6 +571,24 @@ class MultiStageStrategyPipeline:
                     **llm_error_metrics,
                 }
                 log_fn = logger.info if llm_error_metrics.get("status") == "cooldown_skip" else logger.warning
+                if _is_provider_output_format_failure(
+                    error_type=llm_error_type,
+                    error_text=llm_error,
+                    metrics=llm_error_metrics,
+                ):
+                    logger.warning(
+                        "Stage %s LLM output format failed after repair/retry; suppressing local fallback: %s",
+                        stage_id,
+                        exc,
+                    )
+                    return _provider_output_format_failure_result(
+                        stage_id=stage_id,
+                        started=started,
+                        prompt_chars=prompt_chars,
+                        llm_error=llm_error,
+                        llm_error_type=llm_error_type,
+                        llm_error_metrics=llm_error_metrics,
+                    )
                 log_fn("Stage %s LLM call failed: %s, falling back", stage_id, exc)
         elif skip_llm:
             logger.info("Stage %s skipping LLM (prior stage timed out)", stage_id)

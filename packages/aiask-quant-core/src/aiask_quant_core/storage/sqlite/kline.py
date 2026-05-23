@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
 
-from ...core.validators import validate_kline_list
+from aiask_quant_core.core.validators import validate_kline_list
 
 
 logger = logging.getLogger(__name__)
@@ -262,13 +262,15 @@ class KlineMixin:
 
             if rejected_rows:
                 try:
-                    from ...services.data_sync import data_sync_service
+                    from aiask_quant_core.storage.runtime_hooks import get_rejected_kline_recorder
 
-                    data_sync_service.record_rejected_klines(
-                        stock_code=code,
-                        rejected_rows=rejected_rows,
-                        source="sqlite.save_klines",
-                    )
+                    recorder = get_rejected_kline_recorder()
+                    if callable(recorder):
+                        recorder(
+                            stock_code=code,
+                            rejected_rows=rejected_rows,
+                            source="sqlite.save_klines",
+                        )
                 except Exception as exc:
                     logger.warning("Persist rejected kline rows failed for %s: %s", code or "unknown", exc)
 

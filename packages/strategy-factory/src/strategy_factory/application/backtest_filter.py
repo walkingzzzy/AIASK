@@ -201,6 +201,41 @@ def _summarize_numeric_series(values: Any) -> dict[str, Any]:
     }
 
 
+def _compact_small_mapping(value: Any, *, limit: int = 24) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key, item in list(value.items())[:limit]:
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, (str, int, float, bool)):
+            compact[str(key)] = item
+            continue
+        if isinstance(item, dict):
+            nested = {
+                str(nested_key): nested_value
+                for nested_key, nested_value in list(item.items())[:8]
+                if isinstance(nested_value, (str, int, float, bool)) or nested_value is None
+            }
+            if nested:
+                compact[str(key)] = nested
+            else:
+                compact[f"{key}_summary"] = {
+                    "node_type": "dict",
+                    "key_count": len(item),
+                    "keys": [str(nested_key) for nested_key in list(item.keys())[:12]],
+                }
+            continue
+        if isinstance(item, list):
+            if item and all(isinstance(entry, (str, int, float, bool)) or entry is None for entry in item[:16]):
+                compact[str(key)] = list(item[:16])
+            compact[f"{key}_count"] = len(item)
+            continue
+    if len(value) > limit:
+        compact["truncated_key_count"] = len(value) - limit
+    return compact
+
+
 def _compact_backtest_metric_payload(metric: Optional[dict[str, Any]]) -> dict[str, Any]:
     payload = dict(metric or {})
     compact: dict[str, Any] = {}
@@ -215,16 +250,24 @@ def _compact_backtest_metric_payload(metric: Optional[dict[str, Any]]) -> dict[s
             "round_trip_positions",
             "component_metrics",
             "metrics",
+            "event_window_metrics",
+            "raw_events",
+            "samples",
+            "positions",
+            "orders",
         }:
             continue
         if value in (None, "", [], {}):
             continue
         if isinstance(value, dict):
-            compact[key] = dict(value)
+            nested = _compact_small_mapping(value)
+            if nested:
+                compact[key] = nested
             continue
         if isinstance(value, list):
             if value and all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
                 compact[key] = list(value)[:16]
+            compact[f"{key}_count"] = len(value)
             continue
         compact[key] = value
 

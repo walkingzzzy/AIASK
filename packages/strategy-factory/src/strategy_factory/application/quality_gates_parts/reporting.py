@@ -4,6 +4,14 @@
 # Gate-1: 快速筛选
 # ---------------------------------------------------------------------------
 
+from .compact_contracts import (
+    COMPACT_PREVIEW_LIMIT,
+    compact_backtest_report as _compact_backtest_report_for_gate,
+    compact_candidate_brief as _compact_gate_candidate_brief,
+    compact_quality_gate_report as _compact_quality_gate_report,
+)
+
+
 async def gate_1_fast_screen(
     candidate: dict,
     db,
@@ -587,7 +595,7 @@ async def run_gated_filter(
     }
     gate_0_failed_details = [
         {"strategy_type": c.get("strategy_type"), "reasons": (c.get("gate_0_result") or {}).get("reasons")}
-        for c in gate_0_failed
+        for c in gate_0_failed[:COMPACT_PREVIEW_LIMIT]
     ]
     gate_1_failed_details = [
         {
@@ -595,7 +603,7 @@ async def run_gated_filter(
             "reasons": (c.get("gate_1_result") or {}).get("reasons"),
             "metrics": (c.get("gate_1_result") or {}).get("metrics") or {},
         }
-        for c in gate_1_failed
+        for c in gate_1_failed[:COMPACT_PREVIEW_LIMIT]
     ]
     pre_gate_failed_details = [
         {
@@ -603,9 +611,11 @@ async def run_gated_filter(
             "reasons": (c.get("pre_gate_result") or {}).get("reasons"),
             "metrics": (c.get("pre_gate_result") or {}).get("metrics") or {},
         }
-        for c in pre_gate_failed
+        for c in pre_gate_failed[:COMPACT_PREVIEW_LIMIT]
     ]
-    gate_2_report = backtest_filter.get_last_report() if hasattr(backtest_filter, "get_last_report") else {}
+    gate_2_report = _compact_backtest_report_for_gate(
+        backtest_filter.get_last_report() if hasattr(backtest_filter, "get_last_report") else {}
+    )
     gate_report = {
         "gate_0": {
             "passed_count": len(gate_0_passed),
@@ -613,12 +623,14 @@ async def run_gated_filter(
             "batch_size": _GATE_0_BATCH_SIZE,
             "batch_count": gate_0_batch_count,
             "failed": gate_0_failed_details,
+            "failed_preview_count": len(gate_0_failed_details),
         },
         "pre_gate": {
             "status": "completed" if FACTORY_PRE_GATE_ENABLED else "disabled",
             "passed_count": len(pre_gate_passed),
             "failed_count": len(pre_gate_failed),
             "failed": pre_gate_failed_details,
+            "failed_preview_count": len(pre_gate_failed_details),
             "limits": {
                 "family_quota_limit": family_quota_limit if FACTORY_PRE_GATE_ENABLED else None,
                 "per_stock_quota_limit": per_stock_quota_limit if FACTORY_PRE_GATE_ENABLED else None,
@@ -634,30 +646,24 @@ async def run_gated_filter(
             "preload_code_count": len(gate_1_preload_codes),
             "kline_cache_ready": gate_1_kline_cache_ready,
             "failed": gate_1_failed_details,
+            "failed_preview_count": len(gate_1_failed_details),
             "passed_candidates": [
-                {
-                    "strategy_type": candidate.get("strategy_type"),
-                    "candidate_family": candidate.get("candidate_family"),
-                    "task_source": ((candidate.get("research_task") or {}).get("task_source")),
-                    "task_id": ((candidate.get("research_task") or {}).get("task_id")),
-                    "opportunity_type": ((candidate.get("research_task") or {}).get("opportunity_type")),
-                    "target_symbols": _extract_target_codes_from_payload(candidate, limit=12),
-                    "avg_sharpe": round(
-                        _safe_float(
-                            ((candidate.get("gate_1_result") or {}).get("metrics") or {}).get("avg_sharpe")
-                        ),
-                        4,
-                    ),
-                    "priority_score": round(score, 4),
-                }
-                for candidate, score in gate_1_scored
+                _compact_gate_candidate_brief(candidate, score=round(score, 4))
+                for candidate, score in gate_1_scored[:COMPACT_PREVIEW_LIMIT]
             ],
+            "passed_candidates_count": len(gate_1_scored),
+            "passed_candidates_is_brief": True,
         },
         "gate_2": {
             "input_count": len(gate_2_candidates),
             "passed_count": len(gate_2_passed),
             "selection_mode": "priority_queue",
-            "passed_candidates": gate_2_passed,
+            "passed_candidates": [
+                _compact_gate_candidate_brief(candidate)
+                for candidate in gate_2_passed[:COMPACT_PREVIEW_LIMIT]
+            ],
+            "passed_candidates_count": len(gate_2_passed),
+            "passed_candidates_is_brief": True,
             "report": gate_2_report,
         },
         "gate_3": build_pending_gate_3_report(len(gate_2_passed)),
@@ -667,6 +673,8 @@ async def run_gated_filter(
             "pending_submission_gate_count": len(gate_2_passed),
         },
     }
+
+    gate_report = _compact_quality_gate_report(gate_report)
 
     return {
         "passed": gate_2_passed,

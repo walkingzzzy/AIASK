@@ -127,3 +127,65 @@ def test_factory_topn_handlers_return_snapshot_and_scores():
     assert by_run["data"]["snapshot"]["run_id"] == "factory_run_latest"
     assert by_run["data"]["snapshot"]["score_contract_version"] == "strategy_factory.full_market_topn.v2"
     assert by_run["data"]["top_scores"][0]["rank"] == 1
+
+
+class _FactoryRunDetailDb:
+    async def get_strategy_factory_run(self, run_id: str):
+        assert run_id == "run-artifacts"
+        return {
+            "run_id": run_id,
+            "summary": {"candidates_spawned": 1},
+            "stages": {"quality_gate": {"status": "completed", "passed_count": 1}},
+            "artifact_refs": [],
+        }
+
+    async def list_strategy_factory_run_artifact_refs(self, run_id: str):
+        assert run_id == "run-artifacts"
+        return [
+            {
+                "id": 1,
+                "run_id": run_id,
+                "artifact_type": "quality_gate",
+                "artifact_version": "1",
+                "payload_hash": "hash-1",
+                "storage_mode": "dropped_large_payload",
+                "created_at": "2026-05-22T00:00:00Z",
+            }
+        ]
+
+    async def list_strategy_factory_run_artifacts(self, run_id: str):
+        raise AssertionError("default factory_run_detail must not hydrate artifact payloads")
+
+
+def test_factory_run_detail_defaults_to_artifact_refs_without_payload(monkeypatch):
+    monkeypatch.delenv("STRATEGY_FACTORY_ENABLE_FULL_ARTIFACT_DETAIL", raising=False)
+
+    result = asyncio.run(
+        lifecycle_module.handle_factory_run_detail(
+            _FactoryRunDetailDb(),
+            {"run_id": "run-artifacts"},
+        )
+    )
+
+    assert result["success"] is True
+    detail = result["data"]
+    assert detail["artifact_mode"] == "summary"
+    assert detail["artifact_refs"][0]["artifact_type"] == "quality_gate"
+    assert "payload_json" not in detail["artifacts"][0]
+
+
+def test_factory_run_detail_full_mode_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("STRATEGY_FACTORY_ENABLE_FULL_ARTIFACT_DETAIL", raising=False)
+
+    result = asyncio.run(
+        lifecycle_module.handle_factory_run_detail(
+            _FactoryRunDetailDb(),
+            {"run_id": "run-artifacts", "artifact_mode": "full"},
+        )
+    )
+
+    assert result["success"] is True
+    detail = result["data"]
+    assert detail["artifact_mode"] == "full"
+    assert detail["full_artifact_payload_disabled"] is True
+    assert "payload_json" not in detail["artifacts"][0]

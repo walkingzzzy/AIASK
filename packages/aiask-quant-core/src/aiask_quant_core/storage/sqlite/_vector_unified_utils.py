@@ -8,7 +8,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Iterable, List, Optional
 
-from ...vector_collection_scope import (
+from aiask_quant_core.vector_collection_scope import (
     LEGACY_MARKET_DOC_COLLECTION,
     MARKET_DOC_PROFILE_TYPES,
     is_profile_scoped_collection,

@@ -8,7 +8,7 @@ import logging
 from datetime import date, datetime
 from typing import Any, Iterable, Optional
 
-from ...vector_collection_scope import resolve_dimension_scoped_version, resolve_vector_collection_name
+from aiask_quant_core.vector_collection_scope import resolve_dimension_scoped_version, resolve_vector_collection_name
 
 
 logger = logging.getLogger(__name__)
@@ -203,15 +203,23 @@ class MarketContextMixin:
         headline = cls._pick_document_title(item)
         if not headline:
             return []
-        from ...services.event_extraction import extract_events
-        from ...services.sentiment import SentimentAnalyzer
+        from aiask_quant_core.storage.runtime_hooks import (
+            get_event_extractor,
+            get_headline_sentiment_classifier,
+        )
 
         summary = cls._pick_document_summary(item)
         body = cls._pick_document_body(item)
-        label = SentimentAnalyzer._classify_headline(headline)
-        extraction = extract_events(
-            [{"title": headline, "text": " ".join(part for part in [headline, summary, body[:200]] if part)}],
-            top_n=1,
+        classifier = get_headline_sentiment_classifier()
+        extractor = get_event_extractor()
+        label = classifier(headline) if callable(classifier) else "neutral"
+        extraction = (
+            extractor(
+                [{"title": headline, "text": " ".join(part for part in [headline, summary, body[:200]] if part)}],
+                top_n=1,
+            )
+            if callable(extractor)
+            else {}
         )
         event_tags = list(extraction.get("event_tags") or [])
         event_type = str(event_tags[0].get("tag") or "").strip() if event_tags else None
@@ -565,10 +573,11 @@ class MarketContextMixin:
         vector_dims: set[int] = set()
         if embed and chunk_rows and hasattr(self, "save_vector_profile"):
             try:
-                from ...services.text_embedding import get_strategy_text_embedding_service
+                from aiask_quant_core.storage.runtime_hooks import get_text_embedding_service_factory
 
-                service = get_strategy_text_embedding_service()
-                if service.is_enabled():
+                service_factory = get_text_embedding_service_factory()
+                service = service_factory() if callable(service_factory) else None
+                if service is not None and service.is_enabled():
                     vector_status = "running"
                     profile_type = normalized_doc_type
                     ensured_index_keys: set[tuple[str, int]] = set()

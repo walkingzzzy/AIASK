@@ -189,6 +189,28 @@ def _count_external_empty_200_responses(requests: Optional[list[dict[str, Any]]]
     return sum(1 for item in list(requests or []) if _request_is_empty_200_response(item))
 
 
+def _pipeline_report_has_provider_output_format_failure(report: Optional[dict[str, Any]]) -> bool:
+    payload = dict(report or {})
+    provenance = dict(payload.get("pipeline_provenance") or {})
+    stages = dict(provenance.get("stages") or {})
+    for stage_payload in stages.values():
+        stage = dict(stage_payload or {})
+        metrics = dict(stage.get("llm_error_metrics") or {})
+        if bool(metrics.get("local_fallback_suppressed")):
+            return True
+        if str(metrics.get("suppression_reason") or "").strip().lower() == "provider_output_format_failure":
+            return True
+    external_provider = dict(payload.get("external_provider") or {})
+    for request in list(external_provider.get("requests") or []):
+        request_payload = dict(request or {})
+        metrics = dict(request_payload.get("request_metrics") or {})
+        if bool(metrics.get("local_fallback_suppressed")):
+            return True
+        if str(metrics.get("suppression_reason") or "").strip().lower() == "provider_output_format_failure":
+            return True
+    return False
+
+
 def _finalize_external_provider_report(external_provider: Optional[dict[str, Any]]) -> dict[str, Any]:
     summary = dict(external_provider or {})
     requests = list(summary.get("requests") or [])

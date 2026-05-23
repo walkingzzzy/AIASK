@@ -273,6 +273,28 @@ def _hydrate_factory_run_artifacts(row: dict, artifacts: list[dict[str, Any]]) -
     return payload
 
 
+def _factory_run_artifact_refs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for item in list(artifacts or []):
+        if not isinstance(item, dict):
+            continue
+        artifact_type = str(item.get("artifact_type") or "").strip()
+        if not artifact_type:
+            continue
+        refs.append(
+            {
+                "id": item.get("id"),
+                "run_id": item.get("run_id"),
+                "artifact_type": artifact_type,
+                "artifact_version": item.get("artifact_version"),
+                "payload_hash": item.get("payload_hash"),
+                "storage_mode": item.get("storage_mode"),
+                "created_at": item.get("created_at"),
+            }
+        )
+    return refs
+
+
 def _select_latest_backtest_metrics(
     metrics_list: list[dict] | None,
     fallback: Optional[dict] = None,
@@ -952,12 +974,19 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     row = await db.get_strategy_factory_run(run_id) if hasattr(db, "get_strategy_factory_run") else None
     if not row:
         return fail(f"Factory run not found: {run_id}")
-    artifact_rows = (
-        await db.list_strategy_factory_run_artifacts(run_id)
-        if hasattr(db, "list_strategy_factory_run_artifacts")
-        else []
-    )
-    hydrated_row = _hydrate_factory_run_artifacts(row, artifact_rows)
+    artifact_mode = str(params.get("artifact_mode") or "summary").strip().lower() or "summary"
+    if artifact_mode not in {"summary", "refs", "full"}:
+        return fail("artifact_mode must be one of summary, refs, full")
+    full_artifact_detail_enabled = _env_bool("STRATEGY_FACTORY_ENABLE_FULL_ARTIFACT_DETAIL", False)
+    hydrate_artifacts = artifact_mode == "full" and full_artifact_detail_enabled
+    if hydrate_artifacts and hasattr(db, "list_strategy_factory_run_artifacts"):
+        artifact_rows = await db.list_strategy_factory_run_artifacts(run_id)
+    elif hasattr(db, "list_strategy_factory_run_artifact_refs"):
+        artifact_rows = await db.list_strategy_factory_run_artifact_refs(run_id)
+    else:
+        artifact_rows = []
+    artifact_refs = _factory_run_artifact_refs(artifact_rows)
+    hydrated_row = _hydrate_factory_run_artifacts(row, artifact_rows) if hydrate_artifacts else dict(row or {})
     detail = await refresh_factory_run_detail_quality_contract(db, hydrated_row)
     research_window = {
         **dict(
@@ -981,12 +1010,17 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     full_market_topn = hydrate_full_market_topn_payload(full_market_topn)
     detail["research_window"] = research_window
     detail["full_market_topn"] = full_market_topn
-    detail["artifacts"] = artifact_rows
+    detail["artifact_mode"] = artifact_mode
+    detail["artifacts"] = artifact_rows if hydrate_artifacts else artifact_refs
     detail["artifact_refs"] = list(
-        detail.get("artifact_refs")
+        artifact_refs
+        or detail.get("artifact_refs")
         or hydrated_row.get("artifact_refs")
         or []
     )
+    if artifact_mode == "full" and not full_artifact_detail_enabled:
+        detail["full_artifact_payload_disabled"] = True
+        detail["full_artifact_payload_disabled_reason"] = "STRATEGY_FACTORY_ENABLE_FULL_ARTIFACT_DETAIL is not enabled"
     return ok(detail)
 
 

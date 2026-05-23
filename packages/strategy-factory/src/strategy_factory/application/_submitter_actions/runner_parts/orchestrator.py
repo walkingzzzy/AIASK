@@ -170,14 +170,17 @@
                 existing_evaluation = dict(existing.get("evaluation") or {})
                 existing_result = dict(existing.get("result") or {})
                 candidate_provenance = cls._candidate_provenance(candidate)
-                quality_payload = dict(quality_report or {})
-                backtest_payload = dict(backtest_metrics or {})
+                quality_payload = compact_json(quality_report or {})
+                quality_payload = dict(quality_payload or {}) if isinstance(quality_payload, dict) else {}
+                backtest_payload = compact_scalar_metrics(backtest_metrics or {})
+                compact_gate = compact_json(gate or {})
+                compact_gate = dict(compact_gate or {}) if isinstance(compact_gate, dict) else {}
                 event_window_config = dict(
                     quality_payload.get("event_window_config")
                     or backtest_payload.get("event_window_config")
                     or {}
                 )
-                event_window_metrics = dict(
+                event_window_metrics = compact_event_window_metrics(
                     quality_payload.get("event_window_metrics")
                     or backtest_payload.get("event_window_metrics")
                     or {}
@@ -335,11 +338,12 @@
                 _assign_if_present(evaluation, "entry_exit_signature", candidate.get("entry_exit_signature"))
                 for field_name in _SEMANTIC_CONTRACT_FIELDS:
                     _assign_if_present(evaluation, field_name, candidate.get(field_name))
-                evaluation["quality_gate"] = gate
+                evaluation["quality_gate"] = compact_gate
+                _assign_if_present(evaluation, "quality_gate_summary", compact_gate)
                 if validation_report is not None or "validation_report" not in evaluation:
-                    evaluation["validation_report"] = validation_report or {}
+                    evaluation["validation_report"] = compact_json(validation_report or {})
                 if risk_report is not None or "risk_report" not in evaluation:
-                    evaluation["risk_report"] = risk_report or {}
+                    evaluation["risk_report"] = compact_json(risk_report or {})
                 _assign_if_present(evaluation, "quality_summary", quality_summary)
                 _assign_if_present(evaluation, "backtest_metrics", backtest_payload)
                 _assign_if_present(evaluation, "event_window_config", event_window_config)
@@ -363,7 +367,7 @@
                     quality_payload.get("direct_trade_candidate") or quality_summary.get("direct_trade_candidate")
                 )
                 evaluation["admission_block_reasons"] = list(gate.get("admission_block_reasons") or [])
-                evaluation["admission_evaluations"] = dict(gate.get("admission_evaluations") or {})
+                evaluation["admission_evaluations"] = compact_json(gate.get("admission_evaluations") or {})
 
                 result = dict(existing_result)
                 result.update({"strategy_id": strategy_id, "generated_strategy_id": strategy_id, "status": status})
@@ -415,7 +419,7 @@
                     quality_payload.get("direct_trade_candidate") or quality_summary.get("direct_trade_candidate")
                 )
                 result["admission_block_reasons"] = list(gate.get("admission_block_reasons") or [])
-                result["admission_evaluations"] = dict(gate.get("admission_evaluations") or {})
+                result["admission_evaluations"] = compact_json(gate.get("admission_evaluations") or {})
                 if incubation_pipeline:
                     evaluation["incubation_pipeline"] = (incubation_pipeline or {}).get("snapshot") or {}
                     result["incubation_pipeline"] = (incubation_pipeline or {}).get("snapshot") or {}

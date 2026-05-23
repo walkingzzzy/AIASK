@@ -23,6 +23,7 @@ from ..candidate_contract import (
     candidate_contract_value,
 )
 from ..incubation_budgeter import IncubationBudgeter
+from ..compact_contracts import compact_event_window_metrics, compact_json, compact_scalar_metrics
 from ..quality_gates import _VALID_STRATEGY_TYPES, build_completed_gate_3_report
 from ..quality_reporting import build_quality_report, normalize_quality_gate_result
 from ..semantic_contract import (

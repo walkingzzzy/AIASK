@@ -20,6 +20,15 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    from .strategy_factory_json_budget import (
+        bounded_json_text,
+        strategy_factory_sql_json_field_limits,
+    )
+except Exception:  # pragma: no cover - fallback for partial imports during bootstrap
+    bounded_json_text = None
+    strategy_factory_sql_json_field_limits = None
+
 
 _PG_CAST_RE = re.compile(
     r"::\s*(?:jsonb|json|timestamptz|timestamp(?:\s+with\s+time\s+zone)?|date|integer|int|bigint|float|double\s+precision|numeric|real|text|vector(?:\s*\(\s*\d+\s*\))?)",
@@ -37,11 +46,13 @@ _ADD_COLUMN_RE = re.compile(
     re.I | re.S,
 )
 def default_sqlite_path() -> Path:
-    raw = (
-        os.getenv("AKSHARE_MCP_SQLITE_PATH")
-        or os.getenv("AIASK_SQLITE_PATH")
-        or str(Path.home() / ".aiask" / "akshare_mcp.sqlite3")
-    )
+    aiask_path = os.getenv("AIASK_SQLITE_PATH")
+    akshare_path = os.getenv("AKSHARE_MCP_SQLITE_PATH")
+    if aiask_path and akshare_path and Path(aiask_path).expanduser() != Path(akshare_path).expanduser():
+        logger.warning(
+            "AIASK_SQLITE_PATH and AKSHARE_MCP_SQLITE_PATH differ; using AIASK_SQLITE_PATH"
+        )
+    raw = aiask_path or akshare_path or str(Path.home() / ".aiask" / "aiask.sqlite3")
     return Path(raw).expanduser()
 
 
@@ -188,7 +199,34 @@ def _mark_list_params(sql: str) -> str:
     return text
 
 
+def _strategy_factory_json_field_limit(field_name: str) -> int | None:
+    if strategy_factory_sql_json_field_limits is None:
+        return None
+    try:
+        table, column = str(field_name).split(".", 1)
+    except ValueError:
+        return None
+    limits = strategy_factory_sql_json_field_limits() or {}
+    return limits.get((_normalize_identifier(table), _normalize_identifier(column)))
+
+
+def _coerce_json_field_arg(field_name: str, value: Any) -> Any:
+    limit = _strategy_factory_json_field_limit(field_name)
+    if bounded_json_text is None or limit is None:
+        return _coerce_arg(value)
+    if value is None:
+        return None
+    if isinstance(value, (dict, list, tuple)):
+        return bounded_json_text(field_name, value, max_bytes=limit)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[", '"')) or len(value.encode("utf-8")) > limit:
+            return bounded_json_text(field_name, value, max_bytes=limit)
+    return _coerce_arg(value)
+
+
 def _prepare_statement(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...]]:
+    field_map = _statement_json_field_map(sql)
     text = _mark_list_params(_prepare_sql(sql))
     ordered: list[Any] = []
 
@@ -209,7 +247,11 @@ def _prepare_statement(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any,
             return ", ".join("?" for _ in values)
         position = int(dollar_match)
         if 1 <= position <= len(args):
-            ordered.append(_coerce_arg(args[position - 1]))
+            field_name = field_map.get(position)
+            if field_name:
+                ordered.append(_coerce_json_field_arg(field_name, args[position - 1]))
+            else:
+                ordered.append(_coerce_arg(args[position - 1]))
         return "?"
 
     pattern = re.compile(r"__SQLITE_LIST_PARAM_(\d+)__|\$(\d+)")
@@ -235,6 +277,144 @@ def _coerce_arg(value: Any) -> Any:
         except Exception:
             return str(value)
     return value
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    items: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_single = False
+    in_double = False
+    escape = False
+    for char in text:
+        if char == "'" and not in_double and not escape:
+            in_single = not in_single
+        elif char == '"' and not in_single and not escape:
+            in_double = not in_double
+        elif char == "(" and not in_single and not in_double:
+            depth += 1
+        elif char == ")" and not in_single and not in_double and depth > 0:
+            depth -= 1
+        if char == "," and not in_single and not in_double and depth == 0:
+            item = "".join(current).strip()
+            if item:
+                items.append(item)
+            current = []
+            continue
+        current.append(char)
+        escape = char == "\\" and not escape
+        if char != "\\":
+            escape = False
+    tail = "".join(current).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _find_matching_paren(text: str, start_index: int) -> int:
+    depth = 0
+    in_single = False
+    in_double = False
+    escape = False
+    for index in range(start_index, len(text)):
+        char = text[index]
+        if char == "'" and not in_double and not escape:
+            in_single = not in_single
+        elif char == '"' and not in_single and not escape:
+            in_double = not in_double
+        elif char == "(" and not in_single and not in_double:
+            depth += 1
+        elif char == ")" and not in_single and not in_double:
+            depth -= 1
+            if depth == 0:
+                return index
+        escape = char == "\\" and not escape
+        if char != "\\":
+            escape = False
+    return -1
+
+
+def _statement_json_field_map(sql: str) -> dict[int, str]:
+    if strategy_factory_sql_json_field_limits is None:
+        return {}
+    limits = strategy_factory_sql_json_field_limits() or {}
+    if not limits:
+        return {}
+
+    def field_name(table: str, column: str) -> str | None:
+        key = (_normalize_identifier(table), _normalize_identifier(column))
+        return f"{key[0]}.{key[1]}" if key in limits else None
+
+    def register_placeholders(expr: str, target_field: str, field_map: dict[int, str]) -> None:
+        for match in re.finditer(r"\$(\d+)", expr):
+            field_map[int(match.group(1))] = target_field
+
+    text = sql
+    lowered = text.lower()
+    field_map: dict[int, str] = {}
+
+    insert_match = re.search(r"\b(?:insert\s+(?:or\s+\w+\s+)?into|replace\s+into)\b", text, flags=re.I)
+    if insert_match:
+        after_insert = insert_match.end()
+        table_start = after_insert
+        while table_start < len(text) and text[table_start].isspace():
+            table_start += 1
+        table_end = table_start
+        while table_end < len(text) and not text[table_end].isspace() and text[table_end] != "(":
+            table_end += 1
+        table = text[table_start:table_end].strip()
+        columns_start = text.find("(", table_end)
+        columns_end = _find_matching_paren(text, columns_start) if columns_start != -1 else -1
+        values_idx = lowered.find("values", columns_end if columns_end != -1 else table_end)
+        values_start = text.find("(", values_idx) if values_idx != -1 else -1
+        values_end = _find_matching_paren(text, values_start) if values_start != -1 else -1
+        if table and columns_start != -1 and columns_end != -1 and values_start != -1 and values_end != -1:
+            columns = [_normalize_identifier(item.split()[0]) for item in _split_top_level_commas(text[columns_start + 1 : columns_end])]
+            values = _split_top_level_commas(text[values_start + 1 : values_end])
+            for column, expr in zip(columns, values):
+                target = field_name(table, column)
+                if target:
+                    register_placeholders(expr, target, field_map)
+        conflict_idx = lowered.find("do update set", values_end if values_end != -1 else table_end)
+        if conflict_idx != -1:
+            clause_start = conflict_idx + len("do update set")
+            clause_end = len(text)
+            for stop_keyword in (" returning ", " where ", " limit ", " order by ", " group by "):
+                stop_idx = lowered.find(stop_keyword, clause_start)
+                if stop_idx != -1:
+                    clause_end = min(clause_end, stop_idx)
+            for assignment in _split_top_level_commas(text[clause_start:clause_end]):
+                if "=" not in assignment:
+                    continue
+                left, right = assignment.split("=", 1)
+                column = _normalize_identifier(left.strip().split()[-1])
+                target = field_name(table, column)
+                if target:
+                    register_placeholders(right, target, field_map)
+
+    if lowered.startswith("update ") or " update " in lowered[:40]:
+        update_idx = lowered.find("update ")
+        set_idx = lowered.find(" set ", update_idx)
+        if update_idx != -1 and set_idx != -1:
+            table_start = update_idx + len("update ")
+            table_end = set_idx
+            table = text[table_start:table_end].strip().split()[0]
+            clause_start = set_idx + len(" set ")
+            clause_end = len(text)
+            for stop_keyword in (" returning ", " where ", " from ", " limit ", " order by ", " group by "):
+                stop_idx = lowered.find(stop_keyword, clause_start)
+                if stop_idx != -1:
+                    clause_end = min(clause_end, stop_idx)
+            for assignment in _split_top_level_commas(text[clause_start:clause_end]):
+                if "=" not in assignment:
+                    continue
+                left, right = assignment.split("=", 1)
+                column = _normalize_identifier(left.strip().split()[-1])
+                target = field_name(table, column)
+                if target:
+                    register_placeholders(right, target, field_map)
+
+    return field_map
 
 
 class _SQLiteTransaction:
@@ -502,19 +682,19 @@ class SchemaBase:
                 conn,
                 namespace="market_runtime",
                 migration_key="sqlite_bootstrap_v1",
-                source_module="akshare_mcp.storage.sqlite.schema_market",
+                source_module="aiask_quant_core.storage.sqlite.schema_market",
             )
             await record_schema_namespace_checkpoint(
                 conn,
                 namespace="strategy_runtime",
                 migration_key="sqlite_bootstrap_v1",
-                source_module="akshare_mcp.storage.sqlite.schema_strategy",
+                source_module="aiask_quant_core.storage.sqlite.schema_strategy",
             )
             await record_schema_namespace_checkpoint(
                 conn,
                 namespace="vector_runtime",
                 migration_key="sqlite_bootstrap_v1",
-                source_module="akshare_mcp.storage.sqlite.schema_vector",
+                source_module="aiask_quant_core.storage.sqlite.schema_vector",
             )
 
         logger.info("SQLite tables initialized successfully")

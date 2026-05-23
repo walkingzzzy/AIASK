@@ -10,6 +10,12 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+from .strategy_factory_json_budget import (
+    bounded_json_text,
+    strategy_json_field_max_bytes,
+    strategy_params_max_bytes,
+)
+
 
 class _StrategyCrudCoreMixin:
         async def save_strategy(self, data: dict) -> dict:
@@ -37,8 +43,16 @@ class _StrategyCrudCoreMixin:
                     data.get("description"),
                     str(data.get("author_id", "default")),
                     str(data.get("strategy_type", "custom")),
-                    json.dumps(data.get("params") or {}, ensure_ascii=False, default=str),
-                    json.dumps(data.get("factor_weights") or {}, ensure_ascii=False, default=str),
+                    bounded_json_text(
+                        "strategies.params",
+                        data.get("params") or {},
+                        max_bytes=strategy_params_max_bytes(),
+                    ),
+                    bounded_json_text(
+                        "strategies.factor_weights",
+                        data.get("factor_weights") or {},
+                        max_bytes=strategy_json_field_max_bytes(),
+                    ),
                     str(data.get("status", "draft")),
                     list(data.get("tags") or []),
                     data.get("backtest_artifact_id"),
@@ -110,7 +124,18 @@ class _StrategyCrudCoreMixin:
                     status, now, strategy_id,
                 )
                 if from_status != status:
-                    encoded_metadata = json.dumps(metadata or {}, ensure_ascii=False, default=str)
+                    metadata_payload = metadata if isinstance(metadata, dict) else {}
+                    encoded_metadata = bounded_json_text(
+                        "strategy_status_events.metadata",
+                        metadata_payload,
+                        max_bytes=strategy_json_field_max_bytes(),
+                    )
+                    domain_payload = {
+                        "from_status": from_status,
+                        "to_status": status,
+                        "reason": reason,
+                        "metadata": metadata_payload,
+                    }
                     await conn.execute(
                         """
                         INSERT INTO strategy_status_events
@@ -137,13 +162,12 @@ class _StrategyCrudCoreMixin:
                         "strategy.status_changed",
                         actor_id or "system",
                         "info",
-                        (metadata or {}).get("task_run_id") if isinstance(metadata, dict) else None,
-                        json.dumps({
-                            "from_status": from_status,
-                            "to_status": status,
-                            "reason": reason,
-                            "metadata": metadata or {},
-                        }, ensure_ascii=False, default=str),
+                        metadata_payload.get("task_run_id"),
+                        bounded_json_text(
+                            "strategy_domain_events.payload",
+                            domain_payload,
+                            max_bytes=strategy_json_field_max_bytes(),
+                        ),
                         now,
                     )
 
@@ -287,9 +311,25 @@ class _StrategyCrudCoreMixin:
                 if field not in payload:
                     continue
                 idx = len(values) + 2
-                if field in {"params", "factor_weights"}:
+                if field == "params":
                     assignments.append(f"{field} = ${idx}")
-                    values.append(json.dumps(payload.get(field) or {}, ensure_ascii=False, default=str))
+                    values.append(
+                        bounded_json_text(
+                            "strategies.params",
+                            payload.get(field) or {},
+                            max_bytes=strategy_params_max_bytes(),
+                        )
+                    )
+                    continue
+                if field == "factor_weights":
+                    assignments.append(f"{field} = ${idx}")
+                    values.append(
+                        bounded_json_text(
+                            "strategies.factor_weights",
+                            payload.get(field) or {},
+                            max_bytes=strategy_json_field_max_bytes(),
+                        )
+                    )
                     continue
                 if field == "tags":
                     assignments.append(f"{field} = ${idx}[]")

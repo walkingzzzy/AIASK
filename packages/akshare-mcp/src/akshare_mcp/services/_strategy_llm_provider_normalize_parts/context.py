@@ -2,16 +2,31 @@
         _LEGACY_EXECUTION_REQUIRED_KEYS = ("commission_rate", "slippage_bps", "tradability_filter", "slippage_model")
         _LEGACY_VALIDATION_REQUIRED_KEYS = ("profile", "validation_focus", "primary_validation_layer")
 
+        @staticmethod
+        def _openai_compatible_api_base(base_url: str) -> str:
+            base = str(base_url or "").rstrip("/")
+            if not base:
+                return base
+            lowered = base.lower()
+            if lowered.endswith(("/chat/completions", "/responses")):
+                return base
+            remainder = base.split("://", 1)[1] if "://" in base else base
+            path = remainder.split("/", 1)[1] if "/" in remainder else ""
+            if not path:
+                return f"{base}/v1"
+            return base
+
         def _endpoint(self) -> str:
             base = self.config.base_url.rstrip("/")
             if base.endswith("/chat/completions"):
                 return base
             if base.endswith("/responses"):
                 return base
+            api_base = self._openai_compatible_api_base(base)
             # Support openai_responses provider type
             if getattr(self.config, 'provider', '') == 'openai_responses':
-                return f"{base}/responses"
-            return f"{base}/chat/completions"
+                return f"{api_base}/responses"
+            return f"{api_base}/chat/completions"
 
         def _adapt_payload_for_endpoint(self, payload: dict) -> dict:
             """Transform chat completions payload to Responses API format if needed."""

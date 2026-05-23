@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from ...vector_collection_scope import KLINE_COLLECTION_SPECS, market_doc_collection_name
+from aiask_quant_core.vector_collection_scope import KLINE_COLLECTION_SPECS, market_doc_collection_name
 
 logger = logging.getLogger(__name__)
 

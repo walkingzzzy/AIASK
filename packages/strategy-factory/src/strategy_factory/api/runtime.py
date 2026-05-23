@@ -16,6 +16,7 @@ from ..infrastructure.mcp_adapters import (
     MCPStrategyFactoryRepositoryAdapter,
     MCPValidationGatewayImpl,
     MCPVectorSearchGatewayImpl,
+    StrategyFactoryRepositoryAdapter,
     adapt_repository,
     build_mcp_runtime_adapters,
 )
@@ -50,7 +51,6 @@ from ..infrastructure.mcp_services import (
 )
 
 RuntimeAdapters = MCPRuntimeAdapters
-StrategyFactoryRepositoryAdapter = MCPStrategyFactoryRepositoryAdapter
 VectorSearchGatewayImpl = MCPVectorSearchGatewayImpl
 AutonomyGatewayImpl = MCPAutonomyGatewayImpl
 FactorResearchGatewayImpl = MCPFactorResearchGatewayImpl

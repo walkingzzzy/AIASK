@@ -316,9 +316,7 @@
             error_text = self._error_text(exc).lower()
             if "missing extractable content" in error_text:
                 return True
-            if "text/event-stream" not in content_type:
-                return False
-            return False
+            return "text/event-stream" in content_type
 
         def _should_retry_without_response_format(
             self,
@@ -466,7 +464,7 @@
                 )
             parsed_text = self._extract_json_text(content)
             if not str(parsed_text or "").strip():
-                self._raise_compatibility_error(
+                self._raise_response_parse_error(
                     f"{request_kind}: response content missing JSON payload",
                     response=response,
                     payload=body,
@@ -485,6 +483,97 @@
                 )
             return parsed, body, content
 
+        @staticmethod
+        def _truncate_json_repair_text(value: Any, limit: int = 12000) -> str:
+            text = str(value or "").strip()
+            if len(text) <= limit:
+                return text
+            return text[: max(0, int(limit or 0) - 20)] + "\n...[truncated]"
+
+        @staticmethod
+        def _repair_response_format_for_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
+            response_format = dict((request_payload or {}).get("response_format") or {})
+            if response_format.get("type") == "json_schema":
+                return response_format
+            return {"type": "json_object"}
+
+        async def _repair_non_json_response_payload(
+            self,
+            *,
+            headers: dict[str, Any],
+            request_payload: dict[str, Any],
+            request_kind: str,
+            timeout: httpx.Timeout,
+            source_content: str,
+            source_error: Exception,
+        ) -> tuple[Any, Any, str]:
+            messages = list((request_payload or {}).get("messages") or [])
+            original_system = ""
+            original_user = ""
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "").strip().lower()
+                content = str(message.get("content") or "")
+                if role == "system" and not original_system:
+                    original_system = content
+                elif role == "user":
+                    original_user = content
+
+            repair_payload = {
+                "model": (request_payload or {}).get("model", self.config.model),
+                "temperature": 0,
+                "max_tokens": max(128, int((request_payload or {}).get("max_tokens") or 512)),
+                "response_format": self._repair_response_format_for_payload(request_payload),
+                "stream": False,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict JSON repair layer for an automated trading strategy pipeline. "
+                            "Return exactly one valid JSON object or array. Do not use markdown. "
+                            "Do not add explanations. Preserve the prior answer's intent and schema. "
+                            "If the prior answer has no usable signal for a required list, return an empty list for that key."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "\n".join(
+                            [
+                                f"Request kind: {request_kind}",
+                                "Original system instructions:",
+                                self._truncate_json_repair_text(original_system, 3000),
+                                "Original user instructions:",
+                                self._truncate_json_repair_text(original_user, 9000),
+                                "Previous assistant response that was not valid JSON:",
+                                self._truncate_json_repair_text(source_content, 12000),
+                                "Return only the repaired JSON now.",
+                            ]
+                        ),
+                    },
+                ],
+            }
+            actual_payload = self._adapt_payload_for_endpoint(repair_payload)
+            repair_response = await self._client.post(
+                self._endpoint(),
+                headers=headers,
+                json=actual_payload,
+                timeout=timeout,
+            )
+            repair_response.raise_for_status()
+            parsed, repair_body, repair_content = self._parse_response_payload(
+                repair_response,
+                request_kind=f"{request_kind}: json-repair replay",
+            )
+            synthetic_body = dict(repair_body or {}) if isinstance(repair_body, dict) else {"raw_response": repair_body}
+            synthetic_body["compatibility_mode"] = "chat_json_repair_replay"
+            synthetic_body["json_repair"] = {
+                "source_content_chars": len(str(source_content or "")),
+                "source_error_type": source_error.__class__.__name__,
+                "source_error_preview": self._error_text(source_error)[:240],
+            }
+            return parsed, synthetic_body, repair_content
+
         async def _request_and_parse_payload(
             self,
             *,
@@ -493,6 +582,7 @@
             request_kind: str,
             timeout: httpx.Timeout,
             allow_response_format_replay: bool = True,
+            allow_json_repair_replay: bool = True,
         ) -> tuple[Any, Any, str, str]:
             await self._ensure_runtime_async_state()
             # Transform payload for Responses API if needed
@@ -510,6 +600,26 @@
                     request_kind=request_kind,
                 )
                 return parsed, body, content, "direct"
+            except StrategyLLMResponseParseError as exc:
+                if allow_json_repair_replay:
+                    try:
+                        response_body = response.json()
+                        source_content = self._extract_content(
+                            response_body if isinstance(response_body, dict) else {}
+                        )
+                    except Exception:
+                        source_content = ""
+                    if str(source_content or "").strip():
+                        parsed, body, content = await self._repair_non_json_response_payload(
+                            headers=headers,
+                            request_payload=request_payload,
+                            request_kind=request_kind,
+                            timeout=timeout,
+                            source_content=source_content,
+                            source_error=exc,
+                        )
+                        return parsed, body, content, "chat_json_repair_replay"
+                raise
             except StrategyLLMProviderCompatibilityError as exc:
                 if self._should_retry_with_stream(exc):
                     try:
@@ -534,6 +644,7 @@
                         request_kind=f"{request_kind}: no-response-format replay",
                         timeout=timeout,
                         allow_response_format_replay=False,
+                        allow_json_repair_replay=allow_json_repair_replay,
                     )
                     replay_mode = (
                         "chat_no_response_format_replay"

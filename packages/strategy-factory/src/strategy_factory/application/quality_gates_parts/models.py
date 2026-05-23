@@ -25,16 +25,27 @@ async def run_gated_submission_pipeline(
         backtest_filter,
         kline_cache=kline_cache,
     )
-    gate_report = dict(gate_run.get("gate_report") or gate_run.get("quality_gate") or {})
+    gate_report = _compact_quality_gate_report(
+        gate_run.get("gate_report") or gate_run.get("quality_gate") or {}
+    )
     passed = list(gate_run.get("passed") or [])
     unique = await deduplicator.deduplicate(passed, db)
     submit_result = await submitter.submit(unique, snapshot, db)
-    final_gate_report = finalize_gate_report(gate_report, submit_result)
+    final_gate_report = _compact_quality_gate_report(
+        finalize_gate_report(gate_report, submit_result)
+    )
+    raw_backtest_report = (gate_report.get("gate_2") or {}).get("report")
+    if not raw_backtest_report and hasattr(backtest_filter, "get_last_report"):
+        raw_backtest_report = backtest_filter.get_last_report()
     return {
         "passed": passed,
         "unique": unique,
         "submitted": list(submit_result.get("strategies") or []),
-        "gate_run": gate_run,
+        "gate_run": {
+            "summary": dict(gate_run.get("summary") or {}),
+            "gate_report": gate_report,
+            "quality_gate": gate_report,
+        },
         "submit_result": submit_result,
         "gate_report": final_gate_report,
         "quality_gate": final_gate_report,
@@ -43,14 +54,7 @@ async def run_gated_submission_pipeline(
             if hasattr(deduplicator, "get_last_report")
             else {}
         ),
-        "backtest_report": (
-            (gate_report.get("gate_2") or {}).get("report")
-            or (
-                backtest_filter.get_last_report()
-                if hasattr(backtest_filter, "get_last_report")
-                else {}
-            )
-        ),
+        "backtest_report": _compact_backtest_report_for_gate(raw_backtest_report or {}),
     }
 
 
@@ -60,7 +64,7 @@ def build_legacy_gate_report(
     backtest_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """为尚未切到统一 GateRunner 的调用方构造兼容 gate_report。"""
-    backtest_report = dict(backtest_report or {})
+    backtest_report = _compact_backtest_report_for_gate(backtest_report or {})
     backtest_summary = dict(backtest_report.get("summary") or {})
     gate_2_passed = int(backtest_summary.get("passed_count", len(passed)))
     gate_2_input = int(backtest_summary.get("input_count", len(candidates)))

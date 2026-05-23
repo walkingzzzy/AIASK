@@ -14,6 +14,7 @@ import inspect
 import logging
 from typing import Any, Optional
 
+from ..compact_contracts import compact_backtest_report, compact_quality_gate_report
 from ..governance_plane_contract import build_governance_plane_artifact
 from ...domain.candidates import CandidatePipelineReport
 
@@ -108,6 +109,8 @@ class CandidatePipeline:
                 )
                 backtest_report = dict(pipeline_run.get("backtest_report") or {})
                 submit_result = dict(pipeline_run.get("submit_result") or {})
+                quality_gate_report = compact_quality_gate_report(quality_gate_report)
+                backtest_report = compact_backtest_report(backtest_report)
             elif supports_unified_gate:
                 gate_run = await pkg.run_gated_filter(
                     candidates,
@@ -134,6 +137,8 @@ class CandidatePipeline:
                     read_only=read_only,
                 )
                 quality_gate_report = pkg.finalize_gate_report(quality_gate_report, submit_result)
+                quality_gate_report = compact_quality_gate_report(quality_gate_report)
+                backtest_report = compact_backtest_report(backtest_report)
             else:
                 passed = await backtest_filter.filter(candidates, db)
                 quality_gate_report = {}
@@ -151,6 +156,8 @@ class CandidatePipeline:
                     read_only=read_only,
                 )
                 quality_gate_report = pkg.finalize_gate_report(quality_gate_report, submit_result)
+                quality_gate_report = compact_quality_gate_report(quality_gate_report)
+                backtest_report = compact_backtest_report(backtest_report)
 
             report = self._build_report(
                 candidates, passed, unique, submit_result, quality_gate_report, backtest_report

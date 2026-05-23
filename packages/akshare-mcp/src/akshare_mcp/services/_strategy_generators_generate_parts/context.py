@@ -334,6 +334,28 @@
                     except Exception:
                         request_attempt_count = 0
                     request_attempt_count = max(request_attempt_count, 1)
+                request_metrics = {
+                    "status": stage_error_metrics.get("status"),
+                    "attempt_count": request_attempt_count,
+                    "prompt_chars": int(stage_result.prompt_chars or 0),
+                    "response_chars": int(stage_result.response_chars or 0),
+                    "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
+                    "last_error_type": stage_error_type,
+                    "last_error": stage_error,
+                    "last_error_status_code": (
+                        stage_error_metrics.get("last_error_status_code")
+                        or stage_error_metrics.get("status_code")
+                    ),
+                    "empty_200_response": bool(stage_error_metrics.get("empty_200_response")),
+                }
+                for key in (
+                    "local_fallback_suppressed",
+                    "suppression_reason",
+                    "validation_failure_reason",
+                    "output_keys",
+                ):
+                    if key in stage_error_metrics:
+                        request_metrics[key] = stage_error_metrics.get(key)
                 stage_requests.append(
                     {
                         "stage_id": stage_id,
@@ -344,20 +366,7 @@
                         "response_chars": int(stage_result.response_chars or 0),
                         "error": stage_error,
                         "error_type": stage_error_type,
-                        "request_metrics": {
-                            "status": stage_error_metrics.get("status"),
-                            "attempt_count": request_attempt_count,
-                            "prompt_chars": int(stage_result.prompt_chars or 0),
-                            "response_chars": int(stage_result.response_chars or 0),
-                            "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
-                            "last_error_type": stage_error_type,
-                            "last_error": stage_error,
-                            "last_error_status_code": (
-                                stage_error_metrics.get("last_error_status_code")
-                                or stage_error_metrics.get("status_code")
-                            ),
-                            "empty_200_response": bool(stage_error_metrics.get("empty_200_response")),
-                        },
+                        "request_metrics": request_metrics,
                     }
                 )
 

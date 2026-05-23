@@ -102,6 +102,27 @@ def _allowed_strategy_types(
     return allowed
 
 
+def _llm_report_suppresses_candidate_fallback(llm_report: Optional[dict[str, Any]]) -> bool:
+    payload = dict(llm_report or {})
+    external_provider = dict(payload.get("external_provider") or {})
+    local_generator = dict(payload.get("local_generator") or {})
+    if bool(payload.get("post_pipeline_fallback_suppressed")):
+        return True
+    if bool(external_provider.get("monolithic_fallback_suppressed")):
+        return True
+    if bool(external_provider.get("local_fallback_suppressed")):
+        return True
+    if bool(local_generator.get("local_fallback_suppressed")):
+        return True
+    reason = str(payload.get("post_pipeline_suppression_reason") or "").strip().lower()
+    return reason in {
+        "provider_output_format_failure",
+        "staged_pipeline_empty",
+        "pipeline_timeout",
+        "pipeline_exception",
+    }
+
+
 class CandidateGenerationService:
     def __init__(
         self,
@@ -503,12 +524,19 @@ class CandidateGenerationService:
                         "skip_reason": optimizer_skip_reason or "generator_mode_cooldown",
                     },
                 }
+        suppress_candidate_fallback = _llm_report_suppresses_candidate_fallback(llm_report)
         replay_report: dict[str, Any] = {
             "status": "disabled" if not self._l2_hypothesis_replay_enabled() else "not_needed",
             "selected_count": 0,
         }
         replay_trigger_reason: Optional[str] = None
-        if self._l2_hypothesis_enabled() and self._l2_hypothesis_replay_enabled() and hasattr(
+        if suppress_candidate_fallback:
+            replay_report = {
+                "status": "skipped_after_llm_failure",
+                "skip_reason": "candidate_fallback_suppressed",
+                "selected_count": 0,
+            }
+        elif self._l2_hypothesis_enabled() and self._l2_hypothesis_replay_enabled() and hasattr(
             self.llm_generator,
             "replay_persisted_specs",
         ):
@@ -551,6 +579,7 @@ class CandidateGenerationService:
         llm_report = {
             **dict(llm_report or {}),
             "replay_provider": dict(replay_report or {}),
+            "candidate_fallback_suppressed": bool(suppress_candidate_fallback),
         }
         evolved_specs: list[StrategySpec] = []
         if optimizer_disabled_by_scheduler:
@@ -572,17 +601,31 @@ class CandidateGenerationService:
                 "CandidateGenerationService: bulk_stock_matrix task %s using rule-first generation without optimizer",
                 research_task.get("task_id") or research_task.get("task_key") or "unknown",
             )
+        elif suppress_candidate_fallback:
+            llm_report = {
+                **dict(llm_report or {}),
+                "optimizer": {
+                    "status": "skipped_after_llm_failure",
+                    "skip_reason": "candidate_fallback_suppressed",
+                },
+            }
         else:
             for parent in parents[:2]:
                 evolved_specs.extend(await self.optimizer.evolve(db, parent, limit=2))
 
         merged_specs: list[StrategySpec] = []
         seen = set()
-        prioritized_specs = (
-            [*llm_specs, *replay_specs, *evolved_specs, *rule_specs]
-            if (llm_specs or replay_specs or evolved_specs)
-            else [*rule_specs, *llm_specs, *replay_specs, *evolved_specs]
-        )
+        if suppress_candidate_fallback:
+            rule_specs = []
+            replay_specs = []
+            evolved_specs = []
+            prioritized_specs = list(llm_specs)
+        else:
+            prioritized_specs = (
+                [*llm_specs, *replay_specs, *evolved_specs, *rule_specs]
+                if (llm_specs or replay_specs or evolved_specs)
+                else [*rule_specs, *llm_specs, *replay_specs, *evolved_specs]
+            )
         for spec in prioritized_specs:
             if research_task and not dict(spec.metadata or {}).get("research_task"):
                 spec.metadata = {**dict(spec.metadata or {}), "research_task": research_task}

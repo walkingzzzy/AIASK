@@ -26,6 +26,19 @@ def _chat_response(content: str) -> httpx.Response:
     )
 
 
+def _sse_response(content: str) -> httpx.Response:
+    body = (
+        "event: response.output_text.delta\n"
+        f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': content}, ensure_ascii=False)}\n\n"
+        "data: [DONE]\n\n"
+    )
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        text=body,
+    )
+
+
 def _provider_with_responses(responses: list[httpx.Response], *, stage_retry_count: int = 1) -> StrategyLLMProvider:
     queue = list(responses)
 
@@ -73,6 +86,88 @@ def _provider_with_handler(handler, *, stage_retry_count: int = 1) -> StrategyLL
 
 def _pin_mock_client_to_current_loop(provider: StrategyLLMProvider) -> None:
     provider._runtime_loop_id = id(asyncio.get_running_loop())
+
+
+def test_strategy_llm_endpoint_adds_v1_for_bare_openai_compatible_host() -> None:
+    provider = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://icoe.pp.ua",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+
+    async def _run() -> str:
+        try:
+            return provider._endpoint()
+        finally:
+            await provider.close()
+
+    assert asyncio.run(_run()) == "https://icoe.pp.ua/v1/chat/completions"
+
+
+def test_strategy_llm_endpoint_preserves_explicit_api_paths() -> None:
+    explicit = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://llm.example.test/custom/chat/completions",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+    v1_base = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://llm.example.test/v1",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+    responses = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            provider="openai_responses",
+            base_url="https://llm.example.test",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+
+    async def _run() -> tuple[str, str, str]:
+        try:
+            return explicit._endpoint(), v1_base._endpoint(), responses._endpoint()
+        finally:
+            await explicit.close()
+            await v1_base.close()
+            await responses.close()
+
+    assert asyncio.run(_run()) == (
+        "https://llm.example.test/custom/chat/completions",
+        "https://llm.example.test/v1/chat/completions",
+        "https://llm.example.test/v1/responses",
+    )
+
+
+def test_factor_llm_endpoint_adds_v1_for_bare_openai_compatible_host() -> None:
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            base_url="https://icoe.pp.ua",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+
+    async def _run() -> str:
+        try:
+            return provider._endpoint()
+        finally:
+            await provider.close()
+
+    assert asyncio.run(_run()) == "https://icoe.pp.ua/v1/chat/completions"
 
 
 def test_strategy_llm_extracts_markdown_fenced_json() -> None:
@@ -157,10 +252,47 @@ def test_strategy_llm_bad_non_empty_json_does_not_trigger_compatibility_cooldown
     assert health["last_error_type"] is None
 
 
+def test_strategy_llm_repairs_prose_stage_response_before_fallback() -> None:
+    captured_payloads: list[dict] = []
+    responses = [
+        _chat_response("我会这样处理：输出应包含确认列表，但这里没有直接给 JSON。"),
+        _chat_response('{"confirmations":[{"symbol":"000001","confirmed":true,"signal_strength":"moderate"}]}'),
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content.decode("utf-8")))
+        assert responses
+        return responses.pop(0)
+
+    provider = _provider_with_handler(handler, stage_retry_count=0)
+
+    async def _run() -> dict:
+        try:
+            _pin_mock_client_to_current_loop(provider)
+            return await provider.call_stage(
+                stage_id="market_confirmation",
+                input_data={"topic": "test"},
+                system_prompt="Return JSON.",
+            )
+        finally:
+            await provider.close()
+
+    result = asyncio.run(_run())
+    assert result["confirmations"][0]["symbol"] == "000001"
+    assert result["confirmations"][0]["confirmed"] is True
+    assert len(captured_payloads) == 2
+    assert "strict JSON repair layer" in captured_payloads[1]["messages"][0]["content"]
+    assert "Previous assistant response that was not valid JSON" in captured_payloads[1]["messages"][1]["content"]
+    health = provider.get_health_snapshot()
+    assert health["compatibility_cooldown_active"] is False
+    assert health["scheduler_should_disable"] is False
+
+
 def test_strategy_llm_bad_non_empty_json_final_failure_keeps_provider_available() -> None:
     provider = _provider_with_responses(
         [
             _chat_response('{"events":[{"code":"600519"}],'),
+            _chat_response("still not json"),
             _chat_response('{"candidates":[],"analysis":{"hypothesis":"still usable"}}'),
         ],
         stage_retry_count=0,
@@ -215,3 +347,43 @@ def test_strategy_llm_stage_prompt_is_self_describing() -> None:
     assert "The required top-level key is: confirmations" in user_prompt
     assert "Return only one valid JSON object" in user_prompt
     assert '"headline":"test headline"' in user_prompt
+
+
+def test_strategy_llm_replays_event_stream_response_after_non_json_body() -> None:
+    provider = _provider_with_responses(
+        [
+            _sse_response('{"events":[{"theme_code":"ai","event_type":"policy"}]}'),
+            _sse_response('{"events":[{"theme_code":"ai","event_type":"policy"}]}'),
+        ],
+        stage_retry_count=0,
+    )
+
+    async def _run() -> dict:
+        try:
+            _pin_mock_client_to_current_loop(provider)
+            return await provider.call_stage(
+                stage_id="event_recognition",
+                input_data={"topic": "test"},
+                system_prompt="Return JSON.",
+            )
+        finally:
+            await provider.close()
+
+    result = asyncio.run(_run())
+    assert result["events"][0]["theme_code"] == "ai"
+    health = provider.get_health_snapshot()
+    assert health["compatibility_cooldown_active"] is False
+    assert health["scheduler_should_disable"] is False
+
+
+def test_strategy_llm_should_retry_with_event_stream_content_type() -> None:
+    provider = _provider_with_responses([], stage_retry_count=0)
+    exc = RuntimeError("response body is not valid JSON")
+    compat_exc = type(
+        "CompatExc",
+        (Exception,),
+        {},
+    )("response body is not valid JSON")
+    compat_exc.metrics = {"response_content_type": "text/event-stream; charset=utf-8"}
+    assert provider._should_retry_with_stream(compat_exc) is True
+    assert provider._should_retry_with_stream(exc) is False

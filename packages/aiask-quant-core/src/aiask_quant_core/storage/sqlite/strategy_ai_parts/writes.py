@@ -124,6 +124,7 @@
 
     @classmethod
     def _encode_factory_run_json(cls, field_name: str, value: Any) -> str:
+        value = cls._scrub_storage_json(value or {})
         encoded = json.dumps(value or {}, ensure_ascii=False, default=str)
         size_bytes = len(encoded.encode("utf-8"))
         limit = cls._factory_run_field_max_bytes(field_name)
@@ -286,22 +287,12 @@
 
     @classmethod
     def _encode_generation_experiment_json(cls, field_name: str, value: Any) -> str:
-        encoded = json.dumps(value or {}, ensure_ascii=False, default=str)
-        size_bytes = len(encoded.encode("utf-8"))
-        if size_bytes <= cls._generation_experiment_field_max_bytes():
-            return encoded
-        logger.warning(
-            "strategy_generation_experiments.%s exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
-            field_name,
-            size_bytes,
-            cls._generation_experiment_field_max_bytes(),
+        limit = cls._generation_experiment_field_max_bytes()
+        return bounded_json_text(
+            f"strategy_generation_experiments.{field_name}",
+            value or {},
+            max_bytes=limit,
         )
-        fallback = cls._summarize_large_generation_experiment_field(
-            field_name,
-            value,
-            size_bytes=size_bytes,
-        )
-        return json.dumps(fallback, ensure_ascii=False, default=str)
 
     @classmethod
     def _summarize_large_task_run_result(cls, result: Any, *, size_bytes: int) -> dict:
@@ -351,17 +342,12 @@
     def _encode_task_run_result_json(cls, result: Optional[dict]) -> Optional[str]:
         if result is None:
             return None
-        result_json = json.dumps(result, ensure_ascii=False, default=str)
-        size_bytes = len(result_json.encode("utf-8"))
-        if size_bytes <= cls._task_run_result_max_bytes():
-            return result_json
-        logger.warning(
-            "strategy_task_runs.result exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
-            size_bytes,
-            cls._task_run_result_max_bytes(),
+        limit = cls._task_run_result_max_bytes()
+        return bounded_json_text(
+            "strategy_task_runs.result",
+            result or {},
+            max_bytes=limit,
         )
-        fallback = cls._summarize_large_task_run_result(result, size_bytes=size_bytes)
-        return json.dumps(fallback, ensure_ascii=False, default=str)
 
     # ------------------------------------------------------------------
     # generation experiments
@@ -512,7 +498,11 @@
                 payload.get("task_key"),
                 str(payload.get("status") or "running"),
                 payload.get("trace_id"),
-                json.dumps(payload.get("payload") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_task_runs.payload",
+                    payload.get("payload") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 self._encode_task_run_result_json(payload.get("result") or {}),
                 payload.get("error"),
                 started_at,

@@ -18,6 +18,17 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+try:
+    from aiask_quant_core.storage.sqlite.strategy_factory_json_budget import (
+        bounded_json_text,
+        strategy_json_field_max_bytes,
+    )
+except Exception:  # pragma: no cover - strategy-factory can be imported standalone in narrow tests
+    bounded_json_text = None
+
+    def strategy_json_field_max_bytes() -> int:
+        return 64 * 1024
+
 
 TASK_TYPES = frozenset(
     {
@@ -45,6 +56,16 @@ def _iso(value: datetime | None = None) -> str:
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _bounded_dumps(field_name: str, value: Any) -> str:
+    if bounded_json_text is None:
+        return _dumps(value)
+    return bounded_json_text(
+        field_name,
+        value,
+        max_bytes=strategy_json_field_max_bytes(),
+    )
 
 
 def _loads(value: str | None, default: Any) -> Any:
@@ -157,8 +178,8 @@ class FactoryTaskBoard:
                     tid,
                     normalized_type,
                     str(title or normalized_type).strip() or normalized_type,
-                    _dumps(dict(payload or {})),
-                    _dumps(list(artifact_refs or [])),
+                    _bounded_dumps("factory_tasks.payload_json", dict(payload or {})),
+                    _bounded_dumps("factory_tasks.artifact_refs_json", list(artifact_refs or [])),
                     max(1, int(max_attempts or 3)),
                     ts,
                     ts,
@@ -265,7 +286,12 @@ class FactoryTaskBoard:
             if current is None:
                 return None
             refs = list(artifact_refs if artifact_refs is not None else _loads(current["artifact_refs_json"], []))
-            values: list[Any] = [_dumps(refs), ts, ts, str(task_id or "").strip()]
+            values: list[Any] = [
+                _bounded_dumps("factory_tasks.artifact_refs_json", refs),
+                ts,
+                ts,
+                str(task_id or "").strip(),
+            ]
             where = "task_id = ?"
             if claim_token:
                 where += " AND claim_token = ?"
@@ -285,7 +311,7 @@ class FactoryTaskBoard:
                 SET status = 'completed', result_json = ?, ended_at = ?
                 WHERE task_id = ? AND ended_at IS NULL
                 """,
-                (_dumps(dict(result or {})), ts, str(task_id or "").strip()),
+                (_bounded_dumps("factory_task_attempts.result_json", dict(result or {})), ts, str(task_id or "").strip()),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM factory_tasks WHERE task_id = ?", (str(task_id or "").strip(),)).fetchone()
@@ -314,7 +340,7 @@ class FactoryTaskBoard:
                 SET status = 'blocked', result_json = ?, ended_at = ?
                 WHERE task_id = ? AND ended_at IS NULL
                 """,
-                (_dumps({"blocked_reason": reason}), ts, str(task_id or "").strip()),
+                (_bounded_dumps("factory_task_attempts.result_json", {"blocked_reason": reason}), ts, str(task_id or "").strip()),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM factory_tasks WHERE task_id = ?", (str(task_id or "").strip(),)).fetchone()
@@ -368,7 +394,12 @@ class FactoryTaskBoard:
                     SET status = ?, result_json = ?, ended_at = ?
                     WHERE task_id = ? AND ended_at IS NULL
                     """,
-                    (attempt_status, _dumps({"reclaim_reason": reason or "stale claim expired"}), ts, row["task_id"]),
+                    (
+                        attempt_status,
+                        _bounded_dumps("factory_task_attempts.result_json", {"reclaim_reason": reason or "stale claim expired"}),
+                        ts,
+                        row["task_id"],
+                    ),
                 )
                 reclaimed_ids.append(str(row["task_id"]))
             conn.commit()

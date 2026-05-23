@@ -3,6 +3,24 @@
     SHARPE_MIN = BACKTEST_DEFAULT_THRESHOLDS["sharpe_min"]
     MDD_MAX = BACKTEST_DEFAULT_THRESHOLDS["mdd_max"]
     TRADES_MIN = BACKTEST_DEFAULT_THRESHOLDS["trades_min"]
+    _BACKTEST_REPORT_PREVIEW_LIMIT = 12
+    _BACKTEST_RESULT_HEAVY_KEYS = frozenset(
+        {
+            "equity_curve",
+            "cash_curve",
+            "gross_exposure_curve",
+            "net_exposure_curve",
+            "trades",
+            "fills",
+            "orders",
+            "positions",
+            "round_trip_positions",
+            "component_metrics",
+            "raw_results",
+            "raw_events",
+            "samples",
+        }
+    )
     MIN_SAMPLES = BACKTEST_DEFAULT_THRESHOLDS["min_samples"]
 
     def __init__(self):
@@ -79,21 +97,248 @@
         return {
             "strategy_type": candidate.get("strategy_type"),
             "generator_type": candidate.get("generator_type"),
-            "params": candidate.get("params"),
+            "params": BacktestFilter._compact_json_for_report(candidate.get("params"), max_list_items=8),
             "spawn_reason": candidate.get("spawn_reason"),
-            "generation_reason": candidate.get("generation_reason") or {},
+            "generation_reason": BacktestFilter._compact_json_for_report(candidate.get("generation_reason") or {}),
             "target_symbols": candidate.get("target_symbols") or _extract_target_codes_from_payload(candidate),
-            "stock_pool": candidate.get("stock_pool") or {},
-            "selection_logic": candidate.get("selection_logic") or [],
-            "research_task": candidate.get("research_task") or {},
-            "event_context": candidate.get("event_context") or {},
-            "tags": candidate.get("tags") or [],
-            "constraint_check": candidate.get("constraint_check") or {},
-            "validation_profile": candidate.get("validation_profile") or {},
-            "backtest_result": candidate.get("backtest_result") or {},
+            "stock_pool": BacktestFilter._compact_json_for_report(candidate.get("stock_pool") or {}),
+            "selection_logic": BacktestFilter._compact_json_for_report(candidate.get("selection_logic") or []),
+            "research_task": BacktestFilter._compact_research_task(candidate.get("research_task") or {}),
+            "event_context": BacktestFilter._compact_json_for_report(candidate.get("event_context") or {}),
+            "tags": list(candidate.get("tags") or [])[:16],
+            "constraint_check": BacktestFilter._compact_json_for_report(candidate.get("constraint_check") or {}),
+            "validation_profile": BacktestFilter._compact_json_for_report(candidate.get("validation_profile") or {}),
+            "backtest_outcome": candidate.get("backtest_outcome") or {},
             "backtest_metrics": candidate.get("backtest_metrics") or {},
             "backtest_metrics_contract": candidate.get("backtest_metrics_contract") or {},
         }
+
+    @classmethod
+    def _json_size_bytes(cls, value: Any) -> int:
+        try:
+            return len(json.dumps(value or {}, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            return 0
+
+    @classmethod
+    def _json_node_summary(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return {
+                "storage_mode": "dropped_large_payload",
+                "node_type": "dict",
+                "key_count": len(value),
+                "keys": [str(key) for key in list(value.keys())[:16]],
+                "size_bytes": cls._json_size_bytes(value),
+            }
+        if isinstance(value, (list, tuple)):
+            return {
+                "storage_mode": "dropped_large_payload",
+                "node_type": "list",
+                "item_count": len(value),
+                "size_bytes": cls._json_size_bytes(value),
+            }
+        return {
+            "storage_mode": "dropped_large_payload",
+            "node_type": type(value).__name__,
+            "size_bytes": cls._json_size_bytes(value),
+        }
+
+    @classmethod
+    def _compact_json_for_report(
+        cls,
+        value: Any,
+        *,
+        depth: int = 0,
+        max_list_items: int = 12,
+        max_dict_items: int = 24,
+    ) -> Any:
+        if value in (None, "", [], {}):
+            return {} if isinstance(value, dict) else [] if isinstance(value, list) else value
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if depth >= 3:
+            return cls._json_node_summary(value)
+        if isinstance(value, dict):
+            compact: dict[str, Any] = {}
+            for key, item in list(value.items())[:max_dict_items]:
+                key_text = str(key)
+                if item in (None, "", [], {}):
+                    continue
+                if key_text in cls._BACKTEST_RESULT_HEAVY_KEYS and isinstance(item, (dict, list, tuple)):
+                    compact[f"{key_text}_summary"] = cls._json_node_summary(item)
+                    continue
+                compact[key_text] = cls._compact_json_for_report(
+                    item,
+                    depth=depth + 1,
+                    max_list_items=max_list_items,
+                    max_dict_items=max_dict_items,
+                )
+            if len(value) > max_dict_items:
+                compact["truncated_key_count"] = len(value) - max_dict_items
+            return compact
+        if isinstance(value, (list, tuple)):
+            if len(value) > max_list_items:
+                preview = list(value)[:max_list_items]
+            else:
+                preview = list(value)
+            return [
+                cls._compact_json_for_report(
+                    item,
+                    depth=depth + 1,
+                    max_list_items=max_list_items,
+                    max_dict_items=max_dict_items,
+                )
+                for item in preview
+            ] + ([{"truncated_item_count": len(value) - max_list_items}] if len(value) > max_list_items else [])
+        return str(value)
+
+    @classmethod
+    def _compact_research_task(cls, task: Any) -> dict[str, Any]:
+        payload = dict(task or {}) if isinstance(task, dict) else {}
+        keys = (
+            "task_id",
+            "task_key",
+            "task_source",
+            "opportunity_type",
+            "theme_code",
+            "event_id",
+            "candidate_family",
+            "factor_name",
+            "validation_focus",
+            "target_symbols",
+        )
+        compact = {key: payload.get(key) for key in keys if payload.get(key) not in (None, "", [], {})}
+        if "target_symbols" in compact and isinstance(compact["target_symbols"], list):
+            compact["target_symbols"] = list(compact["target_symbols"])[:12]
+            compact["target_symbol_count"] = len(payload.get("target_symbols") or [])
+        return compact
+
+    @classmethod
+    def _compact_event_window_metrics(cls, metrics: Any) -> dict[str, Any]:
+        payload = dict(metrics or {}) if isinstance(metrics, dict) else {}
+        compact: dict[str, Any] = {}
+        scalar_keys = (
+            "event_study_mode",
+            "event_sample_count",
+            "event_anchor_count",
+            "control_group_count",
+            "event_sample_source",
+            "traceable_to_event_samples",
+            "event_audit_incomplete",
+            "bhar",
+            "abnormal_return",
+            "total_return",
+            "post_event_decay",
+            "hit_ratio",
+            "estimation_days_used",
+            "post_days_used",
+        )
+        for key in scalar_keys:
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                compact[key] = value
+        anchors = payload.get("event_time_anchors")
+        if isinstance(anchors, list):
+            compact["event_time_anchors"] = list(anchors[:8])
+            compact["event_time_anchor_count"] = len(anchors)
+        return compact
+
+    @classmethod
+    def _compact_backtest_result_payload(cls, result: Any) -> dict[str, Any]:
+        payload = dict(result or {}) if isinstance(result, dict) else {}
+        compact: dict[str, Any] = {}
+        scalar_keys = (
+            "passed",
+            "reason_code",
+            "reason",
+            "strategy_type",
+            "sample_count",
+            "required_sample_count",
+            "evaluated_code_count",
+            "successful_code_count",
+            "code_source",
+            "primary_layer",
+            "primary_validation_layer",
+            "validation_focus",
+            "candidate_contract_hash",
+            "execution_contract_hash",
+            "tested_object_hash",
+            "candidate_identity_signature",
+            "queue_wait_ms",
+            "backtest_run_ms",
+            "code_run_ms_total",
+            "code_run_count",
+            "avg_code_ms",
+            "kline_cache_hit_count",
+            "portfolio_backtest_mode",
+            "portfolio_backtest_coverage",
+            "implementation_shortfall_model_source",
+            "position_assumption",
+            "backtest_metrics_contract_status",
+        )
+        for key in scalar_keys:
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                compact[key] = value
+        for key in ("evaluated_codes", "successful_codes", "target_codes", "representative_codes"):
+            values = list(payload.get(key) or [])
+            if values:
+                compact[key] = values[:24]
+                compact[f"{key}_count"] = len(values)
+        for key in ("skipped_codes", "failed_codes"):
+            values = [dict(item or {}) for item in list(payload.get(key) or []) if isinstance(item, dict)]
+            if values:
+                compact[key] = [
+                    cls._compact_json_for_report(item, max_list_items=4, max_dict_items=8)
+                    for item in values[: cls._BACKTEST_REPORT_PREVIEW_LIMIT]
+                ]
+                compact[f"{key}_count"] = len(values)
+        for key in (
+            "thresholds",
+            "constraint_check",
+            "target_quality_summary",
+            "event_window_config",
+            "contamination_summary",
+            "cost_assumptions",
+            "explicit_cost_breakdown",
+            "implicit_cost_breakdown",
+            "tradability_summary",
+            "capacity_summary",
+            "implementation_shortfall_components",
+            "backtest_assumptions",
+            "economic_semantics",
+            "failed_metric",
+            "backtest_metrics_contract",
+        ):
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                compact[key] = cls._compact_json_for_report(value)
+        metrics = _compact_backtest_metric_payload(payload.get("metrics") or {})
+        if metrics:
+            compact["metrics"] = metrics
+        layers = dict(payload.get("layers") or {})
+        if layers:
+            compact_layers: dict[str, Any] = {}
+            for layer_name, layer_payload in layers.items():
+                layer = dict(layer_payload or {})
+                compact_layers[str(layer_name)] = {
+                    "requested_codes": list(layer.get("requested_codes") or [])[:24],
+                    "requested_code_count": len(list(layer.get("requested_codes") or [])),
+                    "successful_codes": list(layer.get("successful_codes") or [])[:24],
+                    "successful_code_count": len(list(layer.get("successful_codes") or [])),
+                    "sample_count": int(layer.get("sample_count") or 0),
+                    "metrics": _compact_backtest_metric_payload(layer.get("metrics") or {}),
+                    "trade_profile": cls._compact_json_for_report(layer.get("trade_profile") or {}),
+                    "metrics_source": layer.get("metrics_source"),
+                }
+            compact["layers"] = compact_layers
+        event_metrics = cls._compact_event_window_metrics(payload.get("event_window_metrics") or {})
+        if event_metrics:
+            compact["event_window_metrics"] = event_metrics
+        dropped = sorted(key for key in payload.keys() if key in cls._BACKTEST_RESULT_HEAVY_KEYS)
+        if dropped:
+            compact["dropped_heavy_fields"] = dropped
+        return compact
 
     @staticmethod
     def _build_failed_metric(field: str, operator: str, threshold: Any, actual: Any, label: str) -> dict:
@@ -281,10 +526,13 @@
         passed: List[dict],
         failed: List[dict],
     ) -> None:
-        candidate["backtest_result"] = result
+        compact_result = self._compact_backtest_result_payload(result)
+        candidate["backtest_outcome"] = compact_result
+        candidate.pop("backtest_result", None)
         derived_trade_metrics = self._derive_trade_validation_metrics(candidate, result)
         metrics_contract = self._build_backtest_metrics_contract(candidate, result)
         candidate["backtest_metrics_contract"] = metrics_contract
+        compact_event_metrics = self._compact_event_window_metrics(result.get("event_window_metrics") or {})
         candidate["backtest_metrics"] = {
             **dict(result.get("metrics") or {}),
             "constraint_check": dict(result.get("constraint_check") or {}),
@@ -314,7 +562,7 @@
             "combined_layer_metrics": _compact_backtest_metric_payload(
                 ((result.get("layers") or {}).get("combined") or {}).get("metrics") or {}
             ),
-            "event_window_metrics": dict(result.get("event_window_metrics") or {}),
+            "event_window_metrics": compact_event_metrics,
             "target_layer_oos_return": float((((result.get("layers") or {}).get("target") or {}).get("metrics") or {}).get("total_return") or 0.0),
             "post_cost_sharpe": float((result.get("metrics") or {}).get("sharpe_ratio") or 0.0),
             "backtest_assumptions": dict(result.get("backtest_assumptions") or {}),
@@ -322,6 +570,14 @@
             "backtest_metrics_contract_status": metrics_contract.get("status"),
             **derived_trade_metrics,
         }
+        candidate["backtest_metrics"] = _compact_backtest_metric_payload(candidate.get("backtest_metrics") or {})
+        if compact_event_metrics:
+            candidate["backtest_metrics"]["event_window_metrics"] = compact_event_metrics
+        candidate["backtest_metrics"]["backtest_metrics_contract"] = metrics_contract
+        candidate["backtest_metrics"]["backtest_metrics_contract_status"] = metrics_contract.get("status")
+        for key, value in derived_trade_metrics.items():
+            if value not in (None, "", [], {}):
+                candidate["backtest_metrics"][key] = value
         if result.get("passed"):
             passed.append(candidate)
         else:
@@ -339,7 +595,7 @@
         shared_result_keys: set[str] = set()
         for item in candidates:
             strategy_type = str(item.get("strategy_type") or "unknown")
-            result = item.get("backtest_result") or {}
+            result = item.get("backtest_outcome") or {}
             thresholds_by_type[strategy_type] = result.get("thresholds") or self._get_thresholds(strategy_type, item)
             candidate_run_ms_total += float(result.get("backtest_run_ms") or 0.0)
             code_run_ms_total += float(result.get("code_run_ms_total") or 0.0)
@@ -350,7 +606,7 @@
             if int(result.get("shared_result_reuse_count") or 0) > 0 and str(result.get("shared_result_key") or "").strip():
                 shared_result_keys.add(str(result.get("shared_result_key")))
         for item in failed:
-            reason_code = str((item.get("backtest_result") or {}).get("reason_code") or "unknown")
+            reason_code = str((item.get("backtest_outcome") or {}).get("reason_code") or "unknown")
             failed_reason_counts[reason_code] = failed_reason_counts.get(reason_code, 0) + 1
         candidate_count = len(candidates)
         return {
@@ -369,8 +625,18 @@
                 "shared_result_reused_count": shared_result_reused_count,
                 "shared_result_group_count": len(shared_result_keys),
             },
-            "passed": [self._build_report_entry(item) for item in passed],
-            "failed": [self._build_report_entry(item) for item in failed],
+            "diagnostics": {
+                "passed_preview": [
+                    self._build_report_entry(item)
+                    for item in passed[: self._BACKTEST_REPORT_PREVIEW_LIMIT]
+                ],
+                "failed_preview": [
+                    self._build_report_entry(item)
+                    for item in failed[: self._BACKTEST_REPORT_PREVIEW_LIMIT]
+                ],
+                "passed_preview_count": min(len(passed), self._BACKTEST_REPORT_PREVIEW_LIMIT),
+                "failed_preview_count": min(len(failed), self._BACKTEST_REPORT_PREVIEW_LIMIT),
+            },
         }
 
     async def filter(self, candidates: List[dict], db) -> List[dict]:

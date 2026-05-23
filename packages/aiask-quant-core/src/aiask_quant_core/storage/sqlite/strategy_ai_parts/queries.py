@@ -61,6 +61,23 @@
             raise ValueError("run_id is required")
         if not artifact_type:
             raise ValueError("artifact_type is required")
+        raw_payload = data.get("payload_json") or {}
+        encoded_payload = self._encode_bounded_storage_json(
+            f"strategy_factory_run_artifacts.{artifact_type}.payload_json",
+            raw_payload,
+            max_bytes=self._factory_artifact_payload_max_bytes(),
+        )
+        payload_was_dropped = False
+        try:
+            decoded_payload = json.loads(encoded_payload or "{}")
+            payload_was_dropped = str(
+                dict(decoded_payload or {}).get("storage_mode") or ""
+            ) == "dropped_large_payload"
+        except Exception:
+            payload_was_dropped = False
+        storage_mode = str(data.get("storage_mode") or "inline_compact_json").strip() or "inline_compact_json"
+        if payload_was_dropped:
+            storage_mode = "dropped_large_payload"
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -72,9 +89,9 @@
                 run_id,
                 artifact_type,
                 artifact_version,
-                json.dumps(data.get("payload_json") or {}, ensure_ascii=False, default=str),
+                encoded_payload,
                 str(data.get("payload_hash") or "").strip() or None,
-                str(data.get("storage_mode") or "inline_json").strip() or "inline_json",
+                storage_mode,
             )
         return self._decode_factory_run_artifact(dict(row))
 
@@ -89,6 +106,19 @@
                 run_id,
             )
         return [self._decode_factory_run_artifact(dict(row)) for row in rows]
+
+    async def list_strategy_factory_run_artifact_refs(self, run_id: str) -> List[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, run_id, artifact_type, artifact_version, payload_hash, storage_mode, created_at
+                FROM strategy_factory_run_artifacts
+                WHERE run_id = $1
+                ORDER BY created_at ASC, id ASC
+                """,
+                run_id,
+            )
+        return [dict(row) for row in rows]
 
     def _decode_factory_dispatch(self, row: dict) -> dict:
         result = dict(row)
@@ -128,7 +158,11 @@
                 str(data.get("run_id") or "").strip() or None,
                 data.get("message"),
                 data.get("error"),
-                json.dumps(data.get("metadata") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_dispatches.metadata",
+                    data.get("metadata") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
             )
         return self._decode_factory_dispatch(dict(row))
 
@@ -283,11 +317,23 @@
                 str(data.get("source_action") or "").strip() or None,
                 int(data.get("universe_count") or 0),
                 int(data.get("eligible_count") or 0),
-                int(data.get("topn_n") or 20),
-                json.dumps(data.get("selection_rules") or {}, ensure_ascii=False, default=str),
-                json.dumps(data.get("constituents") or [], ensure_ascii=False, default=str),
+                max(1, min(int(data.get("topn_n") or 20), full_market_score_topn())),
+                bounded_json_text(
+                    "strategy_factory_topn_snapshots.selection_rules",
+                    data.get("selection_rules") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
+                bounded_json_text(
+                    "strategy_factory_topn_snapshots.constituents",
+                    list(data.get("constituents") or [])[: full_market_score_topn()],
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 str(data.get("portfolio_candidate_id") or "").strip() or None,
-                json.dumps(data.get("metadata") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_topn_snapshots.metadata",
+                    data.get("metadata") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
             )
         return self._decode_strategy_factory_topn_snapshot(dict(row))
 
@@ -348,42 +394,75 @@
             if isinstance(item, dict) and str(dict(item or {}).get("code") or "").strip()
         ]
         async with self.acquire() as conn:
-            await conn.execute(
-                """
-                DELETE FROM strategy_factory_full_market_scores
-                WHERE run_id = $1
-                """,
-                normalized_run_id,
-            )
-            if not normalized_rows:
-                return 0
-            await conn.executemany(
-                """
-                INSERT INTO strategy_factory_full_market_scores
-                    (run_id, snapshot_id, as_of_date, trace_id, correlation_id, code, rank,
-                     composite_score, industry, market_cap, component_scores, family_candidates,
-                     eligible, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
-                """,
-                [
-                    (
-                        normalized_run_id,
-                        normalized_snapshot_id,
-                        encoded_as_of,
-                        normalized_trace_id,
-                        normalized_correlation_id,
-                        str(item.get("code") or "").strip(),
-                        int(item.get("rank") or 0),
-                        float(item.get("composite_score") or 0.0),
-                        str(item.get("industry") or "").strip() or None,
-                        float(item.get("market_cap") or 0.0),
-                        json.dumps(item.get("component_scores") or {}, ensure_ascii=False, default=str),
-                        json.dumps(item.get("family_candidates") or [], ensure_ascii=False, default=str),
-                        bool(item.get("eligible", True)),
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    DELETE FROM strategy_factory_full_market_scores
+                    WHERE run_id = $1
+                    """,
+                    normalized_run_id,
+                )
+                if normalized_rows:
+                    await conn.executemany(
+                        """
+                        INSERT INTO strategy_factory_full_market_scores
+                            (run_id, snapshot_id, as_of_date, trace_id, correlation_id, code, rank,
+                             composite_score, industry, market_cap, component_scores, family_candidates,
+                             eligible, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
+                        """,
+                        [
+                            (
+                                normalized_run_id,
+                                normalized_snapshot_id,
+                                encoded_as_of,
+                                normalized_trace_id,
+                                normalized_correlation_id,
+                                str(item.get("code") or "").strip(),
+                                int(item.get("rank") or 0),
+                                float(item.get("composite_score") or 0.0),
+                                str(item.get("industry") or "").strip() or None,
+                                float(item.get("market_cap") or 0.0),
+                                bounded_json_text(
+                                    "strategy_factory_full_market_scores.component_scores",
+                                    item.get("component_scores") or {},
+                                    max_bytes=strategy_json_field_max_bytes(),
+                                ),
+                                bounded_json_text(
+                                    "strategy_factory_full_market_scores.family_candidates",
+                                    item.get("family_candidates") or [],
+                                    max_bytes=strategy_json_field_max_bytes(),
+                                ),
+                                bool(item.get("eligible", True)),
+                            )
+                            for item in normalized_rows
+                        ],
                     )
-                    for item in normalized_rows
-                ],
-            )
+                retention_runs = full_market_score_retention_runs()
+                if retention_runs > 0:
+                    keep_rows = await conn.fetch(
+                        """
+                        SELECT run_id
+                        FROM strategy_factory_full_market_scores
+                        GROUP BY run_id
+                        ORDER BY MAX(COALESCE(as_of_date, '')) DESC, MAX(created_at) DESC, run_id DESC
+                        LIMIT $1
+                        """,
+                        retention_runs,
+                    )
+                    keep_run_ids = [
+                        str(row.get("run_id") or "").strip()
+                        for row in keep_rows
+                        if str(row.get("run_id") or "").strip()
+                    ]
+                    if keep_run_ids:
+                        await conn.execute(
+                            """
+                            DELETE FROM strategy_factory_full_market_scores
+                            WHERE NOT (run_id = ANY($1))
+                            """,
+                            keep_run_ids,
+                        )
         return len(normalized_rows)
 
     async def count_strategy_factory_full_market_scores(self, run_id: str) -> int:
@@ -501,7 +580,11 @@
                 float(payload.get("margin_proxy_5d_change_pct") or 0.0),
                 json.dumps(payload.get("hot_sectors") or [], ensure_ascii=False, default=str),
                 json.dumps(payload.get("cold_sectors") or [], ensure_ascii=False, default=str),
-                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_market_internals.metadata",
+                    payload.get("metadata") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
             )
         return self._decode_factory_market_internal_snapshot(dict(row))
 
@@ -600,7 +683,11 @@
                 json.dumps(payload.get("commodities") or [], ensure_ascii=False, default=str),
                 json.dumps(payload.get("regions") or [], ensure_ascii=False, default=str),
                 json.dumps(payload.get("themes") or [], ensure_ascii=False, default=str),
-                json.dumps(payload.get("evidence") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_event_clusters.evidence",
+                    payload.get("evidence") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 occurred_at,
                 last_seen_at,
                 str(payload.get("status") or "active"),
@@ -660,7 +747,11 @@
                 payload.get("description"),
                 payload.get("direction_rule"),
                 json.dumps(payload.get("aliases") or [], ensure_ascii=False, default=str),
-                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_theme_definitions.metadata",
+                    payload.get("metadata") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 bool(payload.get("active", True)),
             )
         return self._decode_factory_theme_definition(dict(row))
@@ -713,7 +804,11 @@
                 exposure_type,
                 str(payload.get("direction") or "positive"),
                 float(payload.get("exposure_score") or 0.0),
-                json.dumps(payload.get("evidence") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_company_theme_exposures.evidence",
+                    payload.get("evidence") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
             )
         return self._decode_factory_company_theme_exposure(dict(row))
 
@@ -785,7 +880,11 @@
                 float(payload.get("fundamental_confirm_score") or 0.0),
                 float(payload.get("final_score") or 0.0),
                 payload.get("rationale"),
-                json.dumps(payload.get("evidence") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_event_signals.evidence",
+                    payload.get("evidence") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 observed_at,
             )
         return self._decode_factory_event_signal(dict(row))
@@ -970,7 +1069,11 @@
                 float(payload.get("confidence") or 0.5),
                 str(payload.get("confidence_source") or "manual"),
                 int(payload.get("manual_locked") or 0),
-                _json.dumps(payload.get("evidence") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_theme_edges.evidence",
+                    payload.get("evidence") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 int(payload.get("is_active", 1)),
                 payload.get("updated_by"),
             )
@@ -1050,7 +1153,11 @@
                 str(payload.get("scope") or "theme"),
                 _json.dumps(payload.get("primary_themes") or [], ensure_ascii=False),
                 payload.get("rationale"),
-                _json.dumps(payload.get("evidence") or {}, ensure_ascii=False, default=str),
+                bounded_json_text(
+                    "strategy_factory_event_injections.evidence",
+                    payload.get("evidence") or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                ),
                 str(payload.get("valid_from") or ""),
                 str(payload.get("valid_until") or ""),
                 str(payload.get("status") or "pending_review"),
