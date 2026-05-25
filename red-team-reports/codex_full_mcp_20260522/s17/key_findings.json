@@ -1,0 +1,303 @@
+{
+  "scenario_id": "S17",
+  "key_findings": [
+    {
+      "id": "S17-F01",
+      "severity": "high",
+      "title": "5 个估值器对同股 000651 给出 5 个完全不同的 intrinsic_price,跨度 8 倍(11.6 元 → 91.23 元)",
+      "evidence": {
+        "current_market_price": 39.51,
+        "fundamental_analysis_manager.intrinsic_value(PE).per_share": 91.23,
+        "fundamental_analysis_manager.intrinsic_value(DCF).per_share": 95.92,
+        "dcf_valuation(driver_v2).per_share": 11.60,
+        "scenario_dcf_valuation(制造).per_share": 18.24,
+        "ddm_valuation(g=4%, r=8.5%).per_share": 68.64,
+        "relative_valuation.deviation_risk": "extreme high_discount",
+        "relative_valuation.percentile": 0,
+        "min_max_ratio": "91.23 / 11.60 = 7.86×",
+        "vs_market_signals": {
+          "fa.intrinsic(PE)": "+131% 严重低估",
+          "fa.intrinsic(DCF)": "+143% 严重低估",
+          "dcf_driver_v2": "-71% 严重高估",
+          "scenario_dcf": "-54% 高估",
+          "ddm": "+74% 严重低估",
+          "relative_valuation": "extreme discount(应当低估)"
+        }
+      },
+      "root_cause": "(1) fundamental_analysis_manager.intrinsic_value(PE) 用 EPS=6.082(净利润/股本) × industry_pe=15(硬编码)→ 91.23;但 financials.eps=4.34;EPS 内部口径不一(2) fundamental_analysis_manager.intrinsic_value(DCF) 用 g=10% / r=10% Gordon 数学退化(3) dcf_valuation(driver_v2) 用 base_revenue=42.97B(Q1 单期)× growth=5% / wacc=7.4% → 65B / per_share 11.60(4) scenario_dcf_valuation 用 base_revenue=200B(用户输入)× 制造模板 net_margin=10%(实际 14.16%)+ Bear scenario intrinsic=-35B(负值)(5) ddm 用 dividend=2.97 元 g=4% r=8.5% → 68.64(6) industry_pe 三个值不一:fa.intrinsic(PE)=15 vs relative_valuation.industry_mean=26.48 vs relative_valuation.industry_median=22.69",
+      "impact": "AI 调 5 个估值器拿到 11.6 / 18.2 / 68.6 / 91.2 / 95.9 五个 intrinsic_price,全部都和 39.51 当前价差 50%+,不知该信哪个 — **同 stock 估值跨度 8×,投资决策完全无法收敛**",
+      "previous_occurrences": ["S15-F02 茅台估值差 2.6×"],
+      "recurrence_count": 2,
+      "escalation": "S15: 差 2.6× → S17: 差 8× — 跨工具一致性 4 月内进一步恶化",
+      "recommended_fix": "(1) 5 个估值器统一接受 industry_pe / dividend / fcf 等输入参数 (2) intrinsic 输出 per_share 同时附 ratio_to_market 显式标记 (3) 跨工具 reconciliation: 输出 max/min/mean/median 4 个估值并 emit 'cross_method_dispersion' 警告"
+    },
+    {
+      "id": "S17-F02",
+      "severity": "high",
+      "title": "DCF g=r Gordon 数学退化但仍 success=true(fundamental_analysis_manager.intrinsic_value(DCF))",
+      "evidence": {
+        "input.method": "dcf",
+        "assumptions.growth_rate": "10.0%",
+        "assumptions.discount_rate": "10.0%",
+        "assumptions.terminal_growth": "3.0%",
+        "math.violation": "growth_rate(0.10) == discount_rate(0.10) 显性期 Gordon 模型分母 0 退化",
+        "comparison.S15-F12.ddm_valuation(g>=r)": "显式 fail '增长率必须小于要求回报率'",
+        "comparison.S15-F01.dcf_valuation": "negative discount silent fallback to wacc",
+        "actual.intrinsic_value": 95924342537.14,
+        "actual.intrinsic_price_per_share": 95.92,
+        "top_level.success": true
+      },
+      "root_cause": "(1) fundamental_analysis_manager.intrinsic_value(DCF) 默认 g=10%=r=10%,数学上 Gordon 显性期退化(每年 fcf 不变)(2) 工具用 terminal_growth=3% 走 Gordon Growth (3) 但显性 5 年 g=r 应当 emit warning 或 reject (4) DDM(S15-F12)对 g>=r 显式 reject,DCF 不一致(同 S15-F01 模式延伸)",
+      "impact": "AI 调 fundamental_analysis_manager.intrinsic_value(method=dcf) 默认参数拿到 95.92 元;实际上参数数学退化",
+      "previous_occurrences": ["S15-F01 dcf_valuation negative discount", "S15-F12 ddm Gordon g<r"],
+      "recurrence_count": 3,
+      "recommended_fix": "(1) fundamental_analysis_manager.intrinsic_value(dcf) 强制 g < r,违例 reject(同 DDM)(2) 默认参数 g=8% / r=10% 而非 g=r=10% (3) 与 dcf_valuation/scenario_dcf_valuation 统一 sanity check"
+    },
+    {
+      "id": "S17-F03",
+      "severity": "high",
+      "title": "同股 000651 同时刻 4 个 decision 工具方向冲突(buy=hold / smart_diagnosis=hold / context=sell / unified=watch / sell=sell)",
+      "evidence": {
+        "should_i_buy(conservative).recommendation": "hold",
+        "should_i_buy.score": 45,
+        "should_i_buy.confidence": 40,
+        "smart_stock_diagnosis.recommendation": "hold",
+        "smart_stock_diagnosis.market_regime": "bullish",
+        "build_stock_context.recommendation": "sell",
+        "build_stock_context.score": 24,
+        "build_stock_context.text": "风险偏高,建议回避或降低仓位",
+        "analyze_stock_workflow.decision_summary.action": "watch",
+        "get_unified_decision.action": "watch",
+        "get_unified_decision.gate_flags": [{"name": "compliance", "status": "blocked", "severity": "high"}],
+        "should_i_sell(buy=42, holding=90d).recommendation": "sell",
+        "should_i_sell.reason": "亏损7.76% + 跌破 ATR(40.71)",
+        "directions_count": "hold/hold/sell/watch/sell — 5 个工具 3 种方向"
+      },
+      "root_cause": "(1) build_stock_context 直接用 evidence × 8 + score 算法 → 'sell'(2) should_i_buy 用 valuation+technical+fundamental 加权 → 'hold'(3) smart_stock_diagnosis 走 context_aggregator 输出 'hold'(4) get_unified_decision 走统一闸门 + compliance gate → 'watch'(被 compliance blocked)(5) should_i_sell 走 ATR + 持仓时间 + 盈亏 → 'sell' (6) **5 个 decision 工具底层算法/权重/数据源 各自独立** — 同股拿到 3 种推荐方向",
+      "impact": "AI 调 5 个 decision 工具看到 'hold/hold/sell/watch/sell' — **不知该听哪个**;若听 build_stock_context.sell 则错过格力低估机会;若听 unified=watch 则永远不出手",
+      "previous_occurrences": ["S15-F03 multi_factor_score vs calculate_factors 5x", "S16-F03 multi_factor vs calculate_factors", "S07/S13 should_i_buy threshold"],
+      "recurrence_count": 4,
+      "recommended_fix": "(1) 4 个 decision 工具统一 reconciliation 层(meta-decision)(2) 输出 cross_tool_consensus 字段 (3) 显式标 'tools_agree' / 'tools_split' 给 AI 信号"
+    },
+    {
+      "id": "S17-F04",
+      "severity": "high",
+      "title": "research_manager 与 research.db 完全脱节:同股 6 工具 4 拿到 reports / 2 拿不到",
+      "evidence": {
+        "tools_with_reports": {
+          "get_research_summary": {"count": 2, "source": "research.db"},
+          "analyze_research_report": {"count": 2, "source": "research.db"},
+          "get_research_reports": {"count": 2, "source": "db.research_reports"},
+          "search_research_db": {"count": 2, "source": "research.db"}
+        },
+        "tools_without_reports": {
+          "research_manager.get_reports": {"count": 0, "message": "暂无 000651 的研报数据"},
+          "research_manager.get_ratings": {"total": 0, "consensus_rating": "unknown", "message": "暂无 000651 的评级数据"}
+        },
+        "actual_db_state": {
+          "西南证券": {"date": "2026-05-08", "rating": "(空)"},
+          "山西证券": {"date": "2026-05-04", "rating": "买入"}
+        }
+      },
+      "root_cause": "(1) research_manager 实现走另一条路径(可能是 cache / api 而非 db.research_reports)(2) 4 个低层工具(get_research_summary/analyze_research_report/get_research_reports/search_research_db)走 research.db 都拿到(3) research_manager.get_reports / get_ratings 不查 db 反而走另一缓存层 — **同 db 4 工具看到 2 reports,manager 看不到** (4) S15-F04 fundamental_analysis_manager 模式延伸:manager 层与底层工具完全脱节",
+      "impact": "AI 优先调 research_manager.get_ratings 拿到 'unknown 暂无评级' 直接放弃 — 但实际 db 有 1 个'买入'评级;**manager 层是 AI 的首选入口,首选错了就一切错**",
+      "previous_occurrences": ["S15-F04 fundamental_analysis_manager PE/PB null", "S16-F03 multi_factor vs calculate_factors", "S14-F02 alerts list scope filter"],
+      "recurrence_count": 5,
+      "recommended_fix": "(1) research_manager.get_reports 内部 fallback 到 search_research_db (2) research_manager.get_ratings 内部聚合 db.research_reports.rating 字段 (3) manager 层与 db 层接入审计"
+    },
+    {
+      "id": "S17-F05",
+      "severity": "high",
+      "title": "build_stock_context.industry_chain 强制把白色家电错配到 new_energy 新能源产业链",
+      "evidence": {
+        "build_stock_context.industry_chain_snapshot.industry_keyword": "白色家电",
+        "build_stock_context.industry_chain_snapshot.matched": true,
+        "build_stock_context.industry_chain_snapshot.chain_id": "new_energy",
+        "build_stock_context.industry_chain_snapshot.chain_name": "新能源产业链",
+        "build_stock_context.industry_chain_snapshot.related_segments": ["锂矿", "钴矿", "镍矿", "电池材料", "电池制造", "新能源汽车", "储能"],
+        "vs.get_industry_chain(白色家电)": {
+          "matched": "未找到",
+          "message": "未找到与「白色家电」匹配的产业链,已返回全部预置产业链(共5条)",
+          "available_chains": ["new_energy", "semiconductor", "pv", "liquor", "pharma"]
+        },
+        "industry_actual": "白色家电(空调/冰箱/洗衣机)与新能源产业链完全无关"
+      },
+      "root_cause": "(1) build_stock_context 内部对未匹配的 industry 强制 fuzzy match 到第一个 chain(new_energy)而非 fallback(2) get_industry_chain 显式 graceful fallback 标'未找到'(3) **两工具行为完全相反:build_stock_context 假装 match,get_industry_chain 诚实 fallback** (4) 工具集 industry_chain 库只有 5 条(new_energy/semiconductor/pv/liquor/pharma),缺白色家电/钢铁/银行/地产/汽车/煤炭 等核心行业(同 S15-F03 industry_templates 缺白酒模式 + 此为 industry_chain 缺白色家电)",
+      "impact": "AI 调 build_stock_context 看 industry_chain 显示新能源,'related_segments=锂矿/电池/储能',误以为格力做新能源 → 误判产业链定位;若用 industry_chain 做投资决策,完全错位",
+      "previous_occurrences": ["S15-F03 industry_templates 缺白酒", "S16-F01 screener industry filter 失效"],
+      "recurrence_count": 3,
+      "recommended_fix": "(1) build_stock_context 改用 graceful fallback,与 get_industry_chain 行为一致 (2) industry_chain 库扩展到 30+ 行业 (3) matched=false 时显式标 'industry_not_in_chain_db' 避免 AI 误用"
+    },
+    {
+      "id": "S17-F06",
+      "severity": "high",
+      "title": "get_realtime_quote PE=7.44 PB=1.43 vs get_valuation_metrics PE=7.58 PB=1.45 — 同股两工具同时刻不一致",
+      "evidence": {
+        "get_realtime_quote.pe": 7.44,
+        "get_realtime_quote.pb": 1.43,
+        "get_realtime_quote.mkt_cap": "2169.98 亿",
+        "get_realtime_quote.data_timestamp": "2026-05-24T13:17:13",
+        "get_valuation_metrics.pe_ratio": 7.58,
+        "get_valuation_metrics.pb_ratio": 1.45,
+        "get_valuation_metrics.market_cap": "2200.23 亿",
+        "get_valuation_metrics.timestamp": "2026-05-24T13:15:16",
+        "delta_pe": "(7.58-7.44)/7.58 = 1.85%",
+        "delta_mkt_cap": "(2200.23-2169.98)/2200.23 = 1.37%",
+        "time_gap_seconds": 117
+      },
+      "root_cause": "(1) get_realtime_quote 用 tqcenter 实时价 38.74 计算 PE=7.44(2) get_valuation_metrics 用 db.stocks 缓存价 39.28 计算 PE=7.58 (3) 两工具底层价格源不一致 → PE 派生不一致 (4) 间隔 117 秒,价格 38.74 vs 39.28 差 1.39%,带动 PE 1.85% 误差",
+      "impact": "AI 调 get_realtime_quote 看 PE=7.44 vs get_valuation_metrics 看 PE=7.58 — 两个权威 PE 数,做估值打分时不知用哪个",
+      "previous_occurrences": ["S15-F04 fundamental_analysis_manager pe null", "S07-F09 calculate_factor naming"],
+      "recurrence_count": 3,
+      "recommended_fix": "(1) PE 由统一服务计算并缓存,所有工具 read-only 引用 (2) 显式标 price_basis 与 calculation_timestamp"
+    },
+    {
+      "id": "S17-F07",
+      "severity": "high",
+      "title": "scenario_dcf_valuation 制造模板 Bear scenario intrinsic=-35B(负值)但 weighted 成 102B 仍 success=true",
+      "evidence": {
+        "Bull": {"prob": 0.25, "growth": 0.13, "margin": 0.13, "intrinsic": 269330091878.69},
+        "Base": {"prob": 0.5, "growth": 0.08, "margin": 0.10, "intrinsic": 87209887729.77},
+        "Bear": {"prob": 0.25, "growth": 0.03, "margin": 0.07, "intrinsic": -35017937368.95},
+        "weighted_intrinsic": 102182982492.32,
+        "per_share": 18.24,
+        "current_price": 39.51,
+        "math.bear_negative": "Bear intrinsic=-35B 即'内在价值为负'(企业价值为负数)— 经济上不可能成立",
+        "top_level.success": true,
+        "warning_emit": "无"
+      },
+      "root_cause": "(1) Bear scenario growth=3% / margin=7% 用 5 年显性期 + Gordon terminal 算出 -35B (2) DCF 减项(capex/折旧/nwc)累计 > 经营现金流贴现 → 净负值 (3) 经济上不应该出现负 intrinsic_value (企业最差也是 0 不是负) (4) 但工具仍计入 weighted 加权且 success=true",
+      "impact": "AI 看 weighted=102B 看似合理 per_share=18.24,实际 Bear 子情景'内在价值为 -35B'非但不可信,反而拖累 weighted",
+      "recommended_fix": "(1) 任何子情景 intrinsic<0 强制 floor 到 0(企业最差为 0)(2) emit warning 'bear_scenario_intrinsic_negative_clipped_to_zero' (3) 或 reject 这种参数组合"
+    },
+    {
+      "id": "S17-F08",
+      "severity": "medium",
+      "title": "fundamental_analysis_manager.intrinsic_value(PE) 内部 EPS 与 financials.eps 不一致(6.082 vs 4.34)",
+      "evidence": {
+        "fundamental_analysis_manager.intrinsic_value(PE).eps": 6.082159399999999,
+        "vs.get_financials.eps": 4.34,
+        "vs.fundamental_analysis_manager.analyze.metrics.eps": 4.34,
+        "delta": "(6.082 - 4.34) / 4.34 = +40%",
+        "fundamental_analysis_manager.intrinsic_value(PE).industry_pe": 15,
+        "vs.relative_valuation.industry_mean": 26.48,
+        "vs.relative_valuation.industry_median": 22.69,
+        "industry_pe_count": 3
+      },
+      "root_cause": "(1) intrinsic_value(PE) 用 EPS=net_profit/total_shares 重新算 = 6.082/股,与 financials.eps=4.34(原始数据)差 40%(可能 reportPeriod 单期 vs 全年口径)(2) industry_pe=15 硬编码,vs relative_valuation 用 peer 算 26.48 (3) 两个 industry_pe 同概念差 76%",
+      "recommended_fix": "(1) intrinsic_value 直接读 financials.eps 不要重新算 (2) industry_pe 从 relative_valuation peer 池实时拉取"
+    },
+    {
+      "id": "S17-F09",
+      "severity": "medium",
+      "title": "get_unified_decision warnings 含 Python AttributeError 透出('user_profile_snapshots:str object has no attribute tzinfo')",
+      "evidence": {
+        "get_unified_decision.warnings": ["oos_validation:peer_codes_insufficient", "user_profile_snapshots:'str' object has no attribute 'tzinfo'"],
+        "get_unified_decision.fallback_reason": ["oos_validation:peer_codes_insufficient", "user_profile_fallback"],
+        "stack_trace_root_cause": "user_profile_snapshots 字段被 str(而非 datetime) → 调用 .tzinfo 时 AttributeError"
+      },
+      "root_cause": "(1) user_profile_snapshots 内部期望 datetime 类型,但实际收到 str (2) 调用 .tzinfo 抛 AttributeError (3) 工具 catch 后降级到 'user_profile_fallback' 但仍 emit warning",
+      "impact": "AI 看 warnings 中 Python 栈,知道有 bug 但不知严重性;graceful 处理但暴露内部实现细节",
+      "previous_occurrences": ["S16-F02 save_strategy Python TypeError"],
+      "recurrence_count": 2,
+      "recommended_fix": "(1) datetime 类型 strict check + auto-convert from str (2) error_message 改为业务语义('user_profile_data_format_invalid'而非 Python 栈)"
+    },
+    {
+      "id": "S17-F10",
+      "severity": "medium",
+      "title": "get_historical_valuation 15d 56 raw → 3 unique(每天 ~18 重复,严重 dup)",
+      "evidence": {
+        "raw_count": 56,
+        "deduplicated_count": 3,
+        "duplicate_removed": 53,
+        "duplicates_per_day": "56/3 ≈ 18 条/天",
+        "actual_unique_days": 3,
+        "expected": "15 天 ≈ 11 trading days unique"
+      },
+      "root_cause": "(1) db.stock_quotes 同股每天写入 ~18 条重复(可能不同 source/time of day 多次同步)(2) 3 unique 远少于 11 trading days expected (3) S15-F11 模式 4 倍恶化(S15: 4/天 → S17: 18/天)",
+      "previous_occurrences": ["S15-F11 historical_valuation 30d 122 raw → 6 unique(4/天)"],
+      "recurrence_count": 2,
+      "escalation": "S15: 4 重复/天 → S17: 18 重复/天 — 数据库膨胀严重恶化",
+      "recommended_fix": "(1) db.stock_quotes 加 unique constraint(code+date)(2) 定期 dedup 任务"
+    },
+    {
+      "id": "S17-F11",
+      "severity": "medium",
+      "title": "get_profit_forecast 三源全跪(eastmoney→tushare→akshare),即使高股息蓝筹也拿不到 forecast",
+      "evidence": {
+        "items": [],
+        "total": 0,
+        "source": "none",
+        "fallback_chain": ["eastmoney.profit_forecast", "tushare.forecast", "akshare.profit_forecast"],
+        "fallback_used": true,
+        "stock": "000651 格力电器(白色家电龙头)"
+      },
+      "root_cause": "三源都没数据 — 可能是接口失效或公司名映射问题",
+      "previous_occurrences": ["S14 profit_forecast 类似问题"],
+      "recurrence_count": 2,
+      "recommended_fix": "(1) 增加 wind/同花顺 等第四源 (2) 或缓存最近 30d 历史预测作为 fallback"
+    },
+    {
+      "id": "S17-F12",
+      "severity": "low",
+      "title": "✅ DDM Gordon Model + relative_valuation deviation_risk 极完整(positive)",
+      "evidence": {
+        "ddm.intrinsic_per_share": 68.64,
+        "ddm.formula": "next_dividend / (r - g) = 3.0888 / (0.085 - 0.04) = 68.64",
+        "ddm.gordon_constraint": "g(0.04) < r(0.085) ✅",
+        "relative_valuation.deviation_risk.pe": "extreme high_discount(percentile=0%)",
+        "relative_valuation.deviation_risk.pb": "high(percentile=25%)",
+        "relative_valuation.industry_stats.pe.count": 4,
+        "relative_valuation.industry_stats.pe.median": 22.69,
+        "relative_valuation.peer_pool_build.relaxation_reasons": ["quality_filter_relaxed_due_to_small_sample", "growth_filter_relaxed_due_to_missing_data", "cashflow_filter_relaxed_due_to_missing_data"]
+      },
+      "note": "✅ DDM 数学约束严格 + relative_valuation industry_stats + comparison + peer_pool_build(filter chain + relaxation_reasons)极完整;deviation_risk='extreme'明确标 PE 0% percentile = 行业最低估,这是工具集**最严谨的估值层** ✅"
+    },
+    {
+      "id": "S17-F13",
+      "severity": "low",
+      "title": "✅ analyze_stock_sentiment news_oos_validation alpha_5d_bull_vs_bear=-0.019 signal_stability=degraded 显式标(positive)",
+      "evidence": {
+        "sentiment.score": 49.19,
+        "sentiment.bucket": "neutral",
+        "news_oos_validation.alpha_5d_bull_vs_bear": -0.019,
+        "news_oos_validation.signal_stability": "degraded",
+        "news_oos_validation.fallback_reason": "insufficient_headline_labels",
+        "decay_analysis.decay_note": "signal_reverses_on_longer_horizon",
+        "decay_analysis.alpha_curve": {"5d": -0.019, "10d": -0.0344, "20d": -0.0212},
+        "historical_validation.sample_count": 49,
+        "historical_validation.bucket": "neutral",
+        "historical_validation.forward_returns": {"5d": {"hit_rate": 0.2653, "avg_return": -0.0083}}
+      },
+      "note": "✅ analyze_stock_sentiment **news_oos_validation 极完整**:bull/neutral/bearish 三 bucket × 5d/10d/20d 三 horizon,9 个 cell;**signal_stability='degraded' 显式标信号反转**;alpha_curve 显示 5d 微负 → 10d 更负 → 20d 反弹;**这是情绪层最严谨的 OOS validation 输出** ✅"
+    },
+    {
+      "id": "S17-F14",
+      "severity": "low",
+      "title": "✅ get_factor_profile + get_industry_chain graceful fallback 行为正确(positive)",
+      "evidence": {
+        "get_factor_profile.factors_count": 3,
+        "get_factor_profile.fields_per_factor": ["current", "series_30d", "percentile_1y", "percentile_3y", "trend", "rolling_zscore", "industry_rank", "industry_total", "market_percentile", "historical_oversold_recovery"],
+        "get_factor_profile.rsi.historical_oversold_recovery": {"sample_count": 27, "5d.hit_rate": 0.4074, "10d.hit_rate": 0.4815, "reliable": true},
+        "get_industry_chain.fallback_message": "未找到与「白色家电」匹配的产业链,已返回全部预置产业链(共5条) ✅",
+        "get_industry_chain.behavior": "graceful 与 build_stock_context 强制 match 形成对比"
+      },
+      "note": "✅ get_factor_profile 每因子 10 字段(含 historical_oversold_recovery hit_rate)极完整;get_industry_chain graceful fallback 行为正确(显式标'未找到')— 这是 industry_chain 工具集**唯一 graceful 处理者**,与 build_stock_context 错配形成对照"
+    },
+    {
+      "id": "S17-F15",
+      "severity": "low",
+      "title": "✅ data_validation(GE)累计 10 场景 49/49 stable(positive)",
+      "evidence": {
+        "S07": "7/7", "S08": "7/7", "S09": "2/2", "S10": "3/3",
+        "S11": "5/5", "S12": "5/5", "S14": "3/3", "S15": "3/3",
+        "S16": "7/7", "S17": "val-79124af7473b 7/7",
+        "total_evaluated": 49,
+        "total_passed": 49,
+        "scenarios_count": 10,
+        "success_pct": 100.0
+      },
+      "note": "✅ S07-S17 10 场景累计 49/49 expectations 全 pass — **data_validation GE backend 是工具集最稳定的层** 单一指标 10 场景 100%"
+    }
+  ]
+}

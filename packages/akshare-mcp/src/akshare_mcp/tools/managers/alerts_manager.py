@@ -373,7 +373,11 @@ def register_alerts_manager(mcp):
                 if code_error:
                     return fail(code_error)
                 indicator = str(indicator).strip()
-                condition = str(condition).strip()
+                # P2-4.4.5 fix: condition 字段先 html.unescape(诊断报告 §4.4.5)
+                # 历史问题:condition='<' 经 JSON 编码变成 '&lt;' 直接 reject
+                # 修复:入口统一 unescape,接受常见 HTML 实体
+                import html as _html
+                condition = _html.unescape(str(condition)).strip()
                 if indicator not in _VALID_INDICATORS:
                     return fail(f"不支持的指标: {indicator}. 支持: {', '.join(_VALID_INDICATORS)}")
                 if condition not in _VALID_CONDITIONS:
@@ -476,6 +480,9 @@ def register_alerts_manager(mcp):
 
                 if kwargs.get("condition"):
                     candidate_condition = str(kwargs.get("condition")).strip()
+                    # P2-4.4.5 fix: 同 create,update 也支持 html.unescape
+                    import html as _html
+                    candidate_condition = _html.unescape(candidate_condition).strip()
                     if candidate_condition not in _VALID_CONDITIONS:
                         return fail(f"不支持的条件: {candidate_condition}. 支持: {', '.join(_VALID_CONDITIONS)}")
                     updated_alert["condition"] = candidate_condition

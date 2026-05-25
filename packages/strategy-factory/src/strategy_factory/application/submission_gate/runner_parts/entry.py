@@ -17,6 +17,17 @@ async def run_submission_quality_gate(
         backtest_metrics_contract_status = _normalize_text(
             materialized_backtest_metrics.get("backtest_metrics_contract_status")
         ) or "missing"
+        try:
+            from strategy_factory.application.research.statistical_robustness import (
+                enrich_validation_report_with_robustness_derivations,
+            )
+
+            validation_report = enrich_validation_report_with_robustness_derivations(
+                validation_report,
+                backtest_metrics=materialized_backtest_metrics,
+            )
+        except Exception:
+            pass
         profile = _resolve_validation_profile(strategy)
         profile_name = str(profile.get("profile") or "").strip().lower()
         strategy_type = str(strategy.get("strategy_type", "") or "").strip().lower()
@@ -38,6 +49,8 @@ async def run_submission_quality_gate(
                 strategy,
                 profile=profile,
                 klass=klass,
+                backtest_metrics=materialized_backtest_metrics,
+                validation_report=validation_report,
             )
             normalized = _with_gate_protocol(
                 statistical_gate,
@@ -56,6 +69,8 @@ async def run_submission_quality_gate(
                         strategy,
                         profile=profile,
                         klass=klass,
+                        backtest_metrics=materialized_backtest_metrics,
+                        validation_report=validation_report,
                     )
                 except Exception as exc:
                     supplemental_gate = normalize_quality_gate_result(
@@ -91,6 +106,8 @@ async def run_submission_quality_gate(
                         strategy,
                         profile=profile,
                         klass=klass,
+                        backtest_metrics=materialized_backtest_metrics,
+                        validation_report=validation_report,
                     )
                     warnings = _merge_text_items(
                         statistical_gate.get("warnings"),
@@ -116,6 +133,8 @@ async def run_submission_quality_gate(
                 strategy,
                 profile=profile,
                 klass=klass,
+                backtest_metrics=materialized_backtest_metrics,
+                validation_report=validation_report,
             )
             warnings = list(statistical_gate.get("warnings") or [])
             protocol = f"{profile_name or 'unknown'}:statistical_fallback"

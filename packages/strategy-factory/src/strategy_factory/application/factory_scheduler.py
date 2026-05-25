@@ -181,6 +181,10 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._dispatch_tasks: Dict[str, asyncio.Task] = {}
             self._active_dispatch_id: Optional[str] = None
             self._latest_dispatch_id: Optional[str] = None
+            self._last_theme_exposure_refresh_at: Optional[datetime] = None
+            self._last_theme_regression_run_at: Optional[datetime] = None
+            self._last_event_outbox_drain_at: Optional[datetime] = None
+            self._last_event_theme_maintenance_result: Optional[dict[str, Any]] = None
             # Circuit breaker state
             self._consecutive_failures: int = 0
             self._max_consecutive_failures: int = int(

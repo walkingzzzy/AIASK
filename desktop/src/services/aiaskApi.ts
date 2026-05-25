@@ -290,6 +290,129 @@ export class AiaskApi {
     return this.readOnlyTool<Record<string, unknown>>("agent_strategy_domain_events", body);
   }
 
+  // PR-G (Phase 5, 2026-05-24): Factory Event Trigger Console helpers.
+  // ``factory_event_list`` and ``factory_event_preview_tasks`` are
+  // ``READ_ONLY_STRATEGY_ACTIONS`` per ``tool_risk.py`` — they go
+  // through the ``agent_strategy_manager`` MCP tool with the standard
+  // ``action`` + ``kwargs`` envelope used by other manager surfaces.
+  factoryEventList(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      cleaned[key] = value;
+    }
+    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
+      action: "factory_event_list",
+      kwargs: JSON.stringify(cleaned)
+    });
+  }
+
+  factoryEventPreviewTasks(eventId: string, extras: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
+      action: "factory_event_preview_tasks",
+      kwargs: JSON.stringify({ event_id: eventId, ...extras })
+    });
+  }
+
+  factoryEventLineage(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      cleaned[key] = value;
+    }
+    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
+      action: "factory_event_lineage",
+      kwargs: JSON.stringify(cleaned)
+    });
+  }
+
+  factoryThemeExposureStatus(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
+      action: "factory_theme_exposure_status",
+      kwargs: JSON.stringify(body)
+    });
+  }
+
+  factoryEventOutboxStatus(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
+      action: "factory_event_outbox_status",
+      kwargs: JSON.stringify(body)
+    });
+  }
+
+  // Write actions go through the ActionIntent chain enforced by PR-F:
+  //   POST /intents (create) → POST /intents/{id}/confirm → adapter.
+  // Desktop never touches ``ACTION_HANDLERS`` directly; it stays on
+  // the read-only MCP tool surface for previews and on the intent
+  // surface for writes.
+  factoryEventCreateIntent(payload: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent("strategy_manager.factory_event_create", payload, rationale);
+  }
+
+  factoryEventApproveIntent(eventId: string, approverId: string, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_event_approve",
+      { event_id: eventId, approver_id: approverId },
+      rationale
+    );
+  }
+
+  factoryEventUpdateIntent(eventId: string, updates: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_event_update",
+      { event_id: eventId, ...updates },
+      rationale
+    );
+  }
+
+  factoryEventRecordOutcomeIntent(eventId: string, outcome: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_event_record_outcome",
+      { event_id: eventId, ...outcome },
+      rationale
+    );
+  }
+
+  factoryThemeExposureRefreshIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_theme_exposure_refresh",
+      params,
+      rationale || "Refresh the TDX-only theme exposure matrix from Desktop."
+    );
+  }
+
+  factoryEventOutboxDrainIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_event_outbox_drain",
+      params,
+      rationale || "Drain event-driven task outbox from Desktop."
+    );
+  }
+
+  factoryThemeRegressionRunIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_theme_regression_run",
+      params,
+      rationale || "Run theme-response regression from Desktop."
+    );
+  }
+
+  confirmIntent(intentId: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
+      this.endpoint,
+      `/intents/${encodeURIComponent(intentId)}/confirm`,
+      { method: "POST", token: this.controlToken, body: {} }
+    );
+  }
+
+  denyIntent(intentId: string, reason?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
+      this.endpoint,
+      `/intents/${encodeURIComponent(intentId)}/deny`,
+      { method: "POST", token: this.controlToken, body: { reason: reason || "" } }
+    );
+  }
+
   incubationFactoryStatus(): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
     return this.readOnlyTool<Record<string, unknown>>("agent_incubation_factory_status", {});
   }

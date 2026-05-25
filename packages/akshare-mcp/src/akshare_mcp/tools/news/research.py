@@ -577,7 +577,19 @@ def get_analyst_ranking(year: str = "") -> dict:
         except Exception:
             pass
 
-        return ok({'year': year, 'analysts': [], 'total': 0, 'message': f"暂无 {year} 年分析师排名数据（数据源限制）"})
+        # P3-5.20 fix: empty analysts → degraded=true(诊断报告 §5.20)
+        # 历史问题:返回 success=true / fallback_used=false / degraded=false 但 analysts=[]
+        # AI 误以为今年无人活跃,实际是数据源限制
+        return ok({
+            'year': year,
+            'analysts': [],
+            'total': 0,
+            'message': f"暂无 {year} 年分析师排名数据（数据源限制）",
+            'degraded': True,
+            'fallback_used': True,
+            'fallback_reason': 'tushare_report_rc_no_data_for_recent_5_years',
+            'quality_flags': ['empty_upstream', 'data_source_limitation'],
+        })
     except Exception as e:
         return fail(e)
 

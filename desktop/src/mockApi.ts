@@ -327,6 +327,69 @@ function toolResult(tool: string, body: Record<string, unknown>) {
   if (tool === "agent_strategy_review_snapshot") return strategyFactory().review_snapshot;
   if (tool === "agent_incubation_factory_status") return envelope(tool, { run_count: 3, error_count: 0, last_result_status: "completed" });
   if (tool === "agent_strategy_domain_events") return envelope(tool, { events: [{ event_type: body.event_type || "factory.run_completed", payload: { decision: "review" } }] });
+  // PR-G (Phase 5, 2026-05-24): factory event trigger console mocks so
+  // the new ``Factory Events`` view renders without a backend.
+  if (tool === "agent_strategy_manager") {
+    const action = String(body.action || "");
+    let parsedKwargs: Record<string, unknown> = {};
+    if (typeof body.kwargs === "string") {
+      try { parsedKwargs = JSON.parse(body.kwargs as string); } catch { parsedKwargs = {}; }
+    } else if (body.kwargs && typeof body.kwargs === "object") {
+      parsedKwargs = body.kwargs as Record<string, unknown>;
+    }
+    if (action === "factory_event_list") {
+      const events = [
+        {
+          event_id: "evt_mock_001",
+          event_name: "稀土出口管制(mock)",
+          event_type: "policy_shock",
+          event_source: "manual",
+          status: parsedKwargs.status || "active",
+          direction: "bullish",
+          intensity: 0.85,
+          confidence: 0.7,
+          primary_themes: ["critical_minerals", "rare_earth"],
+          operator_id: "operator_alice",
+          approver_id: "approver_bob",
+          created_at: "2026-05-24T08:00:00Z",
+          valid_from: "2026-05-24T08:00:00Z",
+          valid_until: "2026-06-24T08:00:00Z"
+        },
+        {
+          event_id: "evt_mock_002",
+          event_name: "AI 芯片新规(mock)",
+          event_type: "regulation",
+          event_source: "news_llm",
+          status: "pending_review",
+          direction: "bearish",
+          intensity: 0.6,
+          confidence: 0.55,
+          primary_themes: ["AI_chip"],
+          operator_id: "news_pipeline",
+          approver_id: null,
+          created_at: "2026-05-24T07:30:00Z",
+          valid_from: "2026-05-24T07:30:00Z",
+          valid_until: "2026-05-31T07:30:00Z"
+        }
+      ];
+      return envelope(tool, { events, count: events.length });
+    }
+    if (action === "factory_event_preview_tasks") {
+      return envelope(tool, {
+        event_id: parsedKwargs.event_id || "evt_mock_001",
+        impacts: [
+          { theme_code: "critical_minerals", depth: 0, magnitude: 0.85, source_path: "primary" },
+          { theme_code: "rare_earth", depth: 0, magnitude: 0.85, source_path: "primary" },
+          { theme_code: "metals_processing", depth: 1, magnitude: 0.42, source_path: "critical_minerals -> metals_processing" }
+        ],
+        candidate_symbols: ["600111", "600259", "600392", "002460", "300618"],
+        target_count: 5,
+        warnings: [],
+        preview_mode: "real_bfs"
+      });
+    }
+    return envelope(tool, { action, message: "mock strategy_manager handler" });
+  }
   if (tool === "agent_memory_search") return envelope(tool, { items: [{ memory_id: "mem_mock", content: "mock memory hit", user_id: body.user_id || "local" }] });
   if (tool === "agent_session_search") return envelope(tool, { items: [{ session_id: "sess_mock", content: "mock session hit", user_id: body.user_id || "local" }] });
   if (tool === "agent_file_list") return envelope(tool, { entries: [{ path: "README.md", type: "file" }, { path: "desktop", type: "directory" }] });

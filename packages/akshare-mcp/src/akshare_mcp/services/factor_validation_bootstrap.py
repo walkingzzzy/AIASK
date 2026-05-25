@@ -254,6 +254,29 @@ def _promotion_block_reasons(validation: dict[str, Any]) -> list[str]:
     if str(multiple.get("risk_level") or "").strip().lower() == "high":
         reasons.append("multiple_testing_risk_high")
 
+    # P1-3.6 fix: governance online_offline:inconsistent 接入 promotion hard gate
+    # 历史问题(诊断报告 §3.6):backtest slippage=0bps vs execution 5bps,因子在 8bps gap 下表现差,
+    # governance_check_workflow 检测到但只 emit warning,promotion 仍通过,导致 cohort 全 D 级
+    # 修复:online_offline 状态为 inconsistent 时强制阻塞 promotion
+    consistency = (
+        validation.get("online_offline_consistency")
+        if isinstance(validation.get("online_offline_consistency"), dict)
+        else (validation.get("governance") or {}).get("online_offline_consistency")
+        if isinstance((validation.get("governance") or {}).get("online_offline_consistency"), dict)
+        else {}
+    )
+    if isinstance(consistency, dict):
+        consistency_status = str(consistency.get("consistency_status") or "").strip().lower()
+        if consistency_status == "inconsistent":
+            reasons.append("online_offline_inconsistent")
+        # 即使没显式状态,直接看 issues 列表
+    governance_issues = validation.get("governance_issues") or []
+    if isinstance(governance_issues, list) and any(
+        "online_offline:inconsistent" in str(i) for i in governance_issues
+    ):
+        if "online_offline_inconsistent" not in reasons:
+            reasons.append("online_offline_inconsistent")
+
     warnings = [str(item or "").strip().lower() for item in list(validation.get("warnings") or [])]
     high_risk_warning_tokens = (
         "lookahead_audit_failed",

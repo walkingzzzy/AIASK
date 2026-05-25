@@ -11,6 +11,7 @@ import { CapabilitiesWorkspace } from "./features/capabilities/CapabilitiesWorks
 import { CoverageWorkspace } from "./features/coverage/CoverageWorkspace";
 import { DataSyncWorkspace } from "./features/data/DataSyncWorkspace";
 import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
+import { FactoryEventTriggerPanel } from "./features/factory-events/FactoryEventTriggerPanel";
 import { FactorFactoryPanel } from "./features/factor/FactorFactoryPanel";
 import { IncubationFactoryPanel } from "./features/incubation/IncubationFactoryPanel";
 import { ModelsWorkspace } from "./features/models/ModelsWorkspace";
@@ -275,6 +276,13 @@ export function App() {
         )}
         {mainView === "quant" && <QuantResearchWorkspace apiToken={apiToken} endpoint={normalizedEndpoint} userId={userId} />}
         {mainView === "event-console" && <EventConsolePanel apiToken={apiToken} endpoint={normalizedEndpoint} />}
+        {mainView === "factory-events" && (
+          <FactoryEventTriggerPanel
+            apiToken={apiToken}
+            controlToken={controlToken}
+            endpoint={normalizedEndpoint}
+          />
+        )}
         {mainView === "diagnostics" && (
           <DiagnosticsPanel
             busy={busy}

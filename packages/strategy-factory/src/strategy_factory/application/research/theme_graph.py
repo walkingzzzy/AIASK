@@ -29,6 +29,12 @@ class NormalizedEvent:
     scope: str = "theme"
     primary_themes: list[dict[str, Any]] = field(default_factory=list)
     rationale: Optional[str] = None
+    # PR-C (Phase 1, 2026-05-24): event_context now needs valid_from /
+    # valid_until so downstream lineage and Desktop preview can show the
+    # window. Both default to None to keep backwards compatibility with
+    # legacy callers that build NormalizedEvent inline.
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NormalizedEvent":
@@ -44,6 +50,8 @@ class NormalizedEvent:
             scope=str(data.get("scope") or "theme").strip(),
             primary_themes=list(data.get("primary_themes") or []),
             rationale=data.get("rationale"),
+            valid_from=(str(data.get("valid_from")).strip() or None) if data.get("valid_from") else None,
+            valid_until=(str(data.get("valid_until")).strip() or None) if data.get("valid_until") else None,
         )
 
 
@@ -94,20 +102,44 @@ async def propagate_event_to_themes(
     max_depth: int = 2,
     min_magnitude: float = 0.15,
     min_confidence: float = 0.25,
-) -> list[ThemeImpact]:
+    return_warnings: bool = False,
+) -> list[ThemeImpact] | tuple[list[ThemeImpact], list[dict[str, Any]]]:
     """BFS propagation from event primary themes through the theme graph.
 
+    PR-D (Phase 2, 2026-05-24) hardening:
+        - Visited set keyed by ``(theme_code, depth)`` so a cycle
+          ``A -> B -> A`` cannot expand more than once at the same
+          depth band.
+        - ``neutral`` primary themes (``direction_sign == 0``) do **not**
+          enter the propagation frontier; they are recorded with
+          ``magnitude == 0`` so lineage / preview can still see them.
+        - Missing primary themes (``get_theme_node`` returns ``None``)
+          surface a ``warning`` entry that callers can show in preview
+          UI.
+        - When multiple paths reach the same target theme, the merge
+          rule keeps the strongest (``magnitude``) impact and remembers
+          the runner-up paths in ``source_path`` (joined via ``" || "``)
+          so operators can see which propagation path won.
+
     Args:
-        db: Database adapter with `list_theme_edges` and `get_theme_node` methods.
+        db: Database adapter with ``list_theme_edges`` and ``get_theme_node`` methods.
         event: Normalized event with primary themes.
         max_depth: Maximum graph traversal depth (default 2).
         min_magnitude: Prune branches below this magnitude.
         min_confidence: Prune branches below this confidence.
+        return_warnings: If True, return ``(impacts, warnings)`` tuple.
+            ``warnings`` is a list of dicts describing missing themes,
+            neutral primaries, and merged-paths summaries. Default
+            ``False`` keeps the original list-only return shape.
 
     Returns:
-        List of ThemeImpact objects, one per affected theme.
+        Either ``list[ThemeImpact]`` (default) or
+        ``(list[ThemeImpact], list[dict])`` when ``return_warnings=True``.
     """
     impacts: dict[str, ThemeImpact] = {}
+    merged_paths: dict[str, list[str]] = {}
+    warnings: list[dict[str, Any]] = []
+    visited: set[tuple[str, int]] = set()
 
     # Initialize frontier from primary themes
     frontier: list[tuple[str, int, float, float, int, int, str]] = []
@@ -120,9 +152,35 @@ async def propagate_event_to_themes(
             pt_direction = event.direction
 
         if not theme_code:
+            warnings.append({
+                "type": "primary_missing_theme_code",
+                "raw": str(pt),
+            })
             continue
 
         dir_sign = normalize_direction_sign(pt_direction)
+
+        # Neutral primaries: emit lineage marker, do NOT enter frontier.
+        # Plan §6 Phase 2: "neutral primary 不进入传播队列；只写
+        # lineage 或 preview warning"
+        if dir_sign == 0:
+            impacts[theme_code] = ThemeImpact(
+                theme_code=theme_code,
+                direction_sign=0,
+                magnitude=0.0,
+                confidence=event.confidence,
+                lag_days=0,
+                depth=0,
+                breadth="medium",
+                source_path="primary:neutral",
+            )
+            warnings.append({
+                "type": "neutral_primary_skipped",
+                "theme_code": theme_code,
+                "reason": "direction is neutral; lineage emitted but no propagation",
+            })
+            continue
+
         frontier.append((
             theme_code,
             dir_sign,
@@ -137,6 +195,15 @@ async def propagate_event_to_themes(
     while frontier:
         theme_code, dir_sign, conf, mag, lag, depth, path = frontier.pop(0)
 
+        # Visited check at (theme_code, depth) prevents A->B->A from
+        # expanding twice. We still allow the same theme to appear at a
+        # shallower depth via a different path so the merge step can pick
+        # the stronger one.
+        visit_key = (theme_code, depth)
+        if visit_key in visited:
+            continue
+        visited.add(visit_key)
+
         # Resolve breadth from theme node
         breadth = "medium"
         node = None
@@ -144,10 +211,20 @@ async def propagate_event_to_themes(
             node = await db.get_theme_node(theme_code)
         if node:
             breadth = str(node.get("breadth") or "medium").strip()
+        elif depth == 0:
+            # Missing primary theme: warn so preview UI can show "缺失主题".
+            warnings.append({
+                "type": "missing_theme_node",
+                "theme_code": theme_code,
+                "depth": depth,
+            })
 
-        # Merge: keep the stronger impact for each theme
+        # Merge: keep the stronger impact for each theme; record the loser
+        # path so operators can see which branch won.
         existing = impacts.get(theme_code)
         if existing is None or mag > existing.magnitude:
+            if existing is not None:
+                merged_paths.setdefault(theme_code, []).append(existing.source_path)
             impacts[theme_code] = ThemeImpact(
                 theme_code=theme_code,
                 direction_sign=dir_sign,
@@ -158,6 +235,8 @@ async def propagate_event_to_themes(
                 breadth=breadth,
                 source_path=path,
             )
+        else:
+            merged_paths.setdefault(theme_code, []).append(path)
 
         # Don't expand beyond max_depth
         if depth >= max_depth:
@@ -185,13 +264,51 @@ async def propagate_event_to_themes(
             if new_mag < min_magnitude or new_conf < min_confidence:
                 continue
 
+            # Visited guard cuts cycles before requeueing.
+            new_depth = depth + 1
+            if (target, new_depth) in visited:
+                continue
+
             new_path = f"{path} → {edge.get('relation_type', '?')} → {target}"
             frontier.append((
                 target, new_dir, new_conf, new_mag,
-                new_lag, depth + 1, new_path,
+                new_lag, new_depth, new_path,
             ))
 
-    return list(impacts.values())
+    # Fold merged_paths back into ThemeImpact.source_path so callers that
+    # don't ask for warnings still see the alternative routes.
+    if merged_paths:
+        rebuilt: dict[str, ThemeImpact] = {}
+        for code, impact in impacts.items():
+            losers = merged_paths.get(code) or []
+            if losers:
+                # source_path uses " || " between alternatives so the BFS
+                # path arrows ("→") remain unambiguous.
+                joined = impact.source_path + " || " + " || ".join(losers)
+                rebuilt[code] = ThemeImpact(
+                    theme_code=impact.theme_code,
+                    direction_sign=impact.direction_sign,
+                    magnitude=impact.magnitude,
+                    confidence=impact.confidence,
+                    lag_days=impact.lag_days,
+                    depth=impact.depth,
+                    breadth=impact.breadth,
+                    source_path=joined,
+                )
+                warnings.append({
+                    "type": "merged_paths",
+                    "theme_code": code,
+                    "winner": impact.source_path,
+                    "alternatives": losers,
+                })
+            else:
+                rebuilt[code] = impact
+        impacts = rebuilt
+
+    impact_list = list(impacts.values())
+    if return_warnings:
+        return impact_list, warnings
+    return impact_list
 
 
 __all__ = [

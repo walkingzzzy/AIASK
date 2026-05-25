@@ -564,6 +564,16 @@ def register_sector_manager(mcp):
                     'sectors': sectors,
                     'period': period,
                     'correlation_matrix': correlation_matrix,
+                    'computed_pairs': sum(len(v) for v in correlation_matrix.values()),
+                    'sectors_with_returns': list(sector_returns.keys()),
+                    'sectors_missing_returns': [s for s in sectors if s not in sector_returns],
+                    # P3-5.7 fix: 空 correlation_matrix 显式标 degraded(诊断报告 §5.7)
+                    'degraded': len(correlation_matrix) == 0,
+                    'fallback_reason': (
+                        'all_sector_returns_unavailable'
+                        if len(correlation_matrix) == 0
+                        else None
+                    ),
                     'interpretation': {
                         'high_correlation': '>0.7表示高度相关',
                         'low_correlation': '<0.3表示低相关',

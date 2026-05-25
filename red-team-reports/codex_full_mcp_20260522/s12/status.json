@@ -1,0 +1,312 @@
+{
+  "scenario_id": "S12",
+  "title": "实盘 broker 桥 + dry_run 护栏 + confirm_token 写保护 + 数据同步状态 + 调度任务 + TDX_LOCAL_ONLY 模式",
+  "tools_required": 31,
+  "tools_called": 32,
+  "tools_unique_in_scenario": 32,
+  "tools_new_to_global": 5,
+  "passed": true,
+  "ran_at_start": "2026-05-24T12:32:24+08:00",
+  "ran_at_end": "2026-05-24T12:34:01+08:00",
+  "tool_status_rows": [
+    {"tool": "live_trading_manager.help", "verdict": "Pass", "extra": "🎯 14 actions: gateway_status/account/positions/orders/order_status/order_events/fills/broker_receipts/submit_order/cancel_order/mirror_to_paper/sync_order_events/monitor/sync_positions/help"},
+    {"tool": "live_trading_manager.gateway_status", "verdict": "Pass", "extra": "🎯🎯🎯 provider=alpaca mode=paper base_url='https://paper-api.alpaca.markets' configured=false connected=false read_only=true write_enabled=false;capabilities multi_broker/order_events/fills/broker_receipts ✅"},
+    {"tool": "live_trading_manager.orders", "verdict": "Pass", "extra": "🎯 fail-graceful 'live broker gateway not configured';success=false ✅"},
+    {"tool": "live_trading_manager.positions", "verdict": "Pass", "extra": "🎯 fail-graceful 'live broker gateway not configured'"},
+    {"tool": "live_trading_manager.account", "verdict": "Pass", "extra": "🎯 fail-graceful 同上"},
+    {"tool": "live_trading_manager.submit_order (dry_run=true)", "verdict": "Pass", "extra": "🎯🎯🎯 mode='dry_run' accepted=true submitted=false preview 完整(symbol/side/qty/type/time_in_force/limit_price/stop_price/extended_hours)— **dry_run 护栏 robust ✅**"},
+    {"tool": "live_trading_manager.cancel_order (dry_run=true, fake_id)", "verdict": "Pass", "extra": "🎯 mode='dry_run' cancelled=false 撤单预览 ✅"},
+    {"tool": "live_trading_manager.submit_order (execute=true, no token)", "verdict": "Pass", "extra": "🎯🎯🎯 success=false error_code=CONFIRMATION_REQUIRED;'provide confirm_token=I_UNDERSTAND_THE_RISK';side_effect.level=trade_risk confirmation_policy=explicit_token_required ✅(护栏 robust)"},
+    {"tool": "live_trading_manager.submit_order (execute=true, fake token)", "verdict": "Pass", "extra": "🎯🎯🎯 同样 fail CONFIRMATION_REQUIRED — **不接受任意 token,只接受固定 magic string 'I_UNDERSTAND_THE_RISK' ✅**"},
+    {"tool": "live_trading_manager.submit_order (execute=true, correct token)", "verdict": "Pass", "extra": "🎯🎯🎯 mode='read_only' accepted=true submitted=false message='网关处于只读模式,返回下单预览' — **双重护栏:即使 token 正确也只 preview(因 gateway not configured)✅**"},
+    {"tool": "live_trading_manager.submit_order (dry_run, qty=99亿)", "verdict": "Degraded", "extra": "🚨 qty=9999999999 仍 accepted=true preview — **dry_run 模式无 sanity check**(可发送 99 亿 shares 不报错)"},
+    {"tool": "live_trading_manager.broker_receipts (fake_id)", "verdict": "Pass", "extra": "🎯 fail-graceful 'live broker gateway not configured'"},
+    {"tool": "live_trading_manager.fills", "verdict": "Pass", "extra": "🎯 同上 fail-graceful"},
+    {"tool": "live_trading_manager.order_status (fake_id)", "verdict": "Pass", "extra": "🎯 同上"},
+    {"tool": "live_trading_manager.mirror_to_paper", "verdict": "Pass", "extra": "🎯 同上 fail-graceful;不会 silent fork 创建 paper account"},
+    {"tool": "live_trading_manager.order_events (无 order_id)", "verdict": "Fail-graceful", "extra": "🚨 'order_id is required'— **vs help 写的 'build normalized live order event timeline' 像 list,实际是 single order 视角**;文档误导"},
+    {"tool": "live_trading_manager.sync_order_events (无 order_id)", "verdict": "Fail-graceful", "extra": "🚨 'order_id is required'同样 — output_artifact_id/persist_artifact 参数也未生效"},
+    {"tool": "live_trading_manager.monitor (alias gateway_status)", "verdict": "Pass", "extra": "🎯 alias of gateway_status 一致 ✅"},
+    {"tool": "live_trading_manager.sync_positions (alias positions)", "verdict": "Pass", "extra": "🎯 fail-graceful 同 positions ✅"},
+    {"tool": "data_warmup.status", "verdict": "Pass", "extra": "🎯 last_warmup=null + sync_metrics 全 0 + cache_stats 完整(hit_rate=1.0/1 hit/file_count=3)"},
+    {"tool": "data_sync_manager.help", "verdict": "Pass", "extra": "🎯 9 actions: status/sync/get_task/list_tasks/cancel_task/schedule/list_schedules/cancel_schedule/run_due_schedules"},
+    {"tool": "data_sync_manager.status", "verdict": "Degraded", "extra": "🚨🚨🚨 quote_snapshot.fresh_code_count=0 / stale_code_count=450 / coverage_ratio=8.14%(450/5529);north_fund_flow.max_date='2024-08-16'(21 个月前!);vector_documents=0 kline_pattern_windows=0 vector_optimization_runs=0(为 S10-F04 search_by_kline ST 跑偏提供根因)"},
+    {"tool": "data_sync_manager.list_tasks (5)", "verdict": "Pass", "extra": "🎯 5 historical sync tasks(factor_context/core_market 各 2-3 次)全 status=completed ✅"},
+    {"tool": "data_sync_manager.list_schedules", "verdict": "Degraded", "extra": "🚨🚨 7 schedules:5 个 schedule_kline_* 重复(都 600519 daily,只 1 个 enabled);僵尸 schedule;2 个 runtime schedule(core_market / factor_context)正常运行"},
+    {"tool": "check_db_freshness ([600519, 601318, 510050])", "verdict": "Pass", "extra": "🎯 3/3 fresh:600519(2d) 601318(4d) 510050(2d) 全 ≤ max_stale_days=5;**但 510050 实际 K 线缺(S07-F09 fresh 为'最后日期 fresh' 而非'数据完整')**"},
+    {"tool": "check_db_freshness (FAKE_CODE_999999)", "verdict": "Pass", "extra": "🎯 success=false '存在无效股票代码: FAKE_CODE_999999' ✅(input validation 工作)"},
+    {"tool": "get_dead_letters (5)", "verdict": "Pass", "extra": "🎯 count=0 records=[] path='.mcp_cache/dead_letters/kline_save_failures.jsonl' ✅"},
+    {"tool": "get_sync_status", "verdict": "Pass", "extra": "🎯 metrics 全 0 + dead_letter count=0 ✅"},
+    {"tool": "get_cache_stats", "verdict": "Pass", "extra": "🎯 hit_rate=1.0 / file_count=3 / total_size_mb=0.0063 / ttl_config 8 项完整(realtime 5s/intraday 60s/daily 3600s/calendar 86400s)"},
+    {"tool": "get_cb_info (123039)", "verdict": "Degraded", "extra": "🚨 cb_info={} message='tqcenter 不可用且未启用旧降级' fallback_reason='tdx_only_mode'(TDX_LOCAL_ONLY 锁住即使有备用源也不用)"},
+    {"tool": "get_ipo_info", "verdict": "Degraded", "extra": "🚨🚨 ipo_list=[] success=true degraded=false 但 fallback_used=true reason='tdx_only_mode'— **顶层 degraded=false 但 fallback_used=true 矛盾**(应当 degraded=true)"},
+    {"tool": "data_validation.backend", "verdict": "Pass", "extra": "🎯 backend='great_expectations' ✅;但 side_effect.level='stateful' idempotent=false 可疑(backend query 应当 read_only)"},
+    {"tool": "experiment_tracker.backend", "verdict": "Degraded", "extra": "🚨 backend='builtin_fallback' fallback_reason='mlflow_not_installed'(S08-F04/S09-F13 累计第 3 次复现)"},
+    {"tool": "get_trading_dates (count=5)", "verdict": "Degraded", "extra": "🎯 5 dates(20260518-20260522)source=tqcenter;backend_requested=tushare_pro backend_used=tqcenter fallback_used=true ✅(显式 fallback)"},
+    {"tool": "get_stock_capital (600519)", "verdict": "Pass", "extra": "🎯 ltgb=zgb=1.25B;source=tqcenter;3017ms latency;✅"},
+    {"tool": "data_validation (GE 5 expectations on live_safety dataset)", "verdict": "Pass", "extra": "🎯🎯 validation_id=val-81a2081575f1 evaluated=5 successful=5 100%(S07-S12 累计 6/6 stable ✅)"},
+    {"tool": "log_recommendation_audit", "verdict": "Pass", "extra": "logged=true reasoning_chain 完整记录实盘护栏 4 个层级"}
+  ],
+  "summary": {
+    "Pass": 25,
+    "Degraded": 7,
+    "Fail": 0,
+    "Fail-graceful": 2,
+    "called": 32,
+    "fail_note": "S12 中 order_events / sync_order_events 没传 order_id 是 graceful 错误(error 显式),但 vs help 文档说'build timeline'像 list 是文档误导"
+  },
+  "fail_findings": [],
+
+  "key_findings": [
+    {
+      "id": "S12-F01",
+      "severity": "low",
+      "title": "✅ 实盘 broker 桥四层护栏 robust(positive evidence,工具集最关键安全保障)",
+      "evidence": {
+        "layer_1_dry_run": {
+          "input": {"dry_run": true, "qty": 100, "side": "buy"},
+          "output": {"mode": "dry_run", "accepted": true, "submitted": false}
+        },
+        "layer_2_no_token": {
+          "input": {"execute": true, "no_confirm_token": true},
+          "output": {"success": false, "error_code": "CONFIRMATION_REQUIRED", "error": "provide confirm_token=I_UNDERSTAND_THE_RISK"}
+        },
+        "layer_3_fake_token": {
+          "input": {"execute": true, "confirm_token": "obviously_fake_token"},
+          "output": {"success": false, "error_code": "CONFIRMATION_REQUIRED", "magic_string_match": false}
+        },
+        "layer_4_correct_token_but_gateway_unconfigured": {
+          "input": {"execute": true, "confirm_token": "I_UNDERSTAND_THE_RISK"},
+          "output": {"mode": "read_only", "accepted": true, "submitted": false, "message": "网关处于只读模式,返回下单预览"}
+        }
+      },
+      "note": "✅ **工具集最关键的安全护栏**:即使带正确 confirm_token 也因 gateway 未配置而 read_only mode 阻止下单;这是**实盘交易前 4 重保护**(dry_run / explicit token / magic string / gateway config)。**绝不会 silent 下真实订单**"
+    },
+    {
+      "id": "S12-F02",
+      "severity": "high",
+      "title": "data_sync_manager.status quote_snapshot 全部 stale(fresh_code_count=0 / 450 stale / coverage 8.14%)",
+      "evidence": {
+        "row_count": 9352,
+        "covered_code_count": 450,
+        "fresh_code_count": 0,
+        "stale_code_count": 450,
+        "universe_stock_count": 5529,
+        "coverage_ratio": 0.0814,
+        "freshness_ttl_seconds": 30.0,
+        "latest_quote_time": "2026-05-24 03:44:59"
+      },
+      "root_cause": "(1) freshness_ttl=30s 但 latest_quote_time 在 12 小时前(03:44 vs 12:33 测试时间)— **超过 ttl 整个 9352 行 quote 全 stale** (2) 但工具仍 success=true degraded=false (3) coverage_ratio 8.14% — **5529 全市场只覆盖 450**(91.86% 缺失)",
+      "impact": "AI 调 get_realtime_quote / compliance_manager.check_order 等工具拿到的 'realtime' 数据都是 stale db quote(可能十几小时前);AI 不知 db.stock_quotes 已经过期",
+      "recommended_fix": "(1) data_sync_manager.status 顶层 degraded=true 当 fresh_code_count=0 (2) coverage_ratio<50% 时 warning (3) get_realtime_quote 应当 emit warning 'snapshot_stale' 让 AI 看清"
+    },
+    {
+      "id": "S12-F03",
+      "severity": "high",
+      "title": "north_fund_flow 数据库 max_date=2024-08-16(21 个月前!)— S09/S10 北向资金跪根因揭示",
+      "evidence": {
+        "table": "north_fund_flow",
+        "count": 2264,
+        "min_date": "2014-11-17",
+        "max_date": "2024-08-16",
+        "delta_to_now_months": 21,
+        "comparison.margin_market_flow.max_date": "2026-05-21",
+        "comparison.margin_detail.max_date": "2026-05-18",
+        "comparison.stock_fund_flow.max_date": "2026-05-21"
+      },
+      "root_cause": "(1) north_fund_flow 表 sync 任务停在 2024-08-16(21 月前) (2) S09/S10 看到 4 个 source 全跪 reason='all stale/empty/bad_date' — 这是根因 (3) margin / stock_fund_flow 等其它表都正常 sync 到 2026-05",
+      "impact": "AI 调 get_north_fund / get_north_fund_top / get_north_fund_holding 等工具都会拿到 21 个月前数据或全跪;任何依赖北向资金的策略和决策完全不可用",
+      "recommended_fix": "(1) 修复 north_fund_flow sync schedule (2) 在 sync_status 顶层标 'critical_table_stale' alert (3) 数据 stale > 30 天时 quality_gate.freshness_sla 必须 fail"
+    },
+    {
+      "id": "S12-F04",
+      "severity": "high",
+      "title": "vector_documents=0 / kline_pattern_windows=0 — S10-F04 search_by_kline ST 股跑偏的根因",
+      "evidence": {
+        "vector_documents": 0,
+        "vector_documents_news": 0,
+        "vector_documents_notice": 0,
+        "vector_documents_research": 0,
+        "kline_pattern_windows": 0,
+        "vector_profiles_kline_patterns": 0,
+        "vector_profiles_stock_profiles": 0,
+        "vector_profiles_factor_candidates": 0,
+        "vector_optimization_runs": 0,
+        "BUT_market_documents": 125,
+        "BUT_market_doc_chunks": 125,
+        "vector_collections": 12,
+        "vector_profiles": 112,
+        "vector_dimension_contracts": 13,
+        "vector_graph_nodes": 140,
+        "vector_graph_edges": 224
+      },
+      "root_cause": "(1) market_documents 有 125 条但 vector_documents=0 — **chunks 没生成 embedding**(adapter 跑了但向量化没跑) (2) kline_pattern_windows=0 → search_by_kline 没真实向量库,fallback 到 python 暴力搜索 — **直接造成 S10-F04 茅台相似 ST 股 bug** (3) stock_profiles=0 → similar_stocks 也走 python fallback",
+      "impact": "(1) S10-F04 search_by_kline 返回全 ST 股(2) S10-F14 search_similar_stocks 也是 fallback python (3) market_docs 搜索 / 行业知识图谱搜索都失效",
+      "recommended_fix": "(1) 修复 vector_backfill_kline_patterns / vector_backfill_stock_profiles 调度任务 (2) data_sync_manager.status 顶层标 'vector_index_unhealthy' (3) search_by_kline 在 kline_pattern_windows=0 时 emit warning"
+    },
+    {
+      "id": "S12-F05",
+      "severity": "high",
+      "title": "data_sync_manager.list_schedules 5 个 schedule_kline_* 600519 重复僵尸 schedule(只 1 enabled)",
+      "evidence": {
+        "schedules.count": 7,
+        "schedule_kline_count": 5,
+        "schedule_kline_codes": "all=[\"600519\"]",
+        "schedule_kline_enabled_count": 1,
+        "schedule_kline_disabled_count": 4,
+        "schedule_kline_id_range": "3-7",
+        "duplicate_creation_dates": ["2026-05-21 04:30", "06:22", "08:40", "14:34", "16:42"]
+      },
+      "root_cause": "(1) 创建 schedule 不去重(同一 code+task_type+schedule 多次允许) (2) 5 月 21 日一天创建了 5 个相同的 600519 daily kline schedule (3) cancel_schedule 把 enabled=0 但记录保留 → 僵尸 schedule",
+      "impact": "(1) AI 创建 schedule 时不会发现已存在,导致重复创建 (2) 历史 schedule 列表 noise 大 — 找不到当前真正生效的",
+      "recommended_fix": "(1) schedule 创建去重(code + task_type + schedule period unique constraint)(2) cancel_schedule 物理删除而不是 enabled=0 (3) list_schedules 默认只返回 enabled=1"
+    },
+    {
+      "id": "S12-F06",
+      "severity": "high",
+      "title": "live_trading.submit_order(dry_run=true, qty=99 亿) 仍 accepted=true 无 sanity check",
+      "evidence": {
+        "input.qty": 9999999999.0,
+        "input.dry_run": true,
+        "input.symbol": "SPY",
+        "output.accepted": true,
+        "output.mode": "dry_run",
+        "output.preview.qty": 9999999999.0,
+        "no_warning": true,
+        "no_amount_check": true,
+        "no_position_limit_check": true
+      },
+      "root_cause": "(1) dry_run 模式 bypass 全部 compliance check(假设是 'preview',不需校验) (2) 但**实际场景**用户 dry_run 是要看 'will this order go through?' 的预览,如果 qty 异常应当 dry_run 也警告 (3) 99 亿 SPY shares = SPY $5.5T market cap 的 200 倍 — 异常但不阻断",
+      "impact": "AI 在 dry_run 看到 accepted=true 以为正常,结果切到 execute=true 才发现实盘会拒;**dry_run 与 execute 的 validation 严重不对称**",
+      "recommended_fix": "(1) dry_run 模式仍跑 sanity check(qty>1M 或 amount>1M 时 emit warning)(2) 但不阻断,只 emit warnings 字段"
+    },
+    {
+      "id": "S12-F07",
+      "severity": "medium",
+      "title": "live_trading.order_events / sync_order_events help 文档 'build normalized live order event timeline' 像 list,实际单 order 视角",
+      "evidence": {
+        "help.order_events.description": "build normalized live order event timeline",
+        "help.sync_order_events.description": "persist normalized live order event snapshot as artifact",
+        "actual_call_no_order_id.error": "order_id is required",
+        "documentation_misleading": true
+      },
+      "root_cause": "help 文档暗示 'timeline' 是历史 list,但实际是 single order 的事件时间线(必填 order_id)",
+      "recommended_fix": "(1) help 改为 'build single order event timeline (order_id required)' (2) 或新增一个 list 类 list_order_events action 返回所有"
+    },
+    {
+      "id": "S12-F08",
+      "severity": "medium",
+      "title": "get_ipo_info success=true degraded=false 但 fallback_used=true reason='tdx_only_mode' — 顶层标志矛盾",
+      "evidence": {
+        "ipo_list": [],
+        "count": 0,
+        "success": true,
+        "degraded": false,
+        "fallback_used": true,
+        "fallback_reason": "tdx_only_mode",
+        "quality_flags": ["degraded", "fallback"],
+        "BUT_meta.degraded": false
+      },
+      "root_cause": "(1) ipo_list=[] 是 'no IPO this period' 还是 'data unavailable' 不明 (2) fallback_used=true 但 degraded=false 矛盾",
+      "recommended_fix": "(1) message 字段 'no_data' vs 'data_unavailable' 区分 (2) fallback_used=true 必须 degraded=true"
+    },
+    {
+      "id": "S12-F09",
+      "severity": "medium",
+      "title": "TDX_LOCAL_ONLY=1 模式锁住 fallback chain — get_cb_info / get_ipo_info 都因 tqcenter 不可用而无数据",
+      "evidence": {
+        "get_cb_info_123039.fallback_reason": "tdx_only_mode",
+        "get_cb_info_123039.message": "tqcenter 不可用且未启用旧降级",
+        "get_ipo_info.fallback_reason": "tdx_only_mode",
+        "fallback_chain_all_blocked_by_tdx_only_mode": true
+      },
+      "root_cause": "TDX_LOCAL_ONLY=1 环境变量锁定本地数据源,不允许走 online tushare/akshare/etc.;但 tqcenter(本地)如果跪了就完全没数据",
+      "impact": "AI 在 TDX_LOCAL_ONLY 模式下大量工具会无数据,**用户/部署不知道这个 mode 锁定**",
+      "recommended_fix": "(1) 顶层 quality_flags 加 'tdx_only_mode_active' (2) 文档说明哪些工具受影响"
+    },
+    {
+      "id": "S12-F10",
+      "severity": "medium",
+      "title": "experiment_tracker mlflow→builtin silent fallback(S08-F04 / S09-F13 / S12 累计第 3 次复现)",
+      "evidence": {
+        "backend_requested": "mlflow",
+        "backend_used": "builtin",
+        "fallback_used": true,
+        "fallback_reason": "mlflow_not_installed",
+        "scenarios_observed": ["S08", "S09", "S12"]
+      },
+      "root_cause": "mlflow 包未安装,silent fallback 到 builtin in-memory tracker;场景累计 3 次复现",
+      "recommended_fix": "(参见 S08-F04)"
+    },
+    {
+      "id": "S12-F11",
+      "severity": "medium",
+      "title": "check_db_freshness 'fresh' 仅检查 'last_date 在 max_stale_days 内',不检查数据完整性(S07-F09 复现)",
+      "evidence": {
+        "510050.fresh": true,
+        "510050.last_date": "2026-05-22",
+        "510050.staleness_days": 2,
+        "BUT_S07.get_kline(510050).accepted_count": 11,
+        "BUT_S07.get_kline(510050).expected_count": 30,
+        "data_completeness_check": "missing"
+      },
+      "root_cause": "fresh 只看 last_date(单点)不看序列完整性;510050 有 5 月 22 日数据但缺前 19 天",
+      "impact": "AI 调 check_db_freshness 看 510050 fresh=true,实际 K 线缺 19 天",
+      "recommended_fix": "增加 sequence_completeness_pct 字段:expected_kline_count / actual_kline_count"
+    },
+    {
+      "id": "S12-F12",
+      "severity": "low",
+      "title": "✅ data_validation(GE) S07-S12 累计 6 场景 6/6 stable",
+      "evidence": {
+        "S07.val": "val-53273787f84a (7/7 pass)",
+        "S08.val": "val-1ca745e7ab52 (7/7 pass)",
+        "S09.val": "val-e8933820055e (2/2 pass)",
+        "S10.val": "val-0fa79bf3ba13 (3/3 pass)",
+        "S11.val": "val-3089e8754aab (5/5 pass)",
+        "S12.val": "val-81a2081575f1 (5/5 pass)",
+        "total_evaluated": 29,
+        "total_passed": 29
+      },
+      "note": "✅ S07-S12 6 场景累计 29/29 expectations 全 pass — `data_validation` GE backend 是工具集**最稳定的层**(单一指标连续 6 场景 100% stable)"
+    },
+    {
+      "id": "S12-F13",
+      "severity": "low",
+      "title": "✅ check_db_freshness input validation + dead_letters / cache_stats / sync_status 完整 telemetry 链(positive evidence)",
+      "evidence": {
+        "check_db_freshness.invalid_code_handled": "存在无效股票代码: FAKE_CODE_999999 (success=false)",
+        "dead_letters.count": 0,
+        "dead_letters.path": ".mcp_cache/dead_letters/kline_save_failures.jsonl",
+        "sync_status.metrics": {"pending": 0, "success": 0, "fail": 0, "retry": 0, "lag": 0.0, "dead_letter": 0},
+        "cache_stats.hit_rate": 1.0,
+        "cache_stats.ttl_config_keys": 8,
+        "data_warmup.status_complete": true
+      },
+      "note": "✅ 数据基础设施 telemetry 完整:check_freshness + dead_letters + sync_metrics + cache_stats + ttl_config 五个工具组成完整可观测性链"
+    },
+    {
+      "id": "S12-F14",
+      "severity": "low",
+      "title": "✅ get_trading_dates 显式 fallback chain(positive evidence)",
+      "evidence": {
+        "backend_requested": "tushare_pro",
+        "backend_used": "tqcenter",
+        "fallback_used": true,
+        "result_count": 5,
+        "dates": ["20260518", "20260519", "20260520", "20260521", "20260522"],
+        "source_chain": ["basic_data.get_trading_dates", "market_data.tushare_pro", "market_data.tqcenter"]
+      },
+      "note": "✅ tushare_pro 跪了 fallback 到 tqcenter,顶层显式 fallback_used=true + source_chain 完整 — **降级路径透明 ✅**"
+    }
+  ],
+  "side_effect_state_ids": [
+    "data_validation validation_id=val-81a2081575f1 dataset_id=codex_full_mcp_20260522_s12_live_safety (read_only,5/5 pass,GE)",
+    "log_recommendation_audit logged=true (持久,strategy_id=codex_full_mcp_20260522_s12_audit action=hold)",
+    "audit:live_trading_manager × 14 (gateway_status × 2 / orders/positions/account/submit × 5 / cancel/broker_receipts/fills/order_status/mirror/order_events/sync_order_events/sync_positions)",
+    "audit:data_sync_manager × 4 (help/status/list_tasks/list_schedules)",
+    "audit:check_db_freshness × 2 / get_dead_letters / get_sync_status / get_cache_stats / data_warmup",
+    "audit:get_cb_info / get_ipo_info / get_trading_dates / get_stock_capital",
+    "audit:data_validation:backend / experiment_tracker:backend / data_validation:validate"
+  ]
+}

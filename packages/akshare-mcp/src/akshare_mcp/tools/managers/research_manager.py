@@ -138,7 +138,47 @@ def register_research_manager(mcp):
                                 }, source_chain=['research_manager', 'tushare.report_rc'])
                 except Exception:
                     pass
-                
+
+                # P1-3.4 fix: db.research_reports 回退(诊断报告 §3.4 manager 与 db 脱节)
+                # 历史问题:research_manager.get_reports tushare/akshare 全跪,但 db 实际有 reports
+                # 修复:fallback 到 db.research_reports,与 get_research_reports/search_research_db 同源
+                try:
+                    from ...storage import get_db
+                    db = get_db()
+                    async with db.acquire() as conn:
+                        rows = await conn.fetch(
+                            """SELECT title, institution, author, rating,
+                                      target_price, publish_date, summary
+                               FROM research_reports
+                               WHERE stock_code = $1
+                               ORDER BY publish_date DESC
+                               LIMIT $2""",
+                            code, int(limit),
+                        )
+                    if rows:
+                        reports = [
+                            {
+                                "title": str(r.get("title") or "").strip(),
+                                "institution": str(r.get("institution") or "").strip(),
+                                "author": str(r.get("author") or "").strip(),
+                                "rating": str(r.get("rating") or "").strip(),
+                                "target_price": r.get("target_price"),
+                                "date": str(r.get("publish_date") or ""),
+                                "summary": str(r.get("summary") or "")[:500],
+                            }
+                            for r in rows
+                        ]
+                        return _ok({
+                            'code': code,
+                            'reports': reports,
+                            'count': len(reports),
+                            'source': 'db.research_reports',
+                            'fallback_used': True,
+                            'fallback_reason': 'tushare_and_news_failed',
+                        }, source_chain=['research_manager', 'tushare.report_rc', 'db.research_reports'])
+                except Exception:
+                    pass
+
                 return _ok({
                     'code': code,
                     'reports': [],
@@ -181,7 +221,48 @@ def register_research_manager(mcp):
                                 }, source_chain=['research_manager', 'tushare.report_rc'])
                 except Exception:
                     pass
-                
+
+                # P1-3.4 fix: db.research_reports 回退聚合 ratings(同 get_reports 修复)
+                try:
+                    from ...storage import get_db
+                    db = get_db()
+                    async with db.acquire() as conn:
+                        rows = await conn.fetch(
+                            """SELECT rating FROM research_reports
+                               WHERE stock_code = $1
+                               ORDER BY publish_date DESC
+                               LIMIT 200""",
+                            code,
+                        )
+                    if rows:
+                        ratings = {'buy': 0, 'hold': 0, 'sell': 0}
+                        for row in rows:
+                            r = str(row.get("rating") or "").lower()
+                            if not r:
+                                continue
+                            # 中英文映射统一(诊断报告 §4.6 推荐)
+                            if any(k in r for k in ('买入', '增持', 'buy', 'overweight', 'add')):
+                                ratings['buy'] += 1
+                            elif any(k in r for k in ('卖出', '减持', 'sell', 'underweight', 'reduce')):
+                                ratings['sell'] += 1
+                            elif any(k in r for k in ('持有', '中性', 'hold', 'neutral')):
+                                ratings['hold'] += 1
+                            # 其他 rating 值不计入
+                        total = sum(ratings.values())
+                        if total > 0:
+                            consensus = max(ratings, key=ratings.get)
+                            return _ok({
+                                'code': code,
+                                'consensus_rating': consensus,
+                                'ratings': ratings,
+                                'total': total,
+                                'source': 'db.research_reports',
+                                'fallback_used': True,
+                                'fallback_reason': 'tushare_failed',
+                            }, source_chain=['research_manager', 'tushare.report_rc', 'db.research_reports'])
+                except Exception:
+                    pass
+
                 return _ok({
                     'code': code,
                     'consensus_rating': 'unknown',

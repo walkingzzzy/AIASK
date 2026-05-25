@@ -12,6 +12,7 @@ import {
   Gauge,
   Layers3,
   MessageSquare,
+  Radio,
   ServerCog,
   Settings,
   UserRound,
@@ -43,6 +44,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
   { id: "tools", label: "Tools", icon: Wrench },
   { id: "capabilities", label: "Capabilities", icon: Boxes },
   { id: "event-console", label: "Event Console", icon: Zap },
+  { id: "factory-events", label: "Factory Events", icon: Radio },
   { id: "diagnostics", label: "Diagnostics", icon: Activity },
   { id: "agent", label: "Agent Status", icon: Bot },
   { id: "settings", label: "Settings", icon: Settings }

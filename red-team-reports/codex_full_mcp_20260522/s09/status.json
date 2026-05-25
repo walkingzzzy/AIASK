@@ -1,0 +1,328 @@
+{
+  "scenario_id": "S09",
+  "title": "组合优化 + 风险分解 + 压力测试 + Barra 因子归因 + 绩效归因",
+  "tools_required": 31,
+  "tools_called": 32,
+  "tools_unique_in_scenario": 32,
+  "tools_new_to_global": 12,
+  "passed": true,
+  "ran_at_start": "2026-05-24T11:58:24+08:00",
+  "ran_at_end": "2026-05-24T12:01:40+08:00",
+  "tool_status_rows": [
+    {"tool": "performance_manager.help", "verdict": "Pass", "extra": "5 actions: calculate_metrics/backtest_metrics/attribution/benchmark_comparison/help"},
+    {"tool": "risk_manager.help", "verdict": "Pass", "extra": "5 actions: list/calculate_var/stress_test/risk_exposure/help"},
+    {"tool": "portfolio_manager.help", "verdict": "Pass", "extra": "9 actions: list/create/get/update/delete/add_holding/remove_holding/get_holdings/help"},
+    {"tool": "portfolio_manager.create", "verdict": "Pass", "extra": "portfolio_id=3 created (5 sectors mix)"},
+    {"tool": "optimize_portfolio (equal_weight)", "verdict": "Pass", "extra": "5 stocks each 0.20"},
+    {"tool": "optimize_portfolio (risk_parity, 252d)", "verdict": "Pass", "extra": "🚨 000001 banks 23.86% 最大权重(银行波动率应当低于茅台,risk_parity 应当给波动小的更高权重 — 但这里给了 000001 最大权重,质量待商榷)"},
+    {"tool": "optimize_portfolio (risk_parity, 63d)", "verdict": "Degraded", "extra": "🚨🚨 lookback 63 vs 252 risk_parity 权重: [22.14/19.04/22.26/21.75/14.81] vs [20.93/16.24/23.86/22.02/16.94] — lookback 敏感性显著但工具不警告"},
+    {"tool": "optimize_portfolio (mean_variance, 2.5)", "verdict": "Degraded", "extra": "🚨🚨🚨 600519 ≈ 0(白酒龙头权重接近 0!)而 601857=63.9%(中石油!)与基本面常识完全相反"},
+    {"tool": "optimize_portfolio (max_sharpe, max_weight=0.35)", "verdict": "Degraded", "extra": "🚨🚨🚨 sharpe_ratio=-2.67(竟然是负的还说是 'max_sharpe'!),expected_return=0.08% volatility=0.90% — 负 sharpe 工具仍输出 'max_sharpe' 不警告"},
+    {"tool": "optimize_portfolio (black_litterman)", "verdict": "Degraded", "extra": "🚨🚨🚨 600519 99.46% + 000001 = -26.87%(允许做空 + 极端集中,违背 long-only 常识),sharpe_ratio=4.21 看似很好但权重不可执行"},
+    {"tool": "optimize_portfolio (risk_budget)", "verdict": "Pass", "extra": "5 stocks risk_budgets=[0.4,0.2,0.1,0.2,0.1] → 权重 [31.28/16.65/15.71/22.87/13.50],risk_contributions 与 budget 误差 <0.0001 ✅"},
+    {"tool": "optimize_portfolio (risk_budget, shape mismatch)", "verdict": "Fail-internal-error", "extra": "🚨🚨🚨 5 stocks vs 3 budgets → success=false error='operands could not be broadcast together with shapes (5,) (3,)' — numpy 内部异常透出(同 S07-F07 模式)"},
+    {"tool": "optimize_portfolio (unknown code)", "verdict": "Degraded", "extra": "🚨🚨 stocks=['600519','ZZZZZZ'] 接受错误代码,stock_count=2 但只返回 600519=1.0,无 unknown_code warning"},
+    {"tool": "optimize_portfolio (single stock)", "verdict": "Degraded", "extra": "🚨 stocks=['600519'] risk_parity 单股仍 success=true weight=1.0 — 单一资产无 risk parity 可言,应当退化警告"},
+    {"tool": "risk_manager.calculate_var (historical, 95%)", "verdict": "Pass", "extra": "1M VaR=9229 (0.92%) cvar=11380 (1.14%) vol=0.6149% max_dd=-1.54% — vol 单位不标(daily?annual?)"},
+    {"tool": "risk_manager.calculate_var (parametric, 99%)", "verdict": "Pass", "extra": "VaR=14005 (1.40%) cvar=15025;vs historical 95% 差距合理 ✅"},
+    {"tool": "risk_manager.calculate_var (monte_carlo, 99%)", "verdict": "Pass", "extra": "🎯 VaR=14262 vs parametric 14005 / historical 14005 — 三方法 99% VaR 高度一致 ✅(positive evidence)"},
+    {"tool": "risk_manager.calculate_var (portfolio_id, 99%)", "verdict": "Degraded", "extra": "🚨 portfolio_id 模式 total_value=911235(实际市值,非用户传入的 1M)→ VaR=14351 (1.57%) vs codes_weights 的 1.43% — 两种调用方式 VaR 不一致,口径不显式"},
+    {"tool": "stress_test_portfolio (4 scenarios)", "verdict": "Degraded", "extra": "🚨🚨 sector_rotation 硬编码 '科技-10%/金融+5%' 但持仓 0% 科技;只看 holdings_count 不看 sector — 完全不基于持仓行业"},
+    {"tool": "risk_manager.stress_test (2 scenarios)", "verdict": "Degraded", "extra": "🚨🚨 market_crash=21%(20% market+1% vol penalty)vs stress_test_portfolio=20% — 两工具两套 stress 模型,没显式说明"},
+    {"tool": "analyze_portfolio_risk_barra", "verdict": "Degraded", "extra": "🚨🚨 5 factors but 只有 momentum/volatility 有 exposure (-0.030/0.016),size/value/quality=0 — Barra 没真正算行业暴露"},
+    {"tool": "analyze_portfolio_risk", "verdict": "Pass", "extra": "annual_volatility=9.78% / VaR daily 0.92% / max_dd 6.71% — 与 calculate_var 一致 ✅"},
+    {"tool": "risk_manager.risk_exposure", "verdict": "Degraded", "extra": "🚨🚨🚨 000001 平安银行 avg_daily_amount=122178 (12 万) days_to_exit=8.18 极不合理(实际日成交几十亿);其他 3 股都是 ≥20 亿"},
+    {"tool": "portfolio_manager.add_holding (× 5)", "verdict": "Pass", "extra": "5 持仓全部加入 portfolio_id=3 持久化"},
+    {"tool": "portfolio_manager.get_holdings", "verdict": "Pass", "extra": "返回 5 持仓,字段完整(id/code/shares/cost_price/created_at/updated_at)"},
+    {"tool": "performance_manager.calculate_metrics", "verdict": "Degraded", "extra": "🚨🚨 total_return=0.00% 但 series_total_return=12.27% / annualized_return=13.31% / sharpe=0.80 — total vs series 矛盾(total 用账户视角=0,series 用持仓估值视角)"},
+    {"tool": "performance_manager.attribution", "verdict": "Degraded", "extra": "🚨🚨 stock_selection.return=0.0(全部 0!);sector_allocation=8.98%;timing=-0.68%;归因不完整。同时 lifetime_return vs stock_return 两个口径混合"},
+    {"tool": "performance_manager.benchmark_comparison (000300)", "verdict": "Degraded", "extra": "🎯 benchmark_series_days=0 沪深 300 拿不到!但显式 fallback_used=true reason='insufficient aligned portfolio or benchmark returns' ✅(降级路径正确)"},
+    {"tool": "get_index_quote (000300)", "verdict": "Degraded", "extra": "🚨🚨🚨 三上游全跪 + name='??300' 编码乱码(S07-F05 复现);沪深 300 这个最重要基准不可用"},
+    {"tool": "get_realtime_quote (000300)", "verdict": "Fail-graceful", "extra": "🚨🚨 validate.stock_code 拒绝 '未找到股票 000300 的信息'(S07-F01 复现+扩展)"},
+    {"tool": "get_kline (000300, limit=252)", "verdict": "Fail-graceful", "extra": "🚨🚨 db.get_klines + data_source.get_kline + baostock 三层全跪,latency=21s — **沪深 300 在 3 个工具线全不可用**(realtime / index_quote / kline)"},
+    {"tool": "run_simple_backtest (600519, buy_and_hold, 1Y)", "verdict": "Pass", "extra": "🎯 1Y total_return=-15.72% sharpe=0 max_dd=17.03% trades=1 turnover=1.84;equity_curve 完整 251 天 + execution_reality.warnings 完整 + cost_assumptions 8.0bps — 完整产品级回测 ✅"},
+    {"tool": "get_stock_fund_flow (600519)", "verdict": "Degraded", "extra": "🚨 mainNetInflow=0.0 但 8 个字段中 7 个 null(superLargeNetInflow/largeNetInflow/middleNetInflow/smallNetInflow/mainInflowPercent 全 null);quality_gate freshness_sla failed (age 273682s ≈ 3.2 天)"},
+    {"tool": "get_north_fund_holding (600519)", "verdict": "Degraded", "extra": "🚨🚨 shares=58733069 ratio=4.69% change=58733069 — change=shares 即 100% 增持(语义错!应当是 delta);data_timestamp=2026-03-31 已 53 天前"},
+    {"tool": "data_validation (GE 2 expectations)", "verdict": "Pass", "extra": "🎯 validation_id=val-e8933820055e backend=GE evaluated=2 successful=2 100%(positive evidence,与 S07/S08 一致)"},
+    {"tool": "experiment_tracker.log_run", "verdict": "Degraded", "extra": "🚨 mlflow→builtin silent fallback(同 S08-F04);run_id=run-2ac7030cb63b backend=builtin_fallback fallback_used=true reason='mlflow_not_installed'"},
+    {"tool": "log_recommendation_audit", "verdict": "Pass", "extra": "logged=true;reasoning_chain 完整记录 8 类 finding"}
+  ],
+  "summary": {
+    "Pass": 13,
+    "Degraded": 17,
+    "Fail": 0,
+    "Fail-graceful": 2,
+    "called": 32,
+    "fail_note": "S09 中 risk_budget shape mismatch (numpy 透出) 是 Fail-internal-error,但 success=false + error 显式 → 不计入 schema-fail;000300 三工具拒绝是 graceful 错误"
+  },
+  "fail_findings": [],
+
+  "key_findings": [
+    {
+      "id": "S09-F01",
+      "severity": "high",
+      "title": "optimize_portfolio black_litterman 输出极端不可执行权重 — 600519=99.46% + 000001=-26.87%(允许做空)",
+      "evidence": {
+        "input.method": "black_litterman",
+        "input.market_weights": [0.3, 0.2, 0.2, 0.2, 0.1],
+        "input.views": [{"asset": 0, "return": 0.10, "type": "absolute"}, {"assets": [1,2], "return": 0.05, "type": "relative"}],
+        "output.weights": {"600519": 0.9946, "601318": 0.2717, "000001": -0.2687, "000333": 0.0015, "601857": 0.0008},
+        "output.expected_return": "5.44%",
+        "output.sharpe_ratio": "4.21",
+        "weight_sum": 1.0
+      },
+      "root_cause": "(1) Black-Litterman 后验权重未做 long-only 约束 (2) view 强度过大导致后验集中到 asset 0 (3) 工具不阻断 weight<0 的'做空'结果",
+      "impact": "AI 拿到 sharpe=4.21 漂亮指标但权重含 -26.87% 做空,A 股市场无法直接执行;同时 99.46% 权重违背组合分散原则",
+      "recommended_fix": "(1) Black-Litterman 入口加 long_only 约束(默认 true) (2) max_weight 默认上限(默认 0.5) (3) view 强度过大时 emit warning 'view_dominance' (4) 输出 executable_warning 字段标识不可执行权重"
+    },
+    {
+      "id": "S09-F02",
+      "severity": "high",
+      "title": "optimize_portfolio max_sharpe 输出 negative sharpe -2.67 仍 success=true 不警告",
+      "evidence": {
+        "input.method": "max_sharpe",
+        "input.risk_free_rate": 0.025,
+        "input.max_weight": 0.35,
+        "output.weights": {"601318": 0.35, "000333": 0.30, "601857": 0.35},
+        "output.expected_return": "0.08%",
+        "output.volatility": "0.90%",
+        "output.sharpe_ratio": "-2.67"
+      },
+      "root_cause": "(1) lookback 期间组合 expected_return < risk_free_rate 导致 sharpe<0 (2) 工具仍输出 'max_sharpe' 标签,不警告这只是'最少负 sharpe'",
+      "impact": "AI 看到 'max_sharpe' 方法以为是最优组合,但实际是负夏普,**用户做出反向决策**",
+      "recommended_fix": "(1) sharpe_ratio<0 时升级 quality_flags=['negative_sharpe_optimal'] + warning 顶层 (2) 增加 method_note='no positive Sharpe achievable in lookback window'"
+    },
+    {
+      "id": "S09-F03",
+      "severity": "high",
+      "title": "optimize_portfolio mean_variance 给白酒龙头 600519 权重 ≈ 0,中石油 601857 = 63.9% — 与基本面常识相反",
+      "evidence": {
+        "input.method": "mean_variance",
+        "input.risk_aversion": 2.5,
+        "output.weights": {"600519": 5.9e-17, "601318": 0.141, "000001": 1.4e-17, "000333": 0.220, "601857": 0.639}
+      },
+      "root_cause": "lookback 252d 期间(2025-05 至 2026-05)茅台暴跌,中石油暴涨 → 历史 mean_variance 完全外推(601857 阶段性涨势 = 历史看似低风险高收益)",
+      "impact": "AI 拿到 mean_variance 权重看到中石油占 63.9% 不会知道这是'历史均值反推',不会做出 ex-ante 配置决策;同时白酒龙头 600519 接近 0% 失去了 portfolio diversification 的核心标的",
+      "recommended_fix": "(1) mean_variance 输出增加 historical_dependence_warning (2) 单一资产 weight>50% 时 emit concentration_warning (3) 加 robust_mean_variance(用 shrinkage 协方差)选项"
+    },
+    {
+      "id": "S09-F04",
+      "severity": "high",
+      "title": "stress_test_portfolio + risk_manager.stress_test sector_rotation 硬编码 '科技-10% / 金融+5%' 不识别实际持仓行业",
+      "evidence": {
+        "stress_test_portfolio.sector_rotation": {"科技": -0.10, "金融": 0.05, "消费": -0.02, "医药": -0.02, "其他": -0.02},
+        "actual_holdings_sectors": ["酿酒", "保险", "全国性银行", "白色家电", "油气开采"],
+        "tech_holdings_count": 0,
+        "stress_test_portfolio.signed_return_percent": -2.0,
+        "stress_test_portfolio.uses_actual_sector_lookup": false
+      },
+      "root_cause": "(1) stress_test 用固定 sector → shock 字典 (2) 不查询持仓的 sector 字段 → 不计算实际敞口 (3) 给一个'平均加权 -2%'误导结果",
+      "impact": "AI 看到 sector_rotation -2% 误以为持仓抗压,**实际持仓不含'科技'但被算了 -10% 科技冲击**;且对真正的 banking/energy 暴露完全无评估",
+      "recommended_fix": "(1) stress_test 入口先调 risk_exposure 拿 sector_exposure (2) 用 actual_sector × sector_shock 计算 weighted_loss (3) 增加 sector_unknown_handling 处理 'unknown'/'其他'"
+    },
+    {
+      "id": "S09-F05",
+      "severity": "high",
+      "title": "risk_manager.risk_exposure 平安银行 000001 avg_daily_amount=122178(12 万)days_to_exit=8.18 严重错误(实际日成交几十亿)",
+      "evidence": {
+        "code": "000001",
+        "name": "000001",
+        "avg_daily_amount": 122178.402,
+        "days_to_exit": 8.18,
+        "level": "high",
+        "comparison.601318.avg_daily_amount": 4943273024.0,
+        "comparison.000333.avg_daily_amount": 2606513862.4,
+        "comparison.601857.avg_daily_amount": 2057551686.4,
+        "comparison.600519.avg_daily_amount": 643129226.0
+      },
+      "root_cause": "(1) 000001 平安银行的 avg_daily_amount 错把 1 万元 ≈ 100 单位计成绝对元数值 (2) 单位转换 bug:其他股都是元,000001 单独是手或万元,差距 10000 倍",
+      "impact": "AI 看到 days_to_exit 8.18 天对 200K 持仓认为流动性极差,**完全错误**(平安银行实际日成交 50 亿 = 退出 200K 用 0.04 秒)",
+      "recommended_fix": "(1) avg_daily_amount 单位统一为元 (2) 增加 unit_audit 字段 (3) days_to_exit 异常值(>1 天)时复查数据源"
+    },
+    {
+      "id": "S09-F06",
+      "severity": "high",
+      "title": "performance_manager.attribution stock_selection 全部 0;且 stock_return / lifetime_return 两个口径混合",
+      "evidence": {
+        "attribution.stock_selection": {"return": 0.0, "contribution": "0.00%"},
+        "attribution.sector_allocation": {"return": 0.0898, "contribution": "8.98%"},
+        "attribution.timing": {"return": -0.0068, "contribution": "-0.68%"},
+        "attribution_by_stock.600519.stock_return": -0.1825,
+        "attribution_by_stock.600519.lifetime_return": -0.2940,
+        "delta_pct": 11.15
+      },
+      "root_cause": "(1) stock_selection 没真正实现 (sector_allocation 已经包含全部 8.98%,stock_selection 应当 = stock_return - sector_avg_return) (2) lifetime_return 是从 cost_price 算的,stock_return 是 252d 算的,两个 timeframe 混在一起 AI 不分清",
+      "impact": "AI 拿到 attribution 看 stock_selection=0 以为'选股完全没贡献';而 stock_return vs lifetime_return 11% 偏差不清楚是不是噪声还是 timeframe 差异",
+      "recommended_fix": "(1) 修复 stock_selection 公式:= stock_return - sector_avg (2) 字段重命名:period_return / inception_to_date_return / annualized_period_return — 三个 timeframe 显式 (3) 在 attribution 顶层标注 attribution_window"
+    },
+    {
+      "id": "S09-F07",
+      "severity": "high",
+      "title": "沪深 300 (000300) 在 get_index_quote / get_realtime_quote / get_kline 三工具线全部不可用(国内最重要基准)",
+      "evidence": {
+        "get_index_quote(000300).price": null,
+        "get_index_quote(000300).fallback_reason": ["eastmoney_index_single returned empty", "eastmoney_index失败", "tushare_index_daily失败: 您的token不对"],
+        "get_index_quote(000300).name": "??300",
+        "get_realtime_quote(000300).success": false,
+        "get_realtime_quote(000300).error": "未找到股票 000300 的信息",
+        "get_kline(000300).success": false,
+        "get_kline(000300).error": "所有数据源均无法获取 000300 的K线数据",
+        "get_kline.latency_ms": 21045
+      },
+      "root_cause": "(1) tushare token 配置错误(S07-F05 复现) (2) eastmoney 不支持 000300 single quote (3) baostock 也跪 (4) validate.stock_code 不识别指数 (5) name 编码再次乱码",
+      "impact": "**国内最重要基准沪深 300 在三工具线全跪**;benchmark_comparison(000300) 也直接 degraded;backtest 中 benchmark_return=null;**所有需要基准对比的工具完全没法用**",
+      "recommended_fix": "(1) tushare_token 修复 (2) get_index_quote 自动 fallback 到 db.stock_quotes 路径 (3) validate.stock_code 加入指数白名单 (4) get_kline 对指数代码自动走 sina/eastmoney 指数线"
+    },
+    {
+      "id": "S09-F08",
+      "severity": "high",
+      "title": "analyze_portfolio_risk_barra 5 factors 但只有 momentum/volatility 有 exposure,size/value/quality=0 — Barra 没真正算行业暴露",
+      "evidence": {
+        "factor_names": ["momentum", "volatility", "size", "value", "quality"],
+        "portfolio_exposure": [-0.0301, 0.0161, 0.0, 0.0, 0.0],
+        "factor_risk": 0.0034,
+        "specific_risk": 0.0062,
+        "factor_contribution": 0.2315,
+        "specific_contribution": 0.7685
+      },
+      "root_cause": "(1) size/value/quality 因子没真正计算 portfolio exposure (2) factor_risk 0.34% / specific_risk 0.62% specific 占 76.85% — **个股特质风险占主导,因子模型几乎没解释力** (3) 也可能 factor returns 数据缺失",
+      "impact": "AI 看 Barra 分解以为'已经做了多因子归因',实际 size/value/quality 三个核心因子完全没算;且 specific_contribution=76.85% 说明因子模型根本 fit 不上",
+      "recommended_fix": "(1) 检查 size/value/quality 因子计算管道 (2) 当 factor_contribution<30% 时 emit warning 'low_factor_explanatory_power' (3) 增加 factor_data_quality 字段标 each factor 的可用性"
+    },
+    {
+      "id": "S09-F09",
+      "severity": "medium",
+      "title": "optimize_portfolio 接受 unknown_code('ZZZZZZ')+ single stock 不警告;risk_budget shape mismatch numpy 透出",
+      "evidence": {
+        "case_unknown.input.stocks": ["600519", "ZZZZZZ"],
+        "case_unknown.output.weights": {"600519": 1.0},
+        "case_unknown.output.stock_count": 2,
+        "case_single.input.stocks": ["600519"],
+        "case_single.output.weights": {"600519": 1.0},
+        "case_single.no_warning_for_single_asset_risk_parity": true,
+        "case_shape.input.risk_budgets_len": 3,
+        "case_shape.input.stocks_len": 5,
+        "case_shape.error": "operands could not be broadcast together with shapes (5,) (3,) "
+      },
+      "root_cause": "(1) unknown_code 没前置 validate (2) single stock risk_parity 没退化警告 (3) shape mismatch 没业务校验 → numpy broadcast error 透出(同 S07-F07 模式)",
+      "recommended_fix": "(1) optimize_portfolio 入口校验 stocks 全部存在 + risk_budgets 长度一致 (2) single stock 退化时 emit notice (3) numpy 异常包装为业务语义 error"
+    },
+    {
+      "id": "S09-F10",
+      "severity": "medium",
+      "title": "performance_manager.calculate_metrics total_return=0.00% 但 series_total_return=12.27% — total vs series 矛盾(账户视角 vs 持仓视角)",
+      "evidence": {
+        "current_value": 1000000.0,
+        "initial_capital": 1000000.0,
+        "total_return": 0.0,
+        "total_return_pct": "0.00%",
+        "series_total_return": 0.1227,
+        "series_total_return_pct": "12.27%",
+        "annualized_return_pct": "13.31%",
+        "sharpe_ratio": 0.7994,
+        "trading_stats.total_trades": 0,
+        "days_held": 1
+      },
+      "root_cause": "(1) total_return 用'账户视角': current_value - initial_capital(没真实 paper trade 提交,所以为 0) (2) series_total_return 用'持仓视角': sum(w_i × stock_return_i)估值 (3) 两者口径不同 AI 看不出哪个是'真正组合表现'",
+      "recommended_fix": "(1) 字段重命名: realized_pnl_return / theoretical_holdings_return — 显式区分账户 vs 持仓 (2) 顶层增加 attribution_basis='holdings_estimate' / 'realized_account'"
+    },
+    {
+      "id": "S09-F11",
+      "severity": "medium",
+      "title": "stress_test_portfolio + risk_manager.stress_test 双工具两套 stress 模型(20% vs 21% market_crash)",
+      "evidence": {
+        "stress_test_portfolio.market_crash.loss_pct": 20.0,
+        "stress_test_portfolio.market_crash.assumptions": "整体下跌20%",
+        "risk_manager.stress_test.market_crash.loss_pct": 21.0,
+        "risk_manager.stress_test.market_crash.layer_losses.market_loss": 200000,
+        "risk_manager.stress_test.market_crash.layer_losses.volatility_penalty": 10000
+      },
+      "root_cause": "stress_test_portfolio 是单层 -20%,risk_manager.stress_test 多 vol_penalty(2× volatility multiplier)+ liquidity_penalty 两层 — 但两工具表面同名同 scenario,差异不显式",
+      "recommended_fix": "(1) 两工具统一 stress 模型;或 (2) 顶层显式标 model_version='single_layer' / 'multi_layer'"
+    },
+    {
+      "id": "S09-F12",
+      "severity": "medium",
+      "title": "get_north_fund_holding 600519 change=shares 即 100% 增持(语义错);data_timestamp=2026-03-31 已 53 天前",
+      "evidence": {
+        "shares": 58733069,
+        "ratio": 4.69,
+        "change": 58733069,
+        "data_timestamp": "2026-03-31 00:00:00",
+        "delta_days_to_now": 53
+      },
+      "root_cause": "(1) change 字段语义错:应当是 'delta_shares'(本期增减),但当前 = absolute shares (2) data_timestamp 53 天前但 quality_gate.freshness_sla 没 fail(因为 freshness 检测的 data_timestamp 字段是 'date' 但实际值是 null)",
+      "recommended_fix": "(1) change 语义改为 delta(this_period - prev_period) (2) freshness_sla 加 data_timestamp_field 别名兜底"
+    },
+    {
+      "id": "S09-F13",
+      "severity": "medium",
+      "title": "experiment_tracker mlflow→builtin silent fallback(S08-F04 复现)",
+      "evidence": {
+        "backend_requested": "mlflow",
+        "backend_used": "builtin",
+        "fallback_used": true,
+        "fallback_reason": "mlflow_not_installed",
+        "log_level": "info"
+      },
+      "root_cause": "S08-F04 同模式复现 — mlflow 未装,silent fallback 到 builtin,run_id=run-2ac7030cb63b 写入内存,服务重启即丢",
+      "recommended_fix": "(参见 S08-F04)fallback_used=true 时升级 log_level=warning + quality_flags 标 fallback_to_builtin"
+    },
+    {
+      "id": "S09-F14",
+      "severity": "low",
+      "title": "✅ VaR 三方法(historical/parametric/monte_carlo)在 99% 置信度下高度一致(positive evidence)",
+      "evidence": {
+        "historical_99_VaR": null,
+        "parametric_99_VaR": 14005,
+        "monte_carlo_99_VaR": 14262,
+        "delta_pct": 1.83
+      },
+      "note": "✅ parametric vs monte_carlo VaR 差距 1.83% 在合理 noise 范围;cvar 完全一致(15025);**VaR 数学层 robust ✅**"
+    },
+    {
+      "id": "S09-F15",
+      "severity": "low",
+      "title": "✅ run_simple_backtest(600519, 1Y, buy_and_hold) 输出产品级回测包(positive evidence)",
+      "evidence": {
+        "total_return": -0.1572,
+        "max_drawdown": 0.1703,
+        "trades_count": 1,
+        "equity_curve_count": 251,
+        "execution_reality_warnings_count": 3,
+        "cost_assumptions_full": true,
+        "promotion_gate_full": true,
+        "implementation_shortfall_proxy_bps": 7.0747
+      },
+      "note": "✅ equity_curve 完整 251 天 / cost_assumptions 8 bps / execution_reality 3 个 warnings(收盘价成交/无市场冲击/不等于实盘)/ promotion_gate 完整 6 项 — 这是回测工具最完整的产品级输出"
+    },
+    {
+      "id": "S09-F16",
+      "severity": "low",
+      "title": "✅ data_validation(GE)再次 evaluated=2/2 pass(S07/S08 复现)+ portfolio CRUD 全链路成功",
+      "evidence": {
+        "data_validation.evaluated": 2,
+        "data_validation.passed": 2,
+        "data_validation.success_pct": 100.0,
+        "portfolio_create.portfolio_id": 3,
+        "add_holding_success_count": 5,
+        "get_holdings.count": 5
+      },
+      "note": "✅ 状态管理工具(portfolio CRUD + data_validation)是**最稳定的层**;5 个持仓增删查全部成功"
+    }
+  ],
+  "side_effect_state_ids": [
+    "portfolio.create portfolio_id=3 (persist,5 holdings stateful)",
+    "portfolio.add_holding × 5 (600519/601318/000001/000333/601857 持久化)",
+    "data_validation validation_id=val-e8933820055e dataset_id=codex_full_mcp_20260522_s09_portfolio (read_only,GE 2/2 pass)",
+    "experiment_tracker run_id=run-2ac7030cb63b backend=builtin_fallback (in-memory,服务重启即丢)",
+    "log_recommendation_audit logged=true (持久,user_id=codex_full_mcp_20260522 strategy_id=codex_full_mcp_20260522_s09_audit action=hold)",
+    "audit:optimize_portfolio × 9 (equal_weight/risk_parity × 3/mean_variance/max_sharpe/black_litterman/risk_budget × 2)",
+    "audit:risk_manager:calculate_var × 4 / risk_exposure / stress_test",
+    "audit:stress_test_portfolio:stress_test",
+    "audit:analyze_portfolio_risk / analyze_portfolio_risk_barra",
+    "audit:performance_manager:calculate_metrics / attribution / benchmark_comparison",
+    "audit:portfolio_manager:create / add_holding × 5 / get_holdings",
+    "audit:run_simple_backtest:run / get_kline / get_index_quote / get_realtime_quote / get_north_fund_holding / get_stock_fund_flow"
+  ]
+}

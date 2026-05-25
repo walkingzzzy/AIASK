@@ -1117,6 +1117,11 @@
         import json as _json
         from uuid import uuid4
         event_id = str(payload.get("event_id") or f"manual_{uuid4().hex[:12]}").strip()
+        # PR-B1: approver_id / approved_at 支持. handler 传入这两个字段时
+        # 必须真正写到 DB（之前只在 handler 返回值里），否则审批结果完全
+        # 不持久化，事件审计无效。
+        approver_id = payload.get("approver_id")
+        approved_at = payload.get("approved_at")
         async with self.acquire() as conn:
             await conn.execute(
                 """
@@ -1124,8 +1129,8 @@
                     (event_id, source, event_name, event_type, direction,
                      confidence, intensity, horizon, scope, primary_themes,
                      rationale, evidence, valid_from, valid_until, status,
-                     operator_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                     operator_id, approver_id, approved_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 ON CONFLICT(event_id) DO UPDATE SET
                     event_name = EXCLUDED.event_name,
                     event_type = EXCLUDED.event_type,
@@ -1140,6 +1145,8 @@
                     valid_from = EXCLUDED.valid_from,
                     valid_until = EXCLUDED.valid_until,
                     status = EXCLUDED.status,
+                    approver_id = COALESCE(EXCLUDED.approver_id, strategy_factory_event_injections.approver_id),
+                    approved_at = COALESCE(EXCLUDED.approved_at, strategy_factory_event_injections.approved_at),
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 event_id,
@@ -1162,6 +1169,8 @@
                 str(payload.get("valid_until") or ""),
                 str(payload.get("status") or "pending_review"),
                 payload.get("operator_id"),
+                approver_id,
+                approved_at,
             )
         return {"event_id": event_id, "status": payload.get("status") or "pending_review"}
 
@@ -1182,24 +1191,49 @@
 
     async def upsert_event_task_lineage(self, payload: dict) -> dict:
         import json as _json
+        dedupe_key = str(payload.get("dedupe_key") or "").strip()
+        event_id = str(payload.get("event_id") or "")
+        task_id = str(payload.get("task_id") or "")
+        theme_code = str(payload.get("theme_code") or "")
         async with self.acquire() as conn:
+            if dedupe_key:
+                existing = await conn.fetchrow(
+                    "SELECT lineage_id, event_id, task_id FROM strategy_factory_event_task_lineage "
+                    "WHERE dedupe_key = $1 ORDER BY lineage_id DESC LIMIT 1",
+                    dedupe_key,
+                )
+                if existing is not None:
+                    row = dict(existing)
+                    return {
+                        "event_id": row.get("event_id"),
+                        "task_id": row.get("task_id"),
+                        "dedupe_key": dedupe_key,
+                        "lineage_id": row.get("lineage_id"),
+                        "inserted": 0,
+                    }
             await conn.execute(
                 """
                 INSERT INTO strategy_factory_event_task_lineage
-                    (event_id, task_id, theme_code, impact_direction,
+                    (dedupe_key, event_id, task_id, theme_code, impact_direction,
                      impact_magnitude, target_symbols, target_count, breadth_resolved)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
-                str(payload.get("event_id") or ""),
-                str(payload.get("task_id") or ""),
-                str(payload.get("theme_code") or ""),
+                dedupe_key or None,
+                event_id,
+                task_id,
+                theme_code,
                 str(payload.get("impact_direction") or "positive"),
                 float(payload.get("impact_magnitude") or 0),
                 _json.dumps(payload.get("target_symbols") or [], ensure_ascii=False),
                 int(payload.get("target_count") or 0),
                 str(payload.get("breadth_resolved") or "medium"),
             )
-        return {"event_id": payload.get("event_id"), "task_id": payload.get("task_id")}
+        return {
+            "event_id": payload.get("event_id"),
+            "task_id": payload.get("task_id"),
+            "dedupe_key": dedupe_key or None,
+            "inserted": 1,
+        }
 
     async def list_theme_exposure(self, theme_code: str = None, min_exposure: float = 0.3, limit: int = 30) -> list:
         """Query theme exposure matrix for a specific theme."""
@@ -1215,3 +1249,734 @@
                     min_exposure, limit,
                 )
         return [dict(r) for r in rows]
+
+    async def list_company_concept_blocks(
+        self,
+        symbols=None,
+        theme_code: str = None,
+        limit: int = 50000,
+    ) -> list:
+        """List TDX-only stock -> concept block mappings.
+
+        This deliberately reads only local TDX/cache tables. It does not call
+        Tushare, AKShare, eFinance, Baostock, or any online fallback.
+        """
+
+        normalized_symbols = [
+            str(item).strip()
+            for item in list(symbols or [])
+            if str(item).strip()
+        ]
+        theme_filter = str(theme_code or "").strip().lower()
+        row_limit = max(1, min(int(limit or 50000), 200000))
+        async with self.acquire() as conn:
+            code_col = await self._stocks_code_column(conn)
+            symbol_clause = ""
+            params: list = []
+            idx = 1
+            if normalized_symbols:
+                symbol_clause = f" AND s.{code_col} IN (${idx})"
+                params.append(normalized_symbols)
+                idx += 1
+            params.append(row_limit)
+            relation_rows = await conn.fetch(
+                f"""
+                SELECT
+                    s.{code_col} AS symbol,
+                    s.stock_name,
+                    s.industry,
+                    s.tdx_industry,
+                    s.list_status,
+                    s.market_cap,
+                    r.block_code,
+                    COALESCE(r.block_name, mb.block_name, r.block_code) AS block_name,
+                    COALESCE(r.block_type, mb.block_type, '') AS block_type,
+                    COALESCE(r.gp_num, mb.stock_count, 0) AS member_count,
+                    extra.trade_date,
+                    extra.turnover_rate,
+                    extra.zsz,
+                    extra.ltsz,
+                    extra.tp_flag
+                FROM stocks s
+                JOIN tdx_relation r ON r.code = s.{code_col}
+                LEFT JOIN market_blocks mb ON mb.block_code = r.block_code
+                LEFT JOIN (
+                    SELECT e.*
+                    FROM tdx_stock_extra e
+                    JOIN (
+                        SELECT code, MAX(trade_date) AS trade_date
+                        FROM tdx_stock_extra
+                        GROUP BY code
+                    ) latest
+                      ON latest.code = e.code AND latest.trade_date = e.trade_date
+                ) extra ON extra.code = s.{code_col}
+                WHERE (
+                    LOWER(COALESCE(r.block_type, mb.block_type, '')) LIKE '%concept%'
+                    OR COALESCE(r.block_type, mb.block_type, '') LIKE '%概念%'
+                ){symbol_clause}
+                ORDER BY s.{code_col}, block_name
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+
+            symbol_clause = ""
+            params = []
+            idx = 1
+            if normalized_symbols:
+                symbol_clause = f" AND s.{code_col} IN (${idx})"
+                params.append(normalized_symbols)
+                idx += 1
+            params.append(row_limit)
+            block_rows = await conn.fetch(
+                f"""
+                SELECT
+                    s.{code_col} AS symbol,
+                    s.stock_name,
+                    s.industry,
+                    s.tdx_industry,
+                    s.list_status,
+                    s.market_cap,
+                    bs.block_code,
+                    COALESCE(mb.block_name, bs.block_code) AS block_name,
+                    COALESCE(mb.block_type, '') AS block_type,
+                    COALESCE(mb.stock_count, 0) AS member_count,
+                    extra.trade_date,
+                    extra.turnover_rate,
+                    extra.zsz,
+                    extra.ltsz,
+                    extra.tp_flag
+                FROM stocks s
+                JOIN block_stocks bs ON bs.stock_code = s.{code_col}
+                JOIN market_blocks mb ON mb.block_code = bs.block_code
+                LEFT JOIN (
+                    SELECT e.*
+                    FROM tdx_stock_extra e
+                    JOIN (
+                        SELECT code, MAX(trade_date) AS trade_date
+                        FROM tdx_stock_extra
+                        GROUP BY code
+                    ) latest
+                      ON latest.code = e.code AND latest.trade_date = e.trade_date
+                ) extra ON extra.code = s.{code_col}
+                WHERE (
+                    LOWER(COALESCE(mb.block_type, '')) LIKE '%concept%'
+                    OR COALESCE(mb.block_type, '') LIKE '%概念%'
+                ){symbol_clause}
+                ORDER BY s.{code_col}, block_name
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+
+        merged: dict[tuple[str, str], dict] = {}
+        for row in list(relation_rows or []) + list(block_rows or []):
+            item = dict(row)
+            if theme_filter:
+                haystack = " ".join(
+                    str(item.get(key) or "").lower()
+                    for key in ("block_code", "block_name", "block_type")
+                )
+                if theme_filter not in haystack:
+                    continue
+            key = (str(item.get("symbol") or ""), str(item.get("block_code") or ""))
+            if not key[0] or not key[1]:
+                continue
+            merged.setdefault(key, item)
+            if len(merged) >= row_limit:
+                break
+        return list(merged.values())
+
+    async def list_industry_blocks(self, symbols=None, limit: int = 50000) -> list:
+        """List TDX-only stock industry rows from local stocks/tdx_relation."""
+
+        normalized_symbols = [
+            str(item).strip()
+            for item in list(symbols or [])
+            if str(item).strip()
+        ]
+        row_limit = max(1, min(int(limit or 50000), 200000))
+        async with self.acquire() as conn:
+            code_col = await self._stocks_code_column(conn)
+            symbol_clause = ""
+            params: list = []
+            idx = 1
+            if normalized_symbols:
+                symbol_clause = f" AND s.{code_col} IN (${idx})"
+                params.append(normalized_symbols)
+                idx += 1
+            params.append(row_limit)
+            stock_rows = await conn.fetch(
+                f"""
+                SELECT
+                    s.{code_col} AS symbol,
+                    s.stock_name,
+                    COALESCE(NULLIF(s.tdx_industry, ''), NULLIF(s.industry, ''), NULLIF(s.sector, '')) AS industry_name,
+                    NULL AS block_code,
+                    'stocks' AS industry_source,
+                    s.industry,
+                    s.tdx_industry,
+                    s.sector,
+                    s.list_status,
+                    s.market_cap,
+                    extra.trade_date,
+                    extra.turnover_rate,
+                    extra.zsz,
+                    extra.ltsz,
+                    extra.tp_flag
+                FROM stocks s
+                LEFT JOIN (
+                    SELECT e.*
+                    FROM tdx_stock_extra e
+                    JOIN (
+                        SELECT code, MAX(trade_date) AS trade_date
+                        FROM tdx_stock_extra
+                        GROUP BY code
+                    ) latest
+                      ON latest.code = e.code AND latest.trade_date = e.trade_date
+                ) extra ON extra.code = s.{code_col}
+                WHERE COALESCE(NULLIF(s.tdx_industry, ''), NULLIF(s.industry, ''), NULLIF(s.sector, '')) IS NOT NULL
+                {symbol_clause}
+                ORDER BY s.{code_col}
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+
+            symbol_clause = ""
+            params = []
+            idx = 1
+            if normalized_symbols:
+                symbol_clause = f" AND s.{code_col} IN (${idx})"
+                params.append(normalized_symbols)
+                idx += 1
+            params.append(row_limit)
+            relation_rows = await conn.fetch(
+                f"""
+                SELECT
+                    s.{code_col} AS symbol,
+                    s.stock_name,
+                    COALESCE(r.block_name, r.block_code) AS industry_name,
+                    r.block_code,
+                    'tdx_relation' AS industry_source,
+                    s.industry,
+                    s.tdx_industry,
+                    s.sector,
+                    s.list_status,
+                    s.market_cap,
+                    extra.trade_date,
+                    extra.turnover_rate,
+                    extra.zsz,
+                    extra.ltsz,
+                    extra.tp_flag,
+                    COALESCE(r.gp_num, 0) AS member_count
+                FROM stocks s
+                JOIN tdx_relation r ON r.code = s.{code_col}
+                LEFT JOIN (
+                    SELECT e.*
+                    FROM tdx_stock_extra e
+                    JOIN (
+                        SELECT code, MAX(trade_date) AS trade_date
+                        FROM tdx_stock_extra
+                        GROUP BY code
+                    ) latest
+                      ON latest.code = e.code AND latest.trade_date = e.trade_date
+                ) extra ON extra.code = s.{code_col}
+                WHERE (
+                    LOWER(COALESCE(r.block_type, '')) LIKE '%industry%'
+                    OR COALESCE(r.block_type, '') LIKE '%行业%'
+                ){symbol_clause}
+                ORDER BY s.{code_col}, industry_name
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+
+        merged: dict[tuple[str, str, str], dict] = {}
+        for row in list(stock_rows or []) + list(relation_rows or []):
+            item = dict(row)
+            symbol = str(item.get("symbol") or "")
+            industry_name = str(item.get("industry_name") or "").strip()
+            if not symbol or not industry_name:
+                continue
+            source = str(item.get("industry_source") or "")
+            merged.setdefault((symbol, industry_name, source), item)
+            if len(merged) >= row_limit:
+                break
+        return list(merged.values())
+
+    async def list_event_task_lineage(
+        self,
+        *,
+        event_id: str = None,
+        task_id: str = None,
+        limit: int = 100,
+    ) -> list:
+        """Read persisted event -> task -> gate lineage rows."""
+
+        conditions = []
+        params = []
+        idx = 1
+        if event_id:
+            conditions.append(f"l.event_id = ${idx}")
+            params.append(str(event_id).strip())
+            idx += 1
+        if task_id:
+            conditions.append(f"l.task_id = ${idx}")
+            params.append(str(task_id).strip())
+            idx += 1
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(max(1, min(int(limit or 100), 1000)))
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    l.*,
+                    e.event_name,
+                    e.event_type,
+                    e.source AS event_source,
+                    e.status AS event_status,
+                    e.valid_from,
+                    e.valid_until,
+                    e.actual_outcome
+                FROM strategy_factory_event_task_lineage l
+                LEFT JOIN strategy_factory_event_injections e
+                  ON e.event_id = l.event_id
+                {where}
+                ORDER BY l.generated_at DESC, l.lineage_id DESC
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+        result = []
+        for row in rows:
+            item = dict(row)
+            raw_symbols = item.get("target_symbols")
+            if isinstance(raw_symbols, str):
+                try:
+                    item["target_symbols"] = __import__("json").loads(raw_symbols)
+                except Exception:
+                    item["target_symbols"] = []
+            result.append(item)
+        return result
+
+    async def get_theme_exposure_status(self) -> dict:
+        """Return aggregate status for the theme exposure matrix."""
+
+        async with self.acquire() as conn:
+            summary = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) AS row_count,
+                    COUNT(DISTINCT symbol) AS symbol_count,
+                    COUNT(DISTINCT theme_code) AS theme_count,
+                    MAX(updated_at) AS latest_updated_at,
+                    AVG(exposure_score) AS avg_exposure,
+                    MAX(exposure_score) AS max_exposure
+                FROM strategy_factory_theme_exposure
+                """
+            )
+            latest_rows = await conn.fetch(
+                """
+                SELECT theme_code, COUNT(*) AS row_count, MAX(updated_at) AS latest_updated_at
+                FROM strategy_factory_theme_exposure
+                GROUP BY theme_code
+                ORDER BY latest_updated_at DESC
+                LIMIT 20
+                """
+            )
+        payload = dict(summary or {})
+        payload["latest_themes"] = [dict(row) for row in latest_rows]
+        payload["source"] = "strategy_factory_theme_exposure"
+        return payload
+
+    async def list_event_outbox_state(
+        self,
+        *,
+        status: str = None,
+        event_id: str = None,
+        limit: int = 100,
+    ) -> list:
+        conditions = []
+        params = []
+        idx = 1
+        if status:
+            conditions.append(f"status = ${idx}")
+            params.append(str(status).strip())
+            idx += 1
+        if event_id:
+            conditions.append(f"source_event_id = ${idx}")
+            params.append(str(event_id).strip())
+            idx += 1
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(max(1, min(int(limit or 100), 1000)))
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT *
+                FROM strategy_factory_event_outbox_state
+                {where}
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+        return [dict(row) for row in rows]
+
+    async def get_event_outbox_status(self, *, limit: int = 50) -> dict:
+        async with self.acquire() as conn:
+            counts = await conn.fetch(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM strategy_factory_event_outbox_state
+                GROUP BY status
+                ORDER BY status
+                """
+            )
+            latest = await conn.fetch(
+                """
+                SELECT *
+                FROM strategy_factory_event_outbox_state
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT $1
+                """,
+                max(1, min(int(limit or 50), 200)),
+            )
+        return {
+            "source": "strategy_factory_event_outbox_state",
+            "counts": {str(row.get("status") or "unknown"): int(row.get("count") or 0) for row in counts},
+            "latest": [dict(row) for row in latest],
+        }
+
+    # ------------------------------------------------------------------
+    # PR-B1 (2026-05-24): 事件驱动 DAO 补齐
+    #
+    # 上一版 ThemeExposureBuilder 调用 ``upsert_theme_exposure`` 但 DAO 不存在；
+    # event_task_lineage 也只能 INSERT，无法回写 Gate 状态；事件驱动 outbox
+    # 全靠 strategy_domain_events 主表（孵化工厂热写路径），缺幂等保障。
+    # 本节补齐这 6 个 DAO，全部不影响其它子系统现有写入。
+    # ------------------------------------------------------------------
+
+    async def upsert_theme_exposure(self, payload: dict) -> dict:
+        """Single-row upsert for ``strategy_factory_theme_exposure``.
+
+        Used by the on-demand path (preview / single recompute). Bulk
+        rebuilds should call :meth:`bulk_upsert_theme_exposure`.
+        """
+        import json as _json
+
+        symbol = str(payload.get("symbol") or "").strip()
+        theme_code = str(payload.get("theme_code") or "").strip()
+        if not symbol or not theme_code:
+            raise ValueError("symbol and theme_code are required")
+
+        evidence = payload.get("evidence")
+        if isinstance(evidence, (dict, list)):
+            evidence_text = _json.dumps(evidence, ensure_ascii=False)
+        elif isinstance(evidence, str):
+            evidence_text = evidence
+        else:
+            evidence_text = "{}"
+
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO strategy_factory_theme_exposure
+                    (symbol, theme_code, exposure_score, industry_match_level,
+                     name_match_score, mainbz_match_score, historical_beta,
+                     evidence)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT(symbol, theme_code) DO UPDATE SET
+                    exposure_score       = EXCLUDED.exposure_score,
+                    industry_match_level = EXCLUDED.industry_match_level,
+                    name_match_score     = EXCLUDED.name_match_score,
+                    mainbz_match_score   = EXCLUDED.mainbz_match_score,
+                    historical_beta      = EXCLUDED.historical_beta,
+                    evidence             = EXCLUDED.evidence,
+                    updated_at           = CURRENT_TIMESTAMP
+                """,
+                symbol,
+                theme_code,
+                float(payload.get("exposure_score") or 0),
+                int(payload.get("industry_match_level") or 0),
+                float(payload.get("name_match_score") or 0),
+                float(payload.get("mainbz_match_score") or 0),
+                float(payload.get("historical_beta") or 0),
+                evidence_text,
+            )
+        return {"symbol": symbol, "theme_code": theme_code, "written": 1}
+
+    async def bulk_upsert_theme_exposure(self, rows, *, batch_size: int = 1000) -> dict:
+        """Batched upsert for ``strategy_factory_theme_exposure``.
+
+        方案 §6 Phase 6 验收要求：暴露度全量构建必须批量写，不能逐条
+        await（6,000 标的 × 200 主题 = 120 万次写）。每批包在单事务里，
+        借助 SQLite WAL + ``synchronous=NORMAL`` 已经在 SQLiteAdapter
+        启动时配置（``schema_base.py``）。
+
+        Args:
+            rows: iterable of payload dicts (same shape as
+                  ``upsert_theme_exposure`` accepts).
+            batch_size: 每批行数，默认 1000。
+
+        Returns:
+            ``{"written": int, "batch_count": int, "skipped": int}`` —
+            ``skipped`` 是因 symbol/theme_code 缺失被丢弃的行。
+        """
+        import json as _json
+
+        prepared: list[tuple] = []
+        skipped = 0
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol") or "").strip()
+            theme_code = str((row or {}).get("theme_code") or "").strip()
+            if not symbol or not theme_code:
+                skipped += 1
+                continue
+            evidence = (row or {}).get("evidence")
+            if isinstance(evidence, (dict, list)):
+                evidence_text = _json.dumps(evidence, ensure_ascii=False)
+            elif isinstance(evidence, str):
+                evidence_text = evidence
+            else:
+                evidence_text = "{}"
+            prepared.append((
+                symbol,
+                theme_code,
+                float(row.get("exposure_score") or 0),
+                int(row.get("industry_match_level") or 0),
+                float(row.get("name_match_score") or 0),
+                float(row.get("mainbz_match_score") or 0),
+                float(row.get("historical_beta") or 0),
+                evidence_text,
+            ))
+
+        if not prepared:
+            return {"written": 0, "batch_count": 0, "skipped": skipped}
+
+        sql = (
+            "INSERT INTO strategy_factory_theme_exposure "
+            "(symbol, theme_code, exposure_score, industry_match_level, "
+            " name_match_score, mainbz_match_score, historical_beta, evidence) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+            "ON CONFLICT(symbol, theme_code) DO UPDATE SET "
+            "  exposure_score       = EXCLUDED.exposure_score, "
+            "  industry_match_level = EXCLUDED.industry_match_level, "
+            "  name_match_score     = EXCLUDED.name_match_score, "
+            "  mainbz_match_score   = EXCLUDED.mainbz_match_score, "
+            "  historical_beta      = EXCLUDED.historical_beta, "
+            "  evidence             = EXCLUDED.evidence, "
+            "  updated_at           = CURRENT_TIMESTAMP"
+        )
+
+        written = 0
+        batch_count = 0
+        async with self.acquire() as conn:
+            for start in range(0, len(prepared), max(1, int(batch_size))):
+                chunk = prepared[start:start + batch_size]
+                # The aiask_quant_core SQLite wrapper exposes ``executemany``
+                # via the underlying connection; fall back to per-row
+                # ``execute`` if the wrapper does not support it.
+                try:
+                    await conn.executemany(sql, chunk)
+                except AttributeError:
+                    for params in chunk:
+                        await conn.execute(sql, *params)
+                written += len(chunk)
+                batch_count += 1
+        return {"written": written, "batch_count": batch_count, "skipped": skipped}
+
+    async def update_event_task_lineage_gates(
+        self,
+        *,
+        event_id: str,
+        task_id: str,
+        gate_1_passed=None,
+        gate_2_passed=None,
+        gate_3_passed=None,
+        strategies_submitted=None,
+    ) -> dict:
+        """Patch Gate / submission state on an existing lineage row.
+
+        方案 §6 Phase 0 实施第 4 项：lineage 表必须支持按
+        ``(event_id, task_id)`` 写回 gate_1/2/3 + strategies_submitted。
+        允许部分字段为 ``None``（保持原值），避免上游忘传字段时把已通过
+        的 Gate 重置成 NULL。
+        """
+
+        event_id_str = str(event_id or "").strip()
+        task_id_str = str(task_id or "").strip()
+        if not event_id_str or not task_id_str:
+            raise ValueError("event_id and task_id are required")
+
+        sets: list[str] = []
+        params: list = []
+        idx = 1
+
+        def _add(column: str, value):
+            nonlocal idx
+            if value is None:
+                return
+            sets.append(f"{column} = ${idx}")
+            params.append(value)
+            idx += 1
+
+        if gate_1_passed is not None:
+            _add("gate_1_passed", int(bool(gate_1_passed)))
+        if gate_2_passed is not None:
+            _add("gate_2_passed", int(bool(gate_2_passed)))
+        if gate_3_passed is not None:
+            _add("gate_3_passed", int(bool(gate_3_passed)))
+        if strategies_submitted is not None:
+            _add("strategies_submitted", int(strategies_submitted))
+
+        if not sets:
+            return {"event_id": event_id_str, "task_id": task_id_str, "updated": 0}
+
+        params.extend([event_id_str, task_id_str])
+        sql = (
+            "UPDATE strategy_factory_event_task_lineage "
+            f"SET {', '.join(sets)} "
+            f"WHERE event_id = ${idx} AND task_id = ${idx + 1}"
+        )
+
+        async with self.acquire() as conn:
+            await conn.execute(sql, *params)
+            row = await conn.fetchrow(
+                "SELECT lineage_id FROM strategy_factory_event_task_lineage "
+                "WHERE event_id = $1 AND task_id = $2 ORDER BY lineage_id DESC LIMIT 1",
+                event_id_str,
+                task_id_str,
+            )
+        return {
+            "event_id": event_id_str,
+            "task_id": task_id_str,
+            "updated": 1 if row is not None else 0,
+            "lineage_id": dict(row).get("lineage_id") if row else None,
+        }
+
+    async def claim_event_outbox(self, payload: dict) -> dict:
+        """Idempotent outbox claim by ``dedupe_key``.
+
+        Returns ``{"claimed": bool, "status": str, "attempts": int}``.
+        ``claimed=False`` means another worker already took the slot or
+        the same dedupe_key is in a terminal state (``processed`` /
+        ``abandoned``); the caller must skip processing.
+
+        方案 §3.1 + §8: dedupe_key 是消费幂等的边界，主键约束让 SQLite
+        强制单调。
+        """
+
+        dedupe_key = str(payload.get("dedupe_key") or "").strip()
+        source_event_id = str(payload.get("source_event_id") or "").strip()
+        if not dedupe_key or not source_event_id:
+            raise ValueError("dedupe_key and source_event_id are required")
+
+        theme_code = payload.get("theme_code")
+        event_type = payload.get("event_type")
+
+        async with self.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT status, attempts FROM strategy_factory_event_outbox_state "
+                "WHERE dedupe_key = $1",
+                dedupe_key,
+            )
+            if existing is None:
+                await conn.execute(
+                    """
+                    INSERT INTO strategy_factory_event_outbox_state
+                        (dedupe_key, source_event_id, theme_code, event_type,
+                         status, attempts, claimed_at)
+                    VALUES ($1, $2, $3, $4, 'processing', 1, CURRENT_TIMESTAMP)
+                    """,
+                    dedupe_key,
+                    source_event_id,
+                    theme_code,
+                    event_type,
+                )
+                return {
+                    "claimed": True,
+                    "status": "processing",
+                    "attempts": 1,
+                    "dedupe_key": dedupe_key,
+                }
+
+            existing_status = str(existing["status"] or "").strip()
+            existing_attempts = int(existing["attempts"] or 0)
+            # Terminal states are not re-claimable; return claimed=False to
+            # signal the publisher to skip without raising.
+            if existing_status in ("processed", "abandoned"):
+                return {
+                    "claimed": False,
+                    "status": existing_status,
+                    "attempts": existing_attempts,
+                    "dedupe_key": dedupe_key,
+                }
+            # In-flight: tighten attempts and refresh claimed_at; the row
+            # remains 'processing' so a parallel worker (should not exist
+            # under v1 single-worker rule, but guard anyway) sees a busy
+            # slot.
+            await conn.execute(
+                """
+                UPDATE strategy_factory_event_outbox_state
+                SET status = 'processing',
+                    attempts = attempts + 1,
+                    claimed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE dedupe_key = $1
+                """,
+                dedupe_key,
+            )
+            return {
+                "claimed": True,
+                "status": "processing",
+                "attempts": existing_attempts + 1,
+                "dedupe_key": dedupe_key,
+            }
+
+    async def mark_event_outbox_processed(self, dedupe_key: str) -> dict:
+        """Mark an outbox row as ``processed`` (terminal). Idempotent."""
+        key = str(dedupe_key or "").strip()
+        if not key:
+            raise ValueError("dedupe_key is required")
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE strategy_factory_event_outbox_state
+                SET status = 'processed',
+                    processed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_error = NULL
+                WHERE dedupe_key = $1
+                """,
+                key,
+            )
+        return {"dedupe_key": key, "status": "processed"}
+
+    async def mark_event_outbox_failed(
+        self,
+        dedupe_key: str,
+        *,
+        error: str,
+        abandon: bool = False,
+    ) -> dict:
+        """Mark an outbox row as ``failed`` (retryable) or ``abandoned`` (terminal)."""
+        key = str(dedupe_key or "").strip()
+        if not key:
+            raise ValueError("dedupe_key is required")
+        target_status = "abandoned" if abandon else "failed"
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE strategy_factory_event_outbox_state
+                SET status = $1,
+                    failed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_error = $2
+                WHERE dedupe_key = $3
+                """,
+                target_status,
+                str(error or "").strip()[:1024] if error else None,
+                key,
+            )
+        return {"dedupe_key": key, "status": target_status}

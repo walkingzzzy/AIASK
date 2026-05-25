@@ -58,6 +58,16 @@ def test_admission_uses_authoritative_backtest_expectancy():
 
 
 def test_statistical_admission_distinguishes_missing_from_zero():
+    """P1 update (R5.1, audit P1-prep): explicit 0.0 is now classified
+    as ``missing`` rather than ``weak``. The audit observed that
+    ``factor_validation_bootstrap`` writes 0.0 as a placeholder when an
+    empty walk-forward / bootstrap run happens, so 0.0 should not be
+    treated as "weak signal" — it's "no signal at all".
+
+    The old assertion (``walk_forward_ic_ir 0.000 < ...``) is preserved
+    here as a regression guard, but flipped: we now assert it is *not*
+    emitted, and instead the per-metric ``missing_<m>`` codes are.
+    """
     from strategy_factory.application.submission_gate import runner
 
     missing = runner._evaluate_statistical_admission(
@@ -81,9 +91,43 @@ def test_statistical_admission_distinguishes_missing_from_zero():
         },
     )
 
-    assert not any(reason.startswith("missing_statistical_metrics") for reason in explicit_zero["reasons"])
-    assert any(reason.startswith("walk_forward_ic_ir 0.000") for reason in explicit_zero["reasons"])
-    assert any(reason.startswith("purged_kfold_ic 0.000") for reason in explicit_zero["reasons"])
+    # Post-P1: explicit 0.0 -> missing (placeholder semantics).
+    assert any(reason.startswith("missing_statistical_metrics") for reason in explicit_zero["reasons"])
+    # And the per-metric structured codes appear:
+    for m in ("wf_ic_ir", "pkf_ic", "bootstrap_ci_lower", "param_sensitivity"):
+        assert f"missing_{m}" in explicit_zero["reasons"]
+    # Threshold-comparison messages should NOT appear, because the value is
+    # now classified as missing not present-real.
+    assert not any(reason.startswith("walk_forward_ic_ir 0.000")
+                   for reason in explicit_zero["reasons"])
+    assert not any(reason.startswith("purged_kfold_ic 0.000")
+                   for reason in explicit_zero["reasons"])
+
+
+def test_statistical_gate_uses_validation_and_backtest_metrics():
+    from strategy_factory.application.submission_gate import runner
+
+    result = asyncio.run(
+        runner._run_statistical_gate(
+            None,
+            _semantic_ready_strategy("value_factor"),
+            profile={"profile": "factor_rank_validation"},
+            validation_report={
+                "walk_forward": {"oos_rank_ic_ir": 0.35},
+                "purged_kfold": {"oos_rank_ic_mean": 0.03},
+                "bootstrap_ci": {"ci_lower": 0.02},
+            },
+            backtest_metrics={"parameter_perturbation_trade_stability": 0.85},
+        )
+    )
+
+    assert result["passed"] is True
+    assert result["wf_ic_ir"] == 0.35
+    assert result["pkf_ic"] == 0.03
+    assert result["bootstrap_ci_lower"] == 0.02
+    assert result["param_sensitivity"] == 0.15
+    assert not any(reason.startswith("missing_statistical_metrics") for reason in result["reasons"])
+    assert result["metric_source_audit"]["wf_ic_ir"] == "validation_report.walk_forward"
 
 
 def test_research_task_timeout_skips_without_local_fallback(monkeypatch):
@@ -182,3 +226,50 @@ def test_success_summary_exposes_quality_diagnostics():
     assert summary["validation_grade_counts"] == {"D": 1}
     assert summary["statistical_metric_missing_counts"]["wf_ic_ir"] == 1
     assert summary["metric_source_audit"]["expectancy"]["event_window_metrics"] == 1
+
+
+def test_success_summary_maps_llm_provider_diagnostics_into_status_counts():
+    from strategy_factory.application._cycle_success_summary import build_success_run_summary
+
+    summary = build_success_run_summary(
+        trace_id="trace_llm_mapping",
+        snapshot={},
+        candidates=[],
+        passed=[],
+        unique=[],
+        eliminated=[],
+        spawn_report={},
+        submit_result={},
+        quality_gate_report={},
+        backtest_report={},
+        autonomy_summary={
+            "external_llm_status_counts": {"non_executable": 2},
+            "pipeline_fallback_counts": {
+                "cooldown_skip": 3,
+                "local_fallback_preferred_or_skip": 10,
+                "target_context_blocked": 1,
+                "502 Bad Gateway": 4,
+            },
+            "external_llm_request_status_counts": {"cooldown_skip": 2, "failed": 4},
+            "external_llm_last_error": "Server error '502 Bad Gateway'",
+        },
+        task_scan_summary={},
+        task_source_counts={},
+        bulk_stock_matrix_family_counts={},
+        bulk_stock_matrix_allocation_pass_counts={},
+        factor_research_summary={},
+        factor_refresh_summary={},
+        readiness_summary={},
+        warmup_summary={},
+        backtest_audit_summary={},
+        submission_audit_summary={},
+        vector_summary={},
+        elapsed=1.0,
+    )
+
+    counts = summary["llm_status_counts"]
+    assert counts["non_executable"] == 2
+    assert counts["provider_cooldown_skip"] == 3
+    assert counts["provider_http_502"] == 4
+    assert "local_fallback_preferred_or_skip" not in counts
+    assert "target_context_blocked" not in counts

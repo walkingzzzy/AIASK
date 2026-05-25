@@ -477,6 +477,31 @@ class ReadinessService:
         elif budget_feedback_promotion_ready_ratio <= 0.25 and budget_feedback_strategy_count >= 3:
             warnings.append("incubating_promotion_ready_gap_elevated")
             score -= 0.03
+
+        # P0-3 fix: factory_readiness_score 与 cohort 实际产出脱节
+        # 历史问题(诊断报告 §2.3):143 strategies submitted 但 promotion_ready_rate=0 / zero_signal_rate=100%,
+        # 而 readiness_score 仍 0.7-0.84 显示"可继续 proceed",AI Agent 误判系统健康
+        # 修复策略:
+        #   - cohort >= 50 且 promotion_ready=0: 强制 critical_blocker(integration health 失败)
+        #   - cohort >= 50 且 zero_signal_rate >= 0.95: 强制 critical_blocker
+        # 这两条阻塞会让 can_proceed=False,readiness_score 降到 0.1 附近,真实反映系统状态
+        if budget_feedback_strategy_count >= 50:
+            if budget_feedback_promotion_ready_count == 0 and budget_feedback_promotion_ready_ratio <= 0.001:
+                if "cohort_promotion_ready_complete_failure" not in warnings:
+                    warnings.append("cohort_promotion_ready_complete_failure")
+                if "cohort_promotion_ready_complete_failure" not in blockers:
+                    blockers.append("cohort_promotion_ready_complete_failure")
+                if hard_block:
+                    critical_blockers.append("cohort_promotion_ready_complete_failure")
+                score -= 0.40
+            if budget_feedback_zero_signal_ratio >= 0.95:
+                if "cohort_zero_signal_pervasive" not in warnings:
+                    warnings.append("cohort_zero_signal_pervasive")
+                if "cohort_zero_signal_pervasive" not in blockers:
+                    blockers.append("cohort_zero_signal_pervasive")
+                if hard_block:
+                    critical_blockers.append("cohort_zero_signal_pervasive")
+                score -= 0.30
         if (
             budget_feedback_promotion_review_coverage_ratio <= 0.10
             and budget_feedback_strategy_count >= 4

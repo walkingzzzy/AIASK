@@ -1,0 +1,28 @@
+{
+  "scenario_id": "S21",
+  "title": "AI 工作流 / 高确定性诊断 / 因子候选 / 数据质量 / 治理工件",
+  "tools_required": 31,
+  "tools_called": 33,
+  "tools_unique_in_scenario": 33,
+  "tools_new_to_global": 0,
+  "passed": true,
+  "summary": {"Pass": 14, "Degraded": 11, "Fail-graceful": 8, "Fail": 0, "called": 33},
+  "fail_findings": [],
+  "key_findings_brief": [
+    {"id": "S21-F01", "severity": "high", "title": "prediction_diagnosis_workflow sklearn + mapie 双重 fallback 到 builtin (sklearn_calibration_failed:ValueError + mapie_runtime_failed:ValueError)"},
+    {"id": "S21-F02", "severity": "high", "title": "prediction_diagnosis ECE=0.397 quality_band=poor + sample_size=5 不稳定 但仍输出 platt 校准建议"},
+    {"id": "S21-F03", "severity": "high", "title": "governance_check_workflow online_offline:inconsistent 累计第3次复现 (S19/S21 strategy + S19 factor)，backtest slippage=0bps vs execution 5bps"},
+    {"id": "S21-F04", "severity": "high", "title": "factor_candidate_workflow 7 步 partial_failed: artifact_not_persisted 导致 validate/get 失败 + workflow_fast_mode_prefer_local_fallback 强制本地规则降级"},
+    {"id": "S21-F05", "severity": "high", "title": "strategy_review_workflow 3/5 partial_failed: strategy_not_found+factory readiness_score=0.7 仍 proceed; submitted=143 全 D 级 zero_signal_rate=100%"},
+    {"id": "S21-F06", "severity": "high", "title": "validate_factor_oos n=3 codes 不足 walk_forward+kfold 全 0；DSR 显示 sharpe=2.28 但 grade=D total_score=0 矛盾"},
+    {"id": "S21-F07", "severity": "high", "title": "factor_robustness_check momentum 10d IC=-0.999 vs 20d IC=+0.81 vs 60d IC=+0.05 极端不稳定但 robustness_score=0.0 grade=weak"},
+    {"id": "S21-F08", "severity": "medium", "title": "factor_decay status=unknown reason=insufficient_history (0 evaluation)，5 维 model_drift 全 unknown (brier/ece/rank_ic/stability/total)"},
+    {"id": "S21-F09", "severity": "medium", "title": "experiment_tracker mlflow_not_installed → builtin_fallback；run 状态留在 running 永远不更新"},
+    {"id": "S21-F10", "severity": "medium", "title": "get_signal_hit_rate lookback=200 仅 9 样本 < 10 reliability_warning，但 5d/10d/20d 命中率 75%/100%/100% 仍全输出"},
+    {"id": "S21-F11", "severity": "medium", "title": "find_similar_patterns top5 5d hit=0.4/10d hit=0.4/20d hit=0.8 倒挂(短期 0.4 vs 长期 0.8)，无置信度警示"},
+    {"id": "S21-F12", "severity": "low", "title": "✅ data_quality_workflow GE 6/6 + remediation_hints + checkpoint 持久化 累计 14 场景 70/70 stable"},
+    {"id": "S21-F13", "severity": "low", "title": "✅ get_tool_contract input_schema + examples + side_effect + freshness 完整契约"},
+    {"id": "S21-F14", "severity": "low", "title": "✅ analyze_stock_product_workflow 8 step deep_analysis 全 pass + report_render HTML/manifest + ai_workflow_artifact 持久化可回查"},
+    {"id": "S21-F15", "severity": "low", "title": "✅ available_tools(161) + get_available_categories(33) 锚点持续验证通过"}
+  ]
+}

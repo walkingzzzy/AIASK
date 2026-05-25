@@ -21,6 +21,164 @@
                 call_optional_async=_call_optional_async,
             )
 
+        @staticmethod
+        def _maintenance_env_bool(name: str, default: bool = False) -> bool:
+            raw = str(os.getenv(name) or "").strip().lower()
+            return raw in ("1", "true", "yes", "on") if raw else default
+
+        @staticmethod
+        def _maintenance_seconds(name: str, default: int) -> int:
+            try:
+                return max(1, int(os.getenv(name, str(default)) or default))
+            except Exception:
+                return max(1, int(default))
+
+        @staticmethod
+        def _maintenance_due(last_at: Optional[datetime], now: datetime, interval_seconds: int) -> bool:
+            if last_at is None:
+                return True
+            return (now - last_at).total_seconds() >= float(interval_seconds)
+
+        async def _drain_event_outbox_maintenance(self, db, *, limit: int) -> dict[str, Any]:
+            from .research.event_task_generator import generate_tasks_from_active_events
+
+            generated = await generate_tasks_from_active_events(
+                db,
+                force_enabled=True,
+                persist_lineage=False,
+                event_limit=max(1, limit),
+            )
+            tasks = list(generated.get("tasks") or [])
+            lineage_records = list(generated.get("lineage_records") or [])
+            lineage_by_key = {
+                str(item.get("dedupe_key") or "").strip(): dict(item or {})
+                for item in lineage_records
+                if str(item.get("dedupe_key") or "").strip()
+            }
+            processed = 0
+            skipped = 0
+            failed = 0
+            for task in tasks[: max(1, limit)]:
+                context = dict(task.get("event_context") or {})
+                dedupe_key = str(context.get("dedupe_key") or "").strip()
+                record = lineage_by_key.get(dedupe_key)
+                if not dedupe_key or not record:
+                    skipped += 1
+                    continue
+                try:
+                    claim = await db.claim_event_outbox(
+                        {
+                            "dedupe_key": dedupe_key,
+                            "source_event_id": record.get("event_id") or context.get("event_id"),
+                            "theme_code": record.get("theme_code") or task.get("candidate_family"),
+                            "event_type": context.get("event_type") or task.get("opportunity_type"),
+                        }
+                    )
+                    if not claim.get("claimed"):
+                        skipped += 1
+                        continue
+                    await db.upsert_event_task_lineage(record)
+                    await db.mark_event_outbox_processed(dedupe_key)
+                    processed += 1
+                except Exception as exc:
+                    failed += 1
+                    with suppress(Exception):
+                        await db.mark_event_outbox_failed(dedupe_key, error=str(exc))
+            return {
+                "status": "completed",
+                "generated_task_count": len(tasks),
+                "candidate_lineage_count": len(lineage_records),
+                "processed": processed,
+                "skipped": skipped,
+                "failed": failed,
+            }
+
+        async def _run_event_theme_maintenance_if_due(self, db=None) -> dict[str, Any]:
+            now = self._now()
+            if self._is_market_hours(now):
+                return {"status": "skipped", "reason": "market_hours"}
+
+            exposure_enabled = self._maintenance_env_bool(
+                "STRATEGY_FACTORY_THEME_EXPOSURE_AUTO_REFRESH_ENABLED",
+                False,
+            )
+            outbox_enabled = self._maintenance_env_bool(
+                "STRATEGY_FACTORY_EVENT_OUTBOX_AUTO_DRAIN_ENABLED",
+                False,
+            )
+            regression_enabled = self._maintenance_env_bool(
+                "STRATEGY_FACTORY_THEME_REGRESSION_AUTO_RUN_ENABLED",
+                False,
+            )
+            if not (exposure_enabled or outbox_enabled or regression_enabled):
+                return {"status": "disabled"}
+
+            resolved_db = self._load_db() if db is None else db
+            results: dict[str, Any] = {
+                "status": "completed",
+                "ran": [],
+                "skipped": [],
+                "errors": [],
+            }
+
+            if outbox_enabled:
+                interval = self._maintenance_seconds(
+                    "STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_INTERVAL_SEC",
+                    1800,
+                )
+                if self._maintenance_due(self._last_event_outbox_drain_at, now, interval):
+                    try:
+                        limit = max(1, min(int(os.getenv("STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_LIMIT", "10") or 10), 100))
+                        results["outbox_drain"] = await self._drain_event_outbox_maintenance(resolved_db, limit=limit)
+                        self._last_event_outbox_drain_at = now
+                        results["ran"].append("outbox_drain")
+                    except Exception as exc:
+                        results["errors"].append({"step": "outbox_drain", "error": str(exc)})
+                else:
+                    results["skipped"].append("outbox_drain_not_due")
+
+            if exposure_enabled:
+                interval = self._maintenance_seconds(
+                    "STRATEGY_FACTORY_THEME_EXPOSURE_REFRESH_INTERVAL_SEC",
+                    86400,
+                )
+                if self._maintenance_due(self._last_theme_exposure_refresh_at, now, interval):
+                    try:
+                        from .research.theme_exposure_builder import ThemeExposureBuilder
+
+                        batch_size = max(1, min(int(os.getenv("STRATEGY_FACTORY_THEME_EXPOSURE_BATCH_SIZE", "1000") or 1000), 10000))
+                        results["theme_exposure_refresh"] = await ThemeExposureBuilder(
+                            batch_size=batch_size,
+                        ).build(resolved_db, batch_size=batch_size)
+                        self._last_theme_exposure_refresh_at = now
+                        results["ran"].append("theme_exposure_refresh")
+                    except Exception as exc:
+                        results["errors"].append({"step": "theme_exposure_refresh", "error": str(exc)})
+                else:
+                    results["skipped"].append("theme_exposure_refresh_not_due")
+
+            if regression_enabled:
+                interval = self._maintenance_seconds(
+                    "STRATEGY_FACTORY_THEME_REGRESSION_INTERVAL_SEC",
+                    604800,
+                )
+                if self._maintenance_due(self._last_theme_regression_run_at, now, interval):
+                    try:
+                        from .research.theme_response_regression import ThemeResponseRegression
+
+                        results["theme_regression_run"] = await ThemeResponseRegression().run_full_update(resolved_db)
+                        self._last_theme_regression_run_at = now
+                        results["ran"].append("theme_regression_run")
+                    except Exception as exc:
+                        results["errors"].append({"step": "theme_regression_run", "error": str(exc)})
+                else:
+                    results["skipped"].append("theme_regression_not_due")
+
+            if results["errors"]:
+                results["status"] = "partial"
+            self._last_event_theme_maintenance_result = results
+            return results
+
         async def _loop(self):
             while self._running:
                 try:
@@ -104,6 +262,7 @@
                     if self._running:
                         self._metrics.record_cycle_start()
                         cycle_start = self._now()
+                        await self._run_event_theme_maintenance_if_due()
                         await self.run_once()
                         self._daily_run_count += 1
                         self._cycle_count += 1
@@ -181,11 +340,22 @@
                     effective_task,
                     base_timeout=base_timeout_sec,
                 )
+                # P3 (R7.3): classify the timeout source so dashboards can
+                # tell apart external LLM gateway timeouts (network) from
+                # pipeline-stage timeouts (LLM responded but a stage took
+                # too long) from bulk-research timeouts (long-tail bulk
+                # task hit the bulk timeout cap).
+                timeout_kind = _classify_research_task_timeout_kind(
+                    effective_task,
+                    base_timeout_sec=base_timeout_sec,
+                    effective_timeout_sec=initial_timeout_sec,
+                )
                 logger.warning(
-                    "StrategyFactory: research task %s timed out after %.1fs; "
-                    "skipping generation without local fallback",
+                    "StrategyFactory: research task %s timed out after %.1fs "
+                    "(kind=%s); skipping generation without local fallback",
                     task_id,
                     float(initial_timeout_sec or 0.0),
+                    timeout_kind,
                 )
                 timeout_lifecycle = {
                     "state": "skipped",
@@ -219,6 +389,7 @@
                         "task_timeout_skip": True,
                         "task_timeout_sec": round(float(initial_timeout_sec or 0.0), 4),
                         "task_timeout_policy": "skip_without_local_fallback",
+                        "task_timeout_kind": timeout_kind,
                         "requeue_recommended": True,
                         "external_provider": {
                             "enabled": bool(not effective_task.get("disable_external_llm")),

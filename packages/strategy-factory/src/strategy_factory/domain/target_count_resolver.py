@@ -43,7 +43,10 @@ def resolve_target_count(
         confidence: Event confidence [0, 1].
         intensity: Event intensity [0, 1].
         theme_breadth: "narrow" / "medium" / "broad".
-        task_source: "manual_event" / "auto_event" / "snapshot".
+        task_source: PR-C unified canonical value is "event_driven" (further
+            distinguished by ``event_source``). Legacy values
+            "manual_event" / "auto_event" are still accepted for
+            backwards compatibility — they map to the same numeric path.
         feature_flag_target_max: Override max (if None, uses env config).
 
     Returns:
@@ -59,6 +62,10 @@ def resolve_target_count(
     stretch = evidence ** 1.3
     dynamic = base + stretch * 12
 
+    # PR-C: legacy manual_event got a +3 boost to differentiate from auto.
+    # Under the unified semantics that boost only triggers when the legacy
+    # alias is explicitly used; ``event_driven`` callers must pass the
+    # boost decision via ``event_source`` (handled in event_task_generator).
     if task_source == "manual_event":
         dynamic += 3
 
@@ -80,24 +87,39 @@ def resolve_target_symbol_limit(
     This is the single entry point that replaces all hardcoded `limit=12`
     calls throughout the codebase (§4.2 stage 5a).
 
+    PR-E (Phase 3, 2026-05-24): the function reads the feature flag
+    *every call* rather than caching the module-level constant so that
+    runtime env changes (operator flipping `STRATEGY_FACTORY_DYNAMIC_TARGET_COUNT_ENABLED=1`
+    without a process restart) take effect immediately. Tests rely on
+    this behaviour to flip the flag with ``monkeypatch.setenv`` between
+    cases.
+
     Args:
-        task_source: Origin of the task.
+        task_source: Origin of the task. PR-C unified canonical value is
+            ``"event_driven"``; legacy ``"manual_event"`` / ``"auto_event"``
+            are still recognised so PR-E (target contract v2) can roll out
+            independently.
         validation_focus: Validation focus mode.
         configured_target_count: Explicit target count from research task.
 
     Returns:
         Maximum number of target symbols allowed.
     """
-    if configured_target_count is not None and configured_target_count > 0:
-        if not DYNAMIC_TARGET_COUNT_ENABLED:
-            return min(configured_target_count, 12)
-        return min(configured_target_count, TARGET_COUNT_MAX)
+    dynamic_enabled = _env_bool("STRATEGY_FACTORY_DYNAMIC_TARGET_COUNT_ENABLED", False)
+    target_max = int(os.getenv("STRATEGY_FACTORY_TARGET_COUNT_MAX") or 30)
 
-    if not DYNAMIC_TARGET_COUNT_ENABLED:
+    if configured_target_count is not None and configured_target_count > 0:
+        if not dynamic_enabled:
+            return min(configured_target_count, 12)
+        return min(configured_target_count, target_max)
+
+    if not dynamic_enabled:
         return 12
 
-    if task_source in ("manual_event", "auto_event"):
-        return TARGET_COUNT_MAX
+    # PR-C: include the unified ``event_driven`` token alongside legacy
+    # aliases. PR-E will collapse these into a single canonical value.
+    if task_source in ("event_driven", "manual_event", "auto_event"):
+        return target_max
 
     if task_source == "bulk_stock_matrix":
         return 1

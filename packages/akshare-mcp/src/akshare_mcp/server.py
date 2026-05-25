@@ -61,6 +61,7 @@ try:
         governance_workflow, adapter_tools,
         market_blocks, basic_data, managers, research,
         key_levels, stop_levels, trade_plan, db_freshness,
+        valuation_consensus, decision_consensus,
     )
 except UnicodeDecodeError as e:
     for _n in _core_tool_names:
@@ -369,6 +370,8 @@ def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
     portfolio.register(app)
     valuation.register(app)
     decision.register(app)
+    valuation_consensus.register(app)
+    decision_consensus.register(app)
     search.register(app)
     semantic.register(app)
     research.register(app)

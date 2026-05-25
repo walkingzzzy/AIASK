@@ -462,6 +462,7 @@
                 results.get("status") or FactoryRunStatus.SUCCESS.value,
                 results.get("stages") or {},
                 persistence_failure_count=len(failures),
+                summary=summary,
             )
             results["status"] = resolved_status.value
             summary.update(stage_summary)

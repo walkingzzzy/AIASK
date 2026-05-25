@@ -115,14 +115,28 @@ def get_industry_chain(keyword: Optional[str] = None, chain_id: Optional[str] = 
                 except Exception:
                     pass
             if not result:
+                # P3-5.13 fix: not_found 显式标 quality_flags(诊断报告 §5.13)
+                # 历史问题:silent 返回全部预置 chains,success=true,AI 误以为找到匹配
                 result = chains
                 message = f'未找到与「{keyword}」匹配的产业链，已返回全部预置产业链（共{len(chains)}条）'
+                out = {
+                    'chains': result,
+                    'count': len(result),
+                    'matched': False,
+                    'message': message,
+                    'quality_flags': ['not_found', 'fallback_to_preset'],
+                    'fallback_used': True,
+                    'fallback_reason': f'no_match_for_keyword:{keyword}',
+                    'requested_keyword': keyword,
+                }
+                return ok(out)
         else:
             result = chains
 
-        out = {'chains': result, 'count': len(result)}
+        out = {'chains': result, 'count': len(result), 'matched': bool(result and not message)}
         if message:
             out['message'] = message
+            out['matched'] = False
         return ok(out)
 
     except Exception as e:

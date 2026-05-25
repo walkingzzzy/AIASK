@@ -97,14 +97,37 @@ class MarketOpportunityScanner(
             opportunity_type = str(task.get("opportunity_type") or "unknown")
             type_counts[opportunity_type] = type_counts.get(opportunity_type, 0) + 1
 
+        # PR-C (Phase 1, 2026-05-24): event-driven tasks are now uniformly
+        # tagged ``task_source="event_driven"`` and distinguished by
+        # ``event_source`` (manual / news_llm / macro_shock / market_anomaly /
+        # price_inference). Both old and new statistic keys are derived
+        # from the merged task list rather than the manual-only sub-list,
+        # so downstream dashboards stay consistent across the migration.
+        event_driven_tasks = [
+            item for item in tasks
+            if str(item.get("task_source") or "").strip() == "event_driven"
+        ]
+        event_source_counts: Dict[str, int] = {}
+        for item in event_driven_tasks:
+            origin = str(item.get("event_source") or "").strip() or "unknown"
+            event_source_counts[origin] = event_source_counts.get(origin, 0) + 1
+
         report = {
             "summary": {
                 "task_count": len(tasks),
                 "task_types": type_counts,
                 "themes": [str(item.get("theme") or "") for item in tasks],
                 "task_sources": dict(task_sources),
-                "event_task_count": len([item for item in tasks if item.get("task_source") == "event_driven"]),
-                "manual_event_task_count": len(manual_event_tasks),
+                "event_task_count": len(event_driven_tasks),
+                # manual_event_task_count is now defined as
+                # event_driven AND event_source==manual (PR-C verification:
+                # 7.2 new test). Fallback to len(manual_event_tasks) when
+                # the merged list is empty so legacy callers still see a
+                # non-negative number.
+                "manual_event_task_count": event_source_counts.get(
+                    "manual", len(manual_event_tasks)
+                ),
+                "event_source_counts": event_source_counts,
                 **manual_event_meta,
                 "max_tasks": AUTONOMY_MAX_RESEARCH_TASKS,
                 "universe_limit": int(OPPORTUNITY_UNIVERSE_LIMIT),

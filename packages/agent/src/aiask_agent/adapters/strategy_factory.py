@@ -182,6 +182,29 @@ def _load_factory_dispatch_handler():
     return handle_factory_dispatch_run
 
 
+def _load_factory_event_handler(action: str):
+    """Resolve a ``factory_event_*`` write handler from the strategy manager
+    dispatch table.
+
+    PR-F (Phase 4, 2026-05-24): instead of importing each handler by name we
+    delegate to ``ACTION_HANDLERS`` so the agent stays in lock-step with the
+    contract registry — if a new ``factory_event_*`` write action lands in
+    the manager later, only the white-lists in ``tool_risk.py`` need to grow,
+    the executor automatically discovers the handler.
+
+    Closes Phase 4 §"execute_confirmed_action() 增加 strategy_manager event
+    action 执行分支" while satisfying the §"执行路径复用 AKShare MCP manager
+    handler，不新增 model-visible agent_strategy_manager" requirement.
+    """
+
+    from akshare_mcp.tools.managers.strategy_manager import ACTION_HANDLERS
+
+    handler = ACTION_HANDLERS.get(action)
+    if handler is None:
+        raise LookupError(f"strategy_manager has no handler for action: {action}")
+    return handler
+
+
 async def factory_status(arguments: dict[str, Any]) -> dict[str, Any]:
     result = await _call_db_facade(_load_factory_status_handler, arguments)
     return _read_only_fallback("factory_status", result)
@@ -246,6 +269,28 @@ async def execute_confirmed_action(action: str, params: dict[str, Any] | None = 
     normalized = str(action or "").strip()
     if normalized in {"factory_run_once", "factory_dispatch_run"}:
         return await _call_db_facade(_load_factory_dispatch_handler, dict(params or {}))
+    # PR-F (Phase 4, 2026-05-24): route confirmed event-driven write actions
+    # through the existing AKShare MCP manager handlers so Desktop / TUI
+    # writes share the same dual-person review, self-approval guard and
+    # outbox/lineage persistence as direct manager calls.
+    #
+    # ``factory_event_list`` and ``factory_event_preview_tasks`` are
+    # read-only and live in ``tool_risk.READ_ONLY_STRATEGY_ACTIONS`` —
+    # they never reach this executor (no ActionIntent is created), so we
+    # only handle the four write actions here.
+    if normalized in {
+        "factory_event_create",
+        "factory_event_update",
+        "factory_event_approve",
+        "factory_event_record_outcome",
+        "factory_theme_exposure_refresh",
+        "factory_event_outbox_drain",
+        "factory_theme_regression_run",
+    }:
+        return await _call_db_facade(
+            lambda action=normalized: _load_factory_event_handler(action),
+            dict(params or {}),
+        )
     return {
         "success": False,
         "data": {

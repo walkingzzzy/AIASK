@@ -562,6 +562,194 @@ def _resolve_multiple_testing_panel(
     return list(dict.fromkeys([*target_codes, "600519", "000858", "601318"]))[:6], "representative_fallback"
 
 
+def _assign_statistical_metric(
+    payload: dict[str, Any],
+    audit: dict[str, Any],
+    field_name: str,
+    value: Any,
+    source: str,
+    *,
+    override: bool = False,
+) -> None:
+    if value in (None, "", [], {}):
+        return
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return
+    if not np.isfinite(numeric):
+        return
+    if not override and _optional_metric_value(payload, field_name) is not None:
+        return
+    payload[field_name] = numeric
+    audit[field_name] = source
+
+
+def _copy_statistical_fields(
+    payload: dict[str, Any],
+    audit: dict[str, Any],
+    source_payload: Optional[dict[str, Any]],
+    source_name: str,
+) -> None:
+    source = dict(source_payload or {})
+    for field_name in _SUPPLEMENTAL_STATISTICAL_FIELDS:
+        if field_name == "period_robustness":
+            period_payload = dict(source.get("period_robustness") or {})
+            if period_payload and not payload.get("period_robustness"):
+                payload["period_robustness"] = period_payload
+                audit["period_robustness"] = source_name
+            continue
+        if field_name in source:
+            _assign_statistical_metric(
+                payload,
+                audit,
+                field_name,
+                source.get(field_name),
+                source_name,
+            )
+
+
+def _copy_statistical_metric_records(
+    payload: dict[str, Any],
+    audit: dict[str, Any],
+    source_payload: Optional[dict[str, Any]],
+    source_name: str,
+) -> None:
+    source = dict(source_payload or {})
+    for field_name in _SUPPLEMENTAL_STATISTICAL_FIELDS:
+        if field_name not in source:
+            continue
+        record = source.get(field_name)
+        record_payload = dict(record or {}) if isinstance(record, dict) else {}
+        value = record_payload.get("value") if record_payload else record
+        derived = bool(record_payload.get("derived")) if record_payload else False
+        record_source = str(record_payload.get("source") or "").strip()
+        audit_source = f"{source_name}.{field_name}"
+        if record_source:
+            audit_source = f"{audit_source}:{record_source}"
+        if derived and "derived" not in audit_source.lower():
+            audit_source = f"{audit_source}_derived"
+        if field_name == "period_robustness":
+            period_payload = dict(value or {}) if isinstance(value, dict) else {}
+            if period_payload and not payload.get("period_robustness"):
+                payload["period_robustness"] = period_payload
+                audit["period_robustness"] = audit_source
+            continue
+        _assign_statistical_metric(
+            payload,
+            audit,
+            field_name,
+            value,
+            audit_source,
+        )
+
+
+def _build_statistical_gate_payload(
+    strategy: dict,
+    profile: dict[str, Any],
+    *,
+    gate_payload: Optional[dict[str, Any]] = None,
+    backtest_metrics: Optional[dict[str, Any]] = None,
+    validation_report: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = dict(gate_payload or {})
+    audit = dict(payload.get("metric_source_audit") or {})
+    metrics = _materialize_backtest_metrics_contract(backtest_metrics)
+
+    for source_name, source_payload in (
+        ("gate_payload", gate_payload),
+        ("backtest_metrics", metrics),
+        ("factor_metrics", dict(metrics.get("factor_metrics") or {})),
+        ("statistical_validation", dict(metrics.get("statistical_validation") or {})),
+        ("validation", dict(metrics.get("validation") or {})),
+    ):
+        _copy_statistical_fields(payload, audit, source_payload, source_name)
+
+    validation = dict(validation_report or {})
+    walk_forward = dict(validation.get("walk_forward") or {})
+    purged_kfold = dict(validation.get("purged_kfold") or {})
+    bootstrap_ci = dict(validation.get("bootstrap_ci") or {})
+    multiple_testing = dict(validation.get("multiple_testing") or {})
+    statistical_metrics = dict(validation.get("statistical_metrics") or {})
+
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "wf_ic_ir",
+        _optional_metric_value(walk_forward, "oos_rank_ic_ir", "oos_ic_ir"),
+        "validation_report.walk_forward",
+    )
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "pkf_ic",
+        _optional_metric_value(purged_kfold, "oos_rank_ic_mean", "oos_ic_mean"),
+        "validation_report.purged_kfold",
+    )
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "bootstrap_ci_lower",
+        _optional_metric_value(bootstrap_ci, "ci_lower"),
+        "validation_report.bootstrap_ci",
+    )
+    _copy_statistical_metric_records(
+        payload,
+        audit,
+        statistical_metrics,
+        "validation_report.statistical_metrics",
+    )
+
+    if _optional_metric_value(payload, "param_sensitivity") is None:
+        stability = _optional_metric_value(metrics, "parameter_perturbation_trade_stability")
+        if stability is not None:
+            sensitivity = max(0.0, min(1.0, 1.0 - float(stability)))
+            _assign_statistical_metric(
+                payload,
+                audit,
+                "param_sensitivity",
+                sensitivity,
+                "backtest_metrics.parameter_perturbation_trade_stability_inverse",
+            )
+
+    deflated = dict(multiple_testing.get("deflated_sharpe") or {})
+    pbo = dict(multiple_testing.get("pbo") or {})
+    reality_check = dict(multiple_testing.get("white_reality_check") or {})
+    spa = dict(multiple_testing.get("hansen_spa") or {})
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "deflated_sharpe_ratio",
+        _optional_metric_value(deflated, "dsr", "deflated_sharpe_ratio"),
+        "validation_report.multiple_testing.deflated_sharpe",
+    )
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "pbo",
+        _optional_metric_value(pbo, "pbo"),
+        "validation_report.multiple_testing.pbo",
+    )
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "white_reality_check_pvalue",
+        _optional_metric_value(reality_check, "p_value"),
+        "validation_report.multiple_testing.white_reality_check",
+    )
+    _assign_statistical_metric(
+        payload,
+        audit,
+        "hansen_spa_pvalue",
+        _optional_metric_value(spa, "p_value"),
+        "validation_report.multiple_testing.hansen_spa",
+    )
+
+    if audit:
+        payload["metric_source_audit"] = audit
+    return payload
+
+
 # PR-C1: 补充缺失的 _run_statistical_gate 函数（修复 NameError）
 async def _run_statistical_gate(
     db,
@@ -569,6 +757,9 @@ async def _run_statistical_gate(
     *,
     profile: dict = None,
     klass=None,
+    gate_payload: Optional[dict[str, Any]] = None,
+    backtest_metrics: Optional[dict[str, Any]] = None,
+    validation_report: Optional[dict[str, Any]] = None,
 ) -> dict:
     """执行统计门禁评估（factor_rank_validation 路径）。
 
@@ -578,10 +769,13 @@ async def _run_statistical_gate(
     """
     import inspect as _inspect
     profile = profile or {}
-    # gate_payload 为空 dict 时，_evaluate_statistical_admission 内部
-    # 会把 wf_ic_ir / pkf_ic / bootstrap_ci_lower / param_sensitivity 全取 0，
-    # 这比抛 TypeError 后 100% False 要好——至少 period_robustness 等有值时能真正评估。
-    gate_payload: dict = {}
+    gate_payload = _build_statistical_gate_payload(
+        strategy,
+        profile,
+        gate_payload=gate_payload,
+        backtest_metrics=backtest_metrics,
+        validation_report=validation_report,
+    )
     try:
         result = _evaluate_statistical_admission(
             strategy,
@@ -590,7 +784,10 @@ async def _run_statistical_gate(
         )
         if _inspect.isawaitable(result):
             result = await result
-        return normalize_quality_gate_result(result or {"passed": False, "reason": "empty_result"})
+        normalized = normalize_quality_gate_result(result or {"passed": False, "reason": "empty_result"})
+        if gate_payload.get("metric_source_audit"):
+            normalized["metric_source_audit"] = dict(gate_payload.get("metric_source_audit") or {})
+        return normalized
     except Exception as exc:
         return normalize_quality_gate_result(
             {

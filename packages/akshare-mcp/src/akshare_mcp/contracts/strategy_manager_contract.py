@@ -96,6 +96,12 @@ STRATEGY_MANAGER_ACTIONS = (
     "factory_event_approve",
     "factory_event_record_outcome",
     "factory_event_preview_tasks",
+    "factory_event_lineage",
+    "factory_theme_exposure_status",
+    "factory_event_outbox_status",
+    "factory_theme_exposure_refresh",
+    "factory_event_outbox_drain",
+    "factory_theme_regression_run",
 )
 
 STRATEGY_MANAGER_READ_ONLY_ACTIONS = frozenset(
@@ -152,6 +158,9 @@ STRATEGY_MANAGER_READ_ONLY_ACTIONS = frozenset(
         "task_runs",
         "factory_event_list",
         "factory_event_preview_tasks",
+        "factory_event_lineage",
+        "factory_theme_exposure_status",
+        "factory_event_outbox_status",
     }
 )
 
@@ -193,6 +202,9 @@ STRATEGY_MANAGER_CONFIRM_REQUIRED_ACTIONS = frozenset(
         "factory_event_update",
         "factory_event_approve",
         "factory_event_record_outcome",
+        "factory_theme_exposure_refresh",
+        "factory_event_outbox_drain",
+        "factory_theme_regression_run",
     }
 )
 

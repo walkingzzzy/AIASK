@@ -1,7 +1,14 @@
-"""Target basket resolution from theme impacts (PR-3).
+"""Target basket resolution from theme impacts (PR-3 + PR-D / Phase 2).
 
 Implements Layer C: given a ThemeImpact, resolve which stocks to target
 based on theme exposure scores, with industry diversification.
+
+PR-D (2026-05-24): the local ``resolve_target_count`` formula was a
+duplicate of the canonical implementation in
+``strategy_factory.domain.target_count_resolver``. The canonical
+implementation is now re-exported (alias) so all event task generators
+hit the same formula. ``resolve_target_basket`` defaults to
+``task_source="event_driven"`` to align with PR-C unified semantics.
 
 Usage:
     basket = await resolve_target_basket(db, impact)
@@ -13,6 +20,40 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .theme_graph import ThemeImpact
+
+# PR-D: single source of truth for target count formula. Re-exporting the
+# canonical resolver keeps existing call sites
+# (``from .target_basket import resolve_target_count``) working without
+# duplicating the math.
+from ...domain.target_count_resolver import (
+    resolve_target_count as _domain_resolve_target_count,
+)
+
+
+def resolve_target_count(
+    *,
+    confidence: float,
+    intensity: float,
+    theme_breadth: str,
+    task_source: str,
+    feature_flag_target_max: int = 12,
+) -> int:
+    """Backwards-compatible alias for the canonical target count resolver.
+
+    Forwards every keyword argument to
+    ``strategy_factory.domain.target_count_resolver.resolve_target_count``
+    so legacy callers (``apply_industry_diversification``,
+    ``resolve_target_basket`` itself, ``test_theme_graph_propagation``)
+    continue to work without code changes.
+    """
+
+    return _domain_resolve_target_count(
+        confidence=confidence,
+        intensity=intensity,
+        theme_breadth=theme_breadth,
+        task_source=task_source,
+        feature_flag_target_max=feature_flag_target_max,
+    )
 
 
 @dataclass
@@ -32,35 +73,6 @@ class TargetBasket:
             "weights": self.weights,
             "evidence": self.evidence,
         }
-
-
-def resolve_target_count(
-    *,
-    confidence: float,
-    intensity: float,
-    theme_breadth: str,
-    task_source: str,
-    feature_flag_target_max: int = 12,
-) -> int:
-    """Compute dynamic target count based on event/theme context.
-
-    See §4.1 of the upgrade plan for the formula derivation.
-    """
-    base_by_breadth = {"narrow": 5, "medium": 10, "broad": 18}
-    base = base_by_breadth.get(theme_breadth, 10)
-
-    evidence = confidence * 0.55 + intensity * 0.45
-    stretch = evidence ** 1.3
-    dynamic = base + stretch * 12
-
-    if task_source == "manual_event":
-        dynamic += 3
-
-    if task_source == "snapshot":
-        dynamic = min(dynamic, 12)
-
-    upper = max(3, min(feature_flag_target_max, 30))
-    return max(3, min(upper, int(round(dynamic))))
 
 
 def apply_industry_diversification(
@@ -117,31 +129,36 @@ async def resolve_target_basket(
     Returns:
         TargetBasket with selected symbols.
     """
-    # Compute dynamic target count if not overridden
+    # Compute dynamic target count if not overridden.
+    # PR-D: use canonical "event_driven" instead of legacy "manual_event"
+    # (the resolver still recognizes both for backwards compatibility).
     if target_count is None:
         target_count = resolve_target_count(
             confidence=impact.confidence,
             intensity=impact.magnitude,
             theme_breadth=impact.breadth,
-            task_source="manual_event",
+            task_source="event_driven",
             feature_flag_target_max=feature_flag_target_max,
         )
 
     # Load exposure data
     rows: list[dict[str, Any]] = []
+    fallback_used = False
+    fallback_reason: str | None = None
     if hasattr(db, "list_theme_exposure"):
-        # Future: dedicated exposure table query
         try:
             rows = await db.list_theme_exposure(
                 theme_code=impact.theme_code,
                 min_exposure=min_exposure,
                 limit=50,
             )
-        except Exception:
+        except Exception as exc:
             rows = []
+            fallback_reason = f"list_theme_exposure_failed: {exc}"
 
     if not rows:
-        # Fallback: try concept_detail or return empty
+        # PR-D: surface "为什么空" 让上游 (preview / lineage) 可以解释。
+        # Phase 6 会接入 concept-block fallback；Phase 2 仅记录原因。
         return TargetBasket(
             theme_code=impact.theme_code,
             symbols=[],
@@ -149,6 +166,13 @@ async def resolve_target_basket(
                 "reason": "no_exposure_data",
                 "theme_code": impact.theme_code,
                 "min_exposure": min_exposure,
+                "fallback": True,
+                "fallback_reason": fallback_reason or "exposure_table_empty",
+                "exposure_rule_version": "v1",
+                "target_count_resolved": target_count,
+                "direction_sign": impact.direction_sign,
+                "magnitude": impact.magnitude,
+                "confidence": impact.confidence,
             },
         )
 

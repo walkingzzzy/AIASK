@@ -56,6 +56,15 @@ READ_ONLY_STRATEGY_ACTIONS = frozenset(
         "vector_health",
         "ai_experiments",
         "task_runs",
+        # PR-F (Phase 4, 2026-05-24): event-driven manager actions.
+        # ``factory_event_list`` and ``factory_event_preview_tasks`` are
+        # idempotent reads — listing existing injections / dry-running
+        # propagation should never need ActionIntent confirmation.
+        "factory_event_list",
+        "factory_event_preview_tasks",
+        "factory_event_lineage",
+        "factory_theme_exposure_status",
+        "factory_event_outbox_status",
     }
 )
 
@@ -94,6 +103,17 @@ CONFIRM_REQUIRED_STRATEGY_ACTIONS = frozenset(
         "vector_cleanup",
         "ai_generate",
         "ai_optimize_personal_strategy",
+        # PR-F (Phase 4, 2026-05-24): event-driven write actions must
+        # flow through ActionIntent so Desktop / TUI cannot bypass the
+        # dual-person review and self-approval guard implemented in
+        # ``strategy_mgr_factory_events.handle_factory_event_*``.
+        "factory_event_create",
+        "factory_event_update",
+        "factory_event_approve",
+        "factory_event_record_outcome",
+        "factory_theme_exposure_refresh",
+        "factory_event_outbox_drain",
+        "factory_theme_regression_run",
     }
 )
 

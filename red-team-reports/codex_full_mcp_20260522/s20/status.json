@@ -1,0 +1,28 @@
+{
+  "scenario_id": "S20",
+  "title": "工作流 / AI 技能 / 产业链 / 板块 / 主题事件驱动",
+  "tools_required": 31,
+  "tools_called": 31,
+  "tools_unique_in_scenario": 31,
+  "tools_new_to_global": 5,
+  "passed": true,
+  "summary": {"Pass": 12, "Degraded": 12, "Fail-graceful": 7, "Fail": 0, "called": 31},
+  "fail_findings": [],
+  "key_findings_brief": [
+    {"id": "S20-F01", "severity": "high", "title": "36 skills 中 15 (41.7%) execution_mode=no_handler;skills_registry_unavailable fallback to codex"},
+    {"id": "S20-F02", "severity": "high", "title": "macro_manager.market_overview 深证成指/创业板指 name=????(GBK→UTF8 乱码),value=null"},
+    {"id": "S20-F03", "severity": "high", "title": "market_insight_manager 上证 K 线 unavailable,ma5/20/60 fallback 到 currentPrice 全相同"},
+    {"id": "S20-F04", "severity": "high", "title": "market_sentiment_context 上证 close=10.68 vs macro/insight 工具 4112.9(差 385×)"},
+    {"id": "S20-F05", "severity": "high", "title": "concept_fund_flow ProxyError + dragon_tiger 双源不可用 + northbound 全 null + margin_latest=0"},
+    {"id": "S20-F06", "severity": "high", "title": "search_by_kline 茅台 20d 5 results 中 4 个 *ST 退市股(无质量过滤)"},
+    {"id": "S20-F07", "severity": "medium", "title": "get_market_blocks source=db_stale fallback 'using stale db cache'"},
+    {"id": "S20-F08", "severity": "medium", "title": "get_block_stocks 半导体 5/5 stocks price=0.0 changePercent=0.0(db_cache 残缺)"},
+    {"id": "S20-F09", "severity": "medium", "title": "calculate_factor(sentiment) 'Failed to calculate factor: sentiment_score' naming gap"},
+    {"id": "S20-F10", "severity": "medium", "title": "search_similar_stocks fallback_reason='db_empty_result' 走 python fallback"},
+    {"id": "S20-F11", "severity": "medium", "title": "event_manager.upcoming_events 7d 空数组(no event in db)"},
+    {"id": "S20-F12", "severity": "low", "title": "✅ run_skill orchestrator akshare-market 4 step smoke_test 全 OK"},
+    {"id": "S20-F13", "severity": "low", "title": "✅ semantic_stock_search 白酒龙头 3 层 match(industry/context/sector_seed)"},
+    {"id": "S20-F14", "severity": "low", "title": "✅ sector_rotation 30d + industry_chain 三段 + fear_greed 47 完整"},
+    {"id": "S20-F15", "severity": "low", "title": "✅ data_validation(GE)累计 13 场景 66/66 stable"}
+  ]
+}

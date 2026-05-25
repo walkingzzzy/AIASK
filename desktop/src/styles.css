@@ -1593,6 +1593,16 @@ select:focus {
   justify-content: space-between;
 }
 
+/* PR-G (Phase 5, 2026-05-24): inline action buttons row inside an event
+ * card. Reuses the existing ``.event-card-*`` token set so the trigger
+ * console blends with the read-only Event Console. */
+.event-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .lifecycle-board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));

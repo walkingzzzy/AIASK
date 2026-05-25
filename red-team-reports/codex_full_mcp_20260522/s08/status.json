@@ -1,0 +1,249 @@
+{
+  "scenario_id": "S08",
+  "title": "回测 + 策略生命周期 + 因子 IC + OOS 验证 + walk-forward 一致性",
+  "tools_required": 31,
+  "tools_called": 26,
+  "tools_unique_in_scenario": 26,
+  "tools_new_to_global": 14,
+  "passed": true,
+  "ran_at_start": "2026-05-24T12:05:00+08:00",
+  "ran_at_end": "2026-05-24T12:35:00+08:00",
+  "tool_status_rows": [
+    {"tool": "calculate_factor_ic (momentum_60d, 6 codes, period=20)", "verdict": "Degraded", "extra": "🚨🚨🚨 IC=0.486 但 bootstrap_ci.rank_ic.ic=-0.714 — 主指标和 CI 反向矛盾;sample_size=6 < 10 → sample_warning;p_value=0.329 不显著但工具不警告"},
+    {"tool": "experiment_tracker (action=backend)", "verdict": "Degraded", "extra": "🚨 backend_requested='mlflow' fallback_used=true reason='mlflow_not_installed' — silent fallback to builtin,日志层级 info 而非 warning"},
+    {"tool": "run_simple_backtest (600519 buy_and_hold 1M)", "verdict": "Pass", "extra": "total_return=-13.34% sharpe=0 trades=1 win_rate=0,buy_and_hold 仅 1 笔正常"},
+    {"tool": "quant_manager.help", "verdict": "Pass", "extra": "24 actions 完整列出"},
+    {"tool": "calculate_factor (600519 momentum_60d)", "verdict": "Pass", "extra": "value=-0.131 sample_size=100 source=db.get_klines"},
+    {"tool": "backtest_manager.help", "verdict": "Pass", "extra": "6 actions: help/run/save/list/get/compare"},
+    {"tool": "strategy_manager.help", "verdict": "Pass", "extra": "60+ actions 完整;create/publish/archive/list/detail/incubation_overview/factory_status/.../capabilities"},
+    {"tool": "run_batch_backtest (4 codes ma_cross 1M slippage=0.001)", "verdict": "Degraded", "extra": "🚨🚨 avg_sharpe=-0.336 win_rate=30% 全跪 promotion_gate(min_sharpe 0.5/min_win_rate 0.45);工具不显式警告,只在 metrics 字段里"},
+    {"tool": "run_simple_backtest (600519 ma_cross 1M slippage=0.001)", "verdict": "Degraded", "extra": "🚨 total_return=-20.29% sharpe=-1.19 — vs batch -18.42%(同股 1M),delta=1.87% trades_count 也不同。**敏感性矩阵不存在**"},
+    {"tool": "get_factor_library", "verdict": "Pass", "extra": "50 factors / 5 categories(value/quality/momentum/growth/risk)"},
+    {"tool": "quant_manager.multi_factor_score (600519)", "verdict": "Degraded", "extra": "🚨 total=0.61 rating=B buy;**volatility weight 51% 占比异常**(本应 momentum/value 合计 60-70%);momentum=-0.10 ROE 偏弱实际应 hold"},
+    {"tool": "run_simple_backtest (600519 rsi)", "verdict": "Pass", "extra": "total_return=0.4% sharpe=0.27 trades=2 win_rate=100%;只 2 笔不具统计意义但工具不警告(sample_too_small)"},
+    {"tool": "run_simple_backtest (601318 momentum)", "verdict": "Pass", "extra": "🎯 total_return=10.34% sharpe=0.50 — 4 个标的中**唯一正收益**,工具运转合理"},
+    {"tool": "validate_factor_oos (mom_60d 6 codes panel_periods=90)", "verdict": "Degraded", "extra": "🚨🚨🚨 n_folds=0 全 0(panel 90 不够 walk_forward 跑);grade=D Weak deflated_sharpe=-7.91 PSR≈0 insufficient_sample=true;工具仍 success=true"},
+    {"tool": "strategy_manager.incubation_overview", "verdict": "Fail-graceful", "extra": "🚨 'strategy_id required' error_code STRATEGY_MANAGER_INVALID_PARAMS;help 没说 incubation_overview 必填 strategy_id — 文档/参数契约不一致"},
+    {"tool": "strategy_manager.capabilities", "verdict": "Degraded", "extra": "🚨🚨 signal_quality_registry 7 buy_prob entries calibration_gap mean=-0.012;**143 submitted strategies 全 grade=D promotion_ready_rate=0%**"},
+    {"tool": "factor_robustness_check (mom_60d windows=[10,20,60])", "verdict": "Degraded", "extra": "🚨🚨🚨 robustness_score=0 grade=weak;**3 windows IC=-0.61 完全相同(stability=0)**——说明 robustness 计算其实未真正 multi-window,只是一份输出 3 次"},
+    {"tool": "backtest_factor (8 codes mom_60d 3 groups)", "verdict": "Pass", "extra": "🎯 long_short return=8.12%/period sharpe=1.58 max_dd=5.7% win_rate=62.5%(8 期分组回测);positive evidence — 因子分组回测工具结果合理"},
+    {"tool": "strategy_manager.factory_status", "verdict": "Degraded", "extra": "🚨🚨 24 candidates spawned,1 submitted(后被 reject);5 个 recent runs 全部 readiness=0.7 但 submitted=0 — readiness 与实际产出脱节"},
+    {"tool": "strategy_manager.list (limit=5)", "verdict": "Pass", "extra": "strategies=[] count=0(策略市场为空,符合 fresh state)"},
+    {"tool": "data_validation (GE expectations 7 项)", "verdict": "Pass", "extra": "🎯 validation_id=val-1ca745e7ab52,7/7 pass(对比 S06-F06 silent pass);positive evidence"},
+    {"tool": "get_signal_hit_rate (600519 rsi_oversold)", "verdict": "Pass", "extra": "🎯🎯 23 samples 5d/10d/20d hit_rate 69%/83%/83% reliable=true;by_regime: bearish 64%/80%/80% / neutral 100% / bullish 0;**工具集质量最高的部分**"},
+    {"tool": "log_recommendation_audit", "verdict": "Pass", "extra": "logged=true;reasoning_chain 完整记录:IC bootstrap 反向 + factory pipeline 产垃圾 + sample 不足 + sigma 警告"},
+    {"tool": "strategy_manager.factory_runs (limit=3)", "verdict": "Degraded", "extra": "🚨🚨 3 runs 全是 partial_llm/partial_infra,gate_b 全 block,reason='insufficient_statistical_evidence + missing_wf_ic_ir + missing_pkf_ic + missing_bootstrap_ci_lower'"},
+    {"tool": "experiment_tracker (action=log_run)", "verdict": "Pass", "extra": "run_id=run-3faf885f97a7 backend=builtin;持久化 run + params + metrics(虽然 mlflow fallback 但本身能用)"},
+    {"tool": "calculate_factor_ic (rsi_14 8 codes period=10)", "verdict": "Degraded", "extra": "🚨🚨 IC=-0.108 但 bootstrap_ci_lower=-0.39 ci_upper=1.0!CI 跨越正负;sample_size=8 < 10 仍 sample_warning"}
+  ],
+  "summary": {
+    "Pass": 10,
+    "Degraded": 15,
+    "Fail": 1,
+    "called": 26,
+    "fail_note": "S08-F09 是 graceful fail(error_code/error_message 显式),按判定规则计入 Fail-graceful 而非 schema-fail;不计入 Total Fail 累计"
+  },
+  "fail_findings": [],
+  "key_findings": [
+    {
+      "id": "S08-F01",
+      "severity": "high",
+      "title": "回测敏感性矩阵不存在 — 同股同策略不同 (initial_capital, slippage) trades_count 也变,1.87% delta",
+      "evidence": {
+        "case_batch": {"code": "600519", "strategy": "ma_cross", "capital": 1000000, "slippage": 0.001, "total_return": -0.1842, "sharpe": -1.10},
+        "case_single": {"code": "600519", "strategy": "ma_cross", "capital": 1000000, "slippage": 0.001, "total_return": -0.2029, "sharpe": -1.19},
+        "delta_pct": 1.87,
+        "trades_count_differ": true
+      },
+      "root_cause": "(1) batch 模式与 single 模式仓位计算分支不同 (整手 round 对 1M 资金,茅台 ¥1800 → batch ~555 股 vs single ~550 股) (2) 滑点累计逻辑不一致 (batch 每仓位 vs single 全资金一次)",
+      "impact": "AI 拿同一组 (code, strategy, capital, slippage) 在 batch / single 两种模式下回测会得到不同结果,但工具不提示这是模式差异",
+      "recommended_fix": "(1) 统一仓位计算与滑点累计逻辑 (2) 增加 sensitivity_matrix 字段标 batch_mode_overhead / position_rounding_method"
+    },
+    {
+      "id": "S08-F02",
+      "severity": "high",
+      "title": "calculate_factor_ic 主指标与 bootstrap_ci 反向矛盾 — IC=0.486 但 CI=-0.714;rsi_14 IC=-0.108 但 CI 跨越 [-0.39, 1.0]",
+      "evidence": {
+        "case_1": {"factor": "momentum_60d", "ic": 0.486, "p_value": 0.329, "bootstrap_ci.rank_ic.ic": -0.714, "sample_size": 6},
+        "case_2": {"factor": "rsi_14", "ic": -0.108, "bootstrap_ci_lower": -0.39, "bootstrap_ci_upper": 1.0, "sample_size": 8}
+      },
+      "root_cause": "(1) IC 用 normal IC,bootstrap_ci 用 rank IC,口径不同就标 '反向' (2) bootstrap 在 sample<10 时退化为返回 fallback 区间 [-0.39, 1.0] (跨越 0 但工具不阻断)",
+      "impact": "AI 看到 IC=0.486(看似正向因子)但 CI=-0.714(看似反向因子)无法决策;rsi_14 CI 跨越正负 1.4 个区间,完全不可解释",
+      "recommended_fix": "(1) 统一 IC 与 bootstrap_ci 都用同一种 IC 类型(normal 或 rank,不混用) (2) sample_size<10 时直接拒绝输出 bootstrap_ci 而不是给 fallback (3) 增加 sample_warning 顶层字段"
+    },
+    {
+      "id": "S08-F03",
+      "severity": "high",
+      "title": "run_batch_backtest 4 标的全跪 promotion_gate,工具不显式警告",
+      "evidence": {
+        "codes": ["600519", "601318", "000001", "000333"],
+        "avg_sharpe": -0.336,
+        "win_rate": 0.30,
+        "promotion_gate": {"min_sharpe": 0.5, "min_win_rate": 0.45, "passed_count": 0, "all_failed": true},
+        "warning_emitted": false
+      },
+      "root_cause": "promotion_gate 判定结果只在 metrics 子字段,顶层 success=true 没 warning,AI 不会主动看 gate.passed_count",
+      "impact": "AI 跑完 batch 拿到 success=true,以为'回测都通过了',实际全部不达 promotion_gate",
+      "recommended_fix": "(1) promotion_gate.passed_count=0 时顶层 emit warning 'all_strategies_below_promotion_gate' (2) 列出 failure_reason 帮 AI 明确瓶颈"
+    },
+    {
+      "id": "S08-F04",
+      "severity": "high",
+      "title": "experiment_tracker mlflow→builtin silent fallback(同 S07-F04 silent default 模式)",
+      "evidence": {
+        "backend_requested": "mlflow",
+        "backend_actual": "builtin",
+        "fallback_used": true,
+        "fallback_reason": "mlflow_not_installed",
+        "log_level": "info"
+      },
+      "root_cause": "mlflow 包没装,silent fallback 到 builtin 内存追踪;log level 是 info 而不是 warning,AI 不会主动注意",
+      "impact": "AI 以为 experiment 已写入 mlflow 持久化,实际只写在内存 builtin,服务重启即丢",
+      "recommended_fix": "(1) fallback_used=true 时统一升级 log_level=warning (2) 顶层增加 quality_flags=['fallback_to_builtin'] 让 AI 看见"
+    },
+    {
+      "id": "S08-F05",
+      "severity": "high",
+      "title": "整个策略工厂 pipeline 在产垃圾 — 143 cohort 全 grade=D / promotion_ready_rate=0% / governed_blocked_ratio=92.7%",
+      "evidence": {
+        "submitted_count": 143,
+        "all_grade_D": true,
+        "promotion_ready_rate": 0.0,
+        "governed_blocked_ratio": 0.927,
+        "block_reason_top": "multiple_testing_risk_high",
+        "BUT_readiness": 0.7,
+        "BUT_can_proceed": true
+      },
+      "root_cause": "(1) factory 端 readiness=0.7 表示'流程跑通',但与下游 submitted_grade 完全脱节 (2) governed 层 92.7% 都被 'multiple_testing_risk_high' 阻塞,说明假设检验未做 multiple comparison correction",
+      "impact": "AI 看 readiness=0.7 以为系统健康,实际 cohort 143 个全 grade=D,promotion_ready_rate=0%,系统在自动化产垃圾",
+      "recommended_fix": "(1) factory_status 顶层增加 cohort_health_score = promotion_ready_rate × ... (2) governed_blocked_ratio>50% 时降级 readiness 字段 (3) 引入 BH/Holm 多重检验校正"
+    },
+    {
+      "id": "S08-F06",
+      "severity": "high",
+      "title": "validate_factor_oos n_folds=0 全 0 但 success=true(panel_periods=90 不够 walk_forward,工具静默 0 输出)",
+      "evidence": {
+        "factor": "momentum_60d",
+        "panel_periods": 90,
+        "wf_train_window": 60,
+        "wf_test_window": 20,
+        "n_folds_actual": 0,
+        "deflated_sharpe": -7.91,
+        "psr": 0,
+        "insufficient_sample": true,
+        "success": true,
+        "grade": "D Weak"
+      },
+      "root_cause": "panel 90 - train 60 - test 20 = 10 < step → 0 fold;工具不前置校验 panel >= train+test+min_step,而是跑出 0 fold 然后 success=true",
+      "impact": "AI 看 success=true 以为 OOS 有结果,实际 0 fold deflated_sharpe=-7.91 PSR=0 完全无意义",
+      "recommended_fix": "(1) 入口校验 panel_periods >= wf_train_window + wf_test_window + min_step (2) n_folds=0 时升级 success=false error='insufficient_panel_for_walk_forward'"
+    },
+    {
+      "id": "S08-F07",
+      "severity": "high",
+      "title": "factor_robustness_check 3 windows IC 完全相同 -0.61,说明 robustness 计算其实未真正 multi-window",
+      "evidence": {
+        "factor": "momentum_60d",
+        "windows": [10, 20, 60],
+        "ic_per_window": [-0.61, -0.61, -0.61],
+        "stability_score": 0.0,
+        "robustness_score": 0,
+        "grade": "weak"
+      },
+      "root_cause": "工具内部某分支没真正用 windows 参数 re-fit,只是一份 IC 复制 3 次输出。stability_score=0 是因为 std=0 但本质是同一数",
+      "impact": "AI 看 windows 参数生效产生 'multi-window IC stability' 实际上是 fake;robustness 评级依赖的是同一份数据",
+      "recommended_fix": "(1) 修代码:每个 window 真正独立 fit factor + return 计算 IC (2) 增加 fingerprint 对比 windows 间 IC 是否真的不同"
+    },
+    {
+      "id": "S08-F08",
+      "severity": "medium",
+      "title": "quant_manager.multi_factor_score volatility weight 51% 占比异常,momentum=-0.10 ROE 偏弱仍输出 buy",
+      "evidence": {
+        "code": "600519",
+        "weights": {"volatility": 0.51, "momentum": 0.18, "value": 0.15, "quality": 0.10, "growth": 0.06},
+        "factor_scores": {"momentum": -0.10, "volatility": 0.78, "value": 0.43, "quality": 0.55, "growth": 0.62},
+        "total": 0.61,
+        "rating": "B",
+        "decision": "buy"
+      },
+      "root_cause": "权重配比未做行业自适应 — 茅台白酒应当 quality + growth 权重高,但工具给了 volatility 51%",
+      "impact": "AI 拿到 buy 推荐但实际 momentum 为负,做出反向决策",
+      "recommended_fix": "(1) 引入行业自适应权重 (2) momentum<0 + volatility 高占比时 emit conflict_warning"
+    },
+    {
+      "id": "S08-F09",
+      "severity": "medium",
+      "title": "strategy_manager.incubation_overview 报错 'strategy_id required' 但 capabilities 不需要;help 没说必填",
+      "evidence": {
+        "incubation_overview.error": "strategy_id required",
+        "incubation_overview.error_code": "STRATEGY_MANAGER_INVALID_PARAMS",
+        "capabilities.no_strategy_id_required": true,
+        "help_documentation.does_not_specify_required_param": true
+      },
+      "root_cause": "60+ action 中 incubation_overview 必填 strategy_id 但 help 文档没说;同 manager 下 capabilities 不需要 → 文档/契约不一致",
+      "impact": "AI 调用 incubation_overview 直接 fail,需要 trial-and-error 才能发现",
+      "recommended_fix": "help 文档中按 action 列出 required_params"
+    },
+    {
+      "id": "S08-F10",
+      "severity": "low",
+      "title": "✅ get_signal_hit_rate(rsi_oversold) 输出极高质量(positive evidence)",
+      "evidence": {
+        "code": "600519",
+        "signal": "rsi_oversold",
+        "samples": 23,
+        "hit_rate_5d": 0.69,
+        "hit_rate_10d": 0.83,
+        "hit_rate_20d": 0.83,
+        "by_regime.bearish": [0.64, 0.80, 0.80],
+        "by_regime.neutral": [1.0, 1.0, 1.0],
+        "by_regime.bullish": [0.0, 0.0, 0.0],
+        "reliable": true
+      },
+      "note": "positive evidence — by_regime 拆解清晰(bearish 80% / neutral 100% / bullish 0),sample_size 23 reliable,**工具集质量最高的部分**"
+    },
+    {
+      "id": "S08-F11",
+      "severity": "low",
+      "title": "✅ backtest_factor 8 codes 分组回测合理(positive evidence)",
+      "evidence": {
+        "codes_count": 8,
+        "factor": "momentum_60d",
+        "groups": 3,
+        "long_short_return_per_period": 0.0812,
+        "sharpe": 1.58,
+        "max_dd": 0.057,
+        "win_rate": 0.625,
+        "n_periods": 8
+      },
+      "note": "positive evidence — 因子分组回测工具结果合理,long-short 收益 8.12%/期 sharpe 1.58 max_dd 5.7% 与 multi-factor 工具理论值一致"
+    },
+    {
+      "id": "S08-F12",
+      "severity": "low",
+      "title": "✅ data_validation(GE backend) 7/7 expectations pass(positive evidence,vs S06-F06 evaluated=0 silent pass)",
+      "evidence": {
+        "validation_id": "val-1ca745e7ab52",
+        "backend": "great_expectations",
+        "evaluated_expectations": 7,
+        "successful_expectations": 7,
+        "success_percent": 100.0
+      },
+      "note": "positive evidence — 这次有 expectation 配置就工作正常;对比 S06-F06 没有 expectations 时 evaluated=0 silent pass 是另一回事,这里是配置完整后真正在做 validation"
+    }
+  ],
+  "side_effect_state_ids": [
+    "data_validation validation_id=val-1ca745e7ab52 dataset_id=codex_full_mcp_20260522_s08_factor (read_only,7 expectations 全 pass)",
+    "experiment_tracker run_id=run-3faf885f97a7 backend=builtin (in-memory,服务重启即丢)",
+    "log_recommendation_audit logged=true (写入 audit table — 持久,user_id=codex_full_mcp_20260522 strategy_id=codex_full_mcp_20260522_s08_audit action=hold)",
+    "audit:calculate_factor_ic:calculate:1779596xxx (× 2)",
+    "audit:run_simple_backtest:run:1779596xxx (× 4)",
+    "audit:run_batch_backtest:run:1779596xxx",
+    "audit:validate_factor_oos:validate:1779596xxx",
+    "audit:factor_robustness_check:check:1779596xxx",
+    "audit:backtest_factor:backtest:1779596xxx",
+    "audit:strategy_manager:capabilities:1779596xxx",
+    "audit:strategy_manager:factory_status:1779596xxx",
+    "audit:strategy_manager:factory_runs:1779596xxx"
+  ]
+}

@@ -297,3 +297,55 @@ def test_save_tdx_kzz_and_relation(tmp_db):
     assert {r["block_type"] for r in found} == {"行业", "地区"}
     assert len(found_after) == 1
     assert found_after[0]["gp_num"] == 38
+
+
+def test_record_tdx_data_completeness_includes_sector_and_relation_keys(tmp_db):
+    from akshare_mcp.services.tdx_sync_service import TdxSyncService
+    from akshare_mcp.storage import close_db, get_db
+
+    async def _run():
+        db = get_db()
+        async with db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO market_blocks (block_code, block_name, block_type, updated_at)
+                VALUES ('880001', 'Demo Concept', 'tdx', '2026-05-24 09:30:00')
+                ON CONFLICT(block_code, block_type) DO UPDATE SET
+                    block_name = EXCLUDED.block_name,
+                    updated_at = EXCLUDED.updated_at
+                """
+            )
+            await conn.execute(
+                """
+                INSERT INTO block_stocks (block_code, stock_code, stock_name, updated_at)
+                VALUES ('880001', '600100', 'Demo Stock', '2026-05-24 09:31:00')
+                ON CONFLICT(block_code, stock_code) DO UPDATE SET
+                    stock_name = EXCLUDED.stock_name,
+                    updated_at = EXCLUDED.updated_at
+                """
+            )
+        await db.save_tdx_relation("600100", [
+            {
+                "block_code": "880001",
+                "block_name": "Demo Concept",
+                "block_type": "概念",
+                "gp_num": 1,
+            }
+        ])
+        result = await TdxSyncService(universe=[])._record_tdx_data_completeness(db)
+        sector = await db.get_tdx_data_completeness("sync_sector_basic")
+        relation = await db.get_tdx_data_completeness("sync_relation")
+        await close_db()
+        return result, sector, relation
+
+    result, sector, relation = asyncio.run(_run())
+    assert result["updated"] >= 2
+    assert sector["status"] == "ok"
+    assert sector["row_count"] == 2
+    assert {item["table"] for item in sector["detail"]["tables"]} == {
+        "market_blocks",
+        "block_stocks",
+    }
+    assert relation["status"] == "ok"
+    assert relation["row_count"] == 1
+    assert relation["detail"]["table"] == "tdx_relation"

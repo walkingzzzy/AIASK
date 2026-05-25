@@ -389,6 +389,28 @@
                     return None
 
             validation_report, risk_report = await _asyncio.gather(_run_validation(), _run_risk())
+            try:
+                from strategy_factory.application.research.statistical_robustness import (
+                    enrich_validation_report_with_robustness_derivations,
+                )
+
+                candidate_index = int(
+                    candidate.get("candidate_index")
+                    or candidate.get("rank")
+                    or candidate.get("priority_rank")
+                    or 0
+                )
+                validation_report = enrich_validation_report_with_robustness_derivations(
+                    validation_report,
+                    backtest_metrics=dict(candidate.get("backtest_metrics") or {}),
+                    candidate_index=candidate_index,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "StrategySubmitter: validation robustness enrichment failed for %s: %s",
+                    candidate.get("strategy_type"),
+                    exc,
+                )
             return validation_report, risk_report
 
         async def _save_metric_with_retry(

@@ -202,6 +202,70 @@ def register_data_sync_manager(mcp):
                         quote_fresh_cutoff,
                     ) or 0
                     stale_quote_count = max(int(quote_unique_codes) - int(fresh_quote_count), 0)
+
+                    # P0-1 fix: critical_table_stale_alerts
+                    # 监控关键数据表的 max_date 是否过期(北向资金/融资融券/龙虎榜/指数)
+                    # 任何一张 stale > 阈值都 emit alert,让 AI Agent 和监控系统看到底层数据问题
+                    critical_tables = [
+                        # (table, date_col, max_stale_days, severity_threshold_days)
+                        ('north_fund_flow', 'date', 7, 30),
+                        ('north_fund_holding', 'period', 14, 60),
+                        ('margin_market_flow', 'date', 3, 14),
+                        ('margin_detail', 'date', 3, 14),
+                        ('dragon_tiger_list', 'date', 3, 14),
+                        ('kline_1d', 'time', 2, 14),  # 个股 K 线 (跳过周末为 ~3 天)
+                    ]
+                    critical_table_alerts: list[dict] = []
+                    for table, col, warn_days, high_days in critical_tables:
+                        try:
+                            max_d = await conn.fetchval(f"SELECT MAX({col}) FROM {table}")
+                            if max_d is None:
+                                critical_table_alerts.append({
+                                    'table': table,
+                                    'severity': 'high',
+                                    'reason': 'no_data',
+                                    'max_date': None,
+                                    'days_stale': None,
+                                })
+                                continue
+                            now = datetime.now()
+                            if hasattr(max_d, 'date'):
+                                last_dt = max_d
+                            elif isinstance(max_d, str):
+                                try:
+                                    last_dt = datetime.fromisoformat(max_d.replace('Z', '+00:00'))
+                                except Exception:
+                                    last_dt = datetime.strptime(max_d[:10], '%Y-%m-%d')
+                            else:
+                                last_dt = now  # 无法解析,跳过
+                            try:
+                                if hasattr(last_dt, 'tzinfo') and last_dt.tzinfo is not None:
+                                    last_dt = last_dt.replace(tzinfo=None)
+                                days_stale = max(0, (now - last_dt).days)
+                            except Exception:
+                                days_stale = 0
+                            if days_stale > high_days:
+                                severity = 'high'
+                            elif days_stale > warn_days:
+                                severity = 'warning'
+                            else:
+                                continue  # 不报警
+                            critical_table_alerts.append({
+                                'table': table,
+                                'severity': severity,
+                                'max_date': str(max_d),
+                                'days_stale': int(days_stale),
+                                'threshold_warn_days': warn_days,
+                                'threshold_high_days': high_days,
+                            })
+                        except Exception as exc:
+                            critical_table_alerts.append({
+                                'table': table,
+                                'severity': 'unknown',
+                                'reason': f'query_failed:{type(exc).__name__}',
+                                'max_date': None,
+                                'days_stale': None,
+                            })
                 def _ts_iso(ts):
                     if ts is None:
                         return None
@@ -227,6 +291,13 @@ def register_data_sync_manager(mcp):
                         'coverage_ratio': round((int(quote_unique_codes) / int(stock_count)), 4) if int(stock_count) > 0 else None,
                         'freshness_ttl_seconds': quote_ttl,
                         'latest_quote_time': _ts_iso(quote_sync),
+                    },
+                    'critical_table_stale_alerts': critical_table_alerts,
+                    'critical_alerts_summary': {
+                        'total': len(critical_table_alerts),
+                        'high': sum(1 for a in critical_table_alerts if a.get('severity') == 'high'),
+                        'warning': sum(1 for a in critical_table_alerts if a.get('severity') == 'warning'),
+                        'unknown': sum(1 for a in critical_table_alerts if a.get('severity') == 'unknown'),
                     },
                 })
             

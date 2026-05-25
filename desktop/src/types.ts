@@ -115,7 +115,8 @@ export type MainView =
   | "skills"
   | "user"
   | "settings"
-  | "event-console";
+  | "event-console"
+  | "factory-events";
 export type CapabilityTab = "overview" | "coverage" | "hermes" | "mcp" | "connectors" | "factory" | "incubation" | "skills" | "plugins" | "ai";
 
 export interface TaskThread {

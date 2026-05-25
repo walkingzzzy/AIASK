@@ -53,7 +53,29 @@ async def record_schema_namespace_checkpoint(
     if existing and str(existing["checksum"]) == checksum:
         return
     if existing and str(existing["checksum"]) != checksum:
-        raise RuntimeError(f"schema checkpoint checksum mismatch: {namespace}/{migration_key}")
+        # 与 run_app_core_migrations 的策略保持一致：checkpoint 仅记录
+        # (namespace, migration_key, source_module) 的字符串签名，发生漂移时
+        # 直接刷新 checksum，而不阻塞启动。任何真正的 schema 变更都应通过
+        # bumping migration_key 而非更换 source_module 字符串来触发。
+        logger.info(
+            "Refreshing schema namespace checkpoint checksum: %s/%s",
+            namespace,
+            migration_key,
+        )
+        await conn.execute(
+            f"""
+            UPDATE {_SCHEMA_MIGRATION_TABLE}
+               SET checksum = $3,
+                   source_module = $4
+             WHERE namespace = $1
+               AND migration_key = $2
+            """,
+            namespace,
+            migration_key,
+            checksum,
+            source_module,
+        )
+        return
     await conn.execute(
         f"""
         INSERT INTO {_SCHEMA_MIGRATION_TABLE} (namespace, migration_key, checksum, source_module)

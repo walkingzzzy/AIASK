@@ -66,6 +66,7 @@ def _augment_realtime_checks(
     checks: dict,
     violations: list[str],
     warnings: list[str],
+    order_price: float | None = None,
 ) -> dict:
     realtime = {
         "quote_available": False,
@@ -127,6 +128,24 @@ def _augment_realtime_checks(
                             violations.append("实时行情显示接近或处于涨停，当前不宜买入")
                         if direction == "sell" and at_limit_down:
                             violations.append("实时行情显示接近或处于跌停，当前不宜卖出")
+                        # P2-4.4.2 fix: 订单 price 越界涨跌停板 — 这是诊断报告 §4.4.2 真正的 bug
+                        # 历史问题:input.price=1828 / limit_up_price=1442.1 但 checks.limit_up_down=true silent pass
+                        # 修复:只要订单 price 给定且超出 [lower, upper] 区间,无论实时价是否 at_limit,都 reject
+                        if order_price is not None:
+                            try:
+                                order_price_f = float(order_price)
+                                if order_price_f > upper:
+                                    checks["limit_up_down"] = False
+                                    violations.append(
+                                        f"订单价格 {order_price_f} 超过涨停价 {upper}（不可下单）"
+                                    )
+                                elif order_price_f < lower:
+                                    checks["limit_up_down"] = False
+                                    violations.append(
+                                        f"订单价格 {order_price_f} 低于跌停价 {lower}（不可下单）"
+                                    )
+                            except (TypeError, ValueError):
+                                warnings.append("订单价格格式无效,涨跌停越界校验跳过")
                 except Exception:
                     warnings.append("实时涨跌停复核解析失败，已降级为静态规则")
         else:
@@ -239,6 +258,7 @@ def evaluate_order_compliance(code: str, direction: str, quantity_raw, price_raw
         checks=checks,
         violations=violations,
         warnings=warnings,
+        order_price=price,
     )
     if not realtime.get("quote_available"):
         warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')

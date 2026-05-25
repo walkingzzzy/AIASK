@@ -659,11 +659,17 @@ ACTION_HANDLERS.update({
 # Register factory event handlers (PR-2)
 from .strategy_mgr_factory_events import (
     handle_factory_event_create,
+    handle_factory_event_lineage,
     handle_factory_event_list,
+    handle_factory_event_outbox_drain,
+    handle_factory_event_outbox_status,
     handle_factory_event_update,
     handle_factory_event_approve,
     handle_factory_event_record_outcome,
     handle_factory_event_preview_tasks,
+    handle_factory_theme_exposure_refresh,
+    handle_factory_theme_exposure_status,
+    handle_factory_theme_regression_run,
 )
 
 ACTION_HANDLERS.update({
@@ -673,6 +679,12 @@ ACTION_HANDLERS.update({
     "factory_event_approve": handle_factory_event_approve,
     "factory_event_record_outcome": handle_factory_event_record_outcome,
     "factory_event_preview_tasks": handle_factory_event_preview_tasks,
+    "factory_event_lineage": handle_factory_event_lineage,
+    "factory_theme_exposure_status": handle_factory_theme_exposure_status,
+    "factory_event_outbox_status": handle_factory_event_outbox_status,
+    "factory_theme_exposure_refresh": handle_factory_theme_exposure_refresh,
+    "factory_event_outbox_drain": handle_factory_event_outbox_drain,
+    "factory_theme_regression_run": handle_factory_theme_regression_run,
 })
 
 

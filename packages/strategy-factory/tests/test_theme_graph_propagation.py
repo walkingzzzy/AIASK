@@ -234,6 +234,189 @@ async def test_propagation_empty_primary_themes():
     assert impacts == []
 
 
+# --- PR-D (Phase 2, 2026-05-24) hardening tests ---
+
+
+@pytest.mark.asyncio
+async def test_propagation_neutral_primary_does_not_expand():
+    """Neutral primary 不进入 frontier；只写 lineage 标记，不向下游传播."""
+    db = MagicMock()
+    db.get_theme_node = AsyncMock(return_value={"breadth": "medium"})
+    edges_called = AsyncMock(return_value=[
+        {
+            "target_theme_code": "downstream",
+            "relation_type": "amplifies",
+            "direction_sign": 1,
+            "magnitude_factor": 0.8,
+            "confidence": 0.7,
+            "lag_days": 0,
+        }
+    ])
+    db.list_theme_edges = edges_called
+
+    event = NormalizedEvent(
+        event_id="neutral_test",
+        primary_themes=[{"theme_code": "neutral_root", "direction": "neutral"}],
+        confidence=0.8,
+        intensity=0.7,
+    )
+    impacts, warnings = await propagate_event_to_themes(db, event, return_warnings=True)
+
+    codes = {i.theme_code for i in impacts}
+    assert "neutral_root" in codes
+    assert "downstream" not in codes, "neutral primary must not expand"
+    neutral_impact = next(i for i in impacts if i.theme_code == "neutral_root")
+    assert neutral_impact.direction_sign == 0
+    assert neutral_impact.magnitude == 0.0
+    assert neutral_impact.source_path == "primary:neutral"
+    # warning: neutral_primary_skipped
+    types = {w["type"] for w in warnings}
+    assert "neutral_primary_skipped" in types
+    edges_called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_propagation_visited_blocks_simple_cycle():
+    """A -> B -> A 循环必须由 visited (theme_code, depth) 截断."""
+    db = MagicMock()
+    db.get_theme_node = AsyncMock(return_value={"breadth": "medium"})
+
+    async def cyclic_edges(source=None, **kwargs):
+        if source == "a":
+            return [{"target_theme_code": "b", "relation_type": "amplifies",
+                     "direction_sign": 1, "magnitude_factor": 0.9, "confidence": 0.9, "lag_days": 0}]
+        if source == "b":
+            return [{"target_theme_code": "a", "relation_type": "amplifies",
+                     "direction_sign": 1, "magnitude_factor": 0.9, "confidence": 0.9, "lag_days": 0}]
+        return []
+
+    db.list_theme_edges = AsyncMock(side_effect=cyclic_edges)
+
+    event = NormalizedEvent(
+        event_id="cycle_test",
+        primary_themes=[{"theme_code": "a", "direction": "positive"}],
+        confidence=0.95,
+        intensity=0.95,
+    )
+    impacts = await propagate_event_to_themes(db, event, max_depth=4)
+
+    codes = [i.theme_code for i in impacts]
+    # Both a and b appear once (no infinite expansion).
+    assert codes.count("a") == 1
+    assert codes.count("b") == 1
+
+
+@pytest.mark.asyncio
+async def test_propagation_emits_warning_for_missing_primary_theme():
+    """Primary 主题不存在时,warning 必须包含 missing_theme_node 标记."""
+    db = MagicMock()
+    db.get_theme_node = AsyncMock(return_value=None)
+    db.list_theme_edges = AsyncMock(return_value=[])
+
+    event = NormalizedEvent(
+        event_id="missing_test",
+        primary_themes=[{"theme_code": "ghost_theme", "direction": "positive"}],
+        confidence=0.7,
+        intensity=0.5,
+    )
+    impacts, warnings = await propagate_event_to_themes(db, event, return_warnings=True)
+
+    types = [w["type"] for w in warnings]
+    assert "missing_theme_node" in types
+    miss = next(w for w in warnings if w["type"] == "missing_theme_node")
+    assert miss["theme_code"] == "ghost_theme"
+    assert miss["depth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_propagation_merges_multi_path_records_runner_up():
+    """同一 target theme 多路径命中:winner 留 source_path,runner-up 进 warnings."""
+    db = MagicMock()
+    db.get_theme_node = AsyncMock(return_value={"breadth": "medium"})
+
+    async def multi_path_edges(source=None, **kwargs):
+        if source == "root":
+            return [
+                # Strong edge: magnitude 0.9 wins.
+                {"target_theme_code": "target", "relation_type": "amplifies",
+                 "direction_sign": 1, "magnitude_factor": 0.9, "confidence": 0.9, "lag_days": 0},
+                # Weak edge to a 2nd hop that loops back to target.
+                {"target_theme_code": "side", "relation_type": "amplifies",
+                 "direction_sign": 1, "magnitude_factor": 0.7, "confidence": 0.7, "lag_days": 0},
+            ]
+        if source == "side":
+            return [
+                {"target_theme_code": "target", "relation_type": "amplifies",
+                 "direction_sign": 1, "magnitude_factor": 0.7, "confidence": 0.7, "lag_days": 0},
+            ]
+        return []
+
+    db.list_theme_edges = AsyncMock(side_effect=multi_path_edges)
+
+    event = NormalizedEvent(
+        event_id="merge_test",
+        primary_themes=[{"theme_code": "root", "direction": "positive"}],
+        confidence=0.9,
+        intensity=0.9,
+    )
+    impacts, warnings = await propagate_event_to_themes(db, event, return_warnings=True, max_depth=3)
+
+    target_impact = next(i for i in impacts if i.theme_code == "target")
+    # Winner is the depth-1 0.9 edge from root → target.
+    assert " || " in target_impact.source_path, "merged source_path must list alternatives"
+    assert target_impact.source_path.startswith("primary → amplifies → target")
+
+    types = [w["type"] for w in warnings]
+    assert "merged_paths" in types
+    merge_warn = next(w for w in warnings if w["type"] == "merged_paths" and w["theme_code"] == "target")
+    assert merge_warn["winner"].startswith("primary → amplifies → target")
+    # The 2-hop alternative path must be recorded.
+    assert any("side" in alt for alt in merge_warn["alternatives"])
+
+
+@pytest.mark.asyncio
+async def test_target_basket_empty_exposure_records_fallback_evidence():
+    """Exposure 为空时,evidence 必须显式标 fallback=True,不能静默吞."""
+    db = MagicMock()
+    db.list_theme_exposure = AsyncMock(return_value=[])
+
+    impact = ThemeImpact(
+        theme_code="empty_theme",
+        direction_sign=1,
+        magnitude=0.7,
+        confidence=0.8,
+        breadth="narrow",
+    )
+    basket = await resolve_target_basket(db, impact)
+    assert basket.symbols == []
+    evidence = basket.evidence
+    assert evidence["fallback"] is True
+    assert evidence["fallback_reason"] in ("exposure_table_empty",) or evidence["fallback_reason"].startswith(
+        "list_theme_exposure_failed"
+    )
+    assert evidence["target_count_resolved"] >= 3
+
+
+def test_target_basket_resolve_target_count_uses_canonical_resolver():
+    """target_basket.resolve_target_count 必须委托给 domain.target_count_resolver,
+    不再保留独立公式（PR-D 删除重复实现）."""
+    from strategy_factory.application.research import target_basket as tb_mod
+    from strategy_factory.domain import target_count_resolver as canonical
+
+    # Direct alias guarantee.
+    assert tb_mod.resolve_target_count.__module__ == tb_mod.__name__
+    # Same numeric output for representative inputs.
+    for case in [
+        dict(confidence=0.5, intensity=0.5, theme_breadth="narrow",
+             task_source="event_driven", feature_flag_target_max=12),
+        dict(confidence=1.0, intensity=1.0, theme_breadth="broad",
+             task_source="manual_event", feature_flag_target_max=30),
+        dict(confidence=0.0, intensity=0.0, theme_breadth="medium",
+             task_source="snapshot", feature_flag_target_max=12),
+    ]:
+        assert tb_mod.resolve_target_count(**case) == canonical.resolve_target_count(**case)
+
+
 # --- apply_industry_diversification ---
 
 def test_diversification_limits_per_industry():

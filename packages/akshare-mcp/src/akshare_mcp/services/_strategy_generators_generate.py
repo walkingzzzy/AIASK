@@ -902,6 +902,92 @@ class RuleStrategyGenerator:
 
 from akshare_mcp._fragment_loader import exec_block as _exec_block
 
+
+# P3 (R7.1): structured failure-reason taxonomy for the staged LLM
+# pipeline. Each LLM stage that fails is classified into one of these
+# enum-equivalent strings; the dashboard groups by (stage_id, reason).
+class StagedPipelineReason:
+    EMPTY_OUTPUT = "empty_output"
+    SCHEMA_INVALID = "schema_invalid"
+    NON_EXECUTABLE = "non_executable"
+    TARGET_CONTEXT_BLOCKED = "target_context_blocked"
+    PIPELINE_TIMEOUT = "pipeline_timeout"
+    PROVIDER_FORMAT_FAILURE = "provider_output_format_failure"
+    UNKNOWN = "unknown"
+
+
+_STAGED_PIPELINE_REASON_KEYWORDS = (
+    # ordered: most specific first
+    ("target_context_blocked", StagedPipelineReason.TARGET_CONTEXT_BLOCKED),
+    ("provider_output_format", StagedPipelineReason.PROVIDER_FORMAT_FAILURE),
+    ("pipeline_timeout", StagedPipelineReason.PIPELINE_TIMEOUT),
+    ("invalid_output", StagedPipelineReason.SCHEMA_INVALID),
+    ("schema_invalid", StagedPipelineReason.SCHEMA_INVALID),
+    ("non_executable", StagedPipelineReason.NON_EXECUTABLE),
+    ("returned_empty", StagedPipelineReason.EMPTY_OUTPUT),
+    ("no_executable_specs", StagedPipelineReason.EMPTY_OUTPUT),
+    ("empty_output", StagedPipelineReason.EMPTY_OUTPUT),
+)
+
+
+def classify_staged_pipeline_reason(token: str) -> str:
+    """Map an arbitrary stage_fallback reason string into a stable enum
+    string. Unknown tokens fall back to ``StagedPipelineReason.UNKNOWN``."""
+    text = str(token or "").strip().lower()
+    if not text:
+        return StagedPipelineReason.UNKNOWN
+    for keyword, value in _STAGED_PIPELINE_REASON_KEYWORDS:
+        if keyword in text:
+            return value
+    return StagedPipelineReason.UNKNOWN
+
+
+def _build_pipeline_fallback_breakdown(
+    stage_fallback_reasons: dict,
+    *,
+    invalid_output_stage_ids: list,
+) -> dict:
+    """Produce the ``pipeline_fallback_breakdown`` payload required by R7.2.
+
+    Returns a dict with three sub-maps:
+        - ``by_reason``: enum -> count
+        - ``by_stage``: stage_id -> count (each stage counted once)
+        - ``by_stage_reason``: ``"<stage_id>:<enum>"`` -> count
+
+    The legacy ``pipeline_fallback_counts`` (free-form reason strings)
+    stays for read-path compatibility.
+    """
+    by_reason: dict[str, int] = {}
+    by_stage: dict[str, int] = {}
+    by_stage_reason: dict[str, int] = {}
+    for stage_id, raw_reason in (stage_fallback_reasons or {}).items():
+        sid = str(stage_id or "unknown_stage")
+        enum_reason = classify_staged_pipeline_reason(raw_reason)
+        by_reason[enum_reason] = by_reason.get(enum_reason, 0) + 1
+        by_stage[sid] = by_stage.get(sid, 0) + 1
+        key = f"{sid}:{enum_reason}"
+        by_stage_reason[key] = by_stage_reason.get(key, 0) + 1
+    # invalid_output_stage_ids that didn't already show up in
+    # stage_fallback_reasons get their own schema_invalid entry so
+    # operators see them too.
+    for sid in invalid_output_stage_ids or []:
+        sid_text = str(sid or "")
+        if not sid_text:
+            continue
+        key = f"{sid_text}:{StagedPipelineReason.SCHEMA_INVALID}"
+        if key not in by_stage_reason:
+            by_stage_reason[key] = 1
+            by_stage[sid_text] = by_stage.get(sid_text, 0) + 1
+            by_reason[StagedPipelineReason.SCHEMA_INVALID] = (
+                by_reason.get(StagedPipelineReason.SCHEMA_INVALID, 0) + 1
+            )
+    return {
+        "by_reason": by_reason,
+        "by_stage": by_stage,
+        "by_stage_reason": by_stage_reason,
+    }
+
+
 _exec_block(
     globals(),
     '_strategy_generators_generate_parts',

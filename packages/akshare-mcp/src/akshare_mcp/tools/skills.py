@@ -231,13 +231,28 @@ def register(mcp):
 
         Returns:
             dict: 标准技能响应，包含技能列表、数量、来源和注册表摘要。
+            P1-3.7: 顶层显式拆分 executable_count / registered_only_count,
+            让 AI Agent 看到 "总数 36 中真正能执行的只有 21" 这种关键信号。
         """
         started_at = datetime.now()
         skills = _enrich_skills(_load_skills())
         source = _skills_source(skills)
         registry_summary = _build_skill_registry_summary(skills)
+        # P1-3.7 fix: 把 executable_count / registered_only_count 等关键监控字段提到顶层
         return _skill_ok(
-            {"skills": skills, "count": len(skills), "source": source, "registry_summary": registry_summary},
+            {
+                "skills": skills,
+                "count": len(skills),
+                "executable_count": int(registry_summary.get("executable_count") or 0),
+                "registered_only_count": int(registry_summary.get("registered_only_count") or 0),
+                "deprecated_count": int(registry_summary.get("deprecated_count") or 0),
+                "executor_coverage_ratio": (
+                    round(int(registry_summary.get("executable_count") or 0) / max(len(skills), 1), 4)
+                    if skills else None
+                ),
+                "source": source,
+                "registry_summary": registry_summary,
+            },
             backend_requested="skills_registry",
             backend_used=source,
             fallback_used=source != "skills_registry",

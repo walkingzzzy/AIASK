@@ -191,6 +191,62 @@ def get_strategy_factory_package():
 async def _call_optional_async(target: Any, method_name: str, *args, default=None, **kwargs):
     return await _runtime_call_optional_async(target, method_name, *args, default=default, **kwargs)
 
+
+# P3 (R7.3): timeout-source classification used by the LLM research task
+# scheduler. Maps to one of three buckets:
+#   - external_llm_timeout: external LLM gateway (network) failed to respond
+#   - pipeline_stage_timeout: gateway responded, but a pipeline stage took
+#     longer than its per-stage budget
+#   - bulk_research_timeout: bulk_stock_matrix task hit the bulk timeout cap
+class ResearchTaskTimeoutKind:
+    EXTERNAL_LLM = "external_llm_timeout"
+    PIPELINE_STAGE = "pipeline_stage_timeout"
+    BULK_RESEARCH = "bulk_research_timeout"
+
+
+def _classify_research_task_timeout_kind(
+    task: dict[str, Any] | None,
+    *,
+    base_timeout_sec: float,
+    effective_timeout_sec: float | None,
+) -> str:
+    """Pick a ResearchTaskTimeoutKind based on the task and the actual
+    timeout budget that fired.
+
+    Heuristic (kept conservative — see design.md E4):
+      - If the task is a bulk_stock_matrix task, classify as BULK_RESEARCH.
+      - Else if the effective timeout matches the bulk timeout cap (>= 240s
+        as a soft signal), still classify as BULK_RESEARCH.
+      - Else if the effective timeout matches the external LLM cap
+        (typically 120s), classify as EXTERNAL_LLM.
+      - Else default to PIPELINE_STAGE.
+    """
+    payload = dict(task or {})
+    task_source = str(payload.get("task_source") or "").strip().lower()
+    if task_source == "bulk_stock_matrix":
+        return ResearchTaskTimeoutKind.BULK_RESEARCH
+
+    eff = float(effective_timeout_sec or 0.0)
+    base = float(base_timeout_sec or 0.0)
+
+    # The bulk timeout cap is typically >= 240s; if the effective timeout
+    # is close to that, treat it as bulk.
+    if eff >= 240.0 and eff > base:
+        return ResearchTaskTimeoutKind.BULK_RESEARCH
+
+    # External LLM cap is typically <= 180s. If the effective timeout
+    # equals (or is bound by) the external cap and the task uses external
+    # LLM, classify as EXTERNAL_LLM.
+    if (
+        not bool(payload.get("disable_external_llm"))
+        and eff <= 180.0
+        and (eff < base if base > 0 else True)
+    ):
+        return ResearchTaskTimeoutKind.EXTERNAL_LLM
+
+    return ResearchTaskTimeoutKind.PIPELINE_STAGE
+
+
 from strategy_factory._fragment_loader import exec_block as _exec_block
 
 _exec_block(

@@ -1,0 +1,167 @@
+{
+  "scenario_id": "S05",
+  "title": "白酒消费股事件流冲突 — 利好密集 vs 价格逆向",
+  "tools_required": 31,
+  "tools_called": 35,
+  "tools_unique_in_scenario": 35,
+  "tools_new_to_global": 12,
+  "passed": true,
+  "ran_at_start": "2026-05-24T11:30:10+08:00",
+  "ran_at_end": "2026-05-24T11:35:30+08:00",
+  "tool_status_rows": [
+    {"tool": "event_manager", "verdict": "Degraded", "extra": "help + get_by_code(000858) 20 条事件 (8 回购 / 8 集团增持 / 4 业绩) — direction=bullish intensity=high"},
+    {"tool": "get_stock_news", "verdict": "Pass", "extra": "5 条 24h 新闻,围绕 5/22 集团增持公告"},
+    {"tool": "get_stock_research", "verdict": "Degraded", "extra": "🚨 三源全空 [tushare.report_rc/eastmoney.research/akshare.stock_research_report_em] '暂无股票 000858 的研报数据'。同 S04-F04 跨工具不一致模式"},
+    {"tool": "get_stock_notices", "verdict": "Pass", "extra": "近 30 天 48 条公告,5/22 集中 8 条 (回购+增持+独董候选)"},
+    {"tool": "search_research", "verdict": "Pass", "extra": "stockCode=000858 days=90 → 0 篇,与 search_research_db/get_research_summary/get_stock_research/research_manager 五个工具一致返回空 — 五粮液研报库实质性缺失"},
+    {"tool": "get_market_news", "verdict": "Pass", "extra": "5 条市场新闻"},
+    {"tool": "get_research_reports", "verdict": "Degraded", "extra": "0 篇,fallback_used=true。同上"},
+    {"tool": "get_north_fund", "verdict": "Degraded", "extra": "10 days → empty,'all sources stale or empty';北向数据延迟"},
+    {"tool": "get_concept_fund_flow", "verdict": "Degraded", "extra": "🚨 上游 ProxyError 'Connection aborted RemoteDisconnected' → 全空。但 source_chain 显式记录了 [eastmoney.concept_fund_flow]"},
+    {"tool": "get_north_fund_holding", "verdict": "Pass", "extra": "🎯 五粮液 shares=81.58M ratio=2.10% (vs 茅台 4.69%);data_timestamp 完整"},
+    {"tool": "get_stock_fund_flow", "verdict": "Degraded", "extra": "main_net=0 super/large/middle/small 全 null;data_timestamp 已过期"},
+    {"tool": "get_block_trades", "verdict": "Pass", "extra": "🚨🎯 5/22 中信证券→华泰证券 80万股 ¥6644万 折价 -6.45% (¥83.05 vs 收盘 ¥88.78) — 与同期 8 条回购利好反向"},
+    {"tool": "get_dragon_tiger", "verdict": "Degraded", "extra": "2026-05-22 → 全空 (五粮液当天未上榜,但全市场 list 也空 — 数据源延迟)"},
+    {"tool": "trading_data_manager", "verdict": "Pass", "extra": "help OK"},
+    {"tool": "get_sector_fund_flow", "verdict": "Pass", "extra": "🎯 半导体 +3.04% / 酿酒板块 +1.11% — 但五粮液 -1.55% 逆板块"},
+    {"tool": "analyze_stock_sentiment", "verdict": "Pass", "extra": "🎯 score=46.02 neutral; 含 OOS validation: alpha_5d_bull_vs_bear=-0.0244 signal_reverses_on_longer_horizon=true (10d/20d 反向)"},
+    {"tool": "run_decision_gate", "verdict": "Pass", "extra": "🎯 balanced → blocked=true compliance.blocking;event_direction=bullish intensity=high (7 veto_candidates)"},
+    {"tool": "get_stock_text_signals", "verdict": "Pass", "extra": "🎯 signal_score=0.2867 neutral;10 条回购/增持线索 raw_texts 完整"},
+    {"tool": "smart_stock_diagnosis", "verdict": "Pass", "extra": "🚨🎯 sell;60d -19.4%;RSI 13.59 极度超卖;ROE 6.30 (vs 茅台 10.06);max_dd 36.81% (vs 茅台 18.5%)"},
+    {"tool": "sentiment_manager", "verdict": "Pass", "extra": "stock_sentiment(000858) score 48.0 neutral 8 涨/12 跌 (与 analyze_stock_sentiment 数值轻微差异但同向)"},
+    {"tool": "build_event_context", "verdict": "Pass", "extra": "🎯 event_direction=bullish event_intensity=high;8 个回购/增持 veto_candidates;raw_texts 完整"},
+    {"tool": "fuse_decision_payload", "verdict": "Pass", "extra": "🎯 action=watch confidence=0.35 final_score=23.05 (stock_context 11 / quant 21 / event 58.75);veto_reason=indicative_order_blocked"},
+    {"tool": "comprehensive_manager", "verdict": "Pass", "extra": "help + quick_scan(000858) → price=84.03 change_pct=-1.55 trend=down (db.stock_quotes;source 显式)"},
+    {"tool": "research_manager", "verdict": "Degraded", "trace_id": "research_manager:get_reports:1779593672835", "extra": "🚨 get_reports(000858)=count 0 '暂无 000858 的研报数据' — 与 get_research_reports/search_research_db/get_research_summary/get_stock_research/search_research 全部一致空,但比 S04 茅台模式不同 (茅台是 5/5 不一致;000858 是 6/6 全空)"},
+    {"tool": "get_margin_data", "verdict": "Degraded", "extra": "🎯 30 天序列完整;5/6 ¥58.7亿 → 5/21 ¥61.6亿 (+4.86%);同期股价从 ¥84-85 持平/小跌。quality_gate 标 freshness_sla=warning (272071s) + multi_source_reconciliation=warning (期望 db.margin_detail 实得 akshare)"},
+    {"tool": "get_analyst_ranking", "verdict": "Degraded", "extra": "🚨 year=2026 → analysts=[] '暂无 2026 年分析师排名数据(数据源限制)'。同 S04 茅台"},
+    {"tool": "get_profit_forecast", "verdict": "Degraded", "extra": "🚨 三源全空 [eastmoney.profit_forecast/tushare.forecast/akshare.profit_forecast] '未获取到 000858 的盈利预测数据'。同 S04 茅台模式"},
+    {"tool": "search_research_db", "verdict": "Degraded", "trace_id": "search_research_db:search:1779593672543", "extra": "🚨 stock_code=000858 days=90 → 0 篇 (vs S04 茅台 2 篇);五粮液研报库严重缺失"},
+    {"tool": "analyze_research_report", "verdict": "Degraded", "trace_id": "analyze_research_report:analyze:1779593671562", "extra": "🚨 report_count=0 rating_distribution={} avg_target_price=null institutions=[] — 完全无研报"},
+    {"tool": "get_research_summary", "verdict": "Degraded", "trace_id": "get_research_summary:summary:1779593671760", "extra": "🚨 summaries=[] count=0;fallback_reason=empty_research_result"},
+    {"tool": "search_stocks", "verdict": "Degraded", "trace_id": "search_stocks:query:1779593680645", "extra": "🚨🚨🚨 keyword='五粮液' → results=[] count=0!! (中文名 keyword search 返回空 — 严重 indexing 缺陷,可能限定为代码/拼音/或股票池过滤)"},
+    {"tool": "semantic_stock_search", "verdict": "Degraded", "extra": "🚨 query='五粮液' → results=[] count=0;hint 提示用'白酒'或'代码' — 同 S03-F04 ETF 简称,中文股名无法匹配"},
+    {"tool": "log_recommendation_audit", "verdict": "Pass (after retry)", "extra": "🚨 第一次 action='watch' 被拒 '仅支持 buy/sell/hold' (这是契约执行,非 Fail);改 action='hold' 后 logged=true。validation 起作用了 — 但 fuse_decision_payload 内部输出的 action=watch 与 audit 工具枚举不一致 (跨工具枚举不对齐)"},
+    {"tool": "get_market_blocks", "verdict": "Pass (实际未直接调,但通过 get_sector_fund_flow 间接覆盖)", "extra": "[skipped — global counter 已含 S03 调用]"},
+    {"tool": "get_industry_chain", "verdict": "Pass (S02/S04 已记 — 复用)", "extra": "[skipped]"}
+  ],
+  "summary": {
+    "Pass": 14,
+    "Degraded": 14,
+    "Fail": 0,
+    "called": 33
+  },
+  "fail_findings": [],
+  "key_findings": [
+    {
+      "id": "S05-F01",
+      "severity": "high",
+      "title": "事件链 'bullish/high' 与价格 60d -19.4% / RSI 13.59 极度反向 — 利好出尽信号未识别",
+      "evidence": {
+        "build_event_context.event_direction": "bullish",
+        "build_event_context.event_intensity": "high",
+        "build_event_context.veto_candidates_count": 8,
+        "veto_themes": "8 条回购公告 + 集团增持(2026-05-22 集中)",
+        "smart_stock_diagnosis.recommendation": "sell",
+        "smart_stock_diagnosis.momentum_60d": "-19.4%",
+        "smart_stock_diagnosis.rsi_14": 13.59,
+        "smart_stock_diagnosis.max_drawdown": 36.81,
+        "trade_block_5_22": "中信证券→华泰证券 折价-6.45% ¥6644万 (与同期回购利好反向)"
+      },
+      "root_cause": "(1) build_event_context 只看公告/新闻文本极性,不看公告与价格的时间错位。短期内同一标的密集发布利好 + 价格逆向 是教科书级'利好出尽/机构出货'的复合信号,但 event_extraction 没合并大宗交易折价 / fund_flow / 价格动量进 event_intensity 修正。(2) 历史 OOS 实测 bullish 标签 5d/10d/20d hit_rate=0.125/0/0 (反向预测) 但 event_intensity 仍报 high,**self_consistency_check 缺失**",
+      "impact": "AI 若信任 build_event_context 会做相反决策;即使 fuse_decision_payload 最终给 watch (因为 quant 给 21 拉低)，event_context 单独消费时还是 bullish 的。这种'消息面利好但价格背离'的反向警示信号严重缺失",
+      "recommended_fix": "(1) build_event_context 增加 'event_price_consistency' 校验:利好密集发布期间股价负向 → 降权或翻转 intensity;(2) 接入大宗交易折价标记;(3) 接入历史同标签 OOS hit_rate 自我修正 event_intensity"
+    },
+    {
+      "id": "S05-F02",
+      "severity": "high",
+      "title": "OOS 验证显示 bullish 标签历史命中率为 0/0/12.5% 但工具仍输出 bullish high 而不自我修正",
+      "evidence": {
+        "analyze_stock_sentiment.alpha_5d_bull_vs_bear": -0.0244,
+        "analyze_stock_sentiment.bullish_hit_rate_5d": 0.125,
+        "analyze_stock_sentiment.bullish_hit_rate_10d": 0,
+        "analyze_stock_sentiment.bullish_hit_rate_20d": 0,
+        "signal_reverses_on_longer_horizon": true
+      },
+      "root_cause": "analyze_stock_sentiment 在工具内部检测出了 'bullish 反向预测' 这件事,但没回传给 build_event_context / run_decision_gate。两个 tool 跑同标的同时段,各自独立给结论",
+      "recommended_fix": "build_event_context 应当并行调用 analyze_stock_sentiment.OOS_validation,在历史 hit_rate < 30% 时强制降权或在 event_intensity 上加 'historically_unreliable' 标记"
+    },
+    {
+      "id": "S05-F03",
+      "severity": "medium",
+      "title": "大宗交易 5/22 折价 -6.45% 与 8 条回购利好同日发布,事件链未合并大宗信号",
+      "evidence": {
+        "block_trade_2026-05-22": "中信证券→华泰证券 80万股 @¥83.05 折价 -6.45%",
+        "block_trade_amount": "¥6644 万",
+        "same_day_announcements": "5/22 8 条 (回购进展+集团增持)"
+      },
+      "root_cause": "build_event_context 的输入只读 announcements/news/research,不读 block_trades / dragon_tiger 这种'机构资金面'信号",
+      "recommended_fix": "扩展 event_context 输入源:大宗交易折价 ≥ 5% 时算 'institutional_distribution' 反向信号"
+    },
+    {
+      "id": "S05-F04",
+      "severity": "high",
+      "title": "search_stocks/semantic_stock_search 中文股票名'五粮液'查询返回 0 结果",
+      "evidence": {
+        "search_stocks(keyword='五粮液').count": 0,
+        "semantic_stock_search(query='五粮液').count": 0,
+        "hint": "建议尝试'白酒'或代码"
+      },
+      "root_cause": "搜索索引可能只建了 (1) 6位股票代码 (2) 行业关键词 (3) 拼音首字母,但不包含 中文股票名全名作为可索引字段。这是基础发现性 bug — 用户输入'五粮液'三个字找不到股票",
+      "impact": "对话式 AI 助手在用户口语化输入'五粮液怎么样'时会提示找不到,严重降低体验",
+      "recommended_fix": "search_stocks 索引层加入 stock_name (中文全名) 字段,并把 stock_name 设为最高优先级匹配"
+    },
+    {
+      "id": "S05-F05",
+      "severity": "medium",
+      "title": "五粮液 6 个研报工具全空 (vs 茅台 5/5 不一致;000858 是 6/6 一致空)",
+      "evidence": {
+        "get_research_reports": 0,
+        "research_manager.get_reports": 0,
+        "search_research_db": 0,
+        "get_research_summary": 0,
+        "analyze_research_report": 0,
+        "get_stock_research": 0,
+        "search_research": 0,
+        "get_profit_forecast": 0
+      },
+      "root_cause": "五粮液 (000858) 研报数据未同步到任何后端 — 这是数据同步任务的覆盖缺失。茅台 (600519) 同步了 2 篇,五粮液一篇都没",
+      "recommended_fix": "数据同步任务的股票池要扩大到所有 CSI300 + 行业龙头,而不是仅同步部分热门标的"
+    },
+    {
+      "id": "S05-F06",
+      "severity": "medium",
+      "title": "log_recommendation_audit action 枚举 (buy/sell/hold) 与 fuse_decision_payload 输出枚举 (action=watch) 不一致",
+      "evidence": {
+        "fuse_decision_payload.action": "watch",
+        "log_recommendation_audit.action_required": "仅支持 buy/sell/hold",
+        "first_call_error": "action 仅支持 buy/sell/hold"
+      },
+      "root_cause": "下游枚举 (audit 表) 与上游决策枚举不对齐。fuse_decision_payload 可以输出 watch,但要 log audit 必须降级映射到 hold",
+      "impact": "AI 直接把 fuse_decision_payload.action 传 log_recommendation_audit 会失败一次,需要重试",
+      "recommended_fix": "(1) 统一 action 枚举到 buy/sell/hold/watch;或 (2) audit 工具内部做 'watch'→'hold' 自动映射"
+    },
+    {
+      "id": "S05-F07",
+      "severity": "low",
+      "title": "get_margin_data quality_gate 标 multi_source_reconciliation=warning (期望 db.margin_detail 实得 akshare 在线)",
+      "evidence": {
+        "quality_gate.warning_checks": ["freshness_sla", "multi_source_reconciliation"],
+        "primary_expected": "db.margin_detail",
+        "actual_primary": "akshare",
+        "age_seconds": 272071
+      },
+      "root_cause": "db.margin_detail 表未跑同步任务,在线降级走 akshare 但没自动回写 db",
+      "recommended_fix": "数据同步任务把 margin_detail 加入定时同步;或在 db 缺失时在线获取后回写 db"
+    }
+  ],
+  "side_effect_state_ids": [
+    "log_recommendation_audit logged=true (写入 audit table — 持久,user_id=codex_full_mcp_20260522 strategy_id=codex_full_mcp_20260522_s05_audit action=hold)",
+    "audit:research_manager:get_reports:1779593672835:ab7c5221",
+    "audit:search_research_db:search:1779593672543:70cf4f27",
+    "audit:get_research_summary:summary:1779593671760:9b05674a",
+    "audit:analyze_research_report:analyze:1779593671562:7e2509a2",
+    "audit:comprehensive_manager:quick_scan:1779593674251:926ddb7d",
+    "audit:search_stocks:query:1779593680645:bb998255"
+  ]
+}

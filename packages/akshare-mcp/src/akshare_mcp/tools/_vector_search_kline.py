@@ -1,6 +1,25 @@
 from ._vector_common import *
 from ..utils import propagate_data_quality_to_top
 
+
+def _is_excluded_stock_name(name: str) -> bool:
+    """P0-4 fix: filter out ST/退市/暂停上市 stocks from kline-similarity results.
+
+    These stocks can have low-volatility flat-line K shapes that score high in cosine similarity
+    but are useless as investment references (see S10-F04 茅台 5/5 全 ST 退市股 case).
+    Filter rules cover common A-share abnormal markers from stock_name field.
+    """
+    if not name:
+        return False
+    txt = str(name).strip().upper()
+    # 常见异常标记: *ST / ST / 退 / 退市 / 暂停 / *退
+    if txt.startswith('*ST') or txt.startswith('ST'):
+        return True
+    if '退' in txt or '暂停' in txt or 'PT' in txt:
+        return True
+    return False
+
+
 async def search_by_kline(
     code: str,
     days: int = 20,
@@ -40,10 +59,17 @@ async def search_by_kline(
 
         # 3. 查找候选股票
         _, candidate_rows = await _load_candidate_stock_rows(db, code, target_industry, limit=100)
+        # P0-4 fix: 入口过滤 ST/退市/暂停上市股票,避免低波动平直 K 线推高 cosine 相似度
+        excluded_count_before = len(candidate_rows)
+        candidate_rows = [
+            row for row in candidate_rows
+            if not _is_excluded_stock_name(str(row.get('stock_name', '') or ''))
+        ]
+        excluded_st_count = excluded_count_before - len(candidate_rows)
         candidate_rows = candidate_rows[:50]
         candidates = {row['code']: row.get('stock_name', '') for row in candidate_rows if row.get('code')}
         if not candidates:
-            return fail('No candidate stocks found')
+            return fail('No candidate stocks found (after ST/delisted filter)')
 
         search_meta = {
             'backend_requested': backend_requested,
@@ -83,9 +109,11 @@ async def search_by_kline(
                                 'forward_return_10d': item.get('forward_return_10d'),
                                 'forward_return_20d': item.get('forward_return_20d'),
                             }
-                            for item in db_rows[:int(top_n)]
+                            for item in db_rows[:int(top_n) * 3]  # 取 3x 候选,过滤后裁剪
                             if str(item.get('stock_code') or '')
                         ]
+                        # P0-4 fix: 二次过滤,防御 db 返回的 stock_name 含 ST/退市标记
+                        results = [r for r in results if not _is_excluded_stock_name(r.get('name', ''))][:int(top_n)]
                         candidate_klines_loaded = len(db_rows)
                         search_meta = {
                             'backend_requested': 'db',
@@ -118,6 +146,8 @@ async def search_by_kline(
                     'fallback_used': bool(search_meta.get('fallback_used', False)),
                     'fallback_reason': search_meta.get('fallback_reason'),
                     'latency_ms': search_meta.get('latency_ms', 0.0),
+                    'excluded_st_count': excluded_st_count,
+                    'quality_filter': 'st_delisted_excluded_at_input',
                 }))
 
             if not allow_fallback:
@@ -137,6 +167,8 @@ async def search_by_kline(
                     'fallback_used': False,
                     'fallback_reason': fallback_reason or 'db_empty_result',
                     'latency_ms': 0.0,
+                    'excluded_st_count': excluded_st_count,
+                    'quality_filter': 'st_delisted_excluded_at_input',
                 }))
 
         # 4. 获取候选K线并执行向量检索
@@ -176,9 +208,13 @@ async def search_by_kline(
         for item in search_results:
             candidate_code = item.get('code', '')
             similarity = float(item.get('similarity', 0.0))
+            cand_name = candidates.get(candidate_code, '')
+            # P0-4 fix: 二次过滤防御 fallback 路径
+            if _is_excluded_stock_name(cand_name):
+                continue
             results.append({
                 'code': candidate_code,
-                'name': candidates.get(candidate_code, ''),
+                'name': cand_name,
                 'similarity': round(similarity, 4),
                 'source': item.get('source', vector_search_engine.last_backend_used),
             })
@@ -200,6 +236,8 @@ async def search_by_kline(
             'fallback_used': bool(search_meta.get('fallback_used', False)),
             'fallback_reason': search_meta.get('fallback_reason'),
             'latency_ms': search_meta.get('latency_ms', 0.0),
+            'excluded_st_count': excluded_st_count,
+            'quality_filter': 'st_delisted_excluded_at_input',
         }))
 
     except Exception as e:

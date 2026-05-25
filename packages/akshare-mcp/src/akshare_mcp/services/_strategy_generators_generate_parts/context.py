@@ -308,6 +308,16 @@
             for reason in stage_fallback_reasons.values():
                 token = str(reason or "fallback").strip() or "fallback"
                 pipeline_fallback_counts[token] = pipeline_fallback_counts.get(token, 0) + 1
+            # P3 (R7.1, R7.2): structured breakdown of pipeline fallbacks
+            # so dashboards can group by stage / by reason / by both.
+            # Maps to the StagedPipelineReason enum exposed via
+            # `classify_staged_pipeline_reason`.
+            pipeline_fallback_breakdown = _build_pipeline_fallback_breakdown(
+                stage_fallback_reasons,
+                invalid_output_stage_ids=list(
+                    pipeline_provenance.get("invalid_output_stage_ids") or []
+                ),
+            )
             for stage_id, stage_result in pipeline_result.stages.items():
                 stage_error = getattr(stage_result, "llm_error", None) or stage_result.error
                 stage_error_type = getattr(stage_result, "llm_error_type", None)
@@ -385,6 +395,7 @@
                 'pipeline_error': pipeline_result.error,
                 'pipeline_stage_fallback_reasons': stage_fallback_reasons,
                 'pipeline_fallback_counts': pipeline_fallback_counts,
+                'pipeline_fallback_breakdown': pipeline_fallback_breakdown,
                 'pipeline_invalid_output_stage_ids': list(
                     pipeline_provenance.get("invalid_output_stage_ids") or []
                 ),

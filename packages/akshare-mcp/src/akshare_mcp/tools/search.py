@@ -422,6 +422,30 @@ def register(mcp):
                 fallback_used = bool(results)
                 if fallback_used:
                     source_chain.append("tushare_pro.stock_basic")
+
+            # P2-4.5.10 fix: 中文 stock_name LIKE 兜底(诊断报告 §4.5.10)
+            # 历史问题:keyword='五粮液' / '茅台' 等中文全名查询返回 0
+            # 修复:LIKE %keyword% 在 db.stocks.stock_name 字段全文检索
+            if not results and keyword and keyword.strip():
+                try:
+                    keyword_clean = keyword.strip()
+                    async with db.acquire() as conn:
+                        like_rows = await conn.fetch(
+                            """SELECT code, stock_name, industry, market_cap,
+                                      pe_ratio, pb_ratio
+                               FROM stocks
+                               WHERE stock_name LIKE $1 OR code LIKE $2
+                               LIMIT $3""",
+                            f"%{keyword_clean}%",
+                            f"%{keyword_clean}%",
+                            int(limit),
+                        )
+                    if like_rows:
+                        results = [dict(r) for r in like_rows]
+                        fallback_used = True
+                        source_chain.append("db.stocks.like_search")
+                except Exception:
+                    pass
             
             return ok_with_meta(
                 {

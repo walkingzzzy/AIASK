@@ -194,9 +194,25 @@ def pre_gate_screen(
     """廉价预筛：约束任务类型一致性、单股矩阵目标完整性与重复候选。"""
     payload = dict(candidate or {})
     reasons: list[str] = []
-    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    raw_research_task = dict(payload.get("research_task") or {})
+    # PR-E (Phase 3, 2026-05-24): capture the operator-supplied
+    # ``target_alignment_contract`` *before* normalize. Normalize will
+    # always synthesize a default contract from ``target_symbols`` /
+    # ``strategy_type``, which would mask the operator's explicit cap.
+    # Gate priority #1 must look at the *raw* contract, not the
+    # synthesized one.
+    raw_user_contract = (
+        raw_research_task.get("target_alignment_contract")
+        or payload.get("target_alignment_contract")
+        or {}
+    )
+    research_task = _normalize_research_task_contract(raw_research_task)
     strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    # PR-E: ``target_codes`` keeps the legacy 12-cap so quota/snapshot
+    # bookkeeping stays untouched. The *real* count for the dynamic
+    # limit check is derived separately below from the unbounded payload.
     target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    raw_target_codes = _extract_target_codes_from_payload(payload, limit=64)
     tags = _candidate_tags(payload)
     allowed_strategy_types = {
         str(item).strip().lower()
@@ -260,8 +276,63 @@ def pre_gate_screen(
             reasons.append("bulk_stock_matrix_requires_single_target")
     elif task_source == "event_driven" and not target_codes:
         reasons.append("event_task_missing_target_symbols")
-    if len(target_codes) > 12:
-        reasons.append("target_symbol_count_exceeds_12")
+
+    # PR-E (Phase 3, 2026-05-24): replace the hardcoded ``> 12`` check
+    # with the canonical ``resolve_target_symbol_limit`` so:
+    #   - ``snapshot`` and other legacy task_sources still cap at 12;
+    #   - ``event_driven`` honors the dynamic feature flag (defaults to
+    #     12 in 5a, allows up to 30 in 5b);
+    #   - operators see the *actual* limit in the reject reason.
+    #
+    # Resolution priority (matches plan §6 Phase 3):
+    #   1. operator-supplied target_alignment_contract.max_candidate_target_symbols
+    #      (raw, pre-normalize — see ``raw_user_contract`` above)
+    #   2. research_task.target_symbol_limit (rare; legacy override)
+    #   3. resolve_target_symbol_limit(task_source=...)
+    #
+    # Why we use ``raw_user_contract`` instead of the normalized one:
+    # ``_normalize_research_task_contract`` always synthesizes a default
+    # ``target_alignment_contract`` from ``target_symbols`` /
+    # ``strategy_type`` (typically capping at 8 for event_targeted,
+    # 4 for snapshot pipelines). Reading the normalized contract would
+    # mean the gate's "5b allow 30" path can never be reached because
+    # the synthesized cap of 8 always wins priority #1.
+    contract_cap = 0
+    try:
+        contract_cap = int((raw_user_contract or {}).get("max_candidate_target_symbols") or 0)
+    except (TypeError, ValueError):
+        contract_cap = 0
+
+    explicit_limit = 0
+    explicit_raw = research_task.get("target_symbol_limit") or payload.get("target_symbol_limit")
+    if explicit_raw is not None:
+        try:
+            explicit_limit = int(explicit_raw)
+        except (TypeError, ValueError):
+            explicit_limit = 0
+
+    fallback_limit = resolve_target_symbol_limit(
+        task_source=task_source,
+        validation_focus=validation_focus,
+    )
+
+    target_symbol_limit = max(
+        1,
+        contract_cap if contract_cap > 0 else (explicit_limit if explicit_limit > 0 else fallback_limit),
+    )
+
+    if len(target_codes) > target_symbol_limit:
+        reasons.append(
+            f"target_symbol_count_exceeds_limit:{target_symbol_limit}"
+        )
+    elif len(raw_target_codes) > target_symbol_limit:
+        # ``target_codes`` is already capped at 12 by the legacy extractor;
+        # if the raw payload would have exceeded the dynamic limit, we
+        # still surface the violation so 5b operators (limit > 12) see
+        # the real reject.
+        reasons.append(
+            f"target_symbol_count_exceeds_limit:{target_symbol_limit}"
+        )
     if (
         targeted_snapshot
         and "target_universe_alignment_too_low" in list(target_quality_summary.get("reasons") or [])

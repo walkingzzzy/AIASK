@@ -281,10 +281,23 @@ def register(mcp) -> None:
                     )
                 exp.setdefault("min_quality_threshold", minimum_quality_threshold)
                 result = adapter.validate_dataset(rows, exp)
+                # P2-4.6.7 fix: evaluated_expectations=0 → vacuous pass(诊断报告 §4.6.7)
+                # 历史问题:GE 没配 expectation suite 时 passed=true 但 evaluated=0/successful=0
+                # AI 看 passed=true 以为数据通过校验,实际从未执行任何检查
+                vacuous = (
+                    int(result.expectations_evaluated or 0) == 0
+                    and int(result.expectations_passed or 0) == 0
+                )
+                effective_passed = result.passed and not vacuous
                 payload: dict[str, Any] = {
                     "dataset_id": dataset_id,
                     "backend": backend,
-                    "passed": result.passed,
+                    "passed": effective_passed,  # 修正:vacuous → False
+                    "raw_passed": result.passed,
+                    "vacuous_pass": vacuous,
+                    "validation_status": "vacuous_no_checks_configured" if vacuous else (
+                        "passed" if result.passed else "failed"
+                    ),
                     "validation_id": result.validation_id,
                     "method": result.method,
                     "stats": result.stats,
@@ -297,7 +310,7 @@ def register(mcp) -> None:
                     "fallback_used": result.fallback_used,
                     "fallback_reason": result.fallback_reason,
                 }
-                degraded = not result.passed
+                degraded = not effective_passed
                 return ok_with_meta(
                     payload,
                     tool_name="data_validation",
@@ -306,8 +319,13 @@ def register(mcp) -> None:
                     source_chain=[f"adapter.data_validation.{backend}"],
                     extra_meta={
                         "quality": {
-                            "status": "good" if result.passed else "failed",
-                            "passed": result.passed,
+                            "status": (
+                                "vacuous"
+                                if vacuous
+                                else ("good" if effective_passed else "failed")
+                            ),
+                            "passed": effective_passed,
+                            "vacuous_pass": vacuous,
                             "validation_id": result.validation_id,
                         },
                         "side_effect": {"level": "read_only", "confirmation_required": False},

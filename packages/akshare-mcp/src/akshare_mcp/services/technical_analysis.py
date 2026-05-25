@@ -53,28 +53,35 @@ class TechnicalAnalysis:
     
     @staticmethod
     def calculate_sma(closes: List[float], period: int = 20) -> List[float]:
-        """计算简单移动平均"""
+        """计算简单移动平均
+
+        P2-4.5.6 fix(诊断报告 §4.5.6):
+        warmup 期(前 period-1 个)用 None 填充而非 0,与 MACD 的 null 行为一致。
+        AI 看到 ma[0]=0 容易误读为'价格曾跌到 0'。
+        """
         if not PANDAS_TA_AVAILABLE:
             return TechnicalAnalysis._calculate_sma_numpy(closes, period)
-        
+
         df = pd.DataFrame({'close': closes})
         result = df.ta.sma(length=period)
-        return result.fillna(0).tolist()
-    
+        # warmup 区(NaN)统一返回 None,与 MACD 一致
+        return [None if pd.isna(v) else float(v) for v in result.tolist()]
+
     @staticmethod
     def _calculate_sma_numpy(closes: List[float], period: int) -> List[float]:
         """NumPy实现的SMA（fallback）"""
         closes_arr = _float_array(closes)
         if len(closes_arr) < period:
-            return [0.0] * len(closes)
-        
+            # P2-4.5.6 fix: 长度不足时返回 None list 而非 0
+            return [None] * len(closes)
+
         weights = np.ones(period) / period
         sma = np.convolve(closes_arr, weights, mode='valid')
-        
-        # 前面补0
-        result = np.zeros(len(closes))
-        result[period-1:] = sma
-        return result.tolist()
+
+        # P2-4.5.6 fix: 前 period-1 用 None,统一 warmup 行为
+        result: list[float | None] = [None] * (period - 1)
+        result.extend(float(v) for v in sma.tolist())
+        return result
     
     @staticmethod
     def calculate_ema(closes: List[float], period: int = 20) -> List[float]:

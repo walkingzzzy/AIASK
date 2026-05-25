@@ -1433,13 +1433,18 @@ class TdxSyncService:
         if not hasattr(db, "save_tdx_data_completeness"):
             return {"updated": 0, "reason": "adapter_missing_method"}
         specs = [
-            ("stock_quotes", "stock_quotes", "time", ""),
-            ("index_klines", "kline_1d", "time", "WHERE code IN ('sh000001','sh000300','sz399001','sz399006')"),
-            ("north_fund_flow", "north_fund_flow", "trade_date", ""),
-            ("margin_market_flow", "margin_market_flow", "trade_date", ""),
-            ("margin_detail", "margin_detail", "trade_date", ""),
-            ("stock_fund_flow", "stock_fund_flow", "trade_date", ""),
-            ("strategy_factory_market_internals", "strategy_factory_market_internals", "snapshot_date", ""),
+            ("stock_quotes", [("stock_quotes", "time", "")]),
+            ("index_klines", [("kline_1d", "time", "WHERE code IN ('sh000001','sh000300','sz399001','sz399006')")]),
+            ("north_fund_flow", [("north_fund_flow", "trade_date", "")]),
+            ("margin_market_flow", [("margin_market_flow", "trade_date", "")]),
+            ("margin_detail", [("margin_detail", "trade_date", "")]),
+            ("stock_fund_flow", [("stock_fund_flow", "trade_date", "")]),
+            ("strategy_factory_market_internals", [("strategy_factory_market_internals", "snapshot_date", "")]),
+            ("sync_sector_basic", [
+                ("market_blocks", "updated_at", ""),
+                ("block_stocks", "updated_at", ""),
+            ]),
+            ("sync_relation", [("tdx_relation", "updated_at", "")]),
         ]
         stale_after_days = {
             "stock_quotes": 5,
@@ -1449,52 +1454,76 @@ class TdxSyncService:
             "margin_detail": 10,
             "stock_fund_flow": 10,
             "strategy_factory_market_internals": 10,
+            "sync_sector_basic": 10,
+            "sync_relation": 10,
         }
         updated = 0
-        snapshots: list[tuple[str, str, str, str, int, Any, dict, list[dict]]] = []
+        snapshots: list[tuple[str, list[dict], int, Any, dict, list[dict]]] = []
         async with db.acquire() as conn:
-            for key, table, date_col, where_clause in specs:
-                row = await conn.fetchrow(
-                    f"SELECT COUNT(*) AS row_count, MAX({date_col}) AS as_of_date FROM {table} {where_clause}"
-                )
-                row_count = int((row or {}).get("row_count") or 0)
-                as_of_date = (row or {}).get("as_of_date")
+            for key, table_specs in specs:
+                total_rows = 0
+                latest_as_of = None
+                table_details: list[dict] = []
                 source_rows: list[dict] = []
-                columns = await conn.fetch("SELECT name FROM pragma_table_info($1)", table)
-                column_names = {str(item.get("name") or "") for item in columns}
-                if "source" in column_names:
-                    source_priority_expr = (
-                        "COALESCE(source_priority, 'unknown')"
-                        if "source_priority" in column_names
-                        else "'unknown'"
+                for table, date_col, where_clause in table_specs:
+                    row = await conn.fetchrow(
+                        f"SELECT COUNT(*) AS row_count, MAX({date_col}) AS as_of_date FROM {table} {where_clause}"
                     )
-                    group_by_expr = "source, source_priority" if "source_priority" in column_names else "source"
-                    source_rows = [
-                        dict(item)
-                        for item in await conn.fetch(
-                            f"""
-                            SELECT
-                                COALESCE(source, 'unknown') AS source,
-                                {source_priority_expr} AS source_priority,
-                                COUNT(*) AS row_count,
-                                MAX({date_col}) AS as_of_date
-                            FROM {table}
-                            {where_clause}
-                            GROUP BY {group_by_expr}
-                            ORDER BY row_count DESC
-                            """
+                    row_count = int((row or {}).get("row_count") or 0)
+                    as_of_date = (row or {}).get("as_of_date")
+                    total_rows += row_count
+                    if as_of_date and (latest_as_of is None or str(as_of_date) > str(latest_as_of)):
+                        latest_as_of = as_of_date
+                    table_details.append({
+                        "table": table,
+                        "date_column": date_col,
+                        "where": where_clause,
+                        "row_count": row_count,
+                        "as_of_date": as_of_date,
+                    })
+                    columns = await conn.fetch("SELECT name FROM pragma_table_info($1)", table)
+                    column_names = {str(item.get("name") or "") for item in columns}
+                    if "source" in column_names:
+                        source_priority_expr = (
+                            "COALESCE(source_priority, 'unknown')"
+                            if "source_priority" in column_names
+                            else "'unknown'"
                         )
-                    ]
+                        group_by_expr = "source, source_priority" if "source_priority" in column_names else "source"
+                        source_rows.extend(
+                            dict(item, table=table)
+                            for item in await conn.fetch(
+                                f"""
+                                SELECT
+                                    COALESCE(source, 'unknown') AS source,
+                                    {source_priority_expr} AS source_priority,
+                                    COUNT(*) AS row_count,
+                                    MAX({date_col}) AS as_of_date
+                                FROM {table}
+                                {where_clause}
+                                GROUP BY {group_by_expr}
+                                ORDER BY row_count DESC
+                                """
+                            )
+                        )
                 previous = {}
-                if row_count == 0 and hasattr(db, "get_tdx_data_completeness"):
+                if total_rows == 0 and hasattr(db, "get_tdx_data_completeness"):
                     try:
                         previous = await db.get_tdx_data_completeness(key)
                     except Exception:
                         previous = {}
-                snapshots.append((key, table, date_col, where_clause, row_count, as_of_date, previous, source_rows))
-        for key, table, date_col, where_clause, row_count, as_of_date, previous, source_rows in snapshots:
+                snapshots.append((key, table_details, total_rows, latest_as_of, previous, source_rows))
+        for key, table_details, row_count, as_of_date, previous, source_rows in snapshots:
             status = "ok" if row_count else "missing"
-            detail = {"table": table, "date_column": date_col, "where": where_clause}
+            if len(table_details) == 1:
+                only = table_details[0]
+                detail = {
+                    "table": only["table"],
+                    "date_column": only["date_column"],
+                    "where": only["where"],
+                }
+            else:
+                detail = {"tables": table_details}
             if source_rows:
                 detail["sources"] = source_rows
             if row_count and as_of_date and key in stale_after_days:

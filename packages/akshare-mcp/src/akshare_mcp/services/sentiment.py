@@ -487,8 +487,15 @@ class SentimentAnalyzer:
         headline_labels: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """三分量复合情绪评分"""
+        # P2-4.5.8 fix: 区分"真实计算的分量"与"无数据时默认 50.0"
+        # 历史问题(诊断报告 §4.5.8):3 components 中 2/3 默认 50,但工具不显式标记
+        # AI 看到 score=50 不知是真 neutral 还是数据缺失
+        # 修复:effective_components 列出真正有数据的分量,加 component_availability
         pm = self._price_momentum_score(klines)
+        pm_available = bool(klines)
+        news_provided = bool(news_headlines)
         ns = self._news_sentiment_score(news_headlines or [])
+        ff_provided = bool(fund_flow_data)
         ff = self._fund_flow_score(fund_flow_data)
         ordered_klines = self._sort_klines(klines)
         news_oos_validation = self._build_news_sentiment_oos_validation(
@@ -511,6 +518,25 @@ class SentimentAnalyzer:
             current_price_momentum_score=pm,
         )
 
+        # P2-4.5.8: 列出真正有数据的分量
+        effective_components = [
+            name for name, available in (
+                ("price_momentum", pm_available),
+                ("news_sentiment", news_provided),
+                ("fund_flow", ff_provided),
+            )
+            if available
+        ]
+        availability_warnings: list[str] = []
+        if not news_provided:
+            availability_warnings.append("news_sentiment_default_neutral_50")
+        if not ff_provided:
+            availability_warnings.append("fund_flow_default_neutral_50")
+        if len(effective_components) <= 1:
+            availability_warnings.append(
+                f"sentiment_low_confidence: only {len(effective_components)}/3 components have real data"
+            )
+
         result = {
             'sentiment': sentiment,
             'score': round(composite, 2),
@@ -519,6 +545,14 @@ class SentimentAnalyzer:
                 'news_sentiment': round(ns, 2),
                 'fund_flow': round(ff, 2),
             },
+            'component_availability': {
+                'price_momentum': pm_available,
+                'news_sentiment': news_provided,
+                'fund_flow': ff_provided,
+            },
+            'effective_components': effective_components,
+            'effective_component_count': len(effective_components),
+            'availability_warnings': availability_warnings,
             'weights': {'price_momentum': 0.4, 'news_sentiment': 0.3, 'fund_flow': 0.3},
             'historical_validation': historical_validation,
             'news_oos_validation': news_oos_validation,

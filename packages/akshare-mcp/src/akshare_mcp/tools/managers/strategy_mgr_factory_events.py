@@ -11,10 +11,13 @@ Actions:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+
+_OUTBOX_DRAIN_RUNNING = False
 
 
 def _now_iso() -> str:
@@ -153,7 +156,12 @@ async def handle_factory_event_update(db, params: dict[str, Any]) -> dict[str, A
 
 
 async def handle_factory_event_approve(db, params: dict[str, Any]) -> dict[str, Any]:
-    """Approve a pending_review event (dual-person review)."""
+    """Approve a pending_review event (dual-person review).
+
+    PR-B1 (2026-05-24): approver_id / approved_at 必须真正写入 DB，
+    不能像之前那样只在响应 envelope 里返回。DAO 端
+    ``upsert_event_injection`` 已支持这两个列。
+    """
     event_id = _string(params.get("event_id") or params.get("id"))
     approver_id = _string(params.get("approver_id"))
     if not event_id:
@@ -167,12 +175,17 @@ async def handle_factory_event_approve(db, params: dict[str, Any]) -> dict[str, 
 
     # Cannot self-approve
     operator = _string(target.get("operator_id"))
-    if approver_id and approver_id == operator:
+    if approver_id and operator and approver_id == operator:
         return {"success": False, "error": "Cannot self-approve: approver must differ from operator"}
+    if not approver_id:
+        return {"success": False, "error": "approver_id is required to approve a pending event"}
 
+    approved_at = _now_iso()
     payload = {
         "event_id": event_id,
         "status": "active",
+        "approver_id": approver_id,
+        "approved_at": approved_at,
     }
     await db.upsert_event_injection(payload)
     return {
@@ -181,7 +194,7 @@ async def handle_factory_event_approve(db, params: dict[str, Any]) -> dict[str, 
             "event_id": event_id,
             "status": "active",
             "approved_by": approver_id,
-            "approved_at": _now_iso(),
+            "approved_at": approved_at,
         },
     }
 
@@ -215,14 +228,24 @@ async def handle_factory_event_record_outcome(db, params: dict[str, Any]) -> dic
 async def handle_factory_event_preview_tasks(db, params: dict[str, Any]) -> dict[str, Any]:
     """Preview tasks that would be generated from an event (dry-run, no side effects).
 
-    This is a simplified preview that shows theme propagation results.
-    Full task generation requires PR-3 (theme_graph.py) and PR-6 (scan integration).
+    PR-D (Phase 2, 2026-05-24): preview now drives the real BFS
+    (``propagate_event_to_themes``) and target basket resolution
+    (``resolve_target_basket``), so Desktop can show the propagation path
+    and the candidate stock pool before the operator approves the event.
+    The handler still degrades gracefully — if strategy-factory is not
+    on the import path or the propagation modules raise, we fall back to
+    the depth=1 edge listing so the manager keeps working.
     """
     event_id = _string(params.get("event_id") or params.get("id"))
     primary_themes = params.get("primary_themes") or []
     confidence = float(params.get("confidence") or 0.7)
     intensity = float(params.get("intensity") or 0.5)
     direction = params.get("direction")
+    horizon = _string(params.get("horizon")) or "swing_5_20d"
+    valid_from = _string(params.get("valid_from")) or None
+    valid_until = _string(params.get("valid_until")) or None
+    source = _string(params.get("source")) or "manual"
+    event_type = _string(params.get("event_type"))
 
     if not primary_themes and event_id:
         # Try to load from DB
@@ -233,28 +256,365 @@ async def handle_factory_event_preview_tasks(db, params: dict[str, Any]) -> dict
             confidence = float(target.get("confidence") or confidence)
             intensity = float(target.get("intensity") or intensity)
             direction = target.get("direction") or direction
+            horizon = _string(target.get("horizon")) or horizon
+            valid_from = _string(target.get("valid_from")) or valid_from
+            valid_until = _string(target.get("valid_until")) or valid_until
+            source = _string(target.get("source")) or source
+            event_type = _string(target.get("event_type")) or event_type
 
     if not primary_themes:
         return {"success": False, "error": "No primary_themes found for preview"}
 
-    # Load theme edges for propagation preview
-    preview_impacts = []
+    # PR-D: prefer the real propagation + target basket pipeline.
+    try:
+        from strategy_factory.application.research.theme_graph import (  # noqa: PLC0415
+            NormalizedEvent,
+            propagate_event_to_themes,
+        )
+        from strategy_factory.application.research.target_basket import (  # noqa: PLC0415
+            resolve_target_basket,
+        )
+    except Exception as exc:
+        # Degraded path: fall back to depth-1 edge listing if strategy-factory
+        # cannot be imported (should not happen in production but guards
+        # tests / partial deployments).
+        return await _preview_tasks_legacy_depth1(
+            db=db,
+            event_id=event_id,
+            primary_themes=primary_themes,
+            confidence=confidence,
+            intensity=intensity,
+            direction=direction,
+            fallback_reason=f"strategy_factory_unavailable: {exc}",
+        )
+
+    normalized_event = NormalizedEvent(
+        event_id=event_id or f"preview_{uuid4().hex[:8]}",
+        source=source,
+        event_name=_string(params.get("event_name")) or "preview_event",
+        event_type=event_type,
+        direction=direction,
+        confidence=confidence,
+        intensity=intensity,
+        horizon=horizon,
+        scope=_string(params.get("scope")) or "theme",
+        primary_themes=list(primary_themes),
+        valid_from=valid_from,
+        valid_until=valid_until,
+    )
+
+    impacts, warnings = await propagate_event_to_themes(
+        db,
+        normalized_event,
+        return_warnings=True,
+    )
+
+    # Per-theme basket preview (capped to 8 symbols per theme so the
+    # response stays Desktop-friendly; the real factory_run_once will
+    # resolve full target_count later).
+    impact_payload: list[dict[str, Any]] = []
+    candidate_symbols: list[str] = []
+    candidate_seen: set[str] = set()
+    for impact in impacts:
+        try:
+            basket = await resolve_target_basket(
+                db,
+                impact,
+                target_count=8,
+                feature_flag_target_max=12,
+            )
+        except Exception as exc:
+            basket = None
+            warnings.append({
+                "type": "target_basket_failed",
+                "theme_code": impact.theme_code,
+                "error": str(exc),
+            })
+
+        item: dict[str, Any] = {
+            "theme_code": impact.theme_code,
+            "direction_sign": impact.direction_sign,
+            "magnitude": round(impact.magnitude, 4),
+            "confidence": round(impact.confidence, 4),
+            "depth": impact.depth,
+            "breadth": impact.breadth,
+            "lag_days": impact.lag_days,
+            "source_path": impact.source_path,
+        }
+        if basket is not None:
+            item["candidate_symbols"] = list(basket.symbols)
+            item["candidate_count"] = len(basket.symbols)
+            item["basket_evidence"] = basket.evidence
+            for sym in basket.symbols:
+                if sym not in candidate_seen:
+                    candidate_seen.add(sym)
+                    candidate_symbols.append(sym)
+        else:
+            item["candidate_symbols"] = []
+            item["candidate_count"] = 0
+        impact_payload.append(item)
+
+    return {
+        "success": True,
+        "data": {
+            "event_id": event_id,
+            "primary_theme_count": len(primary_themes),
+            "total_impacts": len(impact_payload),
+            "impacts": impact_payload,
+            "candidate_symbols": candidate_symbols,
+            "candidate_count": len(candidate_symbols),
+            "warnings": warnings,
+            "preview_mode": "real_propagation_v1",
+        },
+    }
+
+
+async def handle_factory_event_lineage(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Read event -> task -> gate lineage from persisted storage."""
+
+    event_id = _string(params.get("event_id") or params.get("id"))
+    task_id = _string(params.get("task_id"))
+    limit = max(1, min(int(params.get("limit") or 100), 1000))
+    if not hasattr(db, "list_event_task_lineage"):
+        return {"success": False, "error": "lineage DAO unsupported"}
+    rows = await db.list_event_task_lineage(
+        event_id=event_id or None,
+        task_id=task_id or None,
+        limit=limit,
+    )
+    return {
+        "success": True,
+        "data": {
+            "lineage": rows,
+            "items": rows,
+            "count": len(rows),
+            "filters": {"event_id": event_id or None, "task_id": task_id or None},
+            "source": "strategy_factory_event_task_lineage",
+        },
+    }
+
+
+async def handle_factory_theme_exposure_status(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Read aggregate status of the TDX-only theme exposure matrix."""
+
+    if hasattr(db, "get_theme_exposure_status"):
+        status = await db.get_theme_exposure_status()
+    else:
+        rows = await db.list_theme_exposure(limit=1) if hasattr(db, "list_theme_exposure") else []
+        status = {
+            "row_count": len(rows),
+            "symbol_count": None,
+            "theme_count": None,
+            "latest_updated_at": None,
+            "source": "strategy_factory_theme_exposure",
+            "unsupported": not bool(rows),
+        }
+    return {"success": True, "data": status}
+
+
+async def handle_factory_event_outbox_status(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Read outbox consumer state."""
+
+    limit = max(1, min(int(params.get("limit") or 50), 200))
+    if hasattr(db, "get_event_outbox_status"):
+        status = await db.get_event_outbox_status(limit=limit)
+    elif hasattr(db, "list_event_outbox_state"):
+        rows = await db.list_event_outbox_state(limit=limit)
+        counts: dict[str, int] = {}
+        for row in rows:
+            key = str(row.get("status") or "unknown")
+            counts[key] = counts.get(key, 0) + 1
+        status = {"source": "strategy_factory_event_outbox_state", "counts": counts, "latest": rows}
+    else:
+        return {"success": False, "error": "outbox DAO unsupported"}
+    return {"success": True, "data": status}
+
+
+async def handle_factory_theme_exposure_refresh(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Confirm-required manual refresh for the TDX-only exposure matrix."""
+
+    try:
+        from strategy_factory.application.research.theme_exposure_builder import (  # noqa: PLC0415
+            ThemeExposureBuilder,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"strategy_factory unavailable: {exc}"}
+
+    builder = ThemeExposureBuilder(
+        stock_limit=int(params.get("stock_limit") or 0) or None,
+        theme_limit=int(params.get("theme_limit") or 0) or None,
+        batch_size=max(1, min(int(params.get("batch_size") or 1000), 10000)),
+    )
+    report = await builder.build(
+        db,
+        batch_size=max(1, min(int(params.get("batch_size") or 1000), 10000)),
+    )
+    return {"success": True, "data": report}
+
+
+async def handle_factory_event_outbox_drain(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Single-worker outbox drain for event-driven task lineage.
+
+    The generator is called in non-persisting mode; each candidate task is
+    claimed by dedupe_key before lineage is written. Duplicate or terminal
+    dedupe slots are skipped.
+    """
+
+    global _OUTBOX_DRAIN_RUNNING
+    if _OUTBOX_DRAIN_RUNNING:
+        return {
+            "success": False,
+            "error": "factory_event_outbox_drain already running",
+            "data": {"single_worker": True},
+        }
+
+    limit = max(1, min(int(params.get("limit") or 20), 200))
+    event_limit = max(1, min(int(params.get("event_limit") or 20), 200))
+    _OUTBOX_DRAIN_RUNNING = True
+    try:
+        try:
+            from strategy_factory.application.research.event_task_generator import (  # noqa: PLC0415
+                generate_tasks_from_active_events,
+            )
+        except Exception as exc:
+            return {"success": False, "error": f"strategy_factory unavailable: {exc}"}
+
+        generated = await generate_tasks_from_active_events(
+            db,
+            snapshot=params.get("snapshot") if isinstance(params.get("snapshot"), dict) else None,
+            force_enabled=True,
+            persist_lineage=False,
+            event_limit=event_limit,
+        )
+        tasks = list(generated.get("tasks") or [])
+        lineage_records = list(generated.get("lineage_records") or [])
+        lineage_by_key = {
+            str(item.get("dedupe_key") or "").strip(): dict(item or {})
+            for item in lineage_records
+            if str(item.get("dedupe_key") or "").strip()
+        }
+
+        processed = 0
+        skipped = 0
+        failed = 0
+        claimed = 0
+        details: list[dict[str, Any]] = []
+
+        for task in tasks[:limit]:
+            context = dict(task.get("event_context") or {})
+            dedupe_key = _string(context.get("dedupe_key"))
+            if not dedupe_key:
+                skipped += 1
+                details.append({"status": "skipped", "reason": "missing_dedupe_key"})
+                continue
+            record = lineage_by_key.get(dedupe_key)
+            if not record:
+                skipped += 1
+                details.append({"dedupe_key": dedupe_key, "status": "skipped", "reason": "missing_lineage_record"})
+                continue
+            payload = {
+                "dedupe_key": dedupe_key,
+                "source_event_id": record.get("event_id") or context.get("event_id"),
+                "theme_code": record.get("theme_code") or task.get("candidate_family"),
+                "event_type": context.get("event_type") or task.get("opportunity_type"),
+            }
+            try:
+                claim = await db.claim_event_outbox(payload)
+                if not claim.get("claimed"):
+                    skipped += 1
+                    details.append({
+                        "dedupe_key": dedupe_key,
+                        "status": "skipped",
+                        "claim_status": claim.get("status"),
+                    })
+                    continue
+                claimed += 1
+                await db.upsert_event_task_lineage(record)
+                await db.mark_event_outbox_processed(dedupe_key)
+                processed += 1
+                details.append({
+                    "dedupe_key": dedupe_key,
+                    "status": "processed",
+                    "event_id": record.get("event_id"),
+                    "task_id": record.get("task_id"),
+                    "theme_code": record.get("theme_code"),
+                })
+            except Exception as exc:
+                failed += 1
+                try:
+                    await db.mark_event_outbox_failed(dedupe_key, error=str(exc))
+                except Exception:
+                    pass
+                details.append({"dedupe_key": dedupe_key, "status": "failed", "error": str(exc)})
+
+            await asyncio.sleep(0)
+
+        return {
+            "success": True,
+            "data": {
+                "status": "completed",
+                "single_worker": True,
+                "generated_task_count": len(tasks),
+                "candidate_lineage_count": len(lineage_records),
+                "processed": processed,
+                "claimed": claimed,
+                "skipped": skipped,
+                "failed": failed,
+                "limit": limit,
+                "details": details,
+                "generator": {
+                    key: value
+                    for key, value in dict(generated or {}).items()
+                    if key not in {"tasks", "lineage_records"}
+                },
+            },
+        }
+    finally:
+        _OUTBOX_DRAIN_RUNNING = False
+
+
+async def handle_factory_theme_regression_run(db, params: dict[str, Any]) -> dict[str, Any]:
+    """Confirm-required manual run for theme-response regression."""
+
+    try:
+        from strategy_factory.application.research.theme_response_regression import (  # noqa: PLC0415
+            ThemeResponseRegression,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"strategy_factory unavailable: {exc}"}
+
+    model = ThemeResponseRegression()
+    report = await model.run_full_update(db)
+    return {"success": True, "data": report}
+
+
+async def _preview_tasks_legacy_depth1(
+    *,
+    db,
+    event_id: str,
+    primary_themes: list,
+    confidence: float,
+    intensity: float,
+    direction: Any,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    """Legacy depth=1 preview, kept only as a graceful-degradation fallback."""
+
+    preview_impacts: list[dict[str, Any]] = []
     for pt in primary_themes:
         theme_code = pt.get("theme_code") if isinstance(pt, dict) else str(pt)
         pt_direction = (pt.get("direction") if isinstance(pt, dict) else direction) or "positive"
         dir_sign = 1 if pt_direction == "positive" else (-1 if pt_direction == "negative" else 0)
 
-        # Direct impact
         preview_impacts.append({
             "theme_code": theme_code,
             "direction_sign": dir_sign,
             "magnitude": intensity,
             "confidence": confidence,
             "depth": 0,
-            "source": "primary",
+            "source_path": "primary",
         })
 
-        # Load edges from this theme (depth=1)
         edges = await db.list_theme_edges(source=theme_code, is_active=True, limit=50)
         for edge in edges:
             new_dir = dir_sign * int(edge.get("direction_sign") or 1)
@@ -268,7 +628,7 @@ async def handle_factory_event_preview_tasks(db, params: dict[str, Any]) -> dict
                 "magnitude": round(new_mag, 4),
                 "confidence": round(new_conf, 4),
                 "depth": 1,
-                "source": f"{theme_code} → {edge.get('relation_type')}",
+                "source_path": f"{theme_code} → {edge.get('relation_type')}",
                 "lag_days": int(edge.get("lag_days") or 0),
             })
 
@@ -279,6 +639,12 @@ async def handle_factory_event_preview_tasks(db, params: dict[str, Any]) -> dict
             "primary_theme_count": len(primary_themes),
             "total_impacts": len(preview_impacts),
             "impacts": preview_impacts,
-            "note": "This is a preview. Full task generation requires PR-3/PR-6 integration.",
+            "candidate_symbols": [],
+            "candidate_count": 0,
+            "warnings": [{
+                "type": "preview_degraded",
+                "reason": fallback_reason,
+            }],
+            "preview_mode": "legacy_depth1",
         },
     }

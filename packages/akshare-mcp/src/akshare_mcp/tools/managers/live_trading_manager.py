@@ -294,6 +294,45 @@ async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
                     )
             if dry_run or not adapter.can_write():
                 mode = "dry_run" if dry_run else "read_only"
+                # P2-4.4.3 fix: dry_run 模式仍跑 sanity check + emit warnings(诊断报告 §4.4.3)
+                # 历史问题:dry_run + qty=9999999999 → accepted=true preview,无任何告警
+                # 修复:即使是 preview 也跑 sanity 校验,emit warnings 让 AI 看到风险
+                preview_warnings: list[str] = []
+                try:
+                    qty_val = preview.get("qty")
+                    notional_val = preview.get("notional")
+                    if qty_val is not None and qty_val not in ("", 0):
+                        try:
+                            qty_int = int(float(qty_val))
+                            # 单笔 100w 股以上提示
+                            if qty_int > 1_000_000:
+                                preview_warnings.append(
+                                    f"sanity_warning:qty_too_large:qty={qty_int} > 1,000,000 shares"
+                                )
+                            # 1 亿股以上严重越界
+                            if qty_int > 100_000_000:
+                                preview_warnings.append(
+                                    f"sanity_warning:qty_extreme:qty={qty_int} > 100M, "
+                                    f"likely a unit error"
+                                )
+                            # 100 整数倍校验(A 股)
+                            if qty_int % 100 != 0:
+                                preview_warnings.append(
+                                    f"sanity_warning:lot_size:qty={qty_int} not multiple of 100"
+                                )
+                        except (TypeError, ValueError):
+                            preview_warnings.append("sanity_warning:qty_format_invalid")
+                    if notional_val is not None and notional_val not in ("", 0):
+                        try:
+                            notional_f = float(notional_val)
+                            if notional_f > 5_000_0000:  # 5000 万
+                                preview_warnings.append(
+                                    f"sanity_warning:notional_too_large:notional={notional_f} > 50M"
+                                )
+                        except (TypeError, ValueError):
+                            preview_warnings.append("sanity_warning:notional_format_invalid")
+                except Exception:
+                    pass
                 data = {
                     "accepted": True,
                     "submitted": False,
@@ -302,6 +341,8 @@ async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
                     "preview": preview,
                     "order": None,
                     "raw": preview,
+                    "sanity_warnings": preview_warnings,
+                    "sanity_warning_count": len(preview_warnings),
                 }
                 return _with_meta(data, adapter)
 

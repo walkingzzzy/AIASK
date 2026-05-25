@@ -398,6 +398,7 @@
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS strategy_factory_event_task_lineage (
             lineage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dedupe_key TEXT,
             event_id TEXT NOT NULL,
             task_id TEXT NOT NULL,
             theme_code TEXT NOT NULL,
@@ -413,6 +414,12 @@
             strategies_submitted INTEGER DEFAULT 0
         );
     """)
+    await conn.execute(
+        "ALTER TABLE strategy_factory_event_task_lineage ADD COLUMN IF NOT EXISTS dedupe_key TEXT;"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_event_task_lineage_dedupe ON strategy_factory_event_task_lineage(dedupe_key);"
+    )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_event_task_lineage_event ON strategy_factory_event_task_lineage(event_id, generated_at DESC);"
     )
@@ -440,4 +447,52 @@
     )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_theme_exposure_symbol ON strategy_factory_theme_exposure(symbol);"
+    )
+
+    # ---------------------------------------------------------------------
+    # PR-B1 (2026-05-24): 事件驱动 outbox 消费状态旁路表
+    #
+    # 方案 §6 Phase 0 + §8 决议：v1 直接复用 strategy_domain_events 作为
+    # append-only outbox 基底。但孵化工厂已经在该表上密集写入（intake/
+    # hit_rate/accelerator/alert/feedback 五个 writer，生产 ~5,783 行），
+    # 不应该给热写表加新列。改为独立旁路表，按 (event_id, theme_code,
+    # target_symbols_signature) 维度记录消费状态：
+    #
+    #   - dedupe_key       : 上层（event_task_generator / publisher）算出的稳
+    #                        定消费指纹，主键即去重边界。
+    #   - source_event_id  : 关联到 strategy_factory_event_injections.event_id
+    #                        或 strategy_domain_events.id（不强制外键，避免
+    #                        循环依赖）。
+    #   - status           : pending / processing / processed / failed / abandoned
+    #   - attempts         : 当前重试次数（publisher 单 worker 串行扫描时累加）
+    #   - last_error       : 最近一次失败原因
+    #   - claimed_at / processed_at / failed_at : 时间审计三元组
+    # 设计原则：
+    #   - 不复制业务字段（event_name/intensity 等），始终通过 dedupe_key 反查源表
+    #   - 主键 dedupe_key 让幂等约束在 SQLite 层强制
+    #   - 不影响孵化工厂对 strategy_domain_events 的现有写入热路径
+    # ---------------------------------------------------------------------
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_factory_event_outbox_state (
+            dedupe_key TEXT PRIMARY KEY,
+            source_event_id TEXT NOT NULL,
+            theme_code TEXT,
+            event_type TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            claimed_at TEXT,
+            processed_at TEXT,
+            failed_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_event_outbox_state_status "
+        "ON strategy_factory_event_outbox_state(status, created_at);"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_event_outbox_state_source "
+        "ON strategy_factory_event_outbox_state(source_event_id, status);"
     )

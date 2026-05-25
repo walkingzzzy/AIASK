@@ -221,10 +221,25 @@ def _build_fund_flow_snapshot(
 
 def _pick_industry_snapshot(industry_resp: dict[str, Any], industry_keyword: str) -> dict[str, Any]:
     chains = []
+    upstream_match: dict[str, Any] | None = None  # 通过 industry_keyword 匹配到的链
     if _is_successful_response(industry_resp):
         raw = industry_resp.get("data", {})
         if isinstance(raw, dict):
             chains = [dict(item) for item in (raw.get("chains") or []) if isinstance(item, dict)]
+            # P2-4.5.2 fix: 检查 message 是否含"未找到"标记,识别真实 not_found 场景
+            # 历史问题(诊断报告 §4.5.2):"白色家电" 强制 fuzzy match 到 new_energy 新能源链
+            # 修复:基于 industry_keyword 与 chain.name/segments 字符串匹配,严格度比"无脑 chains[0]"高
+            if isinstance(raw.get("message"), str) and "未找到" in raw["message"]:
+                # graceful not_found:返回全部预置但显式标 matched=False
+                return {
+                    "industry_keyword": industry_keyword,
+                    "matched": False,
+                    "chains": [],
+                    "related_segments": [],
+                    "match_status": "not_found_in_preset_chains",
+                    "message": raw["message"],
+                }
+
     if not chains:
         return {
             "industry_keyword": industry_keyword,
@@ -232,15 +247,48 @@ def _pick_industry_snapshot(industry_resp: dict[str, Any], industry_keyword: str
             "chains": [],
             "related_segments": [],
         }
-    best = chains[0]
+
+    # P2-4.5.2 fix: 基于 industry_keyword 字符串匹配选 chain,而不是无脑 chains[0]
+    keyword_normalized = str(industry_keyword or "").strip().lower()
+    if keyword_normalized:
+        for chain in chains:
+            chain_name = str(chain.get("name") or "").lower()
+            chain_id = str(chain.get("id") or "").lower()
+            # 链名/ID 直接含关键词
+            if keyword_normalized in chain_name or keyword_normalized in chain_id:
+                upstream_match = chain
+                break
+            # 关键词出现在某段中
+            for segment_field in ("upstream", "midstream", "downstream"):
+                segments = chain.get(segment_field) or []
+                if any(keyword_normalized in str(seg).lower() for seg in segments):
+                    upstream_match = chain
+                    break
+            if upstream_match:
+                break
+
+    # 没找到精确/模糊匹配 → graceful 标 fuzzy 状态,提示 AI 可信度低
+    if upstream_match is None:
+        # 不再无脑 chains[0],而是 matched=False + match_status=fuzzy_fallback
+        return {
+            "industry_keyword": industry_keyword,
+            "matched": False,
+            "chains": [],  # 不返回错位 chain,避免 AI 误读
+            "related_segments": [],
+            "match_status": "no_keyword_match_in_chains",
+            "available_chain_count": len(chains),
+        }
+
+    best = upstream_match
     related_segments = unique_texts(best.get("upstream", []), best.get("midstream", []), best.get("downstream", []))
     return {
         "industry_keyword": industry_keyword,
         "matched": True,
         "chain_id": best.get("id"),
         "chain_name": best.get("name"),
-        "chains": chains[:3],
+        "chains": [best] + [c for c in chains[:3] if c is not best][:2],
         "related_segments": related_segments[:12],
+        "match_status": "keyword_matched",
     }
 
 
@@ -552,6 +600,20 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                     total_weight = 0.0
                     for row in rows:
                         created_at = row["created_at"]
+                        # P3-5.17 fix: created_at 可能是 string(SQLite 路径)而非 datetime
+                        # 历史问题(诊断报告 §5.17):'str' object has no attribute 'tzinfo'
+                        if isinstance(created_at, str):
+                            try:
+                                created_at = datetime.fromisoformat(
+                                    created_at.replace("Z", "+00:00")
+                                )
+                            except (TypeError, ValueError):
+                                # 解析失败 → 跳过此条 snapshot
+                                continue
+                        if created_at is None:
+                            continue
+                        if not isinstance(created_at, datetime):
+                            continue
                         if created_at.tzinfo is None:
                             created_at = created_at.replace(tzinfo=timezone.utc)
                         age_days = (now - created_at).total_seconds() / 86400.0

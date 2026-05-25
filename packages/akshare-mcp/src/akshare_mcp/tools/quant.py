@@ -54,6 +54,12 @@ def _factor_library_payload(category: str = "all") -> dict:
     categories = sorted({meta["category"] for meta in SUPPORTED_FACTORS.values()})
     if category_key not in {"all", *categories}:
         raise ValueError(f"Unsupported category: {category_key}. Supported: all, {', '.join(categories)}")
+    # P2-4.2.1 fix: 暴露完整的 alias-canonical 映射(诊断报告 §4.2.1)
+    # AI Agent 一次调用即可看到所有别名,避免 'momentum_20d' 在不同 action 接受/拒绝
+    from .factor_naming import list_factor_aliases
+
+    alias_map = list_factor_aliases()
+
     factors = [
         {
             "name": name,
@@ -66,7 +72,7 @@ def _factor_library_payload(category: str = "all") -> dict:
                 ["kline", "financials"] if meta.get("requires_financials") else ["kline"],
             ),
             "sub_factors": meta.get("sub_factors", []),
-            "aliases": meta.get("aliases", []),
+            "aliases": list(set((meta.get("aliases", []) or []) + alias_map.get(name, []))),
             "status": "supported",
         }
         for name, meta in SUPPORTED_FACTORS.items()
@@ -78,6 +84,14 @@ def _factor_library_payload(category: str = "all") -> dict:
         "categories": categories,
         "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
         "total_categories": len(categories),
+        # P2-4.2.1 fix: 顶层暴露完整 alias map,AI 可一次性看到所有别名
+        "alias_canonical_map": alias_map,
+        "alias_count": sum(len(aliases) for aliases in alias_map.values()),
+        "naming_note": (
+            "All 4 quant_manager actions (factor_ic / batch_compute_factors / "
+            "calculate_factor / list_factors) accept any name in 'aliases' or 'name'. "
+            "Resolver: factor_naming.resolve_factor_name()"
+        ),
         "note": f"Factor library includes {len(SUPPORTED_FACTORS)} factors.",
     }
 

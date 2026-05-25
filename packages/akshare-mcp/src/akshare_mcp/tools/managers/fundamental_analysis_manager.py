@@ -432,6 +432,35 @@ def register_fundamental_analysis_manager(mcp):
                         metrics['roe'] = fin_data.get('roe')
                         metrics['source'] = fin_data.get('source', 'finance_tool')
                         source_chain = _dedupe_chain(source_chain + ['finance.get_financials'] + list(tool_chain or []))
+
+                # P1-3.4 fix: 同步 join db.stocks 拿 PE/PB(诊断报告 §3.4)
+                # 历史问题:fundamental_analysis_manager.analyze 返回 pe_ratio/pb_ratio=null
+                # 而 build_stock_context.valuation 有 pe=19.91,manager 与 db 脱节
+                if metrics.get('pe_ratio') is None or metrics.get('pb_ratio') is None:
+                    try:
+                        async with db.acquire() as conn:
+                            stocks_row = await conn.fetchrow(
+                                """SELECT pe_ratio, pb_ratio, market_cap
+                                   FROM stocks WHERE code = $1""",
+                                code,
+                            )
+                        if stocks_row:
+                            db_pe = stocks_row.get('pe_ratio')
+                            db_pb = stocks_row.get('pb_ratio')
+                            db_mcap = stocks_row.get('market_cap')
+                            if metrics.get('pe_ratio') is None and db_pe is not None and float(db_pe) > 0:
+                                metrics['pe_ratio'] = float(db_pe)
+                                metrics['pe_calculation_method'] = 'daily_snapshot'
+                                metrics['pe_source'] = 'db.stocks'
+                            if metrics.get('pb_ratio') is None and db_pb is not None and float(db_pb) > 0:
+                                metrics['pb_ratio'] = float(db_pb)
+                                metrics['pb_source'] = 'db.stocks'
+                            if metrics.get('market_cap') is None and db_mcap is not None and float(db_mcap) > 0:
+                                metrics['market_cap'] = float(db_mcap)
+                                metrics['market_cap_source'] = 'db.stocks'
+                            source_chain = _dedupe_chain(source_chain + ['db.stocks'])
+                    except Exception:
+                        pass
                 
                 return _ok({
                     'code': code,

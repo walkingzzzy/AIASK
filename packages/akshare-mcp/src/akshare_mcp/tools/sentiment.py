@@ -55,6 +55,38 @@ def _pct_change(data: list[float], days: int) -> float | None:
     return round((float(data[-1]) - base) / base * 100, 2)
 
 
+# P0-2 fix: numeric_sanity for index close values
+# 主要 A 股指数的合理价位区间（2010-2030 经验范围）：
+#   sh000001 上证指数 1500-7000
+#   sh000300 沪深300  2000-8000
+#   sz399001 深证成指 5000-30000
+#   sz399006 创业板指 1000-5000
+#   sh000016 上证50   1500-5000
+#   sh000905 中证500  3000-12000
+_INDEX_CLOSE_RANGE = {
+    'sh000001': (1000, 10000),
+    'sh000300': (1500, 9000),
+    'sz399001': (4000, 35000),
+    'sz399006': (800, 6000),
+    'sh000016': (1000, 6000),
+    'sh000905': (2500, 14000),
+}
+
+
+def _validate_index_close(code: str, close: float | None) -> bool:
+    """Return True if close falls into the empirical valid range for the given index code."""
+    if close is None or not isinstance(close, (int, float)):
+        return False
+    bounds = _INDEX_CLOSE_RANGE.get(str(code).strip().lower())
+    if not bounds:
+        return True  # unknown index, do not block
+    lo, hi = bounds
+    try:
+        return lo <= float(close) <= hi
+    except (TypeError, ValueError):
+        return False
+
+
 async def _load_db_northbound_context(db, *, days: int) -> dict[str, Any] | None:
     getter = getattr(db, 'get_recent_north_fund_summary', None)
     if not callable(getter):
@@ -258,12 +290,41 @@ def register(mcp):
 
             closes = [float(k.get('close', 0) or 0) for k in (index_klines or []) if isinstance(k, dict)]
             valid_closes = [x for x in closes if x > 0]
+            close_value = _round_or_none(valid_closes[-1], 2) if valid_closes else None
+            quality_flags: list[str] = []
+
+            # P0-2 fix: 校验 sh000001 close 是否落在合理区间 [1000, 10000]
+            # 历史问题:某些情况下 db.get_klines('sh000001') 错位返回 000001 平安银行的 close=10.68
+            # 真实上证指数应在 1500-7000 区间(2010-2030 经验范围)
+            if close_value is not None and not _validate_index_close('sh000001', close_value):
+                # 触发降级链:akshare get_index_quote → get_index_quote(macro path)
+                warnings.append(
+                    f"index_close_out_of_range:close={close_value} expected [1000, 10000] for sh000001"
+                )
+                quality_flags.append('numeric_sanity_failed_index_close')
+                fallback_close = None
+                try:
+                    from .market.quote import get_index_quote as _get_index_quote
+                    iq = await asyncio.to_thread(_get_index_quote, '000001')
+                    if iq.get('success'):
+                        iq_data = iq.get('data') or {}
+                        candidate = iq_data.get('price') or iq_data.get('close')
+                        if candidate is not None and _validate_index_close('sh000001', float(candidate)):
+                            fallback_close = float(candidate)
+                            quality_flags.append('index_close_recovered_via_index_quote')
+                except Exception as exc:
+                    warnings.append(f"index_close_fallback_failed:{exc}")
+                # 失败时 close 标 None,而非保留错位值
+                close_value = _round_or_none(fallback_close, 2) if fallback_close is not None else None
+
             index_context = {
                 'code': 'sh000001',
-                'close': _round_or_none(valid_closes[-1], 2) if valid_closes else None,
+                'close': close_value,
                 'change_5d_pct': _pct_change(valid_closes, 5) if len(valid_closes) >= 6 else None,
                 'change_20d_pct': _pct_change(valid_closes, 20) if len(valid_closes) >= 21 else None,
             }
+            if quality_flags:
+                index_context['quality_flags'] = quality_flags
 
             northbound = {
                 'northbound_flow_1d': None,
@@ -550,6 +611,20 @@ def register(mcp):
         try:
             db = get_db()
             async with db.acquire() as conn:
+                # P3-5.18 fix: update_user_profile 自动 upsert users 表(诊断报告 §5.18)
+                # 历史问题:profile 写 user_profile_snapshots,但 db.users 表不会自动注册
+                # AI 调 list_users 看不到该用户,但 get_user_profile 能拿到 profile
+                # 修复:先 upsert users 实体,后写 snapshot
+                try:
+                    await conn.execute(
+                        """INSERT INTO users (user_id, source)
+                           VALUES ($1, 'ai_inference_upsert')
+                           ON CONFLICT (user_id) DO NOTHING""",
+                        user_id,
+                    )
+                except Exception:
+                    # users 表可能 schema 不同,降级 silent skip
+                    pass
                 await conn.execute(
                     """INSERT INTO user_profile_snapshots
                        (user_id, neuroticism, openness, herd_tendency, greed_fear_axis, confidence, source)
@@ -561,7 +636,7 @@ def register(mcp):
                     max(-1.0, min(1.0, greed_fear_axis)),
                     max(0.0, min(1.0, confidence)),
                 )
-            return ok({'user_id': user_id, 'recorded': True})
+            return ok({'user_id': user_id, 'recorded': True, 'user_upserted': True})
         except Exception as e:
             return fail(str(e))
 
@@ -649,8 +724,15 @@ def register(mcp):
             db = get_db()
             stock_code = resolve_security_code(code, stock_code=stock_code)
             normalized_action = str(action or '').strip().lower()
+            # P2-4.6.6 fix: 'watch' 自动映射到 'hold'(诊断报告 §4.6.6)
+            # 历史问题:fuse_decision_payload 输出 action='watch',但 log_recommendation_audit 仅支持 buy/sell/hold
+            # 跨工具枚举不一致导致 audit 失败,需要 trial-and-error 才能写入
+            audit_action_remapped = False
+            if normalized_action == 'watch':
+                normalized_action = 'hold'
+                audit_action_remapped = True
             if normalized_action and normalized_action not in {'buy', 'sell', 'hold'}:
-                return fail("action 仅支持 buy/sell/hold")
+                return fail("action 仅支持 buy/sell/hold/watch (watch 会自动映射到 hold)")
             if isinstance(cognitive_biases, (list, tuple, set)):
                 biases_list = [str(b).strip() for b in cognitive_biases if str(b).strip()]
             else:

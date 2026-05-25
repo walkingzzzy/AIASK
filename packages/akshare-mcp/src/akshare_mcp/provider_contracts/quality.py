@@ -123,21 +123,36 @@ def evaluate_provider_quality_gate(result: dict[str, Any], contract: dict[str, A
     timestamp = _data_timestamp(result)
     parsed_timestamp = _parse_timestamp(timestamp)
     max_stale = freshness.get("max_stale_seconds")
-    freshness_passed = True
+    # P1-3.5 fix: freshness_sla must NOT silent-pass when data_timestamp is null.
+    # Previous behavior: freshness_passed defaulted to True regardless of timestamp availability,
+    # which made the check meaningless for any source missing data_timestamp (e.g. north_fund 21mo stale).
+    # New behavior: when timestamp cannot be verified, mark passed=False with severity='warning'
+    # and emit cannot_verify_freshness flag so AI agents/clients can see the data is unverified.
+    freshness_passed: bool
     age_seconds = None
+    cannot_verify = False
     if parsed_timestamp is not None and isinstance(max_stale, int):
         age_seconds = max(0, int((datetime.now(timezone.utc) - parsed_timestamp.astimezone(timezone.utc)).total_seconds()))
         freshness_passed = age_seconds <= max_stale
-    checks.append(
-        {
-            "name": "freshness_sla",
-            "passed": freshness_passed,
-            "severity": "warning" if not freshness_passed else "info",
-            "data_timestamp": str(timestamp) if timestamp else None,
-            "age_seconds": age_seconds,
-            "max_stale_seconds": max_stale,
-        }
-    )
+    elif isinstance(max_stale, int):
+        # contract expected a max_stale_seconds bound but no parseable timestamp was provided.
+        freshness_passed = False
+        cannot_verify = True
+    else:
+        # no freshness contract at all (e.g. static metadata tools); treat as not applicable, pass.
+        freshness_passed = True
+    freshness_check = {
+        "name": "freshness_sla",
+        "passed": freshness_passed,
+        "severity": "warning" if not freshness_passed else "info",
+        "data_timestamp": str(timestamp) if timestamp else None,
+        "age_seconds": age_seconds,
+        "max_stale_seconds": max_stale,
+    }
+    if cannot_verify:
+        freshness_check["cannot_verify_freshness"] = True
+        freshness_check["reason"] = "data_timestamp_missing_or_unparseable"
+    checks.append(freshness_check)
 
     degraded = bool(result.get("degraded") or _result_meta(result).get("degraded"))
     fallback_used = bool(result.get("fallback_used") or len(actual_sources) > 1)

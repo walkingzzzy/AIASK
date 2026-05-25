@@ -478,6 +478,26 @@
                 degraded=warmup_status == StageStatus.PARTIAL,
             )
 
+            # P0 (R3 / R9): when warmup degrades, surface a structured error
+            # summary on the console and persist top-N to factory_runs.summary
+            # so operators don't have to query sync_tasks to find the cause.
+            if warmup_status in (StageStatus.FAILED, StageStatus.PARTIAL):
+                error_topn = _build_warmup_error_topn(warmup_result, limit=5)
+                results["summary"]["warmup_error_topn"] = error_topn
+                results["summary"]["sync_task_failed_count"] = int(
+                    warmup_result.get("failed") or 0
+                )
+                for entry in error_topn:
+                    logger.warning(
+                        "StrategyFactory: warmup %s task=%s schedule=%s "
+                        "task_id=%s error=%s",
+                        warmup_status.value,
+                        entry.get("task_type") or "unknown",
+                        entry.get("schedule_id") or "-",
+                        entry.get("task_id") or "-",
+                        (entry.get("error_message") or "")[:200],
+                    )
+
             collector = factory_pkg.DataCollector()
             snapshot = await collector.collect(db)
             snapshot["factory_run_id"] = results["run_id"]

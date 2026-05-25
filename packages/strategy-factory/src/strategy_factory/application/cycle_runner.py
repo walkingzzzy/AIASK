@@ -58,6 +58,66 @@ class FactoryCycleOutcome:
     result: FactoryRunResult
     persistence_failures: list[dict[str, Any]] = field(default_factory=list)
 
+
+def _build_warmup_error_topn(
+    warmup_result: dict[str, Any] | None,
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Extract a structured top-N list of warmup task failures.
+
+    Reads ``warmup_result["schedules"]`` (produced by
+    ``run_runtime_data_warmup``) and returns at most ``limit`` entries,
+    each with ``task_type / schedule_id / task_id / error_message /
+    error_kind``. The shape is what ``factory_runs.summary`` and the
+    console warning use; keep it stable.
+    """
+    if not isinstance(warmup_result, dict):
+        return []
+    schedules = warmup_result.get("schedules") or []
+    if not isinstance(schedules, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for entry in schedules:
+        if not isinstance(entry, dict):
+            continue
+        task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
+        status = str(task.get("status") or "").strip().lower()
+        if status in {"completed", "success"}:
+            continue
+
+        msg = task.get("error_message")
+        if not msg and isinstance(task.get("results"), dict):
+            errs = task["results"].get("errors") or []
+            if errs:
+                msg = "; ".join(str(e) for e in errs[:3])
+
+        # Cheap classification so dashboards can group later. Pure
+        # string match — keep it conservative; the underlying message
+        # itself remains the source of truth.
+        msg_str = str(msg or "")
+        if "脚本不存在" in msg_str or "script_missing" in msg_str:
+            error_kind: str | None = "script_missing"
+        elif "timeout" in msg_str.lower():
+            error_kind = "timeout"
+        elif msg_str:
+            error_kind = "exception"
+        else:
+            error_kind = None
+
+        out.append({
+            "task_type": entry.get("task_type") or task.get("task_type"),
+            "schedule_id": entry.get("schedule_id"),
+            "task_id": task.get("task_id"),
+            "error_message": (msg_str or None) and msg_str[:500],
+            "error_kind": error_kind,
+        })
+        if len(out) >= max(1, int(limit or 5)):
+            break
+    return out
+
+
 from strategy_factory._fragment_loader import exec_block as _exec_block
 
 _exec_block(
