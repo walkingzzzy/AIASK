@@ -6,8 +6,9 @@ magnitude_factor, lag_days, and confidence for theme graph edges.
 The model answers: "When theme S has a shock, what happens to theme T
 at T+k days?" using historical K-line data.
 
-Designed to run weekly (off-hours cron) and write results back to
-strategy_factory_theme_edges with confidence_source='regression'.
+Designed to run weekly (off-hours cron). By default it emits a report with
+recommended edge updates; callers must pass ``apply_updates=True`` to write
+changes back to strategy_factory_theme_edges.
 """
 
 from __future__ import annotations
@@ -287,14 +288,16 @@ class ThemeResponseRegression:
 
         return best_result
 
-    async def run_full_update(self, db: Any) -> dict[str, Any]:
-        """Run regression for all active edges and update the theme graph.
+    async def run_full_update(self, db: Any, *, apply_updates: bool = False) -> dict[str, Any]:
+        """Run regression for all active edges and return update suggestions.
 
-        Only updates edges where:
+        By default this does not mutate the theme graph. When
+        ``apply_updates=True``, only updates edges where:
         - n_samples >= MIN_SAMPLES
         - |beta| >= 0.01
         - p_value <= 0.1
         - manual_locked = 0
+        - no sign conflict with the current manual direction
         """
         import time
         start = time.time()
@@ -309,6 +312,7 @@ class ThemeResponseRegression:
 
         results: list[dict[str, Any]] = []
         updated_count = 0
+        recommendation_count = 0
         sign_conflicts = 0
         skipped_locked = 0
 
@@ -353,17 +357,18 @@ class ThemeResponseRegression:
                         result.sign_conflict = True
                         sign_conflicts += 1
 
-                # Update edge if significant and no sign conflict
-                should_update = (
+                # Significant non-conflicting fits are recommendations by
+                # default; callers opt into applying them.
+                recommended_update = (
                     result.status == "fitted"
                     and result.n_samples >= self.MIN_SAMPLES
                     and abs(result.beta) >= 0.01
                     and result.p_value <= 0.1
                     and not result.sign_conflict
                 )
-
-                if should_update and hasattr(db, "upsert_theme_edge"):
-                    await db.upsert_theme_edge({
+                suggestion = None
+                if recommended_update:
+                    suggestion = {
                         "source_theme_code": source,
                         "target_theme_code": target,
                         "relation_type": edge.get("relation_type"),
@@ -381,10 +386,19 @@ class ThemeResponseRegression:
                             "n_samples": result.n_samples,
                             "best_horizon": result.best_horizon,
                         },
-                    })
-                    updated_count += 1
+                    }
+                    recommendation_count += 1
 
-                results.append(result.to_dict())
+                update_applied = False
+                if apply_updates and suggestion is not None and hasattr(db, "upsert_theme_edge"):
+                    await db.upsert_theme_edge(suggestion)
+                    updated_count += 1
+                    update_applied = True
+
+                item = result.to_dict()
+                item["recommended_update"] = suggestion
+                item["update_applied"] = update_applied
+                results.append(item)
 
             except Exception as exc:
                 logger.warning("ThemeResponseRegression: edge %s→%s failed: %s", source, target, exc)
@@ -396,8 +410,11 @@ class ThemeResponseRegression:
         elapsed = time.time() - start
         return {
             "status": "completed",
+            "mode": "apply_updates" if apply_updates else "report_only",
+            "apply_updates": bool(apply_updates),
             "total_edges": len(edges),
             "fitted_count": sum(1 for r in results if r.get("status") == "fitted"),
+            "recommendation_count": recommendation_count,
             "updated_count": updated_count,
             "sign_conflicts": sign_conflicts,
             "skipped_locked": skipped_locked,

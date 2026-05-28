@@ -1,0 +1,15 @@
+{
+  "scenario": "S06",
+  "title": "因子/量化",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T10:25:00+08:00",
+  "tools_tested": [
+    {"tool": "get_factor_profile", "status": "pass", "note": "industry_total=37 §B4 fixed"},
+    {"tool": "calculate_factor", "status": "pass", "note": "momentum_20d=-0.121"},
+    {"tool": "find_similar_patterns", "status": "pass", "note": "5 patterns, hit_rate=0.6"},
+    {"tool": "get_signal_hit_rate", "status": "pass", "note": "rsi_oversold 30 samples"},
+    {"tool": "get_conditional_returns", "status": "degraded", "note": "samples=8 panel insufficient warning"}
+  ],
+  "summary": {"pass": 4, "degraded": 1, "fail_graceful": 0, "fail_schema": 0},
+  "verdict": "pass"
+}

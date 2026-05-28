@@ -1175,6 +1175,30 @@ async def handle_help(db, params: dict) -> dict:
             "incubation_overview", "help",
         ],
         "description": "策略超市管理器（含生命周期与前向信号跟踪）",
+        # P2-4.6.4 fix: 补 action 参数文档(诊断报告 §4.6.4)
+        # 历史问题:incubation_overview 等 action 在 help 里只列名,没说明可选参数
+        "action_params": {
+            "create": {"required": ["name"], "optional": ["description", "strategy_type", "params", "tags", "user_id"]},
+            "publish": {"required": ["strategy_id"], "optional": []},
+            "list": {"required": [], "optional": ["status", "limit", "offset", "user_id"]},
+            "detail": {"required": ["strategy_id"], "optional": ["user_id"]},
+            "subscribe": {"required": ["strategy_id"], "optional": ["user_id"]},
+            "rank": {"required": [], "optional": ["sort_by", "limit"]},
+            "incubation_overview": {
+                "required": [],
+                "optional": ["strategy_id", "limit"],
+                "doc": "strategy_id 提供时返回该策略 overview;否则返回 incubating 策略列表(默认 limit=20)",
+            },
+            "factory_run_once": {"required": [], "optional": ["actor_id", "actor_roles"]},
+            "execution_audit_verification": {"required": ["strategy_id"], "optional": ["as_of"]},
+            "review_report": {"required": ["strategy_id"], "optional": []},
+            "closure_review": {"required": ["strategy_id"], "optional": ["as_of", "actor_id", "actor_roles"]},
+            "events": {"required": ["strategy_id"], "optional": ["limit"]},
+            "get_signals": {"required": ["strategy_id"], "optional": ["limit"]},
+            "vector_health": {"required": [], "optional": []},
+            "vector_cleanup": {"required": [], "optional": ["dry_run"]},
+            "ai_optimize_personal_strategy": {"required": ["strategy_id"], "optional": ["objectives", "user_id"]},
+        },
     })
 
 

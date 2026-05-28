@@ -19,7 +19,7 @@ function mockFetch() {
         llm: { providers: { configured: true } },
         memory: { default_provider: "sqlite" },
         databases: {},
-        profile: { user_id: "local", profile_name: "Local Operator" },
+        profile: { user_id: "local", profile_name: "本地操作者" },
         secrets_redacted: true
       });
     }
@@ -30,7 +30,7 @@ function mockFetch() {
       return jsonResponse({ object: "aiask.desktop_data_sync_plan", status: "ready", intent_request: { action: "data_sync.sync", params: {} } });
     }
     if (url.includes("/v1/desktop/users/local-profile")) {
-      return jsonResponse({ object: "aiask.local_profile", user_id: "local", profile_name: "Local Operator" });
+      return jsonResponse({ object: "aiask.local_profile", user_id: "local", profile_name: "本地操作者" });
     }
     if (url.includes("/v1/desktop/factor-factory/status")) {
       return jsonResponse({ object: "aiask.desktop.factor_factory_status", status: "ready", active_factors: [] });
@@ -70,7 +70,7 @@ describe("AiaskApi desktop contract", () => {
     await api.dataStatus({ codes: ["600519", "000001"], max_stale_days: 3 });
     await api.dataSyncPlan({ codes: ["600519"], task_type: "kline" });
     await api.localProfileGet();
-    await api.localProfileSave({ user_id: "local", profile_name: "Local Operator" });
+    await api.localProfileSave({ user_id: "local", profile_name: "本地操作者" });
     await api.factorFactoryStatus(7);
     await api.connectorsSummary();
 
@@ -126,5 +126,63 @@ describe("AiaskApi desktop contract", () => {
       ["DELETE", "http://127.0.0.1:8767/v1/jobs/job%201"]
     ]);
     expect(calls.every((call) => (call.init.headers as Record<string, string>).Authorization === "Bearer api-token")).toBe(true);
+  });
+
+  it("covers missing frontend v1 run, response, plugin, gateway, approval, rl, and quant routes", async () => {
+    const { calls } = mockFetch();
+    const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
+
+    await api.responseGet("resp 1");
+    await api.responseDelete("resp 1");
+    await api.runGet("run 1");
+    await api.runCancel("run 1");
+    await api.runStop("run 1");
+    await api.runSteer("run 1", "slow down");
+    await api.pluginUpsert({ name: "audit-plugin", enabled: true });
+    await api.pluginCommands("audit-plugin");
+    await api.pluginCommandTest("audit-plugin", "doctor", { verbose: true });
+    await api.gatewayDaemonStatus();
+    await api.gatewayMessageRetry("msg 1");
+    await api.approvalDecide("approval 1", "deny", "not safe");
+    await api.rlRunGet("rl 1");
+    await api.rlRunResults("rl 1");
+    await api.rlRunLogs("rl 1");
+    await api.quantResearchReport("qr 1");
+    await api.financialManagerCatalog();
+    await api.financialManagerStatus();
+    await api.financialManagerQuery({ capability_id: "portfolio", action_id: "risk", params: { codes: ["600519"] } });
+    await api.financialManagerIntent({ capability_id: "portfolio", action_id: "create", params: { name: "Desk" }, rationale: "review", user_id: "local" });
+
+    expect(calls.map((call) => [call.init.method || "GET", call.url])).toEqual([
+      ["GET", "http://127.0.0.1:8767/v1/responses/resp%201"],
+      ["DELETE", "http://127.0.0.1:8767/v1/responses/resp%201"],
+      ["GET", "http://127.0.0.1:8767/v1/runs/run%201"],
+      ["POST", "http://127.0.0.1:8767/v1/runs/run%201/cancel"],
+      ["POST", "http://127.0.0.1:8767/v1/runs/run%201/stop"],
+      ["POST", "http://127.0.0.1:8767/v1/runs/run%201/steer"],
+      ["POST", "http://127.0.0.1:8767/v1/plugins"],
+      ["GET", "http://127.0.0.1:8767/v1/plugins/audit-plugin/commands"],
+      ["POST", "http://127.0.0.1:8767/v1/plugins/audit-plugin/commands/doctor/test"],
+      ["GET", "http://127.0.0.1:8767/v1/gateway/daemon/status"],
+      ["POST", "http://127.0.0.1:8767/v1/gateway/messages/msg%201/retry"],
+      ["POST", "http://127.0.0.1:8767/v1/approvals/approval%201/deny"],
+      ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201"],
+      ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201/results"],
+      ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201/logs"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/quant/research-runs/qr%201/report"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/financial-manager/catalog"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/financial-manager/status"],
+      ["POST", "http://127.0.0.1:8767/v1/desktop/financial-manager/query"],
+      ["POST", "http://127.0.0.1:8767/v1/desktop/financial-manager/intent"]
+    ]);
+    expect(requestBody(calls[5])).toEqual({ instruction: "slow down" });
+    expect(requestBody(calls[6])).toEqual({ name: "audit-plugin", enabled: true });
+    expect(requestBody(calls[8])).toEqual({ verbose: true });
+    expect(requestBody(calls[11])).toEqual({ reason: "not safe" });
+    expect(requestBody(calls[18])).toEqual({ capability_id: "portfolio", action_id: "risk", params: { codes: ["600519"] } });
+    expect(requestBody(calls[19])).toEqual({ capability_id: "portfolio", action_id: "create", params: { name: "Desk" }, rationale: "review", user_id: "local" });
+    expect((calls[9].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
+    expect((calls[15].init.headers as Record<string, string>).Authorization).toBe("Bearer api-token");
+    expect((calls[19].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
   });
 });

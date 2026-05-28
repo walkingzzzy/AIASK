@@ -159,18 +159,50 @@ async def _fetch_peer_codes(db, code: str, industry: str) -> tuple[list[str], li
         return [], []
     try:
         async with db.acquire() as conn:
+            # P3-B4 fix: stocks 表实际列名为 stock_code 而非 code(对话式复测发现)
+            # 历史问题:silent OperationalError 导致 industry_total=1(应为 ~37 酿酒行业)
+            # 修复:column rename + SELECT alias 让上层 row["code"] 仍然兼容
             market_rows = await conn.fetch(
-                """SELECT code FROM stocks WHERE code <> $1 ORDER BY market_cap DESC NULLS LAST LIMIT 80""",
+                """SELECT stock_code AS code FROM stocks
+                   WHERE stock_code <> $1
+                   ORDER BY market_cap DESC NULLS LAST LIMIT 80""",
                 code,
             )
             industry_rows = []
             if industry:
                 industry_rows = await conn.fetch(
-                    """SELECT code FROM stocks WHERE industry = $1 AND code <> $2 ORDER BY market_cap DESC NULLS LAST LIMIT 40""",
+                    """SELECT stock_code AS code FROM stocks
+                       WHERE industry = $1 AND stock_code <> $2
+                       ORDER BY market_cap DESC NULLS LAST LIMIT 40""",
                     industry,
                     code,
                 )
-        return [row["code"] for row in industry_rows], [row["code"] for row in market_rows]
+        industry_codes_db = [row["code"] for row in industry_rows]
+        market_codes_db = [row["code"] for row in market_rows]
+
+        # P3-5.12 fix: industry_total 取自 search.search_stocks(诊断报告 §5.12)
+        # P3-B4 fix: 列名修复 + search_stocks 是 register_*() 闭包内的 @mcp.tool,
+        #            module 级 import 拿不到。这里直接查 db 即可,无需走 MCP 工具调用
+        # 历史问题:db.stocks.industry 字段填充不全(尤其新股),导致 industry_total 偏小
+        # 修复:db 拿不到时降级到直接 SQL count 同行业作为 industry_total 上限参考
+        if industry and len(industry_codes_db) < 5:
+            try:
+                async with db.acquire() as conn2:
+                    # 不限制 LIMIT,只查代码不查全字段(避免大查询)
+                    extra_rows = await conn2.fetch(
+                        """SELECT stock_code AS code FROM stocks
+                           WHERE industry LIKE $1 AND stock_code <> $2
+                           ORDER BY market_cap DESC NULLS LAST LIMIT 50""",
+                        f"%{industry}%",
+                        code,
+                    )
+                extra_codes = [row["code"] for row in extra_rows if row["code"] not in industry_codes_db]
+                if extra_codes:
+                    industry_codes_db = (industry_codes_db + extra_codes)[:50]
+            except Exception:
+                pass
+
+        return industry_codes_db, market_codes_db
     except Exception:
         return [], []
 

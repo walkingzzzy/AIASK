@@ -37,13 +37,40 @@ class IncubationIntake:
         # 加载所有 incubating 状态的策略
         incubating = await self._list_incubating_strategies(db)
         if not incubating:
-            return {
+            # === DEV-V1 P1: 即使 incubating 为空,也要走 paper observation 通道 ===
+            # 不再 early return,继续走下面的 paper 处理段。
+            result = {
                 "scanned": 0,
                 "accepted": 0,
                 "skipped": 0,
                 "errors": 0,
                 "details": [],
             }
+            paper_candidates = await self._list_paper_observation_strategies(db)
+            paper_recognized = 0
+            for strategy in paper_candidates:
+                sid = str(strategy.get("id") or "").strip()
+                if not sid:
+                    continue
+                try:
+                    await self._record_paper_intake_event(db, strategy)
+                    paper_recognized += 1
+                except Exception as exc:
+                    logger.warning(
+                        "IncubationIntake: paper intake event failed for %s: %s", sid, exc,
+                    )
+            result["paper_observation_intake"] = {
+                "scanned": len(paper_candidates),
+                "recognized": paper_recognized,
+                "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
+            }
+            if paper_candidates:
+                logger.info(
+                    "IncubationIntake: paper observation recognized %d/%d candidates (no incubating)",
+                    paper_recognized,
+                    len(paper_candidates),
+                )
+            return result
 
         accepted: list[dict[str, Any]] = []
         skipped = 0
@@ -116,6 +143,36 @@ class IncubationIntake:
                 errors,
             )
 
+        # === DEV-V1 P1: paper observation 通道 ===
+        # 默认 toggle OFF 时,_list_paper_observation_strategies 直接返回空列表,
+        # 无任何 DB 查询,与原行为完全一致。
+        paper_candidates = await self._list_paper_observation_strategies(db)
+        paper_recognized = 0
+        for strategy in paper_candidates:
+            sid = str(strategy.get("id") or "").strip()
+            if not sid:
+                continue
+            try:
+                # paper observation 策略已经由 _enqueue_paper_observation 创建账户,
+                # 这里只追加 domain event 标记 intake 已经识别它进入孵化处理。
+                await self._record_paper_intake_event(db, strategy)
+                paper_recognized += 1
+            except Exception as exc:
+                logger.warning(
+                    "IncubationIntake: paper intake event failed for %s: %s", sid, exc,
+                )
+        result["paper_observation_intake"] = {
+            "scanned": len(paper_candidates),
+            "recognized": paper_recognized,
+            "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
+        }
+        if paper_candidates:
+            logger.info(
+                "IncubationIntake: paper observation recognized %d/%d candidates",
+                paper_recognized,
+                len(paper_candidates),
+            )
+
         return result
 
     async def _list_incubating_strategies(self, db: Any) -> list[dict[str, Any]]:
@@ -123,6 +180,67 @@ class IncubationIntake:
         if hasattr(db, "list_strategies"):
             return await db.list_strategies("incubating", limit=500)
         return []
+
+    async def _list_paper_observation_strategies(self, db: Any) -> list[dict[str, Any]]:
+        """DEV-V1 P1: 加载 paper observation 候选策略。
+
+        边界:
+          - 只消费 stage='paper' AND status='active'
+          - 排除已升 candidate / listed 的策略(由 SQL 反 EXISTS 子句保证)
+          - toggle 控制:INCUBATION_FACTORY_PAPER_INTAKE_ENABLED=1 才返回非空
+          - LIMIT 由 INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT 控制,默认 50
+          - db 不实现 list_paper_observation_strategies 时降级返回空,不抛异常
+        """
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                paper_intake_enabled,
+                paper_intake_batch_limit,
+            )
+        except Exception:
+            return []
+        if not paper_intake_enabled():
+            return []
+        if not hasattr(db, "list_paper_observation_strategies"):
+            return []
+        try:
+            return await db.list_paper_observation_strategies(
+                limit=paper_intake_batch_limit(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IncubationIntake: list_paper_observation_strategies failed: %s", exc,
+            )
+            return []
+
+    async def _record_paper_intake_event(
+        self,
+        db: Any,
+        strategy: dict[str, Any],
+    ) -> None:
+        """DEV-V1 P1: 记录策略被 paper observation intake 识别的领域事件。
+
+        与 _record_acceptance_event 区别:
+          - paper observation 策略不创建新账户(已经由 _enqueue_paper_observation 创建)
+          - 只追加 domain event 表示孵化工厂已识别它纳入 paper 通道
+        """
+        if not hasattr(db, "save_strategy_domain_event"):
+            return
+        try:
+            await db.save_strategy_domain_event({
+                "strategy_id": strategy.get("id"),
+                "aggregate_type": "incubation_factory",
+                "aggregate_id": str(strategy.get("id")),
+                "event_type": "incubation_factory.paper_observation_recognized",
+                "source": "incubation_factory_intake_paper",
+                "severity": "info",
+                "payload": {
+                    "strategy_name": strategy.get("name"),
+                    "strategy_type": strategy.get("strategy_type"),
+                    "stage": "paper",
+                },
+            })
+        except Exception as exc:
+            logger.debug("IncubationIntake: paper domain event save failed: %s", exc)
 
     async def _record_acceptance_event(
         self,

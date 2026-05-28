@@ -37,7 +37,7 @@ function StageList({ run }: { run: QuantResearchRun | null }) {
           <StatusBadge status={stage.status} />
         </article>
       ))}
-      {!stages.length && <p className="muted">Run a research workflow to populate stage evidence.</p>}
+      {!stages.length && <p className="muted">运行研究工作流后会生成阶段证据。</p>}
     </div>
   );
 }
@@ -70,19 +70,19 @@ function ResearchConfidencePanel({ run }: { run: QuantResearchRun | null }) {
     <div className="capability-section">
       <div className="section-header">
         <div>
-          <span>Trust layer</span>
-          <h3>Validation and overfit risk</h3>
+          <span>信任层</span>
+          <h3>验证与过拟合风险</h3>
         </div>
         <ShieldCheck size={18} />
       </div>
       <div className="diagnostics-summary wide">
         <MetricCard label="OOS" value={firstMetric(backtest, ["oos_return", "out_sample_return", "oos_sharpe"])} status={report ? "partial" : "not_loaded"} />
         <MetricCard label="Walk-forward" value={firstMetric(backtest, ["walk_forward_score", "walk_forward_sharpe", "avg_out_pf"])} status={report ? "partial" : "not_loaded"} />
-        <MetricCard label="Overfit risk" value={overfitRisk} status={overfitRisk === "review" ? "failed" : overfitRisk === "monitor" ? "partial" : "not_loaded"} />
-        <MetricCard label="Factory gate" value={firstMetric(strategyFactory, ["status", "recommendation", "decision"])} status={strategyFactory.status ? String(strategyFactory.status) : "not_loaded"} />
+        <MetricCard label="过拟合风险" value={overfitRisk} status={overfitRisk === "review" ? "failed" : overfitRisk === "monitor" ? "partial" : "not_loaded"} />
+        <MetricCard label="工厂闸门" value={firstMetric(strategyFactory, ["status", "recommendation", "decision"])} status={strategyFactory.status ? String(strategyFactory.status) : "not_loaded"} />
       </div>
       <p className="muted">
-        Promotion decisions should consider OOS stability, parameter sensitivity, sample coverage, and strategy-factory review before incubation.
+        进入孵化前，晋级决策应同时参考 OOS 稳定性、参数敏感性、样本覆盖和策略工厂评审。
       </p>
     </div>
   );
@@ -93,14 +93,14 @@ function FactorHealthPanel({ selectedFactors, library }: { selectedFactors: stri
   const rows = selectedFactors.map((factor) => ({
     name: factor,
     status: librarySet.has(factor) ? "implemented" : "partial",
-    detail: librarySet.has(factor) ? "Known factor library member" : "Custom factor, needs stronger evidence"
+    detail: librarySet.has(factor) ? "已在因子库中登记" : "自定义因子，需要更强证据"
   }));
   return (
     <div className="capability-section">
       <div className="section-header">
         <div>
-          <span>Factor discovery</span>
-          <h3>Health and evidence coverage</h3>
+          <span>因子发现</span>
+          <h3>健康度与证据覆盖</h3>
         </div>
         <Activity size={18} />
       </div>
@@ -111,11 +111,11 @@ function FactorHealthPanel({ selectedFactors, library }: { selectedFactors: stri
               <span>{row.detail}</span>
               <strong>{row.name}</strong>
             </div>
-            <StatusBadge status={row.status} label={row.status === "implemented" ? "known" : "observe"} />
-            <small>Next checks: IC stability, decay, redundancy, and economic rationale.</small>
+            <StatusBadge status={row.status} label={row.status === "implemented" ? "已知" : "观察"} />
+            <small>下一步检查：IC 稳定性、衰减、冗余和经济解释。</small>
           </article>
         ))}
-        {!rows.length && <p className="muted">Add factors to see health coverage.</p>}
+        {!rows.length && <p className="muted">添加因子后会显示健康覆盖。</p>}
       </div>
     </div>
   );
@@ -127,21 +127,21 @@ function ReportPanel({ run }: { run: QuantResearchRun | null }) {
     <section className="quant-report-panel">
       <div className="section-header">
         <div>
-          <span>{run?.research_id || "research artifact"}</span>
-          <h3>Report</h3>
+          <span>{run?.research_id || "研究产物"}</span>
+          <h3>报告</h3>
         </div>
         <StatusBadge status={report?.status || run?.status || "not_loaded"} />
       </div>
       {report ? (
         <>
           <div className="kv-grid">
-            <span>Benchmark</span>
+            <span>基准</span>
             <strong>{report.summary?.benchmark || "-"}</strong>
-            <span>Universe</span>
+            <span>股票池</span>
             <strong>{report.summary?.universe_size ?? report.universe?.length ?? "-"}</strong>
-            <span>Factors</span>
+            <span>因子</span>
             <strong>{report.summary?.factor_count ?? "-"}</strong>
-            <span>Failed stage</span>
+            <span>失败阶段</span>
             <strong>{report.summary?.failed_stage || "-"}</strong>
           </div>
           <div className="notice warn">
@@ -149,14 +149,14 @@ function ReportPanel({ run }: { run: QuantResearchRun | null }) {
             {report.disclaimer || "NOT_INVESTMENT_ADVICE"}
           </div>
           <details className="raw-details" open>
-            <summary>Structured report</summary>
+            <summary>结构化报告</summary>
             <JsonPanel value={report} />
           </details>
         </>
       ) : (
         <div className="empty-mini">
           <FileText size={24} />
-          <span>No research report loaded.</span>
+          <span>尚未加载研究报告。</span>
         </div>
       )}
     </section>
@@ -186,6 +186,7 @@ export function QuantResearchWorkspace({
   const [rebalanceFrequency, setRebalanceFrequency] = useState(template.rebalance_frequency);
   const [costBps, setCostBps] = useState(String(template.cost_bps));
   const [slippageBps, setSlippageBps] = useState(String(template.slippage_bps));
+  const [reportResearchId, setReportResearchId] = useState("");
 
   async function refreshPresets() {
     setBusy(true);
@@ -241,6 +242,26 @@ export function QuantResearchWorkspace({
     }
   }
 
+  async function loadHistoricalReport() {
+    const researchId = reportResearchId.trim();
+    if (!researchId) return;
+    setBusy(true);
+    try {
+      const report = await client.quantResearchReport(researchId);
+      setRun({
+        research_id: report.research_id || researchId,
+        status: report.status,
+        payload: { stages: report.stages || [] },
+        report
+      });
+      setMessage("RESEARCH_REPORT_LOADED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const dataStatus = presets?.data_status?.status || "not_loaded";
   const database = presets?.data_status?.database;
 
@@ -248,14 +269,14 @@ export function QuantResearchWorkspace({
     <section className="quant-workspace">
       <header className="quant-header">
         <div>
-          <span>Quant Research</span>
-          <h1>Data, factors, backtests, portfolio risk</h1>
+          <span>量化研究</span>
+          <h1>数据、因子、回测与组合风险</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={dataStatus} label={dataStatus} />
           <button className="small-button" disabled={busy} onClick={refreshPresets} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -265,26 +286,26 @@ export function QuantResearchWorkspace({
           <div className="section-header">
             <div>
               <span>Research setup</span>
-              <h3>Experiment card</h3>
+              <h3>实验卡片</h3>
             </div>
             <FlaskConical size={18} />
           </div>
 
           <label className="field-row">
-            <span>Universe</span>
+            <span>股票池 Universe</span>
             <textarea value={universe} onChange={(event) => setUniverse(event.target.value)} />
           </label>
           <label className="field-row">
-            <span>Factors</span>
+            <span>因子 Factors</span>
             <input value={factors} onChange={(event) => setFactors(event.target.value)} />
           </label>
           <div className="quant-form-grid">
             <label className="field-row">
-              <span>Benchmark</span>
+              <span>基准 Benchmark</span>
               <input value={benchmark} onChange={(event) => setBenchmark(event.target.value)} />
             </label>
             <label className="field-row">
-              <span>Rebalance</span>
+              <span>调仓频率</span>
               <select value={rebalanceFrequency} onChange={(event) => setRebalanceFrequency(event.target.value)}>
                 <option value="weekly">weekly</option>
                 <option value="monthly">monthly</option>
@@ -292,40 +313,51 @@ export function QuantResearchWorkspace({
               </select>
             </label>
             <label className="field-row">
-              <span>Start date</span>
+              <span>开始日期</span>
               <input value={startDate} onChange={(event) => setStartDate(event.target.value)} placeholder="YYYY-MM-DD" />
             </label>
             <label className="field-row">
-              <span>End date</span>
+              <span>结束日期</span>
               <input value={endDate} onChange={(event) => setEndDate(event.target.value)} placeholder="YYYY-MM-DD" />
             </label>
             <label className="field-row">
-              <span>Cost bps</span>
+              <span>成本 bps</span>
               <input value={costBps} onChange={(event) => setCostBps(event.target.value)} />
             </label>
             <label className="field-row">
-              <span>Slippage bps</span>
+              <span>滑点 bps</span>
               <input value={slippageBps} onChange={(event) => setSlippageBps(event.target.value)} />
             </label>
           </div>
           <button className="primary-button" disabled={busy || !splitList(universe).length || !splitList(factors).length} type="submit">
             <Play size={15} />
-            Run research
+            运行研究
           </button>
+          <div className="inline-form">
+            <input
+              value={reportResearchId}
+              onChange={(event) => setReportResearchId(event.target.value)}
+              placeholder="research_id"
+            />
+            <button disabled={busy || !reportResearchId.trim()} onClick={loadHistoricalReport} type="button">
+              <FileText size={14} />
+              加载报告
+            </button>
+          </div>
         </form>
 
         <section className="quant-center-panel">
           <div className="diagnostics-summary wide">
-            <MetricCard label="Data" value={dataStatus} status={dataStatus} />
-            <MetricCard label="Universe" value={splitList(universe).length} status="implemented" />
-            <MetricCard label="Factors" value={splitList(factors).length} status="implemented" />
-            <MetricCard label="Run" value={run?.status || "not_loaded"} status={run?.status || "not_loaded"} />
+            <MetricCard label="数据" value={dataStatus} status={dataStatus} />
+            <MetricCard label="股票池" value={splitList(universe).length} status="implemented" />
+            <MetricCard label="因子" value={splitList(factors).length} status="implemented" />
+            <MetricCard label="运行" value={run?.status || "not_loaded"} status={run?.status || "not_loaded"} />
           </div>
 
           {database && (!database.configured || database.writable === false) && (
             <div className="notice warn">
               <Database size={15} />
-              {database.setup_hint || "Configure a writable SQLite database path to enable full quant research."}
+              {database.setup_hint || "请配置可写 SQLite 数据库路径，以启用完整量化研究。"}
             </div>
           )}
 
@@ -336,7 +368,7 @@ export function QuantResearchWorkspace({
             <div className="section-header">
               <div>
                 <span>{message}</span>
-                <h3>Pipeline stages</h3>
+                <h3>流水线阶段</h3>
               </div>
               <Activity size={18} />
             </div>
@@ -347,8 +379,8 @@ export function QuantResearchWorkspace({
             <div className="capability-card">
               <div className="card-head">
                 <div>
-                  <span>Backtest</span>
-                  <h3>Assumptions</h3>
+                  <span>回测</span>
+                  <h3>假设</h3>
                 </div>
                 <BarChart3 size={18} />
               </div>
@@ -357,8 +389,8 @@ export function QuantResearchWorkspace({
             <div className="capability-card">
               <div className="card-head">
                 <div>
-                  <span>Strategy factory</span>
-                  <h3>Read-only review</h3>
+                  <span>策略工厂</span>
+                  <h3>只读评审</h3>
                 </div>
                 <StatusBadge status={run?.report?.strategy_factory ? "implemented" : "not_loaded"} />
               </div>

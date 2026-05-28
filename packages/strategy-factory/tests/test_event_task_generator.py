@@ -134,6 +134,120 @@ async def test_generate_disabled_when_flag_off():
         importlib.reload(mod)
 
 
+def _mock_active_event_db(*, claim_result=None, lineage_side_effect=None):
+    db = MagicMock()
+    db.list_event_injections = AsyncMock(return_value=[
+        {
+            "event_id": "claim_evt_001",
+            "source": "manual",
+            "event_name": "Claim event",
+            "event_type": "policy_shock",
+            "direction": "positive",
+            "confidence": 0.8,
+            "intensity": 0.7,
+            "horizon": "swing_5_20d",
+            "primary_themes": [{"theme_code": "claim_theme", "direction": "positive"}],
+            "valid_from": "2026-05-24T00:00:00",
+            "valid_until": "2099-12-31T00:00:00",
+            "status": "active",
+        }
+    ])
+    db.get_theme_node = AsyncMock(return_value={"theme_code": "claim_theme", "breadth": "narrow"})
+    db.list_theme_edges = AsyncMock(return_value=[])
+    db.list_theme_exposure = AsyncMock(return_value=[
+        {"symbol": "600100", "exposure_score": 0.9, "industry": "technology"},
+    ])
+    db.claim_event_outbox = AsyncMock(return_value=claim_result or {
+        "claimed": True,
+        "status": "processing",
+        "attempts": 1,
+        "dedupe_key": "claim_evt_001:claim_theme:600100",
+    })
+    db.upsert_event_task_lineage = AsyncMock(side_effect=lineage_side_effect)
+    db.mark_event_outbox_processed = AsyncMock(return_value={"status": "processed"})
+    db.mark_event_outbox_failed = AsyncMock(return_value={"status": "failed"})
+    return db
+
+
+@pytest.mark.asyncio
+async def test_claim_outbox_success_is_required_before_emit():
+    import importlib
+    import strategy_factory.application.research.event_task_generator as mod
+
+    with patch.dict(os.environ, {
+        "STRATEGY_FACTORY_MANUAL_EVENT_ENABLED": "1",
+        "STRATEGY_FACTORY_THEME_GRAPH_ENABLED": "1",
+        "STRATEGY_FACTORY_DYNAMIC_TARGET_COUNT_ENABLED": "0",
+    }):
+        importlib.reload(mod)
+        db = _mock_active_event_db()
+
+        result = await mod.generate_tasks_from_active_events(db, claim_outbox=True)
+
+        assert result["task_count"] == 1
+        assert result["outbox_claimed"] == 1
+        assert result["outbox_processed"] == 1
+        assert result["outbox_skipped"] == 0
+        assert result["outbox_failed"] == 0
+        db.claim_event_outbox.assert_awaited_once()
+        db.upsert_event_task_lineage.assert_awaited_once()
+        db.mark_event_outbox_processed.assert_awaited_once()
+        db.mark_event_outbox_failed.assert_not_awaited()
+        importlib.reload(mod)
+
+
+@pytest.mark.asyncio
+async def test_claim_outbox_processed_dedupe_skips_emit():
+    import importlib
+    import strategy_factory.application.research.event_task_generator as mod
+
+    with patch.dict(os.environ, {
+        "STRATEGY_FACTORY_MANUAL_EVENT_ENABLED": "1",
+        "STRATEGY_FACTORY_THEME_GRAPH_ENABLED": "1",
+    }):
+        importlib.reload(mod)
+        db = _mock_active_event_db(claim_result={
+            "claimed": False,
+            "status": "processed",
+            "attempts": 1,
+            "dedupe_key": "claim_evt_001:claim_theme:600100",
+        })
+
+        result = await mod.generate_tasks_from_active_events(db, claim_outbox=True)
+
+        assert result["task_count"] == 0
+        assert result["lineage_count"] == 0
+        assert result["outbox_claimed"] == 0
+        assert result["outbox_skipped"] == 1
+        assert result["outbox_failed"] == 0
+        db.upsert_event_task_lineage.assert_not_awaited()
+        db.mark_event_outbox_processed.assert_not_awaited()
+        importlib.reload(mod)
+
+
+@pytest.mark.asyncio
+async def test_claim_outbox_lineage_failure_marks_failed_and_skips_emit():
+    import importlib
+    import strategy_factory.application.research.event_task_generator as mod
+
+    with patch.dict(os.environ, {
+        "STRATEGY_FACTORY_MANUAL_EVENT_ENABLED": "1",
+        "STRATEGY_FACTORY_THEME_GRAPH_ENABLED": "1",
+    }):
+        importlib.reload(mod)
+        db = _mock_active_event_db(lineage_side_effect=RuntimeError("lineage write failed"))
+
+        result = await mod.generate_tasks_from_active_events(db, claim_outbox=True)
+
+        assert result["task_count"] == 0
+        assert result["lineage_count"] == 0
+        assert result["outbox_claimed"] == 1
+        assert result["outbox_failed"] == 1
+        db.mark_event_outbox_processed.assert_not_awaited()
+        db.mark_event_outbox_failed.assert_awaited_once()
+        importlib.reload(mod)
+
+
 @pytest.mark.asyncio
 async def test_generate_with_active_events_unifies_task_source():
     """Full flow with mocked DB and enabled flags — PR-C semantics check."""

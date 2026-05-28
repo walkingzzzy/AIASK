@@ -52,6 +52,8 @@ _VALIDATION_PEER_UNIVERSE_BY_FAMILY: Dict[str, List[str]] = {
     ],
 }
 
+_FACTOR_RANK_VALIDATION_SAMPLE_MIN = 12
+
 
 def _primary_strategy_family(payload: Optional[dict]) -> str:
     item = dict(payload or {})
@@ -207,6 +209,13 @@ def _resolve_strategy_sample_selection(
     sample_size: int = 6,
 ) -> dict[str, Any]:
     validation_profile = dict(params.get("validation_profile") or {})
+    profile_name = str(validation_profile.get("profile") or "").strip().lower()
+    requested_sample_size = max(1, int(sample_size or 6))
+    effective_sample_size = requested_sample_size
+    statistical_sample_min = 0
+    if profile_name == "factor_rank_validation":
+        statistical_sample_min = _FACTOR_RANK_VALIDATION_SAMPLE_MIN
+        effective_sample_size = max(effective_sample_size, statistical_sample_min)
     research_task = dict(params.get("research_task") or {})
     validation_focus = str(
         validation_profile.get("validation_focus")
@@ -216,7 +225,7 @@ def _resolve_strategy_sample_selection(
     validation_focus_layer = _resolve_validation_focus_layer(validation_focus)
     target_codes = _extract_target_codes_from_payload(
         {"strategy_type": strategy_type, "params": params},
-        limit=max(sample_size, 12),
+        limit=max(effective_sample_size, 12),
     )
     static_family_peers = list(
         _VALIDATION_PEER_CODES_BY_FAMILY.get(str(strategy_type or "").strip().lower()) or []
@@ -224,7 +233,7 @@ def _resolve_strategy_sample_selection(
     dynamic_family_peers = _resolve_dynamic_family_peers(
         strategy_type,
         target_codes,
-        sample_size=sample_size,
+        sample_size=effective_sample_size,
     )
 
     sample_selection_mode = "representative_only"
@@ -249,17 +258,24 @@ def _resolve_strategy_sample_selection(
     else:
         combined = list(dict.fromkeys([*target_codes, *REPRESENTATIVE_STOCKS]))
 
-    requested_size = max(int(sample_size or 6), min(len(combined), max(sample_size, len(target_codes))))
+    requested_size = max(
+        effective_sample_size,
+        min(len(combined), max(effective_sample_size, len(target_codes))),
+    )
     sample_codes = combined[:requested_size]
     return {
         "sample_codes": sample_codes,
         "target_codes": list(target_codes),
-        "family_peer_codes": list(dynamic_family_peers[: max(sample_size, 8)]),
+        "family_peer_codes": list(dynamic_family_peers[: max(effective_sample_size, 8)]),
         "validation_focus": validation_focus or None,
         "validation_focus_layer": validation_focus_layer,
         "sample_selection_mode": sample_selection_mode,
         "sample_alignment_reason": sample_alignment_reason,
         "sample_code_count": int(len(sample_codes)),
+        "requested_sample_size": int(requested_sample_size),
+        "effective_sample_size": int(effective_sample_size),
+        "statistical_sample_min": int(statistical_sample_min),
+        "statistical_sample_expanded": bool(effective_sample_size > requested_sample_size),
     }
 
 

@@ -1,6 +1,6 @@
 """Decoupling boundary tests for the strategy-factory package.
 
-Repository decision (recorded in 事件驱动主题联动-结合当前代码升级方案-2026-05-24.md §8):
+Repository decision (recorded in docs/event-driven/事件驱动主题联动-结合当前代码升级方案-2026-05-24.md §8):
 the public surface of ``strategy-factory`` must depend only on the
 shared ``aiask-quant-core`` library plus stdlib / numpy / pandas. No
 module under ``packages/strategy-factory/src`` may import from

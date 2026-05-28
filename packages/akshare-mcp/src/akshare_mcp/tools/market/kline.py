@@ -288,16 +288,63 @@ async def _get_kline_impl(stock_code: str, period: str, limit: int, started_at: 
     limiter.acquire()
 
     raw_code = str(stock_code or "").strip()
-    if not re.fullmatch(r"\d{6}", raw_code):
-        return _fail_kline_response(
-            "股票代码格式无效，应为6位数字",
-            source_chain=["validate.stock_code"],
-            fallback_reason=["invalid_stock_code"],
-            started_at=started_at,
+
+    # P3-B1 fix: 指数代码路由(对话式复测发现)
+    # 历史问题:get_kline("000001") 返回平安银行(close=10.68)而非上证指数(close~4112)
+    # 根因:验证器只接受 6 位数字,sh000001 被拒;000001 同时是平安银行和上证指数代码,
+    #      get_klines 默认按个股查询,无法区分。
+    # 修复:
+    #   1. 接受 sh000001 / sz399001 / 000001.sh / 000001.SH 等带前缀格式
+    #   2. 当代码命中 _INDEX_AK_MAP(主流指数代码)时,自动调用 get_index_kline
+    #   3. 保持 6 位纯数字(默认个股语义)向后兼容,不破坏既有调用
+    # 调用方如想强制走指数路径,使用 sh000001 / get_index_kline 即可
+    code_upper = raw_code.upper()
+    has_market_prefix = code_upper.startswith(("SH", "SZ", "BJ"))
+    has_market_suffix = code_upper.endswith((".SH", ".SZ", ".BJ"))
+    pure_six_digit = re.fullmatch(r"\d{6}", raw_code) is not None
+
+    # 抽取 6 位代码部分(无论前缀后缀)
+    six_digit_match = re.search(r"(\d{6})", raw_code)
+    six_digit = six_digit_match.group(1) if six_digit_match else None
+
+    # 强信号:带前缀且代码命中指数表 → 必走 get_index_kline
+    if six_digit and (has_market_prefix or has_market_suffix) and six_digit in _INDEX_AK_MAP:
+        try:
+            return await get_index_kline(six_digit, period=period, limit=limit)
+        except Exception as exc_idx:
+            # 如果 get_index_kline 内部失败,降级为 fail_response 而非误返个股数据
+            return _fail_kline_response(
+                f"指数 K 线获取失败: {exc_idx}",
+                source_chain=["validate.index_route", "get_index_kline"],
+                fallback_reason=[f"index_route_failed:{type(exc_idx).__name__}"],
+                started_at=started_at,
+            )
+
+    # 弱信号:纯 6 位且命中指数表(如 "000001"/"399001")— 默认仍按个股(保持向后兼容)
+    # 但在响应中加 ambiguity warning,提示调用方使用 sh000001 形式可强制指数路径
+    ambiguity_warning: str | None = None
+    if pure_six_digit and raw_code in _INDEX_AK_MAP:
+        ambiguity_warning = (
+            f"代码 {raw_code} 同时存在个股(平安银行/A股)和指数(上证/深证/创业板)语义，"
+            f"当前默认按个股查询。如需指数 K 线，请使用 'sh{raw_code}' / 'sz{raw_code}' 或调用 get_index_kline。"
         )
+
+    if not pure_six_digit:
+        # 接受 sh000001 / 000001.SH / 等 → 抽 6 位继续按个股流程
+        if six_digit and (has_market_prefix or has_market_suffix):
+            raw_code = six_digit
+        else:
+            return _fail_kline_response(
+                "股票代码格式无效，应为6位数字（或 sh000001/000001.SH 等带市场前缀格式）",
+                source_chain=["validate.stock_code"],
+                fallback_reason=["invalid_stock_code"],
+                started_at=started_at,
+            )
 
     code = normalize_code(raw_code)
     fallback_reason: list[str] = []
+    if ambiguity_warning:
+        fallback_reason.append(ambiguity_warning)
     source_chain: list[str] = ["db.get_klines"] if period == "daily" else []
     _db_fallback: Optional[list[dict]] = None
 
@@ -614,6 +661,91 @@ def _get_minute_kline_from_sina(code: str, minutes: int, limit: int) -> list[dic
         return []
 
 
+# P3-5.4 fix: 加 tencent 第三源(诊断报告 §5.4)
+# 历史问题:Sina 偶尔被反爬墙或限流,akshare→sina 双源都失败时 AI 拿不到分钟K
+# tencent: http://web.ifzq.gtimg.cn/appstock/app/kline/mkline?param=sh600519,m5,,300
+def _get_minute_kline_from_tencent(code: str, minutes: int, limit: int) -> list[dict]:
+    try:
+        if code.startswith("6") or code.startswith("68"):
+            tx_code = f"sh{code}"
+        elif code.startswith("8") or code.startswith("4"):
+            tx_code = f"bj{code}"
+        else:
+            tx_code = f"sz{code}"
+        period_param = f"m{int(minutes)}"
+        url = (
+            "https://web.ifzq.gtimg.cn/appstock/app/kline/mkline"
+            f"?param={tx_code},{period_param},,{int(limit)}"
+        )
+        try:
+            resp = requests.get(
+                url,
+                headers={
+                    "Referer": "https://gu.qq.com",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                timeout=_MINUTE_SINA_TIMEOUT,
+            )
+        except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(
+                url,
+                headers={
+                    "Referer": "https://gu.qq.com",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                timeout=_MINUTE_SINA_TIMEOUT,
+            )
+
+        try:
+            payload = resp.json()
+        except Exception:
+            return []
+        # tencent payload: {"code":0, "data":{"sh600519":{"m5":[ [date,open,close,high,low,vol], ...]}}}
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            return []
+        data = payload.get("data") or {}
+        stock_block = data.get(tx_code) or {}
+        rows = stock_block.get(period_param) or stock_block.get("data") or []
+        if not isinstance(rows, list):
+            return []
+        results: list[dict] = []
+        for row in rows[-int(limit):]:
+            if not isinstance(row, list) or len(row) < 6:
+                continue
+            # row: [time_str, open, close, high, low, volume, *amount]
+            try:
+                date_str = str(row[0])
+                # tencent 时间格式: "202602031430" 或 "20260203143000"
+                if len(date_str) >= 12:
+                    formatted = (
+                        f"{date_str[0:4]}-{date_str[4:6]}-{date_str[6:8]} "
+                        f"{date_str[8:10]}:{date_str[10:12]}"
+                    )
+                    if len(date_str) >= 14:
+                        formatted += f":{date_str[12:14]}"
+                    else:
+                        formatted += ":00"
+                else:
+                    formatted = date_str
+                results.append({
+                    "date": formatted,
+                    "open": safe_float(row[1]),
+                    "close": safe_float(row[2]),
+                    "high": safe_float(row[3]),
+                    "low": safe_float(row[4]),
+                    "volume": safe_int(row[5]),
+                    "amount": safe_float(row[6]) if len(row) > 6 else 0.0,
+                    "source": "tencent",
+                })
+            except Exception:
+                continue
+        return results
+    except Exception:
+        return []
+
+
 @cached(ttl=60.0)
 def get_minute_kline(
     code: str = "",
@@ -682,6 +814,11 @@ def get_minute_kline(
         results = _get_minute_kline_from_sina(code, minutes, limit)
         if not results:
             fallback_reason.append("sina.getKLineData empty_or_failed")
+            # P3-5.4 fix: tencent 第三源(诊断报告 §5.4)
+            _append_chain_step(source_chain, "tencent.mkline")
+            results = _get_minute_kline_from_tencent(code, minutes, limit)
+            if not results:
+                fallback_reason.append("tencent.mkline empty_or_failed")
 
     if not results:
         return _respond(_fail_kline_response(
@@ -699,7 +836,14 @@ def get_minute_kline(
             fallback_reason=fallback_reason + ["all_intraday_rows_rejected"],
             started_at=started_at,
         ))
-    resolved_source = "akshare_minute" if str((validated_results or [{}])[0].get("source") or "").startswith("akshare") else "sina"
+    resolved_source_raw = str((validated_results or [{}])[0].get("source") or "")
+    if resolved_source_raw.startswith("akshare"):
+        resolved_source = "akshare_minute"
+    elif resolved_source_raw == "tencent":
+        # P3-5.4: tencent 显式标识
+        resolved_source = "tencent"
+    else:
+        resolved_source = "sina"
     return _respond(_ok_kline_response(validated_results, source=resolved_source, source_chain=list(source_chain), fallback_reason=fallback_reason, started_at=started_at))
 
 

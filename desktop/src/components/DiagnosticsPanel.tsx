@@ -13,10 +13,10 @@ import { CapabilityRow, JsonPanel, MetricCard, StatusBadge } from "./shared";
 function DiagnosticsSummary({ parity }: { parity?: CapabilityParity }) {
   return (
     <div className="diagnostics-summary">
-      <MetricCard label="Coverage" value={parity ? `${Math.round(parity.coverage_ratio * 100)}%` : "-"} status={parity?.status} />
-      <MetricCard label="Complete" value={parity ? `${Math.round(parity.complete_ratio * 100)}%` : "-"} status={parity?.mock_status || parity?.status} />
-      <MetricCard label="Features" value={parity ? `${parity.implemented_features_count ?? 0}/${parity.feature_count ?? 0}` : "-"} status={parity?.status} />
-      <MetricCard label="Live" value={parity?.live_status || "-"} status={parity?.live_status} />
+      <MetricCard label="覆盖率" value={parity ? `${Math.round(parity.coverage_ratio * 100)}%` : "-"} status={parity?.status} />
+      <MetricCard label="完成率" value={parity ? `${Math.round(parity.complete_ratio * 100)}%` : "-"} status={parity?.mock_status || parity?.status} />
+      <MetricCard label="功能" value={parity ? `${parity.implemented_features_count ?? 0}/${parity.feature_count ?? 0}` : "-"} status={parity?.status} />
+      <MetricCard label="真实环境" value={parity?.live_status || "-"} status={parity?.live_status} />
     </div>
   );
 }
@@ -45,10 +45,10 @@ export function DiagnosticsPanel({
   const matrixItems = parity?.matrix || [];
   const subsystemRows = [
     ["Gateway", fullConsole.gatewayPlatforms?.length ?? "-", fullConsole.gatewayStatus],
-    ["Terminal", fullConsole.terminalBackends?.length ?? "-", fullConsole.terminalBackends],
-    ["Learning", fullConsole.learningReview?.length ?? "-", fullConsole.learningStatus],
+    ["终端", fullConsole.terminalBackends?.length ?? "-", fullConsole.terminalBackends],
+    ["学习", fullConsole.learningReview?.length ?? "-", fullConsole.learningStatus],
     ["RL", fullConsole.rlRuns?.length ?? "-", fullConsole.rlReadiness || fullConsole.rlEnvironments],
-    ["Plugins", fullConsole.plugins?.length ?? "-", fullConsole.pluginHooks],
+    ["插件", fullConsole.plugins?.length ?? "-", fullConsole.pluginHooks],
     ["MCP", fullConsole.mcpTools?.length ?? "-", fullConsole.mcpTools]
   ] as const;
 
@@ -56,39 +56,39 @@ export function DiagnosticsPanel({
     <div className="inspector-scroll">
       <div className="panel-heading">
         <div>
-          <span>Diagnostics</span>
-          <h2>Hermes native parity</h2>
+          <span>诊断</span>
+          <h2>Hermes 原生对齐</h2>
         </div>
         <button className="small-button" disabled={busy} onClick={onRefresh} type="button">
           <RefreshCw size={14} className={busy ? "spin" : ""} />
-          Refresh
+          刷新
         </button>
       </div>
 
       <DiagnosticsSummary parity={parity} />
 
       <section className="subsystem-list">
-        <h3>System health center</h3>
+        <h3>系统健康中心</h3>
         <div className="health-signal-grid">
           <div>
             <Database size={15} />
-            <span>Agent</span>
+            <span>智能体</span>
             <StatusBadge status={health?.status || "not_loaded"} />
           </div>
           <div>
             <Search size={15} />
-            <span>Semantic search</span>
-            <StatusBadge status={fullConsole.memory || fullConsole.providers ? "implemented" : "not_loaded"} label={fullConsole.memory ? "visible" : "unknown"} />
+            <span>语义搜索</span>
+            <StatusBadge status={fullConsole.memory || fullConsole.providers ? "implemented" : "not_loaded"} label={fullConsole.memory ? "可见" : "未知"} />
           </div>
           <div>
             <FlaskConical size={15} />
-            <span>Incubation</span>
-            <StatusBadge status={fullConsole.readiness ? "implemented" : "not_loaded"} label={fullConsole.readiness ? "tracked" : "unknown"} />
+            <span>孵化</span>
+            <StatusBadge status={fullConsole.readiness ? "implemented" : "not_loaded"} label={fullConsole.readiness ? "已跟踪" : "未知"} />
           </div>
           <div>
             <ShieldCheck size={15} />
-            <span>Control</span>
-            <StatusBadge status={controlToken.trim() ? "implemented" : "gated"} label={controlToken.trim() ? "authorized" : "token required"} />
+            <span>控制</span>
+            <StatusBadge status={controlToken.trim() ? "implemented" : "gated"} label={controlToken.trim() ? "已授权" : "需要令牌"} />
           </div>
         </div>
       </section>
@@ -96,23 +96,23 @@ export function DiagnosticsPanel({
       {!controlToken.trim() && (
         <div className="notice warn">
           <ShieldCheck size={15} />
-          Control token unlocks gateway, terminal, learning, RL, plugin, and MCP management details.
+          控制令牌会解锁网关、终端、学习、RL、插件和 MCP 管理详情。
         </div>
       )}
 
       <div className="kv-grid">
-        <span>Implementation</span>
+        <span>实现</span>
         <strong>{hermesStatus?.implementation || "-"}</strong>
-        <span>Baseline</span>
+        <span>基线</span>
         <strong>{hermesStatus?.baseline || "-"}</strong>
-        <span>Vendor runtime</span>
+        <span>外部运行时</span>
         <strong>{String(hermesStatus?.embedded_vendor_runtime ?? false)}</strong>
-        <span>Toolset</span>
+        <span>工具集</span>
         <strong>{hermesStatus?.evaluated_toolset || "-"}</strong>
       </div>
 
       <section className="subsystem-list">
-        <h3>Subsystems</h3>
+        <h3>子系统</h3>
         {subsystemRows.map(([label, count, raw]) => (
           <details className="subsystem-row" key={label}>
             <summary>
@@ -125,22 +125,22 @@ export function DiagnosticsPanel({
       </section>
 
       <section className="capability-list">
-        <h3>Feature readiness</h3>
+        <h3>功能就绪状态</h3>
         {missingItems.length > 0 && (
           <div className="notice bad">
             <AlertTriangle size={15} />
-            {missingItems.length} feature gaps need attention.
+            {missingItems.length} 个功能缺口需要处理。
           </div>
         )}
         {(featureItems.length ? featureItems : matrixItems).slice(0, 20).map((item) => (
           <CapabilityRow item={item} key={item.feature || item.reference} />
         ))}
-        {!featureItems.length && !matrixItems.length && <p className="muted">Refresh diagnostics to load parity data.</p>}
+        {!featureItems.length && !matrixItems.length && <p className="muted">请刷新诊断以加载对齐数据。</p>}
       </section>
 
       <details className="raw-details">
         <summary>
-          Raw diagnostics
+          原始诊断数据
           <ChevronDown size={14} />
         </summary>
         <p className="status-line">{message || "ready"}</p>

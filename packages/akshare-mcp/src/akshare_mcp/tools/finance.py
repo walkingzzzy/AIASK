@@ -1088,17 +1088,48 @@ def get_stock_info(
             row = df.iloc[0]
             info = {str(k): str(row.get(k, "")) for k in df.columns}
 
+        # P2-4.5.9 fix: totalShares 空字符串时尝试 fallback 到 raw.tdx_total_shares 或 daily_basic 计算(诊断报告 §4.5.9)
+        # 历史问题:akshare 路径常返回空字符串,AI 判定 totalShares 为空时把 marketCap=price*0=0
+        total_shares_raw = info.get("总股本", "")
+        float_shares_raw = info.get("流通股", "")
+        total_market_cap_raw = info.get("总市值", "")
+        float_market_cap_raw = info.get("流通市值", "")
+        share_quality_warnings: list[dict] = []
+        if not str(total_shares_raw or "").strip() or str(total_shares_raw or "").strip() == "0":
+            # fallback 1: tdx_total_shares (来自 storage.stocks raw payload)
+            db_payload = _stock_info_from_sqlite(code) or {}
+            tdx_total = (
+                db_payload.get("totalShares")
+                or (db_payload.get("raw", {}) or {}).get("tdx_total_shares")
+                or (db_payload.get("raw", {}) or {}).get("total_share")
+            )
+            if tdx_total:
+                total_shares_raw = str(tdx_total)
+                share_quality_warnings.append({
+                    'code': 'totalShares_fallback_tdx',
+                    'message': 'akshare 未返回总股本,已 fallback 到 db.stocks.raw.tdx_total_shares',
+                    'severity': 'info',
+                })
+            else:
+                share_quality_warnings.append({
+                    'code': 'totalShares_unavailable',
+                    'message': 'akshare 与 db 均未提供总股本,marketCap 字段不可计算',
+                    'severity': 'warning',
+                })
+
         payload = {
             "code": code,
             "name": info.get("股票简称", info.get("A股简称", "")),
             "industry": info.get("行业", info.get("所属行业", "")),
             "listDate": info.get("上市时间", info.get("上市日期", "")),
-            "totalShares": info.get("总股本", ""),
-            "floatShares": info.get("流通股", ""),
-            "totalMarketCap": info.get("总市值", ""),
-            "floatMarketCap": info.get("流通市值", ""),
+            "totalShares": total_shares_raw,
+            "floatShares": float_shares_raw,
+            "totalMarketCap": total_market_cap_raw,
+            "floatMarketCap": float_market_cap_raw,
             "raw": info,
         }
+        if share_quality_warnings:
+            payload['warnings'] = share_quality_warnings
         return _respond(
             ok(payload),
             provider_requested=info_source_chain[0],

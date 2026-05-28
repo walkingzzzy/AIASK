@@ -83,7 +83,62 @@ _NON_PROMOTABLE_VALIDATION_GRADES = {"D"}
 _NON_PROMOTABLE_REVIEW_DECISIONS = {"reject", "revise", "retire", "drop", "defer", "watch", "observe", "paper"}
 _NON_PROMOTABLE_REVIEW_RECOMMENDATIONS = {"reject", "revise", "defer", "observe_only", "paper_only"}
 _LLM_CORRELATED_GENERATOR_MODES = {"external_llm", "pipeline_staged", "llm_proxy", "llm_proxy_fallback"}
-_TRADE_AWARE_VALIDATION_GRADE_FAMILIES = {"momentum", "ma_cross", "quality_factor"}
+
+# === DEV-V1 P3: D→C 升级 family 集合 toggle 化 ===
+# 基础集合(永远启用)
+_BASE_TRADE_AWARE_FAMILIES = frozenset({"momentum", "ma_cross", "quality_factor"})
+# 候选扩展集合 — env STRATEGY_FACTORY_TRADE_AWARE_EXTRA_FAMILIES 灰度推时,
+# 只有在白名单内的 family 会被实际加入,防止误配置(如 reverse-only 类型)。
+_CANDIDATE_EXTRA_FAMILIES = frozenset({
+    "volatility_breakout",      # 占 48% 候选,优先验证
+    "value_factor",
+    "sector_rotation",
+    "macro_timing",
+    "growth_factor",
+    "north_capital_track",
+    "event_structure_breakout",
+})
+
+
+def _resolve_trade_aware_families() -> frozenset:
+    """运行时解析 D→C 升级允许的 family 集合,惰性 import 避免 fragment 顶部 import 复杂化。"""
+    try:
+        from strategy_factory.application._runtime_toggles import trade_aware_extra_families
+        extras_raw = trade_aware_extra_families()
+    except Exception:
+        extras_raw = frozenset()
+    extras_safe = extras_raw & _CANDIDATE_EXTRA_FAMILIES
+    return _BASE_TRADE_AWARE_FAMILIES | extras_safe
+
+
+class _TradeAwareFamiliesProxy:
+    """模拟 frozenset 接口,但每次访问都重新解析 toggle。
+
+    现有调用点 (`x in _TRADE_AWARE_VALIDATION_GRADE_FAMILIES`) 零修改即可适配。
+    """
+
+    __slots__ = ()
+
+    def __contains__(self, item) -> bool:
+        return item in _resolve_trade_aware_families()
+
+    def __iter__(self):
+        return iter(_resolve_trade_aware_families())
+
+    def __len__(self) -> int:
+        return len(_resolve_trade_aware_families())
+
+    def __repr__(self) -> str:
+        return f"_TradeAwareFamiliesProxy({set(_resolve_trade_aware_families())!r})"
+
+    def __eq__(self, other) -> bool:
+        return _resolve_trade_aware_families() == other
+
+    def __hash__(self) -> int:  # 防止 mutable warning,通常 set 不被当成 dict key 用
+        return hash(_BASE_TRADE_AWARE_FAMILIES)
+
+
+_TRADE_AWARE_VALIDATION_GRADE_FAMILIES = _TradeAwareFamiliesProxy()
 _INCUBATION_OBSERVE_TARGET_LAYER_OOS_SOFT_BAND = 0.03
 _INCUBATION_OBSERVE_MDD_SOFT_BAND = 0.03
 _INCUBATION_OBSERVE_POST_COST_SHARPE_FLOOR = 0.55

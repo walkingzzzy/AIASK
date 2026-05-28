@@ -307,6 +307,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio_utf8()
+    # 修复(2026-05-25): 加载 .env 让 ENABLE_EXTERNAL_GAP_FILL 等开关在子进程生效
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv(REPO / ".env", override=False)
+    except ImportError:
+        # 没装 python-dotenv 时手动解析
+        env_path = REPO / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

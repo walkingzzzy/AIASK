@@ -1,9 +1,9 @@
-import { Puzzle, ShieldCheck } from "lucide-react";
+import { ListChecks, Play, Puzzle, Save, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, localizeBlockedReason } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
-import type { CapabilityWorkbenchPayload, PluginSummaryView, SkillPackStatusView } from "../../types";
+import type { CapabilityWorkbenchPayload, PluginCommand, PluginSummaryView, SkillPackStatusView } from "../../types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -39,8 +39,10 @@ export function PluginsPanel({
     [apiToken, controlToken, endpoint]
   );
   const [actionResult, setActionResult] = useState<unknown>(null);
+  const [commandsByPlugin, setCommandsByPlugin] = useState<Record<string, PluginCommand[]>>({});
+  const [upsertDraft, setUpsertDraft] = useState('{\n  "name": "local-plugin",\n  "enabled": true\n}');
   const [busy, setBusy] = useState(false);
-  if (!payload) return <p className="muted">Refresh capabilities to load plugin state.</p>;
+  if (!payload) return <p className="muted">请刷新能力评审以加载插件状态。</p>;
   const pluginsPayload = payload.plugins;
   const skillPackPayload = (payload.skill_packs || payload.hermes?.skill_packs || {}) as SkillPackStatusView;
   const plugins = pluginList(pluginsPayload);
@@ -80,39 +82,82 @@ export function PluginsPanel({
     }
   }
 
+  async function upsertPlugin() {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const parsed = JSON.parse(upsertDraft || "{}") as Record<string, unknown>;
+      const result = await api.pluginUpsert(parsed);
+      setActionResult(result);
+      await onRefresh?.();
+    } catch (error) {
+      setActionResult({ success: false, error: error instanceof SyntaxError ? "PLUGIN_JSON_INVALID" : formatApiError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadCommands(plugin: PluginSummaryView) {
+    if (!api || !plugin.name) return;
+    setBusy(true);
+    try {
+      const payload = await api.pluginCommands(plugin.name);
+      setCommandsByPlugin((current) => ({ ...current, [plugin.name || ""]: payload.data || [] }));
+      setActionResult(payload);
+    } catch (error) {
+      setActionResult({ success: false, error: formatApiError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testCommand(plugin: PluginSummaryView, command: PluginCommand) {
+    if (!api || !plugin.name) return;
+    const commandName = String(command.name || command.command || "");
+    if (!commandName) return;
+    setBusy(true);
+    try {
+      setActionResult(await api.pluginCommandTest(plugin.name, commandName, {}));
+    } catch (error) {
+      setActionResult({ success: false, error: formatApiError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="capability-stack">
       <div className="capability-banner">
         <div>
-          <span>Plugins</span>
-          <h2>Native plugin and skill-pack governance</h2>
-          <p>Read-only registry view. External Hermes dashboard plugin JavaScript is not loaded or executed.</p>
+          <span>插件</span>
+          <h2>原生插件与技能包治理</h2>
+          <p>这里是只读注册表视图，不会加载或执行外部 Hermes dashboard 插件 JavaScript。</p>
         </div>
-        <StatusBadge status={status} label={gated ? "gated" : plugins.length ? "loaded" : "empty"} />
+        <StatusBadge status={status} label={gated ? "受控" : plugins.length ? "已加载" : "空"} />
       </div>
 
       {gated && (
         <div className="notice warn">
           <ShieldCheck size={15} />
-          {String(pluginMeta.reason || "Control token required to inspect native plugin registry.")}
+          {localizeBlockedReason(pluginMeta.reason) || "需要控制令牌 Control token 才能查看原生插件注册表。"}
         </div>
       )}
 
       <div className="diagnostics-summary wide">
         <div className="metric-card">
-          <span>Plugins</span>
+          <span>插件</span>
           <strong>{plugins.length}</strong>
         </div>
         <div className="metric-card">
-          <span>Enabled</span>
+          <span>已启用</span>
           <strong>{enabledCount}</strong>
         </div>
         <div className="metric-card">
-          <span>Skill packs</span>
+          <span>技能包</span>
           <strong>{availablePacks}</strong>
         </div>
         <div className="metric-card">
-          <span>Source</span>
+          <span>来源</span>
           <strong>{String(pluginMeta.source || skillPackPayload.object || "aiask_native")}</strong>
         </div>
       </div>
@@ -121,8 +166,8 @@ export function PluginsPanel({
         <div className="capability-section">
           <div className="section-header">
             <div>
-              <span>{plugins.length} items</span>
-              <h3>Native plugins</h3>
+              <span>{plugins.length} 项</span>
+              <h3>原生插件</h3>
             </div>
           </div>
           <div className="mini-list">
@@ -134,24 +179,47 @@ export function PluginsPanel({
                 <p>{plugin.description || compact({ tools: plugin.tools?.length, commands: plugin.commands?.length, hooks: plugin.hooks?.length })}</p>
                 <div className="row-actions">
                   <button className="small-button" disabled={busy || !(controlToken || "").trim()} onClick={() => togglePlugin(plugin)} type="button">
-                    {plugin.enabled ? "Disable" : "Enable"}
+                    {plugin.enabled ? "禁用" : "启用"}
                   </button>
                   <button
                     className="small-button"
                     disabled={busy || !(controlToken || "").trim()}
                     onClick={() => testPlugin(plugin)}
-                    title={(plugin.tools || []).length ? "Run the first registered plugin tool" : "Run a manifest self-test for plugins without tools"}
+                    title={(plugin.tools || []).length ? "运行第一个已注册插件工具" : "对没有工具的插件运行 manifest 自检"}
                     type="button"
                   >
-                    {(plugin.tools || []).length ? "Test tool" : "Self-test"}
+                    {(plugin.tools || []).length ? "测试工具" : "自检"}
+                  </button>
+                  <button className="small-button" disabled={busy || !(controlToken || "").trim()} onClick={() => loadCommands(plugin)} type="button">
+                    <ListChecks size={13} />
+                    命令
                   </button>
                 </div>
+                {!!commandsByPlugin[plugin.name || ""]?.length && (
+                  <div className="mini-list">
+                    {commandsByPlugin[plugin.name || ""].map((command, commandIndex) => {
+                      const commandName = String(command.name || command.command || commandIndex);
+                      return (
+                        <article className="job-row" key={`${plugin.name}:${commandName}`}>
+                          <div>
+                            <strong>{commandName}</strong>
+                            <span>{compact(command.description || command.enabled || "-")}</span>
+                          </div>
+                          <button className="small-button" disabled={busy || !(controlToken || "").trim()} onClick={() => testCommand(plugin, command)} type="button">
+                            <Play size={13} />
+                            测试
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
               </article>
             ))}
             {!plugins.length && (
               <div className="empty-mini">
                 <Puzzle size={24} />
-                <span>{gated ? "Unlock with a control token to inspect plugins." : "No native plugins registered."}</span>
+                <span>{gated ? "配置控制令牌后可查看插件。" : "暂无已注册的原生插件。"}</span>
               </div>
             )}
           </div>
@@ -161,23 +229,41 @@ export function PluginsPanel({
           <div className="section-header">
             <div>
               <span>{String(skillPackPayload.status || skillPackPayload.object || "skill_packs")}</span>
-              <h3>Skill packs</h3>
+              <h3>技能包</h3>
             </div>
             <StatusBadge status={String(skillPackPayload.status || "ready")} />
           </div>
           <JsonPanel value={skillPackPayload} />
+        </div>
+
+        <div className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>POST /v1/plugins</span>
+              <h3>插件 Upsert</h3>
+            </div>
+            <StatusBadge status={(controlToken || "").trim() ? "ready" : "gated"} />
+          </div>
+          <label className="field-row">
+            <span>JSON</span>
+            <textarea value={upsertDraft} onChange={(event) => setUpsertDraft(event.target.value)} />
+          </label>
+          <button className="small-button" disabled={busy || !(controlToken || "").trim()} onClick={upsertPlugin} type="button">
+            <Save size={14} />
+            保存插件
+          </button>
         </div>
       </section>
 
       {resultRecord && (
         <div className={resultRecord.success === false ? "notice warn" : "notice ok"}>
           <strong>{String(resultRecord.error_code || resultRecord.object || "plugin_action")}</strong>
-          <span>{String(resultRecord.error || resultData?.note || resultData?.test_type || "Plugin action completed.")}</span>
+          <span>{String(resultRecord.error || resultData?.note || resultData?.test_type || "插件操作已完成。")}</span>
         </div>
       )}
 
       <details className="raw-details">
-        <summary>Raw plugin payload</summary>
+        <summary>原始插件 payload</summary>
         <JsonPanel value={{ plugins: pluginsPayload, skill_packs: skillPackPayload, actionResult }} />
       </details>
     </div>

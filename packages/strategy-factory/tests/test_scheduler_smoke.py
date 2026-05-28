@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from types import MethodType
@@ -26,6 +27,114 @@ def test_scheduler_start_stop():
     # stop without start should be safe
     sched.stop()
     assert sched._running is False
+
+
+def test_event_theme_maintenance_runs_default_steps_off_hours(monkeypatch):
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+    from strategy_factory.application.research import theme_exposure_builder
+    from strategy_factory.application.research import theme_response_regression
+    from strategy_factory.application.research import theme_seed
+
+    scheduler = StrategyFactoryScheduler()
+    fixed_now = datetime(2026, 5, 24, 20, 0, tzinfo=timezone.utc)
+    db = object()
+    calls: list[str] = []
+
+    monkeypatch.setattr(scheduler, "_now", lambda: fixed_now)
+    monkeypatch.setattr(scheduler, "_is_market_hours", lambda now: False)
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_SEED_AUTO_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_EXPOSURE_AUTO_REFRESH_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_EVENT_OUTBOX_AUTO_DRAIN_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_REGRESSION_AUTO_RUN_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_EXPOSURE_BATCH_SIZE", "123")
+    monkeypatch.setenv("STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_LIMIT", "7")
+
+    async def fake_seed(resolved_db, *, overwrite=False, updated_by="bootstrap"):
+        calls.append("theme_seed")
+        assert resolved_db is db
+        assert overwrite is False
+        assert updated_by == "scheduler"
+        return {"status": "seeded"}
+
+    class FakeExposureBuilder:
+        def __init__(self, *, batch_size):
+            calls.append(f"exposure_init:{batch_size}")
+            self.batch_size = batch_size
+
+        async def build(self, resolved_db, *, batch_size=None):
+            calls.append("theme_exposure_refresh")
+            assert resolved_db is db
+            assert self.batch_size == 123
+            assert batch_size == 123
+            return {"rows_written": 3}
+
+    class FakeRegression:
+        async def run_full_update(self, resolved_db, *, apply_updates=False):
+            calls.append("theme_regression_run")
+            assert resolved_db is db
+            assert apply_updates is False
+            return {"mode": "report_only", "updated_count": 0}
+
+    async def fake_outbox(self, resolved_db, *, limit):
+        calls.append("outbox_drain")
+        assert resolved_db is db
+        assert limit == 7
+        return {"processed": 1}
+
+    monkeypatch.setattr(theme_seed, "seed_default_theme_graph", fake_seed)
+    monkeypatch.setattr(theme_exposure_builder, "ThemeExposureBuilder", FakeExposureBuilder)
+    monkeypatch.setattr(theme_response_regression, "ThemeResponseRegression", FakeRegression)
+    monkeypatch.setattr(
+        scheduler,
+        "_drain_event_outbox_maintenance",
+        MethodType(fake_outbox, scheduler),
+    )
+
+    result = asyncio.run(scheduler._run_event_theme_maintenance_if_due(db))
+
+    assert result["status"] == "completed"
+    assert result["ran"] == [
+        "theme_seed",
+        "theme_exposure_refresh",
+        "outbox_drain",
+        "theme_regression_run",
+    ]
+    assert calls == [
+        "theme_seed",
+        "exposure_init:123",
+        "theme_exposure_refresh",
+        "outbox_drain",
+        "theme_regression_run",
+    ]
+    assert scheduler._last_event_theme_maintenance_result is result
+
+
+def test_event_theme_maintenance_skips_market_hours(monkeypatch):
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+    scheduler = StrategyFactoryScheduler()
+    monkeypatch.setattr(scheduler, "_now", lambda: datetime(2026, 5, 25, 10, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(scheduler, "_is_market_hours", lambda now: True)
+
+    result = asyncio.run(scheduler._run_event_theme_maintenance_if_due(object()))
+
+    assert result == {"status": "skipped", "reason": "market_hours"}
+
+
+def test_event_theme_maintenance_respects_disable_switches(monkeypatch):
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+    scheduler = StrategyFactoryScheduler()
+    monkeypatch.setattr(scheduler, "_now", lambda: datetime(2026, 5, 24, 20, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(scheduler, "_is_market_hours", lambda now: False)
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_SEED_AUTO_ENABLED", "0")
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_EXPOSURE_AUTO_REFRESH_ENABLED", "0")
+    monkeypatch.setenv("STRATEGY_FACTORY_EVENT_OUTBOX_AUTO_DRAIN_ENABLED", "0")
+    monkeypatch.setenv("STRATEGY_FACTORY_THEME_REGRESSION_AUTO_RUN_ENABLED", "0")
+
+    result = asyncio.run(scheduler._run_event_theme_maintenance_if_due(object()))
+
+    assert result == {"status": "disabled"}
 
 
 def test_scheduler_execution_mode_default():

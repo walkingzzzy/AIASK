@@ -237,6 +237,17 @@ async def run_factor_ic_analysis(
     win_rate = win_count / sample_size if sample_size > 0 else 0.0
 
     serialize_start = time.perf_counter()
+    # P2-4.3.3 fix(诊断报告 §4.3.3):sample_size<10 时 bootstrap_ci 不可靠
+    # 历史问题:case_1 ic=0.486 p_value=0.329 但 bootstrap_ci.rank_ic.ic=-0.714 sample=6 反向
+    # 修复:sample<10 时 bootstrap reliable=false,警告 AI 不要采用
+    bootstrap_reliable = sample_size >= 10
+    bootstrap_warnings: list[str] = []
+    if not bootstrap_reliable:
+        bootstrap_warnings.append(
+            f"bootstrap_unreliable_sample_size={sample_size}<10 — "
+            f"主指标 (ic={rank_ic:.3f}) 与 bootstrap_ci 可能反向矛盾,不可作为决策依据"
+        )
+
     payload = {
         "factor": factor_name,
         # backward compatible fields
@@ -271,6 +282,8 @@ async def run_factor_ic_analysis(
             },
             "n_bootstrap": boot_rank.get("n_bootstrap", 0),
             "ic_ir_method": "bootstrap_se" if boot_se > 1e-10 else "cross_sectional_proxy",
+            "reliable": bootstrap_reliable,
+            "warnings": bootstrap_warnings,
         },
         "data_window": {
             "lookback_bars": factor_lookback + forward_period + 30,
@@ -679,6 +692,21 @@ async def run_factor_oos_validation(
         return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
     if not codes:
         return fail("codes is required")
+
+    # P2-4.3.4 fix(诊断报告 §4.3.4):入口校验 panel >= train+test+min_step
+    # 历史问题:panel=90 / train=60 / test=20 → step≥10 时 0 fold,但工具仍 success=true 输出 deflated_sharpe
+    # 修复:panel 不足时 fail-graceful,不跑空 pipeline
+    _wf_train = max(20, int(wf_train_window))
+    _wf_test = max(5, int(wf_test_window))
+    _min_step = max(_wf_test, int(wf_step) if wf_step else _wf_test)
+    _required_panel = _wf_train + _wf_test + _min_step
+    if int(panel_periods) < _required_panel:
+        return fail(
+            f"insufficient_panel_periods: requested {panel_periods}, "
+            f"required >= {_required_panel} (= wf_train_window {_wf_train} + "
+            f"wf_test_window {_wf_test} + min_step {_min_step}). "
+            f"减小 wf_train/wf_test 或增大 panel_periods."
+        )
 
     run_cache = _new_run_cache()
     perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))

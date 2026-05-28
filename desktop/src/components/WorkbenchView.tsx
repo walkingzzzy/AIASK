@@ -21,29 +21,29 @@ import type { HealthDetailed, TimelineEvent, TaskThread, ToolCatalogItem } from 
 const WORKFLOW_STAGES = [
   {
     id: "evidence",
-    label: "Evidence",
-    detail: "Data, semantic search, and source packages",
+    label: "证据",
+    detail: "数据、语义搜索和来源材料",
     icon: Search,
     tools: ["agent_quant_data_gate", "agent_memory_search", "agent_web_search"]
   },
   {
     id: "research",
-    label: "Research",
-    detail: "Factor checks and candidate strategy work",
+    label: "研究",
+    detail: "因子检查和候选策略研究",
     icon: BarChart3,
     tools: ["agent_factor_validation", "agent_quant_research_run", "agent_backtest_suite"]
   },
   {
     id: "incubation",
-    label: "Incubation",
-    detail: "Lifecycle status, hit-rate reports, and promotion signals",
+    label: "孵化",
+    detail: "生命周期状态、命中率报告和晋升信号",
     icon: FlaskConical,
     tools: ["agent_factory_status", "agent_incubation_factory_status", "agent_strategy_domain_events"]
   },
   {
     id: "risk",
-    label: "Risk",
-    detail: "Portfolio risk, governance, and confirmation intents",
+    label: "风险",
+    detail: "组合风险、治理检查和确认意图",
     icon: ShieldCheck,
     tools: ["agent_portfolio_risk", "agent_governance_check", "agent_action_intent_create"]
   }
@@ -84,31 +84,31 @@ function ActionOverview({ events, tools }: { events: TimelineEvent[]; tools: Too
     <section className="workflow-panel">
       <div className="section-header">
         <div>
-          <span>Action record</span>
-          <h3>Agent activity</h3>
+          <span>动作记录</span>
+          <h3>智能体活动</h3>
         </div>
-        <StatusBadge status={events.length ? "implemented" : "not_loaded"} label={events.length ? "tracked" : "idle"} />
+        <StatusBadge status={events.length ? "implemented" : "not_loaded"} label={events.length ? "已记录" : "空闲"} />
       </div>
       <div className="diagnostics-summary wide">
         <div className="metric-card">
-          <span>Tool calls</span>
+          <span>工具调用</span>
           <strong>{toolEvents}</strong>
-          <small>Visible in the timeline with raw envelopes.</small>
+          <small>会在时间线中展示，并保留原始 envelope。</small>
         </div>
         <div className={`metric-card ${approvals > 0 ? "warn" : "neutral"}`}>
-          <span>Confirmations</span>
+          <span>确认事项</span>
           <strong>{approvals}</strong>
-          <small>{hasConfirmTool ? "Durable intent guard is registered." : "Intent guard not loaded."}</small>
+          <small>{hasConfirmTool ? "持久化意图保护已注册。" : "意图保护尚未加载。"}</small>
         </div>
         <div className="metric-card">
-          <span>Events</span>
+          <span>事件</span>
           <strong>{auditEvents}</strong>
-          <small>Run and strategy events are deduplicated.</small>
+          <small>运行和策略事件会自动去重。</small>
         </div>
         <div className="metric-card ok">
-          <span>Trading mode</span>
-          <strong>Preview first</strong>
-          <small>Live execution must go through confirmation.</small>
+          <span>交易模式</span>
+          <strong>先预览</strong>
+          <small>真实执行必须经过确认。</small>
         </div>
       </div>
     </section>
@@ -123,10 +123,10 @@ function WorkflowOverview({ health, tools }: { health: HealthDetailed | null; to
     <section className="workflow-panel">
       <div className="section-header">
         <div>
-          <span>User journey</span>
-          <h3>Research to incubation loop</h3>
+          <span>用户流程</span>
+          <h3>从研究到孵化的闭环</h3>
         </div>
-        <StatusBadge status={online ? "implemented" : "not_loaded"} label={online ? "ready" : "offline"} />
+        <StatusBadge status={online ? "implemented" : "not_loaded"} label={online ? "就绪" : "离线"} />
       </div>
       <div className="workflow-grid">
         {WORKFLOW_STAGES.map((stage) => {
@@ -158,36 +158,36 @@ function SystemHealthStrip({ health, tools }: { health: HealthDetailed | null; t
     <section className="workflow-panel">
       <div className="section-header">
         <div>
-          <span>System health</span>
-          <h3>Operational signals</h3>
+          <span>系统健康</span>
+          <h3>运行信号</h3>
         </div>
         <Activity size={18} />
       </div>
       <div className="health-signal-grid">
         <div>
           <Database size={15} />
-          <span>Agent</span>
+          <span>智能体</span>
           <StatusBadge status={health?.status || "not_loaded"} />
         </div>
         <div>
           <Database size={15} />
-          <span>Tools</span>
+          <span>工具</span>
           <strong>{tools.length}</strong>
         </div>
         <div>
           <FlaskConical size={15} />
-          <span>Factory</span>
-          <StatusBadge status={factoryReady ? "implemented" : "not_loaded"} label={factoryReady ? "ready" : "missing"} />
+          <span>工厂</span>
+          <StatusBadge status={factoryReady ? "implemented" : "not_loaded"} label={factoryReady ? "就绪" : "缺失"} />
         </div>
         <div>
           <Activity size={15} />
-          <span>Incubation</span>
-          <StatusBadge status={incubationReady ? "implemented" : "not_loaded"} label={incubationReady ? "ready" : "missing"} />
+          <span>孵化</span>
+          <StatusBadge status={incubationReady ? "implemented" : "not_loaded"} label={incubationReady ? "就绪" : "缺失"} />
         </div>
         <div>
           <Search size={15} />
-          <span>Evidence</span>
-          <StatusBadge status={dataReady ? "implemented" : "not_loaded"} label={dataReady ? "ready" : "missing"} />
+          <span>证据</span>
+          <StatusBadge status={dataReady ? "implemented" : "not_loaded"} label={dataReady ? "就绪" : "缺失"} />
         </div>
       </div>
     </section>
@@ -201,24 +201,24 @@ function ReviewQueue({ events, tools }: { events: TimelineEvent[]; tools: ToolCa
   const readyTools = tools.filter((tool) => toolSideEffectLabel(tool) === "read_only").length;
   const reviewItems = [
     {
-      label: "Agent summary",
+      label: "智能体摘要",
       count: events.length,
       status: events.length ? "reviewing" : "ready",
-      detail: events.length ? "Recent run activity is ready for inspection." : "Start a thread to create a reviewable task trace.",
+      detail: events.length ? "最近运行活动可供检查。" : "启动一个任务线程后会生成可复核的任务轨迹。",
       icon: Bot
     },
     {
-      label: "Approvals",
+      label: "审批",
       count: approvals,
       status: approvals ? "queued" : "ready",
-      detail: approvals ? `${approvals} confirmation events waiting in the timeline.` : "No confirmation intents are pending.",
+      detail: approvals ? `${approvals} 个确认事件正在时间线中等待处理。` : "当前没有待处理的确认意图。",
       icon: GitPullRequest
     },
     {
-      label: "Tools and events",
+      label: "工具与事件",
       count: toolEvents || readyTools,
       status: toolEvents || auditEvents ? "reviewing" : "ready",
-      detail: toolEvents ? `${toolEvents} tool calls recorded.` : `${readyTools} read-only actions available.`,
+      detail: toolEvents ? `已记录 ${toolEvents} 次工具调用。` : `${readyTools} 个只读操作可用。`,
       icon: TerminalSquare
     }
   ];
@@ -227,10 +227,10 @@ function ReviewQueue({ events, tools }: { events: TimelineEvent[]; tools: ToolCa
     <section className="review-queue-panel">
       <div className="section-header">
         <div>
-          <span>Review queue</span>
-          <h3>Current thread state</h3>
+          <span>复核队列</span>
+          <h3>当前线程状态</h3>
         </div>
-        <StatusBadge status={events.length ? "reviewing" : "ready"} label={events.length ? "reviewing" : "ready"} />
+        <StatusBadge status={events.length ? "reviewing" : "ready"} label={events.length ? "复核中" : "就绪"} />
       </div>
       <div className="review-queue-list">
         {reviewItems.map((item) => {
@@ -301,21 +301,21 @@ export function WorkbenchView({
       <header className="workbench-header">
         <div>
           <span className="endpoint-chip">{endpoint}</span>
-          <h1>{selectedThread?.title || "What should AIASK work on?"}</h1>
-          <p className="header-subtitle">{profileName || "Local Operator"} / {userId || "local"}</p>
+          <h1>{selectedThread?.title || "你想让 AIASK 做什么？"}</h1>
+          <p className="header-subtitle">{profileName || "本地操作者"} / {userId || "local"}</p>
         </div>
         <div className="header-actions">
-          <StatusBadge status={status} label={status === "AIASK_ONLINE" ? "online" : status} />
+          <StatusBadge status={status} label={status === "AIASK_ONLINE" ? "在线" : status} />
           <button
-            aria-label={status === "AIASK_DISCONNECTED" ? "Connect to Agent" : "Sync Agent state"}
+            aria-label={status === "AIASK_DISCONNECTED" ? "连接智能体" : "同步智能体状态"}
             className="small-button"
             disabled={busy}
             onClick={onRefresh}
-            title={status === "AIASK_DISCONNECTED" ? "Connect to Agent" : "Sync Agent state"}
+            title={status === "AIASK_DISCONNECTED" ? "连接智能体" : "同步智能体状态"}
             type="button"
           >
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            {status === "AIASK_DISCONNECTED" ? "Connect" : "Sync"}
+            {status === "AIASK_DISCONNECTED" ? "连接" : "同步"}
           </button>
         </div>
       </header>
@@ -334,23 +334,23 @@ export function WorkbenchView({
 
       <form className="composer" onSubmit={onSubmit}>
         <div className="composer-toolbar">
-          <div aria-label="Agent mode" className="segmented" role="group">
+          <div aria-label="智能体模式" className="segmented" role="group">
             <button
               aria-pressed={agentMode === "finance_safe"}
               className={agentMode === "finance_safe" ? "active" : ""}
               onClick={() => onAgentModeChange("finance_safe")}
-              title="Finance safe mode"
+              title="金融安全模式"
               type="button"
             >
               <CheckCircle2 size={13} />
-              Finance safe
+              金融安全
             </button>
             <button
               aria-pressed={agentMode === "hermes_full"}
               className={agentMode === "hermes_full" ? "active" : ""}
               disabled={!controlToken.trim()}
               onClick={() => onAgentModeChange("hermes_full")}
-              title={controlToken.trim() ? "Hermes full mode" : "Hermes full mode requires a control token"}
+              title={controlToken.trim() ? "Hermes full 模式" : "Hermes full 模式需要控制令牌"}
               type="button"
             >
               <ShieldCheck size={13} />
@@ -358,20 +358,20 @@ export function WorkbenchView({
             </button>
           </div>
           <label className="session-field">
-            <span>Session</span>
-            <input value={sessionId} onChange={(event) => onSessionIdChange(event.target.value)} placeholder="new session" />
+            <span>会话</span>
+            <input value={sessionId} onChange={(event) => onSessionIdChange(event.target.value)} placeholder="新会话" />
           </label>
           {busy && (
-            <button aria-label="Run in progress" className="ghost-button" disabled title="Run in progress" type="button">
+            <button aria-label="任务运行中" className="ghost-button" disabled title="任务运行中" type="button">
               <Square size={13} />
-              Running
+              运行中
             </button>
           )}
         </div>
         {agentMode === "hermes_full" && !controlToken.trim() && (
           <div className="notice warn compact-notice">
             <ShieldCheck size={14} />
-            Hermes full mode needs a control token in Settings.
+            Hermes full 模式需要先在设置中填写控制令牌。
           </div>
         )}
         <div className="composer-input-row">
@@ -379,11 +379,11 @@ export function WorkbenchView({
             value={prompt}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={onComposerKeyDown}
-            placeholder="Ask AIASK to research, code, inspect tools, or continue a session..."
+            placeholder="让 AIASK 做研究、写代码、检查工具，或继续一个会话..."
           />
-          <button className="send-button" disabled={busy || !prompt.trim()} title="Run thread task" type="submit">
+          <button className="send-button" disabled={busy || !prompt.trim()} title="运行线程任务" type="submit">
             <Send size={16} />
-            Run
+            运行
           </button>
         </div>
       </form>

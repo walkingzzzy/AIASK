@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { CapabilityWorkbenchPayload } from "../../types";
-import { JsonPanel, StatusBadge, compact, shortText } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, localizeBlockedReason, shortText } from "../../components/shared";
 
 function statusFor(value?: string): string {
   if (!value) return "not_loaded";
@@ -25,7 +25,7 @@ function resultDetail(record: Record<string, unknown>, data: Record<string, unkn
     record.error
   ];
   const value = candidates.find((item) => typeof item === "string" && item.trim());
-  return typeof value === "string" ? value : "Action completed.";
+  return typeof value === "string" ? value : "操作已完成。";
 }
 
 function ActionResult({ result }: { result: unknown }) {
@@ -41,16 +41,16 @@ function ActionResult({ result }: { result: unknown }) {
     <div className={`notice ${success ? "ok" : "warn"}`}>
       <strong>{String(record.error_code || record.object || status)}</strong>
       <span>{shortText(detail, 220)}</span>
-      {!!missingAuthEnvVars.length && <span>Set env vars: {missingAuthEnvVars.join(", ")}</span>}
+      {!!missingAuthEnvVars.length && <span>请设置环境变量：{missingAuthEnvVars.join(", ")}</span>}
       {record.error_code === "MCP_DISCOVERY_AUTH_REQUIRED" && !missingAuthEnvVars.length && (
-        <span>Check the MCP server authorization configuration in the Agent process.</span>
+        <span>请检查 Agent 进程中的 MCP 服务授权配置。</span>
       )}
       <div className="kv-grid">
-        <span>Success</span>
+        <span>成功</span>
         <strong>{String(record.success ?? "-")}</strong>
-        <span>Configured</span>
+        <span>已配置</span>
         <strong>{compact(data?.configured)}</strong>
-        <span>Server</span>
+        <span>服务</span>
         <strong>{compact(data?.server || record.server)}</strong>
         <span>Auth env</span>
         <strong>{authEnvVars.length ? authEnvVars.join(", ") : "-"}</strong>
@@ -118,19 +118,19 @@ export function McpPanel({
     }
   }
 
-  if (!mcp) return <p className="muted">Refresh capabilities to load MCP state.</p>;
+  if (!mcp) return <p className="muted">请刷新能力中心以加载 MCP 状态。</p>;
   const registrationStatus = mcp.registration_status || (mcp.servers.length ? "registered" : "not_registered");
   const discoveryStatus = mcp.discovery_status || registrationStatus;
   const registrationReady = registrationStatus === "registered";
   const authEnvVars = Array.isArray(mcp.auth_env_vars) ? mcp.auth_env_vars : [];
   const missingAuthEnvVars = Array.isArray(mcp.missing_auth_env_vars) ? mcp.missing_auth_env_vars : [];
   const discoveredCounts = mcp.discovered_counts || {};
-  const discoverySummary = `${discoveredCounts.tools ?? mcp.tools.length} tools / ${discoveredCounts.resources ?? mcp.resources.length} resources / ${discoveredCounts.prompts ?? mcp.prompts.length} prompts`;
+  const discoverySummary = `${discoveredCounts.tools ?? mcp.tools.length} 个工具 / ${discoveredCounts.resources ?? mcp.resources.length} 个资源 / ${discoveredCounts.prompts ?? mcp.prompts.length} 个提示词`;
   const reviewItems = [
-    { label: "Registration", value: registrationStatus, status: statusFor(registrationStatus) },
-    { label: "Discovery", value: discoveryStatus, status: statusFor(discoveryStatus) },
-    { label: "Auth", value: mcp.auth_configured === undefined ? "-" : mcp.auth_configured ? "configured" : "missing", status: mcp.auth_configured ? "implemented" : "unconfigured" },
-    { label: "Discovered", value: discoverySummary, status: (discoveredCounts.tools ?? mcp.tools.length) ? "implemented" : "not_loaded" }
+    { label: "注册", value: registrationStatus, status: statusFor(registrationStatus) },
+    { label: "发现", value: discoveryStatus, status: statusFor(discoveryStatus) },
+    { label: "授权", value: mcp.auth_configured === undefined ? "-" : mcp.auth_configured ? "已配置" : "缺失", status: mcp.auth_configured ? "implemented" : "unconfigured" },
+    { label: "已发现", value: discoverySummary, status: (discoveredCounts.tools ?? mcp.tools.length) ? "implemented" : "not_loaded" }
   ];
 
   return (
@@ -138,13 +138,13 @@ export function McpPanel({
       <div className="capability-banner">
         <div>
           <span>MCP</span>
-          <h2>Connector review queue</h2>
+          <h2>连接器评审队列</h2>
           <p>
             {mcp.gated
-              ? mcp.reason || "Control token required for tools/resources/prompts."
+              ? localizeBlockedReason(mcp.reason) || "工具、资源和提示词操作需要控制令牌。"
               : registrationReady
-                ? "Full MCP runtime data loaded."
-                : "MCP service may be running, but it is not registered with the AIASK aggregator."}
+                ? "完整 MCP 运行时数据已加载。"
+                : "MCP 服务可能已经运行，但尚未注册到 AIASK 聚合器。"}
           </p>
         </div>
         <StatusBadge
@@ -158,15 +158,15 @@ export function McpPanel({
           <strong>{mcp.error_code || registrationStatus}</strong>
           <span>
             {mcp.detail ||
-              `Configure AIASK_AGENT_MCP_CONFIG or ${mcp.config_path || "~/.aiask-agent/mcp_servers.json"} so Desktop can aggregate this MCP service.`}
+              `请配置 AIASK_AGENT_MCP_CONFIG 或 ${mcp.config_path || "~/.aiask-agent/mcp_servers.json"}，让 Desktop 能聚合此 MCP 服务。`}
           </span>
         </div>
       )}
 
       {registrationReady && !!missingAuthEnvVars.length && (
         <div className="notice warn">
-          <strong>MCP auth env missing in backend process</strong>
-          <span>AIASK is registered to this MCP server, but the running backend has not read these environment variables: {missingAuthEnvVars.join(", ")}</span>
+          <strong>后端进程缺少 MCP 授权环境变量</strong>
+          <span>AIASK 已注册此 MCP 服务，但当前运行的后端尚未读取这些环境变量：{missingAuthEnvVars.join(", ")}</span>
         </div>
       )}
 
@@ -181,31 +181,31 @@ export function McpPanel({
           ))}
         </div>
         <div className="kv-grid">
-          <span>Registration</span>
+          <span>注册</span>
           <strong>{registrationStatus}</strong>
-          <span>Discovery</span>
+          <span>发现</span>
           <strong>{discoveryStatus}</strong>
-          <span>Config path</span>
+          <span>配置路径</span>
           <strong>{mcp.config_path || "-"}</strong>
-          <span>Config exists</span>
+          <span>配置存在</span>
           <strong>{String(mcp.config_exists ?? "-")}</strong>
-          <span>Detected port</span>
+          <span>检测端口</span>
           <strong>{mcp.detected_service_port || "-"}</strong>
-          <span>Suggested URL</span>
+          <span>建议 URL</span>
           <strong>{mcp.suggested_registration_url || "-"}</strong>
-          <span>Auth configured</span>
+          <span>授权已配置</span>
           <strong>{mcp.auth_configured === undefined ? "-" : String(mcp.auth_configured)}</strong>
           <span>Auth env</span>
           <strong>{authEnvVars.length ? authEnvVars.join(", ") : "-"}</strong>
-          <span>Missing auth env</span>
+          <span>缺失授权环境变量</span>
           <strong>{missingAuthEnvVars.length ? missingAuthEnvVars.join(", ") : "-"}</strong>
-          <span>Discovered</span>
+          <span>已发现</span>
           <strong>{discoverySummary}</strong>
         </div>
         <div className="inline-form">
-          <input value={serverName} onChange={(event) => setServerName(event.target.value)} placeholder="MCP server name" />
-          <button aria-label="Register local MCP server" disabled={busy || !controlToken.trim() || registrationReady} onClick={() => run("register")} title="Register local MCP server" type="button">Register local MCP</button>
-          <button aria-label="Discover or refresh MCP server" disabled={busy || !controlToken.trim() || !(serverName || defaultServer).trim()} onClick={() => run("discover")} title="Discover or refresh MCP server" type="button">Discover/Refresh server</button>
+          <input value={serverName} onChange={(event) => setServerName(event.target.value)} placeholder="MCP 服务名称" />
+          <button aria-label="注册本地 MCP 服务" disabled={busy || !controlToken.trim() || registrationReady} onClick={() => run("register")} title="注册本地 MCP 服务" type="button">注册本地 MCP</button>
+          <button aria-label="发现或刷新 MCP 服务" disabled={busy || !controlToken.trim() || !(serverName || defaultServer).trim()} onClick={() => run("discover")} title="发现或刷新 MCP 服务" type="button">发现/刷新服务</button>
         </div>
       </div>
 
@@ -213,8 +213,8 @@ export function McpPanel({
         <div className="capability-section">
           <div className="section-header">
             <div>
-              <span>{mcp.servers.length} configured</span>
-              <h3>Servers</h3>
+              <span>{mcp.servers.length} 个已配置</span>
+              <h3>服务</h3>
             </div>
           </div>
           <div className="mini-list">
@@ -225,15 +225,15 @@ export function McpPanel({
                 <StatusBadge status={server.configured === false ? "unconfigured" : "implemented"} />
               </article>
             ))}
-            {!mcp.servers.length && <p className="muted">No MCP servers configured.</p>}
+            {!mcp.servers.length && <p className="muted">尚未配置 MCP 服务。</p>}
           </div>
         </div>
 
         <div className="capability-section">
           <div className="section-header">
             <div>
-              <span>{mcp.tools.length} discovered</span>
-              <h3>Dynamic Tools</h3>
+              <span>{mcp.tools.length} 个已发现</span>
+              <h3>动态工具</h3>
             </div>
           </div>
           <div className="mini-list">
@@ -241,44 +241,44 @@ export function McpPanel({
               <article key={`${tool.server || ""}:${tool.name}`}>
                 <strong>{tool.wrapped_name || tool.name}</strong>
                 <span>{tool.server || "-"} / {tool.name}</span>
-                <p>{tool.description || "No description."}</p>
+                <p>{tool.description || "暂无描述。"}</p>
               </article>
             ))}
-            {!mcp.tools.length && <p className="muted">{mcp.gated ? "Unlock with control token to inspect MCP tools." : "No MCP tools discovered."}</p>}
+            {!mcp.tools.length && <p className="muted">{mcp.gated ? "请使用控制令牌解锁 MCP 工具查看权限。" : "尚未发现 MCP 工具。"}</p>}
           </div>
         </div>
       </section>
 
       <section className="capability-grid three">
         <div className="capability-section">
-          <h3>Resources</h3>
+          <h3>资源</h3>
           <div className="inline-form">
-            <input value={resourceUri} onChange={(event) => setResourceUri(event.target.value)} placeholder="resource uri" />
-            <button aria-label="Read MCP resource" disabled={busy || !controlToken.trim() || !resourceUri.trim() || !(serverName || defaultServer).trim()} onClick={() => run("resource")} title="Read MCP resource" type="button">Read</button>
+            <input value={resourceUri} onChange={(event) => setResourceUri(event.target.value)} placeholder="资源 URI" />
+            <button aria-label="读取 MCP 资源" disabled={busy || !controlToken.trim() || !resourceUri.trim() || !(serverName || defaultServer).trim()} onClick={() => run("resource")} title="读取 MCP 资源" type="button">读取</button>
           </div>
-          <p className="muted">{mcp.resources.length} resources available</p>
+          <p className="muted">可用资源 {mcp.resources.length} 个</p>
         </div>
         <div className="capability-section">
-          <h3>Prompts</h3>
+          <h3>提示词</h3>
           <div className="inline-form">
-            <input value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder="prompt name" />
-            <button aria-label="Get MCP prompt" disabled={busy || !controlToken.trim() || !promptName.trim() || !(serverName || defaultServer).trim()} onClick={() => run("prompt")} title="Get MCP prompt" type="button">Get</button>
+            <input value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder="提示词名称" />
+            <button aria-label="获取 MCP 提示词" disabled={busy || !controlToken.trim() || !promptName.trim() || !(serverName || defaultServer).trim()} onClick={() => run("prompt")} title="获取 MCP 提示词" type="button">获取</button>
           </div>
-          <p className="muted">{mcp.prompts.length} prompts available</p>
+          <p className="muted">可用提示词 {mcp.prompts.length} 个</p>
         </div>
         <div className="capability-section">
           <h3>OAuth</h3>
           <div className="inline-form">
-            <input value={oauthServer} onChange={(event) => setOauthServer(event.target.value)} placeholder="OAuth server name" />
-            <button aria-label="Start MCP OAuth flow" disabled={busy || !controlToken.trim() || !oauthServer.trim()} onClick={() => run("oauth")} title="Start MCP OAuth flow" type="button">Start</button>
+            <input value={oauthServer} onChange={(event) => setOauthServer(event.target.value)} placeholder="OAuth 服务名称" />
+            <button aria-label="启动 MCP OAuth 流程" disabled={busy || !controlToken.trim() || !oauthServer.trim()} onClick={() => run("oauth")} title="启动 MCP OAuth 流程" type="button">启动</button>
           </div>
-          <p className="muted">{mcp.oauth.length} OAuth entries</p>
+          <p className="muted">OAuth 条目 {mcp.oauth.length} 个</p>
         </div>
       </section>
 
       {result !== null && <ActionResult result={result} />}
       <details className="raw-details" onToggle={(event) => setRawOpen(event.currentTarget.open)}>
-        <summary>Raw action result</summary>
+        <summary>原始操作结果</summary>
         {rawOpen && <JsonPanel value={result || { status: "no_action" }} />}
       </details>
     </div>

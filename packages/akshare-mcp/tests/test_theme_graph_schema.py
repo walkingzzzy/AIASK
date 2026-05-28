@@ -1,7 +1,7 @@
 """PR-A smoke tests: theme graph schema + seed idempotency.
 
 This test file is part of the event-driven theme-linkage upgrade plan
-(see ``事件驱动主题联动-结合当前代码升级方案-2026-05-24.md`` Phase 0).
+(see ``docs/event-driven/事件驱动主题联动-结合当前代码升级方案-2026-05-24.md`` Phase 0).
 
 Design principle (Phase 0 verification line 1):
     "新建临时 SQLite 后,真实 adapter 初始化能创建全部事件驱动表"
@@ -457,6 +457,21 @@ async def _seed_tdx_only_exposure_fixture(adapter) -> None:
             """,
             "C002",
             "AI block",
+            "tdx",
+            20,
+        )
+        await conn.execute(
+            """
+            INSERT INTO tdx_relation (code, block_code, block_name, block_type, gp_num)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT(code, block_code) DO UPDATE SET
+                block_name = EXCLUDED.block_name,
+                block_type = EXCLUDED.block_type,
+                gp_num = EXCLUDED.gp_num
+            """,
+            "600999",
+            "C002",
+            "AI block",
             "concept",
             20,
         )
@@ -688,6 +703,109 @@ def test_handle_factory_event_approve_writes_db_state(initialized_db: Path) -> N
     target = next(r for r in rows if r["event_id"] == "test_evt_handler")
     assert target["approver_id"] == "approver_bob"
     assert target["approved_at"], "approved_at should be persisted, not just returned"
+
+
+def test_event_update_patch_and_source_alias_preserve_metadata(initialized_db: Path) -> None:
+    """Status/approval patches must not blank event metadata; source alias works."""
+
+    from akshare_mcp.tools.managers.strategy_mgr_factory_events import (
+        handle_factory_event_approve,
+        handle_factory_event_create,
+        handle_factory_event_list,
+        handle_factory_event_record_outcome,
+        handle_factory_event_update,
+    )
+
+    adapter = _build_adapter(initialized_db)
+
+    async def scenario() -> tuple[dict, dict, dict, dict, dict]:
+        await adapter.initialize()
+        try:
+            created = await handle_factory_event_create(
+                adapter,
+                {
+                    "event_id": "test_evt_patch_safe",
+                    "event_name": "Patch safe event",
+                    "event_type": "policy_shock",
+                    "event_source": "news_llm",
+                    "direction": "positive",
+                    "confidence": 0.84,
+                    "intensity": 0.86,
+                    "primary_themes": [{"theme_code": "ai_compute", "direction": "positive"}],
+                    "valid_from": "2026-05-24T00:00:00+00:00",
+                    "valid_until": "2099-01-01T00:00:00+00:00",
+                    "operator_id": "operator_alice",
+                },
+            )
+            approved = await handle_factory_event_approve(
+                adapter,
+                {"event_id": "test_evt_patch_safe", "approver_id": "approver_bob"},
+            )
+            paused = await handle_factory_event_update(
+                adapter,
+                {"event_id": "test_evt_patch_safe", "action": "pause"},
+            )
+            outcome = await handle_factory_event_record_outcome(
+                adapter,
+                {
+                    "event_id": "test_evt_patch_safe",
+                    "actual_outcome": "mixed",
+                    "outcome_notes": "mixed follow-through",
+                },
+            )
+            listed = await handle_factory_event_list(
+                adapter,
+                {"event_source": "news_llm", "limit": 20},
+            )
+            return created, approved, paused, outcome, listed
+        finally:
+            await adapter.close()
+
+    created, approved, paused, outcome, listed = _run(scenario())
+    assert created["success"] is True
+    assert approved["success"] is True
+    assert paused["success"] is True
+    assert outcome["success"] is True
+    rows = listed["data"]["events"]
+    target = next(row for row in rows if row["event_id"] == "test_evt_patch_safe")
+    assert target["source"] == "news_llm"
+    assert target["status"] == "paused"
+    assert target["event_name"] == "Patch safe event"
+    assert target["event_type"] == "policy_shock"
+    assert target["primary_themes"] == [{"theme_code": "ai_compute", "direction": "positive"}]
+    assert target["valid_from"] == "2026-05-24T00:00:00+00:00"
+    assert target["valid_until"] == "2099-01-01T00:00:00+00:00"
+    assert target["approver_id"] == "approver_bob"
+    assert target["actual_outcome"] == "mixed"
+    assert target["outcome_notes"] == "mixed follow-through"
+
+
+def test_record_outcome_rejects_free_text_enum(initialized_db: Path) -> None:
+    """Outcome contract must reject arbitrary text values."""
+
+    from akshare_mcp.tools.managers.strategy_mgr_factory_events import (
+        handle_factory_event_record_outcome,
+    )
+
+    adapter = _build_adapter(initialized_db)
+
+    async def scenario() -> dict:
+        await adapter.initialize()
+        try:
+            return await handle_factory_event_record_outcome(
+                adapter,
+                {
+                    "event_id": "test_evt_outcome_enum",
+                    "actual_outcome": "market rallied 4%",
+                    "outcome_notes": "free text belongs in notes",
+                },
+            )
+        finally:
+            await adapter.close()
+
+    response = _run(scenario())
+    assert response["success"] is False
+    assert "actual_outcome must be one of" in response["error"]
 
 
 def test_record_outcome_updates_outcome_columns(initialized_db: Path) -> None:
@@ -946,7 +1064,7 @@ def test_tdx_only_company_concept_and_industry_daos(initialized_db: Path) -> Non
 
     adapter = _build_adapter(initialized_db)
 
-    async def scenario() -> tuple[list, list, list]:
+    async def scenario() -> tuple[list, list, list, str]:
         await adapter.initialize()
         try:
             await _seed_tdx_only_exposure_fixture(adapter)
@@ -957,13 +1075,21 @@ def test_tdx_only_company_concept_and_industry_daos(initialized_db: Path) -> Non
                 symbols=["600100"], theme_code="not-present", limit=10
             )
             industries = await adapter.list_industry_blocks(symbols=["600100"], limit=10)
-            return concepts, filtered_out, industries
+            async with adapter.acquire() as conn:
+                c002_market_type = await conn.fetchval(
+                    "SELECT block_type FROM market_blocks WHERE block_code = $1",
+                    "C002",
+                )
+            return concepts, filtered_out, industries, c002_market_type
         finally:
             await adapter.close()
 
-    concepts, filtered_out, industries = _run(scenario())
+    concepts, filtered_out, industries, c002_market_type = _run(scenario())
     assert {row["block_code"] for row in concepts} == {"C001", "C002"}
     assert all(row["symbol"] == "600100" for row in concepts)
+    by_code = {row["block_code"]: row for row in concepts}
+    assert c002_market_type == "tdx"
+    assert by_code["C002"]["block_type"] == "concept"
     assert filtered_out == []
     assert {row["industry_source"] for row in industries} >= {"stocks", "tdx_relation"}
     assert any(row["industry_name"] == "Semiconductor" for row in industries)
@@ -1109,6 +1235,58 @@ def test_theme_exposure_refresh_handler_uses_tdx_only_builder(
     assert "tdx_only_v1" in str(target["evidence"])
 
 
+def test_factory_event_bootstrap_seeds_graph_and_refreshes_exposure(initialized_db: Path) -> None:
+    """Bootstrap action should seed the default graph and refresh exposure."""
+
+    from akshare_mcp.tools.managers.strategy_mgr_factory_events import (
+        handle_factory_event_bootstrap,
+    )
+
+    adapter = _build_adapter(initialized_db)
+
+    async def scenario() -> tuple[dict, dict, list, list, dict]:
+        await adapter.initialize()
+        try:
+            await _seed_tdx_only_exposure_fixture(adapter)
+            first = await handle_factory_event_bootstrap(
+                adapter,
+                {"batch_size": 3, "operator_id": "operator_bootstrap"},
+            )
+            second = await handle_factory_event_bootstrap(
+                adapter,
+                {"batch_size": 3, "refresh_exposure": False},
+            )
+            nodes = await adapter.list_theme_nodes(is_active=True, limit=500)
+            edges = await adapter.list_theme_edges(is_active=True, limit=500)
+            exposure_status = await adapter.get_theme_exposure_status()
+            return first, second, nodes, edges, exposure_status
+        finally:
+            await adapter.close()
+
+    first, second, nodes, edges, exposure_status = _run(scenario())
+    assert first["success"] is True
+    first_data = first["data"]
+    assert first_data["seed"]["status"] == "seeded"
+    assert first_data["seed"]["nodes_inserted"] >= 15
+    assert first_data["seed"]["edges_inserted"] >= 10
+    assert first_data["exposure_refresh"]["status"] == "completed"
+    assert first_data["exposure_refresh"]["source"] == "tdx_only_v1"
+    assert first_data["exposure_refresh"]["rows_written"] >= 1
+    assert first_data["counts"]["theme_nodes"] >= 15
+    assert first_data["counts"]["theme_edges"] >= 10
+    assert first_data["counts"]["theme_exposure_rows"] >= 1
+    assert first_data["availability"]["theme_graph_available"] is True
+    assert first_data["availability"]["theme_exposure_available"] is True
+
+    assert second["success"] is True
+    assert second["data"]["seed"]["status"] == "skipped"
+    assert second["data"]["seed"]["reason"] == "theme_graph_not_empty"
+    assert second["data"]["exposure_refresh"] is None
+    assert len(nodes) >= 15
+    assert len(edges) >= 10
+    assert exposure_status["row_count"] >= 1
+
+
 def test_event_outbox_drain_writes_lineage_once(initialized_db: Path) -> None:
     """Outbox drain must claim, write lineage, mark processed, and dedupe."""
 
@@ -1202,6 +1380,40 @@ def test_theme_regression_run_handler_skips_without_edges(initialized_db: Path) 
     response = _run(scenario())
     assert response["success"] is True
     assert response["data"] == {"status": "skipped", "reason": "no_active_edges"}
+
+
+def test_theme_regression_run_handler_parses_apply_updates(monkeypatch) -> None:
+    """Manual regression writeback stays opt-in and parses bool-like params."""
+
+    from akshare_mcp.tools.managers.strategy_mgr_factory_events import (
+        handle_factory_theme_regression_run,
+    )
+    from strategy_factory.application.research import theme_response_regression
+
+    calls: list[bool] = []
+
+    class FakeRegression:
+        async def run_full_update(self, db, *, apply_updates=False):
+            calls.append(apply_updates)
+            return {
+                "mode": "apply_updates" if apply_updates else "report_only",
+                "apply_updates": apply_updates,
+            }
+
+    monkeypatch.setattr(theme_response_regression, "ThemeResponseRegression", FakeRegression)
+
+    async def scenario() -> tuple[dict, dict]:
+        default = await handle_factory_theme_regression_run(object(), {})
+        explicit = await handle_factory_theme_regression_run(
+            object(),
+            {"apply_updates": "true"},
+        )
+        return default, explicit
+
+    default, explicit = _run(scenario())
+    assert calls == [False, True]
+    assert default["data"]["mode"] == "report_only"
+    assert explicit["data"]["mode"] == "apply_updates"
 
 
 # ---------------------------------------------------------------------------

@@ -109,24 +109,69 @@ def _calibrate_buy_probability(
     confidence: float,
     style: str,
     volatility: float,
+    *,
+    historical_calibration: dict | None = None,
 ) -> float:
-    """将 score/confidence/波动率压缩为 [0,1] 的买入概率。"""
+    """将 score/confidence/波动率压缩为 [0,1] 的买入概率。
+
+    P2-4.3.1 enhancement(诊断报告 §4.3.1):
+    若 historical_calibration 提供(从 db 读取的过去 N 次预测 vs 实际命中率),
+    则用 sklearn isotonic regression(若装了)做真实校准修正。
+    无 sklearn 时退回 logit baseline。
+    """
     style_bias = {
         "aggressive": 0.15,
         "balanced": 0.0,
         "conservative": -0.15,
     }.get(style, 0.0)
 
-    # 以 60 分为中性点；置信度作为辅助项；波动率越大概率越低
+    # baseline logit 计算(向后兼容)
     score_term = (float(score) - 60.0) / 12.0
     confidence_term = (float(confidence) - 60.0) / 25.0
     vol_term = float(volatility) * 18.0
     logit = score_term + 0.7 * confidence_term - vol_term + style_bias
 
-    # 数值稳定：避免 exp 溢出
     logit = _clamp(logit, -30.0, 30.0)
-    prob = 1.0 / (1.0 + math.exp(-logit))
-    return float(_clamp(prob, 0.0, 1.0))
+    raw_prob = 1.0 / (1.0 + math.exp(-logit))
+
+    # P2-4.3.1: 历史校准修正(若可用)
+    if historical_calibration:
+        calibrated = _apply_isotonic_calibration(raw_prob, historical_calibration)
+        if calibrated is not None:
+            return float(_clamp(calibrated, 0.0, 1.0))
+
+    return float(_clamp(raw_prob, 0.0, 1.0))
+
+
+def _apply_isotonic_calibration(raw_prob: float, history: dict) -> float | None:
+    """P2-4.3.1: 使用 sklearn isotonic regression 校准 raw_prob。
+
+    Args:
+        raw_prob: logit baseline 输出的 [0,1] 概率
+        history: dict 含 'predicted_probs' (list[float]) + 'actual_hit_rates' (list[0/1])
+
+    Returns:
+        校准后 [0,1],或 None(sklearn 不可用 / 历史样本不足)
+    """
+    try:
+        from sklearn.isotonic import IsotonicRegression
+    except ImportError:
+        return None
+
+    pred = history.get("predicted_probs") or []
+    actual = history.get("actual_hit_rates") or []
+    if not pred or len(pred) != len(actual) or len(pred) < 30:
+        return None  # 样本太少,不做校准
+
+    try:
+        iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+        iso.fit(pred, actual)
+        calibrated = iso.predict([float(raw_prob)])
+        if calibrated is not None and len(calibrated) > 0:
+            return float(calibrated[0])
+    except Exception:
+        return None
+    return None
 
 
 
@@ -191,6 +236,11 @@ def _build_threshold_backtest(
     for threshold in thresholds:
         subset = [p for p in points if p[0] >= float(threshold)]
         sample_count = len(subset)
+        # P2-4.3.2 fix(诊断报告 §4.3.2):sample_count<10 时 emit warning
+        # 历史问题:threshold=80 sample=3 严重不足,但 hit_rate=0% 当作"严格阈值不收敛"误导 AI
+        warnings: list[str] = []
+        if 0 < sample_count < 10:
+            warnings.append(f"insufficient_sample_count={sample_count} (<10), hit_rate unreliable")
         if sample_count == 0:
             reports.append(
                 {
@@ -198,6 +248,8 @@ def _build_threshold_backtest(
                     "sample_count": 0,
                     "hit_rate": None,
                     "avg_forward_return": None,
+                    "warnings": ["zero_sample_no_inference"],
+                    "reliable": False,
                 }
             )
             continue
@@ -209,8 +261,29 @@ def _build_threshold_backtest(
                 "sample_count": int(sample_count),
                 "hit_rate": float(win_count / sample_count),
                 "avg_forward_return": float(avg_ret),
+                "warnings": warnings,
+                "reliable": sample_count >= 10,
             }
         )
+    # P2-4.3.2 fix:整体反向矛盾检测
+    # 期望:严格阈值 (80) 应有 ≥ 宽松阈值 (40) 的 hit_rate
+    # 实测反向 → emit threshold_inversion warning
+    reliable_reports = [r for r in reports if r.get("reliable")]
+    if len(reliable_reports) >= 2:
+        sorted_by_threshold = sorted(reliable_reports, key=lambda r: r["threshold"])
+        rates = [r["hit_rate"] for r in sorted_by_threshold]
+        is_inverted = all(rates[i] >= rates[i + 1] - 0.05 for i in range(len(rates) - 1)) is False
+        # 上面 logic 简化,实际看是否有 strict_threshold_hit < lenient_threshold_hit
+        for i in range(len(sorted_by_threshold) - 1):
+            r_lenient = sorted_by_threshold[i]
+            r_strict = sorted_by_threshold[i + 1]
+            if r_strict["hit_rate"] < r_lenient["hit_rate"] - 0.05:
+                # 在 strict report 上加 inversion warning
+                r_strict.setdefault("warnings", []).append(
+                    f"threshold_inversion: stricter threshold {r_strict['threshold']} "
+                    f"hit_rate={r_strict['hit_rate']:.3f} < lenient {r_lenient['threshold']} "
+                    f"hit_rate={r_lenient['hit_rate']:.3f}"
+                )
     return reports
 
 

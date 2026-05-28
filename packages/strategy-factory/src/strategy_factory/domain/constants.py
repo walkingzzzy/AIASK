@@ -808,7 +808,12 @@ PIPELINE_STAGE_MAX_TOKENS: Dict[str, int] = {
     "theme_propagation": 600,
     "exposure_mapping": 800,
     "market_confirmation": 600,
-    "strategy_generation": 1200,
+    # 2026-05-28 (P0/C): bumped from 1200 → 4000 to accommodate
+    # evidence_chain + prediction_contract + confidence_contract auto-backfill
+    # which adds ~2500 chars of additional output per candidate when EVIDENCE_CONTRACT_ENABLED=1.
+    # JSON truncation at 1200 tokens caused 'external llm response missing candidates'
+    # ValueError storms after enabling evidence contract toggle.
+    "strategy_generation": 4000,
 }
 
 PIPELINE_STAGE_TEMPERATURE: Dict[str, float] = {

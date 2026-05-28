@@ -56,6 +56,7 @@ from aiask_agent.tool_risk import (
         "factory_event_update",
         "factory_event_approve",
         "factory_event_record_outcome",
+        "factory_event_bootstrap",
         "factory_theme_exposure_refresh",
         "factory_event_outbox_drain",
         "factory_theme_regression_run",
@@ -102,6 +103,7 @@ def test_factory_event_read_actions_are_idempotent(action: str) -> None:
         "factory_event_update",
         "factory_event_approve",
         "factory_event_record_outcome",
+        "factory_event_bootstrap",
         "factory_theme_exposure_refresh",
         "factory_event_outbox_drain",
         "factory_theme_regression_run",
@@ -256,6 +258,41 @@ def test_intent_chain_dispatches_factory_event_outbox_drain(tmp_path, monkeypatc
     confirmed = asyncio.run(executor.confirm(intent["intent_id"]))
     assert confirmed["success"] is True, confirmed
     assert captured == [{"action": "factory_event_outbox_drain", "params": payload}]
+
+
+def test_intent_chain_dispatches_factory_event_bootstrap(tmp_path, monkeypatch) -> None:
+    """Bootstrap is a stateful maintenance action and must dispatch via confirm."""
+
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    executor = IntentExecutor(store)
+
+    payload = {"batch_size": 1000, "refresh_exposure": True}
+    intent = store.create(
+        action="strategy_manager.factory_event_bootstrap",
+        params=payload,
+        user_id="operator_ops",
+    )
+    assert intent["status"] == "awaiting_confirmation"
+    assert intent["target_tool"] == "strategy_manager"
+    assert intent["target_action"] == "factory_event_bootstrap"
+
+    captured: list[dict] = []
+
+    async def fake_executor(action: str, params: dict | None = None) -> dict:
+        captured.append({"action": action, "params": dict(params or {})})
+        return {
+            "success": True,
+            "data": {"seed": {"status": "seeded"}, "availability": {"available": True}},
+            "error": None,
+        }
+
+    from aiask_agent.adapters import strategy_factory
+
+    monkeypatch.setattr(strategy_factory, "execute_confirmed_action", fake_executor)
+
+    confirmed = asyncio.run(executor.confirm(intent["intent_id"]))
+    assert confirmed["success"] is True, confirmed
+    assert captured == [{"action": "factory_event_bootstrap", "params": payload}]
 
 
 # ---------------------------------------------------------------------------

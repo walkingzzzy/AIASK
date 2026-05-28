@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuantResearchWorkspace } from "./QuantResearchWorkspace";
 
@@ -82,6 +82,7 @@ const blockedRunPayload = {
 
 describe("QuantResearchWorkspace", () => {
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
   });
 
@@ -116,12 +117,46 @@ describe("QuantResearchWorkspace", () => {
       expect(screen.getByText("Configure a writable SQLite database path to enable full quant research.")).toBeInTheDocument()
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Run research/i }));
+    fireEvent.click(screen.getByRole("button", { name: /运行研究/ }));
 
     await waitFor(() => expect(screen.getByText("qr_test_1")).toBeInTheDocument());
     expect(screen.getByText("data gate")).toBeInTheDocument();
     expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/NOT_INVESTMENT_ADVICE/).length).toBeGreaterThan(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads a historical quant report by research id", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/desktop/quant/presets")) {
+        return new Response(JSON.stringify(presetsPayload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.endsWith("/v1/desktop/quant/research-runs/qr_history/report")) {
+        return new Response(
+          JSON.stringify({
+            object: "aiask.quant_research_report",
+            research_id: "qr_history",
+            status: "completed",
+            summary: { benchmark: "000905", universe_size: 3, factor_count: 2 },
+            disclaimer: "NOT_INVESTMENT_ADVICE"
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
+    });
+
+    render(<QuantResearchWorkspace endpoint="http://127.0.0.1:8767" apiToken="" />);
+
+    await waitFor(() => expect(screen.getByPlaceholderText("research_id")).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText("research_id"), { target: { value: "qr_history" } });
+    fireEvent.click(screen.getByRole("button", { name: /加载报告/ }));
+
+    await waitFor(() => expect(screen.getByText("qr_history")).toBeInTheDocument());
+    expect(screen.getByText("000905")).toBeInTheDocument();
   });
 });

@@ -610,21 +610,33 @@ def register(mcp):
         """
         try:
             db = get_db()
+            user_upserted_actual = False
             async with db.acquire() as conn:
-                # P3-5.18 fix: update_user_profile 自动 upsert users 表(诊断报告 §5.18)
+                # P3-5.18 / P3-B7 fix: update_user_profile 自动 upsert users 表(对话式复测发现)
                 # 历史问题:profile 写 user_profile_snapshots,但 db.users 表不会自动注册
-                # AI 调 list_users 看不到该用户,但 get_user_profile 能拿到 profile
-                # 修复:先 upsert users 实体,后写 snapshot
+                #          AI 调 list_users 看不到该用户,但 get_user_profile 能拿到 profile
+                # 真实 schema:users(id, username, email, settings, created_at, updated_at)
+                #          (而非 user_id, source —— 早期假设错误,导致 INSERT 全跪 silent)
+                # 修复:与 user_manager._upsert_minimal_user 保持一致,使用 (id, username, settings, ...)
                 try:
-                    await conn.execute(
-                        """INSERT INTO users (user_id, source)
-                           VALUES ($1, 'ai_inference_upsert')
-                           ON CONFLICT (user_id) DO NOTHING""",
+                    res = await conn.execute(
+                        """INSERT INTO users (id, username, settings, created_at, updated_at)
+                           VALUES ($1, $1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                           ON CONFLICT (id) DO NOTHING""",
                         user_id,
                     )
-                except Exception:
-                    # users 表可能 schema 不同,降级 silent skip
-                    pass
+                    # asyncpg-like 返回 "INSERT 0 1" or "INSERT 0 0",sqlite adapter 返回不同格式
+                    user_upserted_actual = True
+                except Exception as exc_user:
+                    # 仅在调试场景输出,不应静默
+                    try:
+                        from ..utils import safe_stderr_print
+                        safe_stderr_print(
+                            f"[update_user_profile] users upsert failed: "
+                            f"{type(exc_user).__name__}: {exc_user}"
+                        )
+                    except Exception:
+                        pass
                 await conn.execute(
                     """INSERT INTO user_profile_snapshots
                        (user_id, neuroticism, openness, herd_tendency, greed_fear_axis, confidence, source)
@@ -636,7 +648,12 @@ def register(mcp):
                     max(-1.0, min(1.0, greed_fear_axis)),
                     max(0.0, min(1.0, confidence)),
                 )
-            return ok({'user_id': user_id, 'recorded': True, 'user_upserted': True})
+            return ok({
+                'user_id': user_id,
+                'recorded': True,
+                # 仅当 users 表 upsert 真的成功(非 silent 跳过)才标 true
+                'user_upserted': user_upserted_actual,
+            })
         except Exception as e:
             return fail(str(e))
 
@@ -668,8 +685,21 @@ def register(mcp):
             total_weight = 0.0
             weighted = {'neuroticism': 0.0, 'openness': 0.0, 'herd_tendency': 0.0, 'greed_fear_axis': 0.0, 'confidence': 0.0}
 
+            tz_warnings: list[dict] = []
             for row in rows:
-                created_at = _to_utc_datetime(row['created_at']) or now
+                # P3-5.17 fix: tzinfo AttributeError 转成 warning(诊断报告 §5.17)
+                # 历史问题: row['created_at'] 偶有 str 型(SQLite/PG 模式不一),触发 'str.tzinfo' AttributeError 透出
+                try:
+                    created_at = _to_utc_datetime(row['created_at']) or now
+                except AttributeError as ae:
+                    created_at = now
+                    tz_warnings.append({
+                        'code': 'created_at_type_unsupported',
+                        'message': f'created_at 字段类型异常: {ae}; 使用 now 作为 fallback',
+                        'severity': 'info',
+                    })
+                except Exception:
+                    created_at = now
                 age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
                 w = math.exp(-decay_rate * age_days)
                 total_weight += w
@@ -683,12 +713,15 @@ def register(mcp):
             latest = dict(rows[0])
             latest['created_at'] = str(latest['created_at'])
 
-            return ok({
+            response = {
                 'user_id': user_id,
                 'weighted_profile': weighted,
                 'latest_snapshot': latest,
                 'snapshot_count': len(rows),
-            })
+            }
+            if tz_warnings:
+                response['warnings'] = tz_warnings
+            return ok(response)
         except Exception as e:
             return fail(str(e))
 

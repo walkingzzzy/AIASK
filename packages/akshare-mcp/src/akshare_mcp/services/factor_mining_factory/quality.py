@@ -2,14 +2,22 @@
 
 The factory is intentionally conservative: a factor without enough observable
 cross-section IC evidence must not become consumable by strategy generation.
+
+P1-5 fix (诊断报告 §S19-F12 / §S21 quality_baseline):
+  - 默认 strict 阈值不变(60 sample_dates / 80 avg_cross_section / 60 ic_history_rows)
+  - 新增 AKSHARE_QUALITY_PROFILE 环境变量,值可选 strict / lite / minimum
+  - lite 适用于 db 数据稀疏的早期开发期 (factor_ic_history < 5000 rows)
+  - minimum 仅用于 smoke test,不应在生产使用
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
-QUALITY_THRESHOLDS: dict[str, float] = {
+# 默认严苛阈值 (生产标准)
+_STRICT_THRESHOLDS: dict[str, float] = {
     "min_sample_dates": 60.0,
     "min_avg_cross_section_n": 80.0,
     "min_ic_history_rows": 60.0,
@@ -17,6 +25,51 @@ QUALITY_THRESHOLDS: dict[str, float] = {
     "min_rank_ic_ir": 0.25,
     "min_positive_ratio": 0.52,
 }
+
+# Lite 阈值 (开发期 / 数据稀疏期可用,但不应 promote 到 live trading)
+_LITE_THRESHOLDS: dict[str, float] = {
+    "min_sample_dates": 30.0,
+    "min_avg_cross_section_n": 30.0,
+    "min_ic_history_rows": 20.0,
+    "min_abs_rank_ic_mean": 0.015,
+    "min_rank_ic_ir": 0.10,
+    "min_positive_ratio": 0.50,
+}
+
+# Minimum 阈值 (仅用于 smoke test / unit test,不应 promote 任何因子)
+_MINIMUM_THRESHOLDS: dict[str, float] = {
+    "min_sample_dates": 10.0,
+    "min_avg_cross_section_n": 10.0,
+    "min_ic_history_rows": 5.0,
+    "min_abs_rank_ic_mean": 0.005,
+    "min_rank_ic_ir": 0.05,
+    "min_positive_ratio": 0.45,
+}
+
+
+def _resolve_quality_profile() -> str:
+    """Resolve quality profile from env: strict | lite | minimum.
+
+    Default: strict (production standard).
+    """
+    raw = os.getenv("AKSHARE_QUALITY_PROFILE", "strict").strip().lower()
+    if raw in ("strict", "lite", "minimum"):
+        return raw
+    return "strict"
+
+
+def _resolve_thresholds(profile: str | None = None) -> dict[str, float]:
+    profile = (profile or _resolve_quality_profile()).strip().lower()
+    if profile == "lite":
+        return dict(_LITE_THRESHOLDS)
+    if profile == "minimum":
+        return dict(_MINIMUM_THRESHOLDS)
+    return dict(_STRICT_THRESHOLDS)
+
+
+# Public alias kept for backward compatibility (callers reference this dict directly)
+QUALITY_THRESHOLDS: dict[str, float] = _resolve_thresholds()
+QUALITY_PROFILE_ACTIVE: str = _resolve_quality_profile()
 
 
 PROMOTION_CRITERIA: dict[str, Any] = {

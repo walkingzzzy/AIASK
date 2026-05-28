@@ -62,13 +62,20 @@ class MarketOpportunityScanner(
         manual_event_meta: dict = {}
         try:
             from .research.event_task_generator import generate_tasks_from_active_events
-            manual_event_result = await generate_tasks_from_active_events(db, snapshot)
-            if manual_event_result.get("enabled") and manual_event_result.get("tasks"):
-                manual_event_tasks = list(manual_event_result["tasks"])
+            manual_event_result = await generate_tasks_from_active_events(
+                db,
+                snapshot,
+                claim_outbox=True,
+            )
+            if manual_event_result.get("enabled"):
+                manual_event_tasks = list(manual_event_result.get("tasks") or [])
                 manual_event_meta = {
                     "manual_event_count": int(manual_event_result.get("event_count") or 0),
                     "manual_event_task_count": len(manual_event_tasks),
                     "manual_event_impact_count": int(manual_event_result.get("impact_count") or 0),
+                    "manual_event_outbox_claimed": int(manual_event_result.get("outbox_claimed") or 0),
+                    "manual_event_outbox_skipped": int(manual_event_result.get("outbox_skipped") or 0),
+                    "manual_event_outbox_failed": int(manual_event_result.get("outbox_failed") or 0),
                 }
         except Exception as exc:
             import logging

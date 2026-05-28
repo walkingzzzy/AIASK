@@ -3,7 +3,7 @@ import type { ElementType } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useCapabilityWorkbench } from "../../hooks/useCapabilityWorkbench";
 import type { CapabilityTab, CapabilityWorkbenchPayload } from "../../types";
-import { JsonPanel, MetricCard, StatusBadge } from "../../components/shared";
+import { JsonPanel, MetricCard, StatusBadge, localizeBlockedReason } from "../../components/shared";
 import { AiTestingPanel } from "../ai-testing/AiTestingPanel";
 import { ConnectorsPanel } from "../connectors/ConnectorsPanel";
 import { IncubationFactoryPanel } from "../incubation/IncubationFactoryPanel";
@@ -16,28 +16,28 @@ import { PluginsPanel } from "./PluginsPanel";
 import { capabilityIssues, collectCapabilityRows, itemLabel } from "./capabilityUtils";
 
 const tabs: Array<{ id: CapabilityTab; label: string; icon: ElementType }> = [
-  { id: "overview", label: "Overview", icon: Activity },
-  { id: "coverage", label: "Coverage Matrix", icon: ShieldCheck },
-  { id: "connectors", label: "Connectors", icon: Cable },
+  { id: "overview", label: "总览", icon: Activity },
+  { id: "coverage", label: "覆盖矩阵", icon: ShieldCheck },
+  { id: "connectors", label: "连接器", icon: Cable },
   { id: "hermes", label: "Hermes", icon: Boxes },
   { id: "mcp", label: "MCP", icon: ServerCog },
-  { id: "factory", label: "Strategy Factory", icon: Factory },
-  { id: "incubation", label: "Incubation", icon: FlaskConical },
-  { id: "skills", label: "Skills", icon: Layers3 },
-  { id: "plugins", label: "Plugins", icon: Puzzle },
-  { id: "ai", label: "AI Tests", icon: BrainCircuit }
+  { id: "factory", label: "策略工厂", icon: Factory },
+  { id: "incubation", label: "孵化", icon: FlaskConical },
+  { id: "skills", label: "技能", icon: Layers3 },
+  { id: "plugins", label: "插件", icon: Puzzle },
+  { id: "ai", label: "AI 测试", icon: BrainCircuit }
 ];
 
 function sourceMeta(source?: string | null): { status: string; label: string } {
-  if (source === "mock_fixture") return { status: "fixture_degraded", label: "Mock fixture" };
-  if (source === "gated") return { status: "gated", label: "Gated live backend" };
-  if (source === "offline") return { status: "offline", label: "Offline" };
-  return { status: "live_backend", label: "Live backend" };
+  if (source === "mock_fixture") return { status: "fixture_degraded", label: "Mock 数据" };
+  if (source === "gated") return { status: "gated", label: "真实后端受限" };
+  if (source === "offline") return { status: "offline", label: "离线" };
+  return { status: "live_backend", label: "真实后端" };
 }
 
 function summaryStatusMeta(status?: string | null): { status: string; label: string } {
-  if (status === "in_progress") return { status: "live_pending", label: "code parity complete, live pending" };
-  if (!status) return { status: "not_loaded", label: "not loaded" };
+  if (status === "in_progress") return { status: "live_pending", label: "代码对齐完成，等待真实验证" };
+  if (!status) return { status: "not_loaded", label: "未加载" };
   return { status, label: status };
 }
 
@@ -54,9 +54,9 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
     <div className="capability-stack">
       <div className="capability-banner">
         <div>
-          <span>Capabilities</span>
-          <h2>Runtime review board</h2>
-          <p>Review backend parity, MCP discovery, factories, skills, plugins, and AI checks from the active Agent endpoint.</p>
+          <span>能力中心</span>
+          <h2>运行时评审面板</h2>
+          <p>从当前 Agent 端点统一查看后端对齐、MCP 发现、工厂、技能、插件和 AI 检查结果。</p>
         </div>
         <div className="status-cluster">
           <StatusBadge status={sourceBadge.status} label={sourceBadge.label} />
@@ -65,18 +65,18 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       </div>
 
       <div className="diagnostics-summary wide">
-        <MetricCard label="Implemented" value={counts.implemented || 0} status="implemented" />
-        <MetricCard label="Live unverified" value={counts.live_unverified || 0} status="live_unverified" />
-        <MetricCard label="Unconfigured" value={counts.unconfigured || 0} status="unconfigured" />
-        <MetricCard label="Failed/Missing" value={(counts.failed || 0) + (counts.missing || 0)} status={(counts.failed || 0) + (counts.missing || 0) ? "failed" : "implemented"} />
+        <MetricCard label="已实现" value={counts.implemented || 0} status="implemented" />
+        <MetricCard label="真实未验" value={counts.live_unverified || 0} status="live_unverified" />
+        <MetricCard label="未配置" value={counts.unconfigured || 0} status="unconfigured" />
+        <MetricCard label="失败/缺失" value={(counts.failed || 0) + (counts.missing || 0)} status={(counts.failed || 0) + (counts.missing || 0) ? "failed" : "implemented"} />
       </div>
 
       {financialSystem && (
         <div className="capability-section compact-section">
           <div className="section-header">
             <div>
-              <span>Financial system gate</span>
-              <h3>Production readiness</h3>
+              <span>金融系统闸门</span>
+              <h3>生产就绪状态</h3>
             </div>
             <StatusBadge status={financialSystem.status} label={financialSystem.production_ready ? "production ready" : financialSystem.status} />
           </div>
@@ -97,14 +97,14 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       {payload && (
         <div className="capability-section compact-section">
           <div className="kv-grid">
-            <span>Full mode</span>
-            <strong>{control?.full_mode_enabled ? "enabled" : "disabled"}</strong>
-            <span>Control token</span>
-            <strong>{control?.control_token_configured ? "configured" : "not configured"}</strong>
-            <span>Control authorized</span>
+            <span>Full mode 模式</span>
+            <strong>{control?.full_mode_enabled ? "已开启" : "未开启"}</strong>
+            <span>控制令牌</span>
+            <strong>{control?.control_token_configured ? "已配置" : "未配置"}</strong>
+            <span>控制授权</span>
             <strong>{String(control?.control_authorized ?? control?.authorized ?? false)}</strong>
-            <span>Gated reason</span>
-            <strong>{control?.gated_reason || control?.reason || "-"}</strong>
+            <span>受限原因</span>
+            <strong>{localizeBlockedReason(control?.gated_reason || control?.reason) || "-"}</strong>
           </div>
         </div>
       )}
@@ -112,7 +112,7 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       {!payload?.summary.control.authorized && (
         <div className="notice warn">
           <ShieldCheck size={15} />
-          {payload?.summary.control.gated_reason || payload?.summary.control.reason || "Control token is required for full MCP, skills, plugins, gateway, terminal, and RL data."}
+          {localizeBlockedReason(payload?.summary.control.gated_reason || payload?.summary.control.reason) || "需要控制令牌才能查看完整 MCP、技能、插件、网关、终端和 RL 数据。"}
         </div>
       )}
 
@@ -120,27 +120,27 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
         <div className="capability-section">
           <div className="section-header">
             <div>
-              <span>{issues.length} issues</span>
-              <h3>Actionable gaps</h3>
+              <span>{issues.length} 个问题</span>
+              <h3>可处理缺口</h3>
             </div>
           </div>
           <div className="mini-list">
             {issues.slice(0, 12).map((issue) => (
               <article key={`${itemLabel(issue)}:${issue.area || ""}`}>
                 <strong>{itemLabel(issue)}</strong>
-                <span>{issue.area || issue.status || "capability"}</span>
-                <p>{Array.isArray(issue.missing_aiask_tools) ? issue.missing_aiask_tools.join(", ") : issue.error || "Needs configuration or implementation."}</p>
+                <span>{issue.area || issue.status || "能力"}</span>
+                <p>{Array.isArray(issue.missing_aiask_tools) ? issue.missing_aiask_tools.join(", ") : issue.error || "需要配置或实现。"}</p>
               </article>
             ))}
-            {!issues.length && <p className="muted">No code-level gaps in the current capability ledger.</p>}
+            {!issues.length && <p className="muted">当前能力台账没有代码层缺口。</p>}
           </div>
         </div>
 
         <div className="capability-section">
           <div className="section-header">
             <div>
-              <span>{rows.length} checks</span>
-              <h3>Recent readiness rows</h3>
+              <span>{rows.length} 项检查</span>
+              <h3>最近就绪条目</h3>
             </div>
           </div>
           <div className="mini-list">
@@ -156,7 +156,7 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       </section>
 
       <details className="raw-details">
-        <summary>Raw capability workbench</summary>
+        <summary>原始能力中心数据</summary>
         <p className="status-line">{message || "ready"}</p>
         <JsonPanel value={payload || { status: "not_loaded" }} />
       </details>
@@ -192,15 +192,15 @@ export function CapabilitiesWorkspace({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Capability Workbench</span>
-          <h1>Runtime review</h1>
+          <span>能力中心</span>
+          <h1>运行时评审</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={sourceBadge.status} label={sourceBadge.label} />
           <StatusBadge status={summaryBadge.status} label={summaryBadge.label} />
-          <button aria-label="Refresh capability review" className="small-button" disabled={busy} onClick={() => refresh()} title="Refresh capability review" type="button">
+          <button aria-label="刷新能力评审" className="small-button" disabled={busy} onClick={() => refresh()} title="刷新能力评审" type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -229,8 +229,8 @@ export function CapabilitiesWorkspace({
         {!payload && busy && (
           <div className="empty-thread">
             <Bot size={28} />
-            <strong>Loading capabilities</strong>
-            <span>Reading Hermes parity, MCP, strategy factory, skills, and AI diagnostics.</span>
+            <strong>正在加载能力</strong>
+            <span>正在读取 Hermes 对齐、MCP、策略工厂、技能和 AI 诊断。</span>
           </div>
         )}
         {activeTab === "overview" && <Overview payload={payload} message={message} />}

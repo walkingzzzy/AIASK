@@ -87,3 +87,31 @@ def test_stock_strategy_matrix_respects_explicit_candidate_codes(monkeypatch):
     assert summary["requested_target_codes"] == ["600519", "000001"]
     assert summary["loaded_stock_count"] == 2
     assert _task_codes(report) <= {"600519", "000001"}
+
+
+def test_factor_rank_validation_expands_sample_panel_for_statistical_gate():
+    from strategy_factory.domain.targets import _resolve_strategy_sample_selection
+
+    selection = _resolve_strategy_sample_selection(
+        "value_factor",
+        {
+            "target_symbols": ["603979", "603993", "688009", "688187"],
+            "stock_pool": {
+                "selection_mode": "explicit",
+                "symbols": ["603979", "603993", "688009", "688187"],
+            },
+            "validation_profile": {
+                "profile": "factor_rank_validation",
+                "validation_focus": "candidate_target_only",
+                "primary_validation_layer": "target",
+            },
+        },
+    )
+
+    assert selection["requested_sample_size"] == 6
+    assert selection["effective_sample_size"] == 12
+    assert selection["statistical_sample_min"] == 12
+    assert selection["statistical_sample_expanded"] is True
+    assert selection["sample_code_count"] >= 10
+    assert selection["sample_codes"][:4] == ["603979", "603993", "688009", "688187"]
+    assert selection["sample_selection_mode"] == "target_plus_dynamic_family_peer"

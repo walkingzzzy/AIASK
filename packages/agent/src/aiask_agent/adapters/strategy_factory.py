@@ -234,6 +234,32 @@ async def strategy_domain_events(arguments: dict[str, Any]) -> dict[str, Any]:
     return _read_only_fallback("domain_events", result)
 
 
+async def _factory_event_read(action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    params = dict(arguments or {})
+    result = await _call_db_facade(lambda action=action: _load_factory_event_handler(action), params)
+    return _read_only_fallback(action, result)
+
+
+async def factory_event_list(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _factory_event_read("factory_event_list", arguments)
+
+
+async def factory_event_preview_tasks(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _factory_event_read("factory_event_preview_tasks", arguments)
+
+
+async def factory_event_lineage(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _factory_event_read("factory_event_lineage", arguments)
+
+
+async def factory_theme_exposure_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _factory_event_read("factory_theme_exposure_status", arguments)
+
+
+async def factory_event_outbox_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _factory_event_read("factory_event_outbox_status", arguments)
+
+
 async def incubation_factory_status(arguments: dict[str, Any]) -> dict[str, Any]:
     """Read-only adapter to the incubation factory runner status."""
     try:
@@ -283,6 +309,7 @@ async def execute_confirmed_action(action: str, params: dict[str, Any] | None = 
         "factory_event_update",
         "factory_event_approve",
         "factory_event_record_outcome",
+        "factory_event_bootstrap",
         "factory_theme_exposure_refresh",
         "factory_event_outbox_drain",
         "factory_theme_regression_run",

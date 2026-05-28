@@ -6,12 +6,28 @@
 3. 孵化流水线评估与阶段推进
 4. 命中率报告生成
 5. 反馈写入（供策略工厂读取）
+
+2026-05-28 解耦升级 (P0/A 方案):
+    孵化工厂现在 owns paper-trading runtime daemons (MatchingEngine + NavEngine)。
+    之前这两个 daemon 仅由 MCP server 启动 (server.py:_launch_sync_background_services),
+    导致 supervisor 模式下没有 MCP server 时撮合永不执行。现在守护进程入口在
+    run_daemon() 启动时自动拉起 MatchingEngine + NavEngine,优雅退出时关闭。
+
+    Env toggle:
+      INCUBATION_FACTORY_OWNS_PAPER_TRADING=1 (默认开)
+        启用孵化工厂内嵌的 MatchingEngine + NavEngine。
+      MATCHING_ENGINE_ENABLED / NAV_ENGINE_ENABLED 仍按各自子组件 env toggle 走。
+
+    避免双跑:
+      MCP server (server.py) 检查 INCUBATION_FACTORY_OWNS_PAPER_TRADING,
+      为 1 时 server 不再启动 MatchingEngine / NavEngine,留给孵化工厂启动。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -43,6 +59,13 @@ ERROR_BACKOFF_SEC = 300
 HEARTBEAT_INTERVAL_SEC = 3600
 
 
+def _as_bool(value: Optional[str]) -> bool:
+    """ENV bool 解析,与 server.py:_as_bool 等价。"""
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class IncubationFactoryRunner:
     """孵化工厂独立运行器。
 
@@ -57,10 +80,20 @@ class IncubationFactoryRunner:
         run_time: dt_time = DEFAULT_RUN_TIME,
         dry_run: bool = False,
         auto_apply_review: bool = True,
+        owns_paper_trading: Optional[bool] = None,
     ):
         self.run_time = run_time
         self.dry_run = dry_run
         self.auto_apply_review = auto_apply_review
+
+        # 孵化工厂是否拥有 paper-trading runtime (MatchingEngine + NavEngine)。
+        # 默认从 ENV 读 INCUBATION_FACTORY_OWNS_PAPER_TRADING (默认开),
+        # dry_run 模式下强制关闭避免误撮合。
+        if owns_paper_trading is None:
+            owns_paper_trading = _as_bool(
+                os.getenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
+            )
+        self.owns_paper_trading = bool(owns_paper_trading) and not dry_run
 
         # 子模块
         self._intake = IncubationIntake()
@@ -72,11 +105,93 @@ class IncubationFactoryRunner:
         self._accelerator = IncubationAccelerator()
         self._alert_monitor = AlertMonitor()
 
+        # Paper-trading runtime daemons (lazy 初始化,start/shutdown 动作时按需 import)
+        self._matching_engine: Any = None
+        self._nav_engine: Any = None
+        self._paper_trading_started: bool = False
+
         # 运行状态
         self._last_run_at: Optional[datetime] = None
         self._last_result: Optional[dict[str, Any]] = None
         self._run_count: int = 0
         self._error_count: int = 0
+
+    async def _start_paper_trading_daemons(self) -> None:
+        """启动 MatchingEngine + NavEngine 后台 daemon。
+
+        每个组件遵守自己 ENV toggle:
+            MATCHING_ENGINE_ENABLED (默认 true)
+            NAV_ENGINE_ENABLED (默认 true)
+        失败不抛异常,仅 warn,允许孵化工厂继续运行(只是没撮合)。
+        """
+        if not self.owns_paper_trading:
+            logger.info(
+                "IncubationFactory: skipping paper-trading daemons (owns_paper_trading=%s, dry_run=%s)",
+                self.owns_paper_trading,
+                self.dry_run,
+            )
+            return
+        if self._paper_trading_started:
+            return
+
+        # MatchingEngine
+        if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
+            try:
+                from ..matching_engine import get_matching_engine
+                self._matching_engine = get_matching_engine()
+                self._matching_engine.start()
+                logger.info("IncubationFactory: MatchingEngine started (owned by incubation_factory)")
+            except Exception as exc:
+                logger.warning("IncubationFactory: MatchingEngine failed to start: %s", exc)
+                self._matching_engine = None
+        else:
+            logger.info("IncubationFactory: MatchingEngine disabled by env (MATCHING_ENGINE_ENABLED=0)")
+
+        # NavEngine
+        if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
+            try:
+                from ..nav_engine import get_nav_engine
+                self._nav_engine = get_nav_engine()
+                self._nav_engine.start()
+                logger.info("IncubationFactory: NavEngine started (owned by incubation_factory)")
+            except Exception as exc:
+                logger.warning("IncubationFactory: NavEngine failed to start: %s", exc)
+                self._nav_engine = None
+        else:
+            logger.info("IncubationFactory: NavEngine disabled by env (NAV_ENGINE_ENABLED=0)")
+
+        self._paper_trading_started = True
+
+    async def _stop_paper_trading_daemons(self) -> None:
+        """优雅关闭 paper-trading daemon。"""
+        if not self._paper_trading_started:
+            return
+
+        if self._matching_engine is not None:
+            try:
+                shutdown = getattr(self._matching_engine, "shutdown", None)
+                if callable(shutdown):
+                    await shutdown(grace_sec=2.0)
+                else:
+                    self._matching_engine.stop()
+                logger.info("IncubationFactory: MatchingEngine stopped")
+            except Exception as exc:
+                logger.warning("IncubationFactory: MatchingEngine shutdown failed: %s", exc)
+            self._matching_engine = None
+
+        if self._nav_engine is not None:
+            try:
+                shutdown = getattr(self._nav_engine, "shutdown", None)
+                if callable(shutdown):
+                    await shutdown(grace_sec=2.0)
+                else:
+                    self._nav_engine.stop()
+                logger.info("IncubationFactory: NavEngine stopped")
+            except Exception as exc:
+                logger.warning("IncubationFactory: NavEngine shutdown failed: %s", exc)
+            self._nav_engine = None
+
+        self._paper_trading_started = False
 
     async def run_once(self) -> dict[str, Any]:
         """单次执行完整孵化周期。
@@ -134,10 +249,21 @@ class IncubationFactoryRunner:
 
             # Phase 2: 加载所有孵化中的策略 (cheap, no timeout)
             incubating = await self._list_incubating(db)
+            # === DEV-V1 P1: 加载 paper observation 策略 ===
+            # toggle OFF 默认时返回空列表,行为与改造前完全一致。
+            paper_observation = await self._list_paper_observation(db)
+            # 给两个集合打 stage 标记,便于 Phase 3 阈值差异化(后续优化用)。
+            for _s in incubating:
+                _s.setdefault("_intake_stage", "incubating")
+            for _s in paper_observation:
+                _s.setdefault("_intake_stage", "paper")
+            # 合并:incubating 优先,paper 其次。limit 由各自独立控制。
+            all_strategies = list(incubating) + list(paper_observation)
             logger.info(
-                "IncubationFactory [%s] Phase 2: %d strategies to verify",
+                "IncubationFactory [%s] Phase 2: %d incubating + %d paper to verify",
                 run_id,
                 len(incubating),
+                len(paper_observation),
             )
 
             # Phase 3: 信号生成 + 前向收益验证 + 指标记录
@@ -146,7 +272,7 @@ class IncubationFactoryRunner:
             verification_errors = 0
             signals_generated_total = 0
 
-            for strategy in incubating:
+            for strategy in all_strategies:
                 sid = str(strategy.get("id") or "").strip()
                 if not sid:
                     continue
@@ -262,7 +388,9 @@ class IncubationFactoryRunner:
                 "elapsed_seconds": round(elapsed, 2),
                 "intake": intake_result,
                 "verification": {
-                    "total": len(incubating),
+                    "total": len(all_strategies),
+                    "incubating_count": len(incubating),
+                    "paper_count": len(paper_observation),
                     "verified": len(verifications),
                     "metrics_recorded": metrics_recorded,
                     "errors": verification_errors,
@@ -343,55 +471,96 @@ class IncubationFactoryRunner:
 
         在指定时间（默认 18:30）执行孵化周期，
         失败后等待 5 分钟重试一次。
+
+        2026-05-28: 启动时自动拉起 MatchingEngine + NavEngine（如果
+        owns_paper_trading=True），优雅退出时关闭。
         """
         logger.info(
-            "IncubationFactory: daemon started (run_time=%s, dry_run=%s)",
+            "IncubationFactory: daemon started (run_time=%s, dry_run=%s, owns_paper_trading=%s)",
             self.run_time,
             self.dry_run,
+            self.owns_paper_trading,
         )
 
-        while True:
-            now = datetime.now()
-            target = now.replace(
-                hour=self.run_time.hour,
-                minute=self.run_time.minute,
-                second=0,
-                microsecond=0,
-            )
-            if now >= target:
-                target += timedelta(days=1)
+        # 启动 paper-trading 后台 daemon (MatchingEngine + NavEngine)
+        await self._start_paper_trading_daemons()
 
-            wait_seconds = (target - now).total_seconds()
-            logger.info(
-                "IncubationFactory: next run at %s (waiting %.0fs)",
-                target.strftime("%Y-%m-%d %H:%M"),
-                wait_seconds,
-            )
-
-            await asyncio.sleep(wait_seconds)
-
-            # 执行孵化周期
-            result = await self.run_once()
-
-            # 如果失败，等待后重试一次
-            if result.get("status") == "failed":
-                logger.warning(
-                    "IncubationFactory: run failed, retrying in %ds",
-                    ERROR_BACKOFF_SEC,
+        try:
+            while True:
+                now = datetime.now()
+                target = now.replace(
+                    hour=self.run_time.hour,
+                    minute=self.run_time.minute,
+                    second=0,
+                    microsecond=0,
                 )
-                await asyncio.sleep(ERROR_BACKOFF_SEC)
-                retry_result = await self.run_once()
-                if retry_result.get("status") == "failed":
-                    logger.error(
-                        "IncubationFactory: retry also failed: %s",
-                        retry_result.get("error"),
+                if now >= target:
+                    target += timedelta(days=1)
+
+                wait_seconds = (target - now).total_seconds()
+                logger.info(
+                    "IncubationFactory: next run at %s (waiting %.0fs)",
+                    target.strftime("%Y-%m-%d %H:%M"),
+                    wait_seconds,
+                )
+
+                await asyncio.sleep(wait_seconds)
+
+                # 执行孵化周期
+                result = await self.run_once()
+
+                # 如果失败，等待后重试一次
+                if result.get("status") == "failed":
+                    logger.warning(
+                        "IncubationFactory: run failed, retrying in %ds",
+                        ERROR_BACKOFF_SEC,
                     )
+                    await asyncio.sleep(ERROR_BACKOFF_SEC)
+                    retry_result = await self.run_once()
+                    if retry_result.get("status") == "failed":
+                        logger.error(
+                            "IncubationFactory: retry also failed: %s",
+                            retry_result.get("error"),
+                        )
+        finally:
+            # 优雅关闭 paper-trading daemon (CancelledError / KeyboardInterrupt 路径)
+            try:
+                await self._stop_paper_trading_daemons()
+            except Exception as exc:
+                logger.warning("IncubationFactory: paper-trading shutdown failed: %s", exc)
 
     async def _list_incubating(self, db: Any) -> list[dict[str, Any]]:
         """加载所有孵化中的策略。"""
         if hasattr(db, "list_strategies"):
             return await db.list_strategies("incubating", limit=200)
         return []
+
+    async def _list_paper_observation(self, db: Any) -> list[dict[str, Any]]:
+        """DEV-V1 P1: 加载所有 paper observation 候选策略.
+
+        与 _list_incubating 并列,但有独立 LIMIT (默认 50) + 优先级排序 + 反 EXISTS 边界。
+        若 INCUBATION_FACTORY_PAPER_INTAKE_ENABLED=0 (默认),返回空列表,行为与改造前完全一致。
+        """
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                paper_intake_enabled,
+                paper_intake_batch_limit,
+            )
+        except Exception:
+            return []
+        if not paper_intake_enabled():
+            return []
+        if not hasattr(db, "list_paper_observation_strategies"):
+            return []
+        try:
+            return await db.list_paper_observation_strategies(
+                limit=paper_intake_batch_limit(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IncubationFactory: list_paper_observation_strategies failed: %s", exc,
+            )
+            return []
 
     async def _run_pipeline(self, db: Any) -> dict[str, Any]:
         """运行孵化流水线评估（复用已有实现）。"""

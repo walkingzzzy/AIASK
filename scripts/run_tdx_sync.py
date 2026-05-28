@@ -29,6 +29,7 @@ if sys.platform == "win32":
 
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "packages" / "aiask-quant-core" / "src"))
 sys.path.insert(0, str(REPO / "packages" / "akshare-mcp" / "src"))
 sys.path.insert(0, str(REPO / "packages" / "strategy-factory" / "src"))
 

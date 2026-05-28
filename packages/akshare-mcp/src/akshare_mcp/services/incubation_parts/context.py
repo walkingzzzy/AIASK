@@ -74,6 +74,19 @@
         binding = await binding_method(strategy_id) if binding_method is not None else None
         account = None
         created = False
+        # 2026-05-28: 防 stage 降级 — 如果已存在 binding 且新 stage='warmup'(默认值,
+        # 通常来自 SignalTracker.process_strategies 或 IncubationIntake 的兜底调用),
+        # 保留已有 stage 而不是覆盖。stage 升级方向为:
+        #   warmup → paper → candidate → listed → promoted
+        # 严格只允许向更高 stage 升级,默认 warmup 不能降级 paper/candidate。
+        _STAGE_RANK = {'warmup': 0, 'paper': 1, 'candidate': 2, 'listed': 3, 'promoted': 4}
+        existing_stage = None
+        if binding:
+            existing_stage = str(dict(binding).get('stage') or '').strip().lower() or None
+            if existing_stage and existing_stage != stage:
+                if _STAGE_RANK.get(existing_stage, 0) > _STAGE_RANK.get(stage, 0):
+                    # 新 stage 比已有的低,保留已有的(避免被降级覆盖)
+                    stage = existing_stage
         if binding:
             account = await self._get_strategy_account(db, strategy_id)
         if not account:

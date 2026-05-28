@@ -47,16 +47,16 @@ describe("WorkbenchView", () => {
   it("renders Codex-style review queue counts and composer disabled state", () => {
     renderWorkbench();
 
-    expect(screen.getByText("Current thread state")).toBeInTheDocument();
-    expect(screen.getByText("2 read-only actions available.")).toBeInTheDocument();
+    expect(screen.getByText("当前线程状态")).toBeInTheDocument();
+    expect(screen.getByText("2 个只读操作可用。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hermes full" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行" })).toBeDisabled();
   });
 
   it("enables Hermes full mode selector when a control token exists", () => {
     renderWorkbench({ controlToken: "secret", prompt: "inspect tools" });
 
     expect(screen.getByRole("button", { name: "Hermes full" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Run" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "运行" })).toBeEnabled();
   });
 });

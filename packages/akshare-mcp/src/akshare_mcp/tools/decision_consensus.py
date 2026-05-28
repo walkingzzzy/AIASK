@@ -35,16 +35,26 @@ _DIRECTION_NORMALIZE = {
     "strong_buy": "buy",
     "promote": "buy",
     "long": "buy",
+    "accumulate": "buy",
     "hold": "hold",
     "neutral": "hold",
     "wait": "hold",
     "sell": "sell",
+    "strong_sell": "sell",
     "short": "sell",
     "exit": "sell",
     "reduce": "sell",
     "watch": "watch",
     "monitor": "watch",
     "wait_and_see": "watch",
+    # P3-B5 fix: 补充 avoid/reject 等高频上游 raw_action(对话式复测发现)
+    # 历史问题:should_i_buy 返回 raw_action="avoid",此处不识别 → recommendation=None
+    #          → available=false → tools_available 计数偏低、跨工具一致性失真
+    "avoid": "watch",      # avoid 语义介于 sell 与 hold,标 watch 更稳健(不强制平仓)
+    "do_not_buy": "watch",
+    "reject": "sell",
+    "caution": "watch",
+    "abstain": "watch",
 }
 
 

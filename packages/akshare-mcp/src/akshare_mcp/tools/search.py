@@ -424,18 +424,34 @@ def register(mcp):
                     source_chain.append("tushare_pro.stock_basic")
 
             # P2-4.5.10 fix: 中文 stock_name LIKE 兜底(诊断报告 §4.5.10)
-            # 历史问题:keyword='五粮液' / '茅台' 等中文全名查询返回 0
-            # 修复:LIKE %keyword% 在 db.stocks.stock_name 字段全文检索
+            # P3-B8 fix: 修正列名 + 去空格规范化(对话式复测发现)
+            # 历史问题:
+            #   1. SELECT code FROM stocks 报 OperationalError(实际列名 stock_code)
+            #   2. db 中 stock_name 含全/半角空格(如 "五 粮 液"),用户查 "五粮液" 0 命中
+            # 修复:
+            #   1. 列名 code -> stock_code,SELECT 加 alias 保持下游兼容
+            #   2. SQL 端用 REPLACE 去空格,query 同步去空格
+            #   3. 异常详细日志而非 silent pass
             if not results and keyword and keyword.strip():
                 try:
+                    import re as _re_search
                     keyword_clean = keyword.strip()
+                    # 去除中文/英文/全角空格,匹配 db 中含空格的存储
+                    keyword_no_space = _re_search.sub(r"[\s\u3000]+", "", keyword_clean)
                     async with db.acquire() as conn:
                         like_rows = await conn.fetch(
-                            """SELECT code, stock_name, industry, market_cap,
-                                      pe_ratio, pb_ratio
+                            """SELECT stock_code AS code,
+                                      stock_name,
+                                      industry,
+                                      market_cap,
+                                      pe_ratio,
+                                      pb_ratio
                                FROM stocks
-                               WHERE stock_name LIKE $1 OR code LIKE $2
-                               LIMIT $3""",
+                               WHERE REPLACE(REPLACE(stock_name, ' ', ''), '　', '') LIKE $1
+                                  OR stock_name LIKE $2
+                                  OR stock_code LIKE $3
+                               LIMIT $4""",
+                            f"%{keyword_no_space}%",
                             f"%{keyword_clean}%",
                             f"%{keyword_clean}%",
                             int(limit),
@@ -443,9 +459,14 @@ def register(mcp):
                     if like_rows:
                         results = [dict(r) for r in like_rows]
                         fallback_used = True
-                        source_chain.append("db.stocks.like_search")
-                except Exception:
-                    pass
+                        source_chain.append("db.stocks.like_search_normalized")
+                except Exception as exc_search:
+                    # P3-B8: 让失败可观测,而非吞掉
+                    try:
+                        from ..utils import safe_stderr_print
+                        safe_stderr_print(f"[search_stocks] db like fallback failed: {type(exc_search).__name__}: {exc_search}")
+                    except Exception:
+                        pass
             
             return ok_with_meta(
                 {

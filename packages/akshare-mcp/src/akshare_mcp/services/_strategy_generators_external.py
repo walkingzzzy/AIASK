@@ -580,11 +580,37 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                 request_status = str(metrics.get('status') or '').strip().lower()
                 if request_status not in {'compatibility_skip', 'cooldown_skip'}:
                     request_status = 'failed'
+                # 提升可观测性：把 metrics 里的 last_error 文本和首条 attempt 错误拼到日志里。
+                # 否则 %r 仅展示 "StrategyLLMRequestError('... after N attempts: ValueError')"
+                # 这种没有原因的壳，根因要去翻 stages/run_id 持久化才能拿到。
+                last_error_type = metrics.get('last_error_type') or exc.__class__.__name__
+                last_error_text = metrics.get('last_error')
+                last_status_code = metrics.get('last_error_status_code')
+                first_attempt: dict[str, Any] = {}
+                attempts_list = metrics.get('attempts') or []
+                if isinstance(attempts_list, list) and attempts_list:
+                    candidate_attempt = attempts_list[0]
+                    if isinstance(candidate_attempt, dict):
+                        first_attempt = candidate_attempt
+                first_attempt_error = str(first_attempt.get('error') or '')
+                first_attempt_type = str(first_attempt.get('error_type') or '')
+                last_error_summary = str(last_error_text or first_attempt_error or '').strip()
+                if not last_error_summary:
+                    last_error_summary = exc.__class__.__name__
                 logger.warning(
-                    'LLMProxyStrategyGenerator external provider failed at request_index=%s limit=%s, retrying/fallback: %r',
+                    'LLMProxyStrategyGenerator external provider failed at request_index=%s limit=%s, '
+                    'retrying/fallback: %r '
+                    '| status=%s last_error_type=%s status_code=%s last_error=%r '
+                    'first_attempt_error_type=%s first_attempt_error=%r',
                     request_index,
                     request_limit,
                     exc,
+                    request_status,
+                    last_error_type,
+                    last_status_code,
+                    last_error_summary[:300],
+                    first_attempt_type or last_error_type,
+                    first_attempt_error[:300],
                 )
                 return {
                     'status': 'failed',

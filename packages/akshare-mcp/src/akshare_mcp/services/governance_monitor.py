@@ -381,12 +381,33 @@ def check_online_offline_consistency(
 ) -> dict[str, Any]:
     """Compare backtest vs execution cost/fill assumptions.
 
-    If no assumptions are provided, uses defaults from cost_model.
+    P0-3 fix (诊断报告 §S13): 仅当 caller 显式提供两组假设时才执行 consistency 比较。
+    历史问题:caller 未提供 backtest_assumptions 时硬编码 0bps 默认值,生成虚假 inconsistent
+    现状:未提供时返回 not_applicable,提供后才计算 gaps。
 
     Returns
     -------
     dict with consistency_status, gaps, warnings.
+    consistency_status 取值:
+      - "not_applicable": caller 未提供必要假设(non-blocking, 不算 inconsistency)
+      - "consistent": 假设一致(差距 < 0.001)
+      - "gap_detected": 单维度 gap
+      - "inconsistent": 多维度 gap
     """
+    # 当两组都未提供时返回 not_applicable,不参与一致性判定
+    has_backtest_input = bool(backtest_assumptions)
+    has_execution_input = bool(execution_assumptions)
+    if not has_backtest_input and not has_execution_input:
+        return {
+            "consistency_status": "not_applicable",
+            "backtest_assumptions": None,
+            "execution_assumptions": None,
+            "gaps": [],
+            "gap_count": 0,
+            "warnings": [],
+            "reason": "no_assumptions_provided",
+        }
+
     try:
         from .cost_model import resolve_cost_assumptions
         bt = resolve_cost_assumptions(dict(backtest_assumptions or {}), default_mode="backtest")
@@ -406,6 +427,9 @@ def check_online_offline_consistency(
     gaps: list[dict[str, Any]] = []
     warnings: list[str] = []
 
+    # 仅在 caller 显式提供两组假设时,才把零值差距计入 inconsistency
+    explicit_both_sides = has_backtest_input and has_execution_input
+
     for key in ("slippage_bps", "market_impact_bps", "commission_rate"):
         bt_val = _safe_float(bt.get(key), 0.0)
         ex_val = _safe_float(ex.get(key), 0.0)
@@ -418,10 +442,23 @@ def check_online_offline_consistency(
                     "execution": ex_val,
                     "delta": round(delta, 4),
                 })
-                if key == "slippage_bps" and bt_val == 0.0:
-                    warnings.append("回测使用零滑点假设，与执行模式差距显著")
-                if key == "market_impact_bps" and bt_val == 0.0:
-                    warnings.append("回测使用零市场冲击假设，AI 应注意此差距")
+                if explicit_both_sides:
+                    if key == "slippage_bps" and bt_val == 0.0:
+                        warnings.append("回测使用零滑点假设，与执行模式差距显著")
+                    if key == "market_impact_bps" and bt_val == 0.0:
+                        warnings.append("回测使用零市场冲击假设，AI 应注意此差距")
+
+    if not explicit_both_sides and gaps:
+        # 单边输入时不算 inconsistent,只是 partial_input
+        return {
+            "consistency_status": "partial_input",
+            "backtest_assumptions": bt,
+            "execution_assumptions": ex,
+            "gaps": gaps,
+            "gap_count": len(gaps),
+            "warnings": ["consistency_check_skipped_due_to_partial_input"],
+            "reason": "only_one_side_provided",
+        }
 
     status = (
         "inconsistent" if len(gaps) >= 2

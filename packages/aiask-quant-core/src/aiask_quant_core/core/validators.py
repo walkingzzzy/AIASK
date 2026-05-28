@@ -144,6 +144,42 @@ def validate_quote(data: dict) -> StockQuote:
         raise ValueError(f"行情数据验证失败: {e}")
 
 
+def _is_chinese_index_code(code: object) -> bool:
+    """Detect Chinese A-share index codes that need numeric sanity range check.
+
+    Indexes (沪指/深指/创业板/300/500/1000) have close values typically in
+    [1000, 10000] range; if upstream data accidentally lands stock-like quote
+    (e.g. 平安银行 close=10.68) on an index code, it must be rejected.
+    """
+    if not code:
+        return False
+    text = str(code).lower()
+    # Common prefixes
+    if text.startswith("sh000") or text.startswith("sz399") or text.startswith("index_"):
+        return True
+    # Bare normalized index codes (上证 000xxx 系列、深证 399xxx 系列、科创 000688)
+    bare_index = {"000001", "000016", "000300", "000688", "000852", "000905",
+                  "399001", "399005", "399006", "399330"}
+    if text in bare_index:
+        return True
+    return False
+
+
+def _check_index_close_in_range(code: object, close: object) -> bool:
+    """Validate that index close falls in 1000-30000 range; reject mojibake/wrong-symbol writes.
+
+    2026-05-28: 上限从 15000 放宽到 30000,因为深证成指/创业板等指数已突破 15000;
+    主要目的还是拦截 sh000001 (上证) close=10.68 这种 cross-symbol 污染。
+    """
+    if not _is_chinese_index_code(code):
+        return True
+    try:
+        close_value = float(close)
+    except (TypeError, ValueError):
+        return False
+    return 1000.0 <= close_value <= 30000.0
+
+
 def validate_kline(data: dict) -> KlineData:
     """
     验证K线数据
@@ -158,9 +194,21 @@ def validate_kline(data: dict) -> KlineData:
         ValueError: 数据验证失败
     """
     try:
-        return KlineData(**data)
+        validated = KlineData(**data)
     except Exception as e:
         raise ValueError(f"K线数据验证失败: {e}")
+
+    # P0-2 fix (诊断报告 §2.5): 指数代码数值合理性护栏
+    # 历史问题: sh000001 错位写入 000001 平安银行的 close=10.68 (真实上证应在 1000-10000)
+    # 在写入 db 前直接拦截,杜绝 silent corruption
+    code_value = getattr(validated, "code", None) or data.get("code")
+    close_value = getattr(validated, "close", None)
+    if not _check_index_close_in_range(code_value, close_value):
+        raise ValueError(
+            f"index_close_out_of_range: code={code_value!r} close={close_value!r} "
+            "expected [1000, 30000]; possible cross-symbol contamination"
+        )
+    return validated
 
 
 class ValidatedKlineRows(list):

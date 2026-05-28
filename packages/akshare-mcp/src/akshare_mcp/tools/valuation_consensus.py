@@ -305,10 +305,12 @@ def register(mcp):
                         ind = info.get("industry") or industry
                         # 同行业 PE median
                         async with db.acquire() as conn:
+                            # P3-B3 fix: stocks 表实际列名为 stock_code 而非 code(对话式复测发现)
+                            # 历史问题:OperationalError: no such column: code 导致 relative_pe 全跪
                             row = await conn.fetchrow(
                                 """SELECT AVG(pe_ratio) AS avg_pe
                                    FROM stocks
-                                   WHERE industry = $1 AND code <> $2
+                                   WHERE industry = $1 AND stock_code <> $2
                                      AND pe_ratio IS NOT NULL AND pe_ratio > 0 AND pe_ratio < 200""",
                                 ind,
                                 resolved_code,

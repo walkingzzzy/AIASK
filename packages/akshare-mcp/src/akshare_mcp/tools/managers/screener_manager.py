@@ -521,7 +521,9 @@ def register_screener_manager(mcp):
             elif action == 'save_strategy':
                 name = kwargs.get('name')
                 criteria = kwargs.get('criteria', {})
-                user_id = kwargs.get('user_id', 'default')
+                # P2-4.2.6 fix: 用 user_scope 标准化(诊断报告 §4.2.6)
+                from ...services.user_scope import require_user_id_or_warn
+                user_id, scope_warnings = require_user_id_or_warn(kwargs)
                 
                 if not name:
                     return fail('需要提供策略名称')
@@ -540,13 +542,21 @@ def register_screener_manager(mcp):
                 })
             
             elif action in ('list', 'list_strategies'):
-                user_id = kwargs.get('user_id', 'default')
+                # P2-4.2.7 fix: list 类 action 不传 user_id 时不再默认 'default',而是 inherit env or all
+                from ...services.user_scope import resolve_scope_for_list
+                user_id_filter, scope_kind, scope_warnings = resolve_scope_for_list(kwargs)
                 
                 async with db.acquire() as conn:
-                    rows = await conn.fetch(
-                        "SELECT * FROM screener_strategies WHERE user_id = $1 ORDER BY created_at DESC",
-                        user_id
-                    )
+                    if user_id_filter is None:
+                        # scope=all,不 filter
+                        rows = await conn.fetch(
+                            "SELECT * FROM screener_strategies ORDER BY created_at DESC LIMIT 200"
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT * FROM screener_strategies WHERE user_id = $1 ORDER BY created_at DESC",
+                            user_id_filter
+                        )
                     user_strategies = [dict(row) for row in rows]
                 
                 # 合并预置策略和用户策略
@@ -566,7 +576,9 @@ def register_screener_manager(mcp):
                     'preset_strategies': preset_list,
                     'user_strategies': user_strategies,
                     'total': len(preset_list) + len(user_strategies),
-                    'message': '包含5个预置策略和用户自定义策略'
+                    'message': '包含5个预置策略和用户自定义策略',
+                    'scope_kind': scope_kind,
+                    'scope_warnings': scope_warnings,
                 })
             
             elif action == 'run_strategy':

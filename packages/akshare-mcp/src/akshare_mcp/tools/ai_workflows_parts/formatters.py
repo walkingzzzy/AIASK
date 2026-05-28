@@ -71,6 +71,30 @@
                     },
                 )
 
+            # P2-4.3.7 fix(诊断报告 §4.3.7):sample_size<30 强制 reject
+            # 历史问题:method=platt 但 sample=5 时 sklearn+mapie 双重降级 silent 输出 platt_a/b 校准建议
+            # 修复:sample<30 时 fail-graceful,不输出不可信的 calibration 建议
+            if len(probs) < 30:
+                return fail_with_meta(
+                    f"insufficient_sample_size={len(probs)}<30: calibration unreliable, "
+                    f"refusing to compute platt/isotonic. Increase samples or use method='raw'.",
+                    tool_name="prediction_diagnosis_workflow",
+                    action=workflow_method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    error_code="INSUFFICIENT_SAMPLES",
+                    extra_meta={
+                        "quality": {
+                            "status": "rejected_sample_too_small",
+                            "sample_size": len(probs),
+                            "minimum_required": 30,
+                        },
+                        "side_effect": {"level": "read_only", "confirmation_required": False},
+                        "lineage": {"dataset_id": dataset_id, "run_id": run_id},
+                        "degraded": True,
+                    },
+                )
+
             calibration_result = None
             report_method = workflow_method
             if workflow_method in {"platt", "sigmoid", "calibrated_sigmoid", "calibrated_isotonic", "isotonic", "auto"}:

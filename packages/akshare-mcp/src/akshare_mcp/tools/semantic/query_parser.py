@@ -102,24 +102,27 @@ def _parse_fundamental(q: str, conditions: list, LT: str, GT: str):
         conditions.append({'field': 'pb_ratio', 'operator': '>', 'value': float(pb_match2.group(1))})
 
     # ROE / 净资产收益率
+    # P2-4.2.3 fix(诊断报告 §4.2.3):统一以 percent 单位输出,与 db.financials.roe (10.06=10.06%) 对齐
+    # 历史问题:'10%' 被解析为 0.10,但 db ROE 字段是 10.06(已是 percent),scale 100x mismatch
+    # 修复:解析后保留原始百分数(如 10),并标 unit='percent';不再除以 100
     roe_match = re.search(rf'(?:roe|净资产收益率)\s*{GT}\s*(\d+\.?\d*)%?', q)
     if roe_match:
         val = float(roe_match.group(1))
-        conditions.append({'field': 'roe', 'operator': '>', 'value': val / 100 if val > 1 else val})
+        conditions.append({'field': 'roe', 'operator': '>', 'value': val, 'unit': 'percent'})
     roe_match2 = re.search(rf'(?:roe|净资产收益率)\s*{LT}\s*(\d+\.?\d*)%?', q)
     if roe_match2:
         val = float(roe_match2.group(1))
-        conditions.append({'field': 'roe', 'operator': '<', 'value': val / 100 if val > 1 else val})
+        conditions.append({'field': 'roe', 'operator': '<', 'value': val, 'unit': 'percent'})
 
-    # 负债率
+    # 负债率(同 ROE 修复:统一 percent 单位)
     debt_match = re.search(rf'负债率\s*{LT}\s*(\d+\.?\d*)%?', q)
     if debt_match:
         val = float(debt_match.group(1))
-        conditions.append({'field': 'debt_ratio', 'operator': '<', 'value': val / 100 if val > 1 else val})
+        conditions.append({'field': 'debt_ratio', 'operator': '<', 'value': val, 'unit': 'percent'})
     debt_match2 = re.search(rf'负债率\s*{GT}\s*(\d+\.?\d*)%?', q)
     if debt_match2:
         val = float(debt_match2.group(1))
-        conditions.append({'field': 'debt_ratio', 'operator': '>', 'value': val / 100 if val > 1 else val})
+        conditions.append({'field': 'debt_ratio', 'operator': '>', 'value': val, 'unit': 'percent'})
 
     # 营收增长
     rev_match = re.search(rf'(?:营收增长|收入增长|营收增速|净利润增长|利润增速)\s*{GT}\s*(\d+\.?\d*)%?', q)

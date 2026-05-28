@@ -374,6 +374,26 @@ async def handle_multi_factor_score(
     else:
         rating, recommendation = "D", "sell"
 
+    # P2-4.3.6 fix(诊断报告 §4.3.6):single_factor_dominance 检测
+    # 历史问题:weights volatility=0.51/momentum=0.18/value=0.15/.../growth=0.06,
+    # 单因子贡献 84% — emit warning 提示 AI 该评分不可靠
+    warnings: list[str] = []
+    if total_score > 0:
+        max_contribution = 0.0
+        max_factor = None
+        for factor_name, item in factor_scores.items():
+            ws = abs(float(item.get("weighted_score") or 0.0))
+            if ws > max_contribution:
+                max_contribution = ws
+                max_factor = factor_name
+        if total_score > 1e-6:
+            ratio = max_contribution / abs(total_score)
+            if ratio > 0.5:
+                warnings.append(
+                    f"single_factor_dominance>50%: {max_factor} contributes "
+                    f"{ratio*100:.1f}% of total_score. 建议 z-score 归一化或调整 weights."
+                )
+
     return ok(
         {
             "code": code,
@@ -381,6 +401,8 @@ async def handle_multi_factor_score(
             "rating": rating,
             "recommendation": recommendation,
             "factor_scores": factor_scores,
+            "warnings": warnings,
+            "weights": dict(weights),
         },
         source_chain=["quant_manager.calculate_factors"],
     )

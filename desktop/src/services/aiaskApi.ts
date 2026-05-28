@@ -4,22 +4,39 @@ import type {
   AgentResponse,
   AiSmokeResult,
   AiStatus,
+  ApprovalItem,
   CapabilityParity,
   CapabilityWorkbenchPayload,
+  ConnectorDetail,
   DesktopDataStatus,
   DesktopDataSyncPlan,
   DesktopSettingsStatus,
   FactorFactoryStatus,
+  FactoryEventRecord,
+  FinancialManagerCatalog,
+  FinancialManagerIntentResult,
+  FinancialManagerQueryResult,
+  FinancialManagerStatus,
   FullModeConsoleData,
+  GatewayDaemonStatus,
+  GatewayMessage,
+  GatewayPlatform,
   HealthDetailed,
   HermesConsoleSnapshot,
   HermesStatus,
+  JobRunRecord,
+  LearningProposal,
   LocalProfile,
+  PluginCommand,
   QuantPresetPayload,
   QuantResearchReport,
   QuantResearchRun,
+  ResponseRecord,
+  RlRun,
+  RunRecord,
   ToolCatalogItem,
-  ToolEnvelope
+  ToolEnvelope,
+  WebhookSubscription
 } from "../types";
 
 export interface AiaskClientOptions {
@@ -250,6 +267,46 @@ export class AiaskApi {
     return requestJson<AgentResponse>(this.endpoint, "/v1/responses", { method: "POST", token: token || this.apiToken, body });
   }
 
+  responseGet(responseId: string): Promise<ResponseRecord> {
+    return requestJson<ResponseRecord>(this.endpoint, `/v1/responses/${encodeURIComponent(responseId)}`, { token: this.apiToken });
+  }
+
+  responseDelete(responseId: string): Promise<{ id: string; object: string; deleted: boolean }> {
+    return requestJson<{ id: string; object: string; deleted: boolean }>(
+      this.endpoint,
+      `/v1/responses/${encodeURIComponent(responseId)}`,
+      { method: "DELETE", token: this.apiToken }
+    );
+  }
+
+  runGet(runId: string): Promise<RunRecord> {
+    return requestJson<RunRecord>(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}`, { token: controlOrApiToken(this) });
+  }
+
+  runCancel(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body: {}
+    });
+  }
+
+  runStop(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/stop`, {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body: {}
+    });
+  }
+
+  runSteer(runId: string, instruction: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/steer`, {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body: { instruction }
+    });
+  }
+
   async runEvents(runId: string, token?: string): Promise<Record<string, unknown>[]> {
     if (isMockEndpoint(this.endpoint)) {
       const payload = await requestJson<{ data?: Record<string, unknown>[] }>(
@@ -290,28 +347,17 @@ export class AiaskApi {
     return this.readOnlyTool<Record<string, unknown>>("agent_strategy_domain_events", body);
   }
 
-  // PR-G (Phase 5, 2026-05-24): Factory Event Trigger Console helpers.
-  // ``factory_event_list`` and ``factory_event_preview_tasks`` are
-  // ``READ_ONLY_STRATEGY_ACTIONS`` per ``tool_risk.py`` — they go
-  // through the ``agent_strategy_manager`` MCP tool with the standard
-  // ``action`` + ``kwargs`` envelope used by other manager surfaces.
-  factoryEventList(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+  factoryEventList(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: { events?: FactoryEventRecord[] } & Record<string, unknown> }> {
     const cleaned: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(filters)) {
       if (value === undefined || value === null || value === "") continue;
-      cleaned[key] = value;
+      cleaned[key === "event_source" ? "source" : key] = value;
     }
-    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
-      action: "factory_event_list",
-      kwargs: JSON.stringify(cleaned)
-    });
+    return this.readOnlyTool("agent_factory_event_list", cleaned);
   }
 
   factoryEventPreviewTasks(eventId: string, extras: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
-      action: "factory_event_preview_tasks",
-      kwargs: JSON.stringify({ event_id: eventId, ...extras })
-    });
+    return this.readOnlyTool<Record<string, unknown>>("agent_factory_event_preview_tasks", { event_id: eventId, ...extras });
   }
 
   factoryEventLineage(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -320,24 +366,15 @@ export class AiaskApi {
       if (value === undefined || value === null || value === "") continue;
       cleaned[key] = value;
     }
-    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
-      action: "factory_event_lineage",
-      kwargs: JSON.stringify(cleaned)
-    });
+    return this.readOnlyTool<Record<string, unknown>>("agent_factory_event_lineage", cleaned);
   }
 
   factoryThemeExposureStatus(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
-      action: "factory_theme_exposure_status",
-      kwargs: JSON.stringify(body)
-    });
+    return this.readOnlyTool<Record<string, unknown>>("agent_factory_theme_exposure_status", body);
   }
 
   factoryEventOutboxStatus(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.readOnlyTool<Record<string, unknown>>("agent_strategy_manager", {
-      action: "factory_event_outbox_status",
-      kwargs: JSON.stringify(body)
-    });
+    return this.readOnlyTool<Record<string, unknown>>("agent_factory_event_outbox_status", body);
   }
 
   // Write actions go through the ActionIntent chain enforced by PR-F:
@@ -370,6 +407,14 @@ export class AiaskApi {
       "strategy_manager.factory_event_record_outcome",
       { event_id: eventId, ...outcome },
       rationale
+    );
+  }
+
+  factoryEventBootstrapIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(
+      "strategy_manager.factory_event_bootstrap",
+      params,
+      rationale || "Bootstrap the default theme graph and refresh the exposure matrix from Desktop."
     );
   }
 
@@ -411,6 +456,15 @@ export class AiaskApi {
       `/intents/${encodeURIComponent(intentId)}/deny`,
       { method: "POST", token: this.controlToken, body: { reason: reason || "" } }
     );
+  }
+
+  intentsList(status?: string, limit = 100): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    params.set("limit", String(limit));
+    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, `/intents?${params.toString()}`, {
+      token: controlOrApiToken(this)
+    });
   }
 
   incubationFactoryStatus(): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -549,6 +603,14 @@ export class AiaskApi {
     return this.jobRun(jobId);
   }
 
+  jobRuns(jobId: string, limit = 100): Promise<{ object: string; job_id: string; data: JobRunRecord[] }> {
+    return requestJson<{ object: string; job_id: string; data: JobRunRecord[] }>(
+      this.endpoint,
+      `/v1/jobs/${encodeURIComponent(jobId)}/runs?limit=${encodeURIComponent(String(limit))}`,
+      { token: this.apiToken }
+    );
+  }
+
   sessionsList(userId?: string, limit = 100): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
     const params = new URLSearchParams();
     if (userId) params.set("user_id", userId);
@@ -581,6 +643,13 @@ export class AiaskApi {
     return requestJson(this.endpoint, "/v1/skills", { method: "POST", token: this.controlToken, body });
   }
 
+  async skillsList(): Promise<CapabilityWorkbenchPayload["skills"]> {
+    const payload = await requestJson<{ data: CapabilityWorkbenchPayload["skills"] }>(this.endpoint, "/v1/skills", {
+      token: controlOrApiToken(this)
+    });
+    return payload.data;
+  }
+
   skillUpdate(name: string, body: Record<string, unknown>): Promise<unknown> {
     return requestJson(this.endpoint, `/v1/skills/${encodeURIComponent(name)}`, {
       method: "PATCH",
@@ -604,8 +673,28 @@ export class AiaskApi {
     });
   }
 
+  pluginUpsert(body: Record<string, unknown>): Promise<unknown> {
+    return requestJson(this.endpoint, "/v1/plugins", {
+      method: "POST",
+      token: this.controlToken,
+      body
+    });
+  }
+
   pluginToolTest(name: string, tool: string, body: Record<string, unknown> = {}): Promise<unknown> {
     return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/tools/${encodeURIComponent(tool)}/test`, {
+      method: "POST",
+      token: this.controlToken,
+      body
+    });
+  }
+
+  pluginCommands(name: string): Promise<{ object: string; data: PluginCommand[] }> {
+    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/commands`, { token: this.controlToken });
+  }
+
+  pluginCommandTest(name: string, command: string, body: Record<string, unknown> = {}): Promise<unknown> {
+    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/commands/${encodeURIComponent(command)}/test`, {
       method: "POST",
       token: this.controlToken,
       body
@@ -616,6 +705,173 @@ export class AiaskApi {
     return requestJson<{ data: unknown; status?: string; error?: string }>(this.endpoint, "/v1/connectors/summary", {
       token: controlOrApiToken(this)
     });
+  }
+
+  connectorsList(type?: string, category?: string): Promise<{ object: string; data: ConnectorDetail[] }> {
+    const params = new URLSearchParams();
+    if (type) params.set("type", type);
+    if (category) params.set("category", category);
+    const query = params.toString();
+    return requestJson<{ object: string; data: ConnectorDetail[] }>(this.endpoint, `/v1/connectors${query ? `?${query}` : ""}`, {
+      token: controlOrApiToken(this)
+    });
+  }
+
+  connectorDetail(connectorType: string, name: string): Promise<{ object: string; data: ConnectorDetail }> {
+    return requestJson<{ object: string; data: ConnectorDetail }>(
+      this.endpoint,
+      `/v1/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(name)}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  connectorTest(connectorType: string, name: string): Promise<{ object: string; data: ConnectorDetail }> {
+    return requestJson<{ object: string; data: ConnectorDetail }>(
+      this.endpoint,
+      `/v1/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(name)}/test`,
+      { method: "POST", token: controlOrApiToken(this), body: {} }
+    );
+  }
+
+  gatewayStatus(): Promise<{ object?: string; data?: unknown; [key: string]: unknown }> {
+    return requestJson(this.endpoint, "/v1/gateway/status", { token: controlOrApiToken(this) });
+  }
+
+  gatewayDaemonStatus(): Promise<GatewayDaemonStatus> {
+    return requestJson(this.endpoint, "/v1/gateway/daemon/status", { token: this.controlToken });
+  }
+
+  gatewayPlatforms(): Promise<{ object: string; data: GatewayPlatform[] }> {
+    return requestJson(this.endpoint, "/v1/gateway/platforms", { token: controlOrApiToken(this) });
+  }
+
+  gatewayMessages(platform?: string, limit = 100): Promise<{ object: string; data: GatewayMessage[] }> {
+    const params = new URLSearchParams();
+    if (platform) params.set("platform", platform);
+    params.set("limit", String(limit));
+    return requestJson(this.endpoint, `/v1/gateway/messages?${params.toString()}`, { token: controlOrApiToken(this) });
+  }
+
+  gatewayDirectory(platform?: string, kind?: string, limit = 200): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+    const params = new URLSearchParams();
+    if (platform) params.set("platform", platform);
+    if (kind) params.set("kind", kind);
+    params.set("limit", String(limit));
+    return requestJson(this.endpoint, `/v1/gateway/directory?${params.toString()}`, { token: controlOrApiToken(this) });
+  }
+
+  gatewayDirectoryRefresh(): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/gateway/directory/refresh", { method: "POST", token: controlOrApiToken(this), body: {} });
+  }
+
+  gatewayMessageRetry(messageId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/gateway/messages/${encodeURIComponent(messageId)}/retry`, {
+      method: "POST",
+      token: this.controlToken,
+      body: {}
+    });
+  }
+
+  gatewayPlatformStart(platform: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/start`, { method: "POST", token: controlOrApiToken(this), body: {} });
+  }
+
+  gatewayPlatformStop(platform: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/stop`, { method: "POST", token: controlOrApiToken(this), body: {} });
+  }
+
+  gatewayPlatformHealth(platform: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/health`, { token: controlOrApiToken(this) });
+  }
+
+  gatewaySendIntent(payload: Record<string, unknown>, direct = false): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent(direct ? "gateway.direct_deliver" : "gateway.send_message", payload, "Desktop gateway message preview + approval.");
+  }
+
+  webhooksList(): Promise<{ object: string; data: WebhookSubscription[] }> {
+    return requestJson(this.endpoint, "/v1/webhooks", { token: controlOrApiToken(this) });
+  }
+
+  webhookCreate(body: Record<string, unknown>): Promise<unknown> {
+    return requestJson(this.endpoint, "/v1/webhooks", { method: "POST", token: this.controlToken, body });
+  }
+
+  webhookDelete(webhookId: string): Promise<unknown> {
+    return requestJson(this.endpoint, `/v1/webhooks/${encodeURIComponent(webhookId)}`, { method: "DELETE", token: this.controlToken });
+  }
+
+  webhookTriggerIntent(webhookId: string, body: Record<string, unknown>): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent("webhook.trigger", { webhook_id: webhookId, ...body }, "Desktop webhook trigger preview + approval.");
+  }
+
+  approvalsList(status?: string, limit = 100): Promise<{ object: string; data: ApprovalItem[] }> {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    params.set("limit", String(limit));
+    return requestJson(this.endpoint, `/v1/approvals?${params.toString()}`, { token: controlOrApiToken(this) });
+  }
+
+  approvalDecide(approvalId: string, decision: "approve" | "deny", reason = "desktop_decision"): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
+      method: "POST",
+      token: this.controlToken,
+      body: { reason }
+    });
+  }
+
+  learningStatus(): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/learning/status", { token: controlOrApiToken(this) });
+  }
+
+  learningReview(status?: string, limit = 100): Promise<{ object: string; data: LearningProposal[] }> {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    params.set("limit", String(limit));
+    return requestJson(this.endpoint, `/v1/learning/review?${params.toString()}`, { token: controlOrApiToken(this) });
+  }
+
+  learningApply(proposalId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/learning/apply", {
+      method: "POST",
+      token: this.controlToken,
+      body: { proposal_id: proposalId }
+    });
+  }
+
+  rlEnvironments(): Promise<{ object: string; data: unknown }> {
+    return requestJson(this.endpoint, "/v1/rl/environments", { token: controlOrApiToken(this) });
+  }
+
+  rlConfig(): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/rl/config", { token: controlOrApiToken(this) });
+  }
+
+  rlConfigUpdate(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/rl/config", { method: "PATCH", token: this.controlToken, body: { config } });
+  }
+
+  rlRuns(limit = 100): Promise<{ object: string; data: RlRun[] }> {
+    return requestJson(this.endpoint, `/v1/rl/runs?limit=${encodeURIComponent(String(limit))}`, { token: controlOrApiToken(this) });
+  }
+
+  rlRunStart(environment?: string, config: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, "/v1/rl/runs", { method: "POST", token: this.controlToken, body: { environment, config } });
+  }
+
+  rlRunStop(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/stop`, { method: "POST", token: this.controlToken, body: {} });
+  }
+
+  rlRunGet(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}`, { token: controlOrApiToken(this) });
+  }
+
+  rlRunResults(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/results`, { token: controlOrApiToken(this) });
+  }
+
+  rlRunLogs(runId: string): Promise<Record<string, unknown>> {
+    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/logs`, { token: controlOrApiToken(this) });
   }
 
   quantPresets(): Promise<QuantPresetPayload> {
@@ -640,6 +896,40 @@ export class AiaskApi {
       `/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}/report`,
       { token: this.apiToken }
     );
+  }
+
+  financialManagerCatalog(): Promise<FinancialManagerCatalog> {
+    return requestJson<FinancialManagerCatalog>(this.endpoint, "/v1/desktop/financial-manager/catalog", { token: controlOrApiToken(this) });
+  }
+
+  financialManagerStatus(): Promise<FinancialManagerStatus> {
+    return requestJson<FinancialManagerStatus>(this.endpoint, "/v1/desktop/financial-manager/status", { token: controlOrApiToken(this) });
+  }
+
+  financialManagerQuery(body: {
+    capability_id: string;
+    action_id: string;
+    params?: Record<string, unknown>;
+  }): Promise<FinancialManagerQueryResult> {
+    return requestJson<FinancialManagerQueryResult>(this.endpoint, "/v1/desktop/financial-manager/query", {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body
+    });
+  }
+
+  financialManagerIntent(body: {
+    capability_id: string;
+    action_id: string;
+    params?: Record<string, unknown>;
+    rationale?: string;
+    user_id?: string;
+  }): Promise<FinancialManagerIntentResult> {
+    return requestJson<FinancialManagerIntentResult>(this.endpoint, "/v1/desktop/financial-manager/intent", {
+      method: "POST",
+      token: this.controlToken,
+      body
+    });
   }
 
   mcpRegisterLocal(body: Record<string, unknown> = {}): Promise<unknown> {

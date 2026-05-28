@@ -161,6 +161,23 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
             else:
                 fallback_reasons.append(f"eastmoney:{candidate_date}:provider_unavailable")
 
+            # P0-4 fix (诊断报告 §5.5): 加 tushare top_list 第三 source 兜底
+            # 历史问题: sina+eastmoney 6 个交易日全跪 (5/15~5/20)
+            try:
+                from ..data_source import data_source as _ds
+                ts_pro = _ds.get_tushare_pro()
+                if ts_pro is not None:
+                    tushare_df = ts_pro.top_list(trade_date=candidate_date)
+                    if tushare_df is not None and not tushare_df.empty:
+                        df = tushare_df
+                        source = "tushare_top_list"
+                        resolved_date = candidate_date
+                        break
+                else:
+                    fallback_reasons.append(f"tushare_top_list:{candidate_date}:tushare_pro_unavailable")
+            except Exception as exc:
+                fallback_reasons.append(f"tushare_top_list:{candidate_date}:{exc}")
+
         if df is None or df.empty:
             db_rows, db_date = _dragon_tiger_rows_from_db(requested_date, stock_code=stock_code)
             if db_rows:
@@ -168,7 +185,7 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                 response.update(
                     build_quality_meta(
                         source="db.dragon_tiger",
-                        source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "db.dragon_tiger"],
+                        source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "dragon_tiger.tushare_top_list", "db.dragon_tiger"],
                         fallback_reason=fallback_reasons or "live providers unavailable; using DB fallback",
                         asof_value=db_date or requested_date,
                         missing_fields=[],
@@ -185,7 +202,7 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                     "get_dragon_tiger",
                     standard_model="DragonTiger",
                     provider_used="db.dragon_tiger",
-                    source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "db.dragon_tiger"],
+                    source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "dragon_tiger.tushare_top_list", "db.dragon_tiger"],
                     fallback_reason=fallback_reasons or "live providers unavailable; using DB fallback",
                     data_timestamp=db_date or requested_date,
                 )
@@ -194,7 +211,7 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
             response.update(
                 build_quality_meta(
                     source="none",
-                    source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney"],
+                    source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "dragon_tiger.tushare_top_list"],
                     fallback_reason=fallback_reasons or f"未获取到 {requested_date} 龙虎榜数据",
                     asof_value=requested_date,
                     missing_fields=[],
@@ -210,7 +227,7 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                 "get_dragon_tiger",
                 standard_model="DragonTiger",
                 provider_used="none",
-                source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney"],
+                source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney", "dragon_tiger.tushare_top_list"],
                 fallback_reason=fallback_reasons,
                 data_timestamp=requested_date,
             )
@@ -230,6 +247,22 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                     buy = None
                     sell = None
                     net = None
+                elif source == "tushare_top_list":
+                    # P0-4 fix (诊断报告 §5.5): tushare top_list 字段映射
+                    raw_code = row.get("ts_code") or row.get("code")
+                    if raw_code is None:
+                        continue
+                    raw_code_str = str(raw_code).split(".")[0]
+                    code_val = raw_code_str
+                    name = str(row.get("name", ""))
+                    close = safe_float(row.get("close"))
+                    change = safe_float(row.get("pct_change"))
+                    reason = str(row.get("reason", ""))
+                    if reason.lower() == "nan":
+                        reason = ""
+                    buy = safe_float(row.get("l_buy"))
+                    sell = safe_float(row.get("l_sell"))
+                    net = safe_float(row.get("net_amount"))
                 else:
                     code_val = row.get("代码")
                     name = str(row.get("名称", ""))
@@ -881,6 +914,33 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
                     "seller": str(item.get("SELLER_NAME") or ""),
                 }
             )
+        # P3-5.3 fix: 同股同价拆单聚合 cluster_id(诊断报告 §5.3)
+        # 历史问题:同一笔大宗交易因量太大被拆成多笔(date+code+price 一致),AI 误判成多笔不同交易
+        cluster_groups: dict[tuple[str, str, float], list[dict]] = {}
+        for trade in results:
+            try:
+                price_key = round(float(trade.get("price") or 0.0), 4)
+            except (TypeError, ValueError):
+                price_key = 0.0
+            cluster_key = (
+                str(trade.get("date") or ""),
+                str(trade.get("code") or ""),
+                price_key,
+            )
+            cluster_groups.setdefault(cluster_key, []).append(trade)
+        cluster_id_counter = 0
+        for cluster_key, trades_in_group in cluster_groups.items():
+            if len(trades_in_group) <= 1:
+                continue
+            cluster_id_counter += 1
+            cluster_id = f"cluster_{cluster_key[1]}_{cluster_key[0]}_{cluster_id_counter:03d}"
+            total_volume = sum(float(t.get("volume") or 0) for t in trades_in_group)
+            total_amount = sum(float(t.get("amount") or 0) for t in trades_in_group)
+            for t in trades_in_group:
+                t["cluster_id"] = cluster_id
+                t["cluster_size"] = len(trades_in_group)
+                t["cluster_total_volume"] = total_volume
+                t["cluster_total_amount"] = total_amount
         finalized, data_quality = _finalize_block_trade_results(
             results,
             source_chain=source_chain,

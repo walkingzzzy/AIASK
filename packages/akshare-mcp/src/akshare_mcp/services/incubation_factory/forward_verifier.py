@@ -183,7 +183,7 @@ class ForwardVerifier:
         if hasattr(db, "list_strategy_signal_evidence"):
             try:
                 return await db.list_strategy_signal_evidence(
-                    strategy_id, limit=500
+                    strategy_id=strategy_id, limit=500
                 )
             except Exception as exc:
                 logger.warning(

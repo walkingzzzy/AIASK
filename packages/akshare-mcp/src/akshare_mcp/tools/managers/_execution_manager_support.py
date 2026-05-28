@@ -303,11 +303,25 @@ async def _refresh_and_persist_tasks(tasks: list[dict[str, Any]]) -> None:
 def _resolve_soft_gate_thresholds(kwargs: dict) -> dict:
     """Resolve soft gate thresholds by profile + per-request overrides."""
     kwargs = _apply_soft_gate_runtime_defaults(kwargs)
-    profile = str(kwargs.get("soft_gate_profile", "balanced") or "balanced").strip().lower()
+    profile_input = str(kwargs.get("soft_gate_profile", "balanced") or "balanced").strip().lower()
+    profile = profile_input
+    profile_fallback_used = False
+    profile_fallback_reason = None
     if profile not in _SOFT_GATE_PROFILES:
+        # P3-5.16 fix: 标记 fallback 已生效(诊断报告 §5.16)
+        # 历史问题:'unknown' 之类无效 profile silently fallback 到 'balanced',AI 不知错传
+        profile_fallback_used = True
+        profile_fallback_reason = (
+            f"unknown soft_gate_profile={profile_input!r}, fallback to 'balanced'"
+        )
         profile = "balanced"
 
     base = dict(_SOFT_GATE_PROFILES[profile])
+    base["_profile_fallback_used"] = profile_fallback_used
+    if profile_fallback_reason:
+        base["_profile_fallback_reason"] = profile_fallback_reason
+    base["_resolved_profile"] = profile
+    base["_requested_profile"] = profile_input
 
     if kwargs.get("max_order_shares") is not None:
         base["max_order_shares"] = int(kwargs.get("max_order_shares") or base["max_order_shares"])

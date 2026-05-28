@@ -46,6 +46,9 @@ from ..research_protocol_contract import (
 )
 from ..services.submission_coordinator import SubmissionExecutionOptions
 from ..services.admission_authority import SubmissionAdmissionAuthority
+from .._runtime_toggles import (
+    observe_d_grade_enabled as _observe_d_grade_enabled,
+)
 from ...domain.constants import (
     FACTORY_SUBMISSION_MIN_BACKTEST_TRADES,
     FACTORY_SUBMISSION_MIN_EVENT_TARGET_COVERAGE,

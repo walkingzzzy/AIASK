@@ -171,6 +171,8 @@ def test_skill_audit_and_finance_templates_are_real(tmp_path) -> None:
 def test_native_full_management_tools_cover_provider_memory_acp_security_and_skill_packs(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AIASK_AGENT_MCP_CONFIG", str(tmp_path / "mcp_servers.json"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AIASK_AGENT_MODEL_PROVIDERS", raising=False)
     monkeypatch.setenv("OPENAI_API_KEYS", "sk-" + "A" * 32 + ",sk-" + "B" * 32)
     store = SkillStore(tmp_path / "skills")
     handlers = build_native_capability_handlers(

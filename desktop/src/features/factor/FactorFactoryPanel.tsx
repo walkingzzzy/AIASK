@@ -96,15 +96,15 @@ export function FactorFactoryPanel({
     <div className="capability-stack">
       <div className="capability-banner">
         <div>
-          <span>Factor Mining Factory</span>
-          <h2>Factor pool, engine health, and approved mining cycles</h2>
-          <p>Run and maintenance controls create durable approval intents. Confirmed execution stays inside the Agent facade.</p>
+          <span>因子挖掘工厂</span>
+          <h2>因子池、引擎健康和受控挖掘周期</h2>
+          <p>运行与维护控制会创建持久化审批意图；确认后的执行仍然留在 Agent facade 内。</p>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : status?.status || "not_loaded"} label={message} />
           <button className="small-button" disabled={busy} onClick={refresh} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </div>
@@ -112,58 +112,58 @@ export function FactorFactoryPanel({
       {!controlToken.trim() && (
         <div className="notice warn">
           <ShieldCheck size={15} />
-          Control token is required to create factor factory approval intents.
+          创建因子工厂审批意图需要控制令牌。
         </div>
       )}
 
       <div className="diagnostics-summary wide">
-        <MetricCard label="Status" value={status?.status || "-"} status={status?.status} />
-        <MetricCard label="Pool size" value={compact(factory.pool_size)} status="ready" />
-        <MetricCard label="Runs" value={compact(factory.run_count)} status="ready" />
-        <MetricCard label="Active factors" value={activeFactors.length} status={activeFactors.length ? "ready" : "not_loaded"} />
+        <MetricCard label="状态" value={status?.status || "-"} status={status?.status} />
+        <MetricCard label="池规模" value={compact(factory.pool_size)} status="ready" />
+        <MetricCard label="运行次数" value={compact(factory.run_count)} status="ready" />
+        <MetricCard label="活跃因子" value={activeFactors.length} status={activeFactors.length ? "ready" : "not_loaded"} />
       </div>
 
       <section className="capability-grid two">
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Approved action</span>
-              <h3>Mining cycle intent</h3>
+              <span>受控动作</span>
+              <h3>挖掘周期意图</h3>
             </div>
             <GitPullRequest size={18} />
           </div>
           <label className="field-row">
-            <span>Codes</span>
+            <span>代码</span>
             <textarea value={codes} onChange={(event) => setCodes(event.target.value)} />
           </label>
           <label className="field-row">
-            <span>Engines</span>
+            <span>引擎</span>
             <input value={engines} onChange={(event) => setEngines(event.target.value)} />
           </label>
           <div className="quant-form-grid">
             <label className="field-row">
-              <span>Candidates</span>
+              <span>候选数</span>
               <input value={candidateCount} onChange={(event) => setCandidateCount(event.target.value)} />
             </label>
             <label className="field-row">
-              <span>Generations</span>
+              <span>进化代数</span>
               <input value={generations} onChange={(event) => setGenerations(event.target.value)} />
             </label>
           </div>
           <div className="button-row">
             <button className="primary-button" disabled={busy || !controlToken.trim()} onClick={createRunIntent} type="button">
               <BarChart3 size={15} />
-              Create run intent
+              创建运行意图
             </button>
             <button className="small-button" disabled={busy || !controlToken.trim()} onClick={createMaintenanceIntent} type="button">
               <Wrench size={14} />
-              Maintenance intent
+              创建维护意图
             </button>
           </div>
           {createdIntent && (
             <div className="notice ok">
               <strong>{createdIntent}</strong>
-              <span>Confirm this intent from the Agent intent inspector to execute it.</span>
+              <span>请在 Agent 意图检查器中确认此意图后执行。</span>
             </div>
           )}
         </article>
@@ -171,19 +171,19 @@ export function FactorFactoryPanel({
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Health</span>
-              <h3>Engine and pool status</h3>
+              <span>健康状态</span>
+              <h3>引擎与池状态</h3>
             </div>
             <StatusBadge status={status?.status || "not_loaded"} />
           </div>
           <div className="kv-grid">
-            <span>Initialized</span>
+            <span>已初始化</span>
             <strong>{compact(factory.initialized)}</strong>
-            <span>Loaded</span>
+            <span>已加载</span>
             <strong>{compact(factory.pool_loaded_from_db)}</strong>
-            <span>Promoted</span>
+            <span>已晋升</span>
             <strong>{compact(poolHealth.active_promoted_count)}</strong>
-            <span>Quarantine</span>
+            <span>隔离</span>
             <strong>{compact(poolHealth.quarantine_count)}</strong>
           </div>
           <JsonPanel value={{ engineHealth, poolHealth }} />
@@ -193,8 +193,8 @@ export function FactorFactoryPanel({
       <section className="capability-section">
         <div className="section-header">
           <div>
-            <span>{activeFactors.length} factors</span>
-            <h3>Active pool</h3>
+            <span>{activeFactors.length} 个因子</span>
+            <h3>活跃池</h3>
           </div>
           <StatusBadge status={activeFactors.length ? "ready" : "not_loaded"} />
         </div>
@@ -206,12 +206,12 @@ export function FactorFactoryPanel({
               <p>{compact(factor.validation_summary || factor.fitness || factor.quality_score)}</p>
             </article>
           ))}
-          {!activeFactors.length && <p className="muted">No active factors are loaded in this snapshot.</p>}
+          {!activeFactors.length && <p className="muted">当前快照尚未加载活跃因子。</p>}
         </div>
       </section>
 
       <details className="raw-details">
-        <summary>Raw factor factory data</summary>
+        <summary>原始因子工厂数据</summary>
         <JsonPanel value={{ status, intentEnvelope }} />
       </details>
     </div>

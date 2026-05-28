@@ -49,26 +49,35 @@
                 )
             )
             quality_passed = bool(normalized_gate.get("passed"))
+            # === DEV-V1 P0: D 级硬否决 toggle 化 ===
+            # 当 STRATEGY_FACTORY_OBSERVE_D_GRADE_ENABLED=1 时,D 级 + Gate passed 候选
+            # 可以走 observe lane (paper micro budget tier 自动生效);
+            # formal_track_blockers 中已有的 strict_incubation_pass 仍挡住 D 级升 formal,
+            # formal 严格性零变化。
+            allow_d_grade_observe = _observe_d_grade_enabled()
             runtime_bootstrap_eligible = (
                 quality_passed
-                and validation_grade != "D"
+                and (allow_d_grade_observe or validation_grade != "D")
                 and strategy_type_registered
                 and not missing_runtime_fields
                 and not semantic_hard_fail
             )
             if runtime_bootstrap_eligible:
-                runtime_bootstrap_reason = (
-                    "execution_semantic_gap_observe_only"
-                    if execution_semantic_gap
-                    else "proxy_runtime_observe_only"
-                    if proxy_runtime_used
-                    else "diagnostic_only_observe"
-                    if diagnostic_only
-                    else "quality_passed_non_d_candidate_with_complete_runtime_contract"
-                )
+                # === DEV-V1 P0: D 级走 observe 时使用专用 reason ===
+                if validation_grade == "D":
+                    runtime_bootstrap_reason = "d_grade_observe_only_micro_budget"
+                elif execution_semantic_gap:
+                    runtime_bootstrap_reason = "execution_semantic_gap_observe_only"
+                elif proxy_runtime_used:
+                    runtime_bootstrap_reason = "proxy_runtime_observe_only"
+                elif diagnostic_only:
+                    runtime_bootstrap_reason = "diagnostic_only_observe"
+                else:
+                    runtime_bootstrap_reason = "quality_passed_non_d_candidate_with_complete_runtime_contract"
             elif not quality_passed:
                 runtime_bootstrap_reason = "quality_gate_failed"
             elif validation_grade == "D":
+                # 仅在 toggle OFF 且 D 级 + Gate passed 时走到此分支
                 runtime_bootstrap_reason = "validation_grade_d_not_allowed_for_runtime"
             elif not strategy_type_registered:
                 runtime_bootstrap_reason = "strategy_type_not_registered"

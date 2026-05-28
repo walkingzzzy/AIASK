@@ -52,6 +52,12 @@ BLOCK_ALIASES: dict[str, list[str]] = {
     "avgChange": ["avg_change_pct", "avgChange"],
     "leaderCode": ["leader_code", "leaderCode"],
     "leaderName": ["leader_name", "leaderName"],
+    # P3-5.11 fix: 双命名空间 alias 映射(诊断报告 §5.11)
+    # 历史问题:不同 manager 用 blockCode 或 block_code 不一致,AI 调 get_block_stocks 时常 422
+    # 修复:输出层同时暴露 camelCase + snake_case 字段
+    "blockCode": ["block_code", "code", "blockCode"],
+    "blockName": ["block_name", "name", "blockName"],
+    "blockType": ["block_type", "blockType"],
 }
 
 BLOCK_STOCK_ALIASES: dict[str, list[str]] = {

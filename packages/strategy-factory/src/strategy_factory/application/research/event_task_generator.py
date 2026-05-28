@@ -178,6 +178,7 @@ async def generate_tasks_from_active_events(
     *,
     force_enabled: bool = False,
     persist_lineage: bool = True,
+    claim_outbox: bool = False,
     event_limit: int = 20,
 ) -> dict[str, Any]:
     """Main entry point: load active events, propagate, generate tasks.
@@ -216,6 +217,11 @@ async def generate_tasks_from_active_events(
     # Generate tasks for each event
     all_tasks: list[dict[str, Any]] = []
     lineage_records: list[dict[str, Any]] = []
+    outbox_claimed = 0
+    outbox_processed = 0
+    outbox_skipped = 0
+    outbox_failed = 0
+    outbox_details: list[dict[str, Any]] = []
     feature_flag_max = TARGET_COUNT_MAX if DYNAMIC_TARGET_COUNT_ENABLED else 12
 
     for event in active_events:
@@ -264,10 +270,8 @@ async def generate_tasks_from_active_events(
                 event_source=event_source,
                 dedupe_key=dedupe_key,
             )
-            all_tasks.append(task)
-
             # Record lineage
-            lineage_records.append({
+            lineage_record = {
                 "dedupe_key": dedupe_key,
                 "event_id": event.event_id,
                 "task_id": task["task_id"],
@@ -277,10 +281,71 @@ async def generate_tasks_from_active_events(
                 "target_symbols": symbols,
                 "target_count": len(symbols),
                 "breadth_resolved": impact.breadth,
-            })
+            }
+
+            if claim_outbox:
+                required_methods = (
+                    "claim_event_outbox",
+                    "upsert_event_task_lineage",
+                    "mark_event_outbox_processed",
+                    "mark_event_outbox_failed",
+                )
+                if not all(hasattr(db, name) for name in required_methods):
+                    outbox_failed += 1
+                    outbox_details.append({
+                        "dedupe_key": dedupe_key,
+                        "status": "failed",
+                        "reason": "outbox_dao_unsupported",
+                    })
+                    continue
+
+                claim_payload = {
+                    "dedupe_key": dedupe_key,
+                    "source_event_id": event.event_id,
+                    "theme_code": impact.theme_code,
+                    "event_type": event.event_type,
+                }
+                try:
+                    claim = await db.claim_event_outbox(claim_payload)
+                    if not claim.get("claimed"):
+                        outbox_skipped += 1
+                        outbox_details.append({
+                            "dedupe_key": dedupe_key,
+                            "status": "skipped",
+                            "claim_status": claim.get("status"),
+                        })
+                        continue
+                    outbox_claimed += 1
+                    await db.upsert_event_task_lineage(lineage_record)
+                    await db.mark_event_outbox_processed(dedupe_key)
+                    outbox_processed += 1
+                    outbox_details.append({
+                        "dedupe_key": dedupe_key,
+                        "status": "processed",
+                        "event_id": event.event_id,
+                        "task_id": task["task_id"],
+                        "theme_code": impact.theme_code,
+                    })
+                except Exception as exc:
+                    outbox_failed += 1
+                    with_failed = getattr(db, "mark_event_outbox_failed", None)
+                    if with_failed is not None:
+                        try:
+                            await with_failed(dedupe_key, error=str(exc))
+                        except Exception:
+                            pass
+                    outbox_details.append({
+                        "dedupe_key": dedupe_key,
+                        "status": "failed",
+                        "error": str(exc),
+                    })
+                    continue
+
+            all_tasks.append(task)
+            lineage_records.append(lineage_record)
 
     # Persist lineage
-    if persist_lineage and lineage_records and hasattr(db, "upsert_event_task_lineage"):
+    if not claim_outbox and persist_lineage and lineage_records and hasattr(db, "upsert_event_task_lineage"):
         for record in lineage_records:
             try:
                 await db.upsert_event_task_lineage(record)
@@ -296,6 +361,12 @@ async def generate_tasks_from_active_events(
         "lineage_count": len(lineage_records),
         "lineage_records": lineage_records,
         "persist_lineage": bool(persist_lineage),
+        "claim_outbox": bool(claim_outbox),
+        "outbox_claimed": outbox_claimed,
+        "outbox_processed": outbox_processed,
+        "outbox_skipped": outbox_skipped,
+        "outbox_failed": outbox_failed,
+        "outbox_details": outbox_details,
         "feature_flag_target_max": feature_flag_max,
     }
 

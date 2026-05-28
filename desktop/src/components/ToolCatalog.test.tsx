@@ -54,7 +54,7 @@ describe("ToolCatalog", () => {
     fireEvent.change(sideEffectFilter, { target: { value: "read_only" } });
     expect(screen.getByText("agent_quote")).toBeInTheDocument();
     expect(screen.queryByText("agent_strategy_submit")).not.toBeInTheDocument();
-    expect(screen.queryByText("Contract")).not.toBeInTheDocument();
+    expect(screen.queryByText("契约")).not.toBeInTheDocument();
   });
 
   it("shows optional provider contract metadata without requiring it", () => {
@@ -101,14 +101,14 @@ describe("ToolCatalog", () => {
     expect(screen.getByText("source tdx_local > akshare")).toBeInTheDocument();
     expect(screen.getByText("quality passed report_only")).toBeInTheDocument();
     expect(screen.getByText("providers 1")).toBeInTheDocument();
-    expect(screen.getByText("Contract")).toBeInTheDocument();
-    expect(screen.getByText("Parameters")).toBeInTheDocument();
+    expect(screen.getByText("契约")).toBeInTheDocument();
+    expect(screen.getByText("参数")).toBeInTheDocument();
     expect(screen.getByText("agent_plain")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Fill example"));
+    fireEvent.click(screen.getByText("填充示例"));
     expect(screen.getByPlaceholderText("code")).toHaveValue("600519");
 
-    const search = screen.getByPlaceholderText("Search tools");
+    const search = screen.getByPlaceholderText("搜索工具");
     fireEvent.change(search, { target: { value: "tdx_local" } });
     expect(screen.getByText("agent_mcp_akshare_get_realtime_quote")).toBeInTheDocument();
     expect(screen.queryByText("agent_plain")).not.toBeInTheDocument();
@@ -163,7 +163,7 @@ describe("ToolCatalog", () => {
     expect(screen.getByText("source db.stock_fund_flow > tqcenter.more_info > tushare.moneyflow")).toBeInTheDocument();
     expect(screen.getByText("freshness near_real_time_option_chain_snapshot")).toBeInTheDocument();
 
-    const search = screen.getByPlaceholderText("Search tools");
+    const search = screen.getByPlaceholderText("搜索工具");
     fireEvent.change(search, { target: { value: "akshare.option_sse" } });
     expect(screen.getByText("agent_mcp_akshare_get_option_chain")).toBeInTheDocument();
     expect(screen.queryByText("agent_mcp_akshare_get_macro_indicator")).not.toBeInTheDocument();
@@ -194,6 +194,6 @@ describe("ToolCatalog", () => {
 
     expect(screen.getByText("agent_mcp_structured_tool")).toBeInTheDocument();
     expect(screen.getAllByText("read_only").length).toBeGreaterThan(0);
-    expect(screen.getByText("target sector_manager")).toBeInTheDocument();
+    expect(screen.getByText("目标 sector_manager")).toBeInTheDocument();
   });
 });

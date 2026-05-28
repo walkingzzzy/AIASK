@@ -162,38 +162,12 @@
                     json.dumps(input_data, ensure_ascii=False, default=str, separators=(",", ":")),
                 ]
             )
-            # PR-AI3: 对 strategy_generation 阶段使用更严格的 JSON Schema 约束
+            # PR-AI3: 对 strategy_generation 阶段使用 JSON Schema 约束
+            # 2026-05-28 (P0/C): 官方 DeepSeek 不支持 response_format=json_schema(返回
+            # "This response_format type is unavailable now" → HTTP 400),改回 json_object,
+            # 让 prompt 自带 schema 描述驱动 LLM 输出结构,后续 _try_find_list 兼容降级。
+            # 兼容其他 provider(如 OpenAI / Tongyi) 时若需 json_schema 可通过 env 覆盖。
             _response_format: dict[str, Any] = {"type": "json_object"}
-            if stage_id == "strategy_generation":
-                _response_format = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "strategy_generation_output",
-                        "strict": False,
-                        "schema": {
-                            "type": "object",
-                            "required": ["candidates"],
-                            "properties": {
-                                "candidates": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "required": ["name", "strategy_type", "target_symbols", "dsl"],
-                                        "properties": {
-                                            "name": {"type": "string"},
-                                            "strategy_type": {"type": "string"},
-                                            "target_symbols": {"type": "array", "items": {"type": "string"}},
-                                            "dsl": {"type": "object"},
-                                            "tags": {"type": "array", "items": {"type": "string"}},
-                                            "evidence_chain": {"type": "object"},
-                                            "prediction_contract": {"type": "object"},
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                }
             payload = {
                 "model": self.config.model,
                 "temperature": temperature,

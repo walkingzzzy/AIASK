@@ -1,0 +1,201 @@
+{
+  "generated_at": "2026-05-25T21:25:33.503130",
+  "total_probes": 17,
+  "ok_count": 11,
+  "partial_count": 2,
+  "fail_count": 4,
+  "results": {
+    "tqcenter.connect": {
+      "verdict": "✅ OK",
+      "tq_type": "type"
+    },
+    "kline_999999_close": {
+      "verdict": "✅ OK",
+      "latest_close": 4152.57,
+      "latest_date": "2026-05-25",
+      "rows": 5,
+      "sample_keys": [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "source",
+        "pre_close",
+        "change_pct"
+      ]
+    },
+    "realtime_999999": {
+      "verdict": "✅ OK",
+      "price": 4152.57,
+      "field_count": 53,
+      "sample_keys": [
+        "code",
+        "name",
+        "price",
+        "change",
+        "changePercent",
+        "open",
+        "high",
+        "low",
+        "preClose",
+        "volume"
+      ]
+    },
+    "scjy_north_fund": {
+      "verdict": "⚠️ PARTIAL",
+      "fields": [
+        "SC25",
+        "SC36"
+      ],
+      "non_empty_fields": {
+        "SC25": "1/1 real",
+        "SC36": "1/1 real"
+      },
+      "note": "SC 市场字段无明确北向定义,需逐字段语义识别"
+    },
+    "gpjy_GP06_north_holding": {
+      "verdict": "❌ ALL_PLACEHOLDER",
+      "sample": {}
+    },
+    "gpjy_dragon_tiger": {
+      "verdict": "❌ ALL_PLACEHOLDER",
+      "sample": {},
+      "note": "tqcenter 不直接提供龙虎榜,需走 EM/Tushare"
+    },
+    "scjy_margin_total": {
+      "verdict": "✅ OK",
+      "sample": {
+        "SC25": {
+          "real_count": 1,
+          "total": 1,
+          "first_real": {
+            "Date": "20260525",
+            "Value": [
+              "99.92",
+              "0.00"
+            ]
+          }
+        },
+        "SC36": {
+          "real_count": 1,
+          "total": 1,
+          "first_real": {
+            "Date": "20260525",
+            "Value": [
+              "0.00",
+              "0.00"
+            ]
+          }
+        }
+      },
+      "note": "需进一步确认 SC25/SC36 字段语义"
+    },
+    "market_snapshot_50": {
+      "verdict": "❌ FAIL",
+      "error": "TypeError: tq.get_market_snapshot() got an unexpected keyword argument 'stock_list'"
+    },
+    "stock_info_fundamentals": {
+      "verdict": "✅ OK",
+      "real_fields": {
+        "J_yysy(营收)": "5390925.00",
+        "J_jly(净利润)": "2724251.25",
+        "J_jyl(ROE)": "10.06",
+        "J_mgsy(EPS)": "87.02",
+        "J_mgjzc(BVPS)": "216.32"
+      },
+      "missing_fields": [
+        "EPS_TTM",
+        "PE_TTM",
+        "PB",
+        "TotalShares"
+      ],
+      "total_keys": 63
+    },
+    "financial_data_FN": {
+      "verdict": "❌ NO_DATA"
+    },
+    "sector_list": {
+      "verdict": "✅ OK",
+      "count": 586,
+      "first_3": [
+        {
+          "block_code": "880081.SH",
+          "block_name": "轮动趋势"
+        },
+        {
+          "block_code": "880082.SH",
+          "block_name": "板块趋势"
+        },
+        {
+          "block_code": "880201.SH",
+          "block_name": "黑龙江"
+        }
+      ],
+      "note": "11_default_industry=127 / 12_concept=269 / 14_region=32"
+    },
+    "stock_list_in_sector": {
+      "verdict": "✅ OK",
+      "block_code": "881002.SH(煤炭开采)",
+      "members": 25,
+      "first_3": [
+        "000552.SZ",
+        "000571.SZ",
+        "000937.SZ"
+      ]
+    },
+    "kline_5min": {
+      "verdict": "✅ OK",
+      "rows": 20,
+      "first_keys": [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "source"
+      ],
+      "latest_close": 1384.79
+    },
+    "kline_399001.SZ": {
+      "verdict": "✅ OK",
+      "name": "深证成指",
+      "close": 15856.61,
+      "expected_range": [
+        5000,
+        18000
+      ]
+    },
+    "kline_399006.SZ": {
+      "verdict": "⚠️ INVALID_RANGE",
+      "name": "创业板指",
+      "close": 4021.16,
+      "expected_range": [
+        1000,
+        4000
+      ]
+    },
+    "kline_000300.SH": {
+      "verdict": "✅ OK",
+      "name": "沪深300",
+      "close": 4921.6,
+      "expected_range": [
+        2500,
+        6000
+      ]
+    },
+    "kline_000016.SH": {
+      "verdict": "✅ OK",
+      "name": "上证50",
+      "close": 2968.7,
+      "expected_range": [
+        1500,
+        5000
+      ]
+    }
+  }
+}

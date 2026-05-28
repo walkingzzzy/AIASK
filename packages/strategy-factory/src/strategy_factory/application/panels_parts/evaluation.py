@@ -206,6 +206,10 @@ async def _run_validation_report(strategy_type: str, params: dict, db) -> dict |
         "validation_focus_layer": validation_focus_layer,
         "sample_selection_mode": sample_selection_mode,
         "sample_alignment_reason": sample_alignment_reason,
+        "requested_sample_size": int(sample_selection.get("requested_sample_size") or 0),
+        "effective_sample_size": int(sample_selection.get("effective_sample_size") or len(sample_codes)),
+        "statistical_sample_min": int(sample_selection.get("statistical_sample_min") or 0),
+        "statistical_sample_expanded": bool(sample_selection.get("statistical_sample_expanded")),
     }
     adjusted_report["validation_focus"] = validation_focus or None
     adjusted_report["validation_focus_layer"] = validation_focus_layer

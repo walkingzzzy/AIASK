@@ -111,6 +111,7 @@ CONFIRM_REQUIRED_STRATEGY_ACTIONS = frozenset(
         "factory_event_update",
         "factory_event_approve",
         "factory_event_record_outcome",
+        "factory_event_bootstrap",
         "factory_theme_exposure_refresh",
         "factory_event_outbox_drain",
         "factory_theme_regression_run",

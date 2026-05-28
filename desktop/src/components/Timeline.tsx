@@ -65,7 +65,7 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
     {
       id: `${thread.id}:input`,
       kind: "user",
-      title: "Instruction",
+      title: "用户指令",
       body: thread.prompt,
       status: "ready"
     }
@@ -75,8 +75,8 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
     events.push({
       id: `${thread.id}:thinking`,
       kind: "assistant",
-      title: "AIASK is working",
-      body: "Waiting for model output and tool events.",
+      title: "AIASK 正在处理",
+      body: "正在等待模型输出和工具事件。",
       status: "in_progress"
     });
     return events;
@@ -85,7 +85,7 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
   events.push({
     id: `${thread.id}:answer`,
     kind: "assistant",
-    title: "Response",
+    title: "智能体回复",
     body: response.output_text || response.status,
     status: response.status
   });
@@ -102,7 +102,7 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
   });
 
   (response.metadata?.audit_events || []).forEach((audit, index) => {
-    const name = eventName(audit, "Audit event");
+    const name = eventName(audit, "审计事件");
     seen.add(timelineEventKey(audit));
     seenLoose.add(looseTimelineEventKey(audit));
     events.push({
@@ -125,7 +125,7 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
     events.push({
       id: `${thread.id}:run:${index}`,
       kind: isApprovalEvent(event) ? "approval" : "event",
-      title: eventName(event, "Run event"),
+      title: eventName(event, "运行事件"),
       subtitle: eventTimestamp(event),
       body: eventBody(event),
       payload: event,
@@ -141,8 +141,8 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
     return (
       <div className="empty-thread">
         <Bot size={28} />
-        <strong>Start a task</strong>
-        <span>Type an instruction below. AIASK will show the answer, tools, approvals, and run events here.</span>
+        <strong>开始一个任务</strong>
+        <span>在下方输入指令后，AIASK 会在这里展示回复、工具调用、审批和运行事件。</span>
       </div>
     );
   }
@@ -164,7 +164,7 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
           {event.payload !== undefined && (
             <details className="raw-details">
               <summary>
-                Raw
+                原始数据
                 <ChevronDown size={14} />
               </summary>
               <JsonPanel value={event.payload} />

@@ -216,6 +216,66 @@ async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> di
         return _execution_failed(exc, action=action, dependency="incubation_factory")
 
 
+async def _execute_gateway(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from ..gateway import DeliveryRouter, GatewayChannelDirectoryStore, GatewayMessageStore
+        from ..paths import default_state_db_path
+
+        state_path = default_state_db_path()
+        router = DeliveryRouter(
+            messages=GatewayMessageStore(state_path),
+            directory=GatewayChannelDirectoryStore(state_path),
+        )
+        payload = dict(params or {})
+        data = await router.send(
+            platform=str(payload.get("platform") or "local"),
+            target=str(payload.get("target") or ""),
+            message=str(payload.get("message") or ""),
+            thread_id=payload.get("thread_id"),
+            session_id=payload.get("session_id"),
+            user_id=payload.get("user_id"),
+            media_paths=[str(item) for item in list(payload.get("media_paths") or [])],
+        )
+        if action == "direct_deliver":
+            data["deliver_mode"] = "direct_platform"
+        return {"success": True, "data": data, "error": None}
+    except Exception as exc:
+        return _execution_failed(exc, action=action, dependency="gateway")
+
+
+async def _execute_webhook(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from ..gateway import DeliveryRouter, GatewayChannelDirectoryStore, GatewayMessageStore
+        from ..paths import default_state_db_path
+        from ..webhooks import WebhookStore
+
+        if action != "trigger":
+            raise ValueError(f"unsupported webhook action: {action}")
+        payload = dict(params or {})
+        state_path = default_state_db_path()
+        data = WebhookStore(state_path).render_trigger(
+            str(payload.get("webhook_id") or ""),
+            event=str(payload.get("event") or "event"),
+            payload=dict(payload.get("payload") or {}),
+            signature=payload.get("signature"),
+        )
+        deliver_config = data.get("deliver") if isinstance(data.get("deliver"), dict) else {}
+        if isinstance(deliver_config, dict) and deliver_config.get("mode") == "direct_platform":
+            routed = await DeliveryRouter(
+                messages=GatewayMessageStore(state_path),
+                directory=GatewayChannelDirectoryStore(state_path),
+            ).send(
+                platform=str(deliver_config.get("platform") or "local"),
+                target=str(deliver_config.get("target") or ""),
+                thread_id=deliver_config.get("thread_id"),
+                message=str(data.get("prompt") or ""),
+            )
+            data["direct_delivery"] = routed
+        return {"success": True, "data": data, "error": None}
+    except Exception as exc:
+        return _execution_failed(exc, action=action, dependency="webhook")
+
+
 async def execute_confirmed_action(
     target_tool: str,
     action: str,
@@ -234,6 +294,22 @@ async def execute_confirmed_action(
         return await _execute_factor_factory(normalized_action, payload)
     if normalized_tool == "incubation_factory":
         return await _execute_incubation_factory(normalized_action, payload)
+    if normalized_tool == "gateway":
+        return await _execute_gateway(normalized_action, payload)
+    if normalized_tool == "webhook":
+        return await _execute_webhook(normalized_action, payload)
+    if normalized_tool == "financial_manager":
+        return {
+            "success": False,
+            "data": {
+                "target_tool": normalized_tool,
+                "target_action": normalized_action,
+                "params": payload,
+                "detail": "Financial Manager V1 records this approval intent only; stateful manager execution is not enabled from Desktop.",
+            },
+            "error": "financial manager stateful execution is disabled in V1",
+            "error_code": "FINANCIAL_MANAGER_INTENT_ONLY",
+        }
     return {
         "success": False,
         "data": {

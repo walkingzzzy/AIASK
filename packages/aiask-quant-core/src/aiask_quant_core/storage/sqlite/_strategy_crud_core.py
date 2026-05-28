@@ -105,6 +105,40 @@ class _StrategyCrudCoreMixin:
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
 
+        async def list_paper_observation_strategies(self, limit: int = 50) -> List[dict]:
+            """DEV-V1 P1: 列出所有 paper observation 候选策略.
+
+            边界:
+              - 只取 strategies.status = 'submitted'
+              - 只取 strategy_incubation_accounts.stage = 'paper' AND status = 'active'
+              - 反 EXISTS 排除已升 candidate / listed 的策略,避免重复处理
+              - ORDER BY a.bound_at DESC,新进入 paper 的优先
+              - LIMIT 通过参数化绑定,默认 50,toggle 可配
+            """
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           a.account_id AS paper_account_id,
+                           a.bound_at AS paper_bound_at
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    WHERE s.status = 'submitted'
+                      AND a.stage = 'paper'
+                      AND a.status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM strategy_incubation_accounts a2
+                          WHERE a2.strategy_id = s.id
+                            AND a2.stage IN ('candidate', 'listed')
+                            AND a2.status = 'active'
+                      )
+                    ORDER BY datetime(a.bound_at) DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            return [self._decode_strategy_row(dict(r)) for r in rows]
+
         async def update_strategy_status(
             self,
             strategy_id: str,

@@ -136,6 +136,41 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 200},
         }
     ),
+    "agent_factory_event_list": schema(
+        {
+            "event_id": {"type": "string"},
+            "source": {"type": "string"},
+            "status": {"type": "string"},
+            "event_type": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    ),
+    "agent_factory_event_preview_tasks": schema(
+        {
+            "event_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        },
+        required=["event_id"],
+    ),
+    "agent_factory_event_lineage": schema(
+        {
+            "event_id": {"type": "string"},
+            "strategy_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    ),
+    "agent_factory_theme_exposure_status": schema(
+        {
+            "theme": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    ),
+    "agent_factory_event_outbox_status": schema(
+        {
+            "status": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    ),
     "agent_incubation_factory_status": schema({}),
     "agent_action_intent_create": schema(
         {

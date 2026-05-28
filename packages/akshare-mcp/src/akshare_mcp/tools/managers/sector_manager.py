@@ -415,18 +415,25 @@ def register_sector_manager(mcp):
                 source_chain = ['sector_manager']
                 period = _normalize_period(kwargs, 20)
                 
+                # P3-5.9 fix: 同源化 - 显式记录 sector_performance 上游(诊断报告 §5.9)
+                # 历史问题:sector_rotation 的数据源标识与 sector_performance 不一致,AI 难以追溯
+                # 修复:把 sector_performance 的 source 透传到 sector_rotation 输出
                 performance_result = await sector_manager(
                     action='sector_performance',
                     params={'period': period}
                 )
                 source_chain.extend(performance_result.get('meta', {}).get('source_chain') or [])
+                upstream_source = (performance_result.get('data') or {}).get('source') or 'unknown'
+                upstream_fallback_reason = (performance_result.get('data') or {}).get('fallback_reason')
                 
                 sectors = []
                 if performance_result.get('success') and performance_result.get('data'):
                     sectors = performance_result['data'].get('sectors', [])
                 
                 # 如果 sector_performance 返回空，直接用 get_market_blocks 的涨跌幅数据
+                rotation_used_fallback = False
                 if not sectors:
+                    rotation_used_fallback = True
                     try:
                         from ..market_blocks import get_market_blocks
                         blocks_res = await get_market_blocks(block_type='industry', limit=20)
@@ -458,7 +465,8 @@ def register_sector_manager(mcp):
                         'strong_sectors': [],
                         'weak_sectors': [],
                         'rotation_advice': [],
-                        'market_style': 'unknown'
+                        'market_style': 'unknown',
+                        'upstream_source': upstream_source,
                     }, source_chain=_dedupe_chain(source_chain))
                 
                 total_count = len(sectors)
@@ -492,7 +500,11 @@ def register_sector_manager(mcp):
                     'rotation_advice': rotation_advice,
                     'market_style': 'growth' if top_return > 0.15 else (
                         'value' if top_return < 0.05 else 'balanced'
-                    )
+                    ),
+                    # P3-5.9 fix: 透出上游来源,确保 rotation 与 performance 同源可追溯
+                    'upstream_source': upstream_source,
+                    'upstream_fallback_reason': upstream_fallback_reason,
+                    'used_market_blocks_fallback': rotation_used_fallback,
                 }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'sector_correlation':
@@ -560,6 +572,14 @@ def register_sector_manager(mcp):
                         else:
                             correlation_matrix[sector1][sector2] = 0.0
                 
+                # P3-5.7 fix: 全空时显式 fail(诊断报告 §5.7)
+                # 历史问题:5 个 sectors 输入但 correlation_matrix={},success=true 不显式失败
+                if len(correlation_matrix) == 0:
+                    return _fail(
+                        f'所有 {len(sectors)} 个板块均无可用 K 线数据,无法计算相关性',
+                        source_chain=_dedupe_chain(source_chain),
+                    )
+
                 return _ok({
                     'sectors': sectors,
                     'period': period,
@@ -567,11 +587,11 @@ def register_sector_manager(mcp):
                     'computed_pairs': sum(len(v) for v in correlation_matrix.values()),
                     'sectors_with_returns': list(sector_returns.keys()),
                     'sectors_missing_returns': [s for s in sectors if s not in sector_returns],
-                    # P3-5.7 fix: 空 correlation_matrix 显式标 degraded(诊断报告 §5.7)
-                    'degraded': len(correlation_matrix) == 0,
+                    # P3-5.7 fix: 部分缺失时显式标 degraded(诊断报告 §5.7)
+                    'degraded': len(correlation_matrix) < len(sectors),
                     'fallback_reason': (
-                        'all_sector_returns_unavailable'
-                        if len(correlation_matrix) == 0
+                        f'{len(sectors) - len(correlation_matrix)} sectors_returns_unavailable'
+                        if len(correlation_matrix) < len(sectors)
                         else None
                     ),
                     'interpretation': {

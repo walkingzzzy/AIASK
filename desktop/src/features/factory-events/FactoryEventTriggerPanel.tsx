@@ -115,6 +115,7 @@ const STATUS_OPTIONS = ["", "pending_review", "active", "paused", "expired"];
 const SOURCE_OPTIONS = ["", "manual", "news_llm", "macro_shock", "market_anomaly", "price_inference"];
 const TYPE_OPTIONS = ["", "policy_shock", "earnings", "guidance", "regulation", "macro_data", "other"];
 const DIRECTION_OPTIONS = ["bullish", "bearish", "neutral"];
+const OUTCOME_OPTIONS = ["positive", "negative", "mixed", "no_effect"] as const;
 
 const HIGH_INTENSITY_THRESHOLD = 0.8;
 
@@ -287,6 +288,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const [lineageMessage, setLineageMessage] = useState("LINEAGE_NOT_LOADED");
   const [exposureStatus, setExposureStatus] = useState<Record<string, unknown> | null>(null);
   const [outboxStatus, setOutboxStatus] = useState<Record<string, unknown> | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = useState("BOOTSTRAP_NOT_RUN");
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState("MAINTENANCE_NOT_LOADED");
 
@@ -305,7 +307,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   // ── Approve / pause / outcome state ──────────────────────────────────
   const [approverId, setApproverId] = useState("approver_local");
-  const [outcomeText, setOutcomeText] = useState("");
+  const [outcomeValue, setOutcomeValue] = useState<(typeof OUTCOME_OPTIONS)[number]>("mixed");
+  const [outcomeNotes, setOutcomeNotes] = useState("");
 
   const loadMaintenanceStatus = useCallback(async () => {
     setMaintenanceLoading(true);
@@ -349,7 +352,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     try {
       const envelope = await client.factoryEventList({
         status: statusFilter,
-        event_source: sourceFilter,
+        source: sourceFilter,
         event_type: typeFilter,
         limit: 100
       });
@@ -416,7 +419,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const requireControlToken = useCallback(() => {
     if (!hasControlToken) {
-      appendLog("Control token missing — write actions require confirmation.", false);
+      appendLog("缺少控制令牌 Control token，写操作需要确认。", false);
       return false;
     }
     return true;
@@ -425,7 +428,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const handleCreate = useCallback(async () => {
     if (!requireControlToken()) return;
     if (!formName.trim()) {
-      appendLog("Event name is required.", false);
+      appendLog("请填写事件名称。", false);
       return;
     }
     const themes = formThemes
@@ -433,13 +436,13 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       .map((value) => value.trim())
       .filter(Boolean);
     if (themes.length === 0) {
-      appendLog("At least one primary theme is required.", false);
+      appendLog("至少需要填写一个 primary theme。", false);
       return;
     }
     const payload: Record<string, unknown> = {
       event_name: formName.trim(),
       event_type: formType,
-      event_source: formSource,
+      source: formSource,
       direction: formDirection,
       intensity: formIntensity,
       confidence: formConfidence,
@@ -451,19 +454,19 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     if (formEvidenceSummary) payload.evidence_summary = formEvidenceSummary;
 
     const rationale = formIntensity >= HIGH_INTENSITY_THRESHOLD
-      ? `High-intensity event (${formIntensity.toFixed(2)}) — pending dual-person review.`
-      : `Operator-initiated factory event create from Desktop.`;
+      ? `高强度事件 (${formIntensity.toFixed(2)})，进入 pending dual-person review。`
+      : "操作者从 Desktop 创建 factory event。";
 
     try {
       const envelope = await client.factoryEventCreateIntent(payload, rationale);
       const intentId = intentIdFromEnvelope(envelope.data);
       if (intentId) {
-        appendLog(`Intent ${intentId} created (awaiting confirmation).`, true);
+        appendLog(`意图 ${intentId} 已创建，等待确认。`, true);
       } else {
-        appendLog("Intent created (no intent_id in envelope).", envelope.success);
+        appendLog("意图已创建，但 envelope 中没有 intent_id。", envelope.success);
       }
     } catch (error) {
-      appendLog(`Create failed: ${formatApiError(error)}`, false);
+      appendLog(`创建失败：${formatApiError(error)}`, false);
     }
   }, [
     appendLog,
@@ -487,13 +490,13 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       try {
         const envelope = await client.confirmIntent(intentId);
         if (envelope.success) {
-          appendLog(`Intent ${intentId} confirmed.`, true);
+          appendLog(`意图 ${intentId} 已确认。`, true);
           await loadEvents();
         } else {
-          appendLog(`Confirm failed: ${envelope.error || "unknown"}`, false);
+          appendLog(`确认失败：${envelope.error || "unknown"}`, false);
         }
       } catch (error) {
-        appendLog(`Confirm failed: ${formatApiError(error)}`, false);
+        appendLog(`确认失败：${formatApiError(error)}`, false);
       }
     },
     [appendLog, client, loadEvents]
@@ -502,7 +505,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const handleCreateAndConfirm = useCallback(async () => {
     if (!requireControlToken()) return;
     if (!formName.trim()) {
-      appendLog("Event name is required.", false);
+      appendLog("请填写事件名称。", false);
       return;
     }
     const themes = formThemes
@@ -510,13 +513,13 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       .map((value) => value.trim())
       .filter(Boolean);
     if (themes.length === 0) {
-      appendLog("At least one primary theme is required.", false);
+      appendLog("至少需要填写一个 primary theme。", false);
       return;
     }
     const payload: Record<string, unknown> = {
       event_name: formName.trim(),
       event_type: formType,
-      event_source: formSource,
+      source: formSource,
       direction: formDirection,
       intensity: formIntensity,
       confidence: formConfidence,
@@ -528,12 +531,12 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       const envelope = await client.factoryEventCreateIntent(payload, "Desktop create + confirm.");
       const intentId = intentIdFromEnvelope(envelope.data);
       if (!intentId) {
-        appendLog("Create failed: missing intent_id.", false);
+        appendLog("创建失败：缺少 intent_id。", false);
         return;
       }
       await confirmIntentNow(intentId);
     } catch (error) {
-      appendLog(`Create+confirm failed: ${formatApiError(error)}`, false);
+      appendLog(`创建并确认失败：${formatApiError(error)}`, false);
     }
   }, [
     appendLog,
@@ -555,7 +558,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     async (eventId: string) => {
       if (!requireControlToken()) return;
       if (!approverId.trim()) {
-        appendLog("Approver id is required.", false);
+        appendLog("请填写 approver id。", false);
         return;
       }
       try {
@@ -564,10 +567,10 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         if (intentId) {
           await confirmIntentNow(intentId);
         } else {
-          appendLog("Approve intent created without intent_id.", envelope.success);
+          appendLog("批准意图已创建，但缺少 intent_id。", envelope.success);
         }
       } catch (error) {
-        appendLog(`Approve failed: ${formatApiError(error)}`, false);
+        appendLog(`批准失败：${formatApiError(error)}`, false);
       }
     },
     [appendLog, approverId, client, confirmIntentNow, requireControlToken]
@@ -586,10 +589,10 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         if (intentId) {
           await confirmIntentNow(intentId);
         } else {
-          appendLog("Pause intent created without intent_id.", envelope.success);
+          appendLog("暂停意图已创建，但缺少 intent_id。", envelope.success);
         }
       } catch (error) {
-        appendLog(`Pause failed: ${formatApiError(error)}`, false);
+        appendLog(`暂停失败：${formatApiError(error)}`, false);
       }
     },
     [appendLog, client, confirmIntentNow, requireControlToken]
@@ -598,27 +601,27 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const handleRecordOutcome = useCallback(
     async (eventId: string) => {
       if (!requireControlToken()) return;
-      if (!outcomeText.trim()) {
-        appendLog("Outcome description is required.", false);
+      if (!outcomeValue) {
+        appendLog("请填写 outcome 枚举。", false);
         return;
       }
       try {
         const envelope = await client.factoryEventRecordOutcomeIntent(
           eventId,
-          { outcome_description: outcomeText.trim() },
+          { actual_outcome: outcomeValue, outcome_notes: outcomeNotes.trim() },
           "Desktop record outcome."
         );
         const intentId = intentIdFromEnvelope(envelope.data);
         if (intentId) {
           await confirmIntentNow(intentId);
         } else {
-          appendLog("Outcome intent created without intent_id.", envelope.success);
+          appendLog("结果意图已创建，但缺少 intent_id。", envelope.success);
         }
       } catch (error) {
-        appendLog(`Outcome failed: ${formatApiError(error)}`, false);
+        appendLog(`记录结果失败：${formatApiError(error)}`, false);
       }
     },
-    [appendLog, client, confirmIntentNow, outcomeText, requireControlToken]
+    [appendLog, client, confirmIntentNow, outcomeNotes, outcomeValue, requireControlToken]
   );
 
   // ── Tab content renderers ────────────────────────────────────────────
@@ -634,18 +637,21 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         const envelope = await createIntent();
         const intentId = intentIdFromEnvelope(envelope.data);
         if (!intentId) {
-          appendLog(`${label} intent missing intent_id.`, false);
+          appendLog(`${label} 意图缺少 intent_id。`, false);
           return;
         }
         const confirmed = await client.confirmIntent(intentId);
         if (confirmed.success) {
-          appendLog(`${label} intent ${intentId} confirmed.`, true);
+          appendLog(`${label} 意图 ${intentId} 已确认。`, true);
+          if (label.includes("Bootstrap")) {
+            setBootstrapStatus("BOOTSTRAP_CONFIRMED");
+          }
           await Promise.all([loadMaintenanceStatus(), loadLineage()]);
         } else {
-          appendLog(`${label} confirm failed: ${confirmed.error || "unknown"}`, false);
+          appendLog(`${label} 确认失败：${confirmed.error || "unknown"}`, false);
         }
       } catch (error) {
-        appendLog(`${label} failed: ${formatApiError(error)}`, false);
+        appendLog(`${label} 失败：${formatApiError(error)}`, false);
       } finally {
         setMaintenanceLoading(false);
       }
@@ -653,20 +659,27 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     [appendLog, client, loadLineage, loadMaintenanceStatus, requireControlToken]
   );
 
+  const handleBootstrap = useCallback(() => {
+    setBootstrapStatus("BOOTSTRAP_PENDING");
+    createAndConfirmMaintenanceIntent("初始化 Bootstrap", () =>
+      client.factoryEventBootstrapIntent({ batch_size: 1000, refresh_exposure: true })
+    );
+  }, [client, createAndConfirmMaintenanceIntent]);
+
   const handleExposureRefresh = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Exposure refresh", () =>
+    createAndConfirmMaintenanceIntent("刷新暴露", () =>
       client.factoryThemeExposureRefreshIntent({ batch_size: 1000 })
     );
   }, [client, createAndConfirmMaintenanceIntent]);
 
   const handleOutboxDrain = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Outbox drain", () =>
+    createAndConfirmMaintenanceIntent("排空 outbox", () =>
       client.factoryEventOutboxDrainIntent({ limit: 20 })
     );
   }, [client, createAndConfirmMaintenanceIntent]);
 
   const handleRegressionRun = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Theme regression", () =>
+    createAndConfirmMaintenanceIntent("主题回归", () =>
       client.factoryThemeRegressionRunIntent({})
     );
   }, [client, createAndConfirmMaintenanceIntent]);
@@ -676,38 +689,43 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       <div className="section-header">
         <div>
           <span>{maintenanceMessage}</span>
-          <h3>Exposure and outbox status</h3>
+          <h3>暴露与 outbox 状态</h3>
         </div>
         <RefreshCw size={18} className={maintenanceLoading ? "spin" : ""} />
       </div>
       <div className="status-cluster">
-        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "row_count")} exposure rows`} />
-        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "theme_count")} themes`} />
-        <StatusBadge status={outboxCount(outboxStatus, "failed") ? "warning" : "implemented"} label={`${outboxCount(outboxStatus, "failed")} failed outbox`} />
-        <StatusBadge status="info" label={`${outboxCount(outboxStatus, "processed")} processed`} />
+        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "row_count")} 行暴露`} />
+        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "theme_count")} 个主题`} />
+        <StatusBadge status={outboxCount(outboxStatus, "failed") ? "warning" : "implemented"} label={`${outboxCount(outboxStatus, "failed")} 条 outbox 失败`} />
+        <StatusBadge status="info" label={`${outboxCount(outboxStatus, "processed")} 条已处理`} />
+        <StatusBadge status={bootstrapStatus === "BOOTSTRAP_CONFIRMED" ? "implemented" : "info"} label={bootstrapStatus} />
       </div>
       <div className="header-actions">
         <button className="small-button" type="button" onClick={loadMaintenanceStatus} disabled={maintenanceLoading}>
           <RefreshCw size={13} className={maintenanceLoading ? "spin" : ""} />
-          Refresh status
+          刷新状态
+        </button>
+        <button className="small-button" type="button" onClick={handleBootstrap} disabled={!hasControlToken || maintenanceLoading}>
+          <Compass size={13} />
+          初始化 Bootstrap
         </button>
         <button className="small-button" type="button" onClick={handleExposureRefresh} disabled={!hasControlToken || maintenanceLoading}>
           <Target size={13} />
-          Refresh exposure
+          刷新暴露
         </button>
         <button className="small-button" type="button" onClick={handleOutboxDrain} disabled={!hasControlToken || maintenanceLoading}>
           <Workflow size={13} />
-          Drain outbox
+          排空 outbox
         </button>
         <button className="small-button" type="button" onClick={handleRegressionRun} disabled={!hasControlToken || maintenanceLoading}>
           <Compass size={13} />
-          Run regression
+          运行回归
         </button>
       </div>
       {!hasControlToken && (
         <div className="notice warn">
           <AlertTriangle size={15} />
-          Maintenance writes require a control token; read-only status remains available.
+          维护类写操作需要控制令牌 Control token；只读状态仍可查看。
         </div>
       )}
     </section>
@@ -718,47 +736,47 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       <section className="capability-section">
         <div className="section-header">
           <div>
-            <span>Filters</span>
-            <h3>Find an event to inspect or trigger</h3>
+            <span>筛选</span>
+            <h3>查找要查看或触发的事件</h3>
           </div>
           <Filter size={18} />
         </div>
         <div className="event-filter-grid">
           <label>
-            <span>Status</span>
+            <span>状态</span>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               {STATUS_OPTIONS.map((value) => (
                 <option key={value || "all"} value={value}>
-                  {value || "all statuses"}
+                  {value || "全部状态"}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>Source</span>
+            <span>来源</span>
             <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
               {SOURCE_OPTIONS.map((value) => (
                 <option key={value || "all"} value={value}>
-                  {value || "all sources"}
+                  {value || "全部来源"}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>Type</span>
+            <span>类型</span>
             <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
               {TYPE_OPTIONS.map((value) => (
                 <option key={value || "all"} value={value}>
-                  {value || "all types"}
+                  {value || "全部类型"}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>Search</span>
+            <span>搜索</span>
             <div className="search-field">
               <Search size={14} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="theme / id / name" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="主题 / id / 名称" />
             </div>
           </label>
         </div>
@@ -767,8 +785,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       <section className="capability-section">
         <div className="section-header">
           <div>
-            <span>{filtered.length} matching events</span>
-            <h3>Active injections</h3>
+            <span>{filtered.length} 个匹配事件</span>
+            <h3>当前生效的事件注入</h3>
           </div>
           <Workflow size={18} />
         </div>
@@ -785,7 +803,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                   </span>
                   <strong>{event.event_name}</strong>
                   <p>
-                    {shortText(event.primary_themes.join(", ") || "(no themes)", 200)} / intensity{" "}
+                    {shortText(event.primary_themes.join(", ") || "(无主题)", 200)} / 强度{" "}
                     {event.intensity.toFixed(2)} / {event.direction}
                   </p>
                 </div>
@@ -797,7 +815,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
               <div className="event-card-actions">
                 <button className="small-button" type="button" onClick={() => handleSelectEvent(event.event_id)}>
                   <Target size={13} />
-                  Preview
+                  预览
                 </button>
                 {event.status === "pending_review" && (
                   <button
@@ -807,7 +825,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                     disabled={!hasControlToken}
                   >
                     <CheckCircle2 size={13} />
-                    Approve
+                    批准
                   </button>
                 )}
                 {event.status === "active" && (
@@ -818,12 +836,12 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                     disabled={!hasControlToken}
                   >
                     <ShieldAlert size={13} />
-                    Pause
+                    暂停
                   </button>
                 )}
               </div>
               <details className="raw-details">
-                <summary>Evidence payload</summary>
+                <summary>证据 payload</summary>
                 <JsonPanel value={event} />
               </details>
             </article>
@@ -831,7 +849,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           {!filtered.length && (
             <div className="empty-mini">
               <ClipboardCheck size={24} />
-              <span>No events match the current filters. Adjust filters or refresh.</span>
+              <span>没有匹配当前筛选条件的事件。请调整筛选或刷新。</span>
             </div>
           )}
         </div>
@@ -841,26 +859,26 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const renderCreateTab = () => (
     <section className="capability-section">
-      <div className="section-header">
-        <div>
-          <span>Create event</span>
-          <h3>All writes go through ActionIntent</h3>
+        <div className="section-header">
+          <div>
+          <span>创建事件</span>
+          <h3>所有写操作都通过 ActionIntent</h3>
         </div>
         <Plus size={18} />
       </div>
       {!hasControlToken && (
         <div className="notice warn">
           <AlertTriangle size={15} />
-          Control token is missing. Reads still work, but ``Create`` / ``Approve`` / ``Pause`` cannot dispatch intents.
+          缺少控制令牌 Control token。读取仍可使用，但“创建”/“批准”/“暂停”无法派发意图。
         </div>
       )}
       <div className="event-filter-grid">
         <label>
-          <span>Event name</span>
+          <span>事件名称</span>
           <input value={formName} onChange={(event) => setFormName(event.target.value)} placeholder="e.g. 稀土出口管制" />
         </label>
         <label>
-          <span>Type</span>
+          <span>类型</span>
           <select value={formType} onChange={(event) => setFormType(event.target.value)}>
             {TYPE_OPTIONS.filter(Boolean).map((value) => (
               <option key={value} value={value}>{value}</option>
@@ -868,7 +886,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           </select>
         </label>
         <label>
-          <span>Source</span>
+          <span>来源</span>
           <select value={formSource} onChange={(event) => setFormSource(event.target.value)}>
             {SOURCE_OPTIONS.filter(Boolean).map((value) => (
               <option key={value} value={value}>{value}</option>
@@ -876,7 +894,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           </select>
         </label>
         <label>
-          <span>Direction</span>
+          <span>方向</span>
           <select value={formDirection} onChange={(event) => setFormDirection(event.target.value as "bullish" | "bearish" | "neutral")}>
             {DIRECTION_OPTIONS.map((value) => (
               <option key={value} value={value}>{value}</option>
@@ -884,7 +902,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           </select>
         </label>
         <label>
-          <span>Intensity (0–1)</span>
+          <span>强度 Intensity (0-1)</span>
           <input
             type="number"
             min={0}
@@ -895,7 +913,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           />
         </label>
         <label>
-          <span>Confidence (0–1)</span>
+          <span>置信度 Confidence (0-1)</span>
           <input
             type="number"
             min={0}
@@ -906,23 +924,23 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           />
         </label>
         <label>
-          <span>Primary themes (comma-separated)</span>
+          <span>Primary themes（逗号分隔）</span>
           <input value={formThemes} onChange={(event) => setFormThemes(event.target.value)} placeholder="critical_minerals, rare_earth" />
         </label>
         <label>
-          <span>Valid until (ISO)</span>
+          <span>有效期至 (ISO)</span>
           <input value={formValidUntil} onChange={(event) => setFormValidUntil(event.target.value)} placeholder="2026-06-24T08:00:00Z" />
         </label>
         <label>
-          <span>Evidence URL</span>
+          <span>证据 URL</span>
           <input value={formEvidenceUrl} onChange={(event) => setFormEvidenceUrl(event.target.value)} placeholder="https://..." />
         </label>
         <label>
-          <span>Evidence summary</span>
-          <input value={formEvidenceSummary} onChange={(event) => setFormEvidenceSummary(event.target.value)} placeholder="brief context" />
+          <span>证据摘要</span>
+          <input value={formEvidenceSummary} onChange={(event) => setFormEvidenceSummary(event.target.value)} placeholder="简要背景" />
         </label>
         <label>
-          <span>Operator id</span>
+          <span>操作者 id</span>
           <input value={formOperator} onChange={(event) => setFormOperator(event.target.value)} />
         </label>
       </div>
@@ -934,7 +952,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           disabled={!hasControlToken}
         >
           <Plus size={13} />
-          Create intent only
+          仅创建意图
         </button>
         <button
           className="small-button"
@@ -943,18 +961,18 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           disabled={!hasControlToken || formIntensity >= HIGH_INTENSITY_THRESHOLD}
           title={
             formIntensity >= HIGH_INTENSITY_THRESHOLD
-              ? "High-intensity events must go through dual-person review (intent only)."
+              ? "高强度事件必须经过双人复核，只能先创建意图。"
               : undefined
           }
         >
           <CheckCircle2 size={13} />
-          Create + confirm
+          创建并确认
         </button>
       </div>
       {formIntensity >= HIGH_INTENSITY_THRESHOLD && (
         <div className="notice warn">
           <ShieldAlert size={15} />
-          Intensity ≥ {HIGH_INTENSITY_THRESHOLD.toFixed(2)} forces ``pending_review`` — only ``Create intent only`` is enabled.
+          强度 {">="} {HIGH_INTENSITY_THRESHOLD.toFixed(2)} 会强制进入 `pending_review`，只能使用“仅创建意图”。
         </div>
       )}
     </section>
@@ -962,16 +980,16 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const renderPreviewTab = () => (
     <section className="capability-section">
-      <div className="section-header">
-        <div>
-          <span>Preview</span>
-          <h3>BFS propagation + candidate basket</h3>
+        <div className="section-header">
+          <div>
+          <span>预览</span>
+          <h3>BFS 传播与候选篮子</h3>
         </div>
         <Target size={18} />
       </div>
       <div className="event-filter-grid">
         <label>
-          <span>Event id</span>
+          <span>事件 id</span>
           <input
             value={selectedEventId}
             onChange={(event) => setSelectedEventId(event.target.value)}
@@ -987,16 +1005,24 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             disabled={!selectedEventId || previewLoading}
           >
             <RefreshCw size={13} className={previewLoading ? "spin" : ""} />
-            Run preview
+            运行预览
           </button>
         </label>
         <label>
-          <span>Approver id (for approve)</span>
+          <span>批准人 id（用于批准）</span>
           <input value={approverId} onChange={(event) => setApproverId(event.target.value)} placeholder="approver_..." />
         </label>
         <label>
-          <span>Outcome description</span>
-          <input value={outcomeText} onChange={(event) => setOutcomeText(event.target.value)} placeholder="actual market response..." />
+          <span>实际结果</span>
+          <select value={outcomeValue} onChange={(event) => setOutcomeValue(event.target.value as (typeof OUTCOME_OPTIONS)[number])}>
+            {OUTCOME_OPTIONS.map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>结果备注</span>
+          <input value={outcomeNotes} onChange={(event) => setOutcomeNotes(event.target.value)} placeholder="实际市场反应..." />
         </label>
       </div>
       {previewMessage && (
@@ -1014,7 +1040,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             disabled={!hasControlToken || selectedEvent.status !== "pending_review"}
           >
             <CheckCircle2 size={13} />
-            Approve {selectedEvent.event_id}
+            批准 {selectedEvent.event_id}
           </button>
           <button
             className="small-button"
@@ -1023,37 +1049,37 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             disabled={!hasControlToken || selectedEvent.status !== "active"}
           >
             <ShieldAlert size={13} />
-            Pause
+            暂停
           </button>
           <button
             className="small-button"
             type="button"
             onClick={() => handleRecordOutcome(selectedEvent.event_id)}
-            disabled={!hasControlToken || !outcomeText.trim()}
+            disabled={!hasControlToken || !outcomeValue}
           >
             <ClipboardCheck size={13} />
-            Record outcome
+            记录结果
           </button>
         </div>
       )}
       {preview && (
         <>
           <div className="status-cluster">
-            <StatusBadge status="implemented" label={`${preview.candidate_symbols?.length || 0} candidate symbols`} />
-            <StatusBadge status={preview.warnings?.length ? "warning" : "implemented"} label={`${preview.warnings?.length || 0} warnings`} />
+            <StatusBadge status="implemented" label={`${preview.candidate_symbols?.length || 0} 个候选标的`} />
+            <StatusBadge status={preview.warnings?.length ? "warning" : "implemented"} label={`${preview.warnings?.length || 0} 条警告`} />
             <StatusBadge status="info" label={preview.preview_mode || "real_bfs"} />
           </div>
           <details className="raw-details" open>
-            <summary>Theme impacts ({preview.impacts?.length || 0})</summary>
+            <summary>主题影响 ({preview.impacts?.length || 0})</summary>
             <JsonPanel value={preview.impacts || []} />
           </details>
           <details className="raw-details">
-            <summary>Candidate symbols ({preview.candidate_symbols?.length || 0})</summary>
+            <summary>候选标的 ({preview.candidate_symbols?.length || 0})</summary>
             <JsonPanel value={preview.candidate_symbols || []} />
           </details>
           {preview.warnings && preview.warnings.length > 0 && (
             <details className="raw-details" open>
-              <summary>Warnings</summary>
+              <summary>警告</summary>
               <JsonPanel value={preview.warnings} />
             </details>
           )}
@@ -1068,22 +1094,22 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         <div className="section-header">
           <div>
             <span>{lineageMessage}</span>
-            <h3>Persisted event lineage</h3>
+            <h3>已持久化的事件血缘</h3>
           </div>
           <Workflow size={18} />
         </div>
         <div className="header-actions">
           <label>
-            <span>Event id filter</span>
+            <span>事件 id 筛选</span>
             <input
               value={selectedEventId}
               onChange={(event) => setSelectedEventId(event.target.value)}
-              placeholder="all events"
+              placeholder="全部事件"
             />
           </label>
           <button className="small-button" type="button" onClick={loadLineage} disabled={lineageLoading}>
             <RefreshCw size={13} className={lineageLoading ? "spin" : ""} />
-            Refresh lineage
+            刷新血缘
           </button>
         </div>
         <div className="event-list">
@@ -1100,19 +1126,19 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                   <strong>{row.task_id}</strong>
                   <p>
                     {row.impact_direction || "neutral"} {Number(row.impact_magnitude || 0).toFixed(2)}
-                    {" "}/ {row.target_count || 0} targets / {row.breadth_resolved || "unknown"}
+                    {" "}/ {row.target_count || 0} 个目标 / {row.breadth_resolved || "unknown"}
                   </p>
                 </div>
               </div>
               <div className="event-card-meta">
                 <StatusBadge
                   status={row.gate_3_passed ? "implemented" : row.gate_1_passed ? "info" : "warning"}
-                  label={`submitted ${row.strategies_submitted || 0}`}
+                  label={`已提交 ${row.strategies_submitted || 0}`}
                 />
                 <small>{formatTime(row.generated_at)}</small>
               </div>
               <details className="raw-details">
-                <summary>Lineage payload</summary>
+                <summary>血缘 payload</summary>
                 <JsonPanel value={row} />
               </details>
             </article>
@@ -1120,7 +1146,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           {!lineage.length && (
             <div className="empty-mini">
               <ClipboardCheck size={24} />
-              <span>No persisted lineage rows match the current filter.</span>
+              <span>没有符合当前筛选条件的持久化血缘记录。</span>
             </div>
           )}
         </div>
@@ -1129,8 +1155,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       <section className="capability-section">
       <div className="section-header">
         <div>
-          <span>Action log</span>
-          <h3>Recent intent dispatches</h3>
+          <span>操作日志</span>
+          <h3>最近意图派发</h3>
         </div>
         <Workflow size={18} />
       </div>
@@ -1147,21 +1173,21 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
               </div>
             </div>
             <div className="event-card-meta">
-              <StatusBadge status={entry.ok ? "implemented" : "warning"} label={entry.ok ? "ok" : "blocked"} />
+              <StatusBadge status={entry.ok ? "implemented" : "warning"} label={entry.ok ? "成功" : "已阻塞"} />
             </div>
           </article>
         ))}
         {!actionLog.length && (
           <div className="empty-mini">
             <ClipboardCheck size={24} />
-            <span>No dispatches yet. Create or approve an event to see lineage entries.</span>
+            <span>暂无派发记录。创建或批准事件后可在这里查看血缘记录。</span>
           </div>
         )}
       </div>
       <div className="notice">
         <Workflow size={15} />
-        Persisted lineage (event -&gt; task -&gt; gate -&gt; strategy/outcome) is read from
-        ``strategy_factory_event_task_lineage`` through ``factory_event_lineage``.
+        持久化血缘（event -&gt; task -&gt; gate -&gt; strategy/outcome）通过 `factory_event_lineage`
+        读取 `strategy_factory_event_task_lineage`。
       </div>
       </section>
     </>
@@ -1170,24 +1196,24 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   // ── Render ───────────────────────────────────────────────────────────
 
   const tabs: Array<{ id: TabId; label: string }> = [
-    { id: "events", label: "Events" },
-    { id: "create", label: "Create" },
-    { id: "preview", label: "Preview" },
-    { id: "lineage", label: "Lineage" }
+    { id: "events", label: "事件" },
+    { id: "create", label: "创建" },
+    { id: "preview", label: "预览" },
+    { id: "lineage", label: "血缘" }
   ];
 
   return (
     <section className="capabilities-workspace" data-testid="factory-event-trigger-panel">
       <header className="capabilities-header">
         <div>
-          <span>Factory Event Trigger</span>
-          <h1>Inject, approve, and inspect event-driven research</h1>
+          <span>工厂事件触发器</span>
+          <h1>注入、批准并检查事件驱动研究</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : "implemented"} label={message} />
           <button className="small-button" type="button" disabled={loading} onClick={loadEvents}>
             <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -1196,16 +1222,15 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         <div className="capability-stack">
           <section className="capability-banner">
             <div>
-              <span>Agent-gated event console</span>
-              <h2>{filtered.length} events / {events.filter((e) => e.status === "pending_review").length} pending review</h2>
+              <span>Agent 受控事件控制台</span>
+              <h2>{filtered.length} 个事件 / {events.filter((e) => e.status === "pending_review").length} 个待复核</h2>
               <p>
-                All write actions (create / approve / pause / record outcome) flow through the ``ActionIntent`` chain
-                wired in PR-F. This panel never calls the manager handler directly — that would bypass the
-                dual-person review and self-approval guard inside ``handle_factory_event_approve``.
+                所有写操作（创建 / 批准 / 暂停 / 记录结果）都会走 PR-F 接入的 `ActionIntent` 链路。本面板不会直接调用 manager
+                handler，以免绕过 `handle_factory_event_approve` 中的双人复核与自审批保护。
               </p>
             </div>
             <div className="status-cluster">
-              <StatusBadge status={hasControlToken ? "implemented" : "warning"} label={hasControlToken ? "Control token ready" : "Read-only (no control token)"} />
+              <StatusBadge status={hasControlToken ? "implemented" : "warning"} label={hasControlToken ? "控制令牌已就绪" : "只读模式（无控制令牌）"} />
               <StatusBadge status="info" label={`Tab: ${tab}`} />
             </div>
           </section>
@@ -1230,7 +1255,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           {message.startsWith("AIASK_") && (
             <div className="notice warn">
               <AlertTriangle size={15} />
-              {message}. Reads will recover once the Agent API is reachable.
+              {message}. Agent API 可达后读取会自动恢复。
             </div>
           )}
 

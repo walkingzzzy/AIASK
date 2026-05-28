@@ -168,6 +168,111 @@ def _estimate_run_correction_metrics(
     }
 
 
+# === DEV-V1 V5-PR-1: _estimate_run_correction_metrics 接入辅助 ===
+# 把 dead code _estimate_run_correction_metrics 接入 submission_gate 评分流。
+# 提取必要参数 (attempt_adjustment / observed_score / score_series / family_returns
+# / validation_runtime),软降级处理任何缺失。
+# 关联:策略工厂到孵化工厂过渡-开发方案-2026-05-26.md V5 P3 工作流深度调研
+def _inject_run_correction_metrics(
+    strategy: dict,
+    profile: dict[str, Any],
+    normalized: dict[str, Any],
+    *,
+    validation_report: Optional[dict] = None,
+    backtest_metrics: Optional[dict] = None,
+) -> dict[str, Any]:
+    """V5-PR-1: 在 submission_gate 主流程末尾计算多重检验调整指标 (DSR/PBO/RC/SPA)。
+
+    所有提取/计算失败软降级,返回空 dict 不打断主流程。
+    成功时返回包含 multiple_testing_mode / deflated_sharpe_ratio / pbo /
+    white_reality_check_pvalue / hansen_spa_pvalue 等字段的 dict,可直接合并到 normalized。
+
+    Args:
+        strategy:候选策略 dict
+        profile:validation profile dict
+        normalized:已经计算好的 quality_gate dict (含 attempt_adjustment / post_cost_sharpe / wf_ic_ir)
+        validation_report:可选,用于提取 walk-forward 序列
+        backtest_metrics:可选,用于提取 family_returns 矩阵
+
+    Returns:
+        要合并到 normalized 的字段 dict;失败时返回空 dict 但带 warning。
+    """
+    try:
+        attempt_adjustment = dict(normalized.get("attempt_adjustment") or {})
+        if not attempt_adjustment:
+            attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized)
+
+        # observed_score 优先级:trade primary 看 post_cost_sharpe,statistical 看 wf_ic_ir
+        observed_score = (
+            normalized.get("post_cost_sharpe")
+            or normalized.get("wf_ic_ir")
+            or normalized.get("sharpe_ratio")
+            or 0.0
+        )
+        try:
+            observed_score = float(observed_score or 0.0)
+        except Exception:
+            observed_score = 0.0
+
+        # score_series:从 validation_report.walk_forward 抽 fold-level 收益序列
+        # (用于 sample_size>=24 时的 bootstrap proxy)
+        score_series = None
+        try:
+            wf = dict((validation_report or {}).get("walk_forward") or {})
+            folds = list(wf.get("fold_results") or wf.get("folds") or [])
+            if folds:
+                fold_scores = [
+                    float(f.get("oos_sharpe") or f.get("sharpe") or f.get("oos_score") or 0.0)
+                    for f in folds
+                    if isinstance(f, dict)
+                ]
+                if fold_scores:
+                    import numpy as _np
+                    score_series = _np.asarray(fold_scores, dtype=float)
+        except Exception:
+            score_series = None
+
+        # family_returns:V5-PR-1 第一版不主动合成 (代价大),仅尝试从 backtest_metrics 直接取
+        # 若没有则跳过 PBO/RC/SPA,只算 DSR (sample_size>=3 即可触发)
+        family_returns = None
+        try:
+            mt_payload = dict((backtest_metrics or {}).get("multiple_testing") or {})
+            fam_data = mt_payload.get("family_returns") or mt_payload.get("trial_returns")
+            if fam_data is not None:
+                import numpy as _np
+                family_returns = _np.asarray(fam_data, dtype=float)
+        except Exception:
+            family_returns = None
+
+        # validation_runtime:从 mcp_services 拉真实运行时
+        try:
+            from strategy_factory.infrastructure.mcp_services import get_validation_runtime
+            validation_runtime = get_validation_runtime()
+        except Exception:
+            validation_runtime = None
+
+        if validation_runtime is None:
+            return {"multiple_testing_inject_status": "validation_runtime_unavailable"}
+
+        result = _estimate_run_correction_metrics(
+            attempt_adjustment,
+            observed_score=observed_score,
+            score_series=score_series,
+            family_returns=family_returns,
+            validation_runtime=validation_runtime,
+        )
+
+        # 标记注入路径,便于监控
+        result["multiple_testing_inject_status"] = "ok"
+        return result
+    except Exception as exc:
+        # 完全软降级:任何异常都不打断主流程
+        return {
+            "multiple_testing_inject_status": "exception",
+            "multiple_testing_inject_error": f"{type(exc).__name__}:{str(exc)[:120]}",
+        }
+
+
 def _trade_gate_thresholds(
     strategy: dict,
     profile: dict[str, Any],

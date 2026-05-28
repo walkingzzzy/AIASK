@@ -185,6 +185,16 @@ class BuiltinTrackerAdapter(ExperimentTrackerAdapter):
 
 # ── MLflow adapter (optional) ─────────────────────────────────────────────────
 
+# P3-5.1 fix: 模块级 fallback 提示开关(诊断报告 §5.1)
+# 历史问题:每次调用 backend_name 时若 mlflow 未装,只静默 fallback 到 builtin,运维不知该装 mlflow
+# 修复:第一次实例化 MlflowTrackerAdapter 但 mlflow 不可用时,在 stderr 输出一次 WARNING
+import logging
+import sys as _sys
+
+_mlflow_fallback_warned = False
+_experiment_tracker_logger = logging.getLogger("akshare_mcp.experiment_tracker")
+
+
 class MlflowTrackerAdapter(ExperimentTrackerAdapter):
     """Wraps MLflow tracking API when installed.
 
@@ -192,13 +202,24 @@ class MlflowTrackerAdapter(ExperimentTrackerAdapter):
     """
 
     def __init__(self) -> None:
+        global _mlflow_fallback_warned
         self._available = False
         self._fallback = BuiltinTrackerAdapter()
         try:
             import mlflow  # noqa: F401
             self._available = True
         except ImportError:
-            pass
+            # P3-5.1 fix: 一次性 warning,避免重复刷屏,但运维能看到提示
+            if not _mlflow_fallback_warned:
+                _mlflow_fallback_warned = True
+                msg = (
+                    "[experiment_tracker] mlflow 未安装,实验追踪降级到 builtin in-memory tracker; "
+                    "实验记录在进程重启后丢失。运维建议:pip install mlflow 后实现真持久化。"
+                )
+                try:
+                    _experiment_tracker_logger.warning(msg)
+                except Exception:
+                    print(msg, file=_sys.stderr)
 
     def log_run(
         self,

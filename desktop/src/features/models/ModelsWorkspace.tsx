@@ -47,14 +47,14 @@ export function ModelsWorkspace({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Models</span>
-          <h1>LLM provider configuration</h1>
+          <span>模型</span>
+          <h1>LLM 提供方配置</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : ai?.configured ? "ready" : "unconfigured"} label={message} />
           <button className="small-button" disabled={busy} onClick={refresh} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -64,26 +64,26 @@ export function ModelsWorkspace({
           <div className="capability-banner">
             <div>
               <span>{ai?.provider || "-"}</span>
-              <h2>{ai?.model || "Model not loaded"}</h2>
-              <p>Provider state comes from the Agent API, with root project configuration loaded server-side and secrets redacted.</p>
+              <h2>{ai?.model || "模型未加载"}</h2>
+              <p>提供方状态来自 Agent API，项目根配置由服务端加载，密钥会脱敏展示。</p>
             </div>
             <BrainCircuit size={24} />
           </div>
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="Provider" value={ai?.provider || "-"} status={ai?.configured ? "ready" : "unconfigured"} />
-            <MetricCard label="API key" value={ai?.api_key_configured ? "configured" : "missing/mock"} status={ai?.api_key_configured ? "ready" : "partial"} />
-            <MetricCard label="Base URL" value={ai?.base_url_configured ? "configured" : "default"} status="ready" />
-            <MetricCard label="Source" value={ai?.config_source?.loaded ? String(ai.config_source.source || "project") : "process"} status="ready" />
-            <MetricCard label="Pool" value={compact(providersRecord.configured_count || 0)} status={(providersRecord.configured_count as number) ? "ready" : "partial"} />
+            <MetricCard label="提供方" value={ai?.provider || "-"} status={ai?.configured ? "ready" : "unconfigured"} />
+            <MetricCard label="API key" value={ai?.api_key_configured ? "已配置" : "缺失/mock"} status={ai?.api_key_configured ? "ready" : "partial"} />
+            <MetricCard label="Base URL" value={ai?.base_url_configured ? "已配置" : "默认"} status="ready" />
+            <MetricCard label="来源" value={ai?.config_source?.loaded ? String(ai.config_source.source || "project") : "process"} status="ready" />
+            <MetricCard label="池" value={compact(providersRecord.configured_count || 0)} status={(providersRecord.configured_count as number) ? "ready" : "partial"} />
           </div>
 
           <section className="capability-grid two">
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Provider pool</span>
-                  <h3>Configured providers</h3>
+                  <span>提供方池</span>
+                  <h3>已配置提供方</h3>
                 </div>
                 <StatusBadge status={providersRecord.status as string || "not_loaded"} />
               </div>
@@ -92,17 +92,17 @@ export function ModelsWorkspace({
                   <article key={String(provider.name)}>
                     <strong>{String(provider.name)}</strong>
                     <span>{String(provider.type || provider.model || "provider")}</span>
-                    <StatusBadge status={String(provider.status || "not_loaded")} label={provider.configured ? "configured" : String(provider.status || "missing")} />
+                    <StatusBadge status={String(provider.status || "not_loaded")} label={provider.configured ? "已配置" : String(provider.status || "缺失")} />
                   </article>
                 ))}
-                {!providers.length && <p className="muted">No provider pool entries loaded.</p>}
+                {!providers.length && <p className="muted">尚未加载提供方池条目。</p>}
               </div>
             </article>
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Model list</span>
-                  <h3>Provider response</h3>
+                  <span>模型列表</span>
+                  <h3>提供方响应</h3>
                 </div>
                 <StatusBadge status={models ? "ready" : "not_loaded"} />
               </div>
@@ -111,7 +111,7 @@ export function ModelsWorkspace({
           </section>
 
           <details className="raw-details">
-            <summary>Raw model configuration</summary>
+            <summary>原始模型配置</summary>
             <JsonPanel value={{ settings, models }} />
           </details>
         </div>

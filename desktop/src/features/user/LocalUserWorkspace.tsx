@@ -23,7 +23,7 @@ export function LocalUserWorkspace({
   const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
   const [profile, setProfile] = useState<LocalProfile | null>(null);
   const [draftUserId, setDraftUserId] = useState(userId || "local");
-  const [draftProfileName, setDraftProfileName] = useState(profileName || "Local Operator");
+  const [draftProfileName, setDraftProfileName] = useState(profileName || "本地操作者");
   const [sessions, setSessions] = useState<Array<Record<string, unknown>>>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [messages, setMessages] = useState<Array<Record<string, unknown>>>([]);
@@ -39,7 +39,7 @@ export function LocalUserWorkspace({
       const loadedProfile = await api.localProfileGet();
       setProfile(loadedProfile);
       setDraftUserId(loadedProfile.user_id || "local");
-      setDraftProfileName(loadedProfile.profile_name || "Local Operator");
+      setDraftProfileName(loadedProfile.profile_name || "本地操作者");
       onProfileChange(loadedProfile);
       try {
         const sessionPayload = await api.sessionsList(loadedProfile.user_id, 50);
@@ -114,14 +114,14 @@ export function LocalUserWorkspace({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Local User</span>
-          <h1>Profile and local data scope</h1>
+          <span>本地用户</span>
+          <h1>画像与本地数据范围</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : profile?.status || "ready"} label={message} />
           <button className="small-button" disabled={busy} onClick={refresh} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -132,7 +132,7 @@ export function LocalUserWorkspace({
             <div>
               <span>{draftUserId}</span>
               <h2>{draftProfileName}</h2>
-              <p>Local profile is a desktop and Agent state scope. It is not a remote account, and secrets are not stored in the profile.</p>
+              <p>本地画像用于限定 Desktop 与 Agent 的状态范围。它不是远程账号，也不会在画像里保存密钥。</p>
             </div>
             <UserRound size={24} />
           </div>
@@ -141,8 +141,8 @@ export function LocalUserWorkspace({
             <form className="capability-section" onSubmit={saveProfile}>
               <div className="section-header">
                 <div>
-                  <span>Profile</span>
-                  <h3>Local identity</h3>
+                  <span>画像</span>
+                  <h3>本地身份</h3>
                 </div>
                 <StatusBadge status={profile?.status || "ready"} />
               </div>
@@ -151,19 +151,19 @@ export function LocalUserWorkspace({
                 <input value={draftUserId} onChange={(event) => setDraftUserId(event.target.value)} />
               </label>
               <label className="field-row">
-                <span>Profile name</span>
+                <span>画像名称</span>
                 <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} />
               </label>
               <button className="primary-button" disabled={busy || !draftUserId.trim() || !draftProfileName.trim()} type="submit">
                 <Save size={15} />
-                Save profile
+                保存画像
               </button>
               <div className="kv-grid">
-                <span>Storage</span>
+                <span>存储</span>
                 <strong>{compact(profile?.storage)}</strong>
-                <span>Path</span>
+                <span>路径</span>
                 <strong>{compact(profile?.path)}</strong>
-                <span>Updated</span>
+                <span>更新时间</span>
                 <strong>{compact(profile?.updated_at)}</strong>
               </div>
             </form>
@@ -171,8 +171,8 @@ export function LocalUserWorkspace({
             <section className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{sessions.length} sessions</span>
-                  <h3>Recent sessions</h3>
+                  <span>{sessions.length} 个会话</span>
+                  <h3>最近会话</h3>
                 </div>
                 <StatusBadge status={sessions.length ? "ready" : "not_loaded"} />
               </div>
@@ -182,11 +182,11 @@ export function LocalUserWorkspace({
                     <strong>{String(session.title || session.session_id)}</strong>
                     <span>{String(session.updated_at || session.created_at || "-")}</span>
                     <button className="small-button" disabled={busy || !session.session_id} onClick={() => loadSessionMessages(String(session.session_id))} type="button">
-                      Load messages
+                      加载消息
                     </button>
                   </article>
                 ))}
-                {!sessions.length && <p className="muted">Sessions load when control access is available, or after this user starts Agent threads.</p>}
+                {!sessions.length && <p className="muted">获得控制权限后会加载会话；该用户开始 Agent 线程后也会出现记录。</p>}
               </div>
             </section>
           </section>
@@ -195,63 +195,63 @@ export function LocalUserWorkspace({
             <section className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{messages.length} messages</span>
-                  <h3>Session messages</h3>
+                  <span>{messages.length} 条消息</span>
+                  <h3>会话消息</h3>
                 </div>
                 <StatusBadge status={messages.length ? "ready" : "not_loaded"} />
               </div>
               <div className="inline-form">
                 <input value={selectedSessionId} onChange={(event) => setSelectedSessionId(event.target.value)} placeholder="session id" />
                 <button disabled={busy || !selectedSessionId.trim()} onClick={() => loadSessionMessages()} type="button">
-                  Load messages
+                  加载消息
                 </button>
               </div>
               <div className="mini-list">
                 {messages.slice(0, 12).map((item, index) => (
                   <article key={`${item.message_id || item.id || "message"}:${index}`}>
-                    <strong>{String(item.role || item.kind || item.object || "message")}</strong>
+                    <strong>{String(item.role || item.kind || item.object || "消息")}</strong>
                     <span>{String(item.created_at || item.updated_at || item.session_id || "-")}</span>
                     <p>{String(item.content || item.output_text || item.payload || "").slice(0, 220)}</p>
                   </article>
                 ))}
-                {!messages.length && <p className="muted">Select a recent session or paste a session id to inspect stored messages.</p>}
+                {!messages.length && <p className="muted">选择最近会话或粘贴 session id，即可查看已保存的消息。</p>}
               </div>
             </section>
 
             <section className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Search</span>
-                  <h3>Responses, sessions, and memory</h3>
+                  <span>搜索</span>
+                  <h3>回复、会话与记忆</h3>
                 </div>
                 <StatusBadge status={searchResults.length || memoryResults ? "ready" : "not_loaded"} />
               </div>
               <form className="inline-form" onSubmit={runSearch}>
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search local sessions, responses, and memory" />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索本地会话、回复和记忆" />
                 <button disabled={busy || !query.trim()} type="submit">
                   <Search size={14} />
-                  Search
+                  搜索
                 </button>
               </form>
               <div className="mini-list">
                 {searchResults.map((item, index) => (
                   <article key={`${item.object_id || item.session_id || "result"}:${index}`}>
-                    <strong>{String(item.kind || item.object_id || "result")}</strong>
+                    <strong>{String(item.kind || item.object_id || "结果")}</strong>
                     <span>{String(item.session_id || item.user_id || "-")}</span>
                     <p>{String(item.content || item.payload || "").slice(0, 220)}</p>
                   </article>
                 ))}
-                {!searchResults.length && <p className="muted">Search results will appear here.</p>}
+                {!searchResults.length && <p className="muted">搜索结果会显示在这里。</p>}
               </div>
               <details className="raw-details">
-                <summary>Memory search result</summary>
+                <summary>记忆搜索结果</summary>
                 <JsonPanel value={memoryResults || { status: "not_searched" }} />
               </details>
             </section>
           </section>
 
           <details className="raw-details">
-            <summary>Raw local profile data</summary>
+            <summary>原始本地画像数据</summary>
             <JsonPanel value={{ profile, sessions, messages, searchResults, memoryResults }} />
           </details>
         </div>

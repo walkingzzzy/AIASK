@@ -305,7 +305,18 @@ def register_sentiment_manager(mcp):
                         'up_ratio': f"{up_ratio*100:.2f}%" if total_count > 0 else "50.00%",
                         'sample_size': total_count,
                         'data_source': data_source_info
-                    }
+                    },
+                    # P2-4.5.7 fix: 样本数<50 时显式标 warning(诊断报告 §4.5.7)
+                    # 历史问题:数据库样本极少时,sentiment_score 仍按 0~100 输出,AI 不知是统计偏差
+                    'warnings': (
+                        [{
+                            'code': 'low_sample_size',
+                            'message': f'sample_size={total_count} 低于稳健阈值 50,情绪打分置信度低,建议结合北向资金/恐贪指数综合判断',
+                            'severity': 'warning' if total_count >= 10 else 'critical',
+                        }] if total_count < 50 else []
+                    ),
+                    'reliable': total_count >= 50,
+                    'sample_threshold': 50,
                 }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'stock_sentiment':

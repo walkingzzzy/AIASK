@@ -30,11 +30,88 @@ function requestBody(call: { init: RequestInit }): Record<string, unknown> {
   return JSON.parse(String(call.init.body || "{}")) as Record<string, unknown>;
 }
 
+function intentRequests(calls: Array<{ url: string; init: RequestInit }>) {
+  return calls.filter((call) => call.url.endsWith("/intents"));
+}
+
 function makeFetchMock() {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init: init || {} });
+    if (url.includes("/v1/tools/agent_factory_event_list")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          events: [
+            {
+              event_id: "evt_test_001",
+              event_name: "稀土出口管制(test)",
+              event_type: "policy_shock",
+              event_source: "manual",
+              status: "active",
+              direction: "bullish",
+              intensity: 0.85,
+              confidence: 0.7,
+              primary_themes: ["critical_minerals"],
+              operator_id: "operator_alice",
+              approver_id: "approver_bob",
+              created_at: "2026-05-24T08:00:00Z"
+            }
+          ],
+          count: 1
+        }
+      });
+    }
+    if (url.includes("/v1/tools/agent_factory_event_preview_tasks")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          event_id: "evt_test_001",
+          impacts: [{ theme_code: "critical_minerals", depth: 0, magnitude: 0.85 }],
+          candidate_symbols: ["600111", "600259"],
+          target_count: 2,
+          warnings: [],
+          preview_mode: "real_bfs"
+        }
+      });
+    }
+    if (url.includes("/v1/tools/agent_factory_event_lineage")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          lineage: [
+            {
+              lineage_id: 1,
+              dedupe_key: "evt_test_001:critical_minerals:600111-600259",
+              event_id: "evt_test_001",
+              event_name: "lineage test",
+              event_status: "active",
+              task_id: "event_evt_test_001_critical_minerals_abcd1234",
+              theme_code: "critical_minerals",
+              impact_direction: "positive",
+              impact_magnitude: 0.85,
+              target_symbols: ["600111", "600259"],
+              target_count: 2,
+              breadth_resolved: "narrow",
+              generated_at: "2026-05-24T08:10:00Z",
+              gate_1_passed: 1,
+              strategies_submitted: 1
+            }
+          ],
+          count: 1
+        }
+      });
+    }
+    if (url.includes("/v1/tools/agent_factory_theme_exposure_status")) {
+      return jsonResponse({ success: true, error: null, data: { row_count: 42, symbol_count: 12, theme_count: 3, latest_updated_at: "2026-05-24T08:20:00Z" } });
+    }
+    if (url.includes("/v1/tools/agent_factory_event_outbox_status")) {
+      return jsonResponse({ success: true, error: null, data: { counts: { processed: 2, failed: 0 }, latest: [] } });
+    }
     if (url.includes("/v1/tools/agent_strategy_manager")) {
       const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
       const action = String(body.action || "");
@@ -150,7 +227,7 @@ describe("VIEW_REGISTRY", () => {
     const ids = VIEW_REGISTRY.map((entry) => entry.id);
     expect(ids).toContain("factory-events");
     const entry = VIEW_REGISTRY.find((item) => item.id === "factory-events");
-    expect(entry?.label).toBe("Factory Events");
+    expect(entry?.label).toBe("工厂事件");
   });
 });
 
@@ -160,43 +237,43 @@ describe("AiaskApi factory event helpers", () => {
     cleanup();
   });
 
-  it("calls agent_strategy_manager with action=factory_event_list and JSON kwargs", async () => {
+  it("calls the Agent factory event facade with cleaned filters", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
 
     await api.factoryEventList({ status: "active", event_source: "manual", limit: 50 });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("http://127.0.0.1:8767/v1/tools/agent_strategy_manager");
+    expect(calls[0].url).toBe("http://127.0.0.1:8767/v1/tools/agent_factory_event_list");
     expect(calls[0].init.method).toBe("POST");
     const body = requestBody(calls[0]);
-    expect(body.action).toBe("factory_event_list");
-    // ``kwargs`` is a JSON string per the strategy_manager contract.
-    const kwargs = JSON.parse(String(body.kwargs)) as Record<string, unknown>;
-    expect(kwargs).toEqual({ status: "active", event_source: "manual", limit: 50 });
+    expect(body).toEqual({ status: "active", source: "manual", limit: 50 });
     // empty / undefined values are stripped before serialization.
     await api.factoryEventList({ status: "active", event_source: "", event_type: undefined });
-    const trimmed = JSON.parse(String(requestBody(calls[1]).kwargs));
-    expect(trimmed).toEqual({ status: "active" });
+    expect(requestBody(calls[1])).toEqual({ status: "active" });
   });
 
-  it("preview helper carries event_id in kwargs", async () => {
+  it("preview helper carries event_id to the facade", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
     await api.factoryEventPreviewTasks("evt_xyz");
     const body = requestBody(calls[0]);
-    expect(body.action).toBe("factory_event_preview_tasks");
-    expect(JSON.parse(String(body.kwargs))).toEqual({ event_id: "evt_xyz" });
+    expect(calls[0].url).toBe("http://127.0.0.1:8767/v1/tools/agent_factory_event_preview_tasks");
+    expect(body).toEqual({ event_id: "evt_xyz" });
   });
 
   it("write helpers create ActionIntents with the strategy_manager prefix", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
 
-    await api.factoryEventCreateIntent({ event_name: "n", primary_themes: ["t"] }, "create test");
+    await api.factoryEventCreateIntent({ event_name: "n", source: "manual", primary_themes: ["t"] }, "create test");
     await api.factoryEventApproveIntent("evt_1", "approver_bob", "approve test");
     await api.factoryEventUpdateIntent("evt_1", { status: "paused" }, "pause test");
-    await api.factoryEventRecordOutcomeIntent("evt_1", { outcome_description: "x" }, "outcome test");
+    await api.factoryEventRecordOutcomeIntent(
+      "evt_1",
+      { actual_outcome: "positive", outcome_notes: "x" },
+      "outcome test"
+    );
 
     expect(calls).toHaveLength(4);
     expect(calls.every((call) => call.url === "http://127.0.0.1:8767/intents")).toBe(true);
@@ -213,14 +290,20 @@ describe("AiaskApi factory event helpers", () => {
       "strategy_manager.factory_event_update",
       "strategy_manager.factory_event_record_outcome"
     ]);
+    expect(requestBody(calls[0]).params).toEqual({ event_name: "n", source: "manual", primary_themes: ["t"] });
+    expect((requestBody(calls[0]).params as Record<string, unknown>).event_source).toBeUndefined();
     // approve carries event_id + approver_id (the self-approval guard
     // depends on both fields being present).
     expect(requestBody(calls[1]).params).toEqual({ event_id: "evt_1", approver_id: "approver_bob" });
     expect(requestBody(calls[2]).params).toEqual({ event_id: "evt_1", status: "paused" });
-    expect(requestBody(calls[3]).params).toEqual({ event_id: "evt_1", outcome_description: "x" });
+    expect(requestBody(calls[3]).params).toEqual({
+      event_id: "evt_1",
+      actual_outcome: "positive",
+      outcome_notes: "x"
+    });
   });
 
-  it("lineage/status helpers use read-only manager actions", async () => {
+  it("lineage/status helpers use read-only Agent facade tools", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
 
@@ -228,32 +311,35 @@ describe("AiaskApi factory event helpers", () => {
     await api.factoryThemeExposureStatus({});
     await api.factoryEventOutboxStatus({ limit: 10 });
 
-    const actions = calls.map((call) => requestBody(call).action);
-    expect(actions).toEqual([
-      "factory_event_lineage",
-      "factory_theme_exposure_status",
-      "factory_event_outbox_status"
+    const urls = calls.map((call) => call.url);
+    expect(urls).toEqual([
+      "http://127.0.0.1:8767/v1/tools/agent_factory_event_lineage",
+      "http://127.0.0.1:8767/v1/tools/agent_factory_theme_exposure_status",
+      "http://127.0.0.1:8767/v1/tools/agent_factory_event_outbox_status"
     ]);
-    expect(JSON.parse(String(requestBody(calls[0]).kwargs))).toEqual({ event_id: "evt_1", limit: 20 });
-    expect(JSON.parse(String(requestBody(calls[2]).kwargs))).toEqual({ limit: 10 });
+    expect(requestBody(calls[0])).toEqual({ event_id: "evt_1", limit: 20 });
+    expect(requestBody(calls[2])).toEqual({ limit: 10 });
   });
 
   it("maintenance helpers create confirm-required Strategy Manager intents", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
 
+    await api.factoryEventBootstrapIntent({ batch_size: 1000, refresh_exposure: true });
     await api.factoryThemeExposureRefreshIntent({ batch_size: 1000 });
     await api.factoryEventOutboxDrainIntent({ limit: 20 });
     await api.factoryThemeRegressionRunIntent({});
 
     const actions = calls.map((call) => requestBody(call).action);
     expect(actions).toEqual([
+      "strategy_manager.factory_event_bootstrap",
       "strategy_manager.factory_theme_exposure_refresh",
       "strategy_manager.factory_event_outbox_drain",
       "strategy_manager.factory_theme_regression_run"
     ]);
-    expect(requestBody(calls[0]).params).toEqual({ batch_size: 1000 });
-    expect(requestBody(calls[1]).params).toEqual({ limit: 20 });
+    expect(requestBody(calls[0]).params).toEqual({ batch_size: 1000, refresh_exposure: true });
+    expect(requestBody(calls[1]).params).toEqual({ batch_size: 1000 });
+    expect(requestBody(calls[2]).params).toEqual({ limit: 20 });
   });
 
   it("confirm/deny helpers use the right intent route and control token", async () => {
@@ -290,10 +376,10 @@ describe("FactoryEventTriggerPanel render", () => {
       expect(screen.getByTestId("factory-event-trigger-panel")).toBeInTheDocument();
     });
     // Status cluster shows the read-only banner.
-    expect(screen.getByText("Read-only (no control token)")).toBeInTheDocument();
+    expect(screen.getByText("只读模式（无控制令牌）")).toBeInTheDocument();
     // Banner copy explains the boundary.
     expect(
-      screen.getByText(/All write actions \(create \/ approve \/ pause \/ record outcome\)/i)
+      screen.getByText(/所有写操作（创建 \/ 批准 \/ 暂停 \/ 记录结果）/)
     ).toBeInTheDocument();
   });
 
@@ -310,20 +396,90 @@ describe("FactoryEventTriggerPanel render", () => {
     await waitFor(() => {
       expect(screen.getByText("稀土出口管制(test)")).toBeInTheDocument();
     });
-    // factory_event_list was called via agent_strategy_manager.
-    expect(calls.some((call) => call.url.includes("/v1/tools/agent_strategy_manager"))).toBe(true);
+    // factory_event_list is read through the Agent facade, not the raw manager.
+    expect(calls.some((call) => call.url.includes("/v1/tools/agent_factory_event_list"))).toBe(true);
 
     // Switch to Create tab.
-    fireEvent.click(screen.getByRole("tab", { name: "Create" }));
-    expect(screen.getByText("All writes go through ActionIntent")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "创建" }));
+    expect(screen.getByText("所有写操作都通过 ActionIntent")).toBeInTheDocument();
     // Switch to Preview tab — empty until an event is selected.
-    fireEvent.click(screen.getByRole("tab", { name: "Preview" }));
-    expect(screen.getByText("BFS propagation + candidate basket")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    expect(screen.getByText("BFS 传播与候选篮子")).toBeInTheDocument();
     // Switch to Lineage tab.
-    fireEvent.click(screen.getByRole("tab", { name: "Lineage" }));
-    expect(screen.getByText("Persisted event lineage")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "血缘" }));
+    expect(screen.getByText("已持久化的事件血缘")).toBeInTheDocument();
     expect(screen.getByText("event_evt_test_001_critical_minerals_abcd1234")).toBeInTheDocument();
-    expect(screen.getByText("Recent intent dispatches")).toBeInTheDocument();
+    expect(screen.getByText("最近意图派发")).toBeInTheDocument();
+  });
+
+  it("submits create intent payload with source from the form", async () => {
+    const { calls } = makeFetchMock();
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "创建" }));
+    fireEvent.change(screen.getByLabelText(/事件名称/), { target: { value: "Desktop source event" } });
+    fireEvent.change(screen.getByLabelText(/^来源$/), { target: { value: "news_llm" } });
+    fireEvent.change(screen.getByLabelText(/Primary themes/i), { target: { value: "ai_compute, chip_domestic" } });
+    fireEvent.click(screen.getByRole("button", { name: /仅创建意图/ }));
+
+    await waitFor(() => {
+      expect(
+        intentRequests(calls).some(
+          (call) => requestBody(call).action === "strategy_manager.factory_event_create"
+        )
+      ).toBe(true);
+    });
+    const createCall = intentRequests(calls).find(
+      (call) => requestBody(call).action === "strategy_manager.factory_event_create"
+    );
+    expect(createCall).toBeDefined();
+    const params = requestBody(createCall!).params as Record<string, unknown>;
+    expect(params).toMatchObject({
+      event_name: "Desktop source event",
+      event_type: "policy_shock",
+      source: "news_llm",
+      primary_themes: ["ai_compute", "chip_domestic"],
+      operator_id: "operator_local"
+    });
+    expect(params.event_source).toBeUndefined();
+  });
+
+  it("Bootstrap maintenance button creates and confirms a bootstrap intent", async () => {
+    const { calls } = makeFetchMock();
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("BOOTSTRAP_NOT_RUN")).toBeInTheDocument();
+    });
+    const bootstrapButton = screen.getByRole("button", { name: /^初始化 Bootstrap$/ });
+    await waitFor(() => {
+      expect(bootstrapButton).toBeEnabled();
+    });
+    fireEvent.click(bootstrapButton);
+
+    await waitFor(() => {
+      expect(
+        calls.some((call) => call.url === "http://127.0.0.1:8767/intents/intent_phase5_test/confirm")
+      ).toBe(true);
+    });
+    const bootstrapCall = intentRequests(calls).find(
+      (call) => requestBody(call).action === "strategy_manager.factory_event_bootstrap"
+    );
+    expect(bootstrapCall).toBeDefined();
+    expect(requestBody(bootstrapCall!).params).toEqual({ batch_size: 1000, refresh_exposure: true });
+    expect(screen.getByText("BOOTSTRAP_CONFIRMED")).toBeInTheDocument();
   });
 
   it("disables Approve / Pause when controlToken is missing", async () => {
@@ -341,8 +497,8 @@ describe("FactoryEventTriggerPanel render", () => {
       expect(screen.getByText("稀土出口管制(test)")).toBeInTheDocument();
     });
     // The active mock event has status=active, so the visible action
-    // button is "Pause" — and it must be disabled without a control token.
-    const pauseButton = screen.getByRole("button", { name: /Pause/i });
+    // button is "暂停" — and it must be disabled without a control token.
+    const pauseButton = screen.getByRole("button", { name: /暂停/ });
     expect(pauseButton).toBeDisabled();
   });
 });

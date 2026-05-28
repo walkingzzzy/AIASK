@@ -212,17 +212,51 @@ def _build_intrinsic_value_payload(code: str, method: str, latest: dict, kwargs:
     if method_l == "pe":
         shares = _safe_float(_latest_value(latest, "total_shares", "shares_outstanding"), 1_000_000_000)
         net_profit = _safe_float(_latest_value(latest, "net_profit", "n_income"), 0.0)
-        eps = _safe_float(kwargs.get("eps"), 0.0)
-        if eps <= 0 and shares > 0 and net_profit > 0:
-            eps = net_profit / shares
+        # P2-4.5.12 fix: EPS 内部一致性校验(诊断报告 §4.5.12)
+        # 历史问题:5 估值器(PE/PB/DCF/DDM/相对估值)各自重新算 EPS,导致同一公司同一时点 EPS 不一致
+        # 修复:优先级 user.eps > financials.basic_eps/eps > 计算值(net_profit/shares)
+        eps_user = _safe_float(kwargs.get("eps"), 0.0)
+        eps_from_financials = _safe_float(_latest_value(latest, "basic_eps", "eps"), 0.0)
+        eps_calc = float(net_profit / shares) if shares > 0 and net_profit > 0 else 0.0
+        # 确定使用的 EPS
+        if eps_user > 0:
+            eps = eps_user
+            eps_source = 'user_input'
+        elif eps_from_financials > 0:
+            eps = eps_from_financials
+            eps_source = 'financials.basic_eps'
+        elif eps_calc > 0:
+            eps = eps_calc
+            eps_source = 'computed_net_profit_div_shares'
+        else:
+            eps = 0.0
+            eps_source = 'unavailable'
         industry_pe = _safe_float(kwargs.get("industry_pe", 15), 15.0)
-        return {
+        # 一致性校验(允许 5% 误差)
+        consistency_warning = None
+        if eps_from_financials > 0 and eps_calc > 0:
+            diff_pct = abs(eps_from_financials - eps_calc) / max(eps_from_financials, 1e-9)
+            if diff_pct > 0.05:
+                consistency_warning = {
+                    'code': 'eps_inconsistent_across_sources',
+                    'message': f'financials.eps={eps_from_financials:.4f} 与 computed(net_profit/shares)={eps_calc:.4f} 偏差 {diff_pct*100:.1f}%,可能 net_profit 与 shares_outstanding 期数不匹配',
+                    'severity': 'warning',
+                    'eps_from_financials': eps_from_financials,
+                    'eps_computed': eps_calc,
+                    'used_eps': eps,
+                    'used_eps_source': eps_source,
+                }
+        result = {
             "code": code,
             "method": "PE",
             "intrinsic_price_per_share": float(eps * industry_pe),
             "eps": float(eps),
+            "eps_source": eps_source,
             "industry_pe": float(industry_pe),
         }
+        if consistency_warning:
+            result['warnings'] = [consistency_warning]
+        return result
 
     if method_l == "pb":
         bvps = _safe_float(

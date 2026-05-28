@@ -1,0 +1,16 @@
+{
+  "scenario_id": "S02",
+  "title": "行情/K线/盘口/指数",
+  "tool_status_rows": [
+    {"tool":"get_kline","verdict":"Pass","extra":"10条日K, close=1281.55(05-26), source=tqcenter"},
+    {"tool":"calculate_technical_indicators","verdict":"Pass","extra":"RSI=21.25 oversold, MACD warmup=33, 跨工具RSI微差(21.25 vs 22.59)"},
+    {"tool":"get_realtime_quote","verdict":"Degraded","extra":"price=1281.55 pe=19.47, name=空(P1仍存在)"},
+    {"tool":"get_order_book","verdict":"Degraded","extra":"depth_degraded=true 显式 ✓ §4.5.5 完美修复"},
+    {"tool":"get_index_quote","verdict":"Fail-graceful","extra":"name='????' GBK乱码 + 3源全跪 (§4.5.1 高优复现)"}
+  ],
+  "summary": {"Pass":2, "Degraded":2, "Fail-graceful":1, "Fail-schema":0},
+  "v1_v2_delta": {
+    "fixed": ["§4.5.5 order_book depth_degraded 显式", "§4.2.5 K线RSI 与 factor RSI 一致(8x偏差→微差)"],
+    "regressed_or_persistent": ["§4.5.1 GBK 乱码 ????(间歇性,fallback chain 全跪场景)", "§4.5.9 realtime_quote name 字段空字符串"]
+  }
+}

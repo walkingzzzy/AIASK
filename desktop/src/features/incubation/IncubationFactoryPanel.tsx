@@ -119,16 +119,16 @@ function latestReportFromEvents(events: StageEvent[]): IncubationReport | null {
 
 function stageLabel(stage: string): string {
   const labels: Record<string, string> = {
-    warmup: "Warmup",
-    observe: "Observe",
-    candidate: "Candidate",
-    graduation_ready: "Graduation ready",
-    promoted: "Promoted",
-    paused: "Paused",
-    failed: "Failed",
-    retired: "Retired"
+    warmup: "预热",
+    observe: "观察",
+    candidate: "候选",
+    graduation_ready: "可毕业",
+    promoted: "已晋级",
+    paused: "已暂停",
+    failed: "失败",
+    retired: "已退役"
   };
-  return labels[stage] || stage || "Unknown";
+  return labels[stage] || stage || "未知";
 }
 
 function stageTone(stage: string): string {
@@ -145,7 +145,7 @@ function StageDistribution({ counts }: { counts: Record<string, number> }) {
     return (
       <div className="empty-mini">
         <FlaskConical size={22} />
-        <span>No lifecycle stage counts are available yet.</span>
+        <span>暂无生命周期阶段统计。</span>
       </div>
     );
   }
@@ -155,7 +155,7 @@ function StageDistribution({ counts }: { counts: Record<string, number> }) {
         <article className={`lifecycle-column ${stageTone(stage)}`} key={stage}>
           <span>{stageLabel(stage)}</span>
           <strong>{count}</strong>
-          <small>{Math.round((count / Math.max(total, 1)) * 100)}% of tracked strategies</small>
+          <small>占跟踪策略 {Math.round((count / Math.max(total, 1)) * 100)}%</small>
         </article>
       ))}
     </div>
@@ -170,8 +170,8 @@ function FamilyHealth({ report }: { report: IncubationReport | null }) {
     <section className="capability-section">
       <div className="section-header">
         <div>
-          <span>Factor and family health</span>
-          <h3>What the incubator is learning</h3>
+          <span>因子与族群健康度</span>
+          <h3>孵化器正在学习什么</h3>
         </div>
         <Activity size={18} />
       </div>
@@ -182,15 +182,15 @@ function FamilyHealth({ report }: { report: IncubationReport | null }) {
           return (
             <article className={`capability-row ${status === "implemented" ? "ok" : status === "failed" ? "bad" : "warn"}`} key={family}>
               <div>
-                <span>{percent(metrics.hit_rate)} hit rate | n={compact(metrics.total_n)}</span>
+                <span>命中率 {percent(metrics.hit_rate)} | n={compact(metrics.total_n)}</span>
                 <strong>{family}</strong>
               </div>
               <StatusBadge status={status} label={`lcb ${lcb.toFixed(3)}`} />
-              <small>Forward Sharpe {asNumber(metrics.avg_forward_sharpe).toFixed(2)} | strategies {compact(metrics.strategy_count)}</small>
+              <small>前向 Sharpe {asNumber(metrics.avg_forward_sharpe).toFixed(2)} | 策略 {compact(metrics.strategy_count)}</small>
             </article>
           );
         })}
-        {!families.length && <p className="muted">No family-level hit-rate report has been generated yet.</p>}
+        {!families.length && <p className="muted">尚未生成族群级命中率报告。</p>}
       </div>
     </section>
   );
@@ -202,8 +202,8 @@ function StageTimeline({ events }: { events: StageEvent[] }) {
     <section className="capability-section">
       <div className="section-header">
         <div>
-          <span>Recent lifecycle events</span>
-          <h3>Promotion, pause, and retirement trail</h3>
+          <span>最近生命周期事件</span>
+          <h3>晋级、暂停与退役轨迹</h3>
         </div>
         <Clock size={18} />
       </div>
@@ -229,7 +229,7 @@ function StageTimeline({ events }: { events: StageEvent[] }) {
             </article>
           );
         })}
-        {!stageEvents.length && <p className="muted">No incubation lifecycle events are available yet.</p>}
+        {!stageEvents.length && <p className="muted">暂无孵化生命周期事件。</p>}
       </div>
     </section>
   );
@@ -244,26 +244,26 @@ function FeedbackActions({ report }: { report: IncubationReport | null }) {
     <section className="capability-section">
       <div className="section-header">
         <div>
-          <span>Recommended operations</span>
-          <h3>Factory feedback</h3>
+          <span>建议操作</span>
+          <h3>工厂反馈</h3>
         </div>
         <ShieldCheck size={18} />
       </div>
       <div className="feedback-grid">
         <article>
           <TrendingUp size={16} />
-          <strong>Boost</strong>
-          <span>{boosts.length ? boosts.join(", ") : "No boost recommendation"}</span>
+          <strong>加强</strong>
+          <span>{boosts.length ? boosts.join(", ") : "暂无加强建议"}</span>
         </article>
         <article>
           <TrendingDown size={16} />
-          <strong>Cooldown</strong>
-          <span>{cooldown.length ? cooldown.join(", ") : "No cooldown recommendation"}</span>
+          <strong>降温</strong>
+          <span>{cooldown.length ? cooldown.join(", ") : "暂无降温建议"}</span>
         </article>
         <article>
           <XCircle size={16} />
-          <strong>Freeze</strong>
-          <span>{freeze.length ? freeze.join(", ") : "No freeze recommendation"}</span>
+          <strong>冻结</strong>
+          <span>{freeze.length ? freeze.join(", ") : "暂无冻结建议"}</span>
         </article>
       </div>
     </section>
@@ -314,7 +314,7 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       const envelope = await client.factoryIntentCreate(
         `incubation_factory.${action}`,
         { source: "desktop_incubation_factory" },
-        `Run Incubation Factory ${action} from Desktop.`
+        `从 Desktop 创建 Incubation Factory ${action} 审批意图。`
       );
       setIntentEnvelope(envelope);
       setMessage(envelope.success ? `INCUBATION_${action.toUpperCase()}_INTENT_CREATED` : envelope.error || "INCUBATION_INTENT_FAILED");
@@ -335,18 +335,17 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
     <div className="capability-stack">
       <section className="capability-banner">
         <div>
-          <span>Incubation Center</span>
-          <h2>Strategy lifecycle and hit-rate dashboard</h2>
+          <span>孵化中心</span>
+          <h2>策略生命周期与命中率看板</h2>
           <p>
-            This center turns the incubation factory into an operator view: lifecycle stage, recent failures, hit-rate health, and promotion
-            evidence are shown together before any strategy is allowed to graduate.
+            这里把孵化工厂整理成操作视图：生命周期阶段、近期失败、命中率健康度和晋级证据会一起展示，方便在策略毕业前完成复核。
           </p>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : runnerTone} label={message} />
           <button className="small-button" disabled={loading} onClick={fetchData} type="button">
             <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </section>
@@ -354,20 +353,38 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       <section className="capability-section compact-section">
         <div className="section-header">
           <div>
-            <span>Approved operations</span>
-            <h3>Run, dry-run, and maintenance intents</h3>
+            <span>需审批操作</span>
+            <h3>运行、试运行与维护意图</h3>
           </div>
-          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "control ready" : "control required"} />
+          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "控制令牌已就绪" : "需要控制令牌"} />
         </div>
         <div className="button-row">
-          <button className="primary-button" disabled={loading || !controlToken.trim()} onClick={() => createIntent("run_once")} type="button">
-            Run intent
+          <button
+            aria-label="创建运行意图"
+            className="primary-button"
+            disabled={loading || !controlToken.trim()}
+            onClick={() => createIntent("run_once")}
+            type="button"
+          >
+            创建运行意图
           </button>
-          <button className="small-button" disabled={loading || !controlToken.trim()} onClick={() => createIntent("dry_run")} type="button">
-            Dry-run intent
+          <button
+            aria-label="创建试运行意图"
+            className="small-button"
+            disabled={loading || !controlToken.trim()}
+            onClick={() => createIntent("dry_run")}
+            type="button"
+          >
+            创建试运行意图
           </button>
-          <button className="small-button" disabled={loading || !controlToken.trim()} onClick={() => createIntent("maintenance")} type="button">
-            Maintenance intent
+          <button
+            aria-label="创建维护意图"
+            className="small-button"
+            disabled={loading || !controlToken.trim()}
+            onClick={() => createIntent("maintenance")}
+            type="button"
+          >
+            创建维护意图
           </button>
         </div>
         {intentEnvelope ? <JsonPanel value={intentEnvelope} /> : null}
@@ -376,26 +393,26 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       {message.startsWith("AIASK_") && (
         <div className="notice warn">
           <AlertTriangle size={15} />
-          {message}. Incubation status will load once the Agent API and strategy storage are reachable.
+          {message}. Agent API 与策略存储可达后会自动加载孵化状态。
         </div>
       )}
 
       <div className="diagnostics-summary wide">
-        <MetricCard label="Runner" value={runnerStatus} status={runnerTone} />
-        <MetricCard label="Runs" value={status?.run_count ?? "-"} status="implemented" />
-        <MetricCard label="Errors" value={status?.error_count ?? "-"} status={(status?.error_count || 0) > 0 ? "failed" : "implemented"} />
-        <MetricCard label="Last run" value={formatTime(status?.last_run_at)} />
-        <MetricCard label="Hit rate" value={overall.hit_rate === undefined ? "-" : percent(overall.hit_rate)} status={asNumber(overall.hit_rate) >= 0.5 ? "implemented" : "partial"} />
+        <MetricCard label="运行器" value={runnerStatus} status={runnerTone} />
+        <MetricCard label="运行次数" value={status?.run_count ?? "-"} status="implemented" />
+        <MetricCard label="错误数" value={status?.error_count ?? "-"} status={(status?.error_count || 0) > 0 ? "failed" : "implemented"} />
+        <MetricCard label="最近运行" value={formatTime(status?.last_run_at)} />
+        <MetricCard label="命中率" value={overall.hit_rate === undefined ? "-" : percent(overall.hit_rate)} status={asNumber(overall.hit_rate) >= 0.5 ? "implemented" : "partial"} />
         <MetricCard label="Skill LCB" value={overall.avg_skill_lcb === undefined ? "-" : asNumber(overall.avg_skill_lcb).toFixed(4)} status={asNumber(overall.avg_skill_lcb) > 0 ? "implemented" : "partial"} />
         <MetricCard label="Forward Sharpe" value={overall.avg_forward_sharpe === undefined ? "-" : asNumber(overall.avg_forward_sharpe).toFixed(2)} />
-        <MetricCard label="Trend" value={compact(trend.direction || "unknown")} status={trend.direction === "improving" ? "implemented" : trend.direction === "declining" ? "failed" : "partial"} />
+        <MetricCard label="趋势" value={compact(trend.direction || "unknown")} status={trend.direction === "improving" ? "implemented" : trend.direction === "declining" ? "failed" : "partial"} />
       </div>
 
       <section className="capability-section">
         <div className="section-header">
           <div>
-            <span>Strategy lifecycle board</span>
-            <h3>Where strategies are in the incubation funnel</h3>
+            <span>策略生命周期看板</span>
+            <h3>策略在孵化漏斗中的位置</h3>
           </div>
           <FlaskConical size={18} />
         </div>
@@ -410,7 +427,7 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       <StageTimeline events={events} />
 
       <details className="raw-details">
-        <summary>Raw incubation data</summary>
+        <summary>原始孵化数据</summary>
         <JsonPanel value={{ status, report, events }} />
       </details>
     </div>

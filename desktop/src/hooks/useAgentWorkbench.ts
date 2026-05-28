@@ -1,5 +1,5 @@
 import type { FormEvent, KeyboardEvent } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatApiError, parseSseEvents, requestJson } from "../api";
 import { buildTimeline } from "../components/Timeline";
 import { shortText } from "../components/shared";
@@ -23,11 +23,23 @@ function collectIntentIds(value: unknown, bucket = new Set<string>()): Set<strin
   return bucket;
 }
 
+function authToken(controlToken: string, apiToken: string): string {
+  return controlToken.trim() || apiToken.trim();
+}
+
+function contentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  return String(record.content || record.text || record.output_text || "");
+}
+
 export function useAgentWorkbench({
   endpoint,
   apiToken,
   controlToken,
   agentMode,
+  canLoadHistory = true,
   userId,
   onAgentStatus,
   onInspectorTab,
@@ -37,6 +49,7 @@ export function useAgentWorkbench({
   apiToken: string;
   controlToken: string;
   agentMode: "finance_safe" | "hermes_full";
+  canLoadHistory?: boolean;
   userId?: string;
   onAgentStatus: (status: string) => void;
   onInspectorTab: (tab: InspectorTab) => void;
@@ -54,7 +67,7 @@ export function useAgentWorkbench({
   const [runEventsByRunId, setRunEventsByRunId] = useState<Record<string, unknown[]>>({});
 
   const selectedThread = useMemo(
-    () => threads.find((item) => item.id === selectedThreadId) || threads[0] || null,
+    () => (selectedThreadId ? threads.find((item) => item.id === selectedThreadId) || null : null),
     [threads, selectedThreadId]
   );
   const selectedResponse = selectedThread?.response || null;
@@ -70,6 +83,80 @@ export function useAgentWorkbench({
     metadata?: AgentResponse["metadata"] & { tool_calls?: AgentToolCall[] };
   }) | null;
   const selectedAuditEventCount = selectedResponse?.metadata?.audit_events?.length ?? 0;
+
+  async function loadSessions() {
+    if (!canLoadHistory) return;
+    try {
+      const params = new URLSearchParams();
+      if (userId) params.set("user_id", userId);
+      params.set("limit", "50");
+      const payload = await requestJson<{ data?: Array<Record<string, unknown>> }>(
+        endpoint,
+        `/v1/hermes/sessions?${params.toString()}`,
+        { token: authToken(controlToken, apiToken) }
+      );
+      const sessionThreads = (payload.data || []).map((session) => {
+        const sid = String(session.session_id || "");
+        return {
+          id: sid,
+          title: String(session.title || sid || "历史会话"),
+          prompt: String(session.title || "点击加载历史消息"),
+          createdAt: String(session.updated_at || session.created_at || new Date().toISOString()),
+          status: "history",
+          sessionId: sid
+        } satisfies TaskThread;
+      });
+      setThreads((current) => {
+        const currentBySession = new Set(current.map((item) => item.sessionId || item.id));
+        return [...current, ...sessionThreads.filter((item) => !currentBySession.has(item.sessionId || item.id))].slice(0, 50);
+      });
+    } catch {
+      // Session history is an enhancement; chat should still work if the store is gated or offline.
+    }
+  }
+
+  async function hydrateThread(id: string) {
+    const thread = threads.find((item) => item.id === id);
+    const sid = thread?.sessionId || id;
+    if (!sid || thread?.response) return;
+    try {
+      const payload = await requestJson<{ data?: Array<Record<string, unknown>> }>(
+        endpoint,
+        `/v1/sessions/${encodeURIComponent(sid)}/messages?limit=200`,
+        { token: apiToken }
+      );
+      const messages = payload.data || [];
+      const firstUser = messages.find((item) => String(item.role) === "user");
+      const assistantMessages = messages.filter((item) => String(item.role) === "assistant");
+      const lastAssistant = assistantMessages[assistantMessages.length - 1];
+      const output = messages
+        .slice(-8)
+        .map((item) => `${String(item.role || "message")}: ${contentText(item.payload || item)}`)
+        .join("\n\n");
+      const response: AgentResponse = {
+        id: `history_${sid}`,
+        object: "response",
+        status: "completed",
+        output_text: contentText(lastAssistant?.payload || lastAssistant) || output || "历史会话已加载。",
+        metadata: { session_id: sid }
+      };
+      setThreads((items) =>
+        items.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                prompt: contentText(firstUser?.payload || firstUser) || item.prompt,
+                response,
+                status: "completed"
+              }
+            : item
+        )
+      );
+      setSessionId(sid);
+    } catch (error) {
+      onAgentStatus(formatApiError(error));
+    }
+  }
 
   async function sendResponse(event: FormEvent) {
     event.preventDefault();
@@ -168,7 +255,25 @@ export function useAgentWorkbench({
   function selectThread(id: string) {
     setSelectedThreadId(id);
     onInspectorTab("details");
+    void hydrateThread(id);
   }
+
+  function removeResponseThread(responseId: string) {
+    setThreads((items) =>
+      items.filter((item) => item.id !== responseId && item.response?.id !== responseId)
+    );
+    setSelectedThreadId((current) => {
+      const currentThread = threads.find((item) => item.id === current);
+      if (current === responseId || currentThread?.response?.id === responseId) return "";
+      return current;
+    });
+  }
+
+  useEffect(() => {
+    if (!canLoadHistory) return;
+    loadSessions().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canLoadHistory, endpoint, userId]);
 
   async function loadRunEvents(runId: string) {
     if (!runId) return;
@@ -258,6 +363,7 @@ export function useAgentWorkbench({
     intentMessage,
     loadRunEvents,
     prompt,
+    removeResponseThread,
     selectThread,
     selectedAuditEventCount,
     selectedResponse,

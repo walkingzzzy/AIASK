@@ -42,26 +42,26 @@ function FactoryCard({ title, envelope }: { title: string; envelope: ToolEnvelop
       {envelope && !envelope.success && (
         <div className="notice warn">
           {dependency ? `${dependency}: ` : ""}
-          {databaseConfigured && envelope.error_code ? "Database is configured, but strategy manager returned an error. " : ""}
-          {detail || envelope.error || envelope.error_code || "Strategy factory is not ready in this runtime."}
+          {databaseConfigured && envelope.error_code ? "数据库已配置，但 strategy manager 返回错误。" : ""}
+          {detail || envelope.error || envelope.error_code || "当前运行时的策略工厂尚未就绪。"}
         </div>
       )}
       <div className="kv-grid">
-        <span>Success</span>
+        <span>成功</span>
         <strong>{String(envelope?.success ?? false)}</strong>
-        <span>Configured</span>
+        <span>已配置</span>
         <strong>{String(configured ?? envelope?.success ?? false)}</strong>
-        <span>Database</span>
-        <strong>{databaseConfigured === undefined ? "-" : databaseConfigured ? "configured" : "not configured"}</strong>
+        <span>数据库</span>
+        <strong>{databaseConfigured === undefined ? "-" : databaseConfigured ? "已配置" : "未配置"}</strong>
         <span>DB backend</span>
         <strong>{databaseBackend}</strong>
         <span>DB path</span>
         <strong>{databasePath || databaseConfigSources || "-"}</strong>
-        <span>Error</span>
+        <span>错误</span>
         <strong>{errorText}</strong>
       </div>
       <details className="raw-details">
-        <summary>Raw {title}</summary>
+        <summary>原始 {title}</summary>
         <JsonPanel value={envelope} />
       </details>
     </article>
@@ -94,7 +94,7 @@ export function StrategyFactoryPanel({
       const envelope = await api.factoryIntentCreate(
         "factory_run_once",
         { execution_mode: "desktop_approved_once", source: "desktop_strategy_factory" },
-        "Run Strategy Factory once from the desktop control panel."
+        "从桌面控制面板运行一次 Strategy Factory。"
       );
       setIntentEnvelope(envelope);
       setIntentMessage(envelope.success ? "STRATEGY_FACTORY_INTENT_CREATED" : envelope.error || "STRATEGY_FACTORY_INTENT_FAILED");
@@ -109,34 +109,34 @@ export function StrategyFactoryPanel({
     <div className="capability-stack">
       <div className="capability-banner">
         <div>
-          <span>Strategy Factory</span>
-          <h2>Scheduler, runs, promotion reviews</h2>
-          <p>Read-only status is always safe. Mutating actions continue through durable approval intents.</p>
+          <span>策略工厂</span>
+          <h2>调度器、运行和晋升评审</h2>
+          <p>只读状态检查始终安全；会改变状态的操作仍然通过持久化审批意图执行。</p>
         </div>
         <StatusBadge status={factoryStatus} />
       </div>
 
       {!controlToken.trim() && (
-        <div className="notice warn">Control token is required before factory action intents can be created from the desktop.</div>
+        <div className="notice warn">需要控制令牌后，桌面端才能创建工厂操作意图。</div>
       )}
 
       <div className="capability-section compact-section">
         <div className="section-header">
           <div>
-            <span>Approved operation</span>
-            <h3>Factory run once</h3>
+            <span>受控操作</span>
+            <h3>工厂单次运行</h3>
           </div>
           <StatusBadge status={intentEnvelope?.success ? "ready" : "not_loaded"} label={intentMessage} />
         </div>
         <button className="primary-button" disabled={busy || !controlToken.trim()} onClick={createRunIntent} type="button">
           <Play size={15} />
-          Create run intent
+          创建运行意图
         </button>
         {intentEnvelope && (
           <details className="raw-details" open>
             <summary>
               <GitPullRequest size={14} />
-              Latest intent
+              最近意图
             </summary>
             <JsonPanel value={intentEnvelope} />
           </details>
@@ -144,9 +144,9 @@ export function StrategyFactoryPanel({
       </div>
 
       <div className="capability-grid three">
-        <FactoryCard title="Factory Status" envelope={factory?.status || null} />
-        <FactoryCard title="Recent Runs" envelope={factory?.runs || null} />
-        <FactoryCard title="Review Snapshot" envelope={factory?.review_snapshot || null} />
+        <FactoryCard title="工厂状态" envelope={factory?.status || null} />
+        <FactoryCard title="最近运行" envelope={factory?.runs || null} />
+        <FactoryCard title="评审快照" envelope={factory?.review_snapshot || null} />
       </div>
     </div>
   );

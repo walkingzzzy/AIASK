@@ -1,0 +1,14 @@
+{
+  "scenario": "S16",
+  "title": "自选股/告警",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T09:57:51+08:00",
+  "tools_tested": [
+    {"tool": "create_indicator_alert", "status": "fail_graceful", "note": "HTML &lt; escape detected"},
+    {"tool": "check_all_alerts", "status": "pass", "note": "6 alerts triggered=3"},
+    {"tool": "watchlist_manager.create_group", "status": "pass", "note": "group_c7ad7c2f"},
+    {"tool": "create_combo_alert", "status": "pass", "note": "2 conditions AND logic"}
+  ],
+  "summary": {"pass": 3, "degraded": 0, "fail_graceful": 1, "fail_schema": 0},
+  "verdict": "pass"
+}

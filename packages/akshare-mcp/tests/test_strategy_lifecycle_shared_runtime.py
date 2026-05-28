@@ -10,7 +10,16 @@ from akshare_mcp.services.strategy_lifecycle_shared.prediction_trace import _bui
 
 
 class _SignalEvidenceDb:
-    async def list_strategy_signal_evidence(self, strategy_id: str, limit: int = 500):
+    async def list_strategy_signal_evidence(
+        self,
+        *,
+        signal_id: str | None = None,
+        strategy_id: str | None = None,
+        limit: int = 200,
+    ):
+        # match the real DB keyword-only signature so the test catches
+        # any future caller that regresses to positional args
+        assert signal_id is None
         assert strategy_id == "strategy-runtime"
         assert limit >= 2
         return [

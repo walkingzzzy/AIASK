@@ -92,6 +92,7 @@ _PROMPT_EVENT_RECOGNITION = """\
 3. 若证据较弱，也要输出候选事件，并把 severity 设为 1-2
 4. evidence 必须直接引用输入线索，不能留空
 5. 只输出 JSON object，顶层 key 只能是 events
+6. events 数组的每个元素必须是 JSON object（含 theme_code、event_type 等字段），严禁输出字符串数组（如 ["半导体","白酒"]）
 
 常用映射:
 半导体/芯片/算力 -> chip_domestic
@@ -100,7 +101,7 @@ _PROMPT_EVENT_RECOGNITION = """\
 银行/保险/高股息 -> high_dividend_banks
 原油/油气 -> upstream_oil_gas
 
-输出格式:
+输出格式（每个 event 必须是对象，不能是字符串）:
 {"events":[{"theme_code":"chip_domestic","event_type":"sector_rotation","event_id":"ev_chip_001","title":"半导体板块走强","severity":3,"affected_sectors":["半导体"],"evidence":["半导体板块涨3.2%"]}]}"""
 
 _PROMPT_THEME_PROPAGATION = """\
@@ -111,8 +112,9 @@ _PROMPT_THEME_PROPAGATION = """\
 2. 给出传导方向(bullish/bearish)和置信度(0-1)
 3. 只关注产业链逻辑，不涉及具体个股
 4. 传导链条需符合 A 股市场实际产业关系
+5. themes 数组的每个元素必须是 JSON object（含 theme_code、theme_name 等字段），严禁输出字符串数组（如 ["新能源","白酒"]）
 
-严格按以下 JSON 格式输出:
+严格按以下 JSON 格式输出（每个 theme 必须是对象，不能是字符串）:
 {"themes": [{"theme_code": "chip_domestic", "theme_name": "芯片半导体", "source_event_id": "ev_001", "propagation_chain": ["technology", "chip_domestic"], "direction": "bullish", "confidence": 0.7}]}"""
 
 _PROMPT_EXPOSURE_MAPPING = """\
@@ -123,8 +125,9 @@ _PROMPT_EXPOSURE_MAPPING = """\
 2. 给出暴露类型(direct_beneficiary/indirect_beneficiary/hedge)和权重(0-1)
 3. 每个主题映射 2-6 只标的
 4. 优先选择基本面健康、流动性好的标的
+5. exposures 数组的每个元素必须是 JSON object（含 theme_code 和 target_symbols 字段），严禁输出股票代码字符串数组（如 ["600519","000858"]）
 
-严格按以下 JSON 格式输出:
+严格按以下 JSON 格式输出（每个 exposure 必须是对象，不能是字符串）:
 {"exposures": [{"theme_code": "chip_domestic", "target_symbols": ["600519", "000858"], "sector": "芯片半导体", "exposure_type": "direct_beneficiary", "weight": 0.7}]}"""
 
 _PROMPT_MARKET_CONFIRMATION = """\
@@ -196,6 +199,8 @@ def _try_find_list(output: dict[str, Any], primary_key: str, alt_keys: tuple[str
     1. 精确匹配 primary_key
     2. 尝试 alt_keys 别名
     3. 如果 output 只有 1 个 key 且其值是非空 list，直接采用
+    4. 如果整个 output 看起来像是单个 item（含 theme_code/target_symbols 等关键字段），
+       将其包装成单元素列表
     """
     val = output.get(primary_key)
     if isinstance(val, list) and val:
@@ -211,7 +216,146 @@ def _try_find_list(output: dict[str, Any], primary_key: str, alt_keys: tuple[str
         if isinstance(only_val, list) and only_val:
             logger.debug("Validator: accepted single-key fallback for '%s'", primary_key)
             return only_val
+    # 单对象兜底：output 里包含 item 字段（如 theme_code/target_symbols）但没包数组
+    item_signals = {
+        "events": ("event_id", "event_type", "affected_sectors", "evidence"),
+        "themes": ("propagation_chain", "theme_name", "source_event_id", "direction"),
+        "exposures": ("target_symbols", "exposure_type", "weight", "sector"),
+        "confirmations": ("symbol", "confirmed", "signal_strength", "entry_timing"),
+        "candidates": ("dsl", "strategy_type", "target_symbols", "tags"),
+    }
+    signals = item_signals.get(primary_key, ())
+    if signals and any(k in output for k in signals):
+        logger.debug("Validator: wrapping singleton object as %s list", primary_key)
+        return [dict(output)]
     return None
+
+
+def _lazy_match_sector_to_theme(sector_name: str) -> str:
+    """根据主题库 alias 把板块名匹配到 theme_code。
+
+    为避免与 ``postprocess.py`` 的循环 import（postprocess 依赖 context 的运行
+    时片段执行），这里使用本地实现，行为与 postprocess._match_sector_to_theme
+    保持一致。
+    """
+    text = str(sector_name or "").strip().lower()
+    if not text:
+        return ""
+    for theme in EXTENDED_THEME_LIBRARY:
+        for alias in list(theme.get("aliases") or []):
+            a = str(alias or "").strip().lower()
+            if not a:
+                continue
+            if a in text or text in a:
+                return str(theme.get("theme_code") or "")
+    return ""
+
+
+def _is_a_share_symbol(text: str) -> bool:
+    """快速识别 6 位 A 股股票代码。"""
+    cleaned = str(text or "").strip()
+    return cleaned.isdigit() and len(cleaned) == 6
+
+
+def _coerce_event_string(item: str) -> dict[str, Any] | None:
+    """把字符串形态的 event 升级为最小合法 event 对象。"""
+    text = str(item or "").strip()
+    if not text:
+        return None
+    matched_code = _lazy_match_sector_to_theme(text)
+    theme_code = matched_code or "unknown"
+    info = _THEME_LOOKUP.get(theme_code, {})
+    title = info.get("name") or text
+    return {
+        "event_id": f"llm_str_{theme_code}_{abs(hash(text)) % 10**8}",
+        "theme_code": theme_code,
+        "event_type": "sector_rotation",
+        "title": str(title),
+        "severity": 2,
+        "affected_sectors": [text],
+        "evidence": [f"LLM string-only output: {text}"],
+        "_coerced_from_string": True,
+    }
+
+
+def _coerce_theme_string(item: str) -> dict[str, Any] | None:
+    """把字符串形态的 theme 升级为最小合法 theme 对象。"""
+    text = str(item or "").strip()
+    if not text or text.lower() == "theme_code":
+        return None
+    matched_code = _lazy_match_sector_to_theme(text)
+    theme_code = matched_code or "unknown"
+    info = _THEME_LOOKUP.get(theme_code, {})
+    parent = info.get("parent", "")
+    chain: list[str] = []
+    if parent:
+        chain.append(parent)
+    chain.append(theme_code)
+    return {
+        "theme_code": theme_code,
+        "theme_name": info.get("name") or text,
+        "source_event_id": "",
+        "propagation_chain": chain,
+        "direction": "bullish",
+        "confidence": 0.4,
+        "_coerced_from_string": True,
+    }
+
+
+def _coerce_exposure_string(item: str, default_theme_code: str = "unknown") -> dict[str, Any] | None:
+    """把字符串形态的 exposure 升级为最小合法 exposure 对象。
+
+    - 6 位数字 → 视为股票代码，theme_code 从默认上下文继承
+    - 其它字符串 → 视为行业名称，匹配主题库
+    """
+    text = str(item or "").strip()
+    if not text:
+        return None
+    if _is_a_share_symbol(text):
+        return {
+            "theme_code": default_theme_code or "unknown",
+            "target_symbols": [text],
+            "sector": "",
+            "exposure_type": "direct_beneficiary",
+            "weight": 0.5,
+            "_coerced_from_string": True,
+        }
+    matched_code = _lazy_match_sector_to_theme(text)
+    theme_code = matched_code or "unknown"
+    info = _THEME_LOOKUP.get(theme_code, {})
+    return {
+        "theme_code": theme_code,
+        "target_symbols": [],
+        "sector": info.get("name") or text,
+        "exposure_type": "direct_beneficiary",
+        "weight": 0.4,
+        "_coerced_from_string": True,
+    }
+
+
+def _coerce_string_items(
+    items: list[Any],
+    coerce_fn: Callable[[str], dict[str, Any] | None],
+) -> tuple[list[Any], int, int]:
+    """对列表中的字符串元素统一调用 coerce_fn。
+
+    Returns:
+        (新列表, 转换成功数量, 转换失败数量)
+    """
+    coerced_count = 0
+    dropped_count = 0
+    new_items: list[Any] = []
+    for item in items:
+        if isinstance(item, str):
+            obj = coerce_fn(item)
+            if obj is None:
+                dropped_count += 1
+                continue
+            new_items.append(obj)
+            coerced_count += 1
+        else:
+            new_items.append(item)
+    return new_items, coerced_count, dropped_count
 
 
 def _validate_event_recognition(output: dict[str, Any]) -> bool:
@@ -219,8 +363,19 @@ def _validate_event_recognition(output: dict[str, Any]) -> bool:
     if not events:
         logger.debug("event_recognition validation failed: no 'events' list, keys=%s", list(output.keys()))
         return False
+    # 兼容降级：模型偶尔会输出字符串数组，将其规则化为最小合法对象
+    has_string = any(isinstance(ev, str) for ev in events)
+    if has_string:
+        events, coerced, dropped = _coerce_string_items(events, _coerce_event_string)
+        if coerced:
+            logger.info(
+                "event_recognition: coerced %d string events to objects (dropped=%d)",
+                coerced, dropped,
+            )
     # 回写到标准 key 以便下游消费
     output["events"] = events
+    if not events:
+        return False
     for ev in events:
         if not isinstance(ev, dict):
             return False
@@ -235,7 +390,18 @@ def _validate_theme_propagation(output: dict[str, Any]) -> bool:
     if not themes:
         logger.debug("theme_propagation validation failed: no 'themes' list, keys=%s", list(output.keys()))
         return False
+    # 兼容降级：字符串数组形态
+    has_string = any(isinstance(th, str) for th in themes)
+    if has_string:
+        themes, coerced, dropped = _coerce_string_items(themes, _coerce_theme_string)
+        if coerced:
+            logger.info(
+                "theme_propagation: coerced %d string themes to objects (dropped=%d)",
+                coerced, dropped,
+            )
     output["themes"] = themes
+    if not themes:
+        return False
     for th in themes:
         if not isinstance(th, dict):
             return False
@@ -250,7 +416,49 @@ def _validate_exposure_mapping(output: dict[str, Any]) -> bool:
     if not exposures:
         logger.debug("exposure_mapping validation failed: no 'exposures' list, keys=%s", list(output.keys()))
         return False
+    # 兼容降级：字符串数组形态（股票代码列表 / 行业名称列表）
+    has_string = any(isinstance(exp, str) for exp in exposures)
+    if has_string:
+        # 默认 theme_code 取 output 顶层（若有）或上游 themes 第一个
+        default_theme_code = str(output.get("theme_code") or "").strip() or "unknown"
+        exposures, coerced, dropped = _coerce_string_items(
+            exposures,
+            lambda s: _coerce_exposure_string(s, default_theme_code=default_theme_code),
+        )
+        if coerced:
+            logger.info(
+                "exposure_mapping: coerced %d string exposures to objects (dropped=%d)",
+                coerced, dropped,
+            )
+        # 字符串模式下若全是股票代码，target_symbols 仅 1 只，合并到一个 exposure 减少噪音
+        symbol_only = [
+            exp for exp in exposures
+            if exp.get("_coerced_from_string") and exp.get("target_symbols")
+            and not exp.get("sector")
+        ]
+        if len(symbol_only) > 1 and len(symbol_only) == len(exposures):
+            merged_symbols: list[str] = []
+            for exp in symbol_only:
+                for sym in exp.get("target_symbols") or []:
+                    if sym not in merged_symbols:
+                        merged_symbols.append(sym)
+            exposures = [
+                {
+                    "theme_code": default_theme_code or "unknown",
+                    "target_symbols": merged_symbols[:6],
+                    "sector": "",
+                    "exposure_type": "direct_beneficiary",
+                    "weight": 0.5,
+                    "_coerced_from_string": True,
+                }
+            ]
+            logger.info(
+                "exposure_mapping: merged %d string-only symbol exposures into single exposure",
+                len(symbol_only),
+            )
     output["exposures"] = exposures
+    if not exposures:
+        return False
     for exp in exposures:
         if not isinstance(exp, dict):
             return False

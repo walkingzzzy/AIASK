@@ -289,11 +289,40 @@ def register_paper_trading_manager(mcp):
                         }
                     )
 
+                # P2-4.4.4 fix(诊断报告 §4.4.4):market 单显式标 bypass_matching
+                # 历史问题:matching_engine + nav_engine 都 running=false 但 market 单仍直接 filled
+                # AI 看不出该订单是否真正经过撮合,可能误以为系统正常运行
+                _matching_running = False
+                _nav_running = False
+                try:
+                    from ...services.matching_engine import get_matching_engine
+                    _matching_running = bool(get_matching_engine().status().get('running'))
+                except Exception:
+                    pass
+                try:
+                    from ...services.nav_engine import get_nav_engine
+                    _nav_running = bool(get_nav_engine().status().get('running'))
+                except Exception:
+                    pass
+                _bypass_warnings: list[str] = []
+                if not _matching_running:
+                    _bypass_warnings.append(
+                        "market_orders_bypass_matching=true: matching_engine.running=false, "
+                        "市价单直接成交未经撮合,limit 订单将卡 pending"
+                    )
+                if not _nav_running:
+                    _bypass_warnings.append(
+                        "nav_engine.running=false: 账户 NAV 不会自动更新"
+                    )
+
                 return ok({
                     'order_id': trade_id, 'status': 'filled', 'order_type': 'market',
                     'account_id': account_id, 'trade_type': trade_type,
                     'price': price, 'quantity': shares, 'amount': amount,
                     'commission': round(commission, 4),
+                    'matching_engine_running': _matching_running,
+                    'nav_engine_running': _nav_running,
+                    'engine_warnings': _bypass_warnings,
                 })
 
             # --- cancel_order ---
@@ -523,6 +552,9 @@ def register_paper_trading_manager(mcp):
                     account_id = await _ensure_account(user_id, db)
                 await _ensure_positions_consistency(db, account_id)
                 positions = await _refresh_account_prices(db, account_id)
+                # P3-5.15 fix: 计算 updated_count / unchanged_count(诊断报告 §5.15)
+                updated_count = sum(1 for p in positions if str(p.get('_refresh_status') or '') == 'updated')
+                unchanged_count = sum(1 for p in positions if str(p.get('_refresh_status') or '').startswith('unchanged'))
                 async with db.acquire() as conn:
                     enriched_positions = []
                     for row in positions:
@@ -537,6 +569,11 @@ def register_paper_trading_manager(mcp):
                     'account_id': account_id,
                     'positions': enriched_positions,
                     'count': len(enriched_positions),
+                    'updated_count': updated_count,
+                    'unchanged_count': unchanged_count,
+                    'refresh_success_rate': (
+                        round(updated_count / max(len(enriched_positions), 1), 4)
+                    ),
                     'account': dict(account) if account else None,
                     'reconciliation': reconcile,
                 })
@@ -557,8 +594,12 @@ def register_paper_trading_manager(mcp):
             # --- set_risk_rules ---
             elif action == 'set_risk_rules':
                 account_id = kwargs.get('account_id')
+                # P2-4.4.1 fix(诊断报告 §4.4.1):account_id 必填,不允许 silent create
                 if not account_id:
-                    account_id = await _ensure_account(user_id, db)
+                    return fail(
+                        "account_id is required for set_risk_rules. "
+                        "Use create_account first to create an account explicitly."
+                    )
                 raw_rules = kwargs.get('rules')
                 if isinstance(raw_rules, str):
                     try:
@@ -586,7 +627,18 @@ def register_paper_trading_manager(mcp):
                         "UPDATE paper_accounts SET risk_rules=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
                         json.dumps(rules), account_id
                     )
-                return ok({'account_id': account_id, 'risk_rules': rules})
+                # P2-4.4.1 fix(诊断报告 §4.4.1):响应增加 unit 标注消除混淆
+                # 历史问题:input.max_drawdown=0.15 → output.max_drawdown_pct=20.0(默认值,未识别 0.15 含义)
+                # 修复:max_drawdown_pct 字段统一是 percent 单位,显式标 unit + raw_input
+                return ok({
+                    'account_id': account_id,
+                    'risk_rules': rules,
+                    'risk_rules_unit': 'percent',
+                    'risk_rules_note': (
+                        '所有 *_pct 字段以 percent 单位存储 (e.g. 20.0 = 20%). '
+                        '若输入 0~1 范围,会自动 ×100 转 percent.'
+                    ),
+                })
 
             # --- matching_status ---
             elif action == 'matching_status':

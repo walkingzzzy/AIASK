@@ -115,6 +115,7 @@ dependencies = [
     { name = "numba" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pydantic" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
@@ -124,6 +125,7 @@ requires-dist = [
     { name = "numba", specifier = ">=0.59.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "scikit-learn", specifier = ">=1.3.0" },
     { name = "scipy", specifier = ">=1.11.0" },
@@ -300,8 +302,12 @@ requires-dist = [
     { name = "baostock", marker = "extra == 'legacy'", specifier = ">=0.8.8" },
     { name = "efinance", marker = "extra == 'legacy'", specifier = ">=0.5.5" },
     { name = "great-expectations", specifier = ">=1.16.0" },
+    { name = "great-expectations", marker = "extra == 'production'", specifier = ">=1.16.0" },
     { name = "mapie", specifier = ">=1.3.0" },
+    { name = "mapie", marker = "extra == 'production'", specifier = ">=1.3.0" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mlflow", marker = "extra == 'experiment-tracking'", specifier = ">=2.10.0" },
+    { name = "mlflow", marker = "extra == 'production'", specifier = ">=2.10.0" },
     { name = "numba", specifier = ">=0.59.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.0.0" },
@@ -309,12 +315,14 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "ray", extras = ["default"], marker = "extra == 'parallel'", specifier = ">=2.9.0" },
     { name = "scikit-learn", specifier = ">=1.3.0" },
+    { name = "scikit-learn", marker = "extra == 'calibration'", specifier = ">=1.3.0" },
+    { name = "scikit-learn", marker = "extra == 'production'", specifier = ">=1.3.0" },
     { name = "scipy", specifier = ">=1.11.0" },
     { name = "strategy-factory", editable = "../strategy-factory" },
     { name = "ta-lib", specifier = ">=0.4.28" },
     { name = "tushare", specifier = ">=1.4.0" },
 ]
-provides-extras = ["parallel", "legacy"]
+provides-extras = ["parallel", "legacy", "experiment-tracking", "calibration", "production"]
 
 [[package]]
 name = "altair"

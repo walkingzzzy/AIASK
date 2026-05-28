@@ -327,6 +327,25 @@ async def run_factor_robustness_check(
         warnings.append(f"low_sample_params:{','.join(low_sample_params)}")
     if "note" in subsample_detail:
         warnings.append("insufficient_codes_for_subsample_split")
+
+    # P2-4.3.5 fix(诊断报告 §4.3.5):跨 window IC 符号倒挂检测
+    # 历史问题:windows=[10,20,60] IC=-0.999/+0.81/+0.05,因子在不同时间尺度方向相反但仅 grade=weak
+    # 修复:emit warning 'factor_sign_inversion_across_horizons'
+    horizon_ics = []
+    for r in multi_window_results:
+        ic_val = r.get("ic")
+        if isinstance(ic_val, (int, float)) and r.get("sample_size", 0) >= 10:
+            horizon_ics.append((r.get("window"), float(ic_val)))
+    if len(horizon_ics) >= 2:
+        signs = {1 if ic > 0.05 else (-1 if ic < -0.05 else 0) for _, ic in horizon_ics}
+        # 既有正又有负 → 倒挂
+        if 1 in signs and -1 in signs:
+            warnings.append(
+                f"factor_sign_inversion_across_horizons: "
+                f"IC signs differ across windows {horizon_ics} — "
+                f"因子在不同时间尺度方向相反,可能是过拟合或周期性反向"
+            )
+
     payload = {
         "factor": factor_name,
         "robustness_score": robustness_score,

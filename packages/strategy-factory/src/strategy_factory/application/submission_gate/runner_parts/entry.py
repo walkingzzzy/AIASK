@@ -175,6 +175,24 @@ async def run_submission_quality_gate(
                 ),
             }
         )
+        # === DEV-V1 V5-PR-1: 接入 _estimate_run_correction_metrics ===
+        # 计算 deflated_sharpe_ratio / pbo / RC / SPA pvalue 并合并到 normalized,
+        # 让下游 _derive_trade_aware_validation_grade 的 evidence_score 公式能用上多重检验调整指标。
+        # 任何提取/计算失败软降级,不打断主流程。
+        run_correction_fields = _inject_run_correction_metrics(
+            strategy,
+            profile,
+            normalized,
+            validation_report=validation_report,
+            backtest_metrics=materialized_backtest_metrics,
+        )
+        if run_correction_fields:
+            normalized = normalize_quality_gate_result(
+                {
+                    **normalized,
+                    **run_correction_fields,
+                }
+            )
         semantic_runtime_context = _resolve_semantic_runtime_context(strategy, gate=normalized)
         normalized = normalize_quality_gate_result(
             {

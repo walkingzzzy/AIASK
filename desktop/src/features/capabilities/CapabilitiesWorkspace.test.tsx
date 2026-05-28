@@ -101,7 +101,7 @@ const authorizedPayload = {
     skill_packs: { object: "aiask.skill_pack_status", status: "ready", packs: [{ name: "finance-modeling" }] }
   },
   skill_packs: { object: "aiask.skill_pack_status", status: "ready", packs: [{ name: "finance-modeling" }] },
-  plugins: [{ name: "audit-plugin", enabled: true, source: "local", description: "Audit hooks" }]
+  plugins: [{ name: "audit-plugin", enabled: true, source: "local", description: "Audit hooks", commands: [{ name: "doctor" }] }]
 };
 
 const mcpAuthorizedPayload = {
@@ -143,10 +143,10 @@ describe("CapabilitiesWorkspace", () => {
 
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="" />);
 
-    await waitFor(() => expect(screen.getByText("Runtime review board")).toBeInTheDocument());
-    expect(screen.getByText("Implemented")).toBeInTheDocument();
-    expect(screen.getByText("Actionable gaps")).toBeInTheDocument();
-    expect(screen.getAllByText("control token is not configured").length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText("运行时评审面板")).toBeInTheDocument());
+    expect(screen.getByText("已实现")).toBeInTheDocument();
+    expect(screen.getByText("可处理缺口")).toBeInTheDocument();
+    expect(screen.getAllByText(/缺少控制令牌 Control token/).length).toBeGreaterThan(0);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8767/v1/desktop/capabilities",
       expect.objectContaining({ method: "GET" })
@@ -167,6 +167,24 @@ describe("CapabilitiesWorkspace", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
+      if (url.endsWith("/v1/plugins/audit-plugin/commands")) {
+        return new Response(
+          JSON.stringify({ object: "list", data: [{ name: "doctor", description: "Run diagnostics" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.endsWith("/v1/plugins/audit-plugin/commands/doctor/test")) {
+        return new Response(
+          JSON.stringify({ object: "plugin.command_test", success: true, data: { note: "command ok" }, error: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.endsWith("/v1/plugins")) {
+        return new Response(
+          JSON.stringify({ object: "plugin_upserted", success: true, data: { name: "local-plugin" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       return new Response(JSON.stringify(authorizedPayload), {
         status: 200,
         headers: { "Content-Type": "application/json" }
@@ -175,17 +193,27 @@ describe("CapabilitiesWorkspace", () => {
 
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
-    await waitFor(() => expect(screen.getByText("Runtime review")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /Plugins/ }));
+    await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "插件" }));
 
-    expect(screen.getByText("Native plugin and skill-pack governance")).toBeInTheDocument();
+    expect(screen.getByText("原生插件与技能包治理")).toBeInTheDocument();
     expect(screen.getByText("audit-plugin")).toBeInTheDocument();
-    expect(screen.getByText(/External Hermes dashboard plugin JavaScript is not loaded or executed/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Self-test" }));
+    expect(screen.getByText(/不会加载或执行外部 Hermes dashboard 插件 JavaScript/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "自检" }));
     await waitFor(() => expect(screen.getByText("plugin surface is registered")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "命令" }));
+    await waitFor(() => expect(screen.getByText("doctor")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "测试" }));
+    await waitFor(() => expect(screen.getByText("command ok")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "保存插件" }));
+    await waitFor(() => expect(screen.getByText("plugin_upserted")).toBeInTheDocument());
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8767/v1/plugins/audit-plugin/tools/__manifest__/test",
       expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8767/v1/plugins/audit-plugin/commands",
+      expect.objectContaining({ method: "GET" })
     );
   });
 
@@ -199,11 +227,11 @@ describe("CapabilitiesWorkspace", () => {
 
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
-    await waitFor(() => expect(screen.getByText("Runtime review")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /MCP/ }));
 
-    expect(screen.getByText("Connector review queue")).toBeInTheDocument();
-    expect(screen.getAllByText("2 tools / 1 resources / 1 prompts").length).toBeGreaterThan(0);
+    expect(screen.getByText("连接器评审队列")).toBeInTheDocument();
+    expect(screen.getAllByText("2 个工具 / 1 个资源 / 1 个提示词").length).toBeGreaterThan(0);
     expect(screen.getByText("agent_mcp_quote")).toBeInTheDocument();
   });
 
@@ -230,11 +258,11 @@ describe("CapabilitiesWorkspace", () => {
 
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
-    await waitFor(() => expect(screen.getByText("Runtime review")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /MCP/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Read MCP resource" }));
+    fireEvent.click(screen.getByRole("button", { name: "读取 MCP 资源" }));
 
     await waitFor(() => expect(screen.getByText("MCP_DISCOVERY_AUTH_REQUIRED")).toBeInTheDocument());
-    expect(screen.getByText("Set env vars: AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION")).toBeInTheDocument();
+    expect(screen.getByText("请设置环境变量：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION")).toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatApiError, normalizeEndpoint } from "./api";
+import { AppContextPanel } from "./components/AppContextPanel";
 import { AppSidebar } from "./components/AppSidebar";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { InspectorPanel } from "./components/InspectorPanel";
@@ -13,6 +14,7 @@ import { DataSyncWorkspace } from "./features/data/DataSyncWorkspace";
 import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
 import { FactoryEventTriggerPanel } from "./features/factory-events/FactoryEventTriggerPanel";
 import { FactorFactoryPanel } from "./features/factor/FactorFactoryPanel";
+import { FinancialManagerWorkspace } from "./features/financial-manager/FinancialManagerWorkspace";
 import { IncubationFactoryPanel } from "./features/incubation/IncubationFactoryPanel";
 import { ModelsWorkspace } from "./features/models/ModelsWorkspace";
 import { OverviewWorkspace } from "./features/overview/OverviewWorkspace";
@@ -20,13 +22,15 @@ import { QuantResearchWorkspace } from "./features/quant/QuantResearchWorkspace"
 import { SettingsWorkspace } from "./features/settings/SettingsWorkspace";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
 import { LocalUserWorkspace } from "./features/user/LocalUserWorkspace";
+import { WorkflowsWorkspace } from "./features/workflows/WorkflowsWorkspace";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
 import { isMockEndpoint, MOCK_CONTROL_TOKEN } from "./mockApi";
 import { AiaskApi } from "./services/aiaskApi";
-import type { HealthDetailed, InspectorTab, LocalProfile, MainView, ToolCatalogItem } from "./types";
-import { VIEW_REGISTRY } from "./views";
+import type { HealthDetailed, InspectorTab, LocalProfile, MainView, SkillView, ToolCatalogItem } from "./types";
+import { VIEW_GROUPS } from "./views";
 
+const ENDPOINT_KEY = "aiask.endpoint";
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8767";
 const VERIFIED_ENDPOINT_KEY = "aiask.endpoint.verified";
 const AUTO_CONNECT_KEY = "aiask.endpoint.autoconnect";
@@ -55,23 +59,30 @@ function storageSet(key: string, value: string) {
   }
 }
 
+function storageRemove(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Desktop can run under test or restricted webview origins where localStorage is unavailable.
+  }
+}
+
 export function App() {
   const mockMode = isMockMode();
   const verifiedEndpoint = storageGet(VERIFIED_ENDPOINT_KEY) === "1";
-  const autoConnectEnabled = storageGet(AUTO_CONNECT_KEY) === "1";
   const [endpoint, setEndpoint] = useState(() =>
     mockMode
       ? "mock://aiask"
       : verifiedEndpoint
-        ? storageGet("aiask.endpoint") || DEFAULT_ENDPOINT
+        ? storageGet(ENDPOINT_KEY) || DEFAULT_ENDPOINT
         : DEFAULT_ENDPOINT
   );
   const [apiToken, setApiToken] = useState("");
   const [controlToken, setControlToken] = useState(() => (mockMode ? MOCK_CONTROL_TOKEN : ""));
   const [agentMode, setAgentMode] = useState<"finance_safe" | "hermes_full">("finance_safe");
-  const [mainView, setMainView] = useState<MainView>("overview");
+  const [mainView, setMainView] = useState<MainView>("workbench");
   const [userId, setUserId] = useState(() => storageGet("aiask.local.user_id") || "local");
-  const [profileName, setProfileName] = useState(() => storageGet("aiask.local.profile_name") || "Local Operator");
+  const [profileName, setProfileName] = useState(() => storageGet("aiask.local.profile_name") || "本地操作者");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("details");
   const [health, setHealth] = useState<HealthDetailed | null>(null);
   const [tools, setTools] = useState<ToolCatalogItem[]>([]);
@@ -81,6 +92,8 @@ export function App() {
   const [connectionBusy, setConnectionBusy] = useState(false);
 
   const normalizedEndpoint = normalizeEndpoint(endpoint);
+  const canLoadAgentHistory =
+    mockMode || !!health || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1");
   const api = useMemo(() => new AiaskApi({ endpoint: normalizedEndpoint, apiToken, controlToken }), [apiToken, controlToken, normalizedEndpoint]);
   const hermes = useHermesConsole(normalizedEndpoint, apiToken, controlToken);
   const workbench = useAgentWorkbench({
@@ -88,6 +101,7 @@ export function App() {
     apiToken,
     controlToken,
     agentMode,
+    canLoadHistory: canLoadAgentHistory,
     userId,
     onAgentStatus: setStatus,
     onInspectorTab: setInspectorTab,
@@ -100,6 +114,7 @@ export function App() {
   const busy = connectionBusy || hermes.busy || workbench.busy;
   const parity = hermes.fullConsole.parity || hermes.hermesStatus?.parity || health?.hermes?.parity;
   const inspectorVisible = mainView === "workbench";
+  const settingsMode = mainView === "settings";
 
   async function refreshHealth() {
     setConnectionBusy(true);
@@ -109,7 +124,7 @@ export function App() {
       setTools(nextTools.data || []);
       setStatus("AIASK_ONLINE");
       if (!isMockEndpoint(normalizedEndpoint)) {
-        storageSet("aiask.endpoint", normalizedEndpoint);
+        storageSet(ENDPOINT_KEY, normalizedEndpoint);
         storageSet(VERIFIED_ENDPOINT_KEY, "1");
         storageSet(AUTO_CONNECT_KEY, "1");
       }
@@ -128,6 +143,18 @@ export function App() {
       setTools([]);
     } finally {
       setConnectionBusy(false);
+    }
+  }
+
+  function resetEndpointToDefault() {
+    setEndpoint(mockMode ? "mock://aiask" : DEFAULT_ENDPOINT);
+    setHealth(null);
+    setTools([]);
+    setStatus("AIASK_DISCONNECTED");
+    if (!mockMode) {
+      storageRemove(ENDPOINT_KEY);
+      storageRemove(VERIFIED_ENDPOINT_KEY);
+      storageRemove(AUTO_CONNECT_KEY);
     }
   }
 
@@ -160,7 +187,7 @@ export function App() {
 
   function updateLocalProfile(profile: LocalProfile) {
     const nextUserId = profile.user_id || "local";
-    const nextProfileName = profile.profile_name || "Local Operator";
+    const nextProfileName = profile.profile_name || "本地操作者";
     setUserId(nextUserId);
     setProfileName(nextProfileName);
     storageSet("aiask.local.user_id", nextUserId);
@@ -177,6 +204,14 @@ export function App() {
     workbench.selectThread(id);
   }
 
+  function applySkillToChat(skill: SkillView | null) {
+    if (!skill) return;
+    const nextPrompt = `请使用 ${skill.name} 技能协助我完成：${skill.description || "分析当前任务并给出可执行建议。"}`;
+    workbench.setPrompt(nextPrompt);
+    setMainView("workbench");
+    setInspectorTab("details");
+  }
+
   useEffect(() => {
     if (mockMode || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1")) {
       refreshHealth();
@@ -186,20 +221,22 @@ export function App() {
   }, [mockMode]);
 
   return (
-    <div className={`app-shell ${!inspectorVisible ? "capabilities-mode" : ""}`}>
-      <AppSidebar
-        health={health}
-        hermesStatus={hermes.hermesStatus}
-        inspectorTab={inspectorTab}
-        mainView={mainView}
-        onNewTask={startNewTask}
-        onSelectThread={selectThread}
-        onSelectView={selectView}
-        selectedThreadId={workbench.selectedThreadId}
-        status={status}
-        threads={workbench.threads}
-        views={VIEW_REGISTRY}
-      />
+    <div className={`app-shell ${settingsMode ? "settings-mode" : inspectorVisible ? "task-mode" : "context-mode"}`}>
+      {!settingsMode && (
+        <AppSidebar
+          health={health}
+          hermesStatus={hermes.hermesStatus}
+          inspectorTab={inspectorTab}
+          mainView={mainView}
+          onNewTask={startNewTask}
+          onSelectThread={selectThread}
+          onSelectView={selectView}
+          selectedThreadId={workbench.selectedThreadId}
+          status={status}
+          threads={workbench.threads}
+          viewGroups={VIEW_GROUPS}
+        />
+      )}
 
       <main className="workbench">
         {mainView === "overview" && (
@@ -242,6 +279,15 @@ export function App() {
             userId={userId}
           />
         )}
+        {mainView === "workflows" && <WorkflowsWorkspace onOpenView={selectView} />}
+        {mainView === "financial-manager" && (
+          <FinancialManagerWorkspace
+            apiToken={apiToken}
+            controlToken={controlToken}
+            endpoint={normalizedEndpoint}
+            userId={userId}
+          />
+        )}
         {mainView === "strategy-factory" && (
           <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="factory" />
         )}
@@ -249,8 +295,8 @@ export function App() {
           <section className="capabilities-workspace">
             <header className="capabilities-header">
               <div>
-                <span>Factor Factory</span>
-                <h1>Mining and active pool</h1>
+                <span>因子工厂</span>
+                <h1>因子挖掘与活跃池</h1>
               </div>
             </header>
             <div className="capabilities-body">
@@ -262,8 +308,8 @@ export function App() {
           <section className="capabilities-workspace">
             <header className="capabilities-header">
               <div>
-                <span>Incubation Factory</span>
-                <h1>Lifecycle and hit-rate control</h1>
+                <span>孵化工厂</span>
+                <h1>生命周期与命中率控制</h1>
               </div>
             </header>
             <div className="capabilities-body">
@@ -310,9 +356,10 @@ export function App() {
             controlToken={controlToken}
             endpoint={normalizedEndpoint}
             onRefresh={() => refreshHermes({ keepInspector: true })}
+            onApplyToChat={applySkillToChat}
             skillsPayload={
               (hermes.fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
-              (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "Control token required to inspect skills." })
+              (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
             }
           />
         )}
@@ -323,15 +370,20 @@ export function App() {
             busy={busy}
             controlToken={controlToken}
             endpoint={endpoint}
+            connectionStatus={status}
+            defaultEndpoint={mockMode ? "mock://aiask" : DEFAULT_ENDPOINT}
             health={health}
             profileName={profileName}
             userId={userId}
             onAgentModeChange={setAgentMode}
             onApiTokenChange={setApiToken}
+            onBackToApp={() => setMainView("workbench")}
             onControlTokenChange={setControlToken}
             onEndpointChange={setEndpoint}
+            onOpenView={selectView}
             onProfileChange={updateLocalProfile}
             onRefresh={refreshHealth}
+            onResetEndpoint={resetEndpointToDefault}
           />
         )}
         {mainView === "user" && (
@@ -396,6 +448,7 @@ export function App() {
           onProfileChange={updateLocalProfile}
           onRefreshHealth={refreshHealth}
           onRefreshHermes={refreshHermes}
+          onRemoveResponseThread={workbench.removeResponseThread}
           onSetInspectorTab={setInspectorTab}
           onSetIntentIdInput={workbench.setIntentIdInput}
           onUpdateIntent={workbench.updateIntent}
@@ -408,6 +461,17 @@ export function App() {
           selectedThread={workbench.selectedThread}
           tools={tools}
           userId={userId}
+        />
+      )}
+      {!settingsMode && !inspectorVisible && (
+        <AppContextPanel
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          health={health}
+          hermesStatus={hermes.hermesStatus}
+          selectedThread={workbench.selectedThread}
+          status={status}
+          tools={tools}
         />
       )}
     </div>

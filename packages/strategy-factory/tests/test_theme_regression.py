@@ -99,3 +99,105 @@ def test_edge_regression_result_to_dict():
     assert d["source_theme"] == "oil"
     assert d["direction_sign"] == -1
     assert d["status"] == "fitted"
+
+
+class _RegressionDb:
+    def __init__(self):
+        self.upserts: list[dict] = []
+
+    async def list_theme_edges(self, *, is_active=True, limit=200):
+        return [
+            {
+                "source_theme_code": "source",
+                "target_theme_code": "target",
+                "relation_type": "lead_lag",
+                "direction_sign": 1,
+                "magnitude_factor": 0.2,
+                "confidence": 0.3,
+                "manual_locked": 0,
+            }
+        ]
+
+    async def upsert_theme_edge(self, payload):
+        self.upserts.append(payload)
+        return {"upserted": 1}
+
+
+@pytest.mark.asyncio
+async def test_run_full_update_defaults_to_report_only(monkeypatch):
+    model = ThemeResponseRegression()
+    db = _RegressionDb()
+
+    async def fake_build_theme_returns(resolved_db, theme_code, **kwargs):
+        return pd.Series([0.01] * 40)
+
+    def fake_detect_shocks(returns, z_threshold=None, window=20):
+        return pd.DataFrame({"idx": list(range(20)), "magnitude": [0.03] * 20, "direction_sign": [1] * 20})
+
+    def fake_fit_edge(source_returns, target_returns, shocks, horizons=None):
+        return EdgeRegressionResult(
+            source_theme="",
+            target_theme="",
+            status="fitted",
+            beta=0.03,
+            p_value=0.03,
+            n_samples=25,
+            direction_sign=1,
+            magnitude_factor=0.6,
+            confidence=0.7,
+            best_horizon=5,
+        )
+
+    monkeypatch.setattr(model, "build_theme_returns", fake_build_theme_returns)
+    monkeypatch.setattr(model, "detect_shocks", fake_detect_shocks)
+    monkeypatch.setattr(model, "fit_edge", fake_fit_edge)
+
+    report = await model.run_full_update(db)
+
+    assert report["mode"] == "report_only"
+    assert report["apply_updates"] is False
+    assert report["recommendation_count"] == 1
+    assert report["updated_count"] == 0
+    assert db.upserts == []
+    assert report["results"][0]["recommended_update"]["source_theme_code"] == "source"
+    assert report["results"][0]["update_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_full_update_applies_when_explicitly_requested(monkeypatch):
+    model = ThemeResponseRegression()
+    db = _RegressionDb()
+
+    async def fake_build_theme_returns(resolved_db, theme_code, **kwargs):
+        return pd.Series([0.01] * 40)
+
+    def fake_detect_shocks(returns, z_threshold=None, window=20):
+        return pd.DataFrame({"idx": list(range(20)), "magnitude": [0.03] * 20, "direction_sign": [1] * 20})
+
+    def fake_fit_edge(source_returns, target_returns, shocks, horizons=None):
+        return EdgeRegressionResult(
+            source_theme="",
+            target_theme="",
+            status="fitted",
+            beta=0.03,
+            p_value=0.03,
+            n_samples=25,
+            direction_sign=1,
+            magnitude_factor=0.6,
+            confidence=0.7,
+            best_horizon=5,
+        )
+
+    monkeypatch.setattr(model, "build_theme_returns", fake_build_theme_returns)
+    monkeypatch.setattr(model, "detect_shocks", fake_detect_shocks)
+    monkeypatch.setattr(model, "fit_edge", fake_fit_edge)
+
+    report = await model.run_full_update(db, apply_updates=True)
+
+    assert report["mode"] == "apply_updates"
+    assert report["apply_updates"] is True
+    assert report["recommendation_count"] == 1
+    assert report["updated_count"] == 1
+    assert len(db.upserts) == 1
+    assert db.upserts[0]["source_theme_code"] == "source"
+    assert report["results"][0]["update_applied"] is True

@@ -63,8 +63,8 @@ function rowFromTool(tool: ToolCatalogItem): CoverageRow {
     capability: tool.name,
     backend: "Agent tool registry",
     desktopApi: readOnly ? `/v1/tools/${tool.name}` : "control token / intent gated",
-    frontend: readOnly ? "Tools safe probe" : "Tools gated action record",
-    testPath: readOnly ? "Click Fill example or Run safe probe in Tools." : "Verify disabled/gated state; create intent only from approved panels.",
+    frontend: readOnly ? "工具页安全探测" : "工具页受控操作记录",
+    testPath: readOnly ? "在工具页点击“填充示例”或“运行安全探测”。" : "验证禁用/受控状态；仅从已审批面板创建意图。",
     status: normalizeStatus(tool.status || (readOnly ? "implemented" : "gated")),
     notes: tool.description,
     source: tool
@@ -79,8 +79,8 @@ function rowFromHermes(item: CapabilityMatrixItem, index: number): CoverageRow {
     capability: itemLabel(item),
     backend: String(item.code_status || item.live_status || item.status || "mapped"),
     desktopApi: tools || "/v1/hermes/status",
-    frontend: "Capabilities / Hermes and Coverage Matrix",
-    testPath: "Filter Hermes rows and verify mapped AIASK tools or credential gaps.",
+    frontend: "能力中心 / Hermes 与覆盖矩阵",
+    testPath: "筛选 Hermes 行，验证已映射的 AIASK 工具或凭证缺口。",
     status: normalizeStatus(String(item.status || item.live_status || item.code_status || "live_unverified")),
     notes: String(item.description || item.error || item.required_env || ""),
     source: item
@@ -114,12 +114,12 @@ export function buildCoverageRows({
 
   appendIf(rows, {
     id: "runtime:agent",
-    domain: "Agent runtime",
+    domain: "Agent 运行时",
     capability: "health, tool registry, response runtime",
     backend: health?.service || "AIASK Agent",
     desktopApi: "/health/detailed, /v1/tools, /v1/responses",
-    frontend: "Overview, Agent, Workbench, Tools",
-    testPath: "Click Sync/Refresh, run a safe prompt, inspect timeline and run events.",
+    frontend: "总览、智能体、工作台、工具",
+    testPath: "点击同步/刷新，运行安全提示词，检查时间线和运行事件。",
     status: normalizeStatus(health?.status || "not_loaded"),
     notes: `${health?.tools?.count ?? 0} tools / ${health?.tools?.toolset || "unknown"}`
   });
@@ -127,24 +127,24 @@ export function buildCoverageRows({
   const llm = settings?.llm.ai_status;
   appendIf(rows, {
     id: "runtime:llm",
-    domain: "Models",
+    domain: "模型",
     capability: "LLM provider, model, root project API env",
     backend: llm?.configured ? "configured" : "missing/mock",
     desktopApi: "/v1/desktop/settings/status, /v1/ai/status, /v1/ai/models",
-    frontend: "Models, Settings, Capabilities / AI Tests",
-    testPath: "Refresh models and run AI smoke; verify secrets are redacted.",
+    frontend: "模型、设置、能力中心 / AI 测试",
+    testPath: "刷新模型并运行 AI 冒烟测试；确认密钥被脱敏。",
     status: normalizeStatus(llm?.configured ? "implemented" : "unconfigured"),
     notes: `${llm?.provider || "-"} / ${llm?.model || "-"}`
   });
 
   appendIf(rows, {
     id: "data:sync",
-    domain: "Data & Sync",
+    domain: "数据与同步",
     capability: "SQLite/AKShare freshness, quality gate, sync-plan intent",
     backend: data?.database?.writable === false ? "database blocked" : data?.status || "not_loaded",
     desktopApi: "/v1/desktop/data/status, /v1/desktop/data/sync-plan, /intents",
-    frontend: "Data & Sync",
-    testPath: "Refresh data, generate plan, create approval intent only with control token.",
+    frontend: "数据与同步",
+    testPath: "刷新数据、生成计划，并且只在有控制令牌时创建审批意图。",
     status: normalizeStatus(data?.status || "not_loaded"),
     notes: `${data?.codes?.length || 0} codes / missing ${data?.missing_count ?? "-"} / stale ${data?.stale_count ?? "-"}`
   });
@@ -156,8 +156,8 @@ export function buildCoverageRows({
     capability: "registered servers, tools, resources, prompts, OAuth",
     backend: mcp?.gated ? "control gated" : mcp?.discovery_status || "not_loaded",
     desktopApi: "/v1/mcp/* via Agent",
-    frontend: "MCP, Capabilities / MCP",
-    testPath: "Discover server, read safe resource, get prompt, start OAuth in mock/control mode.",
+    frontend: "MCP、能力中心 / MCP",
+    testPath: "在 mock/控制模式下发现服务、读取安全资源、获取提示词、启动 OAuth。",
     status: normalizeStatus(mcp?.gated ? "gated" : mcp?.discovery_status || "not_loaded"),
     notes: `${mcp?.tools?.length || 0} tools / ${mcp?.resources?.length || 0} resources / ${mcp?.prompts?.length || 0} prompts`
   });
@@ -168,8 +168,8 @@ export function buildCoverageRows({
       capability: tool.wrapped_name || tool.name,
       backend: tool.configured === false ? "unconfigured" : "discovered",
       desktopApi: "/v1/mcp/tools, /v1/tools/agent_mcp_*",
-      frontend: "MCP dynamic tools, Tools safe probe",
-      testPath: "Inspect tool contract; run only read-only wrapped MCP tools.",
+      frontend: "MCP 动态工具、工具页安全探测",
+      testPath: "检查工具契约；仅运行只读包装的 MCP 工具。",
       status: normalizeStatus(tool.configured === false ? "unconfigured" : "implemented"),
       notes: tool.description || tool.name,
       source: tool
@@ -179,24 +179,24 @@ export function buildCoverageRows({
   const strategy = capabilities?.strategy_factory;
   appendIf(rows, {
     id: "factory:strategy",
-    domain: "Strategy Factory",
+    domain: "策略工厂",
     capability: "scheduler status, recent runs, review snapshot, run intent",
     backend: rowStatus(strategy?.status),
     desktopApi: "agent_factory_status, agent_factory_runs, /intents",
-    frontend: "Strategy Factory, Capabilities / Strategy Factory",
-    testPath: "Refresh status and create run intent; confirm only through approval inspector.",
+    frontend: "策略工厂、能力中心 / 策略工厂",
+    testPath: "刷新状态并创建运行意图；只通过审批检查器确认。",
     status: normalizeStatus(rowStatus(strategy?.status)),
     source: strategy
   });
 
   appendIf(rows, {
     id: "factory:factor",
-    domain: "Factor Mining Factory",
+    domain: "因子挖掘工厂",
     capability: "active pool, engine health, run and maintenance intents",
     backend: factor?.configured === false ? "unconfigured" : factor?.status || "not_loaded",
     desktopApi: "/v1/desktop/factor-factory/status, /intents",
-    frontend: "Factor Factory",
-    testPath: "Refresh status, create run intent and maintenance intent in mock/control mode.",
+    frontend: "因子工厂",
+    testPath: "在 mock/控制模式下刷新状态、创建运行意图与维护意图。",
     status: normalizeStatus(factor?.status || "not_loaded"),
     notes: `${factor?.active_factors?.length || 0} active factors`,
     source: factor
@@ -204,12 +204,12 @@ export function buildCoverageRows({
 
   appendIf(rows, {
     id: "factory:incubation",
-    domain: "Incubation Factory",
+    domain: "孵化工厂",
     capability: "runner status, lifecycle events, hit-rate dashboard, run/dry-run/maintenance intents",
     backend: rowStatus(strategy?.review_snapshot),
     desktopApi: "agent_incubation_factory_status, agent_strategy_domain_events, /intents",
-    frontend: "Incubation",
-    testPath: "Refresh lifecycle board and create run/dry-run/maintenance intents in mock/control mode.",
+    frontend: "孵化工厂",
+    testPath: "在 mock/控制模式下刷新生命周期看板，创建运行/试运行/维护意图。",
     status: normalizeStatus(rowStatus(strategy?.review_snapshot)),
     source: strategy?.review_snapshot
   });
@@ -217,24 +217,24 @@ export function buildCoverageRows({
   const profile = settings?.profile;
   appendIf(rows, {
     id: "user:local",
-    domain: "Local User",
+    domain: "本地用户",
     capability: "local profile, user_id scope, sessions, messages, memory search",
     backend: profile?.status || "ready",
     desktopApi: "/v1/desktop/users/local-profile, /v1/hermes/sessions, /v1/search, agent_memory_search",
-    frontend: "Local User, Settings, Workbench",
-    testPath: "Save local profile, list sessions, load messages, search user data and memory.",
+    frontend: "本地用户、设置、工作台",
+    testPath: "保存本地画像、列出会话、加载消息、搜索用户数据和记忆。",
     status: normalizeStatus(profile?.status || "implemented"),
-    notes: `${profile?.user_id || "local"} / ${profile?.profile_name || "Local Operator"}`
+    notes: `${profile?.user_id || "local"} / ${profile?.profile_name || "本地操作者"}`
   });
 
   appendIf(rows, {
     id: "automation:jobs",
-    domain: "Automation",
+    domain: "自动化",
     capability: "job list/create/update/delete/run with user ownership",
     backend: jobs.length ? "configured" : "empty",
     desktopApi: "/v1/jobs",
-    frontend: "Automation",
-    testPath: "Create, inspect, pause/resume, run, and delete a mock job.",
+    frontend: "自动化",
+    testPath: "创建、查看、暂停/恢复、运行并删除 mock 任务。",
     status: normalizeStatus(jobs.length ? "implemented" : "not_loaded"),
     notes: `${jobs.length} jobs`
   });
@@ -242,12 +242,12 @@ export function buildCoverageRows({
   const skills = capabilities?.skills?.skills || [];
   appendIf(rows, {
     id: "skills:native",
-    domain: "Skills",
+    domain: "技能",
     capability: "native skill list, install/update/delete, skill packs",
     backend: capabilities?.skills?.gated ? "control gated" : "loaded",
     desktopApi: "/v1/skills, agent_skill_*",
-    frontend: "Skills, Capabilities / Skills and Plugins",
-    testPath: "Verify gated state; install/update/delete only in mock/control mode.",
+    frontend: "技能、能力中心 / 技能与插件",
+    testPath: "验证受控状态；仅在 mock/控制模式下安装、更新、删除。",
     status: normalizeStatus(capabilities?.skills?.gated ? "gated" : "implemented"),
     notes: `${Array.isArray(skills) ? skills.length : 0} skills`
   });
@@ -259,12 +259,12 @@ export function buildCoverageRows({
       : [];
   appendIf(rows, {
     id: "plugins:native",
-    domain: "Plugins",
+    domain: "插件",
     capability: "native plugin registry, enable/disable, tool test",
     backend: isRecord(capabilities?.plugins) && capabilities?.plugins.gated ? "control gated" : "loaded",
     desktopApi: "/v1/plugins, agent_plugin_*",
-    frontend: "Capabilities / Plugins",
-    testPath: "Verify gated state; toggle and test tool only in mock/control mode.",
+    frontend: "能力中心 / 插件",
+    testPath: "验证受控状态；仅在 mock/控制模式下切换与测试工具。",
     status: normalizeStatus(isRecord(capabilities?.plugins) && capabilities?.plugins.gated ? "gated" : "implemented"),
     notes: `${pluginList?.length || 0} plugins`
   });
@@ -320,52 +320,52 @@ export function CoverageMatrixPanel({
     <div className="capability-stack">
       <div className="capability-banner">
         <div>
-          <span>Coverage Matrix</span>
-          <h2>Actual project capability coverage</h2>
+          <span>覆盖矩阵</span>
+          <h2>项目真实能力覆盖</h2>
           <p>
-            This matrix is built from live Agent HTTP surfaces, Hermes parity, MCP discovery, factories, user state, and Desktop API coverage.
+            这张矩阵来自真实 Agent HTTP 接口、Hermes parity、MCP 发现、工厂、本地用户状态和 Desktop API 覆盖情况。
           </p>
         </div>
         <div className="status-cluster">
-          <StatusBadge status={failed ? "failed" : gated ? "partial" : "implemented"} label={`${rows.length} capabilities`} />
-          <StatusBadge status={capabilities?.summary.source || "not_loaded"} label={capabilities?.summary.source || "not loaded"} />
+          <StatusBadge status={failed ? "failed" : gated ? "partial" : "implemented"} label={`${rows.length} 项能力`} />
+          <StatusBadge status={capabilities?.summary.source || "not_loaded"} label={capabilities?.summary.source || "未加载"} />
         </div>
       </div>
 
       <div className="diagnostics-summary wide">
-        <MetricCard label="Implemented" value={implemented} status="implemented" />
-        <MetricCard label="Gated/Config" value={gated} status={gated ? "partial" : "implemented"} />
-        <MetricCard label="Failed/Missing" value={failed} status={failed ? "failed" : "implemented"} />
-        <MetricCard label="Rows" value={rows.length} status={rows.length ? "ready" : "not_loaded"} />
+        <MetricCard label="已实现" value={implemented} status="implemented" />
+        <MetricCard label="受控/配置" value={gated} status={gated ? "partial" : "implemented"} />
+        <MetricCard label="失败/缺失" value={failed} status={failed ? "failed" : "implemented"} />
+        <MetricCard label="行数" value={rows.length} status={rows.length ? "ready" : "not_loaded"} />
       </div>
 
       <section className="capability-section">
         <div className="section-header">
           <div>
             <span>Traceability</span>
-            <h3>Source to frontend test path</h3>
+            <h3>从来源到前端测试路径</h3>
           </div>
           <Filter size={18} />
         </div>
         <div className="coverage-filters">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capability, API, frontend, tool..." />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索能力、API、前端、工具..." />
           <select value={domain} onChange={(event) => setDomain(event.target.value)}>
-            <option value="all">all domains</option>
+            <option value="all">全部领域</option>
             {domains.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="all">all status</option>
+            <option value="all">全部状态</option>
             {statuses.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </div>
         <div className="coverage-table">
           <div className="coverage-row coverage-head">
-            <span>Capability</span>
-            <span>Backend</span>
+            <span>能力</span>
+            <span>后端</span>
             <span>Desktop API</span>
-            <span>Frontend</span>
-            <span>Test Path</span>
-            <span>Status</span>
+            <span>前端</span>
+            <span>测试路径</span>
+            <span>状态</span>
           </div>
           {visible.map((row) => (
             <details className="coverage-row coverage-item" key={row.id}>
@@ -379,16 +379,16 @@ export function CoverageMatrixPanel({
               </summary>
               <div className="coverage-detail">
                 <div className="kv-grid">
-                  <span>Domain</span>
+                  <span>领域</span>
                   <strong>{row.domain}</strong>
-                  <span>Notes</span>
+                  <span>备注</span>
                   <strong>{row.notes || "-"}</strong>
                 </div>
                 <JsonPanel value={row.source || row} />
               </div>
             </details>
           ))}
-          {!visible.length && <p className="muted table-empty">No capability rows match the filters.</p>}
+          {!visible.length && <p className="muted table-empty">没有符合筛选条件的能力行。</p>}
         </div>
       </section>
 
@@ -397,31 +397,31 @@ export function CoverageMatrixPanel({
           <div className="section-header">
             <div>
               <span>Finance Safe</span>
-              <h3>Agent and quant read tools</h3>
+              <h3>Agent 与量化只读工具</h3>
             </div>
             <ShieldCheck size={18} />
           </div>
-          <p className="muted">Stock analysis, data gate, factor validation, backtest, risk, strategy events, memory, and session search are tested through safe probes.</p>
+          <p className="muted">股票分析、数据闸门、因子验证、回测、风险、策略事件、记忆和会话搜索都通过安全探测验证。</p>
         </article>
         <article className="capability-section">
           <div className="section-header">
             <div>
               <span>Hermes Full</span>
-              <h3>Full-mode parity</h3>
+              <h3>Full mode 对齐</h3>
             </div>
             <Wrench size={18} />
           </div>
-          <p className="muted">File, terminal, browser, web, multimodal, gateway, learning, RL, skills, plugins, MCP, and jobs stay control-token gated.</p>
+          <p className="muted">文件、终端、浏览器、网页、多模态、网关、学习、RL、技能、插件、MCP 和任务都保持控制令牌受控。</p>
         </article>
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Factories</span>
-              <h3>Approved operations</h3>
+              <span>工厂</span>
+              <h3>审批型操作</h3>
             </div>
             <Factory size={18} />
           </div>
-          <p className="muted">Strategy, factor, and incubation factories expose status read paths and create durable intents for state changes.</p>
+          <p className="muted">策略、因子与孵化工厂提供状态读取路径，并为状态变更创建可追踪的持久意图。</p>
         </article>
       </section>
 
@@ -429,32 +429,32 @@ export function CoverageMatrixPanel({
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Data Plane</span>
-              <h3>DB and MCP</h3>
+              <span>数据平面</span>
+              <h3>DB 与 MCP</h3>
             </div>
             <Database size={18} />
           </div>
-          <p className="muted">SQLite/AKShare readiness, TDX/Tushare source status, dynamic MCP tools, resources, prompts, and OAuth are covered through Agent HTTP.</p>
+          <p className="muted">SQLite/AKShare 就绪度、TDX/Tushare 源状态、动态 MCP 工具、资源、提示词与 OAuth 都通过 Agent HTTP 覆盖。</p>
         </article>
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>User Plane</span>
-              <h3>Profile and memory</h3>
+              <span>用户平面</span>
+              <h3>画像与记忆</h3>
             </div>
             <UserRound size={18} />
           </div>
-          <p className="muted">Local profile, user_id propagation, sessions, messages, responses, jobs, and financial memory search are visible and testable.</p>
+          <p className="muted">本地画像、user_id 传递、会话、消息、回复、任务和金融记忆搜索都可见且可测试。</p>
         </article>
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Extensions</span>
-              <h3>Skills and plugins</h3>
+              <span>扩展</span>
+              <h3>技能与插件</h3>
             </div>
             <Layers3 size={18} />
           </div>
-          <p className="muted">Native skill and plugin management stays explicit, gated, and mock-testable without loading external dashboard JavaScript.</p>
+          <p className="muted">原生技能和插件管理保持显式、受控，并可在 mock 模式测试，不加载外部 dashboard JavaScript。</p>
         </article>
       </section>
     </div>

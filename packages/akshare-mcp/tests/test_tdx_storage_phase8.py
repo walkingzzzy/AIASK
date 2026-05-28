@@ -349,3 +349,72 @@ def test_record_tdx_data_completeness_includes_sector_and_relation_keys(tmp_db):
     assert relation["status"] == "ok"
     assert relation["row_count"] == 1
     assert relation["detail"]["table"] == "tdx_relation"
+
+
+def test_sync_sector_basic_writes_completeness_directly(tmp_db, monkeypatch):
+    from akshare_mcp.data_source import data_source
+    from akshare_mcp.services.tdx_sync_service import TdxSyncService
+    from akshare_mcp.storage import close_db, get_db
+
+    monkeypatch.setattr(
+        data_source,
+        "get_sector_list",
+        lambda list_type=1: [{"block_code": "880001", "block_name": "Demo Concept"}],
+    )
+    monkeypatch.setattr(
+        data_source,
+        "get_stock_list_in_sector",
+        lambda block_code, block_type=0, list_type=0: ["600100.SH", {"Code": "000001.SZ"}],
+    )
+
+    async def _run():
+        db = get_db()
+        result = await TdxSyncService(universe=[])._sync_sector_basic(db)
+        completeness = await db.get_tdx_data_completeness("sync_sector_basic")
+        await close_db()
+        return result, completeness
+
+    result, completeness = asyncio.run(_run())
+    assert result["sectors"] == 1
+    assert result["members"] == 2
+    assert result["completeness"]["data_key"] == "sync_sector_basic"
+    assert completeness["status"] == "ok"
+    assert completeness["row_count"] == 3
+    assert {item["table"] for item in completeness["detail"]["tables"]} == {
+        "market_blocks",
+        "block_stocks",
+    }
+
+
+def test_sync_relation_writes_completeness_directly(tmp_db, monkeypatch):
+    from akshare_mcp.data_source import data_source
+    from akshare_mcp.services.tdx_sync_service import TdxSyncService
+    from akshare_mcp.storage import close_db, get_db
+
+    monkeypatch.setattr(
+        data_source,
+        "get_relation",
+        lambda code: [
+            {
+                "block_code": "880001",
+                "block_name": "Demo Concept",
+                "block_type": "概念",
+                "gp_num": 1,
+            }
+        ],
+    )
+
+    async def _run():
+        db = get_db()
+        service = TdxSyncService(universe=["600100.SH"])
+        result = await service._sync_relation(db)
+        completeness = await db.get_tdx_data_completeness("sync_relation")
+        await close_db()
+        return result, completeness
+
+    result, completeness = asyncio.run(_run())
+    assert result["updated"] == 1
+    assert result["completeness"]["data_key"] == "sync_relation"
+    assert completeness["status"] == "ok"
+    assert completeness["row_count"] == 1
+    assert completeness["detail"]["table"] == "tdx_relation"

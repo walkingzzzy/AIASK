@@ -1,0 +1,29 @@
+{
+  "scenario_id": "S01",
+  "title": "锚点基线 + 工具发现 + 数据治理",
+  "ran_at_start": "2026-05-26T09:46:55+08:00",
+  "anchor_checks": {
+    "available_tools.count": 163,
+    "available_tools.expected": 163,
+    "available_tools.passed": true,
+    "get_available_categories.count": 33,
+    "get_available_categories.expected": 33,
+    "get_available_categories.passed": true,
+    "v1_baseline": 161,
+    "v2_meta_tools_added": 2,
+    "delta": "+2 (valuation_consensus + decision_consensus)"
+  },
+  "tool_status_rows": [
+    {"tool":"available_tools","verdict":"Pass","extra":"tool_count=163, contract_coverage=1.0"},
+    {"tool":"get_available_categories","verdict":"Pass","extra":"category_count=33"},
+    {"tool":"get_sync_status","verdict":"Pass","extra":"pending=0 success=1 fail=0 dead_letter=0"},
+    {"tool":"get_cache_stats","verdict":"Pass","extra":"file_count=9 size=0.0174MB hit_rate=0"},
+    {"tool":"list_skills","verdict":"Degraded","fallback_used":true,"fallback_reason":"skills_registry_unavailable","extra":"36 skills, executable=21, registered_only=15, ratio=0.5833 (P3-3.7 顶层暴露 ✓)"}
+  ],
+  "summary": {"Pass":4, "Degraded":1, "Fail-graceful":0, "Fail-schema":0},
+  "v1_v2_delta": {
+    "tool_count": "161 → 163 (+2 meta-tools)",
+    "list_skills_executable_exposure": "✅ P3-3.7 修复生效 (executable_count/registered_only_count 顶层显式)",
+    "skills_registry": "依旧降级到 codex_registry (架构选择,非 bug)"
+  }
+}

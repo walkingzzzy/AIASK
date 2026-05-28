@@ -130,6 +130,10 @@ def register_watchlist_manager(mcp):
                 },
             )
             user_id = str(kwargs.get("user_id") or "default").strip() or "default"
+            # P2-4.2.6/4.2.7 fix: 用 user_scope 标准化 + emit warning(诊断报告 §4.2.6)
+            from ...services.user_scope import require_user_id_or_warn
+            resolved_user_id, scope_warnings = require_user_id_or_warn(kwargs)
+            user_id = resolved_user_id
 
             if action == "list":
                 async with db.acquire() as conn:

@@ -563,6 +563,10 @@ async def get_market_blocks(
             'count': len(blocks),
             'block_type': block_type,
             'source': source,
+            # P3-5.10 fix: 明示 source_priority 顺序(诊断报告 §5.10)
+            # 历史问题:多 manager 走 get_market_blocks,但谁先 db 谁先 api 不一致;AI 看不到优先级
+            'source_priority': ['db', 'sina_sector', 'ths', 'akshare', 'akshare_area_summary', 'db_stale'],
+            'sources_attempted': attempted_sources,
         },
         cached=source in {"db", "db_stale"},
     )
@@ -974,6 +978,26 @@ async def get_block_stocks(block_code: str, limit: int | None = None) -> Dict[st
         }
     )
     result["source"] = str(source or "market_blocks")
+    # P2-4.5.5 fix: db_cache 残缺标 warning(诊断报告 §4.5.5)
+    # 历史问题:db_cache 路径只填 stock_code/stock_name,价格/涨跌幅/成交量全 0
+    # AI 不知 0 是真实值还是 cache 残缺,导致下游计算误判
+    if str(source or "") == "db_cache":
+        zero_price_count = sum(
+            1 for item in display_stocks
+            if (item.get('price') in (0, 0.0)) and (item.get('change_pct') in (0, 0.0))
+        )
+        warnings = []
+        if zero_price_count > 0:
+            warnings.append({
+                'code': 'db_cache_partial_quote',
+                'message': f'db_cache 来源: {zero_price_count}/{len(display_stocks)} 条无实时价格/涨跌数据,price/change_pct/volume/amount 字段不可用,仅 stock_code/stock_name 可信',
+                'severity': 'warning',
+                'fields_unreliable': ['price', 'change_pct', 'volume', 'amount'],
+            })
+        if warnings:
+            result['warnings'] = warnings
+            result['quality_flags'] = ['db_cache_quote_missing']
+            result['cache_only'] = True
     return _with_provider_contract(
         result,
         "get_block_stocks",

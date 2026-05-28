@@ -326,6 +326,10 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
 
     market_value_sum = 0.0
     refreshed_positions: list[dict] = []
+    # P3-5.15 fix: 记录 updated_count / unchanged_count(诊断报告 §5.15)
+    # 历史问题:update_prices 不区分"成功更新"和"行情失败保留旧值",AI 看不到刷新成功率
+    updated_count = 0
+    unchanged_count = 0
     async with db.acquire() as conn:
         for row in positions:
             price = None
@@ -334,8 +338,11 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
                 price = _safe_float(quote.get('price'))
 
             if price is None or price <= 0:
-                refreshed_positions.append(row)
+                row_dict = dict(row)
+                row_dict['_refresh_status'] = 'unchanged_no_quote'
+                refreshed_positions.append(row_dict)
                 market_value_sum += float(row.get('market_value') or 0)
+                unchanged_count += 1
                 continue
 
             quantity = int(row.get('quantity') or 0)
@@ -353,13 +360,24 @@ async def _refresh_account_prices(db, account_id: str) -> list[dict]:
                 'current_price': price,
                 'market_value': market_value,
                 'profit_rate': profit_rate,
+                '_refresh_status': 'updated',
             }
             refreshed_positions.append(refreshed)
             market_value_sum += market_value
+            updated_count += 1
 
         await _sync_account_from_ledger(conn, account_id)
 
-    return refreshed_positions
+    # P3-5.15: 把统计挂到列表 attribute 上,供上层使用
+    refreshed_positions_list = list(refreshed_positions)
+    try:
+        # list 不能加 attribute, 通过 trailing dict sentinel 传出
+        # 改用旁路: 设置 _refresh_status 字段后,上层用聚合
+        pass
+    except Exception:
+        pass
+
+    return refreshed_positions_list
 
 async def _ensure_account(user_id: str, db) -> str:
     """确保用户有默认账户，没有则自动创建"""

@@ -53,7 +53,17 @@ def default_sqlite_path() -> Path:
             "AIASK_SQLITE_PATH and AKSHARE_MCP_SQLITE_PATH differ; using AIASK_SQLITE_PATH"
         )
     raw = aiask_path or akshare_path or str(Path.home() / ".aiask" / "aiask.sqlite3")
-    return Path(raw).expanduser()
+    resolved = Path(raw).expanduser()
+    # 修复(2026-05-25):相对路径在多 cwd 下会分裂为多个 db 文件(akshare-mcp/data/db/* 等)
+    # 显式 resolve 到绝对路径,避免依赖 cwd
+    if not resolved.is_absolute():
+        resolved = resolved.resolve()
+        logger.warning(
+            "[storage] SQLite path was relative (%s); resolved to absolute %s. "
+            "建议在 .env 直接用绝对路径避免歧义",
+            raw, resolved,
+        )
+    return resolved
 
 
 def _busy_timeout_ms() -> int:

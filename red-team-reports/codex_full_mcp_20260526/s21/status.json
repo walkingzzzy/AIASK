@@ -1,0 +1,12 @@
+{
+  "scenario": "S21",
+  "title": "AI 工作流/诊断/工件",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T10:00:24+08:00",
+  "tools_tested": [
+    {"tool": "data_quality_workflow", "status": "pass", "note": "GX runtime backend 4 expectations all passed quality_score=1.0"},
+    {"tool": "prediction_diagnosis_workflow", "status": "fail_graceful", "note": "INSUFFICIENT_SAMPLES guard <30 rejects platt"}
+  ],
+  "summary": {"pass": 1, "degraded": 0, "fail_graceful": 1, "fail_schema": 0},
+  "verdict": "pass"
+}

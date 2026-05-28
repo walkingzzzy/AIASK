@@ -74,6 +74,12 @@ def _factor_library_payload(category: str = "all") -> dict:
             "sub_factors": meta.get("sub_factors", []),
             "aliases": list(set((meta.get("aliases", []) or []) + alias_map.get(name, []))),
             "status": "supported",
+            # P2-4.2.2 fix(诊断报告 §4.2.2):标 availability_hint
+            # list 与 calculate 数据脱节问题 — 提示具体股票上是否可用需要传 code 参数
+            "availability_hint": (
+                "always_available" if not meta.get("requires_financials")
+                else "requires_financials_in_db"
+            ),
         }
         for name, meta in SUPPORTED_FACTORS.items()
         if category_key in ("all", meta["category"])

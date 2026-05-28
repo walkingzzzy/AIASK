@@ -382,12 +382,77 @@ class TdxSyncService:
     # 5. sector_basic
     # ------------------------------------------------------------------
 
+    async def _save_tdx_completeness_snapshot(
+        self,
+        db,
+        key: str,
+        table_specs: list[tuple[str, str, str]],
+    ) -> dict[str, Any]:
+        """Persist a lightweight freshness snapshot for a completed sync task."""
+
+        if not hasattr(db, "save_tdx_data_completeness"):
+            return {"updated": 0, "reason": "adapter_missing_method"}
+
+        total_rows = 0
+        latest_as_of = None
+        table_details: list[dict[str, Any]] = []
+        async with db.acquire() as conn:
+            for table, date_col, where_clause in table_specs:
+                row = await conn.fetchrow(
+                    f"SELECT COUNT(*) AS row_count, MAX({date_col}) AS as_of_date FROM {table} {where_clause}"
+                )
+                row_count = int((row or {}).get("row_count") or 0)
+                as_of_date = (row or {}).get("as_of_date")
+                total_rows += row_count
+                if as_of_date and (latest_as_of is None or str(as_of_date) > str(latest_as_of)):
+                    latest_as_of = as_of_date
+                table_details.append({
+                    "table": table,
+                    "date_column": date_col,
+                    "where": where_clause,
+                    "row_count": row_count,
+                    "as_of_date": as_of_date,
+                })
+
+        detail: dict[str, Any]
+        if len(table_details) == 1:
+            only = table_details[0]
+            detail = {
+                "table": only["table"],
+                "date_column": only["date_column"],
+                "where": only["where"],
+            }
+        else:
+            detail = {"tables": table_details}
+        await db.save_tdx_data_completeness(
+            key,
+            "ok" if total_rows else "missing",
+            as_of_date=latest_as_of,
+            row_count=total_rows,
+            detail=detail,
+        )
+        return {
+            "updated": 1,
+            "data_key": key,
+            "row_count": total_rows,
+            "as_of_date": latest_as_of,
+        }
+
     async def _sync_sector_basic(self, db) -> Dict[str, Any]:
         from ..data_source import data_source
 
         sectors = await asyncio.to_thread(data_source.get_sector_list, 1)
         if not sectors:
-            return {"sectors": 0, "members": 0}
+            result = {"sectors": 0, "members": 0}
+            result["completeness"] = await self._save_tdx_completeness_snapshot(
+                db,
+                "sync_sector_basic",
+                [
+                    ("market_blocks", "updated_at", ""),
+                    ("block_stocks", "updated_at", ""),
+                ],
+            )
+            return result
 
         # 行业一级用 list 16；其他自定义板块来自 880xxx
         # 这里把所有 880xxx 板块同步到 market_blocks，成份股同步到 block_stocks
@@ -439,7 +504,16 @@ class TdxSyncService:
                         bcode, bare,
                     )
                     wrote_members += 1
-        return {"sectors": wrote_blocks, "members": wrote_members}
+        result = {"sectors": wrote_blocks, "members": wrote_members}
+        result["completeness"] = await self._save_tdx_completeness_snapshot(
+            db,
+            "sync_sector_basic",
+            [
+                ("market_blocks", "updated_at", ""),
+                ("block_stocks", "updated_at", ""),
+            ],
+        )
+        return result
 
     # ------------------------------------------------------------------
     # 4. more_info → tdx_stock_extra
@@ -570,7 +644,13 @@ class TdxSyncService:
                 ok_count += 1
             except Exception as exc:
                 logger.debug("[TdxSync] relation %s: %s", code, exc)
-        return {"updated": ok_count}
+        result = {"updated": ok_count}
+        result["completeness"] = await self._save_tdx_completeness_snapshot(
+            db,
+            "sync_relation",
+            [("tdx_relation", "updated_at", "")],
+        )
+        return result
 
     # ------------------------------------------------------------------
     # 7. gpjy_daily → tdx_gpjy_daily

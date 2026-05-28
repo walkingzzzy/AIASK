@@ -89,8 +89,12 @@ python scripts/db_sync.py --incremental
 | stock_fund_flow | get_more_info(Zjl_HB) | 每日 |
 | market_blocks | get_sector_list + get_bkjy_value | 每日 |
 | block_stocks | get_stock_list_in_sector | 每周 |
+| tdx_relation | get_relation | 每周 |
+| strategy_factory_theme_exposure | 本地计算：stocks + tdx_relation(block_type='行业/概念') + block_stocks + tdx_stock_extra | 每日/按需 |
 | dragon_tiger | get_gpjy_value(GP02) | 每日 |
 | factor_values | 计算生成（基于上述数据） | 按需 |
+
+主题暴露矩阵的概念/行业分类必须以 `tdx_relation.block_type` 为准：概念板块匹配使用 `tdx_relation(block_type='概念') + block_stocks`，行业匹配使用 `tdx_relation(block_type='行业')`。`market_blocks.block_type='tdx'` 只是同步来源占位，不得作为概念/行业分类依据。
 
 ## 6. 三大工厂数据需求覆盖
 

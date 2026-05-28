@@ -96,17 +96,39 @@ async def get_investment_analysis(
 ):
     """投资分析数据汇聚：透传顶层 monkeypatch 到底层实现。
 
+    .. deprecated:: 2026-05-24 (P2-4.6.1)
+       此工具已 deprecated,后续版本可能移除。
+       建议改用以下专用工具:
+       - ``analyze_stock_workflow``: AI-facing stock snapshot 工作流
+       - ``analyze_stock_product_workflow``: 统一深度分析工作流
+       - ``get_unified_decision``: 统一决策汇总
+       - ``should_i_buy`` / ``should_i_sell``: 单点决策建议
+
     注意：这里不能再次等待 ``_decision_lock``。
     ``should_i_buy`` / ``should_i_sell`` 会在持有该锁时调用当前函数；
     如果在这里重入同一把锁，会形成自锁并最终把整个 MCP 请求拖到超时。
     """
     _sync_decision_overrides()
-    return await _decision_common_mod.get_investment_analysis(
+    result = await _decision_common_mod.get_investment_analysis(
         code=code,
         stock_code=stock_code,
         symbol=symbol,
         ticker=ticker,
     )
+    # P2-4.6.1 fix: 注入 deprecation 标记,提示 AI 不再依赖此工具(诊断报告 §4.6.1)
+    if isinstance(result, dict):
+        result.setdefault('deprecated', True)
+        result.setdefault('deprecation_message',
+            'get_investment_analysis 已 deprecated,建议改用 analyze_stock_workflow / get_unified_decision'
+        )
+        result.setdefault('replacement_tools', [
+            'analyze_stock_workflow',
+            'analyze_stock_product_workflow',
+            'get_unified_decision',
+            'should_i_buy',
+            'should_i_sell',
+        ])
+    return result
 
 
 async def should_i_buy(

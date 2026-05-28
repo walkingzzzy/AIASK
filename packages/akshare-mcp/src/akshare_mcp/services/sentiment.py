@@ -92,7 +92,12 @@ class SentimentAnalyzer:
     # ── 分量 1: 价量动量（40%权重） ──
     @classmethod
     def _price_momentum_score(cls, klines: List[Dict[str, Any]]) -> float:
-        """基于价格变化和量比计算动量得分 0~100"""
+        """基于价格变化和量比计算动量得分 0~100
+
+        P3-5.19 fix: 整合 RSI 信号(诊断报告 §5.19)
+        历史问题:sentiment.score 仅用价格变化+量比,与 should_i_buy/should_i_sell 内部 RSI 不一致
+        修复:在 momentum 分量中加入 RSI 偏离 50 的信号(权重 30% 在 momentum 内部)
+        """
         ordered_klines = cls._sort_klines(klines)
         if not ordered_klines or len(ordered_klines) < 20:
             return 50.0
@@ -103,7 +108,27 @@ class SentimentAnalyzer:
             return 50.0
         price_change = (closes[-1] - base_close) / base_close
         volume_ratio = np.mean(volumes[-5:]) / max(np.mean(volumes[-20:-5]), 1e-9)
-        score = 50 + price_change * 100 + (volume_ratio - 1) * 20
+        # P3-5.19: 简版 RSI(14) 计算,用于强化动量
+        rsi_score_offset = 0.0
+        if len(closes) >= 15:
+            try:
+                deltas = [float(closes[i]) - float(closes[i - 1]) for i in range(-14, 0)]
+                gains = [d for d in deltas if d > 0]
+                losses = [-d for d in deltas if d < 0]
+                avg_gain = sum(gains) / 14 if gains else 0.0
+                avg_loss = sum(losses) / 14 if losses else 1e-9
+                rs = avg_gain / max(avg_loss, 1e-9)
+                rsi = 100 - (100 / (1 + rs))
+                # rsi 偏离 50: 70+ 偏多 / 30- 偏空,贡献 ±15 分
+                if rsi >= 70:
+                    rsi_score_offset = 15.0 * min((rsi - 50) / 50, 1.0)
+                elif rsi <= 30:
+                    rsi_score_offset = -15.0 * min((50 - rsi) / 50, 1.0)
+                else:
+                    rsi_score_offset = (rsi - 50) / 50 * 5.0
+            except Exception:
+                rsi_score_offset = 0.0
+        score = 50 + price_change * 100 + (volume_ratio - 1) * 20 + rsi_score_offset
         return max(0.0, min(100.0, score))
 
     @classmethod

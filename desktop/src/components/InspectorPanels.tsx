@@ -3,6 +3,7 @@ import {
   ClipboardList,
   Eye,
   Play,
+  RefreshCw,
   Search,
   ShieldCheck,
   XCircle,
@@ -13,6 +14,7 @@ import { formatApiError } from "../api";
 import { AiaskApi } from "../services/aiaskApi";
 import type {
   IntentRecord,
+  ApprovalItem,
   ToolCatalogItem,
   ToolEnvelope
 } from "../types";
@@ -287,21 +289,21 @@ export function ToolCatalog({
     <div className="inspector-scroll">
       <div className="panel-heading">
         <div>
-          <span>Tools</span>
-          <h2>Available actions and safe probes</h2>
+          <span>工具</span>
+          <h2>可用操作与安全探测</h2>
         </div>
       </div>
       <div className="notice info compact">
         <ShieldCheck size={14} />
-        Read-only tools can be probed from Desktop. Stateful, filesystem, terminal, messaging, and factory actions remain gated or intent-based.
+        只读工具可以从 Desktop 发起安全探测；有状态、文件系统、终端、消息和工厂类操作仍然需要受控授权或审批意图。
       </div>
       <label className="search-field">
         <Search size={15} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tools" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工具" />
       </label>
       <div className="filter-row tool-filter-row">
         <select value={category} onChange={(event) => setCategory(event.target.value)}>
-          <option value="all">all categories</option>
+          <option value="all">全部分类</option>
           {categories.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -309,7 +311,7 @@ export function ToolCatalog({
           ))}
         </select>
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
-          <option value="all">all status</option>
+          <option value="all">全部状态</option>
           {toolStatus.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -317,7 +319,7 @@ export function ToolCatalog({
           ))}
         </select>
         <select value={sideEffect} onChange={(event) => setSideEffect(event.target.value)}>
-          <option value="all">all side effects</option>
+          <option value="all">全部副作用</option>
           {sideEffects.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -347,7 +349,7 @@ export function ToolCatalog({
                 <StatusBadge status={readOnlyTool ? "implemented" : "gated"} label={sideEffect} />
               </div>
               <p>{tool.description}</p>
-              {sideEffectTargetName && <small className="tool-target">target {sideEffectTargetName}</small>}
+              {sideEffectTargetName && <small className="tool-target">目标 {sideEffectTargetName}</small>}
               {!!chips.length && (
                 <section className="tool-contract-meta">
                   {chips.map((chip) => (
@@ -358,7 +360,7 @@ export function ToolCatalog({
               {hasContractDetails(tool) && (
                 <details className="raw-details tool-contract-details">
                   <summary>
-                    Contract
+                    契约
                     <ChevronDown size={14} />
                   </summary>
                   <JsonPanel value={contractDetails(tool)} />
@@ -367,7 +369,7 @@ export function ToolCatalog({
               {readOnlyTool && fields.length > 0 && (
                 <details className="raw-details tool-form-details">
                   <summary>
-                    Parameters
+                    参数
                     <ChevronDown size={14} />
                   </summary>
                   <div className="tool-form-grid">
@@ -404,11 +406,11 @@ export function ToolCatalog({
                           [tool.name]: example
                         }))
                       }
-                      title={`Fill example for ${tool.name}`}
+                      title={`为 ${tool.name} 填充示例`}
                       type="button"
                     >
                       <ClipboardList size={14} />
-                      Fill example
+                      填充示例
                     </button>
                   </div>
                   <JsonPanel value={draft} />
@@ -417,7 +419,7 @@ export function ToolCatalog({
               {readOnlyTool && fields.length === 0 && Object.keys(example).length > 0 && (
                 <details className="raw-details tool-form-details">
                   <summary>
-                    Parameters
+                    参数
                     <ChevronDown size={14} />
                   </summary>
                   <div className="button-row">
@@ -428,11 +430,11 @@ export function ToolCatalog({
                           [tool.name]: example
                         }))
                       }
-                      title={`Fill example for ${tool.name}`}
+                      title={`为 ${tool.name} 填充示例`}
                       type="button"
                     >
                       <ClipboardList size={14} />
-                      Fill example
+                      填充示例
                     </button>
                   </div>
                   <JsonPanel value={draft} />
@@ -443,22 +445,22 @@ export function ToolCatalog({
                   <>
                     <button className="small-button" disabled={!canProbe || busyTool === tool.name} onClick={() => runSafeProbe(tool, hermesOnly)} type="button">
                       <Play size={13} />
-                      Run safe probe
+                      运行安全探测
                     </button>
-                    <span>{hermesOnly ? "Hermes full control token required for this read-only probe." : "Uses read-only Desktop tool facade."}</span>
+                    <span>{hermesOnly ? "此只读探测需要 Hermes full 控制令牌。" : "使用 Desktop 只读工具 facade。"}</span>
                   </>
                 ) : (
-                  <span>Stateful tool. Verify gated state or use a dedicated approval intent panel.</span>
+                  <span>这是有状态工具。请验证受限状态，或使用专用审批意图面板。</span>
                 )}
               </div>
             </article>
           );
         })}
-        {!visibleTools.length && <p className="muted">No tools match this filter.</p>}
+        {!visibleTools.length && <p className="muted">没有工具符合当前筛选条件。</p>}
       </div>
       <details className="raw-details" open>
         <summary>
-          Last safe probe result
+          最近一次安全探测结果
           <ChevronDown size={14} />
         </summary>
         <p className="status-line">{probeMessage}</p>
@@ -497,23 +499,23 @@ export function IntentsPanel({
     <div className="inspector-scroll">
       <div className="panel-heading">
         <div>
-          <span>Review</span>
-          <h2>Approvals and intents</h2>
+          <span>复核</span>
+          <h2>审批与意图</h2>
         </div>
       </div>
       <div className="inline-form">
         <input value={intentIdInput} onChange={(event) => onIntentInput(event.target.value)} placeholder="intent_..." />
-        <button disabled={busy || !intentIdInput.trim()} onClick={() => onFetchIntent()} title="Load intent" type="button">
+        <button disabled={busy || !intentIdInput.trim()} onClick={() => onFetchIntent()} title="加载意图" type="button">
           <Eye size={14} />
-          Load
+          加载
         </button>
       </div>
 
       <div className="thread-list compact">
         {intentIds.map((id) => (
-          <button className={id === currentIntent?.intent_id ? "active" : ""} key={id} onClick={() => onFetchIntent(id)} title={`Load ${id}`} type="button">
+          <button className={id === currentIntent?.intent_id ? "active" : ""} key={id} onClick={() => onFetchIntent(id)} title={`加载 ${id}`} type="button">
             <span>{id}</span>
-            <strong>{id === currentIntent?.intent_id ? currentIntent.status : "Cached intent"}</strong>
+            <strong>{id === currentIntent?.intent_id ? currentIntent.status : "已缓存意图"}</strong>
           </button>
         ))}
       </div>
@@ -521,42 +523,42 @@ export function IntentsPanel({
       {currentIntent ? (
         <>
           <div className="kv-grid">
-            <span>Status</span>
+            <span>状态</span>
             <strong>{currentIntent.status}</strong>
-            <span>Action</span>
+            <span>动作</span>
             <strong>{currentIntent.action}</strong>
-            <span>Target</span>
+            <span>目标</span>
             <strong>{currentIntent.target_action || compactValue(currentIntent.params)}</strong>
-            <span>Updated</span>
+            <span>更新时间</span>
             <strong>{compactValue(currentIntent.updated_at)}</strong>
           </div>
           <div className="button-row">
             <button
-              aria-label="Confirm selected intent"
+              aria-label="确认所选意图"
               disabled={busy || !controlToken.trim() || currentIntent.status !== "awaiting_confirmation"}
               onClick={() => onUpdateIntent("confirm")}
-              title="Confirm selected intent"
+              title="确认所选意图"
               type="button"
             >
               <Zap size={14} />
-              Confirm
+              确认
             </button>
             <button
-              aria-label="Deny selected intent"
+              aria-label="拒绝所选意图"
               className="danger"
               disabled={busy || !controlToken.trim() || currentIntent.status !== "awaiting_confirmation"}
               onClick={() => onUpdateIntent("deny")}
-              title="Deny selected intent"
+              title="拒绝所选意图"
               type="button"
             >
               <XCircle size={14} />
-              Deny
+              拒绝
             </button>
           </div>
           <p className="status-line">{intentMessage}</p>
           <details className="raw-details" open>
             <summary>
-              Payload
+              载荷
               <ChevronDown size={14} />
             </summary>
             <JsonPanel value={intentEnvelope} />
@@ -565,9 +567,115 @@ export function IntentsPanel({
       ) : (
         <div className="empty-mini">
           <ClipboardList size={24} />
-          <span>Select an intent to review.</span>
+          <span>请选择一个意图进行复核。</span>
         </div>
       )}
     </div>
+  );
+}
+
+export function GeneralApprovalsPanel({
+  apiToken,
+  controlToken,
+  endpoint
+}: {
+  apiToken: string;
+  controlToken: string;
+  endpoint: string;
+}) {
+  const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
+  const [status, setStatus] = useState("pending");
+  const [reason, setReason] = useState("desktop_decision");
+  const [result, setResult] = useState<unknown>(null);
+  const [message, setMessage] = useState("APPROVALS_NOT_LOADED");
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    setBusy(true);
+    try {
+      const payload = await api.approvalsList(status === "all" ? undefined : status, 100);
+      setApprovals(payload.data || []);
+      setMessage("APPROVALS_LOADED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decide(item: ApprovalItem, decision: "approve" | "deny") {
+    const approvalId = String(item.approval_id || item.id || "");
+    if (!approvalId) return;
+    setBusy(true);
+    try {
+      const payload = await api.approvalDecide(approvalId, decision, reason || "desktop_decision");
+      setResult(payload);
+      setMessage(`APPROVAL_${decision.toUpperCase()}D`);
+      await refresh();
+    } catch (error) {
+      setMessage(formatApiError(error));
+      setResult({ success: false, error: formatApiError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>通用审批队列</span>
+          <h3>/v1/approvals</h3>
+        </div>
+        <StatusBadge status={message.startsWith("AIASK_") ? "gated" : approvals.length ? "ready" : "not_loaded"} label={message} />
+      </div>
+      <div className="filter-row">
+        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+          <option value="pending">pending</option>
+          <option value="approved">approved</option>
+          <option value="denied">denied</option>
+          <option value="all">all</option>
+        </select>
+        <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="reason" />
+        <button className="small-button" disabled={busy || !controlToken.trim()} onClick={refresh} type="button">
+          <RefreshCw size={14} className={busy ? "spin" : ""} />
+          刷新队列
+        </button>
+      </div>
+      <div className="mini-list">
+        {approvals.map((item, index) => {
+          const approvalId = String(item.approval_id || item.id || index);
+          const itemStatus = String(item.status || "pending");
+          return (
+            <article className="job-row" key={approvalId}>
+              <div>
+                <strong>{item.action || approvalId}</strong>
+                <span>{compact(item.reason || item.created_at || approvalId)}</span>
+              </div>
+              <StatusBadge status={itemStatus} />
+              <div className="row-actions">
+                <button className="small-button" disabled={busy || !controlToken.trim() || itemStatus !== "pending"} onClick={() => decide(item, "approve")} type="button">
+                  <Zap size={13} />
+                  通过
+                </button>
+                <button className="small-button danger" disabled={busy || !controlToken.trim() || itemStatus !== "pending"} onClick={() => decide(item, "deny")} type="button">
+                  <XCircle size={13} />
+                  拒绝
+                </button>
+              </div>
+            </article>
+          );
+        })}
+        {!approvals.length && <p className="muted">暂无匹配审批项，或需要 Control token 后刷新。</p>}
+      </div>
+      <details className="raw-details">
+        <summary>
+          审批原始结果
+          <ChevronDown size={14} />
+        </summary>
+        <JsonPanel value={{ approvals, result }} />
+      </details>
+    </section>
   );
 }

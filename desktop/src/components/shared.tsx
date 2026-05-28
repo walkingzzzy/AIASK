@@ -18,6 +18,28 @@ export function shortText(value: string, max = 88): string {
   return normalized.length > max ? `${normalized.slice(0, max - 1)}...` : normalized;
 }
 
+export function localizeBlockedReason(reason?: unknown): string {
+  const value = typeof reason === "string" ? reason.trim() : "";
+  if (!value) return "";
+  const normalized = value.toLowerCase();
+  if (normalized.includes("control token") && (normalized.includes("not configured") || normalized.includes("missing") || normalized.includes("required"))) {
+    return "缺少控制令牌 Control token。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。";
+  }
+  if (normalized.includes("control token") && (normalized.includes("invalid") || normalized.includes("unauthorized") || normalized.includes("forbidden"))) {
+    return "控制令牌 Control token 未通过验证。请确认设置中的令牌与 Agent 启动环境一致。";
+  }
+  if (normalized.includes("full mode") || normalized.includes("hermes full") || normalized.includes("general_full")) {
+    return "Agent 未开启 full mode。请使用 AIASK_AGENT_ENABLE_HERMES_FULL=1、AIASK_AGENT_TOOLSET=general_full 和 AIASK_AGENT_ENABLE_GENERAL_TOOLS=1 启动。";
+  }
+  if (normalized.includes("offline") || normalized.includes("not reachable") || normalized.includes("failed to fetch")) {
+    return "当前 Agent 端点不可达。请确认本地 Agent 已启动，并优先使用默认端点 http://127.0.0.1:8767。";
+  }
+  if (normalized.includes("authorization required")) {
+    return "MCP 授权缺失。请在 Agent 进程中配置对应授权环境变量。";
+  }
+  return value;
+}
+
 export function statusTone(status?: string): "ok" | "warn" | "bad" | "neutral" {
   if (!status) return "neutral";
   const normalized = status.toLowerCase();
@@ -86,7 +108,7 @@ export function MetricCard({ label, value, status }: { label: string; value: str
 }
 
 export function CapabilityRow({ item }: { item: CapabilityMatrixItem }) {
-  const label = item.reference || item.feature || "feature";
+  const label = item.reference || item.feature || "功能";
   return (
     <div className={`capability-row ${statusTone(item.status)}`} title={item.description || item.live_status || item.code_status || ""}>
       <div>
@@ -94,7 +116,7 @@ export function CapabilityRow({ item }: { item: CapabilityMatrixItem }) {
         <strong>{label}</strong>
       </div>
       <StatusBadge status={item.status} />
-      <small>{(item.aiask_tools || []).join(", ") || "excluded"}</small>
+      <small>{(item.aiask_tools || []).join(", ") || "未纳入"}</small>
     </div>
   );
 }

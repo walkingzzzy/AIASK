@@ -28,6 +28,21 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return default
+
+
 async def handle_factory_event_create(db, params: dict[str, Any]) -> dict[str, Any]:
     """Create a new event injection."""
     event_name = _string(params.get("event_name"))
@@ -76,7 +91,7 @@ async def handle_factory_event_create(db, params: dict[str, Any]) -> dict[str, A
 
     payload = {
         "event_id": event_id,
-        "source": _string(params.get("source")) or "manual",
+        "source": _string(params.get("source") or params.get("event_source")) or "manual",
         "event_name": event_name,
         "event_type": event_type,
         "direction": params.get("direction"),
@@ -109,7 +124,7 @@ async def handle_factory_event_create(db, params: dict[str, Any]) -> dict[str, A
 async def handle_factory_event_list(db, params: dict[str, Any]) -> dict[str, Any]:
     """List event injections with optional filters."""
     status = params.get("status")
-    source = params.get("source")
+    source = params.get("source") or params.get("event_source")
     limit = int(params.get("limit") or 50)
 
     events = await db.list_event_injections(
@@ -147,12 +162,28 @@ async def handle_factory_event_update(db, params: dict[str, Any]) -> dict[str, A
         payload = {"event_id": event_id}
         for field in ("event_name", "event_type", "direction", "confidence",
                       "intensity", "horizon", "scope", "primary_themes",
-                      "rationale", "evidence", "valid_from", "valid_until", "status"):
+                      "rationale", "evidence", "valid_from", "valid_until",
+                      "status", "source"):
             if field in params:
                 payload[field] = params[field]
+        if "event_source" in params and "source" not in payload:
+            payload["source"] = params["event_source"]
 
-    result = await db.upsert_event_injection(payload)
-    return {"success": True, "data": {"event_id": event_id, "updated": True}}
+    patch_fields = {key: value for key, value in payload.items() if key != "event_id"}
+    if hasattr(db, "patch_event_injection"):
+        result = await db.patch_event_injection(event_id, patch_fields)
+    else:
+        result = await db.upsert_event_injection(payload)
+    if result.get("missing"):
+        return {"success": False, "error": f"Event {event_id} not found"}
+    return {
+        "success": True,
+        "data": {
+            "event_id": event_id,
+            "updated": bool(result.get("updated", 1)),
+            "patch": patch_fields,
+        },
+    }
 
 
 async def handle_factory_event_approve(db, params: dict[str, Any]) -> dict[str, Any]:
@@ -187,7 +218,16 @@ async def handle_factory_event_approve(db, params: dict[str, Any]) -> dict[str, 
         "approver_id": approver_id,
         "approved_at": approved_at,
     }
-    await db.upsert_event_injection(payload)
+    if hasattr(db, "patch_event_injection"):
+        result = await db.patch_event_injection(event_id, {
+            "status": "active",
+            "approver_id": approver_id,
+            "approved_at": approved_at,
+        })
+        if result.get("missing"):
+            return {"success": False, "error": f"Event {event_id} not found"}
+    else:
+        await db.upsert_event_injection(payload)
     return {
         "success": True,
         "data": {
@@ -452,6 +492,69 @@ async def handle_factory_theme_exposure_refresh(db, params: dict[str, Any]) -> d
     return {"success": True, "data": report}
 
 
+async def handle_factory_event_bootstrap(db, params: dict[str, Any]) -> dict[str, Any]:
+    """One-click bootstrap for the default theme graph and exposure matrix."""
+
+    try:
+        from strategy_factory.application.research.theme_exposure_builder import (  # noqa: PLC0415
+            ThemeExposureBuilder,
+        )
+        from strategy_factory.application.research.theme_seed import (  # noqa: PLC0415
+            seed_default_theme_graph,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"strategy_factory unavailable: {exc}"}
+
+    seed_report = await seed_default_theme_graph(
+        db,
+        overwrite=bool(params.get("overwrite_seed") or False),
+        updated_by=_string(params.get("operator_id")) or "factory_event_bootstrap",
+    )
+
+    exposure_report: dict[str, Any] | None = None
+    if bool(params.get("refresh_exposure", True)):
+        batch_size = max(1, min(int(params.get("batch_size") or 1000), 10000))
+        exposure_report = await ThemeExposureBuilder(
+            stock_limit=int(params.get("stock_limit") or 0) or None,
+            theme_limit=int(params.get("theme_limit") or 0) or None,
+            batch_size=batch_size,
+        ).build(db, batch_size=batch_size)
+
+    if hasattr(db, "get_theme_exposure_status"):
+        exposure_status = await db.get_theme_exposure_status()
+    elif hasattr(db, "list_theme_exposure"):
+        exposure_status = {"row_count": len(await db.list_theme_exposure(limit=1))}
+    else:
+        exposure_status = {}
+
+    node_count = int(seed_report.get("node_count") or 0)
+    edge_count = int(seed_report.get("edge_count") or 0)
+    row_count = int(
+        exposure_status.get("row_count")
+        or (exposure_report or {}).get("rows_written")
+        or 0
+    )
+    return {
+        "success": True,
+        "data": {
+            "status": "completed",
+            "seed": seed_report,
+            "exposure_refresh": exposure_report,
+            "counts": {
+                "theme_nodes": node_count,
+                "theme_edges": edge_count,
+                "theme_exposure_rows": row_count,
+                "theme_count": exposure_status.get("theme_count") or (exposure_report or {}).get("theme_count"),
+                "symbol_count": exposure_status.get("symbol_count") or (exposure_report or {}).get("symbol_count"),
+            },
+            "availability": {
+                "theme_graph_available": node_count > 0 and edge_count > 0,
+                "theme_exposure_available": row_count > 0,
+            },
+        },
+    }
+
+
 async def handle_factory_event_outbox_drain(db, params: dict[str, Any]) -> dict[str, Any]:
     """Single-worker outbox drain for event-driven task lineage.
 
@@ -584,7 +687,10 @@ async def handle_factory_theme_regression_run(db, params: dict[str, Any]) -> dic
         return {"success": False, "error": f"strategy_factory unavailable: {exc}"}
 
     model = ThemeResponseRegression()
-    report = await model.run_full_update(db)
+    report = await model.run_full_update(
+        db,
+        apply_updates=_bool(params.get("apply_updates"), False),
+    )
     return {"success": True, "data": report}
 
 

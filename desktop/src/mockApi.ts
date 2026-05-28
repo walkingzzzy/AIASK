@@ -23,6 +23,11 @@ const financeTools: ToolCatalogItem[] = [
   { name: "agent_factory_runs", capability: "strategy_factory_runs", category: "financial_read", side_effect: "read_only", description: "List strategy factory runs.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
   { name: "agent_strategy_review_snapshot", capability: "strategy_review_snapshot", category: "financial_read", side_effect: "read_only", description: "Read strategy review snapshots.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
   { name: "agent_strategy_domain_events", capability: "strategy_domain_events", category: "financial_read", side_effect: "read_only", description: "List strategy domain events.", input_schema: { type: "object", properties: { event_type: { type: "string" }, limit: { type: "integer" } } } },
+  { name: "agent_factory_event_list", capability: "factory_event_list", category: "financial_read", side_effect: "read_only", description: "List Strategy Factory events." },
+  { name: "agent_factory_event_preview_tasks", capability: "factory_event_preview_tasks", category: "financial_read", side_effect: "read_only", description: "Preview Strategy Factory event tasks." },
+  { name: "agent_factory_event_lineage", capability: "factory_event_lineage", category: "financial_read", side_effect: "read_only", description: "Read Strategy Factory event lineage." },
+  { name: "agent_factory_theme_exposure_status", capability: "factory_theme_exposure_status", category: "financial_read", side_effect: "read_only", description: "Read theme exposure status." },
+  { name: "agent_factory_event_outbox_status", capability: "factory_event_outbox_status", category: "financial_read", side_effect: "read_only", description: "Read factory event outbox status." },
   { name: "agent_incubation_factory_status", capability: "incubation_factory_status", category: "financial_read", side_effect: "read_only", description: "Read incubation factory status." },
   { name: "agent_action_intent_create", capability: "action_intent_create", category: "financial_stateful", side_effect: "durable_intent", description: "Create an approval intent." },
   { name: "agent_action_intent_get", capability: "action_intent_get", category: "financial_read", side_effect: "read_only", description: "Read an approval intent." },
@@ -56,7 +61,7 @@ const hermesTools: ToolCatalogItem[] = [
 let profile = {
   object: "aiask.local_profile",
   user_id: "local",
-  profile_name: "Mock Local Operator",
+  profile_name: "Mock 本地操作者",
   storage: "local_json",
   path: "mock://aiask/local-profile.json",
   updated_at: "2026-05-22T09:00:00Z",
@@ -67,8 +72,8 @@ let profile = {
 let jobs: Array<Record<string, unknown>> = [
   {
     job_id: "job_mock_research",
-    name: "Daily research monitor",
-    prompt: "Review mock market data.",
+    name: "每日研究监控",
+    prompt: "复盘 mock 市场数据。",
     schedule: "*/30 * * * *",
     enabled: true,
     user_id: "local",
@@ -77,6 +82,37 @@ let jobs: Array<Record<string, unknown>> = [
 ];
 
 const intents = new Map<string, Record<string, unknown>>();
+
+function financialManagerCatalog() {
+  const groups = [
+    { id: "overview", label: "Overview", description: "Readiness and safety state" },
+    { id: "market-research", label: "Market & Research", description: "Stock, research, sector, sentiment, technical and options" },
+    { id: "portfolio-watchlist", label: "Portfolio & Watchlist", description: "Portfolio and watchlist reads plus intents" },
+    { id: "risk-performance", label: "Risk & Performance", description: "Risk, VaR, exposure, attribution and decision support" },
+    { id: "quant-backtest", label: "Quant & Backtest", description: "Quant research and backtest suite" },
+    { id: "paper-execution", label: "Paper & Execution", description: "Paper trading and execution planning" },
+    { id: "broker-readonly", label: "Broker Read-only", description: "Broker account and order queries only" }
+  ];
+  const actions = [
+    { capability_id: "stock-analysis", action_id: "analyze_stock", group: "market-research", label: "Analyze stock", mode: "read_only", status: "ready", available: true, tool: "agent_analyze_stock", default_params: { code: "600519", include_decision: false } },
+    { capability_id: "portfolio", action_id: "risk", group: "risk-performance", label: "Portfolio risk", mode: "read_only", status: "ready", available: true, tool: "agent_portfolio_risk", default_params: { codes: ["600519", "000001"], weights: [0.5, 0.5] } },
+    { capability_id: "quant", action_id: "data_gate", group: "quant-backtest", label: "Quant data gate", mode: "read_only", status: "ready", available: true, tool: "agent_quant_data_gate", default_params: { codes: ["600519"], max_stale_days: 5 } },
+    { capability_id: "backtest", action_id: "suite", group: "quant-backtest", label: "Backtest suite", mode: "read_only", status: "ready", available: true, tool: "agent_backtest_suite", default_params: { codes: ["600519"], strategy: "ma_cross" } },
+    { capability_id: "portfolio", action_id: "create", group: "portfolio-watchlist", label: "Create portfolio intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "portfolio_manager.create", default_params: { name: "Desktop portfolio" } },
+    { capability_id: "watchlist", action_id: "add", group: "portfolio-watchlist", label: "Add watchlist stock intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "watchlist_manager.add", default_params: { group: "default", code: "600519" } },
+    { capability_id: "paper", action_id: "submit_order", group: "paper-execution", label: "Paper order intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "paper_trading_manager.submit_order", default_params: { code: "600519", side: "buy", quantity: 100, dry_run: true } },
+    { capability_id: "broker-ths", action_id: "positions", group: "broker-readonly", label: "THS positions", mode: "read_only", status: "missing_mcp_tool", available: false, mcp_tool: "ths_query_position", default_params: {} },
+    { capability_id: "broker-live", action_id: "place_order", group: "broker-readonly", label: "Live place order", mode: "blocked", status: "blocked", available: false, blocked_reason: "Live broker order placement is disabled in Financial Manager V1." }
+  ];
+  return {
+    object: "aiask.desktop.financial_manager.catalog",
+    groups,
+    actions,
+    summary: { ready: 4, intent_ready: 3, missing_mcp_tool: 1, blocked: 1 },
+    safety: { mode: "read_only_plus_intents", live_trading_enabled: false, stateful_execution: "action_intent_only", secrets_redacted: true },
+    secrets_redacted: true
+  };
+}
 
 export function isMockEndpoint(endpoint: string): boolean {
   return endpoint.trim().replace(/\/+$/, "") === "mock://aiask";
@@ -327,6 +363,60 @@ function toolResult(tool: string, body: Record<string, unknown>) {
   if (tool === "agent_strategy_review_snapshot") return strategyFactory().review_snapshot;
   if (tool === "agent_incubation_factory_status") return envelope(tool, { run_count: 3, error_count: 0, last_result_status: "completed" });
   if (tool === "agent_strategy_domain_events") return envelope(tool, { events: [{ event_type: body.event_type || "factory.run_completed", payload: { decision: "review" } }] });
+  if (tool === "agent_factory_event_list") {
+    const events = [
+      {
+        event_id: "evt_mock_001",
+        event_name: "稀土出口管制(mock)",
+        event_type: "policy_shock",
+        event_source: "manual",
+        status: body.status || "active",
+        direction: "bullish",
+        intensity: 0.85,
+        confidence: 0.7,
+        primary_themes: ["critical_minerals", "rare_earth"],
+        operator_id: "operator_alice",
+        approver_id: "approver_bob",
+        created_at: "2026-05-24T08:00:00Z",
+        valid_from: "2026-05-24T08:00:00Z",
+        valid_until: "2026-06-24T08:00:00Z"
+      },
+      {
+        event_id: "evt_mock_002",
+        event_name: "AI 芯片新规(mock)",
+        event_type: "regulation",
+        event_source: "news_llm",
+        status: "pending_review",
+        direction: "bearish",
+        intensity: 0.6,
+        confidence: 0.55,
+        primary_themes: ["AI_chip"],
+        operator_id: "news_pipeline",
+        approver_id: null,
+        created_at: "2026-05-24T07:30:00Z",
+        valid_from: "2026-05-24T07:30:00Z",
+        valid_until: "2026-05-31T07:30:00Z"
+      }
+    ];
+    return envelope(tool, { events, count: events.length });
+  }
+  if (tool === "agent_factory_event_preview_tasks") {
+    return envelope(tool, {
+      event_id: body.event_id || "evt_mock_001",
+      impacts: [
+        { theme_code: "critical_minerals", depth: 0, magnitude: 0.85, source_path: "primary" },
+        { theme_code: "rare_earth", depth: 0, magnitude: 0.85, source_path: "primary" },
+        { theme_code: "metals_processing", depth: 1, magnitude: 0.42, source_path: "critical_minerals -> metals_processing" }
+      ],
+      candidate_symbols: ["600111", "600259", "600392", "002460", "300618"],
+      target_count: 5,
+      warnings: [],
+      preview_mode: "real_bfs"
+    });
+  }
+  if (tool === "agent_factory_event_lineage") return envelope(tool, { lineage: [{ event_id: body.event_id || "evt_mock_001", task_id: "task_mock", status: "planned" }] });
+  if (tool === "agent_factory_theme_exposure_status") return envelope(tool, { status: "ready", exposures: [{ theme: body.theme || "AI_chip", exposure: 0.42 }] });
+  if (tool === "agent_factory_event_outbox_status") return envelope(tool, { counts: { pending: 0, sent: 2 }, latest: [] });
   // PR-G (Phase 5, 2026-05-24): factory event trigger console mocks so
   // the new ``Factory Events`` view renders without a backend.
   if (tool === "agent_strategy_manager") {
@@ -476,6 +566,19 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/ai/smoke") return ok({ object: "aiask.ai_smoke", configured: true, success: true, provider: "project-root-api", model: body.model || "gpt-5.4", mock: true, latency_ms: 5, response_preview: "AI_SMOKE_PASSED", secrets_redacted: true } as T);
   if (cleanPath === "/v1/ai/models") return ok({ data: [{ id: "gpt-5.4", object: "model", owned_by: "project-root-api" }, { id: "gpt-5.4-mini", object: "model", owned_by: "project-root-api" }], configured: true } as T);
   if (cleanPath === "/v1/responses") return ok({ id: "resp_mock", object: "response", status: "completed", output_text: "AIASK_OK", metadata: { session_id: body.session_id || "sess_mock", run_id: "run_mock", mode: body.mode || "finance_safe", audit_events: [{ event: "mock" }] } } as T);
+  const responseMatch = cleanPath.match(/^\/v1\/responses\/([^/]+)$/);
+  if (responseMatch) {
+    const responseId = decodeURIComponent(responseMatch[1]);
+    if (method === "DELETE") return ok({ id: responseId, object: "response.deleted", deleted: true } as T);
+    return ok({ id: responseId, object: "response", status: "completed", output_text: "AIASK_OK", metadata: { session_id: "sess_mock", run_id: "run_mock", mode: "finance_safe", audit_events: [{ event: "mock" }] } } as T);
+  }
+  const runActionMatch = cleanPath.match(/^\/v1\/runs\/([^/]+)(?:\/(cancel|stop|steer))?$/);
+  if (runActionMatch && !cleanPath.endsWith("/events")) {
+    const runId = decodeURIComponent(runActionMatch[1]);
+    const action = runActionMatch[2];
+    if (!action) return ok({ object: "run", run_id: runId, status: "completed", payload: { mock: true } } as T);
+    return ok({ object: action === "steer" ? "run.steer" : "run", run_id: runId, status: action === "steer" ? "running" : "cancelled", event: { event: `run.${action}`, data: body } } as T);
+  }
   if (cleanPath === "/v1/runs/run_mock/events") return ok({ object: "list", data: [{ id: "evt_mock", event: "run.completed", data: { status: "completed" } }] } as T);
   if (cleanPath === "/v1/search") return ok({ object: "list", data: [{ kind: "response", object_id: "resp_mock", session_id: "sess_mock", user_id: profile.user_id, content: "mock response hit" }] } as T);
   if (cleanPath === "/v1/hermes/sessions") return ok({ object: "list", data: [{ session_id: "sess_mock", title: "Mock research session", user_id: profile.user_id, updated_at: "2026-05-22T09:00:00Z" }] } as T);
@@ -521,20 +624,37 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/gateway/status") {
     return ok({ object: "aiask.gateway_status", status: "ready", enabled_platforms: ["desktop"], pending_messages: 0 } as T);
   }
+  if (cleanPath === "/v1/gateway/daemon/status") {
+    return ok({ object: "gateway.daemon", data: { enabled: true, running: true, listeners: { desktop: { status: "ready" } } } } as T);
+  }
   if (cleanPath === "/v1/gateway/platforms") {
     return ok({ object: "list", data: [{ platform: "desktop", status: "ready" }, { platform: "discord", status: "missing_credentials" }] } as T);
+  }
+  const gatewayPlatformMatch = cleanPath.match(/^\/v1\/gateway\/platforms\/([^/]+)\/(start|stop|health)$/);
+  if (gatewayPlatformMatch) {
+    return ok({ object: "gateway.platform", data: { platform: decodeURIComponent(gatewayPlatformMatch[1]), status: gatewayPlatformMatch[2] === "stop" ? "stopped" : "ready" } } as T);
   }
   if (cleanPath === "/v1/gateway/messages") {
     return ok({ object: "list", data: [{ message_id: "msg_gateway_mock", platform: "desktop", status: "delivered", user_id: profile.user_id }] } as T);
   }
+  const gatewayRetryMatch = cleanPath.match(/^\/v1\/gateway\/messages\/([^/]+)\/retry$/);
+  if (gatewayRetryMatch) {
+    return ok({ object: "gateway.retry", data: { message_id: decodeURIComponent(gatewayRetryMatch[1]), status: "queued" } } as T);
+  }
   if (cleanPath === "/v1/gateway/directory") {
     return ok({ object: "list", data: [{ platform: "desktop", kind: "user", id: profile.user_id, display_name: profile.profile_name }] } as T);
+  }
+  if (cleanPath === "/v1/gateway/directory/refresh") {
+    return ok({ object: "gateway.directory_refresh", data: [{ platform: "desktop", kind: "user", id: profile.user_id }] } as T);
   }
   if (cleanPath === "/v1/learning/status") {
     return ok({ object: "aiask.learning_status", status: "ready", proposal_count: 1, apply_requires_control: true } as T);
   }
   if (cleanPath === "/v1/learning/review") {
     return ok({ object: "list", data: [{ proposal_id: "learn_mock", status: "pending_review", summary: "Mock prompt improvement proposal" }] } as T);
+  }
+  if (cleanPath === "/v1/learning/apply") {
+    return ok({ object: "learning.proposal", data: { proposal_id: body.proposal_id, status: "applied" } } as T);
   }
   if (cleanPath === "/v1/rl/environments") {
     return ok({ object: "list", data: { environments: [{ id: "finance_safe_eval", status: "ready" }], missing_env: ["TINKER_API_KEY"] } } as T);
@@ -543,13 +663,32 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     return ok({ object: "aiask.rl_config", status: "configured", provider: "mock", secrets_redacted: true } as T);
   }
   if (cleanPath === "/v1/rl/runs") {
+    if (method === "POST") return ok({ object: "rl.run", data: { run_id: "rl_mock_new", environment: body.environment || "finance_safe_eval", status: "running" } } as T);
     return ok({ object: "list", data: [{ run_id: "rl_mock", environment: "finance_safe_eval", status: "dry_run_ready" }] } as T);
   }
+  const rlRunDetailMatch = cleanPath.match(/^\/v1\/rl\/runs\/([^/]+)$/);
+  if (rlRunDetailMatch) {
+    return ok({ object: "rl.run", data: { run_id: decodeURIComponent(rlRunDetailMatch[1]), environment: "finance_safe_eval", status: "dry_run_ready" } } as T);
+  }
+  const rlRunMatch = cleanPath.match(/^\/v1\/rl\/runs\/([^/]+)\/(stop|results|logs)$/);
+  if (rlRunMatch) {
+    return ok({ object: `rl.${rlRunMatch[2]}`, data: { run_id: decodeURIComponent(rlRunMatch[1]), status: rlRunMatch[2] === "stop" ? "stopped" : "ready" } } as T);
+  }
   if (cleanPath === "/v1/webhooks") {
-    return ok({ object: "list", data: [{ webhook_id: "webhook_mock", platform: "desktop", status: "ready" }] } as T);
+    if (method === "POST") return ok({ object: "webhook", data: { webhook_id: `webhook_mock_${Date.now()}`, ...body, enabled: true } } as T);
+    return ok({ object: "list", data: [{ webhook_id: "webhook_mock", name: "Mock webhook", events: ["MCP UI smoke test"], prompt: "mock", enabled: true, status: "ready" }] } as T);
+  }
+  const webhookMatch = cleanPath.match(/^\/v1\/webhooks\/([^/]+)(?:\/trigger)?$/);
+  if (webhookMatch) {
+    if (method === "DELETE") return ok({ object: "webhook.deleted", deleted: true, webhook_id: decodeURIComponent(webhookMatch[1]) } as T);
+    if (cleanPath.endsWith("/trigger")) return ok(envelope("agent_webhook", { webhook_id: decodeURIComponent(webhookMatch[1]), rendered: true }) as T);
   }
   if (cleanPath === "/v1/approvals") {
     return ok({ object: "list", data: Array.from(intents.values()) } as T);
+  }
+  const approvalMatch = cleanPath.match(/^\/v1\/approvals\/([^/]+)\/(approve|deny)$/);
+  if (approvalMatch) {
+    return ok({ object: "approval", approval_id: decodeURIComponent(approvalMatch[1]), status: approvalMatch[2] === "approve" ? "approved" : "denied" } as T);
   }
 
   if (cleanPath === "/v1/jobs" && method === "GET") return ok({ object: "list", data: jobs } as T);
@@ -557,6 +696,11 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     const job = { job_id: `job_mock_${jobs.length + 1}`, enabled: body.enabled ?? true, user_id: body.user_id || profile.user_id, ...body };
     jobs = [job, ...jobs];
     return ok({ object: "aiask.job", job } as T);
+  }
+  const jobRunsMatch = cleanPath.match(/^\/v1\/jobs\/([^/]+)\/runs$/);
+  if (jobRunsMatch) {
+    const jobId = decodeURIComponent(jobRunsMatch[1]);
+    return ok({ object: "list", job_id: jobId, data: [{ job_run_id: `jobrun_${jobId}`, job_id: jobId, status: "completed", response_id: "resp_mock", run_id: "run_mock", duration_ms: 15, started_at: "2026-05-22T09:00:00Z", finished_at: "2026-05-22T09:00:01Z" }] } as T);
   }
   const jobMatch = cleanPath.match(/^\/v1\/jobs\/([^/]+)(?:\/run)?$/);
   if (jobMatch) {
@@ -572,6 +716,9 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     }
   }
 
+  if (cleanPath === "/intents" && method === "GET") {
+    return ok({ object: "list", data: Array.from(intents.values()) } as T);
+  }
   if (cleanPath === "/intents" && method === "POST") {
     if (!authorized(options)) throw new Error("AIASK_UNAUTHORIZED");
     return ok(createIntent(body) as T);
@@ -596,7 +743,14 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath.startsWith("/v1/skills/") && method === "PATCH") return ok({ object: "skill", status: "updated" } as T);
   if (cleanPath.startsWith("/v1/skills/") && method === "DELETE") return ok({ object: "skill", status: "deleted" } as T);
   if (cleanPath === "/v1/plugins" && method === "GET") return ok({ data: capabilities().plugins } as T);
+  if (cleanPath === "/v1/plugins" && method === "POST") return ok({ object: "plugin_upserted", success: true, data: { name: body.name || "local-plugin", enabled: body.enabled ?? true } } as T);
   if (cleanPath.startsWith("/v1/plugins/") && method === "PATCH") return ok({ object: "plugin_updated", enabled: body.enabled } as T);
+  const pluginCommandsMatch = cleanPath.match(/^\/v1\/plugins\/([^/]+)\/commands$/);
+  if (pluginCommandsMatch) return ok({ object: "list", data: [{ name: "doctor", description: "Run plugin diagnostics", enabled: true }] } as T);
+  const pluginCommandTestMatch = cleanPath.match(/^\/v1\/plugins\/([^/]+)\/commands\/([^/]+)\/test$/);
+  if (pluginCommandTestMatch) {
+    return ok({ object: "plugin.command_test", success: true, data: { plugin: decodeURIComponent(pluginCommandTestMatch[1]), command: decodeURIComponent(pluginCommandTestMatch[2]), status: "ready" }, error: null } as T);
+  }
   if (cleanPath.includes("/tools/") && cleanPath.endsWith("/test")) return ok({ object: "plugin_tool_tested", success: true } as T);
 
   if (cleanPath === "/v1/mcp/servers") return ok({ data: capabilities().mcp.servers } as T);
@@ -610,7 +764,48 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/mcp/prompts/get") return ok({ success: true, data: { prompt: "risk prompt ok", name: body.name } } as T);
   if (cleanPath === "/v1/mcp/oauth/start") return ok({ success: false, error_code: "oauth_required", data: { server: body.server, configured: false } } as T);
 
-  if (cleanPath === "/v1/connectors/summary") return ok({ status: "ready", data: { connectors: [{ type: "mcp", name: "akshare-local", status: "ready" }] } } as T);
+  if (cleanPath === "/v1/connectors/summary") return ok({ status: "ready", data: { total: 3, connected: 1, configured: 2, connectors: [{ type: "mcp", name: "akshare-local", status: "ready" }, { type: "platform", name: "discord", status: "missing_credentials", missing_env: ["DISCORD_BOT_TOKEN"] }, { type: "financial", name: "tongdaxin", status: "ready" }] } } as T);
+  if (cleanPath === "/v1/connectors") {
+    return ok({ object: "list", data: [{ type: "mcp", name: "akshare-local", category: "data", status: "ready", configured: true, connected: true }, { type: "platform", name: "discord", category: "communication", status: "missing_credentials", configured: false, connected: false, missing_env: ["DISCORD_BOT_TOKEN"] }, { type: "financial", name: "tongdaxin", category: "data", status: "ready", configured: true, connected: true }] } as T);
+  }
+  const connectorMatch = cleanPath.match(/^\/v1\/connectors\/([^/]+)\/([^/]+)(?:\/test)?$/);
+  if (connectorMatch) {
+    return ok({ object: cleanPath.endsWith("/test") ? "connector.test" : "connector.detail", data: { type: decodeURIComponent(connectorMatch[1]), name: decodeURIComponent(connectorMatch[2]), configured: true, connected: true, status: "ready", missing_env: [] } } as T);
+  }
+  if (cleanPath === "/v1/desktop/financial-manager/catalog") return ok(financialManagerCatalog() as T);
+  if (cleanPath === "/v1/desktop/financial-manager/status") {
+    return ok({
+      object: "aiask.desktop.financial_manager.status",
+      status: "ready",
+      readiness: capabilities().financial_system,
+      catalog_summary: financialManagerCatalog().summary,
+      mcp: { registration: capabilities().mcp.registration_status, servers: capabilities().mcp.servers },
+      broker: { live_trading_enabled: false, read_only_surfaces: ["ths_query_position", "qmt_query_account"], blocked_actions: ["ths_place_order", "qmt_place_order"] },
+      recent_intents: Array.from(intents.values()).slice(-5),
+      secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/financial-manager/query") {
+    const action = financialManagerCatalog().actions.find((item) => item.capability_id === body.capability_id && item.action_id === body.action_id);
+    if (action?.mode === "blocked") return ok({ object: "aiask.desktop.financial_manager.query", success: false, data: { reason: action.blocked_reason }, error: action.blocked_reason, error_code: "FINANCIAL_ACTION_BLOCKED", secrets_redacted: true } as T);
+    if (action?.mode === "stateful_intent") return ok({ object: "aiask.desktop.financial_manager.query", success: false, data: { required_endpoint: "/v1/desktop/financial-manager/intent" }, error: "stateful financial actions must be created as ActionIntent", error_code: "FINANCIAL_ACTION_REQUIRES_INTENT", secrets_redacted: true } as T);
+    return ok({ object: "aiask.desktop.financial_manager.query", capability_id: body.capability_id, action_id: body.action_id, tool: action?.tool || "mock_tool", success: true, data: { status: "ready", params: body.params || action?.default_params || {}, rows: [{ code: "600519", signal: "watch", risk: "medium" }] }, error: null, meta: { side_effect: { level: "read_only", confirmation_required: false } }, secrets_redacted: true } as T);
+  }
+  if (cleanPath === "/v1/desktop/financial-manager/intent") {
+    const action = financialManagerCatalog().actions.find((item) => item.capability_id === body.capability_id && item.action_id === body.action_id);
+    if (action?.mode === "blocked") return ok({ object: "aiask.desktop.financial_manager.intent", success: false, data: { reason: action.blocked_reason }, error: action.blocked_reason, error_code: "FINANCIAL_ACTION_BLOCKED", secrets_redacted: true } as T);
+    const intent = {
+      intent_id: `intent_fin_${Date.now()}`,
+      action: action?.intent_action || "financial_manager.mock",
+      target_tool: "financial_manager",
+      target_action: action?.intent_action || "mock",
+      status: "awaiting_confirmation",
+      params: body.params || action?.default_params || {},
+      rationale: body.rationale || "Financial Manager mock intent"
+    };
+    intents.set(intent.intent_id, intent);
+    return ok({ object: "aiask.desktop.financial_manager.intent", capability_id: body.capability_id, action_id: body.action_id, success: true, data: { intent }, error: null, meta: { side_effect: { level: "stateful", confirmation_required: true } }, secrets_redacted: true } as T);
+  }
   if (cleanPath === "/v1/desktop/quant/presets") {
     return ok({
       object: "aiask.quant_presets",
@@ -624,7 +819,8 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/desktop/quant/research-runs") {
     return ok(envelope("agent_quant_research_run", { research: { research_id: "research_mock", status: "completed", payload: { stages: [] }, report: { object: "report", research_id: "research_mock", status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, stages: [], disclaimer: "MOCK_NOT_INVESTMENT_ADVICE" } } }) as T);
   }
-  if (cleanPath.includes("/report")) return ok({ object: "report", research_id: "research_mock", status: "completed", summary: { benchmark: "000300" } } as T);
+  const quantReportMatch = cleanPath.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)\/report$/);
+  if (quantReportMatch) return ok({ object: "report", research_id: decodeURIComponent(quantReportMatch[1]), status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, disclaimer: "MOCK_NOT_INVESTMENT_ADVICE", stages: [] } as T);
 
   return ok({ object: "mock.unhandled", path: cleanPath, method, data: {}, status: "ready" } as T);
 }

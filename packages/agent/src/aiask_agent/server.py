@@ -659,6 +659,249 @@ async def _desktop_data_sync_plan_payload_for_runtime(
     }
 
 
+FINANCIAL_MANAGER_GROUPS: tuple[dict[str, str], ...] = (
+    {"id": "overview", "label": "Overview", "description": "Readiness, manager coverage, and recent operating context."},
+    {"id": "market-research", "label": "Market & Research", "description": "Stock analysis, research, sector, sentiment, technical, options, and trading-data reads."},
+    {"id": "portfolio-watchlist", "label": "Portfolio & Watchlist", "description": "Portfolio, holdings, and watchlist reads plus intent-only mutations."},
+    {"id": "risk-performance", "label": "Risk & Performance", "description": "Portfolio risk, VaR, exposure, stress, attribution, and benchmark comparison."},
+    {"id": "quant-backtest", "label": "Quant & Backtest", "description": "Quant research, data gates, and backtest suite operations."},
+    {"id": "paper-execution", "label": "Paper & Execution Planning", "description": "Paper trading and execution plan reads plus intent-only task changes."},
+    {"id": "broker-readonly", "label": "Broker Read-only", "description": "THS/QMT account, position, order, and deal queries without live order placement."},
+)
+
+FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
+    {"capability_id": "stock-analysis", "action_id": "analyze_stock", "group": "market-research", "label": "Analyze stock", "mode": "read_only", "tool": "agent_analyze_stock", "default_params": {"code": "600519", "include_decision": False}},
+    {"capability_id": "research", "action_id": "reports", "group": "market-research", "label": "Research reports", "mode": "read_only", "mcp_tool": "research_manager", "mcp_action": "get_reports", "default_params": {"code": "600519", "limit": 5}},
+    {"capability_id": "sector", "action_id": "sector_performance", "group": "market-research", "label": "Sector performance", "mode": "read_only", "mcp_tool": "sector_manager", "mcp_action": "sector_performance", "default_params": {"limit": 10}},
+    {"capability_id": "sentiment", "action_id": "market_sentiment", "group": "market-research", "label": "Market sentiment", "mode": "read_only", "mcp_tool": "sentiment_manager", "mcp_action": "market_sentiment", "default_params": {}},
+    {"capability_id": "technical", "action_id": "calculate", "group": "market-research", "label": "Technical indicators", "mode": "read_only", "mcp_tool": "technical_analysis_manager", "mcp_action": "calculate", "default_params": {"code": "600519", "indicators": ["ma", "rsi"]}},
+    {"capability_id": "options", "action_id": "calculate_greeks", "group": "market-research", "label": "Option Greeks", "mode": "read_only", "mcp_tool": "options_manager", "mcp_action": "calculate_greeks", "default_params": {}},
+    {"capability_id": "trading-data", "action_id": "dragon_tiger", "group": "market-research", "label": "Dragon tiger list", "mode": "read_only", "mcp_tool": "trading_data_manager", "mcp_action": "dragon_tiger", "default_params": {"limit": 20}},
+    {"capability_id": "screener", "action_id": "screen", "group": "market-research", "label": "Stock screener", "mode": "read_only", "mcp_tool": "screener_manager", "mcp_action": "screen", "default_params": {"limit": 20}},
+    {"capability_id": "portfolio", "action_id": "risk", "group": "risk-performance", "label": "Portfolio risk", "mode": "read_only", "tool": "agent_portfolio_risk", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
+    {"capability_id": "portfolio", "action_id": "list", "group": "portfolio-watchlist", "label": "Portfolio list", "mode": "read_only", "mcp_tool": "portfolio_manager", "mcp_action": "list", "default_params": {}},
+    {"capability_id": "portfolio", "action_id": "get_holdings", "group": "portfolio-watchlist", "label": "Portfolio holdings", "mode": "read_only", "mcp_tool": "portfolio_manager", "mcp_action": "get_holdings", "default_params": {"portfolio_id": 1}},
+    {"capability_id": "portfolio", "action_id": "create", "group": "portfolio-watchlist", "label": "Create portfolio intent", "mode": "stateful_intent", "intent_action": "portfolio_manager.create", "default_params": {"name": "Desktop portfolio"}},
+    {"capability_id": "portfolio", "action_id": "add_holding", "group": "portfolio-watchlist", "label": "Add holding intent", "mode": "stateful_intent", "intent_action": "portfolio_manager.add_holding", "default_params": {"portfolio_id": 1, "code": "600519", "weight": 0.1}},
+    {"capability_id": "watchlist", "action_id": "list", "group": "portfolio-watchlist", "label": "Watchlist groups", "mode": "read_only", "mcp_tool": "watchlist_manager", "mcp_action": "list", "default_params": {}},
+    {"capability_id": "watchlist", "action_id": "add", "group": "portfolio-watchlist", "label": "Add watchlist stock intent", "mode": "stateful_intent", "intent_action": "watchlist_manager.add", "default_params": {"group": "default", "code": "600519"}},
+    {"capability_id": "risk", "action_id": "var", "group": "risk-performance", "label": "Risk VaR", "mode": "read_only", "mcp_tool": "risk_manager", "mcp_action": "var", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
+    {"capability_id": "risk", "action_id": "exposure", "group": "risk-performance", "label": "Risk exposure", "mode": "read_only", "mcp_tool": "risk_manager", "mcp_action": "exposure", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
+    {"capability_id": "performance", "action_id": "calculate_metrics", "group": "risk-performance", "label": "Performance metrics", "mode": "read_only", "mcp_tool": "performance_manager", "mcp_action": "calculate_metrics", "default_params": {"portfolio_id": 1}},
+    {"capability_id": "decision", "action_id": "portfolio_advice", "group": "risk-performance", "label": "Portfolio advice", "mode": "read_only", "mcp_tool": "decision_manager", "mcp_action": "portfolio_advice", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
+    {"capability_id": "quant", "action_id": "data_gate", "group": "quant-backtest", "label": "Quant data gate", "mode": "read_only", "tool": "agent_quant_data_gate", "default_params": {"codes": ["600519", "000001"], "max_stale_days": 5}},
+    {"capability_id": "quant", "action_id": "research_run", "group": "quant-backtest", "label": "Quant research run", "mode": "read_only", "tool": "agent_quant_research_run", "default_params": {"universe": ["600519", "000001"], "factors": ["momentum"], "benchmark": "000300"}},
+    {"capability_id": "backtest", "action_id": "suite", "group": "quant-backtest", "label": "Backtest suite", "mode": "read_only", "tool": "agent_backtest_suite", "default_params": {"codes": ["600519", "000001"], "strategy": "ma_cross"}},
+    {"capability_id": "backtest", "action_id": "list", "group": "quant-backtest", "label": "Saved backtests", "mode": "read_only", "mcp_tool": "backtest_manager", "mcp_action": "list", "default_params": {}},
+    {"capability_id": "paper", "action_id": "status", "group": "paper-execution", "label": "Paper trading status", "mode": "read_only", "mcp_tool": "paper_trading_manager", "mcp_action": "status", "default_params": {}},
+    {"capability_id": "paper", "action_id": "orders", "group": "paper-execution", "label": "Paper orders", "mode": "read_only", "mcp_tool": "paper_trading_manager", "mcp_action": "orders", "default_params": {"limit": 20}},
+    {"capability_id": "paper", "action_id": "submit_order", "group": "paper-execution", "label": "Paper order intent", "mode": "stateful_intent", "intent_action": "paper_trading_manager.submit_order", "default_params": {"code": "600519", "side": "buy", "quantity": 100, "dry_run": True}},
+    {"capability_id": "execution", "action_id": "plan", "group": "paper-execution", "label": "Execution plan", "mode": "read_only", "mcp_tool": "execution_manager", "mcp_action": "plan", "default_params": {"code": "600519", "side": "buy", "quantity": 1000}},
+    {"capability_id": "execution", "action_id": "create_plan", "group": "paper-execution", "label": "Create execution plan intent", "mode": "stateful_intent", "intent_action": "execution_manager.create_plan", "default_params": {"code": "600519", "side": "buy", "quantity": 1000, "dry_run": True}},
+    {"capability_id": "broker-ths", "action_id": "positions", "group": "broker-readonly", "label": "THS positions", "mode": "read_only", "mcp_tool": "ths_query_position", "default_params": {}},
+    {"capability_id": "broker-ths", "action_id": "orders", "group": "broker-readonly", "label": "THS orders", "mode": "read_only", "mcp_tool": "ths_query_orders", "default_params": {}},
+    {"capability_id": "broker-qmt", "action_id": "account", "group": "broker-readonly", "label": "QMT account", "mode": "read_only", "mcp_tool": "qmt_query_account", "default_params": {}},
+    {"capability_id": "broker-qmt", "action_id": "positions", "group": "broker-readonly", "label": "QMT positions", "mode": "read_only", "mcp_tool": "qmt_query_position", "default_params": {}},
+    {"capability_id": "broker-live", "action_id": "place_order", "group": "broker-readonly", "label": "Live place order", "mode": "blocked", "blocked_reason": "Live broker order placement is disabled in Financial Manager V1."},
+    {"capability_id": "broker-live", "action_id": "cancel_order", "group": "broker-readonly", "label": "Live cancel order", "mode": "blocked", "blocked_reason": "Live broker cancellation is disabled in Financial Manager V1."},
+)
+
+
+def _financial_action_key(capability_id: str, action_id: str) -> str:
+    return f"{str(capability_id or '').strip()}::{str(action_id or '').strip()}"
+
+
+def _financial_action_map() -> dict[str, dict[str, Any]]:
+    return {
+        _financial_action_key(str(item.get("capability_id") or ""), str(item.get("action_id") or "")): dict(item)
+        for item in FINANCIAL_MANAGER_ACTIONS
+    }
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(token in lowered for token in ("secret", "token", "api_key", "apikey", "password", "credential")):
+                redacted[str(key)] = "[REDACTED]"
+            else:
+                redacted[str(key)] = _redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
+def _wrapped_mcp_lookup(runtime: AgentRuntime) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for name in runtime.tool_registry.names():
+        if not name.startswith("agent_mcp_"):
+            continue
+        tool = runtime.tool_registry.get(name)
+        metadata = dict(getattr(tool, "metadata", {}) or {}) if tool else {}
+        side_effect = metadata.get("side_effect") if isinstance(metadata.get("side_effect"), dict) else {}
+        target = str(side_effect.get("target") or "")
+        for candidate in {name, target, target.split(".")[0]}:
+            if candidate:
+                lookup.setdefault(candidate, {"wrapped_name": name, "metadata": metadata})
+        lowered = name.lower()
+        for action in FINANCIAL_MANAGER_ACTIONS:
+            raw_tool = str(action.get("mcp_tool") or "").lower()
+            if raw_tool and lowered.endswith(raw_tool):
+                lookup.setdefault(str(action.get("mcp_tool")), {"wrapped_name": name, "metadata": metadata})
+    return lookup
+
+
+def _financial_catalog_payload(runtime: AgentRuntime) -> dict[str, Any]:
+    names = set(runtime.tool_registry.names())
+    mcp_lookup = _wrapped_mcp_lookup(runtime)
+    actions: list[dict[str, Any]] = []
+    for raw in FINANCIAL_MANAGER_ACTIONS:
+        item = dict(raw)
+        mode = str(item.get("mode") or "read_only")
+        item["available"] = False
+        item["status"] = "unavailable"
+        item["side_effect"] = {
+            "level": "read_only" if mode == "read_only" else "stateful" if mode == "stateful_intent" else "trade_risk",
+            "target": item.get("intent_action") or item.get("tool") or item.get("mcp_tool") or item.get("action_id"),
+            "confirmation_required": mode != "read_only",
+            "idempotent": mode == "read_only",
+        }
+        if mode == "blocked":
+            item["status"] = "blocked"
+        elif item.get("tool"):
+            item["available"] = str(item["tool"]) in names
+            item["status"] = "ready" if item["available"] else "missing_tool"
+        elif item.get("mcp_tool"):
+            mcp = mcp_lookup.get(str(item["mcp_tool"]))
+            item["available"] = bool(mcp)
+            item["status"] = "ready" if mcp else "missing_mcp_tool"
+            if mcp:
+                item["wrapped_tool"] = mcp.get("wrapped_name")
+        elif item.get("intent_action"):
+            item["available"] = "agent_action_intent_create" in names
+            item["status"] = "intent_ready" if item["available"] else "missing_intent_tool"
+        actions.append(item)
+    summary: dict[str, int] = {}
+    for item in actions:
+        status = str(item.get("status") or "unknown")
+        summary[status] = summary.get(status, 0) + 1
+    return {
+        "object": "aiask.desktop.financial_manager.catalog",
+        "groups": list(FINANCIAL_MANAGER_GROUPS),
+        "actions": actions,
+        "summary": summary,
+        "safety": {
+            "mode": "read_only_plus_intents",
+            "live_trading_enabled": False,
+            "stateful_execution": "action_intent_only",
+            "secrets_redacted": True,
+        },
+        "secrets_redacted": True,
+    }
+
+
+async def _financial_status_payload(runtime: AgentRuntime) -> dict[str, Any]:
+    catalog = _financial_catalog_payload(runtime)
+    readiness = await financial_system_readiness(
+        runtime,
+        full_runtime=None,
+        full_mode_enabled=_hermes_full_enabled(),
+        control_token_configured=_control_token_configured(),
+        ai_status=_ai_status_payload_for_runtime(runtime),
+    )
+    mcp = MCPAggregator()
+    return {
+        "object": "aiask.desktop.financial_manager.status",
+        "status": readiness.get("status") or "unknown",
+        "readiness": _redact_secrets(readiness),
+        "catalog_summary": catalog.get("summary") or {},
+        "mcp": {
+            "registration": _redact_secrets(mcp.registration_diagnostics()),
+            "servers": _redact_secrets(mcp.servers_summary(include_all=False)),
+        },
+        "broker": {
+            "live_trading_enabled": False,
+            "read_only_surfaces": ["ths_query_position", "ths_query_orders", "ths_query_deals", "qmt_query_account", "qmt_query_position", "qmt_query_orders"],
+            "blocked_actions": ["ths_place_order", "ths_cancel_order", "qmt_place_order", "qmt_cancel_order"],
+        },
+        "recent_intents": [],
+        "secrets_redacted": True,
+    }
+
+
+def _manager_arguments(action: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    mcp_action = str(action.get("mcp_action") or "").strip()
+    if not mcp_action:
+        return dict(params)
+    return {"action": mcp_action, "params": dict(params), **dict(params)}
+
+
+async def _financial_query_payload(runtime: AgentRuntime, payload: dict[str, Any]) -> dict[str, Any]:
+    action = _financial_action_map().get(_financial_action_key(str(payload.get("capability_id") or ""), str(payload.get("action_id") or "")))
+    if not action:
+        return {"object": "aiask.desktop.financial_manager.query", "success": False, "data": None, "error": "financial manager action is not registered", "error_code": "FINANCIAL_ACTION_NOT_FOUND", "secrets_redacted": True}
+    if action.get("mode") == "blocked":
+        return {"object": "aiask.desktop.financial_manager.query", "success": False, "data": {"action": action, "reason": action.get("blocked_reason")}, "error": str(action.get("blocked_reason") or "action is blocked"), "error_code": "FINANCIAL_ACTION_BLOCKED", "secrets_redacted": True}
+    if action.get("mode") != "read_only":
+        return {"object": "aiask.desktop.financial_manager.query", "success": False, "data": {"action": action, "required_endpoint": "/v1/desktop/financial-manager/intent"}, "error": "stateful financial actions must be created as ActionIntent", "error_code": "FINANCIAL_ACTION_REQUIRES_INTENT", "secrets_redacted": True}
+    params = dict(action.get("default_params") or {})
+    params.update(dict(payload.get("params") or {}))
+    tool_name = str(action.get("tool") or "")
+    if not tool_name and action.get("mcp_tool"):
+        match = _wrapped_mcp_lookup(runtime).get(str(action.get("mcp_tool")))
+        tool_name = str((match or {}).get("wrapped_name") or "")
+        params = _manager_arguments(action, params)
+    if not tool_name:
+        return {"object": "aiask.desktop.financial_manager.query", "success": False, "data": {"action": action}, "error": "financial manager tool is not available", "error_code": "FINANCIAL_TOOL_UNAVAILABLE", "secrets_redacted": True}
+    result = await runtime.tool_registry.call_tool(tool_name, params)
+    return {
+        "object": "aiask.desktop.financial_manager.query",
+        "capability_id": action.get("capability_id"),
+        "action_id": action.get("action_id"),
+        "tool": tool_name,
+        "success": bool(result.get("success")),
+        "data": _redact_secrets(result.get("data")),
+        "error": result.get("error"),
+        "error_code": result.get("error_code"),
+        "meta": _redact_secrets(result.get("meta")),
+        "secrets_redacted": True,
+    }
+
+
+async def _financial_intent_payload(runtime: AgentRuntime, payload: dict[str, Any]) -> dict[str, Any]:
+    action = _financial_action_map().get(_financial_action_key(str(payload.get("capability_id") or ""), str(payload.get("action_id") or "")))
+    if not action:
+        return {"object": "aiask.desktop.financial_manager.intent", "success": False, "data": None, "error": "financial manager action is not registered", "error_code": "FINANCIAL_ACTION_NOT_FOUND", "secrets_redacted": True}
+    if action.get("mode") == "blocked":
+        return {"object": "aiask.desktop.financial_manager.intent", "success": False, "data": {"action": action, "reason": action.get("blocked_reason")}, "error": str(action.get("blocked_reason") or "action is blocked"), "error_code": "FINANCIAL_ACTION_BLOCKED", "secrets_redacted": True}
+    if action.get("mode") != "stateful_intent":
+        return {"object": "aiask.desktop.financial_manager.intent", "success": False, "data": {"action": action}, "error": "read-only financial actions do not create intents", "error_code": "FINANCIAL_ACTION_READ_ONLY", "secrets_redacted": True}
+    params = dict(action.get("default_params") or {})
+    params.update(dict(payload.get("params") or {}))
+    result = await runtime.tool_registry.call_tool(
+        "agent_action_intent_create",
+        {
+            "action": str(action.get("intent_action") or ""),
+            "params": params,
+            "rationale": payload.get("rationale") or f"Financial Manager V1 intent for {action.get('label') or action.get('action_id')}",
+            "user_id": payload.get("user_id"),
+        },
+    )
+    return {
+        "object": "aiask.desktop.financial_manager.intent",
+        "capability_id": action.get("capability_id"),
+        "action_id": action.get("action_id"),
+        "success": bool(result.get("success")),
+        "data": _redact_secrets(result.get("data")),
+        "error": result.get("error"),
+        "error_code": result.get("error_code"),
+        "meta": _redact_secrets(result.get("meta")),
+        "secrets_redacted": True,
+    }
+
+
 def create_app(
     *,
     runtime: AgentRuntime | None = None,
@@ -1389,6 +1632,28 @@ def create_app(
             ai_status=ai_status_payload(),
         )
 
+    @app.get("/v1/desktop/financial-manager/catalog")
+    async def desktop_financial_manager_catalog(request: Request) -> dict[str, Any]:
+        require_api(request)
+        return _financial_catalog_payload(runtime)
+
+    @app.get("/v1/desktop/financial-manager/status")
+    async def desktop_financial_manager_status(request: Request) -> dict[str, Any]:
+        require_api(request)
+        return await _financial_status_payload(runtime)
+
+    @app.post("/v1/desktop/financial-manager/query")
+    async def desktop_financial_manager_query(request: Request) -> dict[str, Any]:
+        require_api(request)
+        return await _financial_query_payload(runtime, dict(await request.json() or {}))
+
+    @app.post("/v1/desktop/financial-manager/intent")
+    async def desktop_financial_manager_intent(request: Request) -> dict[str, Any]:
+        ok, reason = control_authorized(request)
+        if not ok:
+            raise HTTPException(503 if reason == "control token is not configured" else 401, detail=reason)
+        return await _financial_intent_payload(runtime, dict(await request.json() or {}))
+
     @app.get("/v1/hermes/toolsets")
     async def hermes_toolsets(request: Request) -> dict[str, Any]:
         require_api(request)
@@ -1530,6 +1795,11 @@ def create_app(
     async def session_messages(request: Request, session_id: str, limit: int = 200) -> dict[str, Any]:
         require_api(request)
         return {"object": "list", "session_id": session_id, "data": runtime.session_store.list_session_messages(session_id, limit=limit)}
+
+    @app.get("/intents")
+    async def intent_list(request: Request, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+        require_api(request)
+        return {"object": "list", "data": intent_executor.store.list(status=status, limit=limit)}
 
     @app.get("/intents/{intent_id}")
     async def intent_get(request: Request, intent_id: str) -> dict[str, Any]:
@@ -2094,6 +2364,11 @@ def create_app(
         require_api(request)
         return {"object": "list", "data": runtime.job_store.list()}
 
+    @app.get("/v1/jobs/{job_id}/runs")
+    async def job_runs(request: Request, job_id: str, limit: int = 100) -> dict[str, Any]:
+        require_api(request)
+        return {"object": "list", "job_id": job_id, "data": runtime.job_store.list_runs(job_id, limit=limit)}
+
     @app.post("/v1/jobs")
     async def job_create(request: Request) -> dict[str, Any]:
         require_api(request)
@@ -2604,6 +2879,18 @@ def build_server(
                     return
                 self._send_json(200, quant_adapter.quant_presets())
                 return
+            if path == "/v1/desktop/financial-manager/catalog":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(200, _financial_catalog_payload(runtime))
+                return
+            if path == "/v1/desktop/financial-manager/status":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(200, asyncio.run(_financial_status_payload(runtime)))
+                return
             if path.startswith("/v1/desktop/quant/research-runs/"):
                 if not self._api_authorized():
                     self._send_error_json(401, "unauthorized", code="unauthorized")
@@ -2712,6 +2999,29 @@ def build_server(
                     self._send_error_json(401, "unauthorized", code="unauthorized")
                     return
                 self._send_json(200, {"object": "list", "data": runtime.job_store.list()})
+                return
+            if path.startswith("/v1/jobs/") and path.endswith("/runs"):
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                job_id = path.strip("/").split("/")[2]
+                limit = int((query.get("limit") or ["100"])[0])
+                self._send_json(200, {"object": "list", "job_id": job_id, "data": runtime.job_store.list_runs(job_id, limit=limit)})
+                return
+            if path == "/intents":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    {
+                        "object": "list",
+                        "data": intent_executor.store.list(
+                            status=(query.get("status") or [None])[0],
+                            limit=int((query.get("limit") or ["100"])[0]),
+                        ),
+                    },
+                )
                 return
             if path.startswith("/intents/"):
                 if not self._api_authorized():
@@ -2874,6 +3184,22 @@ def build_server(
                     return
                 result = asyncio.run(runtime.tool_registry.call_tool("agent_quant_research_run", payload))
                 self._send_json(200, result)
+                return
+
+            if path == "/v1/desktop/financial-manager/query":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(200, asyncio.run(_financial_query_payload(runtime, payload)))
+                return
+
+            if path == "/v1/desktop/financial-manager/intent":
+                ok, reason = self._control_authorized()
+                if not ok:
+                    status = 503 if reason == "control token is not configured" else 401
+                    self._send_error_json(status, reason or "unauthorized", code="control_unauthorized")
+                    return
+                self._send_json(200, asyncio.run(_financial_intent_payload(runtime, payload)))
                 return
 
             if path == "/v1/desktop/data/sync-plan":

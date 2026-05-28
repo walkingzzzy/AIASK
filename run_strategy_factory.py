@@ -386,6 +386,23 @@ class StrategyFactoryRunner:
                         self._run_count, status, elapsed, result.get("error", "partial"),
                     )
                     self._log_stages(data)
+                elif status in ("partial_infra", "partial_llm",
+                                "success_no_strategy", "success_no_submission"):
+                    # These are "basically success with caveats" — per
+                    # run_models.py priority table, they sit above failure
+                    # but report quality/infra warnings. Group with partial.
+                    self._partial_count += 1
+                    flavor = {
+                        "partial_infra": "基础设施降级",
+                        "partial_llm": "LLM 降级",
+                        "success_no_strategy": "成功但未产策略",
+                        "success_no_submission": "成功但未提交",
+                    }.get(status, status)
+                    logger.warning(
+                        "第 %d 轮部分完成 ⚠ 状态=%s (%s) 耗时=%.1fs",
+                        self._run_count, status, flavor, elapsed,
+                    )
+                    self._log_stages(data)
                 elif status == "skipped":
                     self._skipped_count += 1
                     logger.info(
@@ -395,7 +412,10 @@ class StrategyFactoryRunner:
                 else:
                     self._failure_count += 1
                     error = result.get("error", "unknown")
-                    logger.warning("第 %d 轮失败 ❌ 错误: %s", self._run_count, error)
+                    logger.warning(
+                        "第 %d 轮失败 ❌ 状态=%s 错误: %s",
+                        self._run_count, status or "(empty)", error,
+                    )
 
             except asyncio.CancelledError as exc:
                 if self._active_dispatch:

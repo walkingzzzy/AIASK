@@ -92,14 +92,39 @@ def get_stock_list(limit: int = 500, offset: int = 0) -> dict:
         data, _ = get_stock_list_cached()
         total = len(data)
         page = data[safe_offset:safe_offset + safe_limit]
-        return ok({
+        # P3-5.14 fix: PE 极端负值标 numeric_sanity warning(诊断报告 §5.14)
+        # 历史问题:亏损股 PE 为负甚至 -10000+(因 EPS 接近 0),AI 看到负 PE 误判逻辑
+        sanity_warnings: list[dict] = []
+        extreme_pe_codes: list[str] = []
+        for stock in page:
+            pe = stock.get('pe') or stock.get('peRatio') or stock.get('pe_ratio')
+            try:
+                pe_val = float(pe) if pe is not None and pe != "" else None
+            except (TypeError, ValueError):
+                pe_val = None
+            if pe_val is not None and (pe_val < -1000 or pe_val > 10000):
+                code = str(stock.get('code') or stock.get('symbol') or '')
+                if code:
+                    extreme_pe_codes.append(code)
+                stock['_numeric_sanity_warning'] = f'PE 极端值 {pe_val:.2f}'
+        if extreme_pe_codes:
+            sanity_warnings.append({
+                'code': 'extreme_pe_values',
+                'message': f'{len(extreme_pe_codes)} 只股票 PE 超出 [-1000, 10000] 区间(亏损股或停牌股),建议结合 EPS/净利润判断',
+                'severity': 'info',
+                'sample_codes': extreme_pe_codes[:10],
+            })
+        result = {
             'stocks': page,
             'count': len(page),
             'total': total,
             'offset': safe_offset,
             'limit': safe_limit,
             'truncated': safe_offset + len(page) < total,
-        })
+        }
+        if sanity_warnings:
+            result['warnings'] = sanity_warnings
+        return ok(result)
     except Exception as e:
         fallback_reason = str(e)
 

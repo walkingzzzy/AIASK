@@ -206,17 +206,40 @@ def register_data_sync_manager(mcp):
                     # P0-1 fix: critical_table_stale_alerts
                     # 监控关键数据表的 max_date 是否过期(北向资金/融资融券/龙虎榜/指数)
                     # 任何一张 stale > 阈值都 emit alert,让 AI Agent 和监控系统看到底层数据问题
+                    # P3-B6 fix: 修正 column 名 + 表名(对话式复测发现 5/5 query_failed)
+                    # 历史问题:date / period 列名错误,dragon_tiger_list 表不存在
+                    # 真实 schema:
+                    #   north_fund_flow.trade_date / north_fund_holding.trade_date
+                    #   margin_market_flow.trade_date / margin_detail.trade_date
+                    #   dragon_tiger.trade_date(无 _list 后缀)/ kline_1d.time
                     critical_tables = [
                         # (table, date_col, max_stale_days, severity_threshold_days)
-                        ('north_fund_flow', 'date', 7, 30),
-                        ('north_fund_holding', 'period', 14, 60),
-                        ('margin_market_flow', 'date', 3, 14),
-                        ('margin_detail', 'date', 3, 14),
-                        ('dragon_tiger_list', 'date', 3, 14),
+                        ('north_fund_flow', 'trade_date', 7, 30),
+                        ('north_fund_holding', 'trade_date', 14, 60),
+                        ('margin_market_flow', 'trade_date', 3, 14),
+                        ('margin_detail', 'trade_date', 3, 14),
+                        ('dragon_tiger', 'trade_date', 3, 14),
                         ('kline_1d', 'time', 2, 14),  # 个股 K 线 (跳过周末为 ~3 天)
                     ]
                     critical_table_alerts: list[dict] = []
                     for table, col, warn_days, high_days in critical_tables:
+                        # P3-B6: 先校验表是否存在,避免传播 OperationalError
+                        try:
+                            tbl_check = await conn.fetchval(
+                                "SELECT name FROM sqlite_master WHERE type='table' AND name = $1",
+                                table,
+                            )
+                        except Exception:
+                            tbl_check = None
+                        if not tbl_check:
+                            critical_table_alerts.append({
+                                'table': table,
+                                'severity': 'unknown',
+                                'reason': 'table_missing',
+                                'max_date': None,
+                                'days_stale': None,
+                            })
+                            continue
                         try:
                             max_d = await conn.fetchval(f"SELECT MAX({col}) FROM {table}")
                             if max_d is None:
@@ -333,7 +356,7 @@ def register_data_sync_manager(mcp):
             
             elif action == 'get_task':
                 task_id = kwargs.get('task_id')
-                
+
                 if not task_id:
                     return fail('需要提供task_id参数')
 
@@ -355,7 +378,7 @@ def register_data_sync_manager(mcp):
                         'scheduled' if _as_bool(schedule_data.get('enabled'), True) else 'cancelled',
                     )
                     return ok(schedule_data)
-                
+
                 async with db.acquire() as conn:
                     task = await conn.fetchrow(
                         "SELECT * FROM sync_tasks WHERE task_id = $1",
@@ -366,13 +389,13 @@ def register_data_sync_manager(mcp):
                         return fail(f'未找到任务: {task_id}')
                     
                     task_data = dict(task)
-                
+
                 return ok(task_data)
             
             elif action == 'list_tasks':
                 status = kwargs.get('status')
                 limit = kwargs.get('limit', 20)
-                
+
                 async with db.acquire() as conn:
                     if status:
                         rows = await conn.fetch(
@@ -387,9 +410,35 @@ def register_data_sync_manager(mcp):
                     
                     tasks = [dict(row) for row in rows]
                 
+                # P3-5.5 fix: codes=空且非全市场任务标 status='skipped'(诊断报告 §5.5)
+                # 历史问题:codes 为空时 sync 直接 fail,但若历史已落库 task 在 list_tasks 中无法识别
+                # 修复:list_tasks 出来后,对 codes 字段空的非全市场 task 派生 derived_status='skipped'
+                _full_market_tasks = {
+                    'core_market', 'factor_context', 'market_text_source_ingest',
+                    'vector_backfill_market_docs', 'vector_backfill_kline_patterns',
+                    'vector_backfill_stock_profiles', 'vector_backfill_factor_candidates',
+                    'factor_external_research_ingest', 'vector_build_snapshot',
+                    'vector_benchmark_collection', 'vector_optimize_bootstrap',
+                    'factor_validation_bootstrap',
+                }
+                skipped_count = 0
+                for task in tasks:
+                    task_type = str(task.get('task_type') or task.get('type') or '')
+                    raw_codes = task.get('codes') or task.get('stock_codes') or []
+                    has_codes = False
+                    if isinstance(raw_codes, list):
+                        has_codes = any(str(c or '').strip() for c in raw_codes)
+                    elif isinstance(raw_codes, str):
+                        has_codes = bool(raw_codes.strip())
+                    if not has_codes and task_type not in _full_market_tasks:
+                        task['derived_status'] = 'skipped'
+                        task['skip_reason'] = 'codes_empty_for_per_stock_task'
+                        skipped_count += 1
+
                 return ok({
                     'tasks': tasks,
                     'count': len(tasks),
+                    'skipped_count': skipped_count,
                 })
             
             elif action == 'cancel_task':
@@ -443,23 +492,35 @@ def register_data_sync_manager(mcp):
                 schedule_id = kwargs.get('schedule_id') or kwargs.get('task_id')
                 if not schedule_id:
                     return fail('需要提供 schedule_id 参数')
+                # P3-5.6 fix: 支持 hard_delete=true 物理删除(诊断报告 §5.6)
+                # 历史问题:cancel_schedule 仅 enabled=false,sync_schedules 表不断膨胀,运维难清理
+                hard_delete = _as_bool(kwargs.get('hard_delete', False), False)
                 async with db.acquire() as conn:
-                    try:
+                    if hard_delete:
                         result = await conn.execute(
-                            "UPDATE sync_schedules SET enabled = false, updated_at = CURRENT_TIMESTAMP WHERE schedule_id = $1",
+                            "DELETE FROM sync_schedules WHERE schedule_id = $1",
                             str(schedule_id),
                         )
-                    except Exception:
-                        result = await conn.execute(
-                            "UPDATE sync_schedules SET enabled = false WHERE schedule_id = $1",
-                            str(schedule_id),
-                        )
-                if result == 'UPDATE 0':
+                    else:
+                        try:
+                            result = await conn.execute(
+                                "UPDATE sync_schedules SET enabled = false, updated_at = CURRENT_TIMESTAMP WHERE schedule_id = $1",
+                                str(schedule_id),
+                            )
+                        except Exception:
+                            result = await conn.execute(
+                                "UPDATE sync_schedules SET enabled = false WHERE schedule_id = $1",
+                                str(schedule_id),
+                            )
+                # 兼容 UPDATE 0 / DELETE 0 形式的 result
+                empty_marker = 'DELETE 0' if hard_delete else 'UPDATE 0'
+                if result == empty_marker:
                     return fail(f'调度任务不存在: {schedule_id}')
                 return ok({
                     'schedule_id': str(schedule_id),
-                    'status': 'cancelled',
+                    'status': 'deleted' if hard_delete else 'cancelled',
                     'enabled': False,
+                    'hard_deleted': hard_delete,
                     'target_type': 'schedule',
                 })
             
@@ -485,6 +546,53 @@ def register_data_sync_manager(mcp):
                 } and not codes:
                     return fail('需要提供codes参数')
                 
+                # P3-5.6 fix: 创建去重(诊断报告 §5.6)
+                # 历史问题:重复调用 schedule 同 task_type+codes 会创建多个 schedule_id,运维难清理
+                # 修复:先检查是否存在同 task_type + codes_signature 的 enabled schedule,有则更新而非新建
+                codes_signature = ",".join(sorted(codes or []))
+                async with db.acquire() as conn:
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT schedule_id FROM sync_schedules
+                        WHERE task_type = $1 AND enabled = true
+                          AND COALESCE(array_to_string(codes, ',', ''), '') = $2
+                        ORDER BY created_at DESC LIMIT 1
+                        """,
+                        task_type,
+                        codes_signature,
+                    ) if hasattr(conn, 'fetchrow') else None
+
+                if existing:
+                    # 已存在同任务,更新 schedule + next_run
+                    next_run = _compute_next_run(schedule)
+                    params = _build_schedule_params(task_type, kwargs, codes)
+                    schedule_id = str(existing['schedule_id'])
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE sync_schedules
+                            SET schedule = $2, params = $3, enabled = $4, next_run = $5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE schedule_id = $1
+                            """,
+                            schedule_id,
+                            schedule,
+                            json.dumps(params, ensure_ascii=False, default=str),
+                            enabled,
+                            next_run,
+                        )
+                    return ok({
+                        'schedule_id': schedule_id,
+                        'task_type': task_type,
+                        'schedule': schedule,
+                        'codes_count': len(codes),
+                        'enabled': enabled,
+                        'params': params,
+                        'next_run': next_run.isoformat(),
+                        'reused_existing': True,
+                        'message': f'已存在同 task_type + codes 的 schedule_id={schedule_id},已更新而非新建',
+                    })
+
                 schedule_id = f'schedule_{task_type}_{int(datetime.now().timestamp())}'
                 next_run = _compute_next_run(schedule)
                 params = _build_schedule_params(task_type, kwargs, codes)
@@ -512,6 +620,7 @@ def register_data_sync_manager(mcp):
                     'enabled': enabled,
                     'params': params,
                     'next_run': next_run.isoformat(),
+                    'reused_existing': False,
                 })
 
             elif action == 'list_schedules':

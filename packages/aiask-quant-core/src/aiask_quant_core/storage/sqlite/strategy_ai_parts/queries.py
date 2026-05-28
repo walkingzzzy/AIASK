@@ -1174,6 +1174,94 @@
             )
         return {"event_id": event_id, "status": payload.get("status") or "pending_review"}
 
+    async def patch_event_injection(self, event_id: str, fields: dict) -> dict:
+        """Patch only explicitly provided event injection fields.
+
+        ``upsert_event_injection`` is intentionally a full create/update API and
+        supplies defaults for missing fields. Status-only flows such as approve,
+        pause, expire, and reject must not use it because defaults would wipe
+        event metadata on conflict.
+        """
+
+        import json as _json
+
+        event_id_str = str(event_id or "").strip()
+        if not event_id_str:
+            raise ValueError("event_id is required")
+
+        allowed_columns = {
+            "source",
+            "event_name",
+            "event_type",
+            "direction",
+            "confidence",
+            "intensity",
+            "horizon",
+            "scope",
+            "primary_themes",
+            "rationale",
+            "evidence",
+            "valid_from",
+            "valid_until",
+            "status",
+            "operator_id",
+            "approver_id",
+            "approved_at",
+        }
+        patch: dict = {}
+        for key, value in dict(fields or {}).items():
+            if key in allowed_columns:
+                patch[key] = value
+        if not patch:
+            return {"event_id": event_id_str, "updated": 0, "reason": "no_allowed_fields"}
+
+        assignments: list[str] = []
+        params: list = []
+        idx = 1
+        for column, value in patch.items():
+            if column == "primary_themes":
+                value = _json.dumps(value or [], ensure_ascii=False)
+            elif column == "evidence":
+                value = bounded_json_text(
+                    "strategy_factory_event_injections.evidence",
+                    value or {},
+                    max_bytes=strategy_json_field_max_bytes(),
+                )
+            elif column in {"confidence", "intensity"} and value is not None:
+                value = float(value)
+            elif column not in {"direction", "rationale", "operator_id", "approver_id", "approved_at"}:
+                value = str(value or "").strip()
+            assignments.append(f"{column} = ${idx}")
+            params.append(value)
+            idx += 1
+
+        params.append(event_id_str)
+        async with self.acquire() as conn:
+            await conn.execute(
+                f"""
+                UPDATE strategy_factory_event_injections
+                SET {", ".join(assignments)}, updated_at = CURRENT_TIMESTAMP
+                WHERE event_id = ${idx}
+                """,
+                *params,
+            )
+            row = await conn.fetchrow(
+                "SELECT * FROM strategy_factory_event_injections WHERE event_id = $1",
+                event_id_str,
+            )
+
+        if row is None:
+            return {"event_id": event_id_str, "updated": 0, "missing": True}
+        item = dict(row)
+        for json_field in ("primary_themes", "evidence"):
+            raw = item.get(json_field)
+            if isinstance(raw, str):
+                try:
+                    item[json_field] = _json.loads(raw)
+                except Exception:
+                    pass
+        return {"event_id": event_id_str, "updated": 1, "event": item}
+
     async def update_event_outcome(self, event_id: str, *, actual_outcome: str, outcome_notes: str = None) -> dict:
         async with self.acquire() as conn:
             await conn.execute(
@@ -1290,7 +1378,7 @@
                     s.market_cap,
                     r.block_code,
                     COALESCE(r.block_name, mb.block_name, r.block_code) AS block_name,
-                    COALESCE(r.block_type, mb.block_type, '') AS block_type,
+                    COALESCE(r.block_type, '') AS block_type,
                     COALESCE(r.gp_num, mb.stock_count, 0) AS member_count,
                     extra.trade_date,
                     extra.turnover_rate,
@@ -1311,8 +1399,8 @@
                       ON latest.code = e.code AND latest.trade_date = e.trade_date
                 ) extra ON extra.code = s.{code_col}
                 WHERE (
-                    LOWER(COALESCE(r.block_type, mb.block_type, '')) LIKE '%concept%'
-                    OR COALESCE(r.block_type, mb.block_type, '') LIKE '%概念%'
+                    LOWER(COALESCE(r.block_type, '')) LIKE '%concept%'
+                    OR COALESCE(r.block_type, '') LIKE '%概念%'
                 ){symbol_clause}
                 ORDER BY s.{code_col}, block_name
                 LIMIT ${idx}
@@ -1338,9 +1426,9 @@
                     s.list_status,
                     s.market_cap,
                     bs.block_code,
-                    COALESCE(mb.block_name, bs.block_code) AS block_name,
-                    COALESCE(mb.block_type, '') AS block_type,
-                    COALESCE(mb.stock_count, 0) AS member_count,
+                    COALESCE(concept_blocks.block_name, mb.block_name, bs.block_code) AS block_name,
+                    concept_blocks.block_type AS block_type,
+                    COALESCE(concept_blocks.member_count, mb.stock_count, 0) AS member_count,
                     extra.trade_date,
                     extra.turnover_rate,
                     extra.zsz,
@@ -1348,7 +1436,20 @@
                     extra.tp_flag
                 FROM stocks s
                 JOIN block_stocks bs ON bs.stock_code = s.{code_col}
-                JOIN market_blocks mb ON mb.block_code = bs.block_code
+                JOIN (
+                    SELECT
+                        block_code,
+                        MAX(block_name) AS block_name,
+                        MAX(block_type) AS block_type,
+                        MAX(COALESCE(gp_num, 0)) AS member_count
+                    FROM tdx_relation
+                    WHERE (
+                        LOWER(COALESCE(block_type, '')) LIKE '%concept%'
+                        OR COALESCE(block_type, '') LIKE '%概念%'
+                    )
+                    GROUP BY block_code
+                ) concept_blocks ON concept_blocks.block_code = bs.block_code
+                LEFT JOIN market_blocks mb ON mb.block_code = bs.block_code
                 LEFT JOIN (
                     SELECT e.*
                     FROM tdx_stock_extra e
@@ -1359,10 +1460,7 @@
                     ) latest
                       ON latest.code = e.code AND latest.trade_date = e.trade_date
                 ) extra ON extra.code = s.{code_col}
-                WHERE (
-                    LOWER(COALESCE(mb.block_type, '')) LIKE '%concept%'
-                    OR COALESCE(mb.block_type, '') LIKE '%概念%'
-                ){symbol_clause}
+                WHERE 1 = 1 {symbol_clause}
                 ORDER BY s.{code_col}, block_name
                 LIMIT ${idx}
                 """,

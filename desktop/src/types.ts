@@ -95,16 +95,39 @@ export interface AgentResponse {
   };
 }
 
+export interface ResponseRecord extends AgentResponse {
+  model?: string;
+  usage?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface RunRecord {
+  run_id?: string;
+  id?: string;
+  object?: string;
+  status?: string;
+  response_id?: string;
+  session_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  payload?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export type InspectorTab = "details" | "diagnostics" | "tools" | "skills" | "intents" | "settings";
 export type MainView =
   | "overview"
   | "workbench"
+  | "financial-manager"
   | "agent"
   | "coverage"
   | "models"
   | "data"
   | "mcp"
   | "automation"
+  | "workflows"
   | "strategy-factory"
   | "factor-factory"
   | "incubation"
@@ -400,6 +423,142 @@ export interface DesktopSettingsStatus {
   secrets_redacted: boolean;
 }
 
+export interface AuthState {
+  controlTokenConfigured: boolean;
+  controlTokenProvided: boolean;
+  controlAuthorized?: boolean;
+  fullModeEnabled?: boolean;
+  fullModeActive?: boolean;
+  reason?: string | null;
+}
+
+export interface ConnectorDetail {
+  id?: string;
+  name: string;
+  type: string;
+  category?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  connected?: boolean;
+  status?: string;
+  description?: string;
+  env_keys?: string[];
+  missing_env?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface GatewayPlatform {
+  platform?: string;
+  name?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  connected?: boolean;
+  status?: string;
+  missing_env?: string[];
+  [key: string]: unknown;
+}
+
+export interface GatewayMessage {
+  message_id?: string;
+  id?: string;
+  platform?: string;
+  direction?: string;
+  target?: string;
+  status?: string;
+  message?: string;
+  created_at?: string;
+  error?: string | null;
+  [key: string]: unknown;
+}
+
+export interface GatewayDaemonStatus {
+  object?: string;
+  data?: {
+    enabled?: boolean;
+    running?: boolean;
+    listeners?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface PluginCommand {
+  name?: string;
+  command?: string;
+  description?: string;
+  enabled?: boolean;
+  schema?: Record<string, unknown>;
+  input_schema?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface WebhookSubscription {
+  webhook_id: string;
+  name: string;
+  events?: string[];
+  prompt?: string;
+  deliver?: unknown;
+  enabled?: boolean;
+  secret_configured?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface LearningProposal {
+  proposal_id?: string;
+  id?: string;
+  status?: string;
+  title?: string;
+  summary?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface RlRun {
+  run_id?: string;
+  environment?: string;
+  status?: string;
+  started_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ApprovalItem {
+  approval_id?: string;
+  id?: string;
+  status?: string;
+  action?: string;
+  reason?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface JobRunRecord {
+  job_run_id: string;
+  job_id: string;
+  status: string;
+  response_id?: string | null;
+  run_id?: string | null;
+  error?: string | null;
+  duration_ms?: number | null;
+  started_at?: string;
+  finished_at?: string | null;
+  payload?: Record<string, unknown>;
+}
+
+export interface FactoryEventRecord {
+  event_id?: string;
+  id?: string;
+  event_name?: string;
+  name?: string;
+  event_type?: string;
+  status?: string;
+  source?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
 export interface DesktopDataStatus {
   object: string;
   status: string;
@@ -544,6 +703,79 @@ export interface FinancialSystemReadiness {
   summary: Record<string, number>;
   parity?: Record<string, unknown>;
   disclaimer?: string;
+}
+
+export type FinancialManagerMode = "read_only" | "stateful_intent" | "blocked" | string;
+
+export interface FinancialManagerGroup {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface FinancialManagerAction {
+  capability_id: string;
+  action_id: string;
+  group: string;
+  label: string;
+  mode: FinancialManagerMode;
+  status?: string;
+  available?: boolean;
+  tool?: string;
+  wrapped_tool?: string;
+  mcp_tool?: string;
+  mcp_action?: string;
+  intent_action?: string;
+  default_params?: Record<string, unknown>;
+  blocked_reason?: string;
+  side_effect?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface FinancialManagerCatalog {
+  object: string;
+  groups: FinancialManagerGroup[];
+  actions: FinancialManagerAction[];
+  summary?: Record<string, number>;
+  safety?: Record<string, unknown>;
+  secrets_redacted?: boolean;
+}
+
+export interface FinancialManagerStatus {
+  object: string;
+  status: string;
+  readiness?: FinancialSystemReadiness | Record<string, unknown>;
+  catalog_summary?: Record<string, number>;
+  mcp?: Record<string, unknown>;
+  broker?: Record<string, unknown>;
+  recent_intents?: unknown[];
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
+}
+
+export interface FinancialManagerQueryResult {
+  object: string;
+  capability_id?: string;
+  action_id?: string;
+  tool?: string;
+  success: boolean;
+  data?: unknown;
+  error?: string | null;
+  error_code?: string;
+  meta?: Record<string, unknown>;
+  secrets_redacted?: boolean;
+}
+
+export interface FinancialManagerIntentResult {
+  object: string;
+  capability_id?: string;
+  action_id?: string;
+  success: boolean;
+  data?: unknown;
+  error?: string | null;
+  error_code?: string;
+  meta?: Record<string, unknown>;
+  secrets_redacted?: boolean;
 }
 
 export interface CapabilityWorkbenchPayload {

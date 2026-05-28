@@ -170,6 +170,13 @@
                     return "\n".join(str(item.get("text") or item) for item in delta_content)
                 if delta_content not in (None, ""):
                     return str(delta_content)
+                # Fallback: DeepSeek-V4-pro / R1 style returns reasoning_content when content is empty
+                # (2026-05-28: official DeepSeek API returns msg.reasoning_content for v4-pro)
+                reasoning_content = message.get("reasoning_content")
+                if isinstance(reasoning_content, list):
+                    return "\n".join(str(item.get("text") or item) for item in reasoning_content)
+                if reasoning_content not in (None, ""):
+                    return str(reasoning_content)
             output = list(payload.get("output") or [])
             parts = []
             for item in output:

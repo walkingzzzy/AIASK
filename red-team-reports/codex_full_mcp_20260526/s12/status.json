@@ -1,0 +1,15 @@
+{
+  "scenario": "S12",
+  "title": "模拟交易",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T09:55:11+08:00",
+  "tools_tested": [
+    {"tool": "paper_trading_manager.create_account", "status": "pass", "note": "account_id=be265174"},
+    {"tool": "paper_trading_manager.place_order", "status": "degraded", "note": "filled with engine_warnings matching_engine+nav_engine off"},
+    {"tool": "paper_trading_manager.list_accounts", "status": "pass", "note": "user_id filter works"},
+    {"tool": "paper_trading_manager.summary", "status": "pass", "note": "reconciliation drift=false"},
+    {"tool": "paper_trading_manager.orders+positions", "status": "pass", "note": "T+1 sellable=0 correct"}
+  ],
+  "summary": {"pass": 4, "degraded": 1, "fail_graceful": 0, "fail_schema": 0},
+  "verdict": "pass"
+}

@@ -681,10 +681,22 @@ def get_north_fund(days: int = 30) -> dict:
                     "partial": True,
                     "message": "northbound fund data unavailable or stale",
                     "sources_status": sources_status,
+                    "policy": {
+                        "rfc_id": "RFC-001",
+                        "policy_id": "north_fund_em_deprecated_2024_08_19",
+                        "summary": "EM RPT_MUTUAL_DEAL_HISTORY 2024-08-19 后被监管要求停止公开,日频净流入 NET_DEAL_AMT 不再返回",
+                        "since": "2024-08-19",
+                        "alternatives": [
+                            "get_north_fund_holding(stock_code) — 季度持股快照 (EM datacenter 仍可用)",
+                            "get_north_fund_top(top_n) — 北向持股排行",
+                            "scripts/backfill_north_fund_em.py — TDX 付费包/历史 dump 离线灌库",
+                        ],
+                        "non_blocking": True,
+                    },
                 },
                 fallback_reason=sources_status,
                 source_chain=[source for source, _ in source_chain],
-                quality_flags=["empty_upstream", "stale"],
+                quality_flags=["empty_upstream", "stale", "rfc_001_north_fund_unavailable"],
             ),
             "get_north_fund",
             standard_model="NorthFundFlow",
@@ -761,7 +773,19 @@ def get_north_fund_holding(stock_code: str) -> dict:
         )
         if not items:
             return _with_provider_contract(
-                ok({"shares": 0, "ratio": 0, "change": 0}),
+                ok({
+                    "shares": 0,
+                    "ratio": 0,
+                    "change": 0,
+                    # P2-4.5.11 fix: change 字段语义明确(诊断报告 §4.5.11)
+                    "change_semantics": "delta_shares_vs_previous_trading_day",
+                    "change_unit": "shares",
+                    "field_doc": {
+                        "shares": "当日陆股通持股数(股)",
+                        "ratio": "持股占流通股比例(%)",
+                        "change": "持股数变化 = 最新持股数 - 上一交易日持股数(股); 正=增持, 负=减持",
+                    },
+                }),
                 "get_north_fund_holding",
                 standard_model="NorthFundHolding",
                 provider_used="eastmoney.datacenter",
@@ -770,13 +794,34 @@ def get_north_fund_holding(stock_code: str) -> dict:
         latest = items[0]
         prev = items[1] if len(items) > 1 else None
         latest_shares = parse_numeric(latest.get("HOLD_SHARES")) or 0
-        prev_shares = parse_numeric(prev.get("HOLD_SHARES")) if prev else 0
+        # P3-B2 fix: prev 缺失时 change 应为 null 而非 latest_shares(对话式复测发现)
+        # 历史问题:EM 仅返回 1 条数据时,prev_shares = 0 → change = latest_shares - 0 = latest_shares
+        #          AI 误读为"持股全部为新增"。
+        # 修复:严格区分"无前期数据"(prev_shares=None, change=None)和"前期为零"(prev_shares=0, change=latest_shares)。
+        prev_shares = parse_numeric(prev.get("HOLD_SHARES")) if prev else None
+        change_value: int | float | None
+        change_semantics = "delta_shares_vs_previous_trading_day"
+        if prev_shares is None:
+            change_value = None
+            change_semantics = "no_prior_period_data_available"
+        else:
+            change_value = latest_shares - prev_shares
         return _with_provider_contract(
             ok(
                 {
                     "shares": latest_shares,
                     "ratio": parse_numeric(latest.get("HOLD_SHARES_RATIO")) or 0,
-                    "change": latest_shares - (prev_shares or 0),
+                    "change": change_value,
+                    # P2-4.5.11 fix: 显式标注 change 字段单位/语义
+                    "change_semantics": change_semantics,
+                    "change_unit": "shares",
+                    "previous_shares": prev_shares,
+                    "previous_trade_date": str((prev or {}).get("TRADE_DATE") or "") if prev else None,
+                    "field_doc": {
+                        "shares": "当日陆股通持股数(股)",
+                        "ratio": "持股占流通股比例(%)",
+                        "change": "持股数变化 = 最新持股数 - 上一交易日持股数(股); 正=增持, 负=减持, null=无前期数据",
+                    },
                 }
             ),
             "get_north_fund_holding",

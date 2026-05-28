@@ -127,14 +127,14 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Strategy Event Console</span>
-          <h1>Lifecycle, risk, and incubation events</h1>
+          <span>策略事件控制台</span>
+          <h1>生命周期、风险与孵化事件</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : "implemented"} label={message} />
           <button className="small-button" disabled={loading} onClick={loadEvents} type="button">
             <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -143,47 +143,46 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
         <div className="capability-stack">
           <section className="capability-banner">
             <div>
-              <span>Read-only Agent tool</span>
-              <h2>Real strategy domain events</h2>
+              <span>只读 Agent 工具</span>
+              <h2>真实策略领域事件</h2>
               <p>
-                The console reads `agent_strategy_domain_events` through `/v1/tools`. It is intentionally read-only, so operators can inspect
-                lifecycle movement without bypassing the Agent safety boundary.
+                控制台通过 `/v1/tools` 读取 `agent_strategy_domain_events`。这里刻意保持只读，方便操作者查看生命周期变化，同时不绕过 Agent 安全边界。
               </p>
             </div>
             <div className="status-cluster">
-              <StatusBadge status="implemented" label={`${filteredEvents.length} visible`} />
-              <StatusBadge status={criticalCount ? "failed" : "implemented"} label={`${criticalCount} critical`} />
-              <StatusBadge status={incubationCount ? "implemented" : "not_loaded"} label={`${incubationCount} incubation`} />
+              <StatusBadge status="implemented" label={`${filteredEvents.length} 条可见`} />
+              <StatusBadge status={criticalCount ? "failed" : "implemented"} label={`${criticalCount} 条严重`} />
+              <StatusBadge status={incubationCount ? "implemented" : "not_loaded"} label={`${incubationCount} 条孵化`} />
             </div>
           </section>
 
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Filters</span>
-                <h3>Find the event that needs attention</h3>
+                <span>筛选</span>
+                <h3>查找需要关注的事件</h3>
               </div>
               <Filter size={18} />
             </div>
             <div className="event-filter-grid">
               <label>
-                <span>Strategy</span>
-                <input value={strategyId} onChange={(event) => setStrategyId(event.target.value)} placeholder="strategy id" />
+                <span>策略</span>
+                <input value={strategyId} onChange={(event) => setStrategyId(event.target.value)} placeholder="策略 ID" />
               </label>
               <label>
-                <span>Event type</span>
+                <span>事件类型</span>
                 <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
                   {EVENT_TYPE_OPTIONS.map((option) => (
                     <option key={option || "all"} value={option}>
-                      {option || "all events"}
+                      {option || "全部事件"}
                     </option>
                   ))}
                 </select>
               </label>
               <label>
-                <span>Severity</span>
+                <span>严重级别</span>
                 <select value={severity} onChange={(event) => setSeverity(event.target.value)}>
-                  <option value="">all severities</option>
+                  <option value="">全部级别</option>
                   <option value="info">info</option>
                   <option value="warning">warning</option>
                   <option value="high">high</option>
@@ -191,10 +190,10 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
                 </select>
               </label>
               <label>
-                <span>Search</span>
+                <span>搜索</span>
                 <div className="search-field">
                   <Search size={14} />
-                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="payload text" />
+                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="payload 文本" />
                 </div>
               </label>
             </div>
@@ -203,15 +202,15 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
           {message.startsWith("AIASK_") && (
             <div className="notice warn">
               <AlertTriangle size={15} />
-              {message}. The event console will recover automatically when the Agent API is available.
+              {message}. Agent API 可用后事件控制台会自动恢复。
             </div>
           )}
 
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Recent events</span>
-                <h3>Lifecycle stream</h3>
+                <span>最近事件</span>
+                <h3>生命周期流</h3>
               </div>
               <Zap size={18} />
             </div>
@@ -233,7 +232,7 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
                     <small>{formatTime(event.created_at)}</small>
                   </div>
                   <details className="raw-details">
-                    <summary>Evidence payload</summary>
+                    <summary>证据 payload</summary>
                     <JsonPanel value={event} />
                   </details>
                 </article>
@@ -241,7 +240,7 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
               {!filteredEvents.length && (
                 <div className="empty-mini">
                   <ShieldCheck size={24} />
-                  <span>No matching strategy events. Adjust filters or refresh after a factory/incubation run.</span>
+                  <span>没有匹配的策略事件。请调整筛选条件，或在工厂/孵化运行后刷新。</span>
                 </div>
               )}
             </div>

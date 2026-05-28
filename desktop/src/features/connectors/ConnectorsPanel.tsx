@@ -43,20 +43,20 @@ function connectorStatusIcon(status: string) {
 
 function typeLabel(type: string): string {
   const labels: Record<string, string> = {
-    financial: "Financial apps",
-    platform: "Messaging platforms",
-    mcp: "MCP servers",
-    plugin: "Plugins"
+    financial: "金融应用",
+    platform: "消息平台",
+    mcp: "MCP 服务",
+    plugin: "插件"
   };
   return labels[type] || type;
 }
 
 function categoryLabel(category: string): string {
   const labels: Record<string, string> = {
-    trading: "Trading",
-    data: "Data",
-    communication: "Communication",
-    tool: "Tool"
+    trading: "交易",
+    data: "数据",
+    communication: "通信",
+    tool: "工具"
   };
   return labels[category] || category;
 }
@@ -119,13 +119,13 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
       <div className="capability-banner">
         <div>
           <Cable size={20} />
-          <span>Connectors</span>
-          <h2>Application bindings and integrations</h2>
-          <p>Inspect financial applications, messaging platforms, MCP servers, and native plugin connections from one surface.</p>
+          <span>连接器</span>
+          <h2>应用绑定与集成</h2>
+          <p>在一个界面里查看金融应用、消息平台、MCP 服务和原生插件连接状态。</p>
         </div>
         <div className="status-cluster">
           <StatusBadge status={message.startsWith("AIASK_") ? "gated" : "ready"} label={message} />
-          <button className="btn-icon" onClick={fetchConnectors} disabled={loading} title="Refresh connectors" type="button">
+          <button className="btn-icon" onClick={fetchConnectors} disabled={loading} title="刷新连接器" type="button">
             <RefreshCw size={16} className={loading ? "spin" : ""} />
           </button>
         </div>
@@ -133,27 +133,27 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
 
       {gated && (
         <div className="notice warn">
-          <span>Control access is required to inspect connectors.</span>
-          <p>Set the Agent control token in Settings, then refresh this panel.</p>
+          <span>查看连接器需要控制权限。</span>
+          <p>请在设置中填写 Agent 控制令牌 Control token，然后刷新本面板。</p>
         </div>
       )}
 
       {summary && (
         <div className="diagnostics-summary wide">
           <div className="metric-card">
-            <span>Total connectors</span>
+            <span>连接器总数</span>
             <strong>{summary.total}</strong>
           </div>
           <div className="metric-card ok">
-            <span>Connected</span>
+            <span>已连接</span>
             <strong className="text-green">{summary.connected}</strong>
           </div>
           <div className="metric-card">
-            <span>Configured</span>
+            <span>已配置</span>
             <strong>{summary.configured}</strong>
           </div>
           <div className="metric-card">
-            <span>Unconfigured</span>
+            <span>未配置</span>
             <strong className="text-muted">{Math.max(summary.total - summary.configured, 0)}</strong>
           </div>
         </div>
@@ -171,7 +171,7 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
               </div>
               <StatusBadge
                 status={active ? "implemented" : "unconfigured"}
-                label={`${active}/${connectors.length} connected`}
+                label={`${active}/${connectors.length} 已连接`}
               />
             </div>
             <div className="connector-list">
@@ -192,18 +192,18 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
                   {connector.description && <p className="muted">{connector.description}</p>}
                   {connector.missing_env && connector.missing_env.length > 0 && (
                     <div className="notice info compact">
-                      <span>Missing environment variables: {connector.missing_env.join(", ")}</span>
+                      <span>缺少环境变量：{connector.missing_env.join(", ")}</span>
                     </div>
                   )}
                   {Array.isArray(connector.metadata?.tools_read) && connector.metadata.tools_read.length > 0 && (
                     <div className="connector-tools">
-                      <span className="muted">Read tools</span>
+                      <span className="muted">读取工具</span>
                       <strong>{String(connector.metadata.tools_read.length)}</strong>
                     </div>
                   )}
                   {Array.isArray(connector.metadata?.tools_trade) && connector.metadata.tools_trade.length > 0 && (
                     <div className="connector-tools">
-                      <span className="muted">Trading tools</span>
+                      <span className="muted">交易工具</span>
                       <strong>{String(connector.metadata.tools_trade.length)}</strong>
                     </div>
                   )}
@@ -216,7 +216,7 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
 
       {!summary && !loading && !gated && (
         <div className="notice info">
-          <span>No connector summary is loaded yet.</span>
+          <span>尚未加载连接器摘要。</span>
         </div>
       )}
     </div>

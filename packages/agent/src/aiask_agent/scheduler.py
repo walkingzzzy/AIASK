@@ -60,6 +60,23 @@ class AgentJobStore:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_job_runs (
+                job_run_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                response_id TEXT,
+                run_id TEXT,
+                error TEXT,
+                duration_ms INTEGER,
+                payload_json TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_job_runs_job ON agent_job_runs(job_id, started_at)")
         conn.commit()
         return conn
 
@@ -165,12 +182,92 @@ class AgentJobStore:
             )
             conn.commit()
 
+    def record_run_start(self, job_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        job_run_id = f"jobrun_{uuid4().hex}"
+        started_at = now_iso()
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_job_runs
+                    (job_run_id, job_id, status, payload_json, started_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (job_run_id, str(job_id or "").strip(), "running", _dumps(dict(payload or {})), started_at),
+            )
+            conn.commit()
+        return {"job_run_id": job_run_id, "job_id": job_id, "status": "running", "started_at": started_at}
+
+    def record_run_finish(
+        self,
+        job_run_id: str,
+        *,
+        status: str,
+        response_id: str | None = None,
+        run_id: str | None = None,
+        error: str | None = None,
+        duration_ms: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        finished_at = now_iso()
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                UPDATE agent_job_runs
+                SET status = ?, response_id = ?, run_id = ?, error = ?, duration_ms = ?,
+                    payload_json = ?, finished_at = ?
+                WHERE job_run_id = ?
+                """,
+                (
+                    str(status or "completed"),
+                    response_id,
+                    run_id,
+                    error,
+                    duration_ms,
+                    _dumps(dict(payload or {})),
+                    finished_at,
+                    str(job_run_id or "").strip(),
+                ),
+            )
+            conn.commit()
+        return self.get_run(job_run_id)
+
+    def get_run(self, job_run_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_job_runs WHERE job_run_id = ?",
+                (str(job_run_id or "").strip(),),
+            ).fetchone()
+        return self._run_row(row)
+
+    def list_runs(self, job_id: str | None = None, *, limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if job_id:
+            clauses.append("job_id = ?")
+            values.append(str(job_id))
+        values.append(max(1, min(int(limit or 100), 500)))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM agent_job_runs {where} ORDER BY started_at DESC LIMIT ?",
+                tuple(values),
+            ).fetchall()
+        return [item for row in rows if (item := self._run_row(row)) is not None]
+
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
         item["enabled"] = bool(item["enabled"])
+        item["payload"] = _loads(item.pop("payload_json", None), {})
+        return item
+
+    @staticmethod
+    def _run_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
         item["payload"] = _loads(item.pop("payload_json", None), {})
         return item
 
@@ -231,21 +328,47 @@ class BackgroundScheduler:
         job = self.store.get(job_id)
         if not job:
             return {"success": False, "error": f"job not found: {job_id}", "error_code": "NOT_FOUND"}
+        started = time.time()
+        run_record = self.store.record_run_start(job_id, {"job": {k: job.get(k) for k in ("job_id", "name", "toolset")}})
         prompt = self._build_prompt(job)
-        result = await self.runtime.run([{"role": "user", "content": prompt}], user_id=None)
-        self.store.mark_ran(job_id)
-        silent_pattern = str(dict(job.get("payload") or {}).get("silent_pattern") or "").strip()
-        silent = bool(silent_pattern and silent_pattern in result.content)
-        return {
-            "success": True,
-            "data": {
-                "job": self.store.get(job_id),
-                "response_id": result.response_id,
-                "run_id": result.run_id,
-                "silent": silent,
-            },
-            "error": None,
-        }
+        try:
+            result = await self.runtime.run([{"role": "user", "content": prompt}], user_id=None)
+            self.store.mark_ran(job_id)
+            silent_pattern = str(dict(job.get("payload") or {}).get("silent_pattern") or "").strip()
+            silent = bool(silent_pattern and silent_pattern in result.content)
+            finished = self.store.record_run_finish(
+                str(run_record["job_run_id"]),
+                status="completed",
+                response_id=result.response_id,
+                run_id=result.run_id,
+                duration_ms=int((time.time() - started) * 1000),
+                payload={"silent": silent},
+            )
+            return {
+                "success": True,
+                "data": {
+                    "job": self.store.get(job_id),
+                    "job_run": finished,
+                    "response_id": result.response_id,
+                    "run_id": result.run_id,
+                    "silent": silent,
+                },
+                "error": None,
+            }
+        except Exception as exc:
+            finished = self.store.record_run_finish(
+                str(run_record["job_run_id"]),
+                status="failed",
+                error=str(exc),
+                duration_ms=int((time.time() - started) * 1000),
+                payload={"job_id": job_id},
+            )
+            return {
+                "success": False,
+                "data": {"job": self.store.get(job_id), "job_run": finished},
+                "error": str(exc),
+                "error_code": "JOB_RUN_FAILED",
+            }
 
     @staticmethod
     def _build_prompt(job: dict[str, Any]) -> str:

@@ -528,17 +528,72 @@ def register_live_trading_manager(mcp):
                         "positions": "fetch normalized live positions",
                         "orders": "fetch normalized live orders",
                         "order_status": "fetch a single live order",
-                        "order_events": "build normalized live order event timeline",
+                        "order_events": "build normalized live order event timeline (REQUIRES order_id; optional limit, max 200)",
                         "fills": "fetch normalized fill events",
-                        "broker_receipts": "fetch broker receipt / ack for an order",
-                        "submit_order": "submit or preview a live order",
-                        "cancel_order": "cancel or preview cancellation for a live order",
-                        "mirror_to_paper": "mirror open live orders into paper-trading context",
-                        "sync_order_events": "persist normalized live order event snapshot as artifact",
+                        "broker_receipts": "fetch broker receipt / ack for an order (REQUIRES order_id)",
+                        "submit_order": "submit or preview a live order (REQUIRES code|symbol, side, qty|notional; supports execute=true with confirm_token)",
+                        "cancel_order": "cancel or preview cancellation for a live order (REQUIRES order_id; supports execute=true with confirm_token)",
+                        "mirror_to_paper": "mirror open live orders into paper-trading context (REQUIRES paper_account_id)",
+                        "sync_order_events": "persist normalized live order event snapshot as artifact (REQUIRES order_id)",
                         "monitor": "alias of gateway_status",
                         "sync_positions": "alias of positions with synced flag",
                         "help": "show help information",
-                    }
+                    },
+                    # P2-4.6.5 fix: 按 action 列出 required/optional 参数(诊断报告 §4.6.5)
+                    # 历史问题:supported_actions 只列说明,AI 不知 order_events 必须传 order_id,导致 422
+                    "action_params": {
+                        "order_events": {
+                            "required": ["order_id"],
+                            "optional": ["limit"],
+                            "limit_default": 50,
+                            "limit_max": 200,
+                        },
+                        "order_status": {
+                            "required": ["order_id"],
+                            "optional": [],
+                        },
+                        "broker_receipts": {
+                            "required": ["order_id"],
+                            "optional": [],
+                        },
+                        "submit_order": {
+                            "required_one_of": [["code"], ["symbol"]],
+                            "required": ["side"],
+                            "required_one_of_quantity": [["qty"], ["quantity"], ["notional"]],
+                            "optional": ["type", "limit_price", "stop_price", "time_in_force",
+                                         "extended_hours", "client_order_id",
+                                         "execute", "confirm_token", "dry_run", "artifact_id"],
+                            "doc": "execute=true 必须配套 confirm_token; 否则仅做 dry_run 预览",
+                        },
+                        "cancel_order": {
+                            "required": ["order_id"],
+                            "optional": ["execute", "confirm_token", "dry_run"],
+                        },
+                        "sync_order_events": {
+                            "required": ["order_id"],
+                            "optional": ["limit", "output_artifact_id", "artifact_id", "persist_artifact"],
+                        },
+                        "mirror_to_paper": {
+                            "required": ["paper_account_id"],
+                            "optional": ["symbols", "limit", "execute", "dry_run"],
+                        },
+                        "fills": {
+                            "required": [],
+                            "optional": ["order_id", "symbol", "limit", "as_of"],
+                        },
+                        "orders": {
+                            "required": [],
+                            "optional": ["status", "limit", "as_of"],
+                        },
+                        "positions": {
+                            "required": [],
+                            "optional": ["limit"],
+                        },
+                    },
+                    "safety_notes": [
+                        "live_trading_manager 写操作(submit_order/cancel_order)默认 dry_run=true",
+                        "execute=true 必须同时提供 confirm_token,工具内会做 token 校验",
+                    ],
                 }
             )
         return await _dispatch_action(action, kwargs)

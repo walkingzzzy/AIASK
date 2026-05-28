@@ -245,6 +245,10 @@
                     cls._append_text_fragments(fragments, value.get("content"))
                 if "output_text" in value:
                     cls._append_text_fragments(fragments, value.get("output_text"))
+                # DeepSeek-V4-pro / R1 style: also collect reasoning_content from deltas/messages
+                # (2026-05-28: official DeepSeek API returns reasoning_content for v4-pro)
+                if "reasoning_content" in value:
+                    cls._append_text_fragments(fragments, value.get("reasoning_content"))
 
         @classmethod
         def _extract_stream_event_text(cls, payload: Any, *, event_name: str = "") -> str:

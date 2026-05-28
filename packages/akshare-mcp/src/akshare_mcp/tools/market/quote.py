@@ -115,6 +115,12 @@ def _ok_quote_response(
             "data_timestamp_field": "data_timestamp",
         },
     )
+    # P2-4.5.1 fix(诊断报告 §4.5.1):清洗 name 字段乱码
+    try:
+        from ...services.name_sanitize import wrap_response_with_clean_names
+        response = wrap_response_with_clean_names(response, fallback="")
+    except Exception:
+        pass
     return response
 
 
@@ -179,7 +185,7 @@ def _fetch_single_index_quote_eastmoney(code: str) -> Optional[dict]:
     change_pct = _eastmoney_scaled_number(data.get("f170"), decimals=2, force_scaled=True)
     return {
         "code": normalize_code(str(data.get("f57") or code)),
-        "name": str(data.get("f58") or ""),
+        "name": _safe_index_name(data.get("f58"), normalize_code(str(data.get("f57") or code))),
         "price": price,
         "change": change,
         "changePercent": change_pct,
@@ -194,13 +200,44 @@ def _fetch_single_index_quote_eastmoney(code: str) -> Optional[dict]:
 
 
 _COMMON_INDEX_NAMES = {
-    "000001": "????",
-    "399001": "????",
-    "399006": "????",
-    "000300": "??300",
-    "000905": "??500",
-    "000852": "??1000",
+    "000001": "上证指数",
+    "399001": "深证成指",
+    "399006": "创业板指",
+    "000300": "沪深300",
+    "000905": "中证500",
+    "000852": "中证1000",
+    "000016": "上证50",
+    "000688": "科创50",
+    "399005": "中小100",
+    "399330": "深证100",
 }
+
+
+def _looks_like_gbk_garbled(value: object) -> bool:
+    """Detect strings that look like GBK→UTF-8 mojibake (e.g. '????').
+
+    When upstream providers return chunked response without proper encoding header,
+    pandas / requests fall back to latin1 and we may end up with '?' placeholders.
+    Detect these so caller can substitute static index name dictionary.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    # Heuristic 1: 字符串中 ? 占比超过 50% 视为乱码
+    qmark_ratio = value.count("?") / len(value)
+    if qmark_ratio >= 0.5:
+        return True
+    # Heuristic 2: 全 \ufffd (replacement char)
+    if all(ch == "\ufffd" for ch in value):
+        return True
+    return False
+
+
+def _safe_index_name(raw: object, code: str) -> str:
+    """Pick a safe index display name; fall back to static table if upstream returns mojibake."""
+    candidate = str(raw or "").strip()
+    if not candidate or _looks_like_gbk_garbled(candidate):
+        return _COMMON_INDEX_NAMES.get(code, "")
+    return candidate
 
 
 def _degraded_empty_index_quote(
@@ -210,8 +247,14 @@ def _degraded_empty_index_quote(
     attempted_sources: list[str],
     source_chain: list[str],
     fallback_reason: Optional[str | list[str]] = None,
+    strict_failure: bool = False,
 ) -> dict:
-    """Return a stable empty index quote when all upstream providers are unavailable."""
+    """Return a stable empty index quote when all upstream providers are unavailable.
+
+    P3-5.8 fix: 当 strict_failure=True 时返回 success=false(诊断报告 §5.8)
+    历史问题:全降级链空时仍 success=true price=None,AI 误以为指数无行情
+    现在调用方可以传 strict_failure=True 显式标记上游不可用
+    """
     reasons = normalize_reason_list(fallback_reason or message)
     payload = {
         "code": code,
@@ -233,6 +276,31 @@ def _degraded_empty_index_quote(
         "data_timestamp": _current_data_timestamp(),
         "degraded": True,
     }
+    if strict_failure:
+        # P3-5.8: 严格模式下返回 fail
+        response = fail(message)
+        response["data"] = payload
+        response["source"] = "none"
+        response["fallback_reason"] = reasons
+        response.update(
+            build_quality_meta(
+                source="none",
+                source_chain=payload["source_chain"],
+                fallback_reason=reasons,
+                asof_value=None,
+                missing_fields=_quote_missing_fields(payload),
+                degraded=True,
+                success=False,
+            )
+        )
+        return enrich_response_meta(
+            response,
+            source="none",
+            source_chain=payload["source_chain"],
+            quality_flags=["degraded", "empty_upstream", "fallback", "all_sources_failed"],
+            degraded=True,
+            fallback_used=True,
+        )
     response = ok(payload, cached=False)
     response["fallback_reason"] = reasons
     response.update(
@@ -696,6 +764,15 @@ def get_batch_quotes_compat(codes: list[str]) -> dict:
             response[key] = result.get(key)
     return response
 
+def _sanitize_index_response(response: dict) -> dict:
+    """P2-4.5.1 fix:清洗 index quote 响应中的 name 字段乱码(诊断报告 §4.5.1)。"""
+    try:
+        from ...services.name_sanitize import wrap_response_with_clean_names
+        return wrap_response_with_clean_names(response, fallback="")
+    except Exception:
+        return response
+
+
 def get_index_quote(index_code: str) -> dict:
     """获取指数实时行情
 
@@ -757,7 +834,7 @@ def get_index_quote(index_code: str) -> dict:
             return _ok_quote_response(
                 {
                     "code": code,
-                    "name": "",
+                    "name": _COMMON_INDEX_NAMES.get(code, ""),
                     "price": ts_price,
                     "change": ts_change,
                     "changePercent": ts_pct,
@@ -847,7 +924,7 @@ def get_index_quote(index_code: str) -> dict:
 
         payload = {
             "code": code,
-            "name": str(pick_value(row, ["名称", "指数名称"]) or ""),
+            "name": _safe_index_name(pick_value(row, ["名称", "指数名称"]), code),
             "price": price,
             "change": safe_float(pick_value(row, ["涨跌额", "涨跌"])),
             "changePercent": safe_float(pick_value(row, ["涨跌幅", "涨幅"])),
@@ -874,10 +951,12 @@ def get_index_quote(index_code: str) -> dict:
             fallback_response = _tushare_index_daily_response(err[:200])
         if fallback_response is not None:
             return fallback_response
+        # P3-5.8 fix: 全降级链空时返回 success=false(诊断报告 §5.8)
         return _degraded_empty_index_quote(
             code,
             err,
             attempted_sources=attempted_sources,
             source_chain=["eastmoney_index", "sina_index", "tushare_index_daily"],
             fallback_reason=fallback_reason_parts or err,
+            strict_failure=True,
         )

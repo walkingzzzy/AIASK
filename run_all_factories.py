@@ -601,6 +601,19 @@ def _build_specs(args: argparse.Namespace) -> list[FactorySpec]:
             )
         )
 
+    if not args.no_signal_tracker:
+        signal_tracker_args: list[str] = ["--daemon", "--run-time", args.signal_tracker_run_time]
+        if args.signal_tracker_verbose:
+            signal_tracker_args.append("--verbose")
+        specs.append(
+            FactorySpec(
+                name="signal_tracker",
+                script=PROJECT_ROOT / "run_signal_tracker.py",
+                args=tuple(signal_tracker_args),
+                silent_restart_sec=_non_negative_seconds(args.signal_tracker_silent_restart),
+            )
+        )
+
     return specs
 
 
@@ -755,6 +768,28 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Restart Incubation Factory after this many seconds without output; 0 disables. Keep disabled for daemon mode.",
+    )
+
+    # SignalTracker — feeds strategy_signals + strategy_signal_evidence so
+    # IncubationFactory has actual signals to verify. Defaults to 18:00 so it
+    # finishes before the 18:30 incubation cycle.
+    parser.add_argument(
+        "--no-signal-tracker", action="store_true",
+        help="Do not start SignalTracker daemon.",
+    )
+    parser.add_argument(
+        "--signal-tracker-run-time", default="18:00",
+        help="Daily SignalTracker run time, HH:MM (default 18:00, 30 min before incubation).",
+    )
+    parser.add_argument(
+        "--signal-tracker-verbose", action="store_true",
+        help="Enable verbose SignalTracker logging.",
+    )
+    parser.add_argument(
+        "--signal-tracker-silent-restart",
+        type=int,
+        default=0,
+        help="Restart SignalTracker after this many seconds without output; 0 disables. Keep disabled for daemon mode.",
     )
     return parser.parse_args()
 

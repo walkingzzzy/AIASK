@@ -876,11 +876,69 @@ def get_profit_forecast(
                 except Exception:
                     pass
 
+        # P3-5.21 fix: 第四源 — 从研报正文回填盈利预测(诊断报告 §5.21)
+        # 历史问题:东财/Tushare/AkShare 三源全跪时 items=[],AI 没有任何 fallback
+        # 修复:从 stock_research_report_em / stock_research_report_ths 的研报里抽取近期评级和目标价作为简化 forecast
+        if ak is not None:
+            for fn_name in ('stock_research_report_em', 'stock_research_report_ths'):
+                fn = getattr(ak, fn_name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    df_research = fn(symbol=code)
+                except Exception:
+                    continue
+                if df_research is None or df_research.empty:
+                    continue
+                try:
+                    head_df = df_research.head(20).fillna("")
+                    extracted: list[dict] = []
+                    for _, row in head_df.iterrows():
+                        rating_col = next((col for col in row.index if '评级' in str(col)), None)
+                        org_col = next((col for col in row.index if '机构' in str(col) or 'org' in str(col).lower()), None)
+                        date_col = next((col for col in row.index if '日期' in str(col) or 'date' in str(col).lower()), None)
+                        researcher_col = next((col for col in row.index if '分析师' in str(col)), None)
+                        target_col = next((col for col in row.index if '目标价' in str(col)), None)
+                        eps_col = next((col for col in row.index if 'eps' in str(col).lower() or '每股' in str(col)), None)
+                        extracted.append({
+                            "date": str(row.get(date_col, "") if date_col else ""),
+                            "institution": str(row.get(org_col, "") if org_col else ""),
+                            "researcher": str(row.get(researcher_col, "") if researcher_col else ""),
+                            "rating": str(row.get(rating_col, "") if rating_col else ""),
+                            "target_price": safe_float(row.get(target_col, None) if target_col else None),
+                            "eps_forecast": safe_float(row.get(eps_col, None) if eps_col else None),
+                            "_source": fn_name,
+                            "_synthesized_from_research_report": True,
+                        })
+                    if extracted:
+                        return attach_argument_contract_meta(
+                            ok({
+                                "stockCode": code,
+                                "items": extracted,
+                                "total": len(extracted),
+                                "fallback_used": True,
+                                "fallback_reason": "三源 forecast 全空,从研报正文抽取评级/目标价作为简化 forecast",
+                                "degraded": True,
+                                "quality_flags": ["synthesized_from_research_report"],
+                                "source": fn_name,
+                            }),
+                            canonical_tool="get_profit_forecast",
+                            canonical_args=canonical_args,
+                            alias_hits=alias_hits,
+                        )
+                except Exception:
+                    continue
+
         return attach_argument_contract_meta(
             _empty_degraded_response(
                 {"stockCode": code, "items": [], "total": 0, "message": f"未获取到 {code} 的盈利预测数据"},
                 fallback_reason=f"未获取到 {code} 的盈利预测数据",
-                source_chain=["eastmoney.profit_forecast", "tushare.forecast", "akshare.profit_forecast"],
+                source_chain=[
+                    "eastmoney.profit_forecast",
+                    "tushare.forecast",
+                    "akshare.profit_forecast",
+                    "akshare.research_report_extracted",  # P3-5.21
+                ],
             ),
             canonical_tool="get_profit_forecast",
             canonical_args=canonical_args,

@@ -1,0 +1,17 @@
+{
+  "scenario": "S19",
+  "title": "用户/auth/paper-orders",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T09:59:21+08:00",
+  "tools_tested": [
+    {"tool": "user_manager.list", "status": "pass", "note": "default user only"},
+    {"tool": "update_user_profile", "status": "pass", "note": "§B7 FIXED user_upserted=true no tzinfo error"},
+    {"tool": "get_user_profile", "status": "pass", "note": "weighted_profile complete"},
+    {"tool": "log_recommendation_audit", "status": "pass", "note": "logged=true with cognitive_biases"}
+  ],
+  "summary": {"pass": 4, "degraded": 0, "fail_graceful": 0, "fail_schema": 0},
+  "verdict": "pass",
+  "v1_v2_delta": [
+    {"finding": "§B7_users_table_schema_tzinfo_error", "v1_count": 3, "v2_count": 0, "status": "perfectly_fixed"}
+  ]
+}

@@ -98,19 +98,23 @@
             if self._is_market_hours(now):
                 return {"status": "skipped", "reason": "market_hours"}
 
+            seed_enabled = self._maintenance_env_bool(
+                "STRATEGY_FACTORY_THEME_SEED_AUTO_ENABLED",
+                True,
+            )
             exposure_enabled = self._maintenance_env_bool(
                 "STRATEGY_FACTORY_THEME_EXPOSURE_AUTO_REFRESH_ENABLED",
-                False,
+                True,
             )
             outbox_enabled = self._maintenance_env_bool(
                 "STRATEGY_FACTORY_EVENT_OUTBOX_AUTO_DRAIN_ENABLED",
-                False,
+                True,
             )
             regression_enabled = self._maintenance_env_bool(
                 "STRATEGY_FACTORY_THEME_REGRESSION_AUTO_RUN_ENABLED",
-                False,
+                True,
             )
-            if not (exposure_enabled or outbox_enabled or regression_enabled):
+            if not (seed_enabled or exposure_enabled or outbox_enabled or regression_enabled):
                 return {"status": "disabled"}
 
             resolved_db = self._load_db() if db is None else db
@@ -121,28 +125,33 @@
                 "errors": [],
             }
 
-            if outbox_enabled:
+            if seed_enabled:
                 interval = self._maintenance_seconds(
-                    "STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_INTERVAL_SEC",
-                    1800,
+                    "STRATEGY_FACTORY_THEME_SEED_INTERVAL_SEC",
+                    86400,
                 )
-                if self._maintenance_due(self._last_event_outbox_drain_at, now, interval):
+                if self._maintenance_due(getattr(self, "_last_theme_seed_at", None), now, interval):
                     try:
-                        limit = max(1, min(int(os.getenv("STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_LIMIT", "10") or 10), 100))
-                        results["outbox_drain"] = await self._drain_event_outbox_maintenance(resolved_db, limit=limit)
-                        self._last_event_outbox_drain_at = now
-                        results["ran"].append("outbox_drain")
+                        from .research.theme_seed import seed_default_theme_graph
+
+                        results["theme_seed"] = await seed_default_theme_graph(
+                            resolved_db,
+                            overwrite=False,
+                            updated_by="scheduler",
+                        )
+                        self._last_theme_seed_at = now
+                        results["ran"].append("theme_seed")
                     except Exception as exc:
-                        results["errors"].append({"step": "outbox_drain", "error": str(exc)})
+                        results["errors"].append({"step": "theme_seed", "error": str(exc)})
                 else:
-                    results["skipped"].append("outbox_drain_not_due")
+                    results["skipped"].append("theme_seed_not_due")
 
             if exposure_enabled:
                 interval = self._maintenance_seconds(
                     "STRATEGY_FACTORY_THEME_EXPOSURE_REFRESH_INTERVAL_SEC",
                     86400,
                 )
-                if self._maintenance_due(self._last_theme_exposure_refresh_at, now, interval):
+                if self._maintenance_due(getattr(self, "_last_theme_exposure_refresh_at", None), now, interval):
                     try:
                         from .research.theme_exposure_builder import ThemeExposureBuilder
 
@@ -157,12 +166,28 @@
                 else:
                     results["skipped"].append("theme_exposure_refresh_not_due")
 
+            if outbox_enabled:
+                interval = self._maintenance_seconds(
+                    "STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_INTERVAL_SEC",
+                    1800,
+                )
+                if self._maintenance_due(getattr(self, "_last_event_outbox_drain_at", None), now, interval):
+                    try:
+                        limit = max(1, min(int(os.getenv("STRATEGY_FACTORY_EVENT_OUTBOX_DRAIN_LIMIT", "10") or 10), 100))
+                        results["outbox_drain"] = await self._drain_event_outbox_maintenance(resolved_db, limit=limit)
+                        self._last_event_outbox_drain_at = now
+                        results["ran"].append("outbox_drain")
+                    except Exception as exc:
+                        results["errors"].append({"step": "outbox_drain", "error": str(exc)})
+                else:
+                    results["skipped"].append("outbox_drain_not_due")
+
             if regression_enabled:
                 interval = self._maintenance_seconds(
                     "STRATEGY_FACTORY_THEME_REGRESSION_INTERVAL_SEC",
                     604800,
                 )
-                if self._maintenance_due(self._last_theme_regression_run_at, now, interval):
+                if self._maintenance_due(getattr(self, "_last_theme_regression_run_at", None), now, interval):
                     try:
                         from .research.theme_response_regression import ThemeResponseRegression
 

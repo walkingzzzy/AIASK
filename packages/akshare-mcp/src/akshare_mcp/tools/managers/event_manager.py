@@ -221,15 +221,34 @@ def register_event_manager(mcp):
                         source = 'aggregated_content'
                         source_chain.extend(aggregated_chain)
 
+                # P3-5.2 fix: 按 (title+date) 二元组去重(诊断报告 §5.2)
+                # 历史问题:多源聚合时同一事件被多次写入 events 表,get_by_code 返回重复行
+                seen_keys: set[tuple[str, str]] = set()
+                deduped: list[dict] = []
+                duplicates_removed = 0
+                for event in events:
+                    title = str((event or {}).get('title') or (event or {}).get('event_title') or '').strip()
+                    raw_date = (event or {}).get('event_date') or (event or {}).get('date') or ''
+                    date_key = str(raw_date)[:10] if raw_date else ''
+                    key = (title.lower(), date_key)
+                    if key in seen_keys:
+                        duplicates_removed += 1
+                        continue
+                    seen_keys.add(key)
+                    deduped.append(event)
+
                 response_chain = _dedupe_chain(source_chain)
                 return _ok(
                     {
                         'code': code,
-                        'events': events,
-                        'count': len(events),
+                        'events': deduped,
+                        'count': len(deduped),
                         'source': source,
                         'source_chain': response_chain,
                         'fallback_used': fallback_used,
+                        # P3-5.2 fix: 透出去重统计,便于运维核查
+                        'raw_count_before_dedup': len(events),
+                        'duplicates_removed': duplicates_removed,
                     },
                     source_chain=response_chain,
                 )

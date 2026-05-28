@@ -34,11 +34,29 @@ ALLOWED_ACTIONS.update(
         "data_sync.sync": {"tool": "data_sync", "action": "sync"},
         "data_sync.maintenance": {"tool": "data_sync", "action": "maintenance"},
         "data_sync.run_due_schedules": {"tool": "data_sync", "action": "run_due_schedules"},
+        "portfolio_manager.create": {"tool": "financial_manager", "action": "portfolio_manager.create"},
+        "portfolio_manager.update": {"tool": "financial_manager", "action": "portfolio_manager.update"},
+        "portfolio_manager.delete": {"tool": "financial_manager", "action": "portfolio_manager.delete"},
+        "portfolio_manager.add_holding": {"tool": "financial_manager", "action": "portfolio_manager.add_holding"},
+        "portfolio_manager.remove_holding": {"tool": "financial_manager", "action": "portfolio_manager.remove_holding"},
+        "watchlist_manager.create_group": {"tool": "financial_manager", "action": "watchlist_manager.create_group"},
+        "watchlist_manager.delete_group": {"tool": "financial_manager", "action": "watchlist_manager.delete_group"},
+        "watchlist_manager.add": {"tool": "financial_manager", "action": "watchlist_manager.add"},
+        "watchlist_manager.remove": {"tool": "financial_manager", "action": "watchlist_manager.remove"},
+        "watchlist_manager.reorder": {"tool": "financial_manager", "action": "watchlist_manager.reorder"},
+        "paper_trading_manager.submit_order": {"tool": "financial_manager", "action": "paper_trading_manager.submit_order"},
+        "paper_trading_manager.cancel_order": {"tool": "financial_manager", "action": "paper_trading_manager.cancel_order"},
+        "execution_manager.create_plan": {"tool": "financial_manager", "action": "execution_manager.create_plan"},
+        "execution_manager.submit_task": {"tool": "financial_manager", "action": "execution_manager.submit_task"},
+        "execution_manager.cancel_task": {"tool": "financial_manager", "action": "execution_manager.cancel_task"},
         "factor_factory.run_once": {"tool": "factor_factory", "action": "run_once"},
         "factor_factory.maintenance": {"tool": "factor_factory", "action": "maintenance"},
         "incubation_factory.run_once": {"tool": "incubation_factory", "action": "run_once"},
         "incubation_factory.dry_run": {"tool": "incubation_factory", "action": "dry_run"},
         "incubation_factory.maintenance": {"tool": "incubation_factory", "action": "maintenance"},
+        "gateway.send_message": {"tool": "gateway", "action": "send_message"},
+        "gateway.direct_deliver": {"tool": "gateway", "action": "direct_deliver"},
+        "webhook.trigger": {"tool": "webhook", "action": "trigger"},
     }
 )
 
@@ -180,6 +198,22 @@ class ActionIntentStore:
             if expires_at < now_utc():
                 return self.update_status(item["intent_id"], "expired", error="intent expired")
         return item
+
+    def list(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        normalized_status = str(status or "").strip()
+        if normalized_status:
+            clauses.append("status = ?")
+            values.append(normalized_status)
+        values.append(max(1, min(int(limit or 100), 500)))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM action_intents {where} ORDER BY updated_at DESC LIMIT ?",
+                tuple(values),
+            ).fetchall()
+        return [item for row in rows if (item := self._row_to_intent(row)) is not None]
 
     def transition(
         self,

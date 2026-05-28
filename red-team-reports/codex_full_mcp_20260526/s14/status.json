@@ -1,0 +1,16 @@
+{
+  "scenario": "S14",
+  "title": "实盘 dry_run / 合规护栏",
+  "run_id": "codex_full_mcp_20260526",
+  "tested_at": "2026-05-26T09:56:29+08:00",
+  "tools_tested": [
+    {"tool": "alerts_manager.help", "status": "pass", "note": "6 supported_actions"},
+    {"tool": "live_trading_manager.help", "status": "pass", "note": "16 actions + safety_notes complete"},
+    {"tool": "execution_manager.twap dry_run", "status": "fail_graceful", "note": "compliance_blocked top_ask_volume=0 + soft_warning participation_rate=687%"},
+    {"tool": "compliance_manager.check_order", "status": "fail_graceful", "note": "blocked=true 实时盘口卖量为 0"},
+    {"tool": "live_trading_manager.submit_order execute=true", "status": "fail_graceful", "note": "CONFIRMATION_REQUIRED guard works perfectly"}
+  ],
+  "summary": {"pass": 2, "degraded": 0, "fail_graceful": 3, "fail_schema": 0},
+  "verdict": "pass",
+  "guardrail_verification": "PERFECT"
+}

@@ -565,8 +565,22 @@ def _launch_sync_background_services(logger: logging.Logger, startup_profile: st
     async def _bg_main() -> None:
         if startup_profile != "worker":
             _try_start("FactorScheduler", get_factor_scheduler, "FACTOR_SCHEDULER_ENABLED")
-            _try_start("MatchingEngine", get_matching_engine, "MATCHING_ENGINE_ENABLED")
-            _try_start("NavEngine", get_nav_engine, "NAV_ENGINE_ENABLED")
+
+            # 2026-05-28 (P0/A 解耦): 当孵化工厂拥有 paper-trading 时,MCP server
+            # 不再启动 MatchingEngine + NavEngine,避免双跑(撮合冲突 / NAV 双写)。
+            # 单进程旧部署可设 INCUBATION_FACTORY_OWNS_PAPER_TRADING=0 让 server 重新接管。
+            incubation_owns_paper = _as_bool(
+                os.getenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
+            )
+            if incubation_owns_paper:
+                logger.info(
+                    "[Server] MatchingEngine/NavEngine skipped (owned by incubation_factory; "
+                    "set INCUBATION_FACTORY_OWNS_PAPER_TRADING=0 to revert)"
+                )
+            else:
+                _try_start("MatchingEngine", get_matching_engine, "MATCHING_ENGINE_ENABLED")
+                _try_start("NavEngine", get_nav_engine, "NAV_ENGINE_ENABLED")
+
             _try_start("SignalTracker", get_signal_tracker, "SIGNAL_TRACKER_ENABLED")
 
         if _strategy_factory_embedded_start_enabled(startup_profile):

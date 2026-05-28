@@ -109,7 +109,7 @@
         max_total = int(os.getenv("STRATEGY_FACTORY_DEDUP_MAX_EXISTING", "5000") or 5000)
         page_size = int(os.getenv("STRATEGY_FACTORY_DEDUP_PAGE_SIZE", "500") or 500)
         page_size = max(50, min(page_size, 2000))
-        for status in ("listed", "incubating"):
+        for status in ("listed", "incubating", "submitted"):
             try:
                 # 优先尝试分页；DB 不支持 offset 时降级到单次拉取
                 offset = 0

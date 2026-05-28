@@ -57,6 +57,38 @@ def _env_paths() -> list[Path]:
     return [*paths, default_path]
 
 
+def _pid_is_running(pid: object) -> bool:
+    try:
+        value = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = kernel32.OpenProcess(process_query_limited_information, False, value)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(value, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def configured() -> bool:
     return bool(os.getenv("TINKER_API_KEY") and os.getenv("WANDB_API_KEY"))
 
@@ -309,9 +341,7 @@ class RLAtroposManager:
             raise FileNotFoundError(f"RL run not found: {run_id}")
         pid = item.get("pid")
         if pid and item.get("status") == "running":
-            try:
-                os.kill(int(pid), 0)
-            except OSError:
+            if not _pid_is_running(pid):
                 item = self.store.update_run(run_id, status="completed") or item
         return item
 

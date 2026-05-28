@@ -75,14 +75,14 @@ export function OverviewWorkspace({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Overview</span>
-          <h1>Unified command console</h1>
+          <span>总览</span>
+          <h1>统一指挥台</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : "ready"} label={message} />
           <button className="small-button" disabled={busy} onClick={refresh} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -92,37 +92,37 @@ export function OverviewWorkspace({
           <div className="capability-banner">
             <div>
               <span>{endpoint}</span>
-              <h2>{profile?.profile_name || "Local Operator"}</h2>
-              <p>Agent, model providers, databases, MCP, skills, automation, and the three factories are shown as one operator surface.</p>
+              <h2>{profile?.profile_name || "本地操作者"}</h2>
+              <p>这里把 Agent、模型提供方、数据库、MCP、技能、自动化和三类工厂汇总成一个操作视图。</p>
             </div>
             <div className="status-cluster">
-              <StatusBadge status={health?.status || "not_loaded"} label={health?.status || "offline"} />
-              <StatusBadge status={control?.authorized ? "ready" : "gated"} label={control?.authorized ? "control authorized" : "control gated"} />
+              <StatusBadge status={health?.status || "not_loaded"} label={health?.status || "离线"} />
+              <StatusBadge status={control?.authorized ? "ready" : "gated"} label={control?.authorized ? "控制已授权" : "控制受限"} />
             </div>
           </div>
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="Agent" value={health?.status || "offline"} status={health?.status || "not_loaded"} />
+            <MetricCard label="智能体" value={health?.status || "离线"} status={health?.status || "not_loaded"} />
             <MetricCard label="LLM" value={settings?.llm.ai_status?.provider || "-"} status={settings?.llm.ai_status?.configured ? "ready" : "unconfigured"} />
-            <MetricCard label="Database" value={data?.database?.writable === false ? "blocked" : data?.status || "-"} status={data?.status} />
-            <MetricCard label="Jobs" value={jobs.length} status={jobs.length ? "ready" : "not_loaded"} />
+            <MetricCard label="数据库" value={data?.database?.writable === false ? "blocked" : data?.status || "-"} status={data?.status} />
+            <MetricCard label="任务" value={jobs.length} status={jobs.length ? "ready" : "not_loaded"} />
           </div>
 
           <section className="capability-grid three">
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Agent runtime</span>
-                  <h3>Endpoint and user scope</h3>
+                  <span>Agent 运行时</span>
+                  <h3>端点与用户作用域</h3>
                 </div>
                 <Bot size={18} />
               </div>
               <div className="kv-grid">
-                <span>User</span>
+                <span>用户</span>
                 <strong>{profile?.user_id || "local"}</strong>
-                <span>Mode</span>
+                <span>模式</span>
                 <strong>{compact(settings?.agent?.toolset)}</strong>
-                <span>Tools</span>
+                <span>工具</span>
                 <strong>{health?.tools?.count ?? "-"}</strong>
               </div>
             </article>
@@ -130,17 +130,17 @@ export function OverviewWorkspace({
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>MCP and skills</span>
-                  <h3>Extension plane</h3>
+                  <span>MCP 与技能</span>
+                  <h3>扩展能力面</h3>
                 </div>
                 <ServerCog size={18} />
               </div>
               <div className="kv-grid">
                 <span>MCP</span>
                 <strong>{mcp?.discovery_status || "-"}</strong>
-                <span>Skills</span>
+                <span>技能</span>
                 <strong>{Array.isArray(skills) ? skills.length : 0}</strong>
-                <span>Plugins</span>
+                <span>插件</span>
                 <strong>{plugins?.length || 0}</strong>
               </div>
             </article>
@@ -148,17 +148,17 @@ export function OverviewWorkspace({
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Data quality</span>
-                  <h3>Freshness gate</h3>
+                  <span>数据质量</span>
+                  <h3>新鲜度闸门</h3>
                 </div>
                 <Database size={18} />
               </div>
               <div className="kv-grid">
-                <span>Codes</span>
+                <span>代码</span>
                 <strong>{data?.codes?.length || 0}</strong>
-                <span>Missing</span>
+                <span>缺失</span>
                 <strong>{data?.missing_count ?? "-"}</strong>
-                <span>Stale</span>
+                <span>过期</span>
                 <strong>{data?.stale_count ?? "-"}</strong>
               </div>
             </article>
@@ -168,35 +168,35 @@ export function OverviewWorkspace({
             <article className="capability-card">
               <div className="card-head">
                 <div>
-                  <span>Strategy Factory</span>
-                  <h3>Generation and review</h3>
+                  <span>策略工厂</span>
+                  <h3>生成与评审</h3>
                 </div>
                 <Factory size={18} />
               </div>
               <StatusBadge status={factoryEnvelopeStatus(strategyFactory?.status)} />
-              <p className="muted">Recent runs and review snapshots are available from the dedicated factory page.</p>
+              <p className="muted">最近运行和评审快照可在策略工厂页面查看。</p>
             </article>
             <article className="capability-card">
               <div className="card-head">
                 <div>
-                  <span>Factor Factory</span>
-                  <h3>Mining and pool health</h3>
+                  <span>因子工厂</span>
+                  <h3>挖掘与池健康</h3>
                 </div>
                 <BarChart3 size={18} />
               </div>
               <StatusBadge status={factor?.status || "not_loaded"} />
-              <p className="muted">{factor?.active_factors?.length || 0} active factors in the desktop snapshot.</p>
+              <p className="muted">当前桌面快照中有 {factor?.active_factors?.length || 0} 个活跃因子。</p>
             </article>
             <article className="capability-card">
               <div className="card-head">
                 <div>
-                  <span>Incubation Factory</span>
-                  <h3>Forward verification</h3>
+                  <span>孵化工厂</span>
+                  <h3>前向验证</h3>
                 </div>
                 <FlaskConical size={18} />
               </div>
-              <StatusBadge status={factoryEnvelopeStatus(capabilities?.strategy_factory?.review_snapshot)} label="review linked" />
-              <p className="muted">Lifecycle events and hit-rate reports are shown in the incubation page.</p>
+              <StatusBadge status={factoryEnvelopeStatus(capabilities?.strategy_factory?.review_snapshot)} label="评审已关联" />
+              <p className="muted">生命周期事件和命中率报告可在孵化工厂页面查看。</p>
             </article>
           </section>
 
@@ -204,8 +204,8 @@ export function OverviewWorkspace({
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Automation</span>
-                  <h3>Scheduled jobs</h3>
+                  <span>自动化</span>
+                  <h3>计划任务</h3>
                 </div>
                 <CalendarClock size={18} />
               </div>
@@ -213,18 +213,18 @@ export function OverviewWorkspace({
                 {jobs.slice(0, 5).map((job) => (
                   <article key={String(job.job_id || job.id)}>
                     <strong>{String(job.name || job.job_id)}</strong>
-                    <span>{String(job.schedule || job.interval_seconds || "manual")}</span>
-                    <StatusBadge status={job.enabled ? "ready" : "disabled"} label={job.enabled ? "enabled" : "disabled"} />
+                    <span>{String(job.schedule || job.interval_seconds || "手动")}</span>
+                    <StatusBadge status={job.enabled ? "ready" : "disabled"} label={job.enabled ? "已启用" : "已停用"} />
                   </article>
                 ))}
-                {!jobs.length && <p className="muted">No automation jobs are configured.</p>}
+                {!jobs.length && <p className="muted">尚未配置自动化任务。</p>}
               </div>
             </article>
             <article className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>Installed skills</span>
-                  <h3>Operator playbooks</h3>
+                  <span>已安装技能</span>
+                  <h3>操作手册</h3>
                 </div>
                 <Layers3 size={18} />
               </div>
@@ -232,16 +232,16 @@ export function OverviewWorkspace({
                 {(Array.isArray(skills) ? skills : []).slice(0, 6).map((skill) => (
                   <article key={String(skill.name)}>
                     <strong>{String(skill.name)}</strong>
-                    <span>{String(skill.description || skill.path || "No description")}</span>
+                    <span>{String(skill.description || skill.path || "暂无描述")}</span>
                   </article>
                 ))}
-                {!Array.isArray(skills) || !skills.length ? <p className="muted">Skills are gated until control access is available.</p> : null}
+                {!Array.isArray(skills) || !skills.length ? <p className="muted">技能列表需要控制权限后才能查看。</p> : null}
               </div>
             </article>
           </section>
 
           <details className="raw-details">
-            <summary>Raw overview snapshot</summary>
+            <summary>原始总览快照</summary>
             <JsonPanel value={{ settings, data, capabilities, factor, jobs }} />
           </details>
         </div>

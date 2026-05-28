@@ -73,14 +73,14 @@ export function CoverageWorkspace({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Coverage Matrix</span>
-          <h1>Actual capability coverage</h1>
+          <span>能力覆盖矩阵</span>
+          <h1>实际能力覆盖</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message.startsWith("AIASK_") ? message : capabilities?.summary.source || "ready"} label={message} />
           <button className="small-button" disabled={busy} onClick={refresh} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
