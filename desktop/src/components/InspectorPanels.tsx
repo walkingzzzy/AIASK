@@ -216,6 +216,33 @@ function sideEffectTarget(tool: ToolCatalogItem): string {
   return "";
 }
 
+const businessAreas = [
+  { id: "all", label: "全部业务" },
+  { id: "finance", label: "金融" },
+  { id: "security", label: "安全" },
+  { id: "browser", label: "浏览器" },
+  { id: "file", label: "文件" },
+  { id: "terminal", label: "终端" },
+  { id: "messaging", label: "消息" },
+  { id: "rl", label: "RL" },
+  { id: "plugins", label: "插件" },
+  { id: "mcp", label: "MCP" }
+];
+
+function businessAreaFor(tool: ToolCatalogItem): string {
+  const text = `${tool.name} ${tool.category || ""} ${tool.capability || ""} ${tool.description || ""}`.toLowerCase();
+  if (text.includes("security")) return "security";
+  if (text.includes("browser")) return "browser";
+  if (text.includes("file_") || text.includes("file ") || text.includes("workspace file")) return "file";
+  if (text.includes("terminal") || text.includes("process") || text.includes("tui")) return "terminal";
+  if (text.includes("gateway") || text.includes("message") || text.includes("discord") || text.includes("feishu")) return "messaging";
+  if (text.includes("rl_") || text.includes("rl ") || text.includes("training") || text.includes("atropos")) return "rl";
+  if (text.includes("plugin")) return "plugins";
+  if (text.includes("mcp") || tool.name.startsWith("agent_mcp_")) return "mcp";
+  if (text.includes("financial") || text.includes("finance") || text.includes("quant") || text.includes("stock") || text.includes("portfolio") || text.includes("factory")) return "finance";
+  return "finance";
+}
+
 export function ToolCatalog({
   apiToken = "",
   controlToken = "",
@@ -233,6 +260,7 @@ export function ToolCatalog({
   const [category, setCategory] = useState("all");
   const [status, setStatus] = useState("all");
   const [sideEffect, setSideEffect] = useState("all");
+  const [businessArea, setBusinessArea] = useState("all");
   const [formDrafts, setFormDrafts] = useState<Record<string, Record<string, unknown>>>({});
   const [probeResult, setProbeResult] = useState<Record<string, unknown>>({ status: "no_probe_run" });
   const [probeMessage, setProbeMessage] = useState("NO_PROBE");
@@ -265,9 +293,10 @@ export function ToolCatalog({
         const matchesCategory = category === "all" || (tool.category || tool.capability || "tool") === category;
         const matchesStatus = status === "all" || derivedStatus === status;
         const matchesSideEffect = sideEffect === "all" || toolSideEffect === sideEffect;
-        return matchesQuery && matchesCategory && matchesStatus && matchesSideEffect;
+        const matchesBusinessArea = businessArea === "all" || businessAreaFor(tool) === businessArea;
+        return matchesQuery && matchesCategory && matchesStatus && matchesSideEffect && matchesBusinessArea;
       }),
-    [allTools, category, query, sideEffect, status]
+    [allTools, businessArea, category, query, sideEffect, status]
   );
 
   async function runSafeProbe(tool: ToolCatalogItem, hermesOnly: boolean) {
@@ -302,6 +331,13 @@ export function ToolCatalog({
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工具" />
       </label>
       <div className="filter-row tool-filter-row">
+        <select value={businessArea} onChange={(event) => setBusinessArea(event.target.value)}>
+          {businessAreas.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
         <select value={category} onChange={(event) => setCategory(event.target.value)}>
           <option value="all">全部分类</option>
           {categories.map((item) => (
@@ -348,6 +384,7 @@ export function ToolCatalog({
                 </div>
                 <StatusBadge status={readOnlyTool ? "implemented" : "gated"} label={sideEffect} />
               </div>
+              <small className="tool-target">业务映射 {businessAreas.find((item) => item.id === businessAreaFor(tool))?.label || businessAreaFor(tool)}</small>
               <p>{tool.description}</p>
               {sideEffectTargetName && <small className="tool-target">目标 {sideEffectTargetName}</small>}
               {!!chips.length && (

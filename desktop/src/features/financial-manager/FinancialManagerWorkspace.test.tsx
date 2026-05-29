@@ -84,6 +84,11 @@ describe("FinancialManagerWorkspace", () => {
     render(<FinancialManagerWorkspace endpoint="http://127.0.0.1:8767" apiToken="api" controlToken="control" userId="local" />);
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "金融经理台" })).toBeInTheDocument());
+    expect(screen.getByText("搜索与状态过滤")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("搜索能力、工具、action 或 group"), { target: { value: "live" } });
+    expect(screen.getByText("Live place order")).toBeInTheDocument();
+    expect(screen.queryByText("Create portfolio intent")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("搜索能力、工具、action 或 group"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /运行查询/ }));
     await waitFor(() => expect(screen.getByText(/var_95/)).toBeInTheDocument());
 

@@ -91,6 +91,12 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "工作流" }));
     expect(screen.getByRole("heading", { name: "AI 可调用的量化流程" })).toBeInTheDocument();
+    expect(screen.getByText("金融分析扩展")).toBeInTheDocument();
+    expect(screen.getByText("买卖决策")).toBeInTheDocument();
+    expect(screen.getByText("基本面")).toBeInTheDocument();
+    expect(screen.getByText("宏观经济")).toBeInTheDocument();
+    expect(screen.getByText("告警管理")).toBeInTheDocument();
+    expect(screen.getByText("涨停与龙虎")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "设置" })[0]);
     expect(screen.getByRole("heading", { name: "设置中心" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "常规" })).toHaveClass("active");

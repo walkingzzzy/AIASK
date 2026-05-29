@@ -7,21 +7,29 @@ import { InspectorPanel } from "./components/InspectorPanel";
 import { ToolCatalog } from "./components/InspectorPanels";
 import { WorkbenchView } from "./components/WorkbenchView";
 import { AgentWorkspace } from "./features/agent/AgentWorkspace";
+import { AlertsWorkspace } from "./features/alerts/AlertsWorkspace";
 import { AutomationWorkspace } from "./features/automation/AutomationWorkspace";
 import { CapabilitiesWorkspace } from "./features/capabilities/CapabilitiesWorkspace";
 import { CoverageWorkspace } from "./features/coverage/CoverageWorkspace";
 import { DataSyncWorkspace } from "./features/data/DataSyncWorkspace";
+import { DecisionWorkspace } from "./features/decision/DecisionWorkspace";
 import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
 import { FactoryEventTriggerPanel } from "./features/factory-events/FactoryEventTriggerPanel";
 import { FactorFactoryPanel } from "./features/factor/FactorFactoryPanel";
 import { FinancialManagerWorkspace } from "./features/financial-manager/FinancialManagerWorkspace";
+import { FundFlowWorkspace } from "./features/fund-flow/FundFlowWorkspace";
+import { FundamentalWorkspace } from "./features/fundamental/FundamentalWorkspace";
 import { IncubationFactoryPanel } from "./features/incubation/IncubationFactoryPanel";
+import { LimitUpWorkspace } from "./features/limit-up/LimitUpWorkspace";
+import { MacroWorkspace } from "./features/macro/MacroWorkspace";
 import { ModelsWorkspace } from "./features/models/ModelsWorkspace";
 import { OverviewWorkspace } from "./features/overview/OverviewWorkspace";
 import { QuantResearchWorkspace } from "./features/quant/QuantResearchWorkspace";
 import { SettingsWorkspace } from "./features/settings/SettingsWorkspace";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
+import { TradePlanWorkspace } from "./features/trade-plan/TradePlanWorkspace";
 import { LocalUserWorkspace } from "./features/user/LocalUserWorkspace";
+import { ValuationWorkspace } from "./features/valuation/ValuationWorkspace";
 import { WorkflowsWorkspace } from "./features/workflows/WorkflowsWorkspace";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
@@ -328,6 +336,30 @@ export function App() {
             controlToken={controlToken}
             endpoint={normalizedEndpoint}
           />
+        )}
+        {mainView === "valuation" && (
+          <ValuationWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+        )}
+        {mainView === "trade-plan" && (
+          <TradePlanWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+        )}
+        {mainView === "fund-flow" && (
+          <FundFlowWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+        )}
+        {mainView === "decision" && (
+          <DecisionWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />
+        )}
+        {mainView === "fundamental" && (
+          <FundamentalWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />
+        )}
+        {mainView === "macro" && (
+          <MacroWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />
+        )}
+        {mainView === "alerts" && (
+          <AlertsWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />
+        )}
+        {mainView === "limit-up" && (
+          <LimitUpWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />
         )}
         {mainView === "diagnostics" && (
           <DiagnosticsPanel

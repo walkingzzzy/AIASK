@@ -1,4 +1,4 @@
-import { Database, GitPullRequest, Play, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Database, GitPullRequest, Play, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
@@ -272,7 +272,79 @@ export function DataSyncWorkspace({
             {!syncIntents.length && <p className="muted">暂无同步审批历史。</p>}
           </div>
         </section>
+
+        <DeadLetterSection endpoint={endpoint} apiToken={apiToken} controlToken={controlToken} />
       </div>
+    </section>
+  );
+}
+
+function DeadLetterSection({ endpoint, apiToken, controlToken }: { endpoint: string; apiToken: string; controlToken: string }) {
+  const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
+  const [records, setRecords] = useState<Array<Record<string, unknown>>>([]);
+  const [message, setMessage] = useState("NOT_LOADED");
+  const [busy, setBusy] = useState(false);
+
+  async function loadDeadLetters() {
+    setBusy(true);
+    try {
+      const result = await api.readOnlyTool("agent_mcp_akshare_get_dead_letters", { limit: 50 });
+      const data = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
+      const items = Array.isArray(data.records) ? data.records : Array.isArray(data.data) ? data.data : [];
+      setRecords(items as Array<Record<string, unknown>>);
+      setMessage(result.success ? `${items.length} 条失败记录` : result.error || "DEAD_LETTER_LOAD_FAILED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearDeadLetters() {
+    setBusy(true);
+    try {
+      const result = await api.hermesToolCall("agent_mcp_akshare_clear_dead_letters", {});
+      setMessage(result.success ? "已清空" : result.error || "CLEAR_FAILED");
+      setRecords([]);
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>Dead-letter 队列</span>
+          <h3>同步失败记录</h3>
+        </div>
+        <div className="button-row">
+          <StatusBadge status={records.length ? "failed" : "ready"} label={message} />
+          <button className="small-button" disabled={busy} onClick={loadDeadLetters} type="button"><RefreshCw size={14} /> 加载</button>
+          <button className="small-button" disabled={busy || !records.length || !controlToken.trim()} onClick={clearDeadLetters} type="button"><Trash2 size={14} /> 清空</button>
+        </div>
+      </div>
+      {records.length > 0 ? (
+        <div className="mini-list compact-list">
+          {records.slice(0, 20).map((record, i) => (
+            <article className="job-row compact" key={i}>
+              <div>
+                <strong>{String(record.code || record.stock_code || `#${i + 1}`)}</strong>
+                <span>{compact(record.error || record.reason || record.period || "-")}</span>
+              </div>
+              <small>{compact(record.timestamp || record.created_at || "-")}</small>
+            </article>
+          ))}
+          {records.length > 20 && <p className="muted">还有 {records.length - 20} 条未显示。</p>}
+        </div>
+      ) : (
+        <div className="empty-mini">
+          <AlertTriangle size={20} />
+          <span>{message === "NOT_LOADED" ? "点击「加载」查看失败队列。" : "当前无失败记录。"}</span>
+        </div>
+      )}
     </section>
   );
 }

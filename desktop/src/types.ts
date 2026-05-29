@@ -139,7 +139,15 @@ export type MainView =
   | "user"
   | "settings"
   | "event-console"
-  | "factory-events";
+  | "factory-events"
+  | "valuation"
+  | "trade-plan"
+  | "fund-flow"
+  | "decision"
+  | "fundamental"
+  | "macro"
+  | "alerts"
+  | "limit-up";
 export type CapabilityTab = "overview" | "coverage" | "hermes" | "mcp" | "connectors" | "factory" | "incubation" | "skills" | "plugins" | "ai";
 
 export interface TaskThread {

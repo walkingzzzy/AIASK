@@ -1,4 +1,4 @@
-import { AlertTriangle, BarChart3, BriefcaseBusiness, Landmark, Play, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, BarChart3, BriefcaseBusiness, Landmark, Play, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
@@ -6,32 +6,11 @@ import { AiaskApi } from "../../services/aiaskApi";
 import type {
   FinancialManagerAction,
   FinancialManagerCatalog,
-  FinancialManagerGroup,
   FinancialManagerIntentResult,
   FinancialManagerQueryResult,
   FinancialManagerStatus
 } from "../../types";
-
-function safeJsonParse(value: string): Record<string, unknown> {
-  if (!value.trim()) return {};
-  const parsed = JSON.parse(value);
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-}
-
-function actionKey(action: FinancialManagerAction): string {
-  return `${action.capability_id}::${action.action_id}`;
-}
-
-function modeLabel(mode?: string) {
-  if (mode === "read_only") return "只读";
-  if (mode === "stateful_intent") return "意图";
-  if (mode === "blocked") return "禁用";
-  return mode || "unknown";
-}
-
-function groupLabel(group: FinancialManagerGroup | undefined, fallback: string) {
-  return group?.label || fallback.replace(/-/g, " ");
-}
+import { actionKey, groupLabel, modeLabel, safeJsonParse, statusDescription } from "./financialManagerUi";
 
 export function FinancialManagerWorkspace({
   endpoint,
@@ -48,6 +27,9 @@ export function FinancialManagerWorkspace({
   const [catalog, setCatalog] = useState<FinancialManagerCatalog | null>(null);
   const [status, setStatus] = useState<FinancialManagerStatus | null>(null);
   const [activeGroup, setActiveGroup] = useState("overview");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [modeFilter, setModeFilter] = useState("all");
   const [selectedKey, setSelectedKey] = useState("");
   const [paramsText, setParamsText] = useState("{}");
   const [rationale, setRationale] = useState("Financial Manager Desktop review");
@@ -58,7 +40,20 @@ export function FinancialManagerWorkspace({
   const groups = catalog?.groups || [];
   const actions = catalog?.actions || [];
   const selectedAction = actions.find((item) => actionKey(item) === selectedKey) || null;
-  const visibleActions = activeGroup === "overview" ? actions.slice(0, 8) : actions.filter((item) => item.group === activeGroup);
+  const statusOptions = Array.from(new Set(actions.map((item) => item.status || "unknown"))).sort();
+  const modeOptions = Array.from(new Set(actions.map((item) => item.mode || "unknown"))).sort();
+  const unmappedGroups = ["decision", "fundamental", "macro", "alerts", "limit-up"]
+    .map((id) => groups.find((group) => group.id === id))
+    .filter(Boolean);
+  const visibleActions = (activeGroup === "overview" ? actions : actions.filter((item) => item.group === activeGroup))
+    .filter((item) => {
+      const haystack = `${item.label} ${item.capability_id} ${item.action_id} ${item.group} ${item.tool || ""} ${item.mcp_tool || ""} ${item.intent_action || ""}`.toLowerCase();
+      const matchesQuery = !query.trim() || haystack.includes(query.trim().toLowerCase());
+      const matchesStatus = statusFilter === "all" || (item.status || "unknown") === statusFilter;
+      const matchesMode = modeFilter === "all" || (item.mode || "unknown") === modeFilter;
+      return matchesQuery && matchesStatus && matchesMode;
+    })
+    .slice(0, activeGroup === "overview" && !query.trim() && statusFilter === "all" && modeFilter === "all" ? 12 : undefined);
 
   async function refresh() {
     setBusy(true);
@@ -141,6 +136,36 @@ export function FinancialManagerWorkspace({
             <MetricCard label="Live Trading" value={status?.broker?.live_trading_enabled ? "enabled" : "disabled"} status="not_required" />
           </div>
 
+          <section className="capability-section compact-section">
+            <div className="section-header">
+              <div>
+                <span>{actions.length} 个后端动作</span>
+                <h3>搜索与状态过滤</h3>
+              </div>
+              <Search size={18} />
+            </div>
+            <label className="search-field">
+              <Search size={15} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索能力、工具、action 或 group" />
+            </label>
+            <div className="filter-row tool-filter-row">
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">全部状态</option>
+                {statusOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+              <select value={modeFilter} onChange={(event) => setModeFilter(event.target.value)}>
+                <option value="all">全部模式</option>
+                {modeOptions.map((item) => <option key={item} value={item}>{modeLabel(item)}</option>)}
+              </select>
+            </div>
+            {!!unmappedGroups.length && (
+              <div className="notice info compact">
+                <ShieldCheck size={14} />
+                这些后端能力已有专门入口，也仍可在这里动态运行：{unmappedGroups.map((group) => group?.label || group?.id).join("、")}。
+              </div>
+            )}
+          </section>
+
           <div className="financial-manager-grid">
             <aside className="financial-manager-side">
               <button className={activeGroup === "overview" ? "active" : ""} onClick={() => setActiveGroup("overview")} type="button">
@@ -189,11 +214,15 @@ export function FinancialManagerWorkspace({
 
               <form className="financial-action-runner" onSubmit={submit}>
                 <div className="section-header">
-                  <div>
-                    <span>{selectedAction ? `${selectedAction.capability_id}.${selectedAction.action_id}` : "未选择"}</span>
-                    <h3>{selectedAction?.label || "选择一个动作"}</h3>
-                  </div>
-                  <StatusBadge status={selectedAction?.status || "not_loaded"} />
+                <div>
+                  <span>{selectedAction ? `${selectedAction.capability_id}.${selectedAction.action_id}` : "未选择"}</span>
+                  <h3>{selectedAction?.label || "选择一个动作"}</h3>
+                </div>
+                <StatusBadge status={selectedAction?.status || "not_loaded"} />
+              </div>
+                <div className={`notice ${selectedAction?.available === false || selectedAction?.mode === "blocked" ? "warn" : "info"} compact`}>
+                  <ShieldCheck size={14} />
+                  {statusDescription(selectedAction)}
                 </div>
                 <textarea aria-label="financial action params" value={paramsText} onChange={(event) => setParamsText(event.target.value)} rows={8} />
                 {selectedAction?.mode === "stateful_intent" && (

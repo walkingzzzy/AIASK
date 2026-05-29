@@ -91,7 +91,15 @@ function financialManagerCatalog() {
     { id: "risk-performance", label: "Risk & Performance", description: "Risk, VaR, exposure, attribution and decision support" },
     { id: "quant-backtest", label: "Quant & Backtest", description: "Quant research and backtest suite" },
     { id: "paper-execution", label: "Paper & Execution", description: "Paper trading and execution planning" },
-    { id: "broker-readonly", label: "Broker Read-only", description: "Broker account and order queries only" }
+    { id: "broker-readonly", label: "Broker Read-only", description: "Broker account and order queries only" },
+    { id: "valuation", label: "估值分析", description: "DCF/DDM/相对/情景/共识估值" },
+    { id: "decision", label: "买卖决策", description: "买入/卖出/共识/统一决策" },
+    { id: "trade-plan", label: "交易计划", description: "入场、止损止盈和关键价位" },
+    { id: "fund-flow", label: "资金流向", description: "北向、行业、概念和个股资金流" },
+    { id: "fundamental", label: "基本面", description: "基本面分析、杜邦和同行对比" },
+    { id: "macro", label: "宏观经济", description: "宏观指标与市场概览" },
+    { id: "alerts", label: "告警管理", description: "告警检查与规则创建" },
+    { id: "limit-up", label: "涨停与龙虎", description: "涨停统计和大宗交易" }
   ];
   const actions = [
     { capability_id: "stock-analysis", action_id: "analyze_stock", group: "market-research", label: "Analyze stock", mode: "read_only", status: "ready", available: true, tool: "agent_analyze_stock", default_params: { code: "600519", include_decision: false } },
@@ -102,13 +110,28 @@ function financialManagerCatalog() {
     { capability_id: "watchlist", action_id: "add", group: "portfolio-watchlist", label: "Add watchlist stock intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "watchlist_manager.add", default_params: { group: "default", code: "600519" } },
     { capability_id: "paper", action_id: "submit_order", group: "paper-execution", label: "Paper order intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "paper_trading_manager.submit_order", default_params: { code: "600519", side: "buy", quantity: 100, dry_run: true } },
     { capability_id: "broker-ths", action_id: "positions", group: "broker-readonly", label: "THS positions", mode: "read_only", status: "missing_mcp_tool", available: false, mcp_tool: "ths_query_position", default_params: {} },
-    { capability_id: "broker-live", action_id: "place_order", group: "broker-readonly", label: "Live place order", mode: "blocked", status: "blocked", available: false, blocked_reason: "Live broker order placement is disabled in Financial Manager V1." }
+    { capability_id: "broker-live", action_id: "place_order", group: "broker-readonly", label: "Live place order", mode: "blocked", status: "blocked", available: false, blocked_reason: "Live broker order placement is disabled in Financial Manager V1." },
+    { capability_id: "decision", action_id: "should_buy", group: "decision", label: "买入建议", mode: "read_only", status: "ready", available: true, mcp_tool: "should_i_buy", default_params: { code: "600519" } },
+    { capability_id: "decision", action_id: "should_sell", group: "decision", label: "卖出建议", mode: "read_only", status: "ready", available: true, mcp_tool: "should_i_sell", default_params: { code: "600519", buy_price: 1800, holding_days: 30 } },
+    { capability_id: "decision", action_id: "consensus", group: "decision", label: "决策共识", mode: "read_only", status: "ready", available: true, mcp_tool: "decision_consensus", default_params: { code: "600519" } },
+    { capability_id: "decision", action_id: "unified", group: "decision", label: "统一决策", mode: "read_only", status: "ready", available: true, mcp_tool: "get_unified_decision", default_params: { code: "600519", detail_level: "summary" } },
+    { capability_id: "fundamental", action_id: "analyze", group: "fundamental", label: "基本面分析", mode: "read_only", status: "ready", available: true, mcp_tool: "fundamental_analysis_manager", mcp_action: "analyze", default_params: { code: "600519" } },
+    { capability_id: "fundamental", action_id: "dupont", group: "fundamental", label: "杜邦分析", mode: "read_only", status: "ready", available: true, mcp_tool: "fundamental_analysis_manager", mcp_action: "dupont", default_params: { code: "600519" } },
+    { capability_id: "fundamental", action_id: "compare", group: "fundamental", label: "同行对比", mode: "read_only", status: "ready", available: true, mcp_tool: "fundamental_analysis_manager", mcp_action: "compare", default_params: { code: "600519", peers: ["000858", "002304"] } },
+    { capability_id: "macro", action_id: "indicators", group: "macro", label: "宏观指标", mode: "read_only", status: "ready", available: true, mcp_tool: "macro_manager", mcp_action: "get_indicators", default_params: { indicators: ["cpi", "pmi"], limit: 12 } },
+    { capability_id: "macro", action_id: "overview", group: "macro", label: "市场概览", mode: "read_only", status: "ready", available: true, mcp_tool: "macro_manager", mcp_action: "market_overview", default_params: {} },
+    { capability_id: "alerts", action_id: "check", group: "alerts", label: "检查所有告警", mode: "read_only", status: "ready", available: true, mcp_tool: "check_all_alerts", default_params: { status: "active" } },
+    { capability_id: "alerts", action_id: "create_indicator", group: "alerts", label: "创建指标告警", mode: "read_only", status: "ready", available: true, mcp_tool: "create_indicator_alert", default_params: { code: "600519", indicator: "price", condition: ">", value: 2000 } },
+    { capability_id: "alerts", action_id: "create_combo", group: "alerts", label: "创建组合告警", mode: "read_only", status: "ready", available: true, mcp_tool: "create_combo_alert", default_params: { name: "RSI超买+放量", conditions: [{ code: "600519", indicator: "rsi", condition: ">", value: 70 }] } },
+    { capability_id: "limit-up", action_id: "list", group: "limit-up", label: "涨停板列表", mode: "read_only", status: "ready", available: true, mcp_tool: "limit_up_manager", mcp_action: "list", default_params: {} },
+    { capability_id: "limit-up", action_id: "statistics", group: "limit-up", label: "涨停统计", mode: "read_only", status: "ready", available: true, mcp_tool: "limit_up_manager", mcp_action: "statistics", default_params: {} },
+    { capability_id: "limit-up", action_id: "block_trades", group: "limit-up", label: "大宗交易", mode: "read_only", status: "ready", available: true, mcp_tool: "trading_data_manager", mcp_action: "block_trades", default_params: { limit: 20 } }
   ];
   return {
     object: "aiask.desktop.financial_manager.catalog",
     groups,
     actions,
-    summary: { ready: 4, intent_ready: 3, missing_mcp_tool: 1, blocked: 1 },
+    summary: { ready: 22, intent_ready: 3, missing_mcp_tool: 1, blocked: 1 },
     safety: { mode: "read_only_plus_intents", live_trading_enabled: false, stateful_execution: "action_intent_only", secrets_redacted: true },
     secrets_redacted: true
   };
@@ -261,7 +284,7 @@ function capabilities(): CapabilityWorkbenchPayload {
       gated: false,
       registration_status: "registered",
       discovery_status: "discovered",
-      discovered_counts: { tools: 4, resources: 1, prompts: 1 },
+      discovered_counts: { tools: 8, resources: 1, prompts: 1 },
       configured: true,
       config_path: "mock://aiask/mcp_servers.json",
       config_exists: true,
@@ -278,7 +301,11 @@ function capabilities(): CapabilityWorkbenchPayload {
         { server: "akshare-local", name: "get_realtime_quote", wrapped_name: "agent_mcp_akshare_get_realtime_quote", domain: "quote", description: "Realtime quote" },
         { server: "akshare-local", name: "get_kline", wrapped_name: "agent_mcp_akshare_get_kline", domain: "kline", description: "K-line data" },
         { server: "akshare-local", name: "get_macro_indicator", wrapped_name: "agent_mcp_akshare_get_macro_indicator", domain: "macro", description: "Macro indicator" },
-        { server: "akshare-local", name: "get_option_chain", wrapped_name: "agent_mcp_akshare_get_option_chain", domain: "options", description: "Option chain" }
+        { server: "akshare-local", name: "get_option_chain", wrapped_name: "agent_mcp_akshare_get_option_chain", domain: "options", description: "Option chain" },
+        { server: "tdx-local", name: "tdx_realtime_quote", wrapped_name: "agent_mcp_tdx_tdx_realtime_quote", domain: "quote", description: "TDX realtime quote" },
+        { server: "eastmoney-local", name: "em_news_flow", wrapped_name: "agent_mcp_em_em_news_flow", domain: "news", description: "Eastmoney news flow" },
+        { server: "ths-local", name: "ths_query_balance", wrapped_name: "agent_mcp_ths_ths_query_balance", domain: "broker", description: "THS account balance" },
+        { server: "qmt-local", name: "qmt_query_stock_data", wrapped_name: "agent_mcp_qmt_qmt_query_stock_data", domain: "broker", description: "QMT stock data" }
       ],
       resources: [{ uri: "aiask://quotes", name: "quote resource" }],
       prompts: [{ name: "risk-review", description: "Risk review prompt" }],
@@ -621,6 +648,10 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/terminal/sessions") {
     return ok({ object: "list", data: [{ session_id: "terminal_mock", backend: "local-powershell", status: "idle", user_id: profile.user_id }] } as T);
   }
+  const terminalBackendSessionsMatch = cleanPath.match(/^\/v1\/terminal\/backends\/([^/]+)\/sessions$/);
+  if (terminalBackendSessionsMatch) {
+    return ok({ object: "list", data: [{ session_id: "terminal_mock", backend: decodeURIComponent(terminalBackendSessionsMatch[1]), status: "idle", user_id: profile.user_id }] } as T);
+  }
   if (cleanPath === "/v1/gateway/status") {
     return ok({ object: "aiask.gateway_status", status: "ready", enabled_platforms: ["desktop"], pending_messages: 0 } as T);
   }
@@ -819,6 +850,8 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/desktop/quant/research-runs") {
     return ok(envelope("agent_quant_research_run", { research: { research_id: "research_mock", status: "completed", payload: { stages: [] }, report: { object: "report", research_id: "research_mock", status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, stages: [], disclaimer: "MOCK_NOT_INVESTMENT_ADVICE" } } }) as T);
   }
+  const quantRunMatch = cleanPath.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)$/);
+  if (quantRunMatch) return ok({ research_id: decodeURIComponent(quantRunMatch[1]), status: "completed", payload: { stages: [] }, report: { object: "report", research_id: decodeURIComponent(quantRunMatch[1]), status: "completed" } } as T);
   const quantReportMatch = cleanPath.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)\/report$/);
   if (quantReportMatch) return ok({ object: "report", research_id: decodeURIComponent(quantReportMatch[1]), status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, disclaimer: "MOCK_NOT_INVESTMENT_ADVICE", stages: [] } as T);
 

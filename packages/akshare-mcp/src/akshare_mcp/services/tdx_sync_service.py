@@ -346,8 +346,11 @@ class TdxSyncService:
         """Sync common index daily bars into kline_1d using prefixed codes."""
         from ..data_source import data_source
 
+        # NOTE: 上证指数在 TDX 的代码是 999999(不是 000001.SH —
+        # 后者会被解析成平安银行个股,close≈10 而非指数点位≈4000,
+        # 触发 validators.index_close_out_of_range 并导致 fear_greed 数据为空)。
         index_map = {
-            "sh000001": "000001.SH",
+            "sh000001": "999999",
             "sh000300": "399300.SZ",
             "sz399001": "399001.SZ",
             "sz399006": "399006.SZ",

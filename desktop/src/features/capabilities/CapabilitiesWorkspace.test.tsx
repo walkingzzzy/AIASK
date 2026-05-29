@@ -233,6 +233,8 @@ describe("CapabilitiesWorkspace", () => {
     expect(screen.getByText("连接器评审队列")).toBeInTheDocument();
     expect(screen.getAllByText("2 个工具 / 1 个资源 / 1 个提示词").length).toBeGreaterThan(0);
     expect(screen.getByText("agent_mcp_quote")).toBeInTheDocument();
+    expect(screen.getByText("外部金融 MCP 工具")).toBeInTheDocument();
+    expect(screen.getByText("通达信")).toBeInTheDocument();
   });
 
   it("shows structured MCP resource errors without treating them as offline", async () => {

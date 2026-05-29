@@ -1,4 +1,4 @@
-import { BarChart3, Database, Factory, FlaskConical, Landmark, LineChart, Radio, Zap } from "lucide-react";
+import { ArrowUpDown, BarChart3, Bell, Database, Factory, Flame, FlaskConical, Gauge, Landmark, LineChart, Radio, Scale, TrendingUp, Crosshair, Zap } from "lucide-react";
 import type { MainView } from "../../types";
 import { StatusBadge } from "../../components/shared";
 
@@ -64,6 +64,33 @@ const workflowCards: Array<{
     status: "ready",
     statusLabel: "孵化",
     icon: FlaskConical
+  },
+  {
+    id: "valuation",
+    label: "估值分析",
+    eyebrow: "内在价值",
+    description: "DCF / DDM / 相对估值 / 情景 DCF / 共识估值一键生成，辅助价值判断。",
+    status: "ready",
+    statusLabel: "估值",
+    icon: TrendingUp
+  },
+  {
+    id: "trade-plan",
+    label: "交易计划",
+    eyebrow: "风险管理",
+    description: "关键价位、ATR 止损止盈和场景化入场方案，生成完整交易计划。",
+    status: "ready",
+    statusLabel: "计划",
+    icon: Crosshair
+  },
+  {
+    id: "fund-flow",
+    label: "资金流向",
+    eyebrow: "市场资金",
+    description: "北向资金、行业/概念资金流和个股主力资金，监控市场资金动向。",
+    status: "ready",
+    statusLabel: "资金",
+    icon: ArrowUpDown
   }
 ];
 
@@ -84,6 +111,44 @@ const advancedWorkflowCards: Array<{
     label: "事件控制台",
     description: "查看事件流、空态和错误详情，默认不占用普通用户首屏。",
     icon: Zap
+  }
+];
+
+const financialAnalysisCards: Array<{
+  id: MainView;
+  label: string;
+  description: string;
+  icon: typeof Factory;
+}> = [
+  {
+    id: "decision",
+    label: "买卖决策",
+    description: "买入/卖出建议、决策共识和统一决策，不再只藏在金融经理台动作列表中。",
+    icon: Scale
+  },
+  {
+    id: "fundamental",
+    label: "基本面",
+    description: "基本面分析、杜邦分解和同行对比，统一进入专门工作台。",
+    icon: Gauge
+  },
+  {
+    id: "macro",
+    label: "宏观经济",
+    description: "GDP/CPI/PMI/M2 等宏观指标与市场概览。",
+    icon: LineChart
+  },
+  {
+    id: "alerts",
+    label: "告警管理",
+    description: "告警检查、指标告警和组合告警规则创建入口。",
+    icon: Bell
+  },
+  {
+    id: "limit-up",
+    label: "涨停与龙虎",
+    description: "涨停列表、涨停统计和大宗交易异动。",
+    icon: Flame
   }
 ];
 
@@ -130,6 +195,28 @@ export function WorkflowsWorkspace({ onOpenView }: { onOpenView: (view: MainView
                 </article>
               );
             })}
+          </section>
+
+          <section className="capability-section">
+            <div className="section-header">
+              <div>
+                <span>金融分析扩展</span>
+                <h3>把后端已实现能力做成明确入口</h3>
+              </div>
+              <StatusBadge status="implemented" label="专门面板" />
+            </div>
+            <div className="settings-shortcut-grid">
+              {financialAnalysisCards.map((card) => {
+                const Icon = card.icon;
+                return (
+                  <button className="settings-shortcut" key={card.id} onClick={() => onOpenView(card.id)} type="button">
+                    <Icon size={16} />
+                    <strong>{card.label}</strong>
+                    <span>{card.description}</span>
+                  </button>
+                );
+              })}
+            </div>
           </section>
 
           <section className="capability-section">

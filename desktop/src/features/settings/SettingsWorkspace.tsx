@@ -1,13 +1,18 @@
 import {
   Archive,
   ArrowLeft,
+  ArrowUpDown,
+  Bell,
   Bot,
   BrainCircuit,
   CalendarClock,
   Cable,
   ChevronDown,
+  Crosshair,
   Database,
   Factory,
+  Flame,
+  Gauge,
   Globe2,
   KeyRound,
   Laptop,
@@ -15,9 +20,11 @@ import {
   Monitor,
   RefreshCw,
   RotateCcw,
+  Scale,
   ServerCog,
   ShieldCheck,
   SlidersHorizontal,
+  TrendingUp,
   Webhook,
   Wrench
 } from "lucide-react";
@@ -88,7 +95,15 @@ const workflowShortcuts: Array<{ id: MainView; label: string; description: strin
   { id: "strategy-factory", label: "策略工厂", description: "进入策略生成、运行和评审流程。", icon: Factory },
   { id: "factor-factory", label: "因子工厂", description: "查看因子挖掘、active pool 和引擎健康。", icon: Factory },
   { id: "incubation", label: "孵化工厂", description: "检查生命周期、命中率报告和晋升信号。", icon: ShieldCheck },
-  { id: "factory-events", label: "工厂事件", description: "创建、预览和审批工厂事件。", icon: CalendarClock }
+  { id: "factory-events", label: "工厂事件", description: "创建、预览和审批工厂事件。", icon: CalendarClock },
+  { id: "valuation", label: "估值分析", description: "DCF/DDM/相对估值/情景/共识估值。", icon: TrendingUp },
+  { id: "trade-plan", label: "交易计划", description: "入场方案、止损止盈与仓位管理。", icon: Crosshair },
+  { id: "fund-flow", label: "资金流向", description: "北向/行业/概念/个股资金流看板。", icon: ArrowUpDown },
+  { id: "decision", label: "买卖决策", description: "买入/卖出/共识/统一决策。", icon: Scale },
+  { id: "fundamental", label: "基本面", description: "基本面分析、杜邦和同行对比。", icon: Gauge },
+  { id: "macro", label: "宏观经济", description: "宏观指标与市场概览。", icon: BrainCircuit },
+  { id: "alerts", label: "告警管理", description: "告警检查与规则创建。", icon: Bell },
+  { id: "limit-up", label: "涨停与龙虎", description: "涨停统计、大宗交易与异动。", icon: Flame }
 ];
 
 const advancedShortcuts: Array<{ id: MainView; label: string; description: string; icon: ElementType }> = [

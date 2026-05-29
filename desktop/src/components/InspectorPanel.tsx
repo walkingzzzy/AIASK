@@ -1,6 +1,6 @@
 import { Activity, ChevronDown, ClipboardCheck, Layers3, MessageSquare, PanelRight, RefreshCw, Settings, ShieldCheck, Square, Trash2, Wrench, XCircle } from "lucide-react";
 import type { ElementType } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../api";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralApprovalsPanel, IntentsPanel, ToolCatalog } from "./InspectorPanels";
@@ -239,6 +239,62 @@ function RunDetailsPanel({
   );
 }
 
+function TaskPlanSection({ apiToken, controlToken, endpoint }: { apiToken: string; controlToken: string; endpoint: string }) {
+  const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
+  const [todos, setTodos] = useState<Array<Record<string, unknown>>>([]);
+  const [subgoals, setSubgoals] = useState<Array<Record<string, unknown>>>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  async function load() {
+    try {
+      const [todoResult, subgoalResult] = await Promise.all([
+        api.readOnlyTool("agent_todo_list", {}).catch(() => ({ success: false, data: {} })),
+        api.readOnlyTool("agent_subgoal", { action: "status" }).catch(() => ({ success: false, data: {} }))
+      ]);
+      const todoData = todoResult.data && typeof todoResult.data === "object" ? (todoResult.data as Record<string, unknown>) : {};
+      const subData = subgoalResult.data && typeof subgoalResult.data === "object" ? (subgoalResult.data as Record<string, unknown>) : {};
+      setTodos(Array.isArray(todoData.items) ? todoData.items as Array<Record<string, unknown>> : []);
+      setSubgoals(Array.isArray(subData.subgoals) ? subData.subgoals as Array<Record<string, unknown>> : []);
+      setLoaded(true);
+    } catch {
+      setLoaded(true);
+    }
+  }
+
+  useEffect(() => { if (endpoint && apiToken) load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [endpoint, apiToken]);
+
+  if (!loaded || (!todos.length && !subgoals.length)) return null;
+
+  return (
+    <section className="inspector-section">
+      <div className="section-header compact">
+        <span>任务计划</span>
+        <strong>{todos.length} 任务 / {subgoals.length} 子目标</strong>
+      </div>
+      {todos.length > 0 && (
+        <div className="mini-list compact-list">
+          {todos.slice(0, 5).map((item, i) => (
+            <article className="job-row compact" key={i}>
+              <div><strong>{String(item.title || item.description || `#${i + 1}`)}</strong></div>
+              <span>{String(item.status || "pending")}</span>
+            </article>
+          ))}
+        </div>
+      )}
+      {subgoals.length > 0 && (
+        <div className="mini-list compact-list">
+          {subgoals.slice(0, 3).map((item, i) => (
+            <article className="job-row compact" key={i}>
+              <div><strong>{String(item.goal || item.description || `子目标 #${i + 1}`)}</strong></div>
+              <span>{String(item.status || "active")}</span>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function InspectorPanel({
   agentMode,
   apiToken,
@@ -340,20 +396,23 @@ export function InspectorPanel({
       </div>
 
       {inspectorTab === "details" && (
-        <RunDetailsPanel
-          agentMode={agentMode}
-          apiToken={apiToken}
-          busy={busy}
-          controlToken={controlToken}
-          endpoint={endpoint}
-          onLoadRunEvents={onLoadRunEvents}
-          onRemoveResponseThread={onRemoveResponseThread}
-          selectedAuditEventCount={selectedAuditEventCount}
-          selectedResponse={selectedResponse}
-          selectedResponseRecord={selectedResponseRecord}
-          selectedRunId={selectedRunId}
-          selectedThread={selectedThread}
-        />
+        <>
+          <RunDetailsPanel
+            agentMode={agentMode}
+            apiToken={apiToken}
+            busy={busy}
+            controlToken={controlToken}
+            endpoint={endpoint}
+            onLoadRunEvents={onLoadRunEvents}
+            onRemoveResponseThread={onRemoveResponseThread}
+            selectedAuditEventCount={selectedAuditEventCount}
+            selectedResponse={selectedResponse}
+            selectedResponseRecord={selectedResponseRecord}
+            selectedRunId={selectedRunId}
+            selectedThread={selectedThread}
+          />
+          <TaskPlanSection apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} />
+        </>
       )}
 
       {inspectorTab === "diagnostics" && (

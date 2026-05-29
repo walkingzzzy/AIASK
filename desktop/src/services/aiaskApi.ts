@@ -17,6 +17,7 @@ import type {
   FinancialManagerIntentResult,
   FinancialManagerQueryResult,
   FinancialManagerStatus,
+  FinancialSystemReadiness,
   FullModeConsoleData,
   GatewayDaemonStatus,
   GatewayMessage,
@@ -92,6 +93,14 @@ export class AiaskApi {
 
   hermesReadiness(): Promise<unknown> {
     return requestJson<unknown>(this.endpoint, "/v1/hermes/readiness", { token: this.apiToken });
+  }
+
+  hermesToolsets(): Promise<unknown> {
+    return requestJson<unknown>(this.endpoint, "/v1/hermes/toolsets", { token: this.apiToken });
+  }
+
+  hermesConfig(): Promise<unknown> {
+    return requestJson<unknown>(this.endpoint, "/v1/hermes/config", { token: controlOrApiToken(this) });
   }
 
   private async controlData<T>(path: string, fallback: T): Promise<T> {
@@ -874,6 +883,10 @@ export class AiaskApi {
     return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/logs`, { token: controlOrApiToken(this) });
   }
 
+  terminalBackendSessions(name: string): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+    return requestJson(this.endpoint, `/v1/terminal/backends/${encodeURIComponent(name)}/sessions`, { token: this.controlToken });
+  }
+
   quantPresets(): Promise<QuantPresetPayload> {
     return requestJson<QuantPresetPayload>(this.endpoint, "/v1/desktop/quant/presets", { token: this.apiToken });
   }
@@ -887,6 +900,14 @@ export class AiaskApi {
         token: this.apiToken,
         body
       }
+    );
+  }
+
+  quantResearchRunGet(researchId: string): Promise<QuantResearchRun> {
+    return requestJson<QuantResearchRun>(
+      this.endpoint,
+      `/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}`,
+      { token: this.apiToken }
     );
   }
 
@@ -904,6 +925,10 @@ export class AiaskApi {
 
   financialManagerStatus(): Promise<FinancialManagerStatus> {
     return requestJson<FinancialManagerStatus>(this.endpoint, "/v1/desktop/financial-manager/status", { token: controlOrApiToken(this) });
+  }
+
+  financialSystemReadiness(): Promise<FinancialSystemReadiness> {
+    return requestJson<FinancialSystemReadiness>(this.endpoint, "/v1/financial-system/readiness", { token: controlOrApiToken(this) });
   }
 
   financialManagerQuery(body: {

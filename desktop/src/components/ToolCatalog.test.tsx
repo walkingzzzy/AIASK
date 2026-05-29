@@ -45,7 +45,7 @@ describe("ToolCatalog", () => {
     expect(screen.getAllByText("read_only").length).toBeGreaterThan(0);
     expect(screen.getAllByText("stateful").length).toBeGreaterThan(0);
 
-    const [, statusFilter, sideEffectFilter] = screen.getAllByRole("combobox");
+    const [, , statusFilter, sideEffectFilter] = screen.getAllByRole("combobox");
     fireEvent.change(statusFilter, { target: { value: "ready" } });
     expect(screen.getByText("agent_quote")).toBeInTheDocument();
     expect(screen.queryByText("agent_strategy_submit")).not.toBeInTheDocument();
@@ -55,6 +55,38 @@ describe("ToolCatalog", () => {
     expect(screen.getByText("agent_quote")).toBeInTheDocument();
     expect(screen.queryByText("agent_strategy_submit")).not.toBeInTheDocument();
     expect(screen.queryByText("契约")).not.toBeInTheDocument();
+  });
+
+  it("filters tools by business capability mapping", () => {
+    render(
+      <ToolCatalog
+        hermesTools={[]}
+        tools={[
+          {
+            name: "agent_security_scan",
+            capability: "security_scan",
+            category: "security",
+            status: "ready",
+            side_effect: "read_only",
+            description: "Scan text for secrets"
+          },
+          {
+            name: "agent_browser_snapshot",
+            capability: "browser_snapshot",
+            category: "browser",
+            status: "ready",
+            side_effect: "read_only",
+            description: "Read browser snapshot"
+          }
+        ]}
+      />
+    );
+
+    const [businessFilter] = screen.getAllByRole("combobox");
+    fireEvent.change(businessFilter, { target: { value: "security" } });
+    expect(screen.getByText("agent_security_scan")).toBeInTheDocument();
+    expect(screen.queryByText("agent_browser_snapshot")).not.toBeInTheDocument();
+    expect(screen.getByText("业务映射 安全")).toBeInTheDocument();
   });
 
   it("shows optional provider contract metadata without requiring it", () => {

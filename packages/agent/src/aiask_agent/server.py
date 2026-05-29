@@ -667,6 +667,14 @@ FINANCIAL_MANAGER_GROUPS: tuple[dict[str, str], ...] = (
     {"id": "quant-backtest", "label": "Quant & Backtest", "description": "Quant research, data gates, and backtest suite operations."},
     {"id": "paper-execution", "label": "Paper & Execution Planning", "description": "Paper trading and execution plan reads plus intent-only task changes."},
     {"id": "broker-readonly", "label": "Broker Read-only", "description": "THS/QMT account, position, order, and deal queries without live order placement."},
+    {"id": "valuation", "label": "估值分析", "description": "DCF/DDM/相对估值/情景估值/共识估值与历史估值分位。"},
+    {"id": "decision", "label": "买卖决策", "description": "综合买卖建议、决策共识、统一决策和闸门。"},
+    {"id": "trade-plan", "label": "交易计划", "description": "入场方案/止损止盈/关键价位/仓位管理。"},
+    {"id": "fund-flow", "label": "资金流向", "description": "北向资金、行业/概念资金流、个股主力资金流。"},
+    {"id": "fundamental", "label": "基本面", "description": "杜邦分析、同行对比、综合基本面分析。"},
+    {"id": "macro", "label": "宏观经济", "description": "GDP/CPI/PMI/M2 等宏观指标与市场概览。"},
+    {"id": "alerts", "label": "告警管理", "description": "价格/指标告警和组合条件告警管理。"},
+    {"id": "limit-up", "label": "涨停与龙虎", "description": "涨停板统计、龙虎榜详情与大宗交易。"},
 )
 
 FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
@@ -704,6 +712,42 @@ FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
     {"capability_id": "broker-qmt", "action_id": "positions", "group": "broker-readonly", "label": "QMT positions", "mode": "read_only", "mcp_tool": "qmt_query_position", "default_params": {}},
     {"capability_id": "broker-live", "action_id": "place_order", "group": "broker-readonly", "label": "Live place order", "mode": "blocked", "blocked_reason": "Live broker order placement is disabled in Financial Manager V1."},
     {"capability_id": "broker-live", "action_id": "cancel_order", "group": "broker-readonly", "label": "Live cancel order", "mode": "blocked", "blocked_reason": "Live broker cancellation is disabled in Financial Manager V1."},
+    # ─── 估值分析 ───
+    {"capability_id": "valuation", "action_id": "dcf", "group": "valuation", "label": "DCF 估值", "mode": "read_only", "mcp_tool": "dcf_valuation", "default_params": {"code": "600519", "growth_rate": 0.05, "discount_rate": 0.1, "years": 5}},
+    {"capability_id": "valuation", "action_id": "ddm", "group": "valuation", "label": "DDM 估值", "mode": "read_only", "mcp_tool": "ddm_valuation", "default_params": {"code": "600519", "growth_rate": 0.05, "required_return": 0.1}},
+    {"capability_id": "valuation", "action_id": "relative", "group": "valuation", "label": "相对估值", "mode": "read_only", "mcp_tool": "relative_valuation", "default_params": {"code": "600519"}},
+    {"capability_id": "valuation", "action_id": "scenario_dcf", "group": "valuation", "label": "情景 DCF", "mode": "read_only", "mcp_tool": "scenario_dcf_valuation", "default_params": {"code": "600519", "industry": "消费"}},
+    {"capability_id": "valuation", "action_id": "consensus", "group": "valuation", "label": "估值共识", "mode": "read_only", "mcp_tool": "valuation_consensus", "default_params": {"code": "600519"}},
+    {"capability_id": "valuation", "action_id": "historical", "group": "valuation", "label": "历史估值", "mode": "read_only", "mcp_tool": "get_historical_valuation", "default_params": {"code": "600519", "days": 90}},
+    # ─── 买卖决策 ───
+    {"capability_id": "decision", "action_id": "should_buy", "group": "decision", "label": "买入建议", "mode": "read_only", "mcp_tool": "should_i_buy", "default_params": {"code": "600519"}},
+    {"capability_id": "decision", "action_id": "should_sell", "group": "decision", "label": "卖出建议", "mode": "read_only", "mcp_tool": "should_i_sell", "default_params": {"code": "600519", "buy_price": 1800, "holding_days": 30}},
+    {"capability_id": "decision", "action_id": "consensus", "group": "decision", "label": "决策共识", "mode": "read_only", "mcp_tool": "decision_consensus", "default_params": {"code": "600519"}},
+    {"capability_id": "decision", "action_id": "unified", "group": "decision", "label": "统一决策", "mode": "read_only", "mcp_tool": "get_unified_decision", "default_params": {"code": "600519", "detail_level": "summary"}},
+    # ─── 交易计划 ───
+    {"capability_id": "trade-plan", "action_id": "generate", "group": "trade-plan", "label": "生成交易计划", "mode": "read_only", "mcp_tool": "generate_trade_plan", "default_params": {"code": "600519", "capital": 1000000, "style": "balanced"}},
+    {"capability_id": "trade-plan", "action_id": "stop_levels", "group": "trade-plan", "label": "止损止盈计算", "mode": "read_only", "mcp_tool": "calculate_stop_levels", "default_params": {"code": "600519", "entry_price": 1800}},
+    {"capability_id": "trade-plan", "action_id": "key_levels", "group": "trade-plan", "label": "关键价位", "mode": "read_only", "mcp_tool": "get_key_levels", "default_params": {"code": "600519"}},
+    # ─── 资金流向 ───
+    {"capability_id": "fund-flow", "action_id": "north", "group": "fund-flow", "label": "北向资金", "mode": "read_only", "mcp_tool": "get_north_fund", "default_params": {"days": 30}},
+    {"capability_id": "fund-flow", "action_id": "sector", "group": "fund-flow", "label": "行业资金流", "mode": "read_only", "mcp_tool": "get_sector_fund_flow", "default_params": {"top_n": 20}},
+    {"capability_id": "fund-flow", "action_id": "concept", "group": "fund-flow", "label": "概念资金流", "mode": "read_only", "mcp_tool": "get_concept_fund_flow", "default_params": {"top_n": 20}},
+    {"capability_id": "fund-flow", "action_id": "stock", "group": "fund-flow", "label": "个股资金流", "mode": "read_only", "mcp_tool": "get_stock_fund_flow", "default_params": {"code": "600519"}},
+    # ─── 基本面 ───
+    {"capability_id": "fundamental", "action_id": "analyze", "group": "fundamental", "label": "基本面分析", "mode": "read_only", "mcp_tool": "fundamental_analysis_manager", "mcp_action": "analyze", "default_params": {"code": "600519"}},
+    {"capability_id": "fundamental", "action_id": "dupont", "group": "fundamental", "label": "杜邦分析", "mode": "read_only", "mcp_tool": "fundamental_analysis_manager", "mcp_action": "dupont", "default_params": {"code": "600519"}},
+    {"capability_id": "fundamental", "action_id": "compare", "group": "fundamental", "label": "同行对比", "mode": "read_only", "mcp_tool": "fundamental_analysis_manager", "mcp_action": "compare", "default_params": {"code": "600519", "peers": ["000858", "002304"]}},
+    # ─── 宏观经济 ───
+    {"capability_id": "macro", "action_id": "indicators", "group": "macro", "label": "宏观指标", "mode": "read_only", "mcp_tool": "macro_manager", "mcp_action": "get_indicators", "default_params": {"indicators": ["cpi", "pmi"], "limit": 12}},
+    {"capability_id": "macro", "action_id": "overview", "group": "macro", "label": "市场概览", "mode": "read_only", "mcp_tool": "macro_manager", "mcp_action": "market_overview", "default_params": {}},
+    # ─── 告警管理 ───
+    {"capability_id": "alerts", "action_id": "check", "group": "alerts", "label": "检查所有告警", "mode": "read_only", "mcp_tool": "check_all_alerts", "default_params": {"status": "active"}},
+    {"capability_id": "alerts", "action_id": "create_indicator", "group": "alerts", "label": "创建指标告警", "mode": "read_only", "mcp_tool": "create_indicator_alert", "default_params": {"code": "600519", "indicator": "price", "condition": ">", "value": 2000}},
+    {"capability_id": "alerts", "action_id": "create_combo", "group": "alerts", "label": "创建组合告警", "mode": "read_only", "mcp_tool": "create_combo_alert", "default_params": {"name": "RSI超买+放量", "conditions": [{"code": "600519", "indicator": "rsi", "condition": ">", "value": 70}]}},
+    # ─── 涨停与龙虎 ───
+    {"capability_id": "limit-up", "action_id": "list", "group": "limit-up", "label": "涨停板列表", "mode": "read_only", "mcp_tool": "limit_up_manager", "mcp_action": "list", "default_params": {}},
+    {"capability_id": "limit-up", "action_id": "statistics", "group": "limit-up", "label": "涨停统计", "mode": "read_only", "mcp_tool": "limit_up_manager", "mcp_action": "statistics", "default_params": {}},
+    {"capability_id": "limit-up", "action_id": "block_trades", "group": "limit-up", "label": "大宗交易", "mode": "read_only", "mcp_tool": "trading_data_manager", "mcp_action": "block_trades", "default_params": {"limit": 20}},
 )
 
 

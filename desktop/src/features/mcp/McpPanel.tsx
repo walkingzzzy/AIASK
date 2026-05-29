@@ -28,6 +28,20 @@ function resultDetail(record: Record<string, unknown>, data: Record<string, unkn
   return typeof value === "string" ? value : "操作已完成。";
 }
 
+const externalFinanceServers = [
+  { id: "tdx", label: "通达信", prefixes: ["tdx_"], expected: ["tdx_realtime_quote", "tdx_kline_history", "tdx_market_snapshot"] },
+  { id: "em", label: "东方财富", prefixes: ["em_"], expected: ["em_realtime_quote", "em_fund_info", "em_news_flow"] },
+  { id: "ths", label: "同花顺", prefixes: ["ths_"], expected: ["ths_query_balance", "ths_query_position", "ths_query_orders"] },
+  { id: "qmt", label: "QMT", prefixes: ["qmt_"], expected: ["qmt_query_account", "qmt_query_position", "qmt_query_stock_data"] }
+];
+
+function financeServerTools(tools: CapabilityWorkbenchPayload["mcp"]["tools"], prefixes: string[]) {
+  return tools.filter((tool) => {
+    const name = `${tool.name || ""} ${tool.wrapped_name || ""}`.toLowerCase();
+    return prefixes.some((prefix) => name.includes(prefix));
+  });
+}
+
 function ActionResult({ result }: { result: unknown }) {
   const record = resultRecord(result);
   if (!record) return null;
@@ -126,6 +140,10 @@ export function McpPanel({
   const missingAuthEnvVars = Array.isArray(mcp.missing_auth_env_vars) ? mcp.missing_auth_env_vars : [];
   const discoveredCounts = mcp.discovered_counts || {};
   const discoverySummary = `${discoveredCounts.tools ?? mcp.tools.length} 个工具 / ${discoveredCounts.resources ?? mcp.resources.length} 个资源 / ${discoveredCounts.prompts ?? mcp.prompts.length} 个提示词`;
+  const externalFinanceGroups = externalFinanceServers.map((server) => ({
+    ...server,
+    tools: financeServerTools(mcp.tools, server.prefixes)
+  }));
   const reviewItems = [
     { label: "注册", value: registrationStatus, status: statusFor(registrationStatus) },
     { label: "发现", value: discoveryStatus, status: statusFor(discoveryStatus) },
@@ -246,6 +264,26 @@ export function McpPanel({
             ))}
             {!mcp.tools.length && <p className="muted">{mcp.gated ? "请使用控制令牌解锁 MCP 工具查看权限。" : "尚未发现 MCP 工具。"}</p>}
           </div>
+        </div>
+      </section>
+
+      <section className="capability-section">
+        <div className="section-header">
+          <div>
+            <span>TDX / Eastmoney / THS / QMT</span>
+            <h3>外部金融 MCP 工具</h3>
+          </div>
+          <StatusBadge status={externalFinanceGroups.some((group) => group.tools.length) ? "implemented" : "not_loaded"} />
+        </div>
+        <div className="mini-list">
+          {externalFinanceGroups.map((group) => (
+            <article key={group.id}>
+              <strong>{group.label}</strong>
+              <span>{group.tools.length ? `${group.tools.length} 个已发现工具` : `未发现；期望 ${group.expected.join(", ")}`}</span>
+              <StatusBadge status={group.tools.length ? "implemented" : mcp.gated ? "gated" : "unconfigured"} />
+              {group.tools.length > 0 && <p>{group.tools.slice(0, 6).map((tool) => tool.wrapped_name || tool.name).join(", ")}</p>}
+            </article>
+          ))}
         </div>
       </section>
 

@@ -32,6 +32,15 @@ const HERMES_GROUPS: Array<{ label: string; area: string; tools: string[] }> = [
   { label: "任务与交接", area: "cron_admin/memory_admin", tools: ["agent_job_list", "agent_job_create", "agent_session_handoff"] }
 ];
 
+const FULL_MODE_SURFACES: Array<{ label: string; ui: string; tools: string[] }> = [
+  { label: "文件/终端/浏览器", ui: "工具目录探测 + 诊断状态，暂无专门操作台", tools: ["agent_file_read", "agent_file_patch", "agent_terminal", "agent_browser_snapshot"] },
+  { label: "消息/Gateway", ui: "设置 > 应用集成 + ActionIntent 审批", tools: ["agent_gateway_status", "agent_gateway_send_message", "agent_gateway_direct_deliver"] },
+  { label: "学习/RL", ui: "设置 > 学习 / RL 专门面板", tools: ["agent_learning_status", "agent_learning_review", "agent_rl_list_environments", "agent_rl_get_config"] },
+  { label: "插件/技能/MCP", ui: "能力中心、设置管理、工具目录", tools: ["agent_skill_list", "agent_plugin_list", "agent_mcp_manage"] },
+  { label: "Home Assistant/外部平台", ui: "工具目录可见，凭据缺失时显示 gated/unconfigured", tools: ["agent_ha_list_entities", "agent_ha_call_service", "agent_discord_channel_send"] },
+  { label: "委派/交接/MoA", ui: "工具级可见，当前无专门业务面板", tools: ["agent_delegate_task", "agent_session_handoff", "agent_moa"] }
+];
+
 function toolNames(tools: ToolCatalogItem[]): Set<string> {
   return new Set(tools.map((tool) => tool.name));
 }
@@ -177,6 +186,30 @@ export function AgentWorkspace({
               </div>
             </article>
 
+            <article className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>general_full</span>
+                  <h3>工具级能力与 UI 映射</h3>
+                </div>
+                <StatusBadge status={fullMode ? "implemented" : "gated"} />
+              </div>
+              <div className="mini-list">
+                {FULL_MODE_SURFACES.map((surface) => {
+                  const available = surface.tools.filter((name) => registered.has(name)).length;
+                  return (
+                    <article key={surface.label}>
+                      <strong>{surface.label}</strong>
+                      <span>{surface.ui}</span>
+                      <StatusBadge status={available === surface.tools.length ? "implemented" : available ? "partial" : fullMode ? "missing" : "gated"} label={`${available}/${surface.tools.length}`} />
+                    </article>
+                  );
+                })}
+              </div>
+            </article>
+          </section>
+
+          <section className="capability-grid two">
             <article className="capability-section">
               <div className="section-header">
                 <div>

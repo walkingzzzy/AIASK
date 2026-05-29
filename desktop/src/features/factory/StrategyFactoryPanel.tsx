@@ -148,6 +148,74 @@ export function StrategyFactoryPanel({
         <FactoryCard title="最近运行" envelope={factory?.runs || null} />
         <FactoryCard title="评审快照" envelope={factory?.review_snapshot || null} />
       </div>
+
+      <FactoryCandidatesSection payload={payload} />
+    </div>
+  );
+}
+
+function FactoryCandidatesSection({ payload }: { payload: CapabilityWorkbenchPayload | null }) {
+  const snapshot = payload?.strategy_factory?.review_snapshot;
+  const data = snapshot?.data && typeof snapshot.data === "object" ? (snapshot.data as Record<string, unknown>) : {};
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const topN = Array.isArray(data.top_n) ? data.top_n : Array.isArray(data.topn) ? data.topn : [];
+  const qualityReport = data.quality_report && typeof data.quality_report === "object" ? (data.quality_report as Record<string, unknown>) : null;
+
+  if (!candidates.length && !topN.length && !qualityReport) return null;
+
+  return (
+    <div className="capability-stack">
+      {topN.length > 0 && (
+        <section className="capability-section">
+          <div className="section-header">
+            <div><span>Top-N 策略</span><h3>最近一轮优胜策略</h3></div>
+            <StatusBadge status="implemented" label={`${topN.length} 个`} />
+          </div>
+          <div className="mini-list">
+            {topN.slice(0, 10).map((item: unknown, i: number) => {
+              const row = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+              return (
+                <article key={i} className="capability-row ok">
+                  <div>
+                    <strong>{String(row.name || row.strategy_id || `策略 #${i + 1}`)}</strong>
+                    <span>Sharpe: {String(row.sharpe ?? row.sharpe_ratio ?? "-")} | 收益: {String(row.return ?? row.total_return ?? "-")}</span>
+                  </div>
+                  <StatusBadge status={String(row.status || "ready")} label={String(row.status || "候选")} />
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {candidates.length > 0 && (
+        <section className="capability-section">
+          <div className="section-header">
+            <div><span>候选策略</span><h3>待评审候选</h3></div>
+            <StatusBadge status="partial" label={`${candidates.length} 个`} />
+          </div>
+          <div className="mini-list">
+            {candidates.slice(0, 8).map((item: unknown, i: number) => {
+              const row = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+              return (
+                <article key={i} className="capability-row">
+                  <div>
+                    <strong>{String(row.name || row.strategy_name || `候选 #${i + 1}`)}</strong>
+                    <span>{String(row.family || row.strategy_type || "-")}</span>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {qualityReport && (
+        <details className="raw-details">
+          <summary>质量报告</summary>
+          <JsonPanel value={qualityReport} />
+        </details>
+      )}
     </div>
   );
 }
