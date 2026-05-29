@@ -72,9 +72,35 @@ def paper_intake_batch_limit() -> int:
     return max(1, min(value, 500))
 
 
+# === DEV-V2: Gate-3 failed but diagnostically useful candidates ===
+def diagnostic_observation_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED", default=False)
+
+
+def diagnostic_observation_batch_limit() -> int:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_BATCH_LIMIT", "5")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 5
+    return max(1, min(value, 50))
+
+
+def diagnostic_observation_ttl_days() -> int:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS", "7")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 7
+    return max(1, min(value, 30))
+
+
 __all__ = [
     "observe_d_grade_enabled",
     "trade_aware_extra_families",
     "paper_intake_enabled",
     "paper_intake_batch_limit",
+    "diagnostic_observation_enabled",
+    "diagnostic_observation_batch_limit",
+    "diagnostic_observation_ttl_days",
 ]

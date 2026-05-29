@@ -13,6 +13,9 @@ def _clear_env(monkeypatch):
         "STRATEGY_FACTORY_TRADE_AWARE_EXTRA_FAMILIES",
         "INCUBATION_FACTORY_PAPER_INTAKE_ENABLED",
         "INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_BATCH_LIMIT",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -116,3 +119,42 @@ def test_runtime_change_takes_effect(monkeypatch):
     assert toggles.observe_d_grade_enabled() is True
     monkeypatch.delenv("STRATEGY_FACTORY_OBSERVE_D_GRADE_ENABLED")
     assert toggles.observe_d_grade_enabled() is False
+
+
+def test_diagnostic_observation_enabled_default_false():
+    assert toggles.diagnostic_observation_enabled() is False
+
+
+def test_diagnostic_observation_enabled_via_env(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED", "1")
+    assert toggles.diagnostic_observation_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("5", 5),
+        ("0", 1),
+        ("-10", 1),
+        ("999", 50),
+        ("bad", 5),
+        ("", 5),
+    ],
+)
+def test_diagnostic_observation_batch_limit_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_BATCH_LIMIT", value)
+    assert toggles.diagnostic_observation_batch_limit() == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("7", 7),
+        ("0", 1),
+        ("99", 30),
+        ("bad", 7),
+    ],
+)
+def test_diagnostic_observation_ttl_days_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS", value)
+    assert toggles.diagnostic_observation_ttl_days() == expected

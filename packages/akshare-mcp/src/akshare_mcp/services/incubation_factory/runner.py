@@ -252,18 +252,22 @@ class IncubationFactoryRunner:
             # === DEV-V1 P1: 加载 paper observation 策略 ===
             # toggle OFF 默认时返回空列表,行为与改造前完全一致。
             paper_observation = await self._list_paper_observation(db)
+            diagnostic_observation = await self._list_diagnostic_observation(db)
             # 给两个集合打 stage 标记,便于 Phase 3 阈值差异化(后续优化用)。
             for _s in incubating:
                 _s.setdefault("_intake_stage", "incubating")
             for _s in paper_observation:
                 _s.setdefault("_intake_stage", "paper")
+            for _s in diagnostic_observation:
+                _s.setdefault("_intake_stage", "diagnostic")
             # 合并:incubating 优先,paper 其次。limit 由各自独立控制。
-            all_strategies = list(incubating) + list(paper_observation)
+            all_strategies = list(incubating) + list(paper_observation) + list(diagnostic_observation)
             logger.info(
-                "IncubationFactory [%s] Phase 2: %d incubating + %d paper to verify",
+                "IncubationFactory [%s] Phase 2: %d incubating + %d paper + %d diagnostic to verify",
                 run_id,
                 len(incubating),
                 len(paper_observation),
+                len(diagnostic_observation),
             )
 
             # Phase 3: 信号生成 + 前向收益验证 + 指标记录
@@ -301,6 +305,13 @@ class IncubationFactoryRunner:
                         )
                         if metric is not None:
                             metrics_recorded += 1
+                        if str(strategy.get("_intake_stage") or "") == "diagnostic":
+                            await self._record_diagnostic_processed_event(
+                                db,
+                                strategy,
+                                verification,
+                                signal_result,
+                            )
                 except asyncio.TimeoutError:
                     verification_errors += 1
                     logger.warning(
@@ -391,6 +402,7 @@ class IncubationFactoryRunner:
                     "total": len(all_strategies),
                     "incubating_count": len(incubating),
                     "paper_count": len(paper_observation),
+                    "diagnostic_count": len(diagnostic_observation),
                     "verified": len(verifications),
                     "metrics_recorded": metrics_recorded,
                     "errors": verification_errors,
@@ -561,6 +573,59 @@ class IncubationFactoryRunner:
                 "IncubationFactory: list_paper_observation_strategies failed: %s", exc,
             )
             return []
+
+    async def _list_diagnostic_observation(self, db: Any) -> list[dict[str, Any]]:
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                diagnostic_intake_enabled,
+                diagnostic_intake_batch_limit,
+            )
+        except Exception:
+            return []
+        if not diagnostic_intake_enabled():
+            return []
+        if not hasattr(db, "list_diagnostic_observation_strategies"):
+            return []
+        try:
+            return await db.list_diagnostic_observation_strategies(
+                limit=diagnostic_intake_batch_limit(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IncubationFactory: list_diagnostic_observation_strategies failed: %s", exc,
+            )
+            return []
+
+    async def _record_diagnostic_processed_event(
+        self,
+        db: Any,
+        strategy: dict[str, Any],
+        verification: dict[str, Any],
+        signal_result: dict[str, Any],
+    ) -> None:
+        if not hasattr(db, "save_strategy_domain_event"):
+            return
+        try:
+            await db.save_strategy_domain_event({
+                "strategy_id": strategy.get("id"),
+                "aggregate_type": "incubation_factory",
+                "aggregate_id": str(strategy.get("id") or ""),
+                "event_type": "incubation_factory.diagnostic_observation_processed",
+                "source": "incubation_factory_diagnostic",
+                "severity": "info",
+                "payload": {
+                    "strategy_name": strategy.get("name"),
+                    "strategy_type": strategy.get("strategy_type"),
+                    "stage": "diagnostic",
+                    "diagnostic_observation": True,
+                    "signals_generated": int(signal_result.get("signals_generated") or 0),
+                    "primary_hit_rate": verification.get("primary_hit_rate"),
+                    "primary_skill_lcb": verification.get("primary_skill_lcb"),
+                    "coverage_ratio": verification.get("coverage_ratio"),
+                },
+            })
+        except Exception as exc:
+            logger.debug("IncubationFactory: diagnostic processed event failed: %s", exc)
 
     async def _run_pipeline(self, db: Any) -> dict[str, Any]:
         """运行孵化流水线评估（复用已有实现）。"""

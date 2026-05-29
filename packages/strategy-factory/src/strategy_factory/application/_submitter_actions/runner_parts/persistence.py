@@ -254,6 +254,14 @@
                 "paper_lane_ready",
                 "paper_account_id",
                 "paper_account_status",
+                "diagnostic_observation",
+                "diagnostic_lane_ready",
+                "diagnostic_account_id",
+                "diagnostic_account_status",
+                "diagnostic_reason",
+                "diagnostic_reason_code",
+                "diagnostic_ttl_days",
+                "admission_layer",
                 "live_review_account_id",
                 "runtime_control_mode",
                 "runtime_control_status",
@@ -341,12 +349,79 @@
                 "paper_account_status": paper_account_status or ("active" if paper_account_id else None),
             }
 
+        async def _enqueue_diagnostic_observation(
+            self,
+            db,
+            strategy: dict,
+            snapshot: dict,
+        ) -> dict:
+            diagnostic_account_id = None
+            diagnostic_account_status = None
+            incubation_gateway = self._get_incubation_gateway()
+            trace = dict(strategy.get("_closure_trace") or {})
+            trace.update(
+                {
+                    "admission_layer": "diagnostic",
+                    "diagnostic_observation": True,
+                    "diagnostic_reason": strategy.get("diagnostic_reason")
+                    or trace.get("diagnostic_reason"),
+                    "diagnostic_reason_code": strategy.get("diagnostic_reason_code")
+                    or trace.get("diagnostic_reason_code")
+                    or strategy.get("diagnostic_reason")
+                    or trace.get("diagnostic_reason"),
+                    "diagnostic_ttl_days": strategy.get("diagnostic_ttl_days")
+                    or trace.get("diagnostic_ttl_days")
+                    or _diagnostic_observation_ttl_days(),
+                    "source_lane": "diagnostic_observation",
+                }
+            )
+            strategy = {
+                **dict(strategy or {}),
+                "_closure_trace": trace,
+            }
+
+            try:
+                binding = await incubation_gateway.ensure_account(
+                    db,
+                    strategy,
+                    source_run_id=snapshot.get("date"),
+                    stage="diagnostic",
+                )
+                diagnostic_account_id = (
+                    ((binding or {}).get("account") or {}).get("id")
+                    or ((binding or {}).get("binding") or {}).get("account_id")
+                )
+                if diagnostic_account_id:
+                    updated = await self._call_optional_db_method(
+                        db,
+                        "update_paper_account_status",
+                        diagnostic_account_id,
+                        "active",
+                        stage="diagnostic",
+                        promotion_candidate=False,
+                    )
+                    diagnostic_account_status = (updated or {}).get("status") if isinstance(updated, dict) else "active"
+            except Exception as exc:
+                logger.warning("StrategyFactory: ensure diagnostic observation account failed for %s: %s", strategy.get("id"), exc)
+
+            return {
+                "diagnostic_observation": True,
+                "diagnostic_lane_ready": bool(diagnostic_account_id),
+                "diagnostic_account_id": diagnostic_account_id,
+                "diagnostic_account_status": diagnostic_account_status or ("active" if diagnostic_account_id else None),
+                "diagnostic_reason": trace.get("diagnostic_reason"),
+                "diagnostic_reason_code": trace.get("diagnostic_reason_code"),
+                "diagnostic_ttl_days": trace.get("diagnostic_ttl_days"),
+                "admission_layer": "diagnostic",
+            }
+
         async def _enqueue_live_ready_review(
             self,
             db,
             strategy: dict,
             snapshot: dict,
             gate: dict,
+            trace_context: Optional[dict[str, Any]] = None,
         ) -> dict:
             review_account_id = None
             runtime_control = None

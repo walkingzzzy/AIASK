@@ -695,45 +695,39 @@ async def get_financials(
 
     # 4. Fallback to Baostock
     if best_payload is None or _financial_payload_needs_enrichment(best_payload):
-        try:
-            source_chain.append("baostock_financials")
-            # Baostock generally works with Quarter/Year, so we get the latest available
-            # But for "latest", we might need to guess the quarter.
-            # Let's try previous quarter relative to now.
-            now = datetime.now()
+        source_chain.append("baostock_financials")
+        if not getattr(baostock_client, "available", True):
+            reason = getattr(baostock_client, "unavailable_reason", None) or "baostock package is not installed"
+            fallback_reason.append(f"baostock_optional_dependency_missing: {reason}")
             baostock_res = None
-            # Simple logic: Check last 4 quarters
-            for i in range(4):
-                # approximate logic to go back quarters
-                q_date = now - timedelta(days=90 * i)
-                year = str(q_date.year)
-                month = q_date.month
-                quarter = "1" if month <= 3 else "2" if month <= 6 else "3" if month <= 9 else "4"
-
-                # Fetch Balance Sheet (for BVPS/Debt) and Profit (for EPS/ROE)
-                # This is expensive, so just trying once or twice might be enough.
-
-                # Simplified: just try to get a valid result
-                df_profit = baostock_client.get_profit_statement(code, year, quarter)
-                if not df_profit.empty:
-                    row = df_profit.iloc[0]
-                    # Map Baostock fields to our schema
-                    # pubDate, statDate, epsTTM, mbEPS, ...
-                    baostock_res = {
-                        "code": code,
-                        "reportDate": f"{year}-Q{quarter}",
-                        "eps": parse_numeric(row.get("epsTTM")), # or mbEPS
-                        "roe": parse_numeric(row.get("roeAvg")),
-                        "grossProfitMargin": parse_numeric(row.get("grossMargin")),
-                        "netProfitMargin": parse_numeric(row.get("netProfitMargin")),
-                        "source": "baostock"
-                    }
-                    if baostock_res:
-                        break
-        except Exception as e:
-            print(f"Baostock financial fetch failed for {code}: {e}", file=sys.stderr)
-            baostock_res = None
-            fallback_reason.append(f"baostock_financials failed: {e}")
+        else:
+            try:
+                # Baostock generally works with Quarter/Year, so try the latest available quarters.
+                now = datetime.now()
+                baostock_res = None
+                for i in range(4):
+                    q_date = now - timedelta(days=90 * i)
+                    year = str(q_date.year)
+                    month = q_date.month
+                    quarter = "1" if month <= 3 else "2" if month <= 6 else "3" if month <= 9 else "4"
+                    df_profit = baostock_client.get_profit_statement(code, year, quarter)
+                    if not df_profit.empty:
+                        row = df_profit.iloc[0]
+                        baostock_res = {
+                            "code": code,
+                            "reportDate": f"{year}-Q{quarter}",
+                            "eps": parse_numeric(row.get("epsTTM")),  # or mbEPS
+                            "roe": parse_numeric(row.get("roeAvg")),
+                            "grossProfitMargin": parse_numeric(row.get("grossMargin")),
+                            "netProfitMargin": parse_numeric(row.get("netProfitMargin")),
+                            "source": "baostock",
+                        }
+                        if baostock_res:
+                            break
+            except Exception as e:
+                print(f"Baostock financial fetch failed for {code}: {e}", file=sys.stderr)
+                baostock_res = None
+                fallback_reason.append(f"baostock_financials failed: {e}")
 
         if baostock_res:
             merged = _merge_financial_payload(best_payload or db_result, baostock_res)

@@ -98,6 +98,7 @@ class LifecycleTransitionResult:
     vector_profile: Optional[dict[str, Any]] = None
     vector_audit: dict[str, Any] = field(default_factory=dict)
     paper_action: dict[str, Any] = field(default_factory=dict)
+    diagnostic_action: dict[str, Any] = field(default_factory=dict)
     live_review_action: dict[str, Any] = field(default_factory=dict)
     action_refs: dict[str, Any] = field(default_factory=dict)
 
@@ -115,6 +116,7 @@ class LifecycleTransitionResult:
             "vector_profile": self.vector_profile,
             "vector_audit": dict(self.vector_audit or {}),
             "paper_action": dict(self.paper_action or {}),
+            "diagnostic_action": dict(self.diagnostic_action or {}),
             "live_review_action": dict(self.live_review_action or {}),
             "action_refs": dict(self.action_refs or {}),
         }
@@ -196,6 +198,18 @@ class LifecycleTransitionResult:
             payload["paper_action"] = _compact_mapping(
                 self.paper_action,
                 ("paper_account_id", "paper_lane_ready", "paper_account_status"),
+            )
+        if self.diagnostic_action:
+            payload["diagnostic_action"] = _compact_mapping(
+                self.diagnostic_action,
+                (
+                    "diagnostic_account_id",
+                    "diagnostic_lane_ready",
+                    "diagnostic_account_status",
+                    "diagnostic_reason",
+                    "diagnostic_ttl_days",
+                    "admission_layer",
+                ),
             )
         if self.live_review_action:
             payload["live_review_action"] = _compact_mapping(
@@ -484,7 +498,71 @@ class StrategyLifecycleCoordinator:
 
         gate_passed = _as_bool(request.gate.get("passed"))
         any_step_failed = False
-        if not gate_passed:
+        if not gate_passed and result.submission_lane == "diagnostic_observation":
+            result.final_status = "submitted"
+            diagnostic_reason = (
+                _string(request.submission_action.get("diagnostic_reason"))
+                or _string(request.submission_action.get("diagnostic_reason_code"))
+                or "diagnostic_observation_gate3_failed"
+            )
+            trace_context.update(
+                {
+                    "admission_layer": "diagnostic",
+                    "diagnostic_observation": True,
+                    "diagnostic_reason": diagnostic_reason,
+                    "diagnostic_reason_code": (
+                        _string(request.submission_action.get("diagnostic_reason_code"))
+                        or diagnostic_reason
+                    ),
+                    "diagnostic_ttl_days": request.submission_action.get("diagnostic_ttl_days"),
+                    "source_lane": "diagnostic_observation",
+                }
+            )
+            enriched_data["_closure_trace"] = trace_context
+            step, _ = await self._step(
+                "status_transition",
+                _status_update("submitted", "diagnostic_observation_gate3_failed"),
+            )
+            any_step_failed = step.status != "success"
+            result.steps.append(step)
+            step, result.diagnostic_action = await self._step(
+                "enqueue_diagnostic_observation",
+                self._submitter._enqueue_diagnostic_observation(
+                    db,
+                    {
+                        **enriched_data,
+                        "status": "submitted",
+                        "admission_layer": "diagnostic",
+                        "diagnostic_observation": True,
+                        "diagnostic_reason": diagnostic_reason,
+                        "diagnostic_reason_code": trace_context.get("diagnostic_reason_code"),
+                        "diagnostic_ttl_days": trace_context.get("diagnostic_ttl_days"),
+                    },
+                    request.snapshot,
+                ),
+                retryable=True,
+            )
+            any_step_failed = any_step_failed or step.status != "success"
+            result.steps.append(step)
+            result.action_audit = {
+                **dict(request.submission_action or {}),
+                **dict(result.diagnostic_action or {}),
+                "final_status": result.final_status,
+                "submission_action_completed": bool(
+                    (result.diagnostic_action or {}).get("diagnostic_lane_ready")
+                ),
+                "admission_layer": "diagnostic",
+                "diagnostic_observation": True,
+                "diagnostic_reason": diagnostic_reason,
+                "diagnostic_ttl_days": trace_context.get("diagnostic_ttl_days"),
+                "execution_audit_snapshot_id": (execution_snapshot or {}).get("snapshot_id"),
+                "correlation_id": trace_context.get("correlation_id"),
+                "factory_run_id": trace_context.get("factory_run_id"),
+                "trace_id": trace_context.get("trace_id"),
+                "parent_task_run_id": trace_context.get("parent_task_run_id"),
+                "source_action": trace_context.get("source_action"),
+            }
+        elif not gate_passed:
             result.final_status = _string(request.submission_action.get("final_status")) or "rejected"
             transition_reason = _string(request.submission_action.get("submission_action_trigger")) or "quality_gate_failed"
             step, _ = await self._step(
@@ -635,6 +713,7 @@ class StrategyLifecycleCoordinator:
             "execution_audit_snapshot_id": (execution_snapshot or {}).get("snapshot_id"),
             "lifecycle_task_run_id": (lifecycle_task_run or {}).get("id"),
             "incubation_account_id": ((result.incubation_binding or {}).get("account") or {}).get("id"),
+            "diagnostic_account_id": (result.diagnostic_action or {}).get("diagnostic_account_id"),
             "promotion_review_id": (result.live_review_action or {}).get("promotion_review_id"),
             "vector_profile_id": (result.vector_profile or {}).get("id"),
         }

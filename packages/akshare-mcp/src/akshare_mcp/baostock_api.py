@@ -3,7 +3,12 @@ import io
 import threading
 from contextlib import redirect_stdout, redirect_stderr
 
-import baostock as bs
+try:
+    import baostock as bs
+    BAOSTOCK_IMPORT_ERROR: str | None = None
+except ImportError as exc:
+    bs = None
+    BAOSTOCK_IMPORT_ERROR = str(exc)
 import pandas as pd
 from typing import Optional
 from datetime import datetime, timedelta
@@ -18,7 +23,17 @@ class BaostockClient:
             cls._instance = super(BaostockClient, cls).__new__(cls)
         return cls._instance
 
+    @property
+    def available(self) -> bool:
+        return bs is not None
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        return BAOSTOCK_IMPORT_ERROR
+
     def login(self):
+        if bs is None:
+            return False
         with self._lock:
             if not self._logged_in:
                 stdout_buf = io.StringIO()
@@ -34,7 +49,7 @@ class BaostockClient:
 
     def logout(self):
         with self._lock:
-            if self._logged_in:
+            if self._logged_in and bs is not None:
                 stdout_buf = io.StringIO()
                 stderr_buf = io.StringIO()
                 with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
@@ -53,7 +68,8 @@ class BaostockClient:
     def get_balance_sheet(self, code: str, year: str, quarter: str) -> pd.DataFrame:
         """获取资产负债表"""
         with self._lock:
-            self.login()
+            if not self.login():
+                return pd.DataFrame()
             bs_code = self.normalize_code(code)
             rs = bs.query_balance_data(code=bs_code, year=year, quarter=quarter)
 
@@ -69,7 +85,8 @@ class BaostockClient:
     def get_profit_statement(self, code: str, year: str, quarter: str) -> pd.DataFrame:
         """获取利润表"""
         with self._lock:
-            self.login()
+            if not self.login():
+                return pd.DataFrame()
             bs_code = self.normalize_code(code)
             rs = bs.query_profit_data(code=bs_code, year=year, quarter=quarter)
 
@@ -85,7 +102,8 @@ class BaostockClient:
     def get_history_k_data(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """获取历史K线"""
         with self._lock:
-            self.login()
+            if not self.login():
+                return pd.DataFrame()
             bs_code = self.normalize_code(code)
             # frequency: d=日k, w=周, m=月
             rs = bs.query_history_k_data_plus(

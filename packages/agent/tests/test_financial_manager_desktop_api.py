@@ -37,6 +37,11 @@ def test_financial_manager_catalog_and_status_redact_secrets(tmp_path, monkeypat
     status_payload = status.json()
     assert catalog_payload["safety"]["live_trading_enabled"] is False
     assert any(item["mode"] == "blocked" for item in catalog_payload["actions"])
+    risk_action = next(item for item in catalog_payload["actions"] if item["capability_id"] == "portfolio" and item["action_id"] == "risk")
+    assert risk_action["availability"]["reason_code"] == "agent_tool_ready"
+    reports_action = next(item for item in catalog_payload["actions"] if item["capability_id"] == "research" and item["action_id"] == "reports")
+    assert reports_action["status"] == "missing_mcp_tool"
+    assert reports_action["availability"]["reason_code"] == "no_financial_mcp_server_registered"
     assert "broker" in status_payload
     raw = json.dumps({"catalog": catalog_payload, "status": status_payload})
     assert "sk-financial-manager-secret" not in raw
@@ -60,6 +65,26 @@ def test_financial_manager_read_only_query_dispatches_agent_tool(tmp_path, monke
     assert payload["tool"] == "agent_portfolio_risk"
     assert payload["success"] is True
     assert payload["meta"]["side_effect"]["level"] == "read_only"
+
+
+def test_financial_manager_missing_mcp_tool_returns_availability_reason(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/v1/desktop/financial-manager/query",
+        json={
+            "capability_id": "research",
+            "action_id": "reports",
+            "params": {"code": "600519", "limit": 5},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "FINANCIAL_TOOL_UNAVAILABLE"
+    assert payload["data"]["availability"]["required_mcp_tool"] == "research_manager"
+    assert payload["data"]["availability"]["reason_code"] == "no_financial_mcp_server_registered"
 
 
 def test_financial_manager_stateful_query_requires_intent_and_intent_is_control_gated(tmp_path, monkeypatch) -> None:

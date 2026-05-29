@@ -47,6 +47,9 @@ from ..research_protocol_contract import (
 from ..services.submission_coordinator import SubmissionExecutionOptions
 from ..services.admission_authority import SubmissionAdmissionAuthority
 from .._runtime_toggles import (
+    diagnostic_observation_batch_limit as _diagnostic_observation_batch_limit,
+    diagnostic_observation_enabled as _diagnostic_observation_enabled,
+    diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
     observe_d_grade_enabled as _observe_d_grade_enabled,
 )
 from ...domain.constants import (
@@ -520,6 +523,256 @@ _RUNTIME_BOOTSTRAP_REQUIRED_FIELDS = (
     "execution_assumptions",
 )
 _EMPTY_CONTRACT_VALUES = (None, "", [], {})
+
+
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if value in (None, "", [], {}):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        if value in (None, "", [], {}):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _diagnostic_reason_codes(gate: Optional[dict[str, Any]]) -> list[str]:
+    payload = dict(gate or {})
+    values: list[Any] = []
+    for key in (
+        "reason_codes",
+        "reasons",
+        "admission_block_reasons",
+        "warning_codes",
+        "warnings",
+    ):
+        raw = payload.get(key)
+        if isinstance(raw, (list, tuple, set)):
+            values.extend(raw)
+        elif raw not in (None, "", [], {}):
+            values.append(raw)
+    return _compact_unique([str(item or "").strip().lower() for item in values], limit=32)
+
+
+def _diagnostic_metric(
+    candidate: dict[str, Any],
+    metrics: Optional[dict[str, Any]],
+    gate: Optional[dict[str, Any]],
+    *keys: str,
+) -> Any:
+    sources = [
+        dict(metrics or {}),
+        dict(candidate.get("backtest_metrics") or {}),
+        dict((candidate.get("backtest_result") or {}).get("metrics") or {}),
+        dict(gate or {}),
+    ]
+    for source in sources:
+        for key in keys:
+            if source.get(key) not in (None, "", [], {}):
+                return source.get(key)
+    return None
+
+
+def _parse_win_rate_from_reason(reason: str) -> Optional[float]:
+    token = str(reason or "").strip().lower()
+    if not token.startswith("win_rate_"):
+        return None
+    nums = re.findall(r"\d+", token)
+    if len(nums) < 2:
+        return None
+    try:
+        return float(f"{int(nums[0])}.{nums[1]}")
+    except Exception:
+        return None
+
+
+def _has_gate_2_full_backtest_evidence(candidate: dict[str, Any]) -> bool:
+    payload = dict(candidate or {})
+    for key in (
+        "gate_2_passed",
+        "gate2_passed",
+        "full_backtest_passed",
+        "passed_full_backtest",
+        "backtest_passed",
+    ):
+        if payload.get(key) is True:
+            return True
+
+    for key in ("backtest_outcome", "backtest_result", "raw_backtest_result"):
+        outcome = dict(payload.get(key) or {})
+        if outcome.get("passed") is True:
+            return True
+        if str(outcome.get("reason_code") or "").strip().lower() == "passed":
+            return True
+
+    metrics = dict(payload.get("backtest_metrics") or {})
+    contract = dict(
+        payload.get("backtest_metrics_contract")
+        or metrics.get("backtest_metrics_contract")
+        or {}
+    )
+    for source in (metrics, contract):
+        for key in (
+            "gate_2_passed",
+            "gate2_passed",
+            "full_backtest_passed",
+            "passed_full_backtest",
+            "backtest_passed",
+        ):
+            if source.get(key) is True:
+                return True
+    return False
+
+
+def _is_diagnostic_observation_candidate(
+    gate: Optional[dict[str, Any]],
+    candidate: Optional[dict[str, Any]],
+    metrics: Optional[dict[str, Any]],
+    *,
+    refresh_existing: bool,
+    read_only: bool,
+) -> tuple[bool, Optional[str]]:
+    gate_payload = dict(gate or {})
+    candidate_payload = dict(candidate or {})
+    if bool(gate_payload.get("passed")):
+        return False, None
+    if refresh_existing or read_only:
+        return False, None
+    dedup_result = dict(candidate_payload.get("dedup_result") or {})
+    if not dedup_result:
+        return False, None
+    if bool(dedup_result.get("duplicate")) or bool(dedup_result.get("refresh_existing")):
+        return False, None
+    if not _has_gate_2_full_backtest_evidence(candidate_payload):
+        return False, None
+    gate_a_decision = str(
+        gate_payload.get("gate_a_decision") or candidate_payload.get("gate_a_decision") or ""
+    ).strip().lower()
+    if gate_a_decision in {"reject", "revise"}:
+        return False, None
+
+    reason_codes = _diagnostic_reason_codes(gate_payload)
+    hard_tokens = {
+        "not_executable",
+        "non_executable",
+        "runtime_contract_missing",
+        "missing_runtime_contract",
+        "missing_runtime",
+        "semantic_hard_fail",
+        "data_missing",
+        "missing_data",
+        "insufficient_data",
+        "max_drawdown_hard",
+        "max_drawdown_exceeded",
+        "multiple_testing_high_risk",
+        "overfitting_high_risk",
+        "overfit_high_risk",
+        "precompile_reject",
+        "generator_hard_reject",
+    }
+    if any(any(token in reason for token in hard_tokens) for reason in reason_codes):
+        return False, None
+
+    for raw in list(candidate_payload.get("hard_failures") or []):
+        payload = dict(raw or {})
+        decision = str(payload.get("decision") or payload.get("severity") or "").strip().lower()
+        if decision in {"reject", "hard_fail", "error"}:
+            return False, None
+    for raw in list(candidate_payload.get("completion_issues") or []):
+        payload = dict(raw or {})
+        decision = str(payload.get("decision") or payload.get("severity") or "").strip().lower()
+        if decision == "reject":
+            return False, None
+
+    trade_count = _safe_int(
+        _diagnostic_metric(candidate_payload, metrics, gate_payload, "trade_count", "trades_count", "total_trades"),
+        default=0,
+    ) or 0
+    if trade_count < 2:
+        return False, None
+    max_drawdown = abs(
+        _safe_float(
+            _diagnostic_metric(candidate_payload, metrics, gate_payload, "max_drawdown", "drawdown"),
+            default=0.0,
+        )
+        or 0.0
+    )
+    if max_drawdown > 0.35:
+        return False, None
+
+    win_rate = _safe_float(
+        _diagnostic_metric(candidate_payload, metrics, gate_payload, "win_rate", "avg_win_rate"),
+        default=None,
+    )
+    parsed_win_rates = [_parse_win_rate_from_reason(reason) for reason in reason_codes]
+    parsed_win_rates = [value for value in parsed_win_rates if value is not None]
+    if win_rate is None and parsed_win_rates:
+        win_rate = parsed_win_rates[0]
+    if win_rate is not None and 0.30 <= float(win_rate) < 0.40:
+        return True, next((r for r in reason_codes if r.startswith("win_rate_")), "win_rate_near_threshold")
+
+    allowed_fragments = (
+        "weak_wf_ic_ir",
+        "weak_pkf_ic",
+        "weak_bootstrap_ci_lower",
+    )
+    for reason in reason_codes:
+        if any(fragment in reason for fragment in allowed_fragments):
+            return True, reason
+        if reason.startswith("period_robustness_"):
+            return True, reason
+        if reason.startswith("trade_count_") or "trade_count" in reason:
+            return True, reason
+    return False, None
+
+
+def _diagnostic_observation_submission_action(
+    base_action: Optional[dict[str, Any]],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    ttl_days = _diagnostic_observation_ttl_days()
+    action = dict(base_action or {})
+    nested = dict(action.get("submission_action") or {})
+    nested.update(
+        {
+            "type": "diagnostic",
+            "trigger_reason": "diagnostic_observation_gate3_failed",
+            "next_step": "diagnostic_observation",
+            "submission_lane": "diagnostic_observation",
+            "final_status": "submitted",
+            "completed": False,
+            "diagnostic_observation": True,
+            "diagnostic_reason": reason,
+            "diagnostic_ttl_days": ttl_days,
+            "admission_layer": "diagnostic",
+        }
+    )
+    action.update(
+        {
+            "submission_action": nested,
+            "submission_action_type": "diagnostic",
+            "submission_action_trigger": "diagnostic_observation_gate3_failed",
+            "submission_action_next_step": "diagnostic_observation",
+            "submission_action_completed": False,
+            "submission_lane": "diagnostic_observation",
+            "final_status": "submitted",
+            "admission_decision": "diagnostic",
+            "admission_layer": "diagnostic",
+            "diagnostic_observation": True,
+            "diagnostic_reason": reason,
+            "diagnostic_reason_code": reason,
+            "diagnostic_ttl_days": ttl_days,
+        }
+    )
+    return action
 
 
 def _semantic_contract_feature_enabled() -> bool:

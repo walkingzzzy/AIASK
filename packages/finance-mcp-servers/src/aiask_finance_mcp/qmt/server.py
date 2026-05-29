@@ -265,11 +265,15 @@ def _handle_jsonrpc(request: dict[str, Any]) -> dict[str, Any] | None:
     req_id = request.get("id")
     params = request.get("params") or {}
     if method == "initialize":
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "aiask-finance-qmt", "version": "0.1.0"}}}
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False}, "prompts": {"listChanged": False}}, "serverInfo": {"name": "aiask-finance-qmt", "version": "0.1.0"}}}
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_DEFINITIONS}}
+    if method == "resources/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": []}}
+    if method == "prompts/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": []}}
     if method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments") or {}

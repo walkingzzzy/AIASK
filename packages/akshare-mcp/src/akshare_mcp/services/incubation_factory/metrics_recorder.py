@@ -173,9 +173,20 @@ class MetricsRecorder:
             primary_n=primary_n,
         )
 
+        incubation_account = strategy.get("incubation_account")
+        if not isinstance(incubation_account, dict):
+            incubation_account = {}
+        intake_stage = str(
+            strategy.get("_intake_stage")
+            or incubation_account.get("stage")
+            or strategy.get("status")
+            or "incubating"
+        )
+        diagnostic_observation = intake_stage == "diagnostic"
+
         return {
             "account_id": account_id,
-            "stage": str(strategy.get("status") or "incubating"),
+            "stage": intake_stage,
             "total_value": total_value,
             "cash": cash,
             "market_value": market_value,
@@ -203,6 +214,8 @@ class MetricsRecorder:
             "total_trades": 0,
             "metadata": {
                 "source": "incubation_factory",
+                "intake_stage": intake_stage,
+                "diagnostic_observation": diagnostic_observation,
                 "profile": verification.get("profile"),
                 "primary_horizon": verification.get("primary_horizon"),
                 "secondary_horizon": verification.get("secondary_horizon"),

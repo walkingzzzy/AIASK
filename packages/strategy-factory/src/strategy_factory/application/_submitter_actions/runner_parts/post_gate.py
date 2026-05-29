@@ -54,6 +54,7 @@
             vector_audit = dict(lifecycle_payload.get("vector_audit") or {})
             live_review_action = dict(lifecycle_payload.get("live_review_action") or {})
             paper_action = dict(lifecycle_payload.get("paper_action") or {})
+            diagnostic_action = dict(lifecycle_payload.get("diagnostic_action") or {})
             action_audit = dict(lifecycle_payload.get("action_audit") or {})
             final_status = str(lifecycle_payload.get("final_status") or "rejected")
 
@@ -120,6 +121,7 @@
                 "lifecycle_task_run_id": ((lifecycle_payload.get("lifecycle_task_run") or {}).get("id")),
                 "lifecycle_transition_steps": lifecycle_payload.get("steps") or [],
                 **paper_action,
+                **diagnostic_action,
                 **live_review_action,
                 **action_audit,
                 "final_status": final_status,

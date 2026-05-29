@@ -249,6 +249,8 @@ class SubmissionAdmissionAuthority:
             return "read_only"
         if str(gate.get("gate_a_decision") or "").strip().lower() == "revise" and not bool(gate.get("passed")):
             return "revise"
+        if submission_lane == "diagnostic_observation" or action_type == "diagnostic":
+            return "diagnostic"
         if final_status == "rejected" or submission_lane == "rejected" or not bool(gate.get("passed")):
             return "reject"
         if bool(gate.get("provisional_pass")):

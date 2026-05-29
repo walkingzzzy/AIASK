@@ -2,6 +2,7 @@
 .env.local
 .env.*.local
 .env*.bak
+.env.backup-*
 .env.*.bak
 .DS_Store
 .mcp_cache/
@@ -38,6 +39,7 @@ packages/akshare-mcp/cache/dead_letters/
 
 # Scratch files
 .tmp_*
+_index_sync_out.txt
 
 # Runtime data and generated outputs
 *.sqlite3

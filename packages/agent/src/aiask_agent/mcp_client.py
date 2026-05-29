@@ -76,6 +76,26 @@ def _contract_metadata_from_tool(tool: dict[str, Any]) -> dict[str, Any]:
     return {field: tool.get(field) for field in MCP_TOOL_CONTRACT_FIELDS if tool.get(field) is not None}
 
 
+def _mcp_error_text(exc: BaseException) -> str:
+    pieces = [str(exc)]
+    for attr in ("error", "data", "message", "code"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            pieces.append(str(value))
+    nested_error = getattr(getattr(exc, "error", None), "message", None)
+    if nested_error is not None:
+        pieces.append(str(nested_error))
+    nested_code = getattr(getattr(exc, "error", None), "code", None)
+    if nested_code is not None:
+        pieces.append(str(nested_code))
+    return " ".join(piece for piece in pieces if piece)
+
+
+def _is_mcp_method_not_found(exc: BaseException) -> bool:
+    text = _mcp_error_text(exc).lower()
+    return "-32601" in text or "method not found" in text
+
+
 class MCPOAuthRequired(RuntimeError):
     def __init__(self, payload: dict[str, Any]) -> None:
         super().__init__("MCP OAuth authorization is required")
@@ -239,6 +259,9 @@ class MCPAggregator:
                     "resources": list(server.get("resources") or []) if include_all else [],
                     "prompts_enabled": bool(server.get("prompts")),
                     "prompts": list(server.get("prompts") or []) if include_all else [],
+                    "partial_success": bool(server.get("partial_success")),
+                    "warnings": list(server.get("warnings") or []) if include_all else [],
+                    "unsupported_methods": list(server.get("unsupported_methods") or []),
                     "oauth_configured": bool(server.get("oauth") or server.get("auth") == "oauth"),
                     "oauth_token_available": MCPTokenStore(str(server.get("name") or "")).summary(configured=self._oauth_configured(server))[
                         "token_available"
@@ -360,6 +383,15 @@ class MCPAggregator:
             "resources": sum(len(list(server.get("resources") or [])) for server in servers),
             "prompts": sum(len(list(server.get("prompts") or [])) for server in servers),
         }
+        warnings = [warning for server in servers for warning in list(server.get("warnings") or []) if isinstance(warning, dict)]
+        unsupported_methods = list(
+            dict.fromkeys(
+                str(method)
+                for server in servers
+                for method in list(server.get("unsupported_methods") or [])
+                if str(method or "").strip()
+            )
+        )
         if status not in {"registered"}:
             discovery_status = status
         elif missing_auth_env_vars:
@@ -373,6 +405,9 @@ class MCPAggregator:
             "registration_status": status,
             "discovery_status": discovery_status,
             "discovered_counts": discovered_counts,
+            "partial_success": bool(warnings),
+            "warnings": warnings,
+            "unsupported_methods": unsupported_methods,
             "error_code": error_code,
             "config_path": str(self.config_path),
             "config_exists": config_exists,
@@ -511,6 +546,9 @@ class MCPAggregator:
         updated["tools"] = tools
         updated["resources"] = resources
         updated["prompts"] = prompts
+        updated["partial_success"] = bool(discovered.get("partial_success"))
+        updated["warnings"] = list(discovered.get("warnings") or [])
+        updated["unsupported_methods"] = list(discovered.get("unsupported_methods") or [])
         self._upsert_server(updated)
         return {
             "server": updated.get("name"),
@@ -518,6 +556,9 @@ class MCPAggregator:
             "resources_count": len(resources),
             "prompts_count": len(prompts),
             "discovered": discovered,
+            "partial_success": bool(discovered.get("partial_success")),
+            "warnings": list(discovered.get("warnings") or []),
+            "unsupported_methods": list(discovered.get("unsupported_methods") or []),
             "registration": self.registration_diagnostics(),
         }
 
@@ -526,14 +567,38 @@ class MCPAggregator:
 
         async def operation(session: Any) -> dict[str, Any]:
             tools = await session.list_tools()
-            resources = await session.list_resources()
-            prompts = await session.list_prompts()
+            warnings: list[dict[str, Any]] = []
+            unsupported_methods: list[str] = []
+
+            async def optional_list(method_name: str, call: Any, result_attr: str) -> Any:
+                try:
+                    result = await call()
+                except Exception as exc:
+                    if not _is_mcp_method_not_found(exc):
+                        raise
+                    detail = str(exc) or _mcp_error_text(exc)
+                    unsupported_methods.append(method_name)
+                    warnings.append(
+                        {
+                            "method": method_name,
+                            "status": "unsupported",
+                            "detail": detail,
+                        }
+                    )
+                    return []
+                return getattr(result, result_attr, result)
+
+            resources = await optional_list("resources/list", session.list_resources, "resources")
+            prompts = await optional_list("prompts/list", session.list_prompts, "prompts")
             return {
                 "server": server.get("name"),
                 "transport": self._transport(server),
                 "tools": _dump_model(getattr(tools, "tools", tools)),
-                "resources": _dump_model(getattr(resources, "resources", resources)),
-                "prompts": _dump_model(getattr(prompts, "prompts", prompts)),
+                "resources": _dump_model(resources),
+                "prompts": _dump_model(prompts),
+                "partial_success": bool(warnings),
+                "warnings": warnings,
+                "unsupported_methods": unsupported_methods,
             }
 
         return await self._with_session(server, operation)

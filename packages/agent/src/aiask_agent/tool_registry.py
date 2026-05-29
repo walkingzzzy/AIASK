@@ -10,6 +10,7 @@ from uuid import uuid4
 from .adapters import akshare as akshare_adapter
 from .adapters import quant as quant_adapter
 from .adapters import strategy_factory as strategy_factory_adapter
+from .code_graph import build_code_graph_query_handler
 from .general_tools import build_general_tool_handlers
 from .intents import ActionIntentStore
 from .mcp_client import MCPAggregator, MCPOAuthRequired
@@ -517,6 +518,16 @@ def build_default_tool_registry(
             metadata=metadata_by_name.get(name, {"category": "financial_read", "side_effect": "read_only"}),
         )
     if policy_engine.policy.general_tools_enabled and policy_engine.toolset == "general_full":
+        registry.register(
+            "agent_code_graph_query",
+            description=descriptions.get("agent_code_graph_query", "Query the AIASK curated code graph."),
+            parameters=TOOL_SCHEMAS["agent_code_graph_query"],
+            handler=build_code_graph_query_handler(policy_engine.policy),
+            metadata=metadata_by_name.get(
+                "agent_code_graph_query",
+                {"category": "general_read", "side_effect": "read_only"},
+            ),
+        )
         for name, handler in build_general_tool_handlers(
             policy_engine.policy,
             state_path=getattr(sessions, "path", None),

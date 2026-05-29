@@ -469,7 +469,11 @@ def _handle_jsonrpc(request: dict[str, Any]) -> dict[str, Any]:
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"listChanged": False},
+                    "prompts": {"listChanged": False},
+                },
                 "serverInfo": {
                     "name": "aiask-finance-tongdaxin",
                     "version": "0.1.0",
@@ -486,6 +490,12 @@ def _handle_jsonrpc(request: dict[str, Any]) -> dict[str, Any]:
             "id": req_id,
             "result": {"tools": TOOL_DEFINITIONS},
         }
+
+    if method == "resources/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": []}}
+
+    if method == "prompts/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": []}}
 
     if method == "tools/call":
         tool_name = params.get("name", "")

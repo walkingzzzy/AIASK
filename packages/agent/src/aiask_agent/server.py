@@ -753,9 +753,79 @@ def _wrapped_mcp_lookup(runtime: AgentRuntime) -> dict[str, dict[str, Any]]:
     return lookup
 
 
+def _financial_mcp_availability_detail(
+    runtime: AgentRuntime,
+    action: dict[str, Any],
+    mcp_lookup: dict[str, dict[str, Any]],
+    *,
+    mcp_tools: list[dict[str, Any]] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    required = str(action.get("mcp_tool") or "").strip()
+    if not required:
+        return {}
+    names = set(runtime.tool_registry.names())
+    match = mcp_lookup.get(required)
+    tools = list(mcp_tools or MCPAggregator().tools_summary(include_all=True))
+    servers = list(mcp_servers or MCPAggregator().servers_summary(include_all=True))
+    matching_tools = [
+        {
+            "server": item.get("server"),
+            "name": item.get("name"),
+            "wrapped_name": item.get("wrapped_name"),
+            "domain": item.get("domain"),
+        }
+        for item in tools
+        if str(item.get("name") or "") == required or str(item.get("wrapped_name") or "") == required
+    ]
+    financial_servers = [
+        {
+            "name": item.get("name"),
+            "domain": item.get("domain"),
+            "transport": item.get("transport"),
+            "tools_count": len(list(item.get("tools") or [])),
+        }
+        for item in servers
+        if str(item.get("domain") or "").lower() == "financial"
+    ]
+    reason_code = "agent_mcp_wrapped_tool_ready"
+    if not match:
+        if matching_tools:
+            reason_code = "mcp_tool_discovered_but_agent_registry_not_refreshed"
+        elif not financial_servers:
+            reason_code = "no_financial_mcp_server_registered"
+        else:
+            reason_code = "mcp_tool_not_discovered"
+    wrapped_name = str((match or {}).get("wrapped_name") or "")
+    return {
+        "required_mcp_tool": required,
+        "required_mcp_action": action.get("mcp_action"),
+        "reason_code": reason_code,
+        "agent_registry_has_wrapped_tool": bool(wrapped_name and wrapped_name in names),
+        "wrapped_tool": wrapped_name or None,
+        "matching_configured_tools": matching_tools,
+        "financial_servers": financial_servers,
+    }
+
+
+def _financial_tool_availability_detail(runtime: AgentRuntime, action: dict[str, Any]) -> dict[str, Any]:
+    required = str(action.get("tool") or "").strip()
+    if not required:
+        return {}
+    names = set(runtime.tool_registry.names())
+    return {
+        "required_tool": required,
+        "reason_code": "agent_tool_ready" if required in names else "agent_tool_missing",
+        "agent_registry_has_tool": required in names,
+    }
+
+
 def _financial_catalog_payload(runtime: AgentRuntime) -> dict[str, Any]:
     names = set(runtime.tool_registry.names())
     mcp_lookup = _wrapped_mcp_lookup(runtime)
+    mcp = MCPAggregator()
+    mcp_tools = mcp.tools_summary(include_all=True)
+    mcp_servers = mcp.servers_summary(include_all=True)
     actions: list[dict[str, Any]] = []
     for raw in FINANCIAL_MANAGER_ACTIONS:
         item = dict(raw)
@@ -770,18 +840,32 @@ def _financial_catalog_payload(runtime: AgentRuntime) -> dict[str, Any]:
         }
         if mode == "blocked":
             item["status"] = "blocked"
+            item["availability"] = {"reason_code": "blocked", "blocked_reason": item.get("blocked_reason")}
         elif item.get("tool"):
             item["available"] = str(item["tool"]) in names
             item["status"] = "ready" if item["available"] else "missing_tool"
+            item["availability"] = _financial_tool_availability_detail(runtime, item)
         elif item.get("mcp_tool"):
             mcp = mcp_lookup.get(str(item["mcp_tool"]))
             item["available"] = bool(mcp)
             item["status"] = "ready" if mcp else "missing_mcp_tool"
+            item["availability"] = _financial_mcp_availability_detail(
+                runtime,
+                item,
+                mcp_lookup,
+                mcp_tools=mcp_tools,
+                mcp_servers=mcp_servers,
+            )
             if mcp:
                 item["wrapped_tool"] = mcp.get("wrapped_name")
         elif item.get("intent_action"):
             item["available"] = "agent_action_intent_create" in names
             item["status"] = "intent_ready" if item["available"] else "missing_intent_tool"
+            item["availability"] = {
+                "required_tool": "agent_action_intent_create",
+                "reason_code": "action_intent_ready" if item["available"] else "action_intent_tool_missing",
+                "agent_registry_has_tool": item["available"],
+            }
         actions.append(item)
     summary: dict[str, int] = {}
     for item in actions:
@@ -850,11 +934,24 @@ async def _financial_query_payload(runtime: AgentRuntime, payload: dict[str, Any
     params.update(dict(payload.get("params") or {}))
     tool_name = str(action.get("tool") or "")
     if not tool_name and action.get("mcp_tool"):
-        match = _wrapped_mcp_lookup(runtime).get(str(action.get("mcp_tool")))
+        mcp_lookup = _wrapped_mcp_lookup(runtime)
+        match = mcp_lookup.get(str(action.get("mcp_tool")))
         tool_name = str((match or {}).get("wrapped_name") or "")
         params = _manager_arguments(action, params)
     if not tool_name:
-        return {"object": "aiask.desktop.financial_manager.query", "success": False, "data": {"action": action}, "error": "financial manager tool is not available", "error_code": "FINANCIAL_TOOL_UNAVAILABLE", "secrets_redacted": True}
+        availability = (
+            _financial_mcp_availability_detail(runtime, action, _wrapped_mcp_lookup(runtime))
+            if action.get("mcp_tool")
+            else _financial_tool_availability_detail(runtime, action)
+        )
+        return {
+            "object": "aiask.desktop.financial_manager.query",
+            "success": False,
+            "data": {"action": action, "availability": _redact_secrets(availability)},
+            "error": "financial manager tool is not available",
+            "error_code": "FINANCIAL_TOOL_UNAVAILABLE",
+            "secrets_redacted": True,
+        }
     result = await runtime.tool_registry.call_tool(tool_name, params)
     return {
         "object": "aiask.desktop.financial_manager.query",
@@ -1238,6 +1335,9 @@ def create_app(
             "auth_configured": mcp_registration["auth_configured"],
             "auth_env_vars": mcp_registration["auth_env_vars"],
             "missing_auth_env_vars": mcp_registration["missing_auth_env_vars"],
+            "partial_success": mcp_registration.get("partial_success"),
+            "warnings": mcp_registration.get("warnings") or [],
+            "unsupported_methods": mcp_registration.get("unsupported_methods") or [],
             "error_code": mcp_registration["error_code"],
             "detail": mcp_registration["detail"],
             "servers": mcp.servers_summary(include_all=full_ok),

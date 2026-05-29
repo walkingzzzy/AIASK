@@ -64,6 +64,10 @@ class IncubationIntake:
                 "recognized": paper_recognized,
                 "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
             }
+            result["diagnostic_observation_intake"] = await self._recognize_diagnostic_observation(
+                db,
+                no_incubating=True,
+            )
             if paper_candidates:
                 logger.info(
                     "IncubationIntake: paper observation recognized %d/%d candidates (no incubating)",
@@ -166,6 +170,7 @@ class IncubationIntake:
             "recognized": paper_recognized,
             "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
         }
+        result["diagnostic_observation_intake"] = await self._recognize_diagnostic_observation(db)
         if paper_candidates:
             logger.info(
                 "IncubationIntake: paper observation recognized %d/%d candidates",
@@ -212,6 +217,61 @@ class IncubationIntake:
             )
             return []
 
+    async def _list_diagnostic_observation_strategies(self, db: Any) -> list[dict[str, Any]]:
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                diagnostic_intake_enabled,
+                diagnostic_intake_batch_limit,
+            )
+        except Exception:
+            return []
+        if not diagnostic_intake_enabled():
+            return []
+        if not hasattr(db, "list_diagnostic_observation_strategies"):
+            return []
+        try:
+            return await db.list_diagnostic_observation_strategies(
+                limit=diagnostic_intake_batch_limit(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IncubationIntake: list_diagnostic_observation_strategies failed: %s", exc,
+            )
+            return []
+
+    async def _recognize_diagnostic_observation(
+        self,
+        db: Any,
+        *,
+        no_incubating: bool = False,
+    ) -> dict[str, Any]:
+        diagnostic_candidates = await self._list_diagnostic_observation_strategies(db)
+        diagnostic_recognized = 0
+        for strategy in diagnostic_candidates:
+            sid = str(strategy.get("id") or "").strip()
+            if not sid:
+                continue
+            try:
+                await self._record_diagnostic_intake_event(db, strategy)
+                diagnostic_recognized += 1
+            except Exception as exc:
+                logger.warning(
+                    "IncubationIntake: diagnostic intake event failed for %s: %s", sid, exc,
+                )
+        if diagnostic_candidates:
+            suffix = " (no incubating)" if no_incubating else ""
+            logger.info(
+                "IncubationIntake: diagnostic observation recognized %d/%d candidates%s",
+                diagnostic_recognized,
+                len(diagnostic_candidates),
+                suffix,
+            )
+        return {
+            "scanned": len(diagnostic_candidates),
+            "recognized": diagnostic_recognized,
+            "strategy_ids": [str(s.get("id") or "") for s in diagnostic_candidates],
+        }
+
     async def _record_paper_intake_event(
         self,
         db: Any,
@@ -241,6 +301,31 @@ class IncubationIntake:
             })
         except Exception as exc:
             logger.debug("IncubationIntake: paper domain event save failed: %s", exc)
+
+    async def _record_diagnostic_intake_event(
+        self,
+        db: Any,
+        strategy: dict[str, Any],
+    ) -> None:
+        if not hasattr(db, "save_strategy_domain_event"):
+            return
+        try:
+            await db.save_strategy_domain_event({
+                "strategy_id": strategy.get("id"),
+                "aggregate_type": "incubation_factory",
+                "aggregate_id": str(strategy.get("id")),
+                "event_type": "incubation_factory.diagnostic_observation_recognized",
+                "source": "incubation_factory_intake_diagnostic",
+                "severity": "info",
+                "payload": {
+                    "strategy_name": strategy.get("name"),
+                    "strategy_type": strategy.get("strategy_type"),
+                    "stage": "diagnostic",
+                    "diagnostic_observation": True,
+                },
+            })
+        except Exception as exc:
+            logger.debug("IncubationIntake: diagnostic domain event save failed: %s", exc)
 
     async def _record_acceptance_event(
         self,

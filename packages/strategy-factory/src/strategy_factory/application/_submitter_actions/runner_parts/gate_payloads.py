@@ -25,6 +25,9 @@
             strict_incubation_ready_count = 0
             factor_performance_reported_count = 0
             submitted_items: List[dict] = []
+            self._diagnostic_observation_lock = asyncio.Lock()
+            self._diagnostic_observation_claimed = 0
+            self._diagnostic_observation_limit = _diagnostic_observation_batch_limit()
             incubation_budget_plan = IncubationBudgeter.plan(candidates, snapshot)
             incubation_budget_summary = dict(incubation_budget_plan.get("summary") or {})
             for candidate in candidates:
@@ -113,6 +116,7 @@
                     ],
                     "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
                     "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
+                    "diagnostic_observation_count": int(submission_lane_counts.get("diagnostic_observation") or 0),
                     "live_ready_review_count": int(submission_lane_counts.get("live_ready_review") or 0),
                     "deferred_submission_count": int(submission_lane_counts.get("deferred_submission") or 0),
                     "research_only_count": int(submission_action_type_counts.get("research_only") or 0),
@@ -140,6 +144,7 @@
                 "gate_3_failure_reason_topn": gate_report["gate_3"]["failure_reason_topn"],
                 "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
                 "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
+                "diagnostic_observation_count": int(submission_lane_counts.get("diagnostic_observation") or 0),
                 "live_ready_review_count": int(submission_lane_counts.get("live_ready_review") or 0),
                 "deferred_submission_count": int(submission_lane_counts.get("deferred_submission") or 0),
                 "research_only_count": int(submission_action_type_counts.get("research_only") or 0),
@@ -153,3 +158,25 @@
                 "persistence_dlq_count": len(persistence_dlq),
                 "persistence_dlq": persistence_dlq,
             }
+
+        async def _claim_diagnostic_observation_slot(self) -> bool:
+            if not _diagnostic_observation_enabled():
+                return False
+            lock = getattr(self, "_diagnostic_observation_lock", None)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._diagnostic_observation_lock = lock
+            async with lock:
+                limit = int(
+                    getattr(
+                        self,
+                        "_diagnostic_observation_limit",
+                        _diagnostic_observation_batch_limit(),
+                    )
+                    or 0
+                )
+                claimed = int(getattr(self, "_diagnostic_observation_claimed", 0) or 0)
+                if claimed >= max(1, limit):
+                    return False
+                self._diagnostic_observation_claimed = claimed + 1
+                return True

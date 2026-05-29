@@ -15,6 +15,20 @@ def _call_jsonrpc(handler, method: str, params: dict | None = None, req_id: int 
     return handler(request)
 
 
+def _assert_resource_prompt_capabilities(result: dict[str, Any]) -> None:
+    capabilities = result["result"]["capabilities"]
+    assert capabilities["tools"]["listChanged"] is False
+    assert capabilities["resources"]["listChanged"] is False
+    assert capabilities["prompts"]["listChanged"] is False
+
+
+def _assert_empty_resources_and_prompts(handler) -> None:
+    resources = _call_jsonrpc(handler, "resources/list")
+    prompts = _call_jsonrpc(handler, "prompts/list")
+    assert resources["result"]["resources"] == []
+    assert prompts["result"]["prompts"] == []
+
+
 class TestTongdaxinProtocol:
     def test_initialize(self):
         from aiask_finance_mcp.tongdaxin.server import _handle_jsonrpc
@@ -24,6 +38,7 @@ class TestTongdaxinProtocol:
         assert result["id"] == 1
         assert result["result"]["protocolVersion"] == "2024-11-05"
         assert result["result"]["serverInfo"]["name"] == "aiask-finance-tongdaxin"
+        _assert_resource_prompt_capabilities(result)
 
     def test_tools_list(self):
         from aiask_finance_mcp.tongdaxin.server import _handle_jsonrpc
@@ -38,6 +53,11 @@ class TestTongdaxinProtocol:
         assert "tdx_tick_data" in tool_names
         assert "tdx_finance_info" in tool_names
         assert "tdx_market_snapshot" in tool_names
+
+    def test_resources_and_prompts_list(self):
+        from aiask_finance_mcp.tongdaxin.server import _handle_jsonrpc
+
+        _assert_empty_resources_and_prompts(_handle_jsonrpc)
 
     def test_tools_call_missing_code(self):
         from aiask_finance_mcp.tongdaxin.server import _handle_jsonrpc
@@ -81,6 +101,7 @@ class TestTonghuashunProtocol:
 
         result = _call_jsonrpc(_handle_jsonrpc, "initialize")
         assert result["result"]["serverInfo"]["name"] == "aiask-finance-tonghuashun"
+        _assert_resource_prompt_capabilities(result)
 
     def test_tools_list(self):
         from aiask_finance_mcp.tonghuashun.server import _handle_jsonrpc
@@ -92,6 +113,11 @@ class TestTonghuashunProtocol:
         assert "ths_query_position" in tool_names
         assert "ths_place_order" in tool_names
         assert "ths_cancel_order" in tool_names
+
+    def test_resources_and_prompts_list(self):
+        from aiask_finance_mcp.tonghuashun.server import _handle_jsonrpc
+
+        _assert_empty_resources_and_prompts(_handle_jsonrpc)
 
     def test_place_order_validation(self):
         from aiask_finance_mcp.tonghuashun.server import _handle_jsonrpc
@@ -125,6 +151,7 @@ class TestEastmoneyProtocol:
 
         result = _call_jsonrpc(_handle_jsonrpc, "initialize")
         assert result["result"]["serverInfo"]["name"] == "aiask-finance-eastmoney"
+        _assert_resource_prompt_capabilities(result)
 
     def test_tools_list(self):
         from aiask_finance_mcp.eastmoney.server import _handle_jsonrpc
@@ -137,6 +164,11 @@ class TestEastmoneyProtocol:
         assert "em_fund_info" in tool_names
         assert "em_news_flow" in tool_names
         assert "em_dragon_tiger_list" in tool_names
+
+    def test_resources_and_prompts_list(self):
+        from aiask_finance_mcp.eastmoney.server import _handle_jsonrpc
+
+        _assert_empty_resources_and_prompts(_handle_jsonrpc)
 
     def test_kline_missing_code(self):
         from aiask_finance_mcp.eastmoney.server import _handle_jsonrpc
@@ -156,6 +188,7 @@ class TestQmtProtocol:
 
         result = _call_jsonrpc(_handle_jsonrpc, "initialize")
         assert result["result"]["serverInfo"]["name"] == "aiask-finance-qmt"
+        _assert_resource_prompt_capabilities(result)
 
     def test_tools_list(self):
         from aiask_finance_mcp.qmt.server import _handle_jsonrpc
@@ -166,6 +199,11 @@ class TestQmtProtocol:
         assert "qmt_query_account" in tool_names
         assert "qmt_place_order" in tool_names
         assert "qmt_cancel_order" in tool_names
+
+    def test_resources_and_prompts_list(self):
+        from aiask_finance_mcp.qmt.server import _handle_jsonrpc
+
+        _assert_empty_resources_and_prompts(_handle_jsonrpc)
 
     def test_place_order_validation(self):
         from aiask_finance_mcp.qmt.server import _handle_jsonrpc

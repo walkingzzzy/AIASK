@@ -340,6 +340,9 @@ export interface McpServerView {
   tools?: unknown[];
   resources?: unknown[];
   prompts?: unknown[];
+  partial_success?: boolean;
+  warnings?: unknown[];
+  unsupported_methods?: string[];
   [key: string]: unknown;
 }
 
@@ -729,6 +732,7 @@ export interface FinancialManagerAction {
   default_params?: Record<string, unknown>;
   blocked_reason?: string;
   side_effect?: Record<string, unknown>;
+  availability?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -829,6 +833,9 @@ export interface CapabilityWorkbenchPayload {
     auth_configured?: boolean;
     auth_env_vars?: string[];
     missing_auth_env_vars?: string[];
+    partial_success?: boolean;
+    warnings?: unknown[];
+    unsupported_methods?: string[];
     error_code?: string | null;
     detail?: string | null;
     servers: McpServerView[];

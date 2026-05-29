@@ -32,4 +32,22 @@ def paper_intake_batch_limit() -> int:
     return max(1, min(value, 500))
 
 
-__all__ = ["paper_intake_enabled", "paper_intake_batch_limit"]
+def diagnostic_intake_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED", default=False)
+
+
+def diagnostic_intake_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_DIAGNOSTIC_BATCH_LIMIT", "5")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 5
+    return max(1, min(value, 50))
+
+
+__all__ = [
+    "paper_intake_enabled",
+    "paper_intake_batch_limit",
+    "diagnostic_intake_enabled",
+    "diagnostic_intake_batch_limit",
+]

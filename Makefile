@@ -1,4 +1,4 @@
-.PHONY: bootstrap test test-agent test-finance typecheck build-desktop package-desktop smoke
+.PHONY: bootstrap test test-agent test-finance typecheck build-desktop package-desktop smoke code-graph
 
 bootstrap:
 	cd packages/agent && uv sync
@@ -25,3 +25,6 @@ package-desktop:
 
 smoke:
 	curl -fsS http://127.0.0.1:$${AIASK_AGENT_PORT:-8767}/health
+
+code-graph:
+	python scripts/code_graph/build_aiask_code_graph.py

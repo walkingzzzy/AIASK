@@ -28,6 +28,14 @@ function resultDetail(record: Record<string, unknown>, data: Record<string, unkn
   return typeof value === "string" ? value : "操作已完成。";
 }
 
+function nestedArray(record: Record<string, unknown> | null, key: string): unknown[] {
+  const direct = record?.[key];
+  if (Array.isArray(direct)) return direct;
+  const discovered = resultRecord(record?.discovered);
+  const nested = discovered?.[key];
+  return Array.isArray(nested) ? nested : [];
+}
+
 function ActionResult({ result }: { result: unknown }) {
   const record = resultRecord(result);
   if (!record) return null;
@@ -37,6 +45,8 @@ function ActionResult({ result }: { result: unknown }) {
   const detail = resultDetail(record, data);
   const missingAuthEnvVars = Array.isArray(data?.missing_auth_env_vars) ? data.missing_auth_env_vars.map(String) : [];
   const authEnvVars = Array.isArray(data?.auth_env_vars) ? data.auth_env_vars.map(String) : [];
+  const warnings = nestedArray(data, "warnings");
+  const unsupportedMethods = nestedArray(data, "unsupported_methods").map(String).filter(Boolean);
   return (
     <div className={`notice ${success ? "ok" : "warn"}`}>
       <strong>{String(record.error_code || record.object || status)}</strong>
@@ -45,6 +55,8 @@ function ActionResult({ result }: { result: unknown }) {
       {record.error_code === "MCP_DISCOVERY_AUTH_REQUIRED" && !missingAuthEnvVars.length && (
         <span>请检查 Agent 进程中的 MCP 服务授权配置。</span>
       )}
+      {!!unsupportedMethods.length && <span>工具已发现，但这些 MCP 接口未实现：{unsupportedMethods.join(", ")}</span>}
+      {!!warnings.length && !unsupportedMethods.length && <span>发现过程有非致命告警：{warnings.map((item) => compact(item)).join("; ")}</span>}
       <div className="kv-grid">
         <span>成功</span>
         <strong>{String(record.success ?? "-")}</strong>
@@ -54,6 +66,8 @@ function ActionResult({ result }: { result: unknown }) {
         <strong>{compact(data?.server || record.server)}</strong>
         <span>Auth env</span>
         <strong>{authEnvVars.length ? authEnvVars.join(", ") : "-"}</strong>
+        <span>Unsupported methods</span>
+        <strong>{unsupportedMethods.length ? unsupportedMethods.join(", ") : "-"}</strong>
       </div>
     </div>
   );
@@ -126,7 +140,21 @@ export function McpPanel({
   const missingAuthEnvVars = Array.isArray(mcp.missing_auth_env_vars) ? mcp.missing_auth_env_vars : [];
   const discoveredCounts = mcp.discovered_counts || {};
   const discoverySummary = `${discoveredCounts.tools ?? mcp.tools.length} 个工具 / ${discoveredCounts.resources ?? mcp.resources.length} 个资源 / ${discoveredCounts.prompts ?? mcp.prompts.length} 个提示词`;
+  const serverWarnings = mcp.servers.flatMap((server) => Array.isArray(server.warnings) ? server.warnings : []);
+  const warnings = [...(Array.isArray(mcp.warnings) ? mcp.warnings : []), ...serverWarnings];
+  const unsupportedMethods = [
+    ...(Array.isArray(mcp.unsupported_methods) ? mcp.unsupported_methods : []),
+    ...mcp.servers.flatMap((server) => Array.isArray(server.unsupported_methods) ? server.unsupported_methods : [])
+  ].map(String).filter(Boolean);
+  const uniqueUnsupportedMethods = Array.from(new Set(unsupportedMethods));
+  const partialDiscovery = Boolean(
+    mcp.partial_success ||
+    warnings.length ||
+    uniqueUnsupportedMethods.length ||
+    mcp.servers.some((server) => server.partial_success)
+  );
   const reviewItems = [
+    { label: "Partial", value: partialDiscovery ? "yes" : "no", status: partialDiscovery ? "partial" : "implemented" },
     { label: "注册", value: registrationStatus, status: statusFor(registrationStatus) },
     { label: "发现", value: discoveryStatus, status: statusFor(discoveryStatus) },
     { label: "授权", value: mcp.auth_configured === undefined ? "-" : mcp.auth_configured ? "已配置" : "缺失", status: mcp.auth_configured ? "implemented" : "unconfigured" },
@@ -170,6 +198,17 @@ export function McpPanel({
         </div>
       )}
 
+      {registrationReady && partialDiscovery && (
+        <div className="notice warn">
+          <strong>Partial MCP discovery</strong>
+          <span>
+            {uniqueUnsupportedMethods.length
+              ? `Tools discovered, unsupported MCP methods: ${uniqueUnsupportedMethods.join(", ")}`
+              : `Tools discovered with non-fatal warnings: ${warnings.length}`}
+          </span>
+        </div>
+      )}
+
       <div className="capability-section compact-section">
         <div className="connector-review-grid">
           {reviewItems.map((item) => (
@@ -201,6 +240,8 @@ export function McpPanel({
           <strong>{missingAuthEnvVars.length ? missingAuthEnvVars.join(", ") : "-"}</strong>
           <span>已发现</span>
           <strong>{discoverySummary}</strong>
+          <span>Unsupported methods</span>
+          <strong>{uniqueUnsupportedMethods.length ? uniqueUnsupportedMethods.join(", ") : "-"}</strong>
         </div>
         <div className="inline-form">
           <input value={serverName} onChange={(event) => setServerName(event.target.value)} placeholder="MCP 服务名称" />
@@ -222,6 +263,9 @@ export function McpPanel({
               <article key={String(server.name)}>
                 <strong>{server.name}</strong>
                 <span>{server.transport || "-"} / {server.domain || "general"}</span>
+                {Array.isArray(server.unsupported_methods) && !!server.unsupported_methods.length && (
+                  <span>unsupported: {server.unsupported_methods.map(String).join(", ")}</span>
+                )}
                 <StatusBadge status={server.configured === false ? "unconfigured" : "implemented"} />
               </article>
             ))}

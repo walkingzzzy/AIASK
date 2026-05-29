@@ -33,6 +33,31 @@ function groupLabel(group: FinancialManagerGroup | undefined, fallback: string) 
   return group?.label || fallback.replace(/-/g, " ");
 }
 
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function actionAvailability(action?: FinancialManagerAction | null): Record<string, unknown> | null {
+  return objectRecord(action?.availability);
+}
+
+function resultAvailability(result?: FinancialManagerQueryResult | FinancialManagerIntentResult | null): Record<string, unknown> | null {
+  const data = objectRecord(result?.data);
+  return objectRecord(data?.availability);
+}
+
+function availabilityExplanation(reason?: unknown): string {
+  const code = String(reason || "");
+  if (code === "agent_tool_ready" || code === "agent_mcp_wrapped_tool_ready") return "可运行";
+  if (code === "mcp_tool_discovered_but_agent_registry_not_refreshed") return "MCP 工具已发现，但 Agent 工具注册表尚未刷新";
+  if (code === "no_financial_mcp_server_registered") return "未发现已注册的金融 MCP server";
+  if (code === "mcp_tool_not_discovered") return "金融 MCP server 未提供目标工具";
+  if (code === "agent_tool_missing" || code === "action_intent_tool_missing") return "Agent 工具注册表缺少目标工具";
+  if (code === "action_intent_ready") return "需要通过 ActionIntent 审批路径执行";
+  if (code === "blocked") return "高风险动作已阻断";
+  return code || "可用性状态";
+}
+
 export function FinancialManagerWorkspace({
   endpoint,
   apiToken,
@@ -59,6 +84,8 @@ export function FinancialManagerWorkspace({
   const actions = catalog?.actions || [];
   const selectedAction = actions.find((item) => actionKey(item) === selectedKey) || null;
   const visibleActions = activeGroup === "overview" ? actions.slice(0, 8) : actions.filter((item) => item.group === activeGroup);
+  const selectedAvailability = actionAvailability(selectedAction);
+  const resultAvailabilityDetail = resultAvailability(result);
 
   async function refresh() {
     setBusy(true);
@@ -196,6 +223,12 @@ export function FinancialManagerWorkspace({
                   <StatusBadge status={selectedAction?.status || "not_loaded"} />
                 </div>
                 <textarea aria-label="financial action params" value={paramsText} onChange={(event) => setParamsText(event.target.value)} rows={8} />
+                {selectedAvailability && (
+                  <div className="notice">
+                    <strong>{availabilityExplanation(selectedAvailability.reason_code)} ({String(selectedAvailability.reason_code || selectedAction?.status || "availability")})</strong>
+                    <span>{compact(selectedAvailability)}</span>
+                  </div>
+                )}
                 {selectedAction?.mode === "stateful_intent" && (
                   <input aria-label="financial action rationale" value={rationale} onChange={(event) => setRationale(event.target.value)} />
                 )}
@@ -214,6 +247,12 @@ export function FinancialManagerWorkspace({
                   </div>
                   <BarChart3 size={18} />
                 </div>
+                {resultAvailabilityDetail && (
+                  <div className="notice warn">
+                    <strong>{availabilityExplanation(resultAvailabilityDetail.reason_code)} ({String(resultAvailabilityDetail.reason_code || result?.error_code || "availability")})</strong>
+                    <span>{compact(resultAvailabilityDetail)}</span>
+                  </div>
+                )}
                 <JsonPanel value={result || { status: message, selected: selectedAction ? compact(selectedAction) : null }} />
               </section>
             </section>

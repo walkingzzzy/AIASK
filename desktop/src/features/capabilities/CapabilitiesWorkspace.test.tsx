@@ -118,8 +118,21 @@ const mcpAuthorizedPayload = {
     detected_service_port: 3100,
     suggested_registration_url: "http://127.0.0.1:3100/mcp",
     auth_env_vars: ["AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION"],
+    partial_success: true,
+    warnings: [{ method: "prompts/list", status: "unsupported", detail: "Method not found: prompts/list" }],
+    unsupported_methods: ["resources/list", "prompts/list"],
     discovered_counts: { tools: 2, resources: 1, prompts: 1 },
-    servers: [{ name: "akshare-local", transport: "streamable_http", domain: "financial", configured: true }],
+    servers: [
+      {
+        name: "akshare-local",
+        transport: "streamable_http",
+        domain: "financial",
+        configured: true,
+        partial_success: true,
+        warnings: [{ method: "resources/list", status: "unsupported", detail: "Method not found: resources/list" }],
+        unsupported_methods: ["resources/list"]
+      }
+    ],
     tools: [{ server: "akshare-local", name: "quote", wrapped_name: "agent_mcp_quote", description: "Quote tool" }],
     resources: [{ uri: "aiask://quotes" }],
     prompts: [{ name: "risk-review" }],
@@ -233,6 +246,9 @@ describe("CapabilitiesWorkspace", () => {
     expect(screen.getByText("连接器评审队列")).toBeInTheDocument();
     expect(screen.getAllByText("2 个工具 / 1 个资源 / 1 个提示词").length).toBeGreaterThan(0);
     expect(screen.getByText("agent_mcp_quote")).toBeInTheDocument();
+    expect(screen.getByText("Partial MCP discovery")).toBeInTheDocument();
+    expect(screen.getAllByText(/resources\/list/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/prompts\/list/).length).toBeGreaterThan(0);
   });
 
   it("shows structured MCP resource errors without treating them as offline", async () => {

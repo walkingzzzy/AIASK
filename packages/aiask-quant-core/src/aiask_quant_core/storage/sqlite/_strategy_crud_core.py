@@ -139,6 +139,31 @@ class _StrategyCrudCoreMixin:
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
 
+        async def list_diagnostic_observation_strategies(self, limit: int = 5) -> List[dict]:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           a.account_id AS diagnostic_account_id,
+                           a.bound_at AS diagnostic_bound_at
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    WHERE s.status = 'submitted'
+                      AND a.stage = 'diagnostic'
+                      AND a.status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM strategy_incubation_accounts a2
+                          WHERE a2.strategy_id = s.id
+                            AND a2.stage IN ('paper', 'candidate', 'listed', 'incubating', 'promoted')
+                            AND a2.status = 'active'
+                      )
+                    ORDER BY datetime(a.bound_at) DESC
+                    LIMIT $1
+                    """,
+                    max(1, min(int(limit or 5), 50)),
+                )
+            return [self._decode_strategy_row(dict(r)) for r in rows]
+
         async def update_strategy_status(
             self,
             strategy_id: str,

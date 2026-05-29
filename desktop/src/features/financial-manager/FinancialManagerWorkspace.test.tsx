@@ -20,7 +20,20 @@ const catalog = {
       mode: "read_only",
       status: "ready",
       available: true,
-      default_params: { codes: ["600519"], weights: [1] }
+      default_params: { codes: ["600519"], weights: [1] },
+      availability: { reason_code: "agent_tool_ready", required_tool: "agent_portfolio_risk", agent_registry_has_tool: true }
+    },
+    {
+      capability_id: "research",
+      action_id: "reports",
+      group: "risk-performance",
+      label: "Research reports",
+      mode: "read_only",
+      status: "missing_mcp_tool",
+      available: false,
+      mcp_tool: "research_manager",
+      default_params: { code: "600519", limit: 5 },
+      availability: { reason_code: "mcp_tool_not_discovered", required_mcp_tool: "research_manager" }
     },
     {
       capability_id: "portfolio",
@@ -43,7 +56,7 @@ const catalog = {
       blocked_reason: "Live broker order placement is disabled in Financial Manager V1."
     }
   ],
-  summary: { ready: 1, intent_ready: 1, blocked: 1 },
+  summary: { ready: 1, missing_mcp_tool: 1, intent_ready: 1, blocked: 1 },
   safety: { live_trading_enabled: false },
   secrets_redacted: true
 };
@@ -73,6 +86,22 @@ describe("FinancialManagerWorkspace", () => {
         return new Response(JSON.stringify(status), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.endsWith("/v1/desktop/financial-manager/query")) {
+        const body = JSON.parse(String(init?.body || "{}"));
+        if (body.action_id === "reports") {
+          return new Response(
+            JSON.stringify({
+              object: "query",
+              success: false,
+              data: {
+                action: { capability_id: "research", action_id: "reports" },
+                availability: { reason_code: "mcp_tool_not_discovered", required_mcp_tool: "research_manager" }
+              },
+              error: "financial manager tool is not available",
+              error_code: "FINANCIAL_TOOL_UNAVAILABLE"
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response(JSON.stringify({ object: "query", success: true, data: { var_95: -0.02 }, error: null }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.endsWith("/v1/desktop/financial-manager/intent")) {
@@ -84,8 +113,15 @@ describe("FinancialManagerWorkspace", () => {
     render(<FinancialManagerWorkspace endpoint="http://127.0.0.1:8767" apiToken="api" controlToken="control" userId="local" />);
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "金融经理台" })).toBeInTheDocument());
+    expect(screen.getByText(/可运行 \(agent_tool_ready\)/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /运行查询/ }));
     await waitFor(() => expect(screen.getByText(/var_95/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /Research reports/ }));
+    expect(screen.getByText(/金融 MCP server 未提供目标工具 \(mcp_tool_not_discovered\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /运行查询/ }));
+    await waitFor(() => expect(screen.getAllByText(/FINANCIAL_TOOL_UNAVAILABLE/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/research_manager/).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: /Portfolio & Watchlist/ }));
     fireEvent.click(screen.getByRole("button", { name: /Create portfolio intent/ }));

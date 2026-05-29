@@ -79,7 +79,7 @@
         # 保留已有 stage 而不是覆盖。stage 升级方向为:
         #   warmup → paper → candidate → listed → promoted
         # 严格只允许向更高 stage 升级,默认 warmup 不能降级 paper/candidate。
-        _STAGE_RANK = {'warmup': 0, 'paper': 1, 'candidate': 2, 'listed': 3, 'promoted': 4}
+        _STAGE_RANK = {'diagnostic': 0, 'warmup': 0, 'paper': 1, 'candidate': 2, 'listed': 3, 'promoted': 4}
         existing_stage = None
         if binding:
             existing_stage = str(dict(binding).get('stage') or '').strip().lower() or None

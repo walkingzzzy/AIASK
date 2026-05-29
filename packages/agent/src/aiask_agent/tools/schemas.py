@@ -237,6 +237,25 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         required=["path"],
     ),
+    "agent_code_graph_query": schema(
+        {
+            "action": {
+                "type": "string",
+                "enum": ["summary", "search", "endpoint", "explain", "affected"],
+                "default": "summary",
+            },
+            "query": {"type": "string"},
+            "node": {"type": "string"},
+            "endpoint": {"type": "string"},
+            "relation": {"type": "string", "default": "calls"},
+            "depth": {"type": "integer", "minimum": 1, "maximum": 5},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "graph_dir": {
+                "type": "string",
+                "description": "Optional curated graph directory under an allowed workspace root.",
+            },
+        }
+    ),
     "agent_terminal": schema(
         {
             "command": {"type": "string"},

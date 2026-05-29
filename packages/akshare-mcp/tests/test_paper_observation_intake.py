@@ -19,6 +19,8 @@ def _clear_env(monkeypatch):
     for key in (
         "INCUBATION_FACTORY_PAPER_INTAKE_ENABLED",
         "INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT",
+        "INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED",
+        "INCUBATION_FACTORY_DIAGNOSTIC_BATCH_LIMIT",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -112,3 +114,54 @@ async def test_record_paper_intake_event_no_db_method(intake):
     db = MagicMock(spec=[])
     strategy = {"id": "s1"}
     await intake._record_paper_intake_event(db, strategy)
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_intake_disabled_by_default(intake):
+    db = MagicMock()
+    db.list_diagnostic_observation_strategies = AsyncMock(return_value=[
+        {"id": "s1", "strategy_type": "volatility_breakout"},
+    ])
+    result = await intake._list_diagnostic_observation_strategies(db)
+    assert result == []
+    db.list_diagnostic_observation_strategies.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_intake_enabled_respects_batch_limit(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("INCUBATION_FACTORY_DIAGNOSTIC_BATCH_LIMIT", "3")
+    db = MagicMock()
+    db.list_diagnostic_observation_strategies = AsyncMock(return_value=[
+        {"id": "s1", "strategy_type": "volatility_breakout"},
+    ])
+    result = await intake._list_diagnostic_observation_strategies(db)
+    assert len(result) == 1
+    db.list_diagnostic_observation_strategies.assert_called_once_with(limit=3)
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_intake_db_failure_returns_empty(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED", "1")
+    db = MagicMock()
+    db.list_diagnostic_observation_strategies = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await intake._list_diagnostic_observation_strategies(db)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_record_diagnostic_intake_event_writes_domain_event(intake):
+    db = MagicMock()
+    db.save_strategy_domain_event = AsyncMock()
+    strategy = {
+        "id": "s_diag",
+        "name": "diag_test",
+        "strategy_type": "volatility_breakout",
+    }
+    await intake._record_diagnostic_intake_event(db, strategy)
+    db.save_strategy_domain_event.assert_called_once()
+    payload = db.save_strategy_domain_event.call_args[0][0]
+    assert payload["event_type"] == "incubation_factory.diagnostic_observation_recognized"
+    assert payload["source"] == "incubation_factory_intake_diagnostic"
+    assert payload["payload"]["stage"] == "diagnostic"
+    assert payload["payload"]["diagnostic_observation"] is True

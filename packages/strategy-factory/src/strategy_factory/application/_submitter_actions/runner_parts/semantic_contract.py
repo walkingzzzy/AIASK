@@ -162,6 +162,37 @@
             )
             submission_lane = str(submission_action.get("submission_lane") or "deferred_submission")
             final_status = str(submission_action.get("final_status") or "submitted")
+            diagnostic_ok, diagnostic_reason = _is_diagnostic_observation_candidate(
+                gate,
+                candidate,
+                metrics,
+                refresh_existing=refresh_existing,
+                read_only=read_only,
+            )
+            if diagnostic_ok and await self._claim_diagnostic_observation_slot():
+                diagnostic_reason = diagnostic_reason or "diagnostic_observation"
+                submission_action = _diagnostic_observation_submission_action(
+                    submission_action,
+                    reason=diagnostic_reason,
+                )
+                submission_lane = str(submission_action.get("submission_lane") or "diagnostic_observation")
+                final_status = str(submission_action.get("final_status") or "submitted")
+                diagnostic_params = {
+                    "admission_layer": "diagnostic",
+                    "diagnostic_observation": True,
+                    "diagnostic_reason": diagnostic_reason,
+                    "diagnostic_reason_code": diagnostic_reason,
+                    "diagnostic_ttl_days": _diagnostic_observation_ttl_days(),
+                    "source_lane": "diagnostic_observation",
+                }
+                candidate = {
+                    **dict(candidate or {}),
+                    **diagnostic_params,
+                    "params": {
+                        **dict(candidate.get("params") or {}),
+                        **diagnostic_params,
+                    },
+                }
             candidate = self._apply_runtime_bootstrap_contract(
                 candidate,
                 submission_lane=submission_lane,
@@ -695,7 +726,11 @@
                 **post_gate,
             }
             created_total = bool(not refresh_existing and not read_only)
-            created_strategy_pool = bool(created_total and final_status in {"submitted", "incubating"})
+            created_strategy_pool = bool(
+                created_total
+                and final_status in {"submitted", "incubating"}
+                and submission_lane != "diagnostic_observation"
+            )
             created_audit_only = bool(not read_only and created_total and not created_strategy_pool)
             summary.update(
                 {

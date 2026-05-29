@@ -198,6 +198,13 @@ GENERAL_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "description": "Verify AIASK file write or patch effects with workspace, hash, stat, and lightweight diagnostics evidence.",
     },
     {
+        "name": "agent_code_graph_query",
+        "capability": "code_graph_query",
+        "category": "general_read",
+        "side_effect": "read_only",
+        "description": "Query the curated AIASK code graph for architecture, endpoint, dependency, and impact context.",
+    },
+    {
         "name": "agent_terminal",
         "capability": "terminal",
         "category": "general_execute",
