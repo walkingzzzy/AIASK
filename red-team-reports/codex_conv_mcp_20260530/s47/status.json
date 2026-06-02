@@ -1,0 +1,93 @@
+{
+  "scenario_id": "N47",
+  "title": "条件收益与信号命中率 (get_conditional_returns / get_signal_hit_rate / find_similar_patterns: 条件组合×逻辑 + 信号统计 + 相似形态 + 非法输入边界)",
+  "ran_at": "2026-05-30T19:59:30+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "DB 约250根日线/8标的样本; lookback_days 最小被钳到约30根(传10→kline_count=30); ★发现 002594(比亚迪)历史K线含-67.85%单段收益异常(疑似拆股/复权未对齐的数据质量问题, find_similar_patterns(002594)与close>90条件均暴露); 000001 在本场景三工具均用对平安银行(~11元), 无 get_key_levels 的指数污染; 999999 非法码在三工具均坐标化到上证指数数据(同N46)",
+  "tool_status_rows": [
+    {"tool": "get_signal_hit_rate(600519 rsi_oversold)", "verdict": "Pass", "extra": "★sample27, 5d/10d/20d hit_rate(0.67/0.92/1.0)+by_regime(bearish/neutral分层)+recent_signals(标注look-ahead截断: 近期信号仅显示可用forward窗口); reliable标注准确"},
+    {"tool": "get_conditional_returns(600519 rsi_14<40 AND)", "verdict": "Pass", "extra": "★condition_matches61/evaluation230, forward 5d/10d/20d(mean/median/win_rate/std/worst/best齐全); recent_matches含details逐条件true/false"},
+    {"tool": "find_similar_patterns(600519 window20 top10)", "verdict": "Pass", "extra": "★相似度0.50-0.67(真实余弦相似, 非N43 build_quant_context的avg_correlation=0); aggregate_prediction按10样本聚合; market_regime标注"},
+    {"tool": "get_conditional_returns(rsi<30 AND volume_ratio>1.5)", "verdict": "Pass", "extra": "★多条件AND正确: matches2(严格), details双条件true; 与单rsi<30对比合理收窄"},
+    {"tool": "get_conditional_returns(conditions=[] 空)", "verdict": "Fail-graceful", "extra": "★'conditions is required' 清晰拒绝空条件数组"},
+    {"tool": "get_conditional_returns(rsi<30 OR pct_change>3)", "verdict": "Pass", "extra": "★OR逻辑正确: matches31(>AND的2); details显示rsi_14:true/pct_change:false(OR命中其一即可)"},
+    {"tool": "get_conditional_returns(nonexistent_field_zzz<30)", "verdict": "Fail-schema", "extra": "★非法field→success=true/matches0(静默, 无'未识别字段'告警); 与全局静默忽略非预期输入同源 (F-N47-2)"},
+    {"tool": "get_conditional_returns(rsi_14 op=BADOP)", "verdict": "Fail-schema", "extra": "★非法运算符BADOP→success=true/matches0(静默, 无'非法op'告警); op应校验枚举 (并入F-N47-2)"},
+    {"tool": "get_signal_hit_rate(nonexistent_signal_zzz)", "verdict": "Pass", "extra": "★非法signal→sample0+reliability_warning'样本量不足(0<10)'; fallback_used诚实标注; 虽未明确'未知信号'但空结果+警告可接受"},
+    {"tool": "get_conditional_returns(rsi_14<40 lookback=10)", "verdict": "Degraded", "extra": "⚠lookback传10但kline_count=30(被钳到最小30根); matches11/win_rate0.09(近期下跌段); 最小lookback钳制未文档化但合理 (F-N47-4)"},
+    {"tool": "get_signal_hit_rate(999999 rsi_oversold)", "verdict": "Fail-schema", "extra": "★非法码999999→sample1(在上证指数数据上算1个oversold信号), 未拒绝; reliability_warning兜底但本质是非法标的坐标化 (F-N47-3, N46同源)"},
+    {"tool": "get_signal_hit_rate(000001 rsi_oversold)", "verdict": "Pass", "extra": "★sample8(平安银行~11元数据正确, 无指数污染! 与get_key_levels(000001)的4068形成对照); reliability_warning(8<10)"},
+    {"tool": "get_conditional_returns(600519 rsi_14<40 lookback=10二次)", "verdict": "Pass", "extra": "复现最小lookback钳制(kline_count=30), 与首次一致, 稳定"},
+    {"tool": "get_signal_hit_rate(999999) [重复确认]", "verdict": "Fail-schema", "extra": "见上, 非法码坐标化(并入F-N47-3)"},
+    {"tool": "get_signal_hit_rate(000001) [对照]", "verdict": "Pass", "extra": "见上, 000001正确用平安银行(F-N47-3对照证据)"},
+    {"tool": "get_conditional_returns(002594 close>90 AND ma_5>90)", "verdict": "Fail-schema", "extra": "★★裸抛 'DataFrame object has no attribute tolist' 未捕获异常; 触发于含 ma_5 字段 (F-N47-1 HIGH)"},
+    {"tool": "get_signal_hit_rate(601318 forward[3,5,10])", "verdict": "Pass", "extra": "★自定义forward_days[3,5,10]正确传播(非默认5/10/20); sample9/reliability_warning; 3d窗口独立计算"},
+    {"tool": "get_conditional_returns(000858 rsi_14>70 超买)", "verdict": "Pass", "extra": "matches2(超买罕见), 20d mean-5.9%(超买后回落), win_rate0; 数据合理"},
+    {"tool": "get_conditional_returns(002594 ma_5>90 单字段)", "verdict": "Fail-schema", "extra": "★★隔离确认: 单 ma_5 字段即触发 'DataFrame object has no attribute tolist'; ma_5 字段处理代码 bug (F-N47-1 关键隔离证据)"},
+    {"tool": "get_conditional_returns(002594 close>90 单字段)", "verdict": "Pass", "extra": "★对照: close 字段正常(matches239); 证明仅 ma_* 字段崩; ★但 002594 worst5d=-0.693(比亚迪K线数据异常, 疑拆股) (F-N47-5数据质量)"},
+    {"tool": "get_conditional_returns(600519 macd>0)", "verdict": "Fail-schema", "extra": "★macd字段→success=true/matches0(静默0匹配, macd值域应有>0的日子却0命中, 疑字段未识别静默); 与nonexistent_field同症状 (并入F-N47-2)"},
+    {"tool": "get_conditional_returns(600519 ma_20>1300)", "verdict": "Fail-schema", "extra": "★★ma_20亦触发 'DataFrame object has no attribute tolist'; 证明全 MA 族字段(ma_5/ma_20)均崩 (并入F-N47-1)"},
+    {"tool": "find_similar_patterns(000651 window30 top8)", "verdict": "Pass", "extra": "★window30相似度0.32-0.43(较window20更低, 长窗口更难匹配, 合理); aggregate按8样本"},
+    {"tool": "get_signal_hit_rate(002594 rsi_oversold)", "verdict": "Pass", "extra": "★sample57(高流动性标的样本多)/reliable=true; 20d avg_return-7.3%(含-69%异常数据拖累, 见F-N47-5); by_regime完整"},
+    {"tool": "get_signal_hit_rate(000858 rsi_oversold)", "verdict": "Pass", "extra": "sample45/reliable=true; look-ahead截断正确(2026-05近期信号仅5d或无10d/20d)"},
+    {"tool": "get_conditional_returns(300750 rsi<50 AND volume_ratio>1)", "verdict": "Pass", "extra": "★matches31, 10d mean+3.9%/best+20.5%(宁德回调放量后反弹); 多条件AND工程正确"},
+    {"tool": "find_similar_patterns(002594 window20)", "verdict": "Pass", "extra": "★相似度0.53-0.63真实; ★但match含-67.85%/-69%异常forward(比亚迪数据质量问题透传到相似形态预测, aggregate avg-12%被污染) (并入F-N47-5)"},
+    {"tool": "get_conditional_returns(601318 rsi>=50 AND rsi<=60 区间)", "verdict": "Pass", "extra": "★同字段双向区间(>=50 AND <=60)正确: matches89; >= 和 <= 运算符均生效; 区间查询工程正确"},
+    {"tool": "get_conditional_returns(600519 rsi_14<0 越界)", "verdict": "Pass", "extra": "★rsi<0(RSI值域[0,100]不可能<0)→matches0(正确空, RSI无负值); 数值越界优雅返回0匹配"},
+    {"tool": "get_signal_hit_rate(300750 rsi_oversold)", "verdict": "Pass", "extra": "sample7/reliability_warning(7<10); 10d hit1.0(宁德超跌反弹强); 小样本诚实标注"},
+    {"tool": "find_similar_patterns(601318)", "verdict": "Pass", "extra": "相似度0.49-0.58; 20d hit_rate1.0/avg+7%; aggregate_prediction合理"},
+    {"tool": "get_conditional_returns(000001 rsi_14<40)", "verdict": "Pass", "extra": "★平安银行60匹配, 5d max+0.05(~11元尺度正确, 无指数污染); 与600519同条件对比合理"}
+  ],
+  "summary": {"Pass": 21, "Degraded": 1, "Fail-graceful": 1, "Fail-schema": 7},
+  "findings": [
+    {
+      "id": "F-N47-1",
+      "severity": "high",
+      "title": "★get_conditional_returns 对 MA 族字段(ma_5/ma_20)裸抛 'DataFrame object has no attribute tolist' 未捕获异常",
+      "evidence": "get_conditional_returns('002594', conditions=[{field:'ma_5',op:'>',value:90}]) → success=false, error='DataFrame object has no attribute tolist'(裸异常); get_conditional_returns('600519', conditions=[{field:'ma_20',op:'>',value:1300}]) → 同样 'DataFrame object has no attribute tolist'。对比单 close/rsi_14/volume_ratio 字段均正常。parse_selection_query 文档示例引用 ma_5。",
+      "impact": "MA 移动均线是最常用技术指标字段之一(parse_selection_query 也支持), 但在 get_conditional_returns 中用 ma_5/ma_20 等 MA 族字段会触发未捕获的 pandas 异常('DataFrame'.tolist), 整个查询崩溃。疑似 MA 字段计算返回 DataFrame 而非 Series, 代码对其调 .tolist() 失败。应修复 MA 字段取值(应为 Series.tolist)并捕获异常返回标准 PARAM_ERROR。",
+      "type": "uncaught_exception_on_ma_field"
+    },
+    {
+      "id": "F-N47-2",
+      "severity": "medium",
+      "title": "★get_conditional_returns 对未识别 field / 非法 op 静默返回 0 匹配而非报错",
+      "evidence": "field='nonexistent_field_zzz' → success=true/condition_matches=0(无告警); op='BADOP' → success=true/matches=0(无'非法运算符'告警); field='macd' → matches=0(macd 值有正有负却 0 命中, 疑字段名未识别被静默)。对比 field='ma_5'→直接崩(F-N47-1), 即字段处理三态: 已知有效(算)/MA族(崩)/未识别(静默0)。",
+      "impact": "未识别 field 与非法 op 都静默返回 0 匹配, AI 无法区分'条件真的无匹配'与'字段/运算符拼错'。macd 这种看似合法的字段也 0 命中(可能未实现该字段), 误导 AI 以为 MACD 从未>0。应校验 field 在支持集合内、op 在枚举内, 否则返回 PARAM_ERROR 并回显支持的 field/op 列表。与全局静默忽略非预期输入模式同源。",
+      "type": "silent_ignore_unknown_field_op"
+    },
+    {
+      "id": "F-N47-3",
+      "severity": "medium",
+      "title": "★非法码 999999 在 get_signal_hit_rate / find_similar_patterns 坐标化到上证指数数据而非拒绝",
+      "evidence": "get_signal_hit_rate('999999', 'rsi_oversold') → sample_count=1(在上证指数 K线上算出1个 oversold 信号), 仅靠 reliability_warning 兜底; find_similar_patterns('999999') → 返回5个相似形态(基于指数数据, 相似度0.42-0.56)。两者均未校验代码存在性。",
+      "impact": "999999 非有效 A 股代码, 两工具回退到上证指数(sh000001)数据并产出'看似正常'统计/形态结果, 无 NOT_FOUND。与 N46/N17/N18 等非法码坐标化模式同源。应校验代码存在性。注: 本场景 000001 在三工具均用对平安银行(无 N46 get_key_levels 的指数污染), 说明污染是 get_key_levels 特有。",
+      "type": "invalid_code_coordinatization"
+    },
+    {
+      "id": "F-N47-4",
+      "severity": "low",
+      "title": "get_conditional_returns lookback_days 最小被静默钳制到约30根, 与传入值不符",
+      "evidence": "get_conditional_returns(lookback_days=10) → 返回 kline_count=30/lookback_days=30(被钳到30); 工具签名注明 lookback_days 最小30。传10未报错而是静默上调到30。",
+      "impact": "lookback_days<30 被静默钳到30, 响应 lookback_days 字段回显30(非传入的10), AI 不知实际用了多少。虽有最小约束合理性, 但应在响应标注'requested=10, effective=30'或文档化。次要。",
+      "type": "lookback_silent_clamp"
+    },
+    {
+      "id": "F-N47-5",
+      "severity": "medium",
+      "title": "★002594(比亚迪)历史 K线含 -67%~-69% 单段收益异常(疑拆股/复权未对齐), 透传到多工具统计",
+      "evidence": "find_similar_patterns('002594').matches[0] forward_returns 5d/10d/20d 全约 -0.68(-68%); get_conditional_returns('002594', close>90).worst 5d=-0.692927; get_signal_hit_rate('002594').20d avg_return=-0.073(被异常段拖累, bearish 20d=-0.0951)。",
+      "impact": "002594 某交易日附近 K线出现 -68% 单段收益, 几乎确定是拆股/送转/复权因子未对齐的数据质量问题(真实比亚迪不可能5日跌68%)。该脏数据透传到 find_similar_patterns 的 forward_returns、get_conditional_returns 的 worst、get_signal_hit_rate 的 avg_return, 污染所有基于 002594 历史收益的统计。应在 K线入库/复权环节修复 002594 并对极端单日收益(如|r|>50%)做数据质量门控。",
+      "type": "underlying_kline_data_anomaly_propagation"
+    }
+  ],
+  "positive_notes": [
+    "★★ get_conditional_returns 条件引擎工程正确: AND/OR 逻辑准确(AND 2匹配 vs OR 31匹配)、同字段双向区间(rsi>=50 AND <=60→89匹配)、所有比较运算符(< > >= <=)生效、details 逐条件 true/false、forward_returns(mean/median/win_rate/std/worst/best)完整、数值越界(rsi<0)优雅返回0匹配",
+    "★★ get_signal_hit_rate 统计诚实: sample_count 随标的流动性变化(002594=57/000858=45/300750=7)、reliable 阈值(≥? 标注)、reliability_warning(<10)、by_regime(bullish/neutral/bearish)分层、★look-ahead 截断正确(近期信号仅显示数据可用的 forward 窗口, 不编造未来收益)",
+    "★★ find_similar_patterns 相似度真实: 余弦相似度 0.32-0.85(随 window_days: 10日窗0.80-0.85/20日0.50-0.67/30日0.32-0.43, 短窗易匹配长窗难, 物理合理), 与 N43 build_quant_context 的 avg_correlation=0 形成对照; aggregate_prediction 按样本聚合 hit_rate/avg_return",
+    "★ 错误路径部分规范: 空 conditions→'conditions is required'; rsi<0 越界→0匹配; 非法 signal→空+reliability_warning",
+    "★ 000001 在本场景三工具(conditional_returns/signal_hit_rate/find_similar_patterns)均正确解析为平安银行(~11元), 无指数污染 — 进一步佐证 N46 的污染仅限 get_key_levels",
+    "★ forward_days 自定义传播正确([3,5,10] 非默认 [5,10,20] 时 3d 窗口独立计算)"
+  ],
+  "verdict": "fail_schema_ma_field_uncaught_exception_and_silent_unknown_field_and_kline_data_anomaly_but_condition_signal_pattern_engines_sound"
+}

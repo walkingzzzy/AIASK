@@ -16,6 +16,12 @@ def _clear_env(monkeypatch):
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED",
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_BATCH_LIMIT",
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_STATUS",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_WIN_RATE",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_TRADE_COUNT",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_GUARD_ENABLED",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_MAX_AGE_HOURS",
+        "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_DEDUPE_ENABLED",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -158,3 +164,68 @@ def test_diagnostic_observation_batch_limit_bounds(monkeypatch, value, expected)
 def test_diagnostic_observation_ttl_days_bounds(monkeypatch, value, expected):
     monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS", value)
     assert toggles.diagnostic_observation_ttl_days() == expected
+
+
+def test_diagnostic_observation_final_status_default_is_diagnostic():
+    assert toggles.diagnostic_observation_final_status() == "diagnostic"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("submitted", "submitted"),
+        ("diagnostic", "diagnostic"),
+        ("bad", "diagnostic"),
+        ("", "diagnostic"),
+    ],
+)
+def test_diagnostic_observation_final_status_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_STATUS", value)
+    assert toggles.diagnostic_observation_final_status() == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("0.36", 0.36),
+        ("0.20", 0.20),
+        ("0.90", 0.399),
+        ("bad", 0.36),
+    ],
+)
+def test_diagnostic_observation_min_win_rate_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_WIN_RATE", value)
+    assert toggles.diagnostic_observation_min_win_rate() == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("4", 4),
+        ("0", 1),
+        ("200", 100),
+        ("bad", 4),
+    ],
+)
+def test_diagnostic_observation_min_trade_count_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_TRADE_COUNT", value)
+    assert toggles.diagnostic_observation_min_trade_count() == expected
+
+
+def test_diagnostic_observation_guard_defaults_enabled():
+    assert toggles.diagnostic_observation_health_guard_enabled() is True
+    assert toggles.diagnostic_observation_dedupe_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("24", 24),
+        ("0", 1),
+        ("999", 168),
+        ("bad", 24),
+    ],
+)
+def test_diagnostic_observation_health_max_age_hours_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_MAX_AGE_HOURS", value)
+    assert toggles.diagnostic_observation_health_max_age_hours() == expected

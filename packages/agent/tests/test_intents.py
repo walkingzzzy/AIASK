@@ -53,3 +53,47 @@ def test_deny_rejects_repeat_confirm(tmp_path) -> None:
     confirmed = asyncio.run(executor.confirm(intent["intent_id"]))
     assert confirmed["success"] is False
     assert confirmed["error_code"] == "INVALID_STATUS"
+
+
+def _force_expire(store: ActionIntentStore, intent_id: str) -> None:
+    """Backdate expires_at so the intent is past its TTL."""
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(str(store.path))) as conn:
+        conn.execute(
+            "UPDATE action_intents SET expires_at = ? WHERE intent_id = ?",
+            ("2000-01-01T00:00:00+00:00", intent_id),
+        )
+        conn.commit()
+
+
+def test_get_on_expired_intent_does_not_recurse(tmp_path) -> None:
+    # Regression: an awaiting_confirmation intent past its TTL used to recurse
+    # infinitely (get -> update_status -> get -> ...) and raise
+    # "maximum recursion depth exceeded" on GET /intents/{id}.
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    intent = store.create(action="data_sync.sync", params={"codes": ["600519"]})
+    _force_expire(store, intent["intent_id"])
+
+    fetched = store.get(intent["intent_id"])
+    assert fetched is not None
+    assert fetched["status"] == "expired"
+    # A second get stays expired (no flip-flop / no recursion).
+    assert store.get(intent["intent_id"])["status"] == "expired"
+
+
+def test_deny_on_expired_intent_is_graceful(tmp_path) -> None:
+    # Regression: deny() on an expired intent used to surface a 500 because
+    # the underlying get() recursed. It should now return a clean failure.
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    executor = IntentExecutor(store)
+    intent = store.create(action="data_sync.sync", params={"codes": ["600519"]})
+    _force_expire(store, intent["intent_id"])
+
+    result = asyncio.run(executor.deny(intent["intent_id"], reason="cleanup"))
+    # The intent already expired, so deny is rejected with a defined error
+    # code rather than crashing.
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_STATUS"
+    assert store.get(intent["intent_id"])["status"] == "expired"

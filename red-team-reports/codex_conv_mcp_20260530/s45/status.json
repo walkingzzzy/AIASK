@@ -1,0 +1,100 @@
+{
+  "scenario_id": "N45",
+  "title": "技能系统 (list_skills / search_skills / run_skill: 注册表审计 + 21可执行/16注册态拆分 + smoke_test/真实task执行 + 边界)",
+  "ran_at": "2026-05-30T17:59:00+08:00",
+  "tool_call_count": 31,
+  "standing_caveat": "技能注册表 backend=codex_registry(fallback_used=true/fallback_reason=skills_registry_unavailable — 主 skills_registry 后端不可用, 全程降级 codex 文件注册表); 37 skills(21 executable runtime_contract + 16 registered-only no_handler); run_skill 执行经 built_in_orchestrator(skill_orchestrator), 调用真实底层工具(get_realtime_quote/get_kline/get_financials等)受同样 DB 约250根日线/8标的样本与非交易时段约束; macro/option 上游 provider 不可用导致部分 step 内部 degraded",
+  "tool_status_rows": [
+    {"tool": "list_skills", "verdict": "Pass", "extra": "★37 skills, 顶层显式拆分 executable_count=21/registered_only_count=16/executor_coverage_ratio=0.5676(P1-3.7需求达成); executable_skill_ids+execution_gap(16条no_handler)+available_handlers 清晰; runtime_contract skill 带完整 input/output_schema"},
+    {"tool": "list_skills(stale_meta检测)", "verdict": "Degraded", "extra": "★registry_summary.stale_meta_detected=true + meta_conflicts[repo_local_contract_mismatch/repo_local_executor_mismatch](actual=1 vs runtime_contract_count=0/runtime_executor_count=0); runtime_contract_count=0 与 21条 source=runtime_contract 自相矛盾(元数据统计 bug, 不影响功能) (F-N45-3)"},
+    {"tool": "search_skills(技术 中文)", "verdict": "Fail-schema", "extra": "★中文关键词'技术'→count=0, 但 aiask-akshare-research-analytics 描述含'technical', 应命中; 搜索仅按英文token匹配, 中文查询全失效 (F-N45-1)"},
+    {"tool": "search_skills(估值 中文)", "verdict": "Fail-schema", "extra": "★中文'估值'→count=0; 同 F-N45-1 中文搜索失效"},
+    {"tool": "search_skills(空字符串)", "verdict": "Degraded", "extra": "⚠空keyword→返回全部37条(等同list); 空查询语义=全列表(可接受但每条带schema, payload较大)"},
+    {"tool": "search_skills(zzz_nonexistent_kw)", "verdict": "Pass", "extra": "无匹配→count=0/skills=[] 干净空返回"},
+    {"tool": "search_skills(quant)", "verdict": "Pass", "extra": "★英文token匹配正常: 9条(含5 executable quant skill + aiask管理类), 按 id/category/description 匹配"},
+    {"tool": "search_skills(market)", "verdict": "Pass", "extra": "3条(akshare-market + 2 aiask描述含market)"},
+    {"tool": "search_skills(portfolio)", "verdict": "Pass", "extra": "4条(2 executable portfolio + 2 aiask管理类)"},
+    {"tool": "search_skills(akshare)", "verdict": "Degraded", "extra": "⚠24条(21 executable全含'akshare' id + 3 aiask-akshare-*); 每条内联完整 input_schema(strategy-factory schema极大), 单响应较大; 且每次 search 都重复内联 16条 execution_gap+available_handlers (F-N45-4 payload冗余)"},
+    {"tool": "run_skill(aiask-repo-orientation, registered-only)", "verdict": "Fail-graceful", "extra": "★'registered but not executable' SKILL_NOT_EXECUTABLE + detail.skill完整+available_handlers(21条); backend_used=registry_only/fallback_reason=handler_not_implemented 规范优雅"},
+    {"tool": "run_skill(nonexistent_skill_zzz)", "verdict": "Fail-graceful", "extra": "★'Skill nonexistent_skill_zzz not found' SKILL_NOT_FOUND, backend_used=none/fallback_reason=skill_not_found 规范"},
+    {"tool": "run_skill(akshare-market, smoke_test)", "verdict": "Fail-schema", "extra": "★★执行成功(4 step: quote/kline/minute/orderbook全success) 但 ★响应同时内嵌 data.execution 与 data.result 两份完全相同的完整执行结果(payload翻倍); 600519 实时1326元正确(tqcenter) (F-N45-2 payload_doubling)"},
+    {"tool": "run_skill(akshare-fundamental, invalid_task_zzz)", "verdict": "Pass", "extra": "★非法task→status=unsupported_task/steps=[]/summary.supported_tasks 列出有效task; 优雅(虽 success=true 而非 error, 但 status 字段明确标注)"},
+    {"tool": "run_skill(akshare-fundamental, fundamental_snapshot)", "verdict": "Pass", "extra": "★get_stock_info(贵州茅台/酿酒)+get_financials(2026Q1 营收539亿/净利272亿/ROE10.06) 2 step success; 内嵌 provider_contract+quality_gate(report_only)完整; data.execution==data.result 翻倍(同F-N45-2)"},
+    {"tool": "run_skill(akshare-fundamental, 空params={})", "verdict": "Fail-schema", "extra": "★缺 task 字段→静默默认 task=fundamental_snapshot 并执行(params回显为{}但执行了snapshot); 缺必填 task 应报 PARAM_ERROR 而非静默默认 (F-N45-5)"},
+    {"tool": "run_skill(akshare-quant-methods-foundation, invalid_zzz)", "verdict": "Pass", "extra": "非法task→unsupported_task 紧凑(steps=[]); 与 fundamental 一致"},
+    {"tool": "run_skill(akshare-ips-discipline, draft_ips)", "verdict": "Pass", "extra": "★2 step success, ips_draft(goal/horizon/max_drawdown0.18/behavior_rules) + discipline_checklist; 纯本地编排无外部依赖"},
+    {"tool": "run_skill(akshare-investor-protection, protection_brief)", "verdict": "Pass", "extra": "★protected_items/not_protected_items(明示'正常市场亏损不受保护'+'不保证盈利')+risk_boundary; 投资者教育合规话术规范"},
+    {"tool": "run_skill(akshare-investor-protection, audit_log)", "verdict": "Pass", "extra": "3 step(+prepare_recommendation_audit_payload), retention_rule 留痕规则; 合规审计路径完整"},
+    {"tool": "run_skill(akshare-macro-options-alerts, alert_blueprint)", "verdict": "Degraded", "extra": "⚠3 step success 但内部 get_macro_indicator(cpi provider unavailable→空records degraded) + get_option_chain(sina options unavailable→空chain degraded); step success=true 而 step.output 内 degraded=true(外层wrapper吞掉降级, 见F-N45-6); alert_blueprint 仍正常生成"},
+    {"tool": "run_skill(akshare-ips-discipline, discipline_checklist)", "verdict": "Pass", "extra": "2 step success 与 draft_ips 共用 collect_ips_constraints; 一致"},
+    {"tool": "run_skill(aiask-strategy-factory, registered-only)", "verdict": "Fail-graceful", "extra": "★SKILL_NOT_EXECUTABLE 规范(注意: 同名 executable 的 akshare-strategy-factory 存在, aiask- 前缀版是 doc-only, 命名易混淆但拒绝正确)"},
+    {"tool": "run_skill(aiask-graphify-architecture, registered-only)", "verdict": "Fail-graceful", "extra": "★SKILL_NOT_EXECUTABLE, detail.skill.repo_local=true(仓库本地skill)"},
+    {"tool": "run_skill(gh-fix-ci, registered-only)", "verdict": "Fail-graceful", "extra": "★SKILL_NOT_EXECUTABLE 规范"},
+    {"tool": "run_skill(akshare-quant-research-process, smoke_test)", "verdict": "Pass", "extra": "★2 step: stage_gate(5 gate全pass)+run_simple_backtest(600519 ma_cross 实测: total_return14.6%/sharpe0.187/maxDD51.4%/64trades/win45.3% + execution_reality 零滑点警告 + promotion_gate阈值); 但 ★equity_curve 内联约400个点(payload较大, smoke应裁剪)"},
+    {"tool": "run_skill(akshare-performance-attribution, smoke_test)", "verdict": "Pass", "extra": "3 step: holdings(3标的等权)/contribution_split/benchmark对比(active_return0.03); 纯计算演示"},
+    {"tool": "run_skill(akshare-quant, smoke_test)", "verdict": "Pass", "extra": "★factor_count=50/categories5类(与基线50因子/5分类锚点一致)+signal_research_card; 因子库锚定校验通过"},
+    {"tool": "run_skill(akshare-quant-ml-signals, smoke_test)", "verdict": "Pass", "extra": "signal_guardrails(IS/OOS分离/drift跟踪/成本后回测)+research_card(validation_stack: factor_ic/group_backtest/oos/stress); ML护栏意识规范"},
+    {"tool": "run_skill(akshare-portfolio-manager-core, smoke_test)", "verdict": "Pass", "extra": "closed_loop 6 stage gate(profile/research/portfolio/risk/execution/review)全pass; 闭环治理框架"},
+    {"tool": "run_skill(akshare-asset-allocation, smoke_test)", "verdict": "Pass", "extra": "★balanced 配置(equity55/bond25/gold10/cash10=100%)+rebalance_policy(monthly/threshold0.08/drawdown_guardrail0.18); 权重和=1.0自洽"}
+  ],
+  "summary": {"Pass": 19, "Degraded": 4, "Fail-graceful": 4, "Fail-schema": 4},
+  "findings": [
+    {
+      "id": "F-N45-1",
+      "severity": "medium",
+      "title": "★search_skills 中文关键词全失效(仅英文 token 匹配)",
+      "evidence": "search_skills('技术')→count=0, search_skills('估值')→count=0; 但技能描述均为英文(如 aiask-akshare-research-analytics 描述含 'technical/valuation'), 而 search_skills('quant'/'market'/'portfolio'/'akshare') 英文均正常命中(9/3/4/24条)。",
+      "impact": "系统全程中文交互(本红队全中文), 用户用中文关键词搜技能必然 0 命中, 误以为无相关技能。技能 description 又全是英文, 中文用户无法通过语义搜索发现技能。应支持中文 query→英文描述的跨语言匹配, 或为技能补充中文关键词/描述。",
+      "type": "search_no_cjk_support"
+    },
+    {
+      "id": "F-N45-2",
+      "severity": "medium",
+      "title": "★run_skill 响应 data.execution 与 data.result 完全重复(payload 翻倍)",
+      "evidence": "run_skill(任意 executable skill) 返回的 data 中 execution 与 result 两个键内容逐字完全相同(同样的 steps/summary/全部内嵌工具 provider_contract/quality_gate)。akshare-market smoke_test/fundamental_snapshot 等含完整子工具 envelope 的执行, 整份大 payload 被复制两遍。",
+      "impact": "每次 run_skill 响应体积翻倍, 含子工具完整 provider_contract/quality_gate 时尤其浪费(单次 market smoke 已达数万 token×2)。AI/前端需判断该读 execution 还是 result。应只保留一份(result), 或让 execution 仅为轻量引用。",
+      "type": "response_payload_duplication"
+    },
+    {
+      "id": "F-N45-3",
+      "severity": "low",
+      "title": "registry_summary 元数据自相矛盾: runtime_contract_count=0 但 21 skill source=runtime_contract + stale_meta_detected=true",
+      "evidence": "registry_summary 显示 runtime_contract_count=0 / runtime_executor_count=0, 但 executable_skill_ids 有 21 条且每条 source='runtime_contract'; stale_meta_detected=true + meta_conflicts[repo_local_contract_mismatch(actual=1 vs runtime_contract_count=0), repo_local_executor_mismatch]。",
+      "impact": "注册表自身已检出 stale_meta(诚实, 正向), 但 runtime_contract_count/runtime_executor_count 统计为 0 与实际 21 条 runtime_contract skill 矛盾, 该计数器对监控/告警无意义。应修复计数器口径。",
+      "type": "registry_metadata_counter_mismatch"
+    },
+    {
+      "id": "F-N45-4",
+      "severity": "low",
+      "title": "search_skills/list_skills 每次内联完整 16 条 execution_gap + available_handlers + 各 skill 全 input_schema",
+      "evidence": "每次 search_skills(任意关键词, 即便命中 0 或 3 条) 都在 registry_summary 内重复内联 execution_gap(16条)/executable_skill_ids(21)/available_handlers(21); 且命中的 runtime_contract skill 每条带完整 input_schema(strategy-factory 的 schema 含 60+ 字段极大)。search('akshare') 24 条 × 完整 schema 单响应巨大。",
+      "impact": "搜索是高频发现操作, 每次重复全量注册表摘要 + 每条完整 schema, payload 与命中数无关地膨胀。建议 search 默认返回精简条目(id/name/category/executable/supported_tasks), schema 按需经 detail 获取; registry_summary 可选关闭。",
+      "type": "search_payload_redundancy"
+    },
+    {
+      "id": "F-N45-5",
+      "severity": "medium",
+      "title": "★run_skill 缺必填 task 字段时静默默认而非报错",
+      "evidence": "run_skill(akshare-fundamental, params={}) → success=true, 静默以 task=fundamental_snapshot 执行(params 回显 {} 但实际跑了 snapshot 全流程); input_schema 的 task 是带 enum 的核心字段。对比 invalid_task_zzz→unsupported_task(明确)。",
+      "impact": "缺失必填 task 不报 PARAM_ERROR 而隐式默认到某 task, AI 误传空参时会意外触发真实数据拉取(本例触发 get_stock_info+get_financials), 行为不可预期。应对缺失 task 返回标准 PARAM_ERROR 或明确 unsupported_task。与全局'静默处理非预期输入'模式同源。",
+      "type": "missing_required_param_silent_default"
+    },
+    {
+      "id": "F-N45-6",
+      "severity": "low",
+      "title": "run_skill step 层 success=true 掩盖内部 provider degraded(macro/option 上游不可用)",
+      "evidence": "run_skill(akshare-macro-options-alerts, alert_blueprint): step get_macro_indicator success=true 但 output.data.degraded=true/records=[](cpi provider unavailable); step get_option_chain success=true 但 options=[]/degraded=true(sina options unavailable)。step 级 success 未反映底层 degraded; 顶层 summary.failed_count=0。",
+      "impact": "编排器以'调用未抛异常'即判 step success, 但底层数据为空+degraded。alert_blueprint 基于空 cpi/option 数据仍生成'看起来正常'的蓝图。AI 若只看 step.success/summary 会忽略数据缺失。建议 step success 纳入 output.degraded, 或在 summary 汇总 degraded_step_count。",
+      "type": "step_success_masks_inner_degraded"
+    }
+  ],
+  "positive_notes": [
+    "★★ list_skills 的 executable/registered_only 拆分(P1-3.7)优秀: 顶层 executable_count=21/registered_only_count=16/executor_coverage_ratio=0.5676 + executable_skill_ids + execution_gap(逐条 no_handler) + available_handlers, AI 一眼看清'37注册中仅21真能跑'", 
+    "★★ run_skill 边界三态清晰: registered-only→SKILL_NOT_EXECUTABLE(backend=registry_only/handler_not_implemented), nonexistent→SKILL_NOT_FOUND(backend=none/skill_not_found), 非法task→unsupported_task(列出supported_tasks); 错误路径规范且带 available_handlers 引导",
+    "★ executable skill 编排质量高: smoke_test 多 step 真实调用底层工具(quote/kline/financials/backtest), 内嵌完整 provider_contract/quality_gate/argument_contract(含 stock_code 别名废弃告警), 数据真实(600519=1326元/茅台财务/factor_count=50)",
+    "★ 合规类 skill(investor-protection/ips-discipline)话术规范: 明示'正常市场亏损不受保护/不保证盈利', behavior_rules(亏损后不加倍)+retention_rule, 投资者保护与纪律意识到位",
+    "★ quant/ml skill 方法论严谨: IS/OOS 分离、drift 跟踪、成本后回测、validation_stack(factor_ic/oos/stress)、promotion_gate 阈值、execution_reality 零滑点警告, 研究护栏意识强",
+    "★ 注册表 stale_meta_detected=true 自检诚实(虽计数器有 bug, 但主动暴露 meta_conflicts); backend fallback(skills_registry_unavailable→codex_registry)透明标注 fallback_used/fallback_reason"
+  ],
+  "verdict": "fail_schema_payload_duplication_and_cjk_search_gap_and_missing_param_default_but_executable_split_and_boundaries_robust"
+}

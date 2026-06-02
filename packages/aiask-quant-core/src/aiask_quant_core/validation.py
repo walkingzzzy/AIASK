@@ -443,10 +443,14 @@ class FactorValidationPipeline:
         )
 
         # 1) Build IC series for bootstrap on the full panel.
+        # 截面最小样本数与 walk-forward 验证器对齐（而非写死 10），消除"bootstrap 用 10、
+        # walk-forward 用 min_samples"两套阈值不一致的隐患；窄面板场景（min_samples_per_period=2）
+        # 也能保留下探能力。下限 3 防止单/双股截面相关产生伪 IC。
+        _min_xs = max(3, int(getattr(self.wf_validator, "min_samples", 10) or 10))
         all_ics_r: List[float] = []
         for t in range(factor_panel.shape[0]):
             _p_ic, r_ic = _calc_ic_pair(factor_panel[t], return_panel[t])
-            if np.isfinite(factor_panel[t]).sum() >= 10:
+            if np.isfinite(factor_panel[t]).sum() >= _min_xs:
                 all_ics_r.append(r_ic)
         ic_array = np.array(all_ics_r, dtype=np.float64)
         selected_bootstrap_mode = _normalize_bootstrap_mode(bootstrap_mode or self.bootstrap_mode)

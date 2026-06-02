@@ -208,6 +208,7 @@ def register(mcp):
             # 1. DCF 路径
             try:
                 fin_payload = None
+                info_payload = None
                 if db is not None:
                     try:
                         fin = await db.get_financials(resolved_code, limit=1)
@@ -215,13 +216,35 @@ def register(mcp):
                             fin_payload = dict(fin[0])
                     except Exception:
                         pass
+                    try:
+                        info = await db.get_stock_info(resolved_code)
+                        if info:
+                            info_payload = dict(info)
+                    except Exception:
+                        pass
                 if fin_payload:
+                    # F-N07-1 修复：字段名与 db.get_financials 实际列对齐。
+                    # 实际列为 net_profit / eps（无 netProfit / totalShares 列）。
+                    # 旧实现读 netProfit/totalShares 恒为 0 → non_positive_net_income_or_shares，
+                    # 而独立 dcf_valuation 用 net_profit 能成功，造成 consensus 内部全失败的假象。
                     base_ni = float(
-                        fin_payload.get("netProfit") or fin_payload.get("net_income") or 0
+                        fin_payload.get("net_profit")
+                        or fin_payload.get("netProfit")
+                        or fin_payload.get("net_income")
+                        or 0
                     )
-                    shares = float(
-                        fin_payload.get("totalShares") or fin_payload.get("shares") or 0
-                    )
+                    # 股本无独立列：优先 net_profit/eps 推导；退化用 market_cap/price 估算。
+                    shares = 0.0
+                    eps = float(fin_payload.get("eps") or 0)
+                    if base_ni > 0 and eps > 0:
+                        shares = base_ni / eps
+                    if shares <= 0 and info_payload:
+                        mcap = float(info_payload.get("market_cap") or 0)
+                        pe = float(info_payload.get("pe_ratio") or 0)
+                        # market_cap / price；price ≈ pe * eps
+                        price = pe * eps if (pe > 0 and eps > 0) else 0.0
+                        if mcap > 0 and price > 0:
+                            shares = mcap / price
                     if base_ni > 0 and shares > 0:
                         per_share = _simple_dcf_per_share(
                             base_cashflow=base_ni,
@@ -242,7 +265,8 @@ def register(mcp):
                                     "terminal_growth_rate": terminal_growth_rate or growth_rate,
                                     "years": years,
                                     "base_net_income": base_ni,
-                                    "shares_outstanding": shares,
+                                    "shares_outstanding": round(shares, 2),
+                                    "shares_source": "net_profit/eps" if eps > 0 else "market_cap/price",
                                 },
                             })
                         else:

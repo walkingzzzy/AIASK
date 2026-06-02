@@ -143,8 +143,6 @@ def register_research_manager(mcp):
                 # 历史问题:research_manager.get_reports tushare/akshare 全跪,但 db 实际有 reports
                 # 修复:fallback 到 db.research_reports,与 get_research_reports/search_research_db 同源
                 try:
-                    from ...storage import get_db
-                    db = get_db()
                     async with db.acquire() as conn:
                         rows = await conn.fetch(
                             """SELECT title, institution, author, rating,
@@ -224,8 +222,6 @@ def register_research_manager(mcp):
 
                 # P1-3.4 fix: db.research_reports 回退聚合 ratings(同 get_reports 修复)
                 try:
-                    from ...storage import get_db
-                    db = get_db()
                     async with db.acquire() as conn:
                         rows = await conn.fetch(
                             """SELECT rating FROM research_reports

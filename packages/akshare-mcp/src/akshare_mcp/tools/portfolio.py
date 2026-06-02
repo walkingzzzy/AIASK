@@ -91,36 +91,63 @@ def register(mcp):
                     source_chain=source_chain,
                     extra_meta=_meta(status="invalid_params", target="portfolio_optimization", degraded=True),
                 )
+            # 获取历史数据（FIX-20: 显式区分有效股与无数据股，避免静默丢弃 + 权重错位）
+            db = get_db()
+            source_chain.append("db.get_klines")
+            returns_list = []
+            valid_codes: List[str] = []
+            dropped_codes: List[str] = []
+
+            for code in stocks:
+                klines = await db.get_klines(code, limit=lookback_days)
+                if klines and len(klines) >= 2:
+                    closes = [k['close'] for k in klines]
+                    returns = np.diff(closes) / closes[:-1]
+                    returns_list.append(returns)
+                    valid_codes.append(code)
+                else:
+                    dropped_codes.append(code)
+
             if method == 'equal_weight':
-                weights = portfolio_optimizer.optimize_equal_weight(stocks)
+                # FIX-20: equal_weight 也只对有效股配权，剔除无数据/垃圾代码
+                if not valid_codes:
+                    return fail_with_meta(
+                        'No data available for any stock',
+                        tool_name="optimize_portfolio",
+                        action=method,
+                        started_at=started_at,
+                        source_chain=source_chain,
+                        extra_meta=_meta(
+                            status="not_found",
+                            target="portfolio_optimization",
+                            degraded=True,
+                            extra_quality={"method": method, "dropped_codes": dropped_codes},
+                        ),
+                    )
+                weights = portfolio_optimizer.optimize_equal_weight(valid_codes)
                 return ok_with_meta(
                     {
                         'weights': weights,
                         'method': method,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,
                     started_at=started_at,
                     source_chain=source_chain,
                     extra_meta=_meta(
-                        status="available",
+                        status="available" if not dropped_codes else "degraded",
                         target="portfolio_optimization",
-                        extra_quality={"method": method, "stock_count": len(stocks or [])},
+                        degraded=bool(dropped_codes),
+                        extra_quality={
+                            "method": method,
+                            "stock_count": len(valid_codes),
+                            "dropped_codes": dropped_codes,
+                        },
                     ),
                 )
-            
-            # 获取历史数据
-            db = get_db()
-            source_chain.append("db.get_klines")
-            returns_list = []
-            
-            for code in stocks:
-                klines = await db.get_klines(code, limit=lookback_days)
-                if klines:
-                    closes = [k['close'] for k in klines]
-                    returns = np.diff(closes) / closes[:-1]
-                    returns_list.append(returns)
-            
+
             if not returns_list:
                 return fail_with_meta(
                     'No data available',
@@ -132,7 +159,7 @@ def register(mcp):
                         status="not_found",
                         target="portfolio_optimization",
                         degraded=True,
-                        extra_quality={"method": method, "stock_count": len(stocks or [])},
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "dropped_codes": dropped_codes},
                     ),
                 )
             
@@ -145,11 +172,13 @@ def register(mcp):
             
             # 根据方法选择优化器
             if method == 'risk_parity':
-                weights = portfolio_optimizer.optimize_risk_parity(stocks, returns_matrix)
+                weights = portfolio_optimizer.optimize_risk_parity(valid_codes, returns_matrix)
                 return ok_with_meta(
                     {
                         'weights': weights,
                         'method': method,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,
@@ -164,7 +193,7 @@ def register(mcp):
             
             elif method == 'mean_variance':
                 weights = portfolio_optimizer.optimize_mean_variance(
-                    stocks, 
+                    valid_codes, 
                     returns_matrix, 
                     expected_returns,
                     risk_aversion=risk_aversion
@@ -174,6 +203,8 @@ def register(mcp):
                         'weights': weights,
                         'method': method,
                         'risk_aversion': risk_aversion,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,
@@ -187,9 +218,9 @@ def register(mcp):
                 )
             
             elif method == 'black_litterman':
-                # 默认市场权重为等权
+                # 默认市场权重为等权（按有效股数量）
                 if market_weights is None:
-                    market_weights = np.array([1.0 / len(stocks)] * len(stocks))
+                    market_weights = np.array([1.0 / len(valid_codes)] * len(valid_codes))
                 else:
                     market_weights = np.array(market_weights)
                 
@@ -198,7 +229,7 @@ def register(mcp):
                     views = []
                 
                 result = portfolio_optimizer.optimize_black_litterman(
-                    stocks,
+                    valid_codes,
                     returns_matrix,
                     market_weights,
                     views,
@@ -213,6 +244,8 @@ def register(mcp):
                         'volatility': f"{result['volatility']*100:.2f}%",
                         'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
                         'method': method,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,
@@ -227,7 +260,7 @@ def register(mcp):
             
             elif method == 'risk_budget':
                 result = portfolio_optimizer.optimize_risk_budget(
-                    stocks,
+                    valid_codes,
                     returns_matrix,
                     risk_budgets=risk_budgets
                 )
@@ -238,6 +271,8 @@ def register(mcp):
                         'risk_contributions': result['risk_contributions'],
                         'portfolio_volatility': f"{result['portfolio_volatility']*100:.2f}%",
                         'method': method,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,
@@ -252,7 +287,7 @@ def register(mcp):
             
             elif method == 'max_sharpe':
                 result = portfolio_optimizer.optimize_max_sharpe(
-                    stocks,
+                    valid_codes,
                     returns_matrix,
                     expected_returns,
                     risk_free_rate=risk_free_rate,
@@ -267,6 +302,8 @@ def register(mcp):
                         'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
                         'constraints_applied': result.get('constraints_applied', {'max_weight': max_weight}),
                         'method': method,
+                        'valid_codes': valid_codes,
+                        'dropped_codes': dropped_codes,
                     },
                     tool_name="optimize_portfolio",
                     action=method,

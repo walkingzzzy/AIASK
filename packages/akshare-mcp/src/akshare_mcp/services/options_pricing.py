@@ -38,11 +38,13 @@ class OptionsPricing:
         """
         if time_to_maturity <= 0:
             # 到期时的内在价值
+            option_type = (option_type or 'call').strip().lower()
             if option_type == 'call':
                 return max(spot - strike, 0)
             else:
                 return max(strike - spot, 0)
         
+        option_type = (option_type or 'call').strip().lower()
         # 计算d1和d2
         d1 = (np.log(spot / strike) + (risk_free_rate - dividend_yield + 0.5 * volatility ** 2) * time_to_maturity) / (volatility * np.sqrt(time_to_maturity))
         d2 = d1 - volatility * np.sqrt(time_to_maturity)
@@ -83,6 +85,7 @@ class OptionsPricing:
         """
         if time_to_maturity <= 0:
             # 到期时Greeks为0（除了delta）
+            option_type = (option_type or 'call').strip().lower()
             if option_type == 'call':
                 delta = 1.0 if spot > strike else 0.0
             else:
@@ -96,6 +99,7 @@ class OptionsPricing:
                 'rho': 0.0,
             }
         
+        option_type = (option_type or 'call').strip().lower()
         # 计算d1和d2
         d1 = (np.log(spot / strike) + (risk_free_rate - dividend_yield + 0.5 * volatility ** 2) * time_to_maturity) / (volatility * np.sqrt(time_to_maturity))
         d2 = d1 - volatility * np.sqrt(time_to_maturity)

@@ -1,0 +1,69 @@
+{
+  "scenario_id": "N33",
+  "title": "告警 CRUD (alerts_manager / create_indicator_alert / create_combo_alert / check_all_alerts)",
+  "ran_at": "2026-05-30T17:00:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "存在两套独立告警store: create_indicator_alert/create_combo_alert/check_all_alerts→alerts.memory_store(进程内存,跨run共享,无user_id); alerts_manager(create/list/delete/check)→DB(按user_id隔离); DB侧redteam告警已清理; memory_store告警无user_id无法按隔离清理(历史run残留)",
+  "tool_status_rows": [
+    {"tool": "alerts_manager(help)", "verdict": "Pass", "extra": "★supported_actions: list/create/check/update/delete/help, 注明create需code/indicator/condition/value"},
+    {"tool": "alerts_manager(create) DB+user_id隔离", "verdict": "Pass", "extra": "★create→alert_id=alert_redteam_conv_20260530_000651_price_<(含user_id前缀), db_id, status=created; list(user_id)只返回该用户告警; DB侧user_id隔离正确"},
+    {"tool": "create_indicator_alert(price/rsi/macd/volume/ma5/change_pct)", "verdict": "Pass", "extra": "★6种指标均创建成功(memory_store), alert_id=alert_{code}_{indicator}_{condition}; 支持指标: change_pct/ma20/ma5/macd/price/rsi/volume"},
+    {"tool": "create_indicator_alert 参数校验", "verdict": "Fail-graceful", "extra": "★★校验优秀: 非法code(ZZZ999)→'股票代码格式无效,需6位数字或带sh/sz/bj'; 非法condition(@@@)→'condition无效,支持>,<,>=,<=,=='; 非法indicator(bogus)→列出7个支持指标; 与N32 watchlist无校验形成鲜明对比"},
+    {"tool": "create_indicator_alert 重复告警", "verdict": "Fail-graceful", "extra": "★重复(600519/price/>)→'告警已存在: alert_600519_price_>,如需修改请使用update'; 但alert_id不含value,同股同指标同条件不能建不同阈值告警 (F-N33-3)"},
+    {"tool": "create_combo_alert(AND/OR)", "verdict": "Pass", "extra": "★AND/OR逻辑combo创建成功, conditions多条件, alert_id=combo_{name}"},
+    {"tool": "check_all_alerts(indicator/combo/all, active/all/inactive)", "verdict": "Pass", "extra": "★触发逻辑正确: 000001 rsi<35当前13.75→triggered=true; combo OR sub_results[false,true]→triggered=true; AND sub_results[false,true]→triggered=false; current_value实算(price1326/rsi41.04/macd-0.31); inactive状态查询返回空"},
+    {"tool": "check_all_alerts vs alerts_manager(list) 双store值冲突", "verdict": "Fail-schema", "extra": "⚠⚠⚠ 同一alert_id 'alert_600519_price_>' 在 check_all_alerts(memory_store)=value2000.0, 在 alerts_manager(list, default)(DB)=value1500.0; 两套store对同一告警ID存不同阈值, 数据源完全割裂 (F-N33-1)"},
+    {"tool": "create_indicator_alert vs alerts_manager store割裂", "verdict": "Fail-schema", "extra": "⚠⚠ create_indicator_alert(无user_id)写memory_store; alerts_manager(create, user_id)写DB; alerts_manager(list,user_id=redteam)看不到create_indicator_alert建的告警; AI用两组工具会操作不同存储 (并入F-N33-1)"},
+    {"tool": "volume告警量纲不一致", "verdict": "Degraded", "extra": "⚠ alert_000001_volume_> value=1.5(疑为量比) 但 current_value=731597710(绝对成交量); volume>1.5 永远触发(triggered=true); 阈值与当前值量纲不匹配 (F-N33-2, 关联F-N19-5)"},
+    {"tool": "alerts_manager(delete) 真实/不存在", "verdict": "Fail-graceful", "extra": "★★删真实告警→deleted=true; 删不存在(nonexistent_alert_zzz)→success=false'告警不存在'(与N32 watchlist remove虚假成功对照, 此处正确报错)"},
+    {"tool": "alerts_manager(create) 非法condition", "verdict": "Fail-graceful", "extra": "★非法condition(bogus)→'不支持的条件: bogus. 支持: >,<,>=,<=,=='"},
+    {"tool": "alerts_manager(check)", "verdict": "Pass", "extra": "★返回 triggered列表+count; 但结构(triggered[])与check_all_alerts(alerts全列表+triggered_count)不同 (F-N33-4)"},
+    {"tool": "alerts_manager(bogus_action)", "verdict": "Fail-graceful", "extra": "★success=false 列出6个supported action"},
+    {"tool": "create_combo_alert(conditions=[]) 空", "verdict": "Fail-graceful", "extra": "空conditions触发pydantic校验(conditions required); schema强制必填"}
+  ],
+  "summary": {"Pass": 6, "Degraded": 1, "Fail-graceful": 6, "Fail-schema": 2},
+  "findings": [
+    {
+      "id": "F-N33-1",
+      "severity": "high",
+      "title": "告警存在两套割裂的存储, 同一alert_id阈值不一致",
+      "evidence": "create_indicator_alert/create_combo_alert/check_all_alerts 操作 alerts.memory_store(进程内存); alerts_manager(create/list/delete/check) 操作 DB(akshare_mcp.sqlite3, 按user_id隔离)。同一 alert_id 'alert_600519_price_>' 在 check_all_alerts(memory)=value2000.0, 在 alerts_manager(list)(DB)=value1500.0, 阈值不一致。alerts_manager(list, user_id=redteam)看不到 create_indicator_alert 创建的告警。",
+      "impact": "AI 用 create_indicator_alert 创建告警, 再用 alerts_manager(list) 查不到; 或 check_all_alerts 检查的告警与 alerts_manager 管理的是两批。同一告警ID在两store存不同阈值, AI 无法判断哪个生效。告警系统存储架构割裂, 严重影响告警可靠性。确凿架构缺陷。",
+      "type": "split_storage_inconsistency"
+    },
+    {
+      "id": "F-N33-2",
+      "severity": "medium",
+      "title": "volume 告警阈值与 current_value 量纲不一致, 永远触发",
+      "evidence": "create_indicator_alert(000001, volume, >, 1.5) 后 check_all_alerts 显示 current_value=731597710(绝对成交量/股), value=1.5(疑为量比阈值)。volume>1.5 用绝对成交量比较恒为 true→triggered=true。",
+      "impact": "volume 告警若用户按'量比1.5'设置, 系统用绝对成交量比较导致永远触发误报。阈值与比较值量纲不匹配。建议明确 volume 是量比还是绝对量并统一(关联 F-N19-5 avg_daily_amount 量纲问题)。",
+      "type": "unit_mismatch_volume"
+    },
+    {
+      "id": "F-N33-3",
+      "severity": "low",
+      "title": "indicator 告警 alert_id 不含 value, 同条件不能建多阈值告警",
+      "evidence": "alert_id=alert_{code}_{indicator}_{condition}(如 alert_600519_price_>), 不含 value。对 600519 price > 创建 value=2000 后, 再创建 value=1500 报'告警已存在'。",
+      "impact": "用户无法对同一股票同指标同方向设置多个阈值告警(如 price>1500 和 price>2000 两档)。建议 alert_id 含 value 或支持多阈值。",
+      "type": "alert_id_collision"
+    },
+    {
+      "id": "F-N33-4",
+      "severity": "low",
+      "title": "alerts_manager(check) 与 check_all_alerts 返回结构不一致",
+      "evidence": "alerts_manager(check)→{triggered:[], count}; check_all_alerts→{alerts:[全部], count, triggered_count, status, type}。两个检查工具返回 schema 不同。",
+      "impact": "AI 用两个检查工具需分别解析不同结构。建议统一。",
+      "type": "inconsistent_response_schema"
+    }
+  ],
+  "positive_notes": [
+    "★★ create_indicator_alert 参数校验优秀: 非法code(列出格式要求)/非法condition(列出5个)/非法indicator(列出7个)全部明确报错, 与N32 watchlist完全无校验形成鲜明对比",
+    "★★ alerts_manager delete 正确: 删不存在告警→'告警不存在'报错(与N32 watchlist remove虚假成功对照)",
+    "★★ check_all_alerts 触发逻辑正确: indicator比较+combo AND/OR(sub_results)+current_value实算(price/rsi/macd), triggered判定准确",
+    "★ alerts_manager DB侧 user_id 隔离正确: alert_id含user_id前缀, list按user_id过滤",
+    "★ 6种指标支持(change_pct/ma20/ma5/macd/price/rsi/volume), AND/OR combo, active/inactive/all状态过滤",
+    "★ 边界优雅: 非法action列出supported, 空conditions触发schema校验, 重复告警提示用update",
+    "★ side_effect.level=stateful(create)/read_only(check), 正确标注状态变更"
+  ],
+  "verdict": "pass_with_high_finding"
+}

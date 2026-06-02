@@ -604,6 +604,16 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
 
         use_minute = len(codes) <= _MINUTE_BATCH_LIMIT
         for code in codes:
+            # FIX-9: 存在性校验，非法码（如 999999）直接进 missing，
+            # 避免回退到 db.stock_quotes 快照时坐标化到上证指数（F-N03-2）。
+            # 与单查 get_realtime_quote 的 resolve_existing_security_code_sync 行为一致。
+            try:
+                _norm, _info, _code_err = resolve_existing_security_code_sync(code=code)
+                if _code_err:
+                    missing.append(code)
+                    continue
+            except Exception as _e:
+                _log_quote_source_error("batch code existence check", code, _e)
             # 1. 优先 DataSource：Tushare / 公开源 → akshare
             try:
                 access = get_quote_snapshot_sync(code, fallback_mode=FALLBACK_DB_FIRST_LIVE)

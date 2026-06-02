@@ -262,16 +262,31 @@ def _parse_technical(q: str, tech_conditions: list):
         tech_conditions.append(payload)
         existing_ids.add(condition_id)
 
-    # 连续上涨/下跌 带天数
-    up_match = re.search(r'连(?:续|涨)\s*(\d+)\s*(?:天|日|个交易日)?\s*(?:上涨)?', q)
-    if up_match or '连续上涨' in q or '连涨' in q:
-        n = int(up_match.group(1)) if up_match else 3
-        _append_condition('upn', {'n': n})
+    # 连续上涨/下跌 带天数（FIX-16: 必须按方向词判定，避免"连续N天上涨"同时命中 upn+downn）
+    # 历史 bug: 旧正则 `连(?:续|跌)` 中 `续` 是 `跌` 的同级备选，"连续上涨" 里的"连续"
+    # 会让 down 正则也命中，导致 upn AND downn 矛盾条件（AND 下永远 0 命中）。
+    def _consecutive_days(direction_terms: tuple[str, ...]) -> int | None:
+        """提取“连续N天<方向>”或“<方向>N天”的天数；未出现方向词则返回 None。"""
+        for term in direction_terms:
+            if term not in q:
+                continue
+            # 优先匹配“连续/连 N 天 ... 方向”或“方向 ... N 天”，宽松取相邻数字
+            m = re.search(r'连(?:续)?\s*(\d+)\s*(?:天|日|个交易日)', q)
+            if m:
+                return int(m.group(1))
+            m2 = re.search(r'(\d+)\s*(?:天|日|个交易日)', q)
+            if m2:
+                return int(m2.group(1))
+            return 3  # 出现方向词但未给天数，默认 3
+        return None
 
-    down_match = re.search(r'连(?:续|跌)\s*(\d+)\s*(?:天|日|个交易日)?\s*(?:下跌)?', q)
-    if down_match or '连续下跌' in q or '连跌' in q:
-        n = int(down_match.group(1)) if down_match else 3
-        _append_condition('downn', {'n': n})
+    up_n = _consecutive_days(('上涨', '连涨', '上升', '走高'))
+    if up_n is not None and ('连' in q or '上涨' in q or '连涨' in q):
+        _append_condition('upn', {'n': up_n})
+
+    down_n = _consecutive_days(('下跌', '连跌', '下降', '走低'))
+    if down_n is not None and ('连' in q or '下跌' in q or '连跌' in q):
+        _append_condition('downn', {'n': down_n})
 
     # 连板天数
     board_match = re.search(r'(\d+)\s*连板', q)

@@ -241,6 +241,14 @@ def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[st
     runtime_alert_count = _safe_int(payload.get("runtime_alert_count"))
     runtime_risk_event_count = _safe_int(payload.get("runtime_risk_event_count"))
     strategy_count = _safe_int(payload.get("strategy_count"))
+    gate_failure_rate = max(0.0, min(safe_float(_metric_value(payload, "gate_failure_rate"), 0.0), 1.0))
+    gate_3_input_count = max(
+        _safe_int(payload.get("gate_3_input_count")),
+        _safe_int(payload.get("gate_3_input")),
+        _safe_int(payload.get("gate_3_input_count_ema")),
+        strategy_count,
+    )
+    gate_3_failure_streak = _safe_int(payload.get("gate_3_failure_streak"))
     zero_signal_ratio = max(0.0, min(safe_float(_metric_value(payload, "zero_signal_ratio"), 0.0), 1.0))
     low_signal_ratio = max(0.0, min(safe_float(_metric_value(payload, "low_signal_ratio"), 0.0), 1.0))
     forward_window_coverage_ratio = max(
@@ -291,6 +299,16 @@ def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[st
         )
     )
     reasons: list[str] = []
+
+    if gate_3_input_count >= 3 and gate_failure_rate >= 0.95:
+        suppressed = True
+        reasons.append(f"{scope_name}_gate_failure_rate_suppress")
+    elif gate_3_input_count >= 2 and gate_failure_rate >= 0.75:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_gate_failure_rate_cooldown")
+    if gate_3_input_count >= 8 and gate_failure_rate >= 0.98 and gate_3_failure_streak >= 3:
+        freeze_active = True
+        reasons.append(f"{scope_name}_gate_failure_rate_freeze")
 
     if runtime_alert_pressure >= 0.88:
         freeze_active = True

@@ -307,11 +307,9 @@ async def handle_factory_event_preview_tasks(db, params: dict[str, Any]) -> dict
 
     # PR-D: prefer the real propagation + target basket pipeline.
     try:
-        from strategy_factory.application.research.theme_graph import (  # noqa: PLC0415
+        from strategy_factory import (  # noqa: PLC0415
             NormalizedEvent,
             propagate_event_to_themes,
-        )
-        from strategy_factory.application.research.target_basket import (  # noqa: PLC0415
             resolve_target_basket,
         )
     except Exception as exc:
@@ -474,7 +472,7 @@ async def handle_factory_theme_exposure_refresh(db, params: dict[str, Any]) -> d
     """Confirm-required manual refresh for the TDX-only exposure matrix."""
 
     try:
-        from strategy_factory.application.research.theme_exposure_builder import (  # noqa: PLC0415
+        from strategy_factory import (  # noqa: PLC0415
             ThemeExposureBuilder,
         )
     except Exception as exc:
@@ -496,10 +494,8 @@ async def handle_factory_event_bootstrap(db, params: dict[str, Any]) -> dict[str
     """One-click bootstrap for the default theme graph and exposure matrix."""
 
     try:
-        from strategy_factory.application.research.theme_exposure_builder import (  # noqa: PLC0415
+        from strategy_factory import (  # noqa: PLC0415
             ThemeExposureBuilder,
-        )
-        from strategy_factory.application.research.theme_seed import (  # noqa: PLC0415
             seed_default_theme_graph,
         )
     except Exception as exc:
@@ -576,7 +572,7 @@ async def handle_factory_event_outbox_drain(db, params: dict[str, Any]) -> dict[
     _OUTBOX_DRAIN_RUNNING = True
     try:
         try:
-            from strategy_factory.application.research.event_task_generator import (  # noqa: PLC0415
+            from strategy_factory import (  # noqa: PLC0415
                 generate_tasks_from_active_events,
             )
         except Exception as exc:
@@ -680,7 +676,7 @@ async def handle_factory_theme_regression_run(db, params: dict[str, Any]) -> dic
     """Confirm-required manual run for theme-response regression."""
 
     try:
-        from strategy_factory.application.research.theme_response_regression import (  # noqa: PLC0415
+        from strategy_factory import (  # noqa: PLC0415
             ThemeResponseRegression,
         )
     except Exception as exc:

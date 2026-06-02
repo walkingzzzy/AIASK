@@ -86,11 +86,13 @@ def main() -> int:
         )
         return 2
     _bootstrap_local_package_paths()
+    from akshare_mcp.env_loader import load_mcp_env
     from akshare_mcp.adapters.strategy_factory_runtime import (
         configure_strategy_factory_runtime_services,
     )
     from run_incubation_factory import main as target_main
 
+    load_mcp_env(override=False)
     configure_strategy_factory_runtime_services()
     # Forward argv as-is and let the real runner do its own argparse.
     sys.argv[0] = str(_TARGET)

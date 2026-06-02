@@ -1,0 +1,67 @@
+{
+  "scenario_id": "N36",
+  "title": "合规检查 (compliance_manager 全 action)",
+  "ran_at": "2026-05-30T17:11:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易: 所有 check_order 因 trading_hours=false(仅warning)+盘口量为0(violation '疑似无法买入/卖出')被 blocked; 涨跌停/lot_size/金额/数量等静态规则可正常验证; N21已覆盖部分合规阻断",
+  "tool_status_rows": [
+    {"tool": "compliance_manager(help/rules)", "verdict": "Pass", "extra": "★help列6 action(check_order/get_restrictions/check/check_trade/rules/help); rules列8条规则(position_limit/single_order_shares/single_order_amount/lot_size/trading_hours/st_restriction/suspended/limit_up_down)"},
+    {"tool": "check_order(600519 正常) 涨跌停基准正确", "verdict": "Pass", "extra": "★茅台 pre_close1275.98/limit_up1403.58/limit_down1148.38 正确; 8项checks+realtime盘口; blocked仅因盘口量0(周末)"},
+    {"tool": "check_order lot_size/数量/金额超限", "verdict": "Pass", "extra": "★★150股→'必须为100整数倍'; 1500000股→'单笔数量超限>1000000'+'金额超限>50000000'; 校验精确"},
+    {"tool": "check_order 涨跌停价校验", "verdict": "Pass", "extra": "★★@1500>涨停1403.58→'超过涨停价(不可下单)'; @1100<跌停1148.38→'低于跌停价'; 茅台/五粮液/比亚迪/平安/洋河基准均正确"},
+    {"tool": "check_order 创业板20%涨跌停", "verdict": "Pass", "extra": "★300750(创业板) limit_pct=0.2/涨停498.82/跌停332.54 正确识别20%; 002304/601318主板10%正确"},
+    {"tool": "check_order(000001) 误当上证指数", "verdict": "Fail-schema", "extra": "⚠⚠⚠ check_order(000001)→name='上证指数'/current_price4068.57/涨跌停[3688,4508]; 平安银行(真实价11.5)被当成上证指数sh000001; @11.5被判'低于跌停价3688.78'拦截; 这是N34 F-N34-1 paper_trading涨跌停取错的同源根因 (F-N36-1)"},
+    {"tool": "check_order(sz000001) 前缀未消歧", "verdict": "Fail-schema", "extra": "⚠⚠ 即便带深市前缀 sz000001 仍返回上证指数数据; 000001↔sh000001 代码歧义未通过交易所前缀消解 (并入F-N36-1)"},
+    {"tool": "check_order(ZZZ999) 非法码坐标化", "verdict": "Fail-schema", "extra": "⚠⚠ check_order(ZZZ999)→坐标化成000999(current_price24.12)返回真实股票合规结果; 同N28/N30坐标化, 但与N34 paper_trading拒绝非法码对照 (F-N36-2)"},
+    {"tool": "check_order 盘口量0过度阻断", "verdict": "Degraded", "extra": "⚠ 周末所有标的盘口 top_ask/bid_volume=0→violation '实时盘口卖量为0,疑似无法买入' blocked=true; 非交易时段盘口本就空, 据此阻断属过度(应与trading_hours一样仅warning) (F-N36-3)"},
+    {"tool": "check_order 负数量/零数量", "verdict": "Fail-graceful", "extra": "★qty=-100→'quantity必须大于0'; qty=0→'quantity必须大于0'; 数量正负校验正确"},
+    {"tool": "check_order 卖出方向", "verdict": "Pass", "extra": "★sell方向检查'实时盘口买量为0,疑似无法卖出'(buy查卖量/sell查买量, 方向正确)"},
+    {"tool": "check/check_trade 别名", "verdict": "Pass", "extra": "★check/check_trade 是 check_order 别名, 不带price时 order_amount=null 仍校验其他项"},
+    {"tool": "get_restrictions(600519/000001/300750/ZZZ999)", "verdict": "Degraded", "extra": "⚠ get_restrictions 仅返回通用静态限制(max_position_pct0.1/max_shares1000000/max_amount5000万/lot100/trading_hours), 不含涨跌停/ST/停牌等标的特定信息; 且ZZZ999非法码也返回通用限制(不校验存在性) (F-N36-4)"},
+    {"tool": "compliance_manager(bogus_action)", "verdict": "Fail-graceful", "extra": "★success=false 列出6个supported action"}
+  ],
+  "summary": {"Pass": 6, "Degraded": 2, "Fail-graceful": 2, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N36-1",
+      "severity": "high",
+      "title": "compliance_manager 将 000001 误当上证指数(sh000001), 涨跌停基准错误",
+      "evidence": "check_order(code='000001')→realtime.name='上证指数'/current_price=4068.57/pre_close=4098.64/涨跌停[3688.78,4508.50]; 平安银行(真实价~11.5元)的合规检查用了上证指数(sh000001)的点位。@11.5 被判'低于跌停价3688.78'拦截。带前缀 sz000001 仍返回上证指数。这与 N34 F-N34-1(paper_trading 000001@11.5被拒[3688,4508])是同一根因。",
+      "impact": "对平安银行(000001)的所有合规检查/涨跌停判定完全错误(用4000点级别基准), 正常11元买单被拦, 4000元荒谬单反通过。000001↔sh000001 代码歧义在行情库层未消解, 影响 compliance/paper_trading 等多个下游。跨模块系统性 bug。",
+      "type": "code_ambiguity_index_vs_stock"
+    },
+    {
+      "id": "F-N36-2",
+      "severity": "high",
+      "title": "compliance_manager(check_order) 非法代码静默坐标化",
+      "evidence": "check_order(code='ZZZ999')→data.code='000999', current_price=24.12, 返回该真实股票的完整合规检查。非法代码被坐标化(抽数字补零)而非拒绝。对比 N34 paper_trading(market单)正确拒绝非法代码。",
+      "impact": "AI 传错代码做合规检查时, 得到另一只无关股票的合规结论且无从察觉。合规是交易前最后防线, 坐标化使合规检查针对错误标的。与 F-N28-1/F-N30-4/F-N17-1 同类系统性缺陷。",
+      "type": "garbage_code_silent_coercion"
+    },
+    {
+      "id": "F-N36-3",
+      "severity": "medium",
+      "title": "非交易时段盘口量为0被当违规阻断(过度阻断)",
+      "evidence": "周末所有标的 realtime.top_ask_volume/top_bid_volume=0(非交易时段无盘口)→violations含'实时盘口卖量为0,当前疑似无法买入'且 blocked=true。而 trading_hours=false 仅作 warning。",
+      "impact": "非交易时段盘口本就为空, 据此判'无法买入'并 blocked 属过度阻断(应与 trading_hours 一致仅 warning)。AI 在盘后做合规预检会对所有标的得 blocked=true, 无法区分真实流动性问题。建议非交易时段盘口量0降级为 warning。",
+      "type": "over_blocking_off_hours"
+    },
+    {
+      "id": "F-N36-4",
+      "severity": "low",
+      "title": "get_restrictions 仅返回通用静态限制, 不含标的特定信息且不校验代码",
+      "evidence": "get_restrictions(600519/000001/300750/ZZZ999) 均返回完全相同的通用限制(max_position_pct0.1/max_shares1000000/max_amount5000万/lot100/trading_allowed=true), 不含涨跌停幅度/ST/停牌/创业板20%等标的特定信息; ZZZ999 非法码也返回通用限制(不校验存在性)。",
+      "impact": "get_restrictions 对所有标的(含非法码)返回相同通用值, 无标的特定限制(如创业板应标20%, ST应标5%), 信息价值有限。AI 据此无法获取标的真实交易限制。建议补充标的特定字段。",
+      "type": "generic_restrictions_no_specifics"
+    }
+  ],
+  "positive_notes": [
+    "★★ 合规规则覆盖全面: 8条规则(持仓限制/单笔数量/单笔金额/整手/交易时段/ST/停牌/涨跌停)+实时盘口校验(quote/order_book)",
+    "★★ 涨跌停基准正确(除000001外): 茅台1403.58/五粮液89.64/比亚迪105.47/平安57.72/洋河48.25; 创业板300750正确识别20%(498.82); 主板10%正确",
+    "★★ 数量/金额/价格校验精确: 非整百/超数量/超金额/超涨停/低跌停/负数量/零数量 全部正确拦截并给明确violation",
+    "★ buy查卖量/sell查买量 方向逻辑正确",
+    "★ check/check_trade 别名一致; 非法action列出supported",
+    "★ realtime 字段透明(quote_source/order_book_source/limit_up_price/at_limit_up), AI可见数据来源与涨跌停"
+  ],
+  "verdict": "pass_with_high_finding"
+}

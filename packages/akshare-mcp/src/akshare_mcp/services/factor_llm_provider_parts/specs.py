@@ -193,7 +193,7 @@ class FactorLLMProvider:
         if not base:
             return base
         lowered = base.lower()
-        if lowered.endswith(("/chat/completions", "/responses")):
+        if lowered.endswith(("/chat/completions", "/responses", "/messages")):
             return base
         remainder = base.split("://", 1)[1] if "://" in base else base
         path = remainder.split("/", 1)[1] if "/" in remainder else ""
@@ -203,9 +203,53 @@ class FactorLLMProvider:
 
     def _endpoint(self) -> str:
         base = self.config.base_url.rstrip("/")
-        if base.endswith("/chat/completions"):
+        lowered = base.lower()
+        if lowered.endswith("/chat/completions"):
             return base
-        return f"{self._openai_compatible_api_base(base)}/chat/completions"
+        if lowered.endswith("/messages"):
+            return base
+        api_base = self._openai_compatible_api_base(base)
+        provider = str(getattr(self.config, "provider", "") or "").strip().lower()
+        if provider in {"anthropic_messages", "anthropic"}:
+            return f"{api_base}/messages"
+        return f"{api_base}/chat/completions"
+
+    def _adapt_payload_for_endpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        provider = str(getattr(self.config, "provider", "") or "").strip().lower()
+        if provider not in {"anthropic_messages", "anthropic"}:
+            return payload
+        messages = payload.get("messages") or []
+        system_parts: list[str] = []
+        adapted_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "user").strip().lower()
+            content = msg.get("content", "")
+            if role == "system":
+                if content not in (None, ""):
+                    system_parts.append(str(content))
+                continue
+            if role not in {"user", "assistant"}:
+                role = "user"
+            adapted_messages.append({"role": role, "content": content if content is not None else ""})
+        if not adapted_messages:
+            adapted_messages.append({"role": "user", "content": ""})
+        raw_max_tokens = payload.get("max_tokens") or payload.get("max_output_tokens") or self.config.max_tokens or 1024
+        try:
+            max_tokens = max(1, int(raw_max_tokens))
+        except Exception:
+            max_tokens = 1024
+        adapted = {
+            "model": payload.get("model", self.config.model),
+            "messages": adapted_messages,
+            "max_tokens": max_tokens,
+        }
+        if system_parts:
+            adapted["system"] = "\n\n".join(system_parts)
+        if payload.get("temperature") is not None:
+            adapted["temperature"] = payload["temperature"]
+        return adapted
 
     def _timeout(self) -> httpx.Timeout:
         timeout_sec = max(float(self.config.timeout_sec or 45.0), 5.0)
@@ -331,6 +375,20 @@ class FactorLLMProvider:
 
     @staticmethod
     def _extract_content(payload: dict[str, Any]) -> str:
+        anthropic_content = payload.get("content")
+        if isinstance(anthropic_content, list):
+            parts = []
+            for item in anthropic_content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if text:
+                        parts.append(str(text))
+                elif item not in (None, ""):
+                    parts.append(str(item))
+            if parts:
+                return "\n".join(parts)
+        if isinstance(anthropic_content, str) and anthropic_content:
+            return anthropic_content
         choices = list(payload.get("choices") or [])
         if choices:
             message = dict((choices[0] or {}).get("message") or {})
@@ -554,10 +612,11 @@ class FactorLLMProvider:
         request_payload: dict[str, Any],
         request_kind: str,
     ) -> tuple[Any, Any, str, str]:
+        actual_payload = self._adapt_payload_for_endpoint(request_payload)
         response = await self._client.post(
             self._endpoint(),
             headers=headers,
-            json=request_payload,
+            json=actual_payload,
             timeout=self._timeout(),
         )
         response.raise_for_status()

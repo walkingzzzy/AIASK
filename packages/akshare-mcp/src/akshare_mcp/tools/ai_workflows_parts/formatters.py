@@ -6,7 +6,7 @@
         meta=build_tool_meta("prediction_diagnosis_workflow"),
     )
     async def prediction_diagnosis_workflow(
-        probabilities: list[float],
+        probabilities: list[float] | None = None,
         labels: list[Any] | None = None,
         outcomes: list[Any] | None = None,
         raw_scores: list[float] | None = None,
@@ -37,6 +37,23 @@
             dataset_id=dataset_id,
         )
         try:
+            # F-N43-1 fix (诊断报告 §N43): 空数组/缺失 probabilities 返回标准化 PARAM_ERROR，
+            # 而非暴露裸 Pydantic 'Field required' 校验栈（签名已改为 Optional 让请求进入业务层）。
+            if not probabilities:
+                return fail_with_meta(
+                    "probabilities is required and must be a non-empty array of numbers in [0, 1]",
+                    tool_name="prediction_diagnosis_workflow",
+                    action=workflow_method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    error_code="PARAM_ERROR",
+                    extra_meta={
+                        "quality": {"status": "failed", "workflow": "prediction_diagnosis_workflow"},
+                        "side_effect": {"level": "read_only", "target": "prediction_inputs", "confirmation_required": False},
+                        "lineage": {"dataset_id": dataset_id, "run_id": run_id},
+                        "degraded": True,
+                    },
+                )
             probs = [float(item) for item in list(probabilities or [])]
             if any((value < 0.0 or value > 1.0) for value in probs):
                 return fail_with_meta(
@@ -97,7 +114,24 @@
 
             calibration_result = None
             report_method = workflow_method
-            if workflow_method in {"platt", "sigmoid", "calibrated_sigmoid", "calibrated_isotonic", "isotonic", "auto"}:
+            # F-N43-2 fix (诊断报告 §N43): 当用户显式传入 platt_a/platt_b 且 method='platt' 时，
+            # 应用「固定系数」Platt 缩放 sigmoid(a*x+b)，而非让 builtin 自拟 sigmoid 无视用户系数。
+            # 历史问题: method=platt 下传任意 platt_a/platt_b 输出逐位相同 → 参数为 no-op。
+            user_supplied_platt = (
+                abs(float(platt_a) - 1.0) > 1e-9 or abs(float(platt_b) - 0.0) > 1e-9
+            )
+            if workflow_method == "platt" and user_supplied_platt:
+                score_basis = (
+                    raw_scores
+                    if raw_scores and len(raw_scores) == len(probs)
+                    else probs
+                )
+                calibrated = [
+                    platt_scale(float(score_basis[idx]), a=float(platt_a), b=float(platt_b))
+                    for idx in range(len(probs))
+                ]
+                report_method = "platt_fixed_coefficients"
+            elif workflow_method in {"platt", "sigmoid", "calibrated_sigmoid", "calibrated_isotonic", "isotonic", "auto"}:
                 target_method = (
                     "sigmoid"
                     if workflow_method in {"platt", "sigmoid", "calibrated_sigmoid", "auto"}
@@ -274,6 +308,26 @@
             import json as _json
             from ..services.adapters.data_validation_adapter import get_data_validation_adapter
 
+            # F-N43-5 fix (诊断报告 §N43): 空 records 跨工具语义统一。
+            # 历史问题: data_quality_workflow(records=[]) → success=true/accepted_ratio=1.0
+            # （真空通过，误导），而 data_validation(records=[]) → 干净 PARAM_ERROR。
+            # 修复: 与 data_validation 对齐，空 records 返回标准化 PARAM_ERROR（拒绝而非真空通过）。
+            if not rows:
+                return fail_with_meta(
+                    "records is required and must be a non-empty array of objects",
+                    tool_name="data_quality_workflow",
+                    action="validate",
+                    started_at=started_at,
+                    source_chain=chain,
+                    error_code="PARAM_ERROR",
+                    extra_meta={
+                        "quality": {"status": "failed", "workflow": "data_quality_workflow", "reason": "empty_records"},
+                        "side_effect": {"level": "read_only", "target": dataset_id or "dataset", "confirmation_required": False},
+                        "lineage": lineage_ctx.to_meta(),
+                        "degraded": True,
+                    },
+                )
+
             for idx, row in enumerate(rows):
                 missing = infer_missing_fields(row, required)
                 if missing:
@@ -288,6 +342,9 @@
                 rows,
                 {
                     "required_fields": required,
+                    # F-N43-4 fix: 让校验子系统也逐行校验 required 字段的内容非空，
+                    # 与上面字段级 accepted_ratio 保持一致，消除「0.6 失败 vs 1.0 通过」互斥。
+                    "non_null_fields": required,
                     "min_record_count": 1 if rows else 0,
                     "min_quality_threshold": minimum_quality_threshold,
                 },

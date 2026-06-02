@@ -1,0 +1,45 @@
+{
+  "scenario_id": "N04",
+  "title": "技术分析全指标 + K线形态 + 因子画像",
+  "ran_at": "2026-05-30T08:49:13+08:00",
+  "tool_call_count": 32,
+  "tool_status_rows": [
+    {"tool": "get_available_patterns", "verdict": "Pass", "extra": "8 形态(doji/hammer/engulfing/morning_star等) 含 bullish/reliability"},
+    {"tool": "calculate_technical_indicators(600519 全7指标 limit250)", "verdict": "Pass", "extra": "MA/EMA/RSI/MACD/KDJ/BOLL/ATR 全算出, RSI=45.22 hold, MACD warmup=33"},
+    {"tool": "calculate_technical_indicators(600519 RSI limit20)", "verdict": "Degraded", "extra": "RSI=39.91 (vs limit250=45.22, 窗口不同导致差异, 合理)"},
+    {"tool": "calculate_technical_indicators(600519 RSI limit10)", "verdict": "Fail-schema", "extra": "⚠ RSI=0 signal=buy oversold=true — warmup不足却输出0并给出'买入'信号 (F-N04-1)"},
+    {"tool": "calculate_technical_indicators(000001/000651/300750 多指标)", "verdict": "Pass", "extra": "跨标的指标正常, 000001 RSI=37.72, 300750 RSI=44.4"},
+    {"tool": "check_candlestick_patterns(600519/000651/000001/002594 多limit)", "verdict": "Pass", "extra": "均 success, patterns=[] (近期无形态), kline_count正确"},
+    {"tool": "check_candlestick_patterns(000651 weekly)", "verdict": "Pass", "extra": "周线形态检测正常 patterns=[]"},
+    {"tool": "technical_analysis_manager(list_indicators)", "verdict": "Pass", "extra": "7指标+中文描述"},
+    {"tool": "technical_analysis_manager(calculate 600519)", "verdict": "Pass", "extra": "★含 summary: trend=down/suggestion=sell/signals=[MA20下方,RSI正常,MACD负] — 优秀的可读决策摘要"},
+    {"tool": "technical_analysis_manager(calculate 000001 KDJ/BOLL/ATR)", "verdict": "Pass", "extra": "summary suggestion=wait, ATR/Close=1.28% 波动低"},
+    {"tool": "technical_analysis_manager(check_patterns 000858)", "verdict": "Pass", "extra": "patterns=[] data_timestamp=2026-05-20"},
+    {"tool": "get_factor_profile(600519/000001/000651 多因子)", "verdict": "Pass", "extra": "★含 percentile/trend/zscore/industry_rank/historical_oversold_recovery 完整画像, 600519 RSI超卖10d命中率0.9231"}
+  ],
+  "summary": {"Pass": 26, "Degraded": 5, "Fail-schema": 1},
+  "findings": [
+    {
+      "id": "F-N04-1",
+      "severity": "high",
+      "title": "calculate_technical_indicators 在 K线数<warmup 时输出 RSI=0 并给出 oversold/buy 信号",
+      "evidence": "calculate_technical_indicators(600519, ['RSI'], limit=10) → {value:0, signal:'buy', overbought:false, oversold:true}。RSI 需≥14根, limit=10 数据不足却返回 0 并判定超卖买入, 无 warmup 不足告警。",
+      "impact": "AI 若用小 limit 调 RSI 会收到虚假'超卖买入'信号(value=0)。指标计算缺少最小样本保护, 可能直接误导交易决策。这是本场景唯一 schema/逻辑级缺陷。",
+      "type": "indicator_warmup_guard"
+    },
+    {
+      "id": "F-N04-2",
+      "severity": "low",
+      "title": "RSI 随 limit 变化(45.22@250 vs 39.91@20 vs 0@10)",
+      "evidence": "同一标的同一指标因 limit 不同结果不同。250/20 属正常窗口差异; 10 触发 F-N04-1。",
+      "impact": "提醒 AI 调技术指标应使用文档默认 limit=250 以保证 warmup 充分。",
+      "type": "parameter_sensitivity"
+    }
+  ],
+  "positive_notes": [
+    "technical_analysis_manager.calculate 自带 summary(trend/momentum/volatility/signals/suggestion) — 对 AI 极友好的可读决策摘要",
+    "get_factor_profile 提供历史超卖恢复命中率(600519 RSI 10d hit_rate=0.9231 reliable=true) — 高质量条件概率证据",
+    "因子画像含 industry_rank/market_percentile/rolling_zscore 多维定位"
+  ],
+  "verdict": "pass_with_high_finding"
+}

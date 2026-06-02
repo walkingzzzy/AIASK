@@ -217,6 +217,7 @@ _INFRA_STAGES: frozenset[str] = frozenset({
 
 _LLM_TIMEOUT_RATIO_DEFAULT = 0.30
 _LLM_NO_SPEC_RATIO_DEFAULT = 0.50
+_LLM_PROVIDER_ERROR_RATIO_DEFAULT = 0.30
 
 _FACTOR_RESEARCH_INFRA_SUMMARY_KEYS = (
     "factor_research_db_error_count",
@@ -246,8 +247,6 @@ _LLM_PROVIDER_ERROR_KEYS = {
     "model_provider_error",
     "upstream_error",
     "api_error",
-    "provider_cooldown_skip",
-    "cooldown_skip",
 }
 _LLM_PROVIDER_ERROR_KEY_MARKERS = (
     "provider_http",
@@ -258,15 +257,12 @@ _LLM_PROVIDER_ERROR_KEY_MARKERS = (
     "gateway_error",
     "provider_error",
     "upstream_error",
-    "provider_cooldown",
-    "cooldown_skip",
 )
 _LLM_PROVIDER_ERROR_SUMMARY_KEYS = (
     "provider_http_error_count",
     "provider_http_5xx_count",
     "provider_5xx_error_count",
     "provider_error_count",
-    "provider_cooldown_skip_count",
     "llm_provider_error_count",
 )
 
@@ -309,6 +305,21 @@ def _resolve_llm_no_spec_partial_threshold() -> float:
         return _LLM_NO_SPEC_RATIO_DEFAULT
     if v <= 0.0 or v >= 1.0:
         return _LLM_NO_SPEC_RATIO_DEFAULT
+    return v
+
+
+def _resolve_llm_provider_error_partial_threshold() -> float:
+    """Resolve the provider-error ratio threshold for `partial_llm`."""
+    raw = os.getenv(
+        "STRATEGY_FACTORY_LLM_PROVIDER_ERROR_PARTIAL_THRESHOLD",
+        str(_LLM_PROVIDER_ERROR_RATIO_DEFAULT),
+    )
+    try:
+        v = float(raw)
+    except Exception:
+        return _LLM_PROVIDER_ERROR_RATIO_DEFAULT
+    if v <= 0.0 or v >= 1.0:
+        return _LLM_PROVIDER_ERROR_RATIO_DEFAULT
     return v
 
 
@@ -439,11 +450,44 @@ def _is_llm_provider_error_key(key: Any) -> bool:
 def _llm_provider_error_count(summary: Mapping[str, Any]) -> int:
     overlay = dict(summary or {})
     count = sum(_safe_count(overlay.get(key)) for key in _LLM_PROVIDER_ERROR_SUMMARY_KEYS)
-    for bucket_name in ("llm_status_counts", "external_llm_status_counts", "pipeline_fallback_counts"):
+    for bucket_name in ("llm_status_counts", "external_llm_status_counts"):
         for key, value in dict(overlay.get(bucket_name) or {}).items():
             if _is_llm_provider_error_key(key):
                 count += _safe_count(value)
+    # pipeline_fallback_counts.cooldown_skip 表示因 provider 近期过载/超时进入冷却而跳过请求，
+    # 属 provider 侧降级，应计入 provider 错误；local_fallback_preferred_or_skip /
+    # target_context_blocked 由 _is_llm_provider_error_key 显式排除，不计入。
+    for key, value in dict(overlay.get("pipeline_fallback_counts") or {}).items():
+        token = str(key or "").strip().lower()
+        if token == "cooldown_skip" or _is_llm_provider_error_key(key):
+            count += _safe_count(value)
     return count
+
+
+def _llm_provider_error_ratio(summary: Mapping[str, Any]) -> float:
+    overlay = dict(summary or {})
+    provider_error_count = _llm_provider_error_count(overlay)
+    if provider_error_count <= 0:
+        return 0.0
+
+    autonomy_total = _safe_count(overlay.get("autonomy_task_count"))
+    if autonomy_total > 0:
+        return float(provider_error_count) / float(autonomy_total)
+
+    counts = dict(overlay.get("llm_status_counts") or overlay.get("external_llm_status_counts") or {})
+    total = sum(_safe_count(v) for v in counts.values())
+    if total > 0:
+        return float(provider_error_count) / float(total)
+
+    request_total = max(
+        _safe_count(overlay.get("external_llm_real_request_count")),
+        _safe_count(overlay.get("external_llm_network_request_count")),
+        _safe_count(overlay.get("external_llm_attempt_count")),
+    )
+    if request_total > 0:
+        return float(provider_error_count) / float(request_total)
+
+    return 1.0
 
 
 def _is_llm_degraded(
@@ -451,15 +495,19 @@ def _is_llm_degraded(
     *,
     timeout_threshold: float | None = None,
     no_spec_threshold: float | None = None,
+    provider_error_threshold: float | None = None,
 ) -> bool:
     """Return True if LLM-side metrics for the cycle are degraded enough
     to warrant ``partial_llm`` status (R7.5).
 
-    Two independent conditions are OR-ed:
+    Three independent conditions are OR-ed:
       - timeout-task ratio exceeds ``timeout_threshold``
         (default from STRATEGY_FACTORY_LLM_TIMEOUT_PARTIAL_THRESHOLD, 0.30);
       - "no executable spec" ratio exceeds ``no_spec_threshold``
         (default from STRATEGY_FACTORY_LLM_NO_SPEC_PARTIAL_THRESHOLD, 0.50).
+      - provider-error ratio exceeds ``provider_error_threshold``
+        (default from STRATEGY_FACTORY_LLM_PROVIDER_ERROR_PARTIAL_THRESHOLD,
+        0.30).
     """
     overlay = dict(summary or {})
     eff_timeout_threshold = (
@@ -472,11 +520,24 @@ def _is_llm_degraded(
         if no_spec_threshold is not None
         else _resolve_llm_no_spec_partial_threshold()
     )
+    eff_provider_error_threshold = (
+        float(provider_error_threshold)
+        if provider_error_threshold is not None
+        else _resolve_llm_provider_error_partial_threshold()
+    )
     if _llm_timeout_ratio(overlay) > eff_timeout_threshold:
         return True
     if _llm_no_spec_ratio(overlay) > eff_no_spec_threshold:
         return True
-    if _llm_provider_error_count(overlay) > 0:
+    # Provider-side 错误判定（http 5xx / 网关错误 / cooldown_skip 等）：
+    # - 当存在可靠分母 autonomy_task_count 时，用比例阈值判定（单个错误占比低于阈值不算降级，
+    #   与 strategy-factory cycle-status 契约一致：1/6 provider_error 不升级 partial_llm）；
+    # - 当缺少 autonomy_task_count（如运维诊断仅给 pipeline_fallback_counts / provider 计数）时，
+    #   无法计算有意义的比例，任何 provider 硬错误都判定为降级。
+    autonomy_total = _safe_count(overlay.get("autonomy_task_count"))
+    if autonomy_total <= 0 and _llm_provider_error_count(overlay) > 0:
+        return True
+    if _llm_provider_error_ratio(overlay) > eff_provider_error_threshold:
         return True
     return False
 

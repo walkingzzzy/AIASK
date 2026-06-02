@@ -1207,6 +1207,22 @@ async def handle_create(db, params: dict) -> dict:
     if not name:
         return fail("name is required")
     strategy_type = str(params.get("strategy_type") or params.get("type") or "custom").strip()
+    # F-N42-5 fix (诊断报告 §N42): strategy_type 白名单校验。
+    # 历史问题: strategy_type='totally_fake_strategy_type_zzz' 无校验直接入库，
+    # 下游无执行器时回测/调度可能崩。
+    # 修复: 已知执行器类型 + custom/factor_weighted 放行；未知类型附 warning
+    # （不硬拒绝以兼容自定义因子权重策略，但显式提示下游可能无执行器）。
+    _KNOWN_STRATEGY_TYPES = {
+        "ma_cross", "buy_and_hold", "momentum", "rsi",
+        "volatility_breakout", "event_structure_breakout", "margin_divergence",
+        "custom", "factor_weighted", "factor", "personal",
+    }
+    strategy_type_warning = None
+    if strategy_type.lower() not in _KNOWN_STRATEGY_TYPES:
+        strategy_type_warning = (
+            f"strategy_type='{strategy_type}' 不在已知执行器类型 {sorted(_KNOWN_STRATEGY_TYPES)} 内；"
+            f"该策略可能无可用回测/调度执行器，请确认或改用 custom + factor_weights"
+        )
     sid = f"strat_{int(time.time())}_{uuid4().hex[:8]}"
     tags = list(params.get("tags") or [])
     metadata = dict(dict(params.get("params") or {}).get("metadata") or {})
@@ -1228,15 +1244,63 @@ async def handle_create(db, params: dict) -> dict:
         "backtest_artifact_id": params.get("backtest_artifact_id"),
     }
     result = await db.save_strategy(data)
-    return ok({"strategy_id": sid, "strategy": result})
+    response = {"strategy_id": sid, "strategy": result}
+    if strategy_type_warning:
+        response["strategy_type_warning"] = strategy_type_warning
+    return ok(response)
 
 
 async def handle_publish(db, params: dict) -> dict:
     sid = str(params.get("strategy_id") or params.get("id") or "").strip()
     if not sid:
         return fail("strategy_id is required")
-    await update_status(db, sid, "listed", actor_id="strategy_manager", reason="manual_publish")
-    return ok({"strategy_id": sid, "status": "listed"})
+
+    # F-N42-1 fix (诊断报告 §N42): publish 必须经过 promotion_gate，
+    # 不能把零证据 draft（raw_signal_count=0 / quality_passed=false / promotion_ready=false /
+    # blocker_count>0）直接上架 listed。
+    # 修复: 发布前评估孵化总览，未达标则拒绝并回显 blockers；
+    # 显式 force=true（且带 force_reason）方可绕过（审计留痕）。
+    strategy = await db.get_strategy(sid) if hasattr(db, "get_strategy") else None
+    if not strategy:
+        return fail(f"strategy not found: {sid}")
+
+    force = parse_bool(params.get("force")) if "force" in params else False
+    overview = await _resolve_strategy_incubation_overview(db, strategy) or {}
+    promotion_ready = bool(overview.get("promotion_ready"))
+    quality_passed = overview.get("quality_passed")
+    blockers = overview.get("blockers") or []
+    if isinstance(blockers, dict):
+        blockers = blockers.get("items") or list(blockers.values())
+    blocker_list = [str(b) for b in (blockers or [])]
+
+    gate_failed = (not promotion_ready) or (quality_passed is False) or bool(blocker_list)
+
+    if gate_failed and not force:
+        return fail(
+            "publish 被 promotion_gate 拦截：策略未达发布标准"
+            f"（promotion_ready={promotion_ready}, quality_passed={quality_passed}, "
+            f"blockers={blocker_list[:10]}）。"
+            "请先通过孵化与质量门，或在确认风险后显式传 force=true + force_reason 强制发布。",
+        )
+
+    reason = "manual_publish"
+    if gate_failed and force:
+        force_reason = str(params.get("force_reason") or "").strip()
+        reason = f"manual_publish_forced:{force_reason or 'no_reason_given'}"
+
+    await update_status(db, sid, "listed", actor_id="strategy_manager", reason=reason)
+    result = {
+        "strategy_id": sid,
+        "status": "listed",
+        # F-N42-3: publish 不可逆提示——上架后 owner 只能 archive，不能 delete。
+        "irreversible_note": "策略一旦上架(listed)即不可删除，owner 后续只能 archive(归档)；如需彻底移除请在 publish 前确认",
+    }
+    if gate_failed and force:
+        result["gate_bypassed"] = True
+        result["gate_warnings"] = blocker_list[:10]
+        result["promotion_ready"] = promotion_ready
+        result["quality_passed"] = quality_passed
+    return ok(result)
 
 
 async def handle_archive(db, params: dict) -> dict:
@@ -1830,7 +1894,7 @@ async def handle_paper_session_get_or_create(db, params: dict) -> dict:
 
 
 async def handle_rank(db, params: dict) -> dict:
-    from ...services.ranking import rrf_rank
+    from ...services.ranking import rrf_rank, DEFAULT_RANK_KEYS
 
     status = _resolve_strategy_status_filter(params.get("status"), default="visible")
     strategy_type = params.get("strategy_type") or params.get("type")
@@ -1838,10 +1902,27 @@ async def handle_rank(db, params: dict) -> dict:
     offset = max(int(params.get("offset", 0)), 0)
     rank_keys = params.get("rank_keys")
 
+    # F-N22-3 fix (诊断报告 §N42 rank): sort_by 枚举校验。
+    # 历史问题: sort_by=nonexistent_metric_zzz 未报错，静默 fallback 到 rrf_score。
+    # 修复: 非法 sort_by 显式回显告警（不静默），合法单指标作为 rank_keys 使用。
+    sort_by = str(params.get("sort_by") or "").strip()
+    sort_by_warning = None
+    _valid_sort_keys = set(DEFAULT_RANK_KEYS) | {"rank", "rrf_score"}
+    if sort_by and sort_by not in _valid_sort_keys:
+        sort_by_warning = (
+            f"sort_by='{sort_by}' 非法（支持 {sorted(_valid_sort_keys)}），"
+            f"已回退默认 RRF 多指标排序"
+        )
+    elif sort_by and sort_by in set(DEFAULT_RANK_KEYS) and not rank_keys:
+        rank_keys = [sort_by]
+
     fetch_limit = limit + offset
     strategies = await db.list_strategies(status, strategy_type, fetch_limit, 0)
     if not strategies:
-        return ok({"strategies": [], "count": 0, "offset": offset, "limit": limit})
+        result = {"strategies": [], "count": 0, "offset": offset, "limit": limit}
+        if sort_by_warning:
+            result["sort_by_warning"] = sort_by_warning
+        return ok(result)
 
     semaphore = asyncio.Semaphore(8)
     enriched = await asyncio.gather(*[
@@ -1851,7 +1932,10 @@ async def handle_rank(db, params: dict) -> dict:
 
     ranked = rrf_rank(enriched, rank_keys)
     page = ranked[offset:offset + limit]
-    return ok({"strategies": page, "count": len(ranked), "offset": offset, "limit": limit})
+    result = {"strategies": page, "count": len(ranked), "offset": offset, "limit": limit}
+    if sort_by_warning:
+        result["sort_by_warning"] = sort_by_warning
+    return ok(result)
 
 
 async def handle_ai_optimize_personal_strategy(db, params: dict) -> dict:

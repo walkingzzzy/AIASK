@@ -37,6 +37,8 @@ REQUIRED_REPOSITORY_METHODS: tuple[str, ...] = (
     "get_latest_strategy_factory_run",
     "save_strategy_factory_run_artifact",
     "list_strategy_factory_run_artifacts",
+    "save_scheduler_state",
+    "load_scheduler_state",
     "create_strategy_factory_dispatch",
     "update_strategy_factory_dispatch",
     "get_strategy_factory_dispatch",
@@ -119,6 +121,10 @@ class StrategyFactoryRepository(Protocol):
     async def save_strategy_factory_run_artifact(self, payload: Mapping[str, Any]) -> Any: ...
 
     async def list_strategy_factory_run_artifacts(self, run_id: str) -> list[Mapping[str, Any]]: ...
+
+    async def save_scheduler_state(self, payload: Mapping[str, Any]) -> Any: ...
+
+    async def load_scheduler_state(self, state_key: str = "strategy_factory_scheduler") -> Mapping[str, Any]: ...
 
     async def create_strategy_factory_dispatch(self, payload: Mapping[str, Any]) -> Any: ...
 

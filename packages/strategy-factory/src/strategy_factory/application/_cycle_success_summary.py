@@ -89,35 +89,14 @@ def _build_llm_status_counts(autonomy_summary: dict[str, Any]) -> dict[str, int]
         or autonomy_summary.get("external_llm_status_counts")
         or {}
     )
-    fallback_counts = dict(autonomy_summary.get("pipeline_fallback_counts") or {})
     request_status_counts = dict(autonomy_summary.get("external_llm_request_status_counts") or {})
-
-    for reason, count in fallback_counts.items():
-        token = str(reason or "").strip().lower()
-        if token in {"target_context_blocked", "local_fallback_preferred_or_skip"}:
-            continue
-        if token == "cooldown_skip":
-            _set_count_at_least(counts, "provider_cooldown_skip", count)
-        elif "no_executable" in token or "non_executable" in token:
-            _set_count_at_least(counts, "non_executable", count)
-        elif "empty_output" in token or "returned_empty" in token:
-            _set_count_at_least(counts, "returned_empty", count)
-        elif "schema_invalid" in token or "invalid_output" in token:
-            _set_count_at_least(counts, "schema_invalid", count)
-        elif "502" in token or "bad gateway" in token:
-            _set_count_at_least(counts, "provider_http_502", count)
-        elif "5xx" in token or "server error" in token:
-            _set_count_at_least(counts, "provider_http_5xx", count)
 
     _set_count_at_least(counts, "provider_cooldown_skip", request_status_counts.get("cooldown_skip"))
     error_text = " ".join(
         str(autonomy_summary.get(key) or "")
         for key in ("external_llm_last_error_type", "external_llm_last_error")
     ).lower()
-    failed_count = max(
-        _safe_int(request_status_counts.get("failed")),
-        _safe_int(fallback_counts.get("failed")),
-    )
+    failed_count = _safe_int(request_status_counts.get("failed"))
     if failed_count > 0:
         if "502" in error_text or "bad gateway" in error_text:
             _set_count_at_least(counts, "provider_http_502", failed_count)

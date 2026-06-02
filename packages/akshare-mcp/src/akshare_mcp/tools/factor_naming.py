@@ -22,17 +22,25 @@ _CROSS_ACTION_ALIASES: dict[str, str] = {
     "momentum_20d": "momentum",
     "mom_20d": "momentum",
     "momentum_30d": "mom_60d",  # fallback 到最近的预设
-    # _ttm 后缀(calculate_factor 要求)兼容
-    "roe_ttm": "roe",
-    "pe_ttm": "pe_ratio",
-    "pb_ttm": "pb_ratio",
-    "ps_ttm": "ps_ratio",
-    "eps_ttm": "eps",
+    # 基本面别名:统一映射到 SUPPORTED_FACTORS 中真实存在的 canonical
+    # (canonical 带 _ttm/_mrq 后缀;此处把无后缀/别名变体都指向真实 canonical)
+    "roe": "roe_ttm",
+    "roa": "roa_ttm",
+    "pe": "pe_ttm",
+    "pe_ratio": "pe_ttm",
+    "pb": "pb_mrq",
+    "pb_ratio": "pb_mrq",
+    "pb_ttm": "pb_mrq",
+    "ps": "ps_ttm",
+    "ps_ratio": "ps_ttm",
     # 全大写/混合大小写 已通过 .lower() 处理
-    # 别名:rsi_14 vs rsi
-    "rsi_14": "rsi",
-    "rsi_6": "rsi",  # 不同周期映射到同一 canonical
-    "rsi_24": "rsi",
+    # 别名:rsi 系列。注意 rsi_14 / rsi_6 本身是 SUPPORTED_FACTORS 中的 canonical,
+    # 不能再被映射到非 canonical 的 "rsi"(FIX-3 遗留回归修复):
+    #   - "rsi"(裸名,非 canonical) -> rsi_14
+    #   - rsi_14 / rsi_6 由 _normalize_factor_name 解析为自身,无需在此映射
+    #   - rsi_24(无对应 canonical) 就近映射到 rsi_14
+    "rsi": "rsi_14",
+    "rsi_24": "rsi_14",
 }
 
 

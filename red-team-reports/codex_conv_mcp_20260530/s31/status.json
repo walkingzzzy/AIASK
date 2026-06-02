@@ -1,0 +1,75 @@
+{
+  "scenario_id": "N31",
+  "title": "涨停板与每日报告 (limit_up_manager / get_limit_up_stocks / get_limit_up_statistics / generate_daily_report)",
+  "ran_at": "2026-05-30T16:53:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易+离线; Tushare(stk_limit/daily)与akshare.zt_pool均不可用; 仅 tqcenter.tdx_stock_extra 可提供05-20/05-21/05-27历史涨停; 05-29/05-30/05-19等多数日期全空; daily_report 指数取数失败(close=0)",
+  "tool_status_rows": [
+    {"tool": "limit_up_manager(help)", "verdict": "Pass", "extra": "★supported_actions: list/statistics/help; 注明 date 支持 YYYYMMDD 或 YYYY-MM-DD"},
+    {"tool": "get_limit_up_stocks(05-20/05-21) 真实涨停", "verdict": "Pass", "extra": "★05-20 兆易创新(+10.0%,半导体,真名)/05-21 京东方A(+10.09%,光学光电); changePercent/limitUpPrice/continuousDays/turnoverRate/marketCap/industry 完整; tqcenter.tdx 源"},
+    {"tool": "get_limit_up_stocks(05-27) 错纳非涨停股", "verdict": "Fail-schema", "extra": "⚠⚠ 05-27 列出 000056(+5.04%)/000509(+9.92%) 标为涨停, 但5.04%/9.92%均未达主板10%涨停线; 且 000056 continuousDays=3 与今日仅+5.04% 矛盾; name/industry 全空; 涨停判定阈值有误纳入非涨停股 (F-N31-1)"},
+    {"tool": "get_limit_up_stocks(05-29/05-30/05-19) 离线空", "verdict": "Degraded", "extra": "★Tushare不可用→data=[]+source=none+degraded=true; data_quality.fallback_used=true; 但顶层 success=true(空数据非错误)"},
+    {"tool": "get_limit_up_stocks(2099-01-01) 未来日期", "verdict": "Degraded", "extra": "⚠ 未来日期 2099→success=true+data=[]空(未拒绝未来日期), 与离线空数据无法区分 (F-N31-3)"},
+    {"tool": "get_limit_up_stocks(baddate) 非法日期", "verdict": "Fail-graceful", "extra": "★success=false error='date 无效: baddate' source_chain=[market.helpers] quality_flags=[failed,degraded]"},
+    {"tool": "get_limit_up_statistics(05-20/05-21/05-27)", "verdict": "Pass", "extra": "★与list一致: 05-27 totalLimitUp4(firstBoard2+thirdBoard2)successRate100%; 05-20/05-21各1首板; 连板分级(first/second/third/higher)+失败/跌停/成功率"},
+    {"tool": "get_limit_up_statistics(bad-format-zzz)", "verdict": "Fail-graceful", "extra": "★success=false error='date 无效'"},
+    {"tool": "limit_up_manager(list/statistics) 多日期", "verdict": "Degraded", "extra": "⚠ list 走友好提示路径('暂无涨停板数据(可能为非交易日)')而 statistics 走 tushare 链 degraded; 两 action 对同一空日期处理路径不同(05-26 list友好 vs statistics degraded) (F-N31-4)"},
+    {"tool": "limit_up_manager(list) reason字段错位", "verdict": "Degraded", "extra": "⚠ list(05-20) 兆易创新 reason='半导体'(实际是行业/industry, 误填入'涨停原因'字段); first/last_limit_up_time空; 与 get_limit_up_stocks 的 industry 字段语义重复但放错位 (F-N31-5)"},
+    {"tool": "limit_up_manager(bogus) 非法action", "verdict": "Fail-graceful", "extra": "★success=false error='Unknown action: bogus. Supported: help, list, statistics'"},
+    {"tool": "generate_daily_report(05-29/05-30)", "verdict": "Fail-schema", "extra": "⚠⚠ 指数 close=0/change_pct=0/volume=null(取数失败) 但仍生成报告; highlights 自相矛盾: '市场整体下跌0.00%,情绪偏冷' 与 '上涨家数明显多于下跌,市场赚钱效应好' 并列; close=0仍输出'下跌0.00%'文案 (F-N31-2)"},
+    {"tool": "generate_daily_report quality标注", "verdict": "Degraded", "extra": "★quality_flags=[market_summary_zero_or_null_index_values, market_summary_missing_volume_amount]+degraded=true+fallback_reason 明确; 质量标注规范(对照daily_report是降级标注亮点)"},
+    {"tool": "generate_daily_report hot_sectors", "verdict": "Pass", "extra": "★hot_sectors 真实(电力+3.29/次新+3.17/半导体+3.04)+stock_count; sentiment/outlook/generated_at 完整"}
+  ],
+  "summary": {"Pass": 4, "Degraded": 6, "Fail-graceful": 3, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N31-1",
+      "severity": "high",
+      "title": "get_limit_up_stocks(05-27) 将非涨停股错纳入涨停列表",
+      "evidence": "get_limit_up_stocks(2026-05-27) 返回4只'涨停股', 其中 000056 changePercent=5.04%(主板涨停应~10%, ST应~5%但其非ST)、000509 changePercent=9.92%(未达10%涨停线), 均被标 limitUpPrice=price 且纳入涨停。000056 continuousDays=3 但今日仅+5.04%, 连板天数与涨幅矛盾。对比 05-20/05-21 数据正常(均~10%)。",
+      "impact": "涨停判定逻辑(用 limitUpPrice 比对收盘价)在该日数据上失效, 把+5%/+9.92%的非涨停股当涨停。AI 据此做打板/连板分析会得错误标的。statistics 也据此算出 totalLimitUp=4 虚高。确凿数据/逻辑 bug。",
+      "type": "wrong_limit_up_detection"
+    },
+    {
+      "id": "F-N31-2",
+      "severity": "high",
+      "title": "generate_daily_report 指数全0仍生成报告且 highlights 自相矛盾",
+      "evidence": "generate_daily_report(2026-05-30) market_summary 三大指数 close=0/change_pct=0/volume=null(取数失败), 但仍生成完整报告。highlights 同时包含 '市场整体下跌0.00%，情绪偏冷' 和 '上涨家数明显多于下跌，市场赚钱效应好'(17涨8跌)——'情绪偏冷'与'赚钱效应好'自相矛盾; close=0 仍输出'下跌0.00%'叙述。",
+      "impact": "指数数据缺失(close=0)时报告不应生成市场涨跌叙述, 但仍输出'下跌0.00%/情绪偏冷'误导性文案, 且与'赚钱效应好'矛盾。AI/用户读报告会被矛盾结论误导。亮点是 quality_flags 已标注 zero_index_values, 但 highlights 文案生成未据此降级。逻辑 bug。",
+      "type": "narrative_on_missing_data_and_contradiction"
+    },
+    {
+      "id": "F-N31-4",
+      "severity": "medium",
+      "title": "limit_up_manager list 与 statistics 对空数据处理路径不一致",
+      "evidence": "limit_up_manager(list, 05-26)→友好提示 message='20260526 暂无涨停板数据（可能为非交易日）' degraded=false; limit_up_manager(statistics, 05-26)→走 tushare 链 total_limit_up=0 degraded=true。同一空日期, list 当非交易日友好处理, statistics 当数据降级。",
+      "impact": "两 action 对同一日期给不同语义(非交易日 vs 数据降级), AI 难判断到底是没交易还是数据缺失。建议统一空数据语义。",
+      "type": "inconsistent_empty_handling"
+    },
+    {
+      "id": "F-N31-3",
+      "severity": "low",
+      "title": "get_limit_up_stocks 未来日期不拒绝返回空",
+      "evidence": "get_limit_up_stocks(2099-01-01)→success=true+data=[]空(degraded), 与离线无数据的空返回无法区分。未对明显的未来日期做校验。",
+      "impact": "未来日期与真实空数据混淆, AI 无法区分'查询了不存在的未来'还是'当日无涨停'。建议未来日期显式提示。",
+      "type": "future_date_not_rejected"
+    },
+    {
+      "id": "F-N31-5",
+      "severity": "low",
+      "title": "limit_up_manager(list) reason 字段被错填为行业",
+      "evidence": "limit_up_manager(list, 05-20) 兆易创新 reason='半导体'(应为涨停原因/题材, 实际填入行业名); first_limit_up_time/last_limit_up_time 空。而 get_limit_up_stocks 同股 industry='半导体' 字段正确。",
+      "impact": "reason(涨停原因)字段被行业名占用, AI 读 reason 会误以为涨停题材是'半导体'(实为行业)。字段语义错位。",
+      "type": "wrong_field_mapping"
+    }
+  ],
+  "positive_notes": [
+    "★ tqcenter.tdx 历史涨停数据质量好(05-20兆易创新/05-21京东方A): 真名+行业+changePercent~10%+连板+换手+市值, 真实涨停",
+    "★ statistics 连板分级完整: first/second/third/higherBoard + failedBoard + limitDown + successRate, 05-27 totalLimitUp4 与 list 一致",
+    "★ generate_daily_report 质量标注规范: quality_flags(zero_index/missing_volume)+degraded+fallback_reason 明确指出指数取数失败",
+    "★ 边界优雅: 非法日期(baddate/bad-format-zzz)→'date 无效'报错; 非法action→列出supported; 离线空数据 success=true 不崩溃",
+    "★ daily_report hot_sectors 真实(电力/次新/半导体)+stock_count, 提供板块轮动线索",
+    "★ 日期格式兼容 YYYYMMDD 与 YYYY-MM-DD 双格式"
+  ],
+  "verdict": "pass_with_high_finding"
+}

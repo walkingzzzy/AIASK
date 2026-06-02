@@ -164,6 +164,12 @@ class StrategyFactoryRepositoryAdapter:
     async def list_strategy_factory_run_artifacts(self, run_id: str):
         return await self._call("list_strategy_factory_run_artifacts", run_id)
 
+    async def save_scheduler_state(self, payload: Mapping[str, Any]):
+        return await self._call("save_scheduler_state", payload)
+
+    async def load_scheduler_state(self, state_key: str = "strategy_factory_scheduler"):
+        return await self._call("load_scheduler_state", state_key)
+
     async def create_strategy_factory_dispatch(self, payload: Mapping[str, Any]):
         return await self._call("create_strategy_factory_dispatch", payload)
 

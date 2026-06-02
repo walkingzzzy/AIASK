@@ -37,7 +37,11 @@ async def generate_plan(
     macd_data = _TA.calculate_macd(closes)
     macd_hist = macd_data.get("histogram", [])
     rsi_data = _TA.calculate_rsi(closes)
-    rsi_value = rsi_data.get("value", 50)
+    # F-N04-1: value 可能为 None(warmup 不足)；trade_plan 上游已要求充足K线，
+    # 这里兜底中性值 50，避免 None 进入下游 trigger/hit_rate 计算。
+    rsi_value = rsi_data.get("value")
+    if rsi_value is None:
+        rsi_value = 50.0
     atr_series = _TA.calculate_atr(highs, lows, closes, period=14)
     atr_14 = atr_series[-1] if atr_series and atr_series[-1] > 0 else 0
 

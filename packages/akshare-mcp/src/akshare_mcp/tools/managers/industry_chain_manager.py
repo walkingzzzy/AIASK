@@ -194,7 +194,7 @@ def register_industry_chain_manager(mcp):
                     # 尝试从数据库查找同行业股票
                     async with db.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT code, stock_name FROM stocks WHERE industry LIKE $1 LIMIT 10",
+                            "SELECT stock_code AS code, stock_name FROM stocks WHERE industry LIKE $1 LIMIT 10",
                             f'%{keyword or chain_id}%'
                         )
                         related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]
@@ -241,7 +241,7 @@ def register_industry_chain_manager(mcp):
                 # 获取股票所属行业
                 async with db.acquire() as conn:
                     stock_info = await conn.fetchrow(
-                        "SELECT stock_name, industry FROM stocks WHERE code = $1",
+                        "SELECT stock_name, industry FROM stocks WHERE stock_code = $1",
                         code
                     )
                 
@@ -257,7 +257,7 @@ def register_industry_chain_manager(mcp):
                 # 查找同行业股票
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT code, stock_name FROM stocks WHERE industry = $1 AND code != $2 LIMIT 20",
+                        "SELECT stock_code AS code, stock_name FROM stocks WHERE industry = $1 AND stock_code != $2 LIMIT 20",
                         industry, code
                     )
                     related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]

@@ -205,11 +205,11 @@ _FACTOR_MIN_HISTORY: Dict[str, int] = {
     "atr_20": 21,
     "bollinger_width": 20,
     "downside_vol": 21,
-    "volume_ratio": 20,
+    "volume_ratio": 21,
     "obv_slope": 20,
     "vwap_deviation": 20,
     "turnover_5d": 20,
-    "turnover_20d": 20,
+    "turnover_20d": 21,
 }
 
 
@@ -806,13 +806,15 @@ def _calculate_factor_value(
 
     # ── Volume-based (simplified, use closes as proxy) ──
     if factor_name == "volume_ratio":
-        if len(closes) < 20:
+        # FIX-7: 访问 closes[i-1]，最旧的 i=-20 需要 closes[-21]，故需 21 根
+        if len(closes) < 21:
             return None
         vol5 = sum(abs(closes[i] - closes[i - 1]) for i in range(-5, 0)) / 5
         vol20 = sum(abs(closes[i] - closes[i - 1]) for i in range(-20, 0)) / 20
         return float(vol5 / vol20) if vol20 > 0 else None
 
     if factor_name == "obv_slope":
+        # FIX-7: 循环内访问 closes[i-1]，i 从 -19 起最旧需 closes[-20]，需 20 根（含 i-1）
         if len(closes) < 20:
             return None
         obv = 0.0
@@ -835,9 +837,10 @@ def _calculate_factor_value(
         return float((closes[-1] - vwap) / vwap) if vwap > 0 else None
 
     if factor_name in ("turnover_5d", "turnover_20d"):
-        if len(closes) < 20:
-            return None
         p = 5 if factor_name == "turnover_5d" else 20
+        # FIX-7: 访问 closes[i-1]，最旧的 i=-p 需要 closes[-(p+1)]，故需 p+1 根
+        if len(closes) < p + 1:
+            return None
         changes = [abs(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(-p, 0) if closes[i - 1] > 0]
         return float(sum(changes) / len(changes)) if changes else None
 

@@ -1,0 +1,54 @@
+{
+  "scenario_id": "N08",
+  "title": "DCF 情景与敏感性 + 蒙特卡洛分布 + 历史估值 + 参数边界",
+  "ran_at": "2026-05-30T08:55:43+08:00",
+  "tool_call_count": 31,
+  "tool_status_rows": [
+    {"tool": "dcf_valuation(600519 enable_distribution=500样本)", "verdict": "Pass", "extra": "★valuation_interval: mean4315亿/p10-p90/std/spread_ratio0.72/spread_risk=wide, 蒙特卡洛完整"},
+    {"tool": "dcf_valuation(600519 g=0.15 terminal=0.12)", "verdict": "Fail-graceful", "extra": "'discount_rate/WACC 必须大于 terminal_growth_rate' 终值分母保护正确"},
+    {"tool": "dcf_valuation(600519 g=0.5 years=10)", "verdict": "Fail-graceful", "extra": "g=50%>WACC 同样终值分母保护"},
+    {"tool": "dcf_valuation(000001/000651/300750/002594 含beta/rfr自定义)", "verdict": "Pass", "extra": "WACC随beta/rfr重算(000651 beta1.2→wacc8.755%), 数值合理"},
+    {"tool": "scenario_dcf_valuation(300750新能源 distribution=300)", "verdict": "Fail-schema", "extra": "⚠ 蒙特卡洛 Base/Bear intrinsic为负(-2744亿/-4781亿), per_share=-53.25元, p10=-3360亿 (F-N08-1 负估值无护栏)"},
+    {"tool": "scenario_dcf_valuation(002594汽车)", "verdict": "Fail-schema", "extra": "⚠ 三情景全负, per_share=-32.52元 (F-N08-1 同类)"},
+    {"tool": "scenario_dcf_valuation(600519白酒/000651消费 多概率)", "verdict": "Pass", "extra": "茅台per_share=240.7元(53.9B营收)/929.5元(215B营收), 概率权重正确"},
+    {"tool": "ddm_valuation(g>=r 边界)", "verdict": "Fail-graceful", "extra": "'增长率必须小于要求回报率' Gordon模型护栏正确"},
+    {"tool": "ddm_valuation(ZZZ888非法)", "verdict": "Fail-graceful", "extra": "代码格式校验"},
+    {"tool": "get_historical_valuation(000001/600036/000858/000651/002594)", "verdict": "Degraded", "extra": "⚠ 000001 05-26 price=4115.5(上证指数点位污染!) pe/pb=null, §2.5复现 (F-N08-2)"},
+    {"tool": "list_industry_templates / get_valuation_metrics(600519)", "verdict": "Pass", "extra": "回归确认一致"}
+  ],
+  "summary": {"Pass": 19, "Degraded": 6, "Fail-graceful": 4, "Fail-schema": 2},
+  "findings": [
+    {
+      "id": "F-N08-1",
+      "severity": "high",
+      "title": "scenario_dcf_valuation 蒙特卡洛/低利润率情景产生负内在价值与负每股, 无合理性护栏",
+      "evidence": "scenario_dcf(300750,新能源,distribution=300) → Base intrinsic=-2744亿, per_share=-53.25元, 分布p10=-3360亿 min=-1.9万亿; scenario_dcf(002594,汽车) → 三情景全负 per_share=-32.52元。负利润率×高capex(新能源capex_ratio15%/汽车10%)导致FCF为负, 终值公式放大成巨额负值, 但工具照常 success=true 输出负每股估值。",
+      "impact": "AI 拿到'每股内在价值-53元'这种数学上无意义的结果(股价不可能为负)却无任何 quality_flag 警示。蒙特卡洛 std 高达3282亿(spread_risk=extreme)时仍输出点估计。缺少'内在价值<=0 应转为告警/不可估'的护栏。",
+      "type": "calculation_sanity_guard"
+    },
+    {
+      "id": "F-N08-2",
+      "severity": "high",
+      "title": "get_historical_valuation(000001) 混入上证指数点位 4115.5 (§2.5 污染数据复现)",
+      "evidence": "get_historical_valuation(000001,20d) 中 2026-05-26 记录 price=4115.5, pe_ratio=null, pb_ratio=null, market_cap=null; 而相邻日 000001(平安银行)价格均为10.6-10.9。4115.5 是上证指数点位, 被错误写入平安银行(000001)历史。data_quality completeness=0.9318 标注了3个missing_cell但未识别该污染值。",
+      "impact": "000001 个股/指数代码歧义导致指数点位污染个股历史库。复现 v2 §2.5 已知问题。AI 若用此历史算波动率/均值会被异常值4115.5严重扭曲(虽pe/pb为null但price字段被污染)。",
+      "type": "data_contamination_persisted"
+    },
+    {
+      "id": "F-N08-3",
+      "severity": "low",
+      "title": "scenario_dcf 蒙特卡洛 spread_risk=extreme 但仍给点估计无置信降级",
+      "evidence": "300750 weighted_valuation_interval spread_ratio=2.06 spread_risk=extreme, std远大于mean, 但仍输出 weighted_intrinsic_value 单点。",
+      "impact": "极端离散时点估计无意义, 应提示不可靠。已有spread_risk标注属半护栏。",
+      "type": "uncertainty_communication"
+    }
+  ],
+  "positive_notes": [
+    "DCF 终值分母保护正确(WACC<=terminal_growth 时 Fail-graceful)",
+    "DDM Gordon 模型 g>=r 保护正确",
+    "dcf 蒙特卡洛 valuation_interval 提供 p10/p50/p90/std/spread_risk 完整不确定性度量",
+    "WACC 随 beta/risk_free_rate/market_risk_premium 正确重算",
+    "历史估值 data_quality 含去重(raw→dedup)与 completeness_ratio"
+  ],
+  "verdict": "pass_with_high_findings"
+}

@@ -8,6 +8,7 @@ import logging
 from typing import Any, Optional
 from uuid import uuid4
 
+from .._runtime_toggles import diagnostic_observation_final_status
 from ..utils import _update_strategy_status as _local_update_strategy_status
 from ...infrastructure.mcp_services import build_strategy_vector_profile
 
@@ -206,6 +207,8 @@ class LifecycleTransitionResult:
                     "diagnostic_account_id",
                     "diagnostic_lane_ready",
                     "diagnostic_account_status",
+                    "diagnostic_fingerprint",
+                    "diagnostic_guard",
                     "diagnostic_reason",
                     "diagnostic_ttl_days",
                     "admission_layer",
@@ -499,12 +502,17 @@ class StrategyLifecycleCoordinator:
         gate_passed = _as_bool(request.gate.get("passed"))
         any_step_failed = False
         if not gate_passed and result.submission_lane == "diagnostic_observation":
-            result.final_status = "submitted"
+            result.final_status = (
+                _string(request.submission_action.get("final_status"))
+                or diagnostic_observation_final_status()
+            )
             diagnostic_reason = (
                 _string(request.submission_action.get("diagnostic_reason"))
                 or _string(request.submission_action.get("diagnostic_reason_code"))
                 or "diagnostic_observation_gate3_failed"
             )
+            diagnostic_fingerprint = _string(request.submission_action.get("diagnostic_fingerprint"))
+            diagnostic_guard = dict(request.submission_action.get("diagnostic_guard") or {})
             trace_context.update(
                 {
                     "admission_layer": "diagnostic",
@@ -514,6 +522,8 @@ class StrategyLifecycleCoordinator:
                         _string(request.submission_action.get("diagnostic_reason_code"))
                         or diagnostic_reason
                     ),
+                    "diagnostic_fingerprint": diagnostic_fingerprint or None,
+                    "diagnostic_guard": diagnostic_guard,
                     "diagnostic_ttl_days": request.submission_action.get("diagnostic_ttl_days"),
                     "source_lane": "diagnostic_observation",
                 }
@@ -521,7 +531,7 @@ class StrategyLifecycleCoordinator:
             enriched_data["_closure_trace"] = trace_context
             step, _ = await self._step(
                 "status_transition",
-                _status_update("submitted", "diagnostic_observation_gate3_failed"),
+                _status_update(result.final_status, "diagnostic_observation_gate3_failed"),
             )
             any_step_failed = step.status != "success"
             result.steps.append(step)
@@ -531,11 +541,13 @@ class StrategyLifecycleCoordinator:
                     db,
                     {
                         **enriched_data,
-                        "status": "submitted",
+                        "status": result.final_status,
                         "admission_layer": "diagnostic",
                         "diagnostic_observation": True,
                         "diagnostic_reason": diagnostic_reason,
                         "diagnostic_reason_code": trace_context.get("diagnostic_reason_code"),
+                        "diagnostic_fingerprint": trace_context.get("diagnostic_fingerprint"),
+                        "diagnostic_guard": trace_context.get("diagnostic_guard"),
                         "diagnostic_ttl_days": trace_context.get("diagnostic_ttl_days"),
                     },
                     request.snapshot,
@@ -553,6 +565,8 @@ class StrategyLifecycleCoordinator:
                 ),
                 "admission_layer": "diagnostic",
                 "diagnostic_observation": True,
+                "diagnostic_fingerprint": diagnostic_fingerprint or (result.diagnostic_action or {}).get("diagnostic_fingerprint"),
+                "diagnostic_guard": diagnostic_guard or (result.diagnostic_action or {}).get("diagnostic_guard"),
                 "diagnostic_reason": diagnostic_reason,
                 "diagnostic_ttl_days": trace_context.get("diagnostic_ttl_days"),
                 "execution_audit_snapshot_id": (execution_snapshot or {}).get("snapshot_id"),

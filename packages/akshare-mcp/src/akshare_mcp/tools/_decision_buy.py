@@ -28,6 +28,19 @@ async def should_i_buy(
     code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
     if not code:
         return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+    # F-N22-5 fix (诊断报告 §N22): investment_style 枚举校验。
+    # 历史问题: 'bogus_style_zzz' 被静默接受并回退 balanced，无任何告警。
+    _VALID_STYLES = {'aggressive', 'balanced', 'conservative'}
+    _style_warning = None
+    _requested_style = str(investment_style or '').strip().lower()
+    if _requested_style not in _VALID_STYLES:
+        _style_warning = (
+            f"investment_style='{investment_style}' 非法（支持 {sorted(_VALID_STYLES)}），"
+            f"已回退 balanced"
+        )
+        investment_style = 'balanced'
+    else:
+        investment_style = _requested_style
     trace_id = f"should_i_buy:{code}:{int(time.time() * 1000)}"
     evidence_chain = None
     try:
@@ -582,9 +595,33 @@ async def should_i_buy(
             recommendation = 'avoid'
             action_text = '建议回避'
 
+        # F-N22-3 fix (诊断报告 §N22): score→recommendation 映射保持单调。
+        # 历史问题: context_decision 可把 score=60 的 hold 一次性翻到 avoid，
+        # 而 score=45 仍是 hold，出现「高分反而更悲观」的非单调割裂。
+        # 修复: 限定 context 覆盖最多**下调一档**（hold→wait, wait→avoid），
+        # 不允许 hold 直接跳到 avoid；保留 context 的下调能力但维持单调性。
+        _REC_ORDER = {'avoid': 0, 'wait': 1, 'hold': 2, 'buy': 3}
         if context_decision and recommendation in {'hold', 'wait'}:
-            recommendation = context_decision["recommendation"]
-            action_text = context_decision["action_text"]
+            ctx_rec = context_decision["recommendation"]
+            base_level = _REC_ORDER.get(recommendation, 1)
+            ctx_level = _REC_ORDER.get(ctx_rec, base_level)
+            # 仅允许在 [base-1, base+1] 范围内调整，禁止 hold→avoid 的跨级跳变
+            bounded_level = max(base_level - 1, min(base_level + 1, ctx_level))
+            if bounded_level != base_level:
+                bounded_rec = next(
+                    (name for name, lvl in _REC_ORDER.items() if lvl == bounded_level),
+                    recommendation,
+                )
+                recommendation = bounded_rec
+                if bounded_rec == ctx_rec:
+                    action_text = context_decision["action_text"]
+                else:
+                    action_text = {
+                        'avoid': '建议回避',
+                        'wait': '建议观望',
+                        'hold': '可以持有或小仓位试探',
+                        'buy': '建议买入',
+                    }.get(bounded_rec, action_text)
             for item in context_decision["positives"]:
                 if item not in reasons:
                     reasons.append(item)
@@ -705,6 +742,74 @@ async def should_i_buy(
             'historical_positive_rate': historical_positive_rate,
             'method': 'decision_threshold_bucket_backtest_proxy',
             'support_samples': prediction_quality.get('support_samples', 0),
+        }
+
+        # F-N22-1 fix (诊断报告 §N22): decision_probability 失校准修正。
+        # 历史问题: logit(score,confidence,volatility) 产出的 buy_probability 与历史实证胜率
+        # 严重背离（ECE 0.5-0.75），把 hit_rate 50-75% 的标的标为 buy_probability<1%。
+        # 修复: 当 prediction_quality 暴露大 calibration_gap 且样本充足时，
+        # 用历史经验命中率对 buy_probability 做收缩混合（empirical shrinkage），
+        # 并显式标注 calibrated=true + reliability，避免输出明显失真的概率。
+        _ece = prediction_quality.get('ece')
+        _support = int(prediction_quality.get('support_samples') or 0)
+        _calibration_applied = False
+        if (
+            empirical_hit_rate is not None
+            and _ece is not None
+            and _support >= 15
+            and abs(float(_ece)) > 0.15
+        ):
+            # 样本越多越信任历史命中率；混合权重随样本量上升
+            w_emp = min(0.7, 0.3 + _support / 200.0)
+            calibrated_prob = (1.0 - w_emp) * float(buy_probability) + w_emp * float(empirical_hit_rate)
+            payload['decision_probability']['raw_buy_probability'] = round(float(buy_probability), 4)
+            payload['decision_probability']['buy_probability'] = round(float(calibrated_prob), 4)
+            payload['decision_probability']['buy_probability_pct'] = f"{calibrated_prob * 100:.2f}%"
+            payload['decision_probability']['band'] = (
+                "high" if calibrated_prob >= 0.7 else ("medium" if calibrated_prob >= 0.45 else "low")
+            )
+            payload['decision_probability']['method'] = 'empirical_shrinkage(logit, historical_hit_rate)'
+            payload['decision_probability']['calibrated'] = True
+            payload['decision_probability']['calibration_weight_empirical'] = round(w_emp, 3)
+            payload['decision_probability']['reliability'] = 'medium' if _support >= 30 else 'low'
+            _calibration_applied = True
+        else:
+            payload['decision_probability']['calibrated'] = False
+            payload['decision_probability']['reliability'] = (
+                'high' if _support >= 30 and _ece is not None and abs(float(_ece)) <= 0.08
+                else 'medium' if _support >= 15
+                else 'low'
+            )
+
+        # F-N22-2 fix (诊断报告 §N22): recommendation 与 offline_baseline 一致性校验。
+        # 历史问题: recommendation='avoid' 但 benchmark_delta=+0.328/hit_rate=0.778，
+        # 'avoid' 与历史正收益证据直接矛盾，AI 无法判断信谁。
+        # 修复: 检出矛盾时附 decision_consistency 块显式告警（不强行翻转决策，保留打分体系）。
+        consistency_warnings: list[str] = []
+        if _style_warning:
+            consistency_warnings.append(_style_warning)
+        if (
+            recommendation in {'avoid', 'wait'}
+            and benchmark_delta is not None
+            and float(benchmark_delta) > 0.1
+            and _support >= 15
+        ):
+            consistency_warnings.append(
+                f"决策为 '{recommendation}' 但历史回测显示正向超额收益"
+                f"（benchmark_delta=+{benchmark_delta}, hit_rate={empirical_hit_rate}, "
+                f"support={_support}）；评分体系与历史实证存在矛盾，建议人工复核"
+            )
+        # threshold_inversion 透传到一致性块
+        _inversion = any(
+            'threshold_inversion' in str(w)
+            for row in (threshold_backtest or [])
+            for w in (row.get('warnings') or [])
+        ) if threshold_backtest else False
+        payload['decision_consistency'] = {
+            'consistent': not consistency_warnings and not _inversion,
+            'warnings': consistency_warnings,
+            'threshold_inversion_detected': _inversion,
+            'probability_recalibrated': _calibration_applied,
         }
 
         # 数据新鲜度检查

@@ -1,0 +1,71 @@
+{
+  "scenario_id": "N20",
+  "title": "Barra 多因子风险分解 (analyze_portfolio_risk_barra)",
+  "ran_at": "2026-05-30T16:11:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "测试 DB 仅约250根日线/8只标的, Barra因子协方差为小样本估计; 单只标的'组合'的因子分解仅供工具行为审计",
+  "tool_status_rows": [
+    {"tool": "analyze_portfolio_risk_barra(1/2/3/4/8股 多组合)", "verdict": "Pass", "extra": "★total_risk/factor_risk/specific_risk/factor_contribution/specific_contribution(两者和=1.0)+portfolio_exposure(5因子)+factor_names; 各组合数值差异化合理"},
+    {"tool": "Barra 5因子 size/value/quality 恒为 0.0", "verdict": "Fail-schema", "extra": "⚠⚠ factor_names=[momentum,volatility,size,value,quality] 但 size/value/quality 在所有30+次调用、所有标的/组合中恒为 0.0, 仅 momentum+volatility 有非零暴露, 3/5 因子未实现 (F-N20-1)"},
+    {"tool": "Barra volatility 因子受 lookback 阈值影响", "verdict": "Degraded", "extra": "⚠ lookback=20/60 时 volatility 暴露=0.0, lookback=120/250/252 时才非零; volatility 因子需≥~120日样本否则静默置0, 无低样本告警 (F-N20-2)"},
+    {"tool": "Barra 权重不归一化", "verdict": "Fail-schema", "extra": "⚠⚠ holdings 权重[2,2]→exposure(-0.147)约为[0.5,0.5](-0.037)的4倍, factor_risk同比放大; Barra不归一化权重, 与 analyze_portfolio_risk(自动归一化)行为冲突, 未归一化夸大风险 (F-N20-3)"},
+    {"tool": "analyze_portfolio_risk_barra([600519,BADX]) 含非法代码", "verdict": "Degraded", "extra": "⚠ holdings_count=2 但 factor_exposure_count=1, BADX 被静默从因子计算剔除, 但无 dropped_holdings 字段(不如 analyze_portfolio_risk 透明) (F-N20-4)"},
+    {"tool": "analyze_portfolio_risk_barra([]) 空", "verdict": "Fail-schema", "extra": "⚠ holdings=[] 抛裸 pydantic ValidationError(Field required), 与 N17-3 同模式, 非业务层 error_code"},
+    {"tool": "analyze_portfolio_risk_barra([BADX]) 全无效", "verdict": "Fail-graceful", "extra": "★success=false 'No data available for Barra decomposition' + status=not_found + degraded=true, 全无效时优雅"},
+    {"tool": "analyze_portfolio_risk_barra(零权重/负权重)", "verdict": "Degraded", "extra": "⚠ [600519:0, 000001:1]结果=单股000001(零权重正确忽略); [-0.5,1.5]长短组合被接受计算无long-only约束(同BL F-N18-2倾向) (F-N20-5)"},
+    {"tool": "analyze_portfolio_risk_barra(lookback=20/60/120/250/252/500)", "verdict": "Degraded", "extra": "⚠ lookback=500 与252结果逐位相同(DB仅~250日被静默截断); lookback影响volatility因子是否非零 (关联F-N20-2)"},
+    {"tool": "analyze_portfolio_risk_barra 确定性", "verdict": "Pass", "extra": "★同输入(600519单股)多次调用结果逐位一致(-0.0536/0.0138), 计算确定性良好"}
+  ],
+  "summary": {"Pass": 3, "Degraded": 5, "Fail-graceful": 1, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N20-1",
+      "severity": "high",
+      "title": "Barra 5因子中 size/value/quality 恒为 0.0 (3/5 因子未实现)",
+      "evidence": "analyze_portfolio_risk_barra 返回 factor_names=[momentum,volatility,size,value,quality], 但在 30+ 次调用(覆盖1/2/3/4/8股、多标的、多lookback)中 portfolio_exposure 的后3项(size/value/quality)恒为 0.0, 仅 momentum 和 volatility 有非零值。",
+      "impact": "号称 Barra 5因子模型实则仅 2 个量价因子(momentum/volatility)有效, size/value/quality 三个基本面/规模风格因子未接入数据或未实现, 输出占位0误导AI以为已做完整风格归因。factor_risk 仅反映2因子, 严重低估风格风险敞口。",
+      "type": "unimplemented_factors_placeholder"
+    },
+    {
+      "id": "F-N20-3",
+      "severity": "high",
+      "title": "Barra 不对 holdings 权重归一化, 未归一化权重夸大风险",
+      "evidence": "holdings 权重 [2,2](和=4) 时 portfolio_exposure=-0.147, 而 [0.5,0.5](和=1)时=-0.037, 比例正好4:1; factor_risk/total_risk 同比放大约4倍。analyze_portfolio_risk(N19)对相同[2,2]自动归一化为[0.5,0.5], 两工具行为冲突。",
+      "impact": "若 AI 传入未归一化权重(如绝对市值或股数), Barra 会输出被放大数倍的风险值且无告警, 与 analyze_portfolio_risk 结果不可比。建议统一归一化或显式标注 weight_sum。",
+      "type": "missing_weight_normalization"
+    },
+    {
+      "id": "F-N20-2",
+      "severity": "medium",
+      "title": "Barra volatility 因子在短 lookback 下静默置 0",
+      "evidence": "lookback_days=20/60 时 volatility 暴露=0.0, lookback=120/250/252 时为非零(如0.0124)。momentum 在所有 lookback 下均非零。说明 volatility 因子需要≥~120日窗口, 不足则静默归零。",
+      "impact": "短回看窗口下 volatility 因子被静默关闭, AI 不知该因子已失效, factor_risk 被进一步低估(此时仅 momentum 一个因子)。建议低样本时告警或拒绝。",
+      "type": "factor_silently_disabled_small_sample"
+    },
+    {
+      "id": "F-N20-4",
+      "severity": "medium",
+      "title": "Barra 含无数据代码时缺 dropped_holdings 透明字段",
+      "evidence": "analyze_portfolio_risk_barra([600519,BADX]) 返回 holdings_count=2 但 quality.factor_exposure_count=1, BADX 被剔除但 data 中无 dropped_holdings/coverage 字段(对比 analyze_portfolio_risk 有完整 dropped_holdings+coverage)。",
+      "impact": "AI 无法从 data 主体得知哪只标的被剔除及原因, 只能从 meta.quality 推断计数差。建议补充 dropped_holdings 字段对齐 analyze_portfolio_risk。",
+      "type": "missing_transparency_field"
+    },
+    {
+      "id": "F-N20-5",
+      "severity": "low",
+      "title": "Barra 接受负权重(long-short)无 long-only 约束",
+      "evidence": "holdings=[600519:-0.5, 000001:1.5] 被接受并计算(exposure=-0.0032/0.0089), 无 long-only 校验。零权重 holding 正确被忽略(结果=纯多头单股)。",
+      "impact": "负权重组合被静默接受, 若用户误传负权重会得到长短组合的风险分解而无提示。属输入校验缺失(与 BL F-N18-2 的无约束倾向一致)。",
+      "type": "missing_long_only_validation"
+    }
+  ],
+  "positive_notes": [
+    "Barra 输出结构完整: total_risk/factor_risk/specific_risk + factor_contribution/specific_contribution(两者和恒=1.0) + portfolio_exposure + factor_names",
+    "momentum 与 volatility 两因子产出差异化合理值(不同标的暴露不同: 000858 momentum=-0.137高, 300750 volatility=0.025高)",
+    "计算确定性良好: 同输入多次调用结果逐位一致",
+    "零权重 holding 正确忽略(结果等同剔除该标的)",
+    "全无效标的优雅处理('No data available for Barra decomposition' + not_found)",
+    "specific_contribution 主导(小样本下特异风险占比60%-96%)符合个股集中组合的预期"
+  ],
+  "verdict": "pass_with_high_finding"
+}

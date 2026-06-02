@@ -66,7 +66,17 @@ def _env_with_allowlist(base: dict[str, str], allowlist: list[str] | tuple[str, 
 
 def _shell() -> str:
     if os.name == "nt":
-        return os.environ.get("SHELL") or os.environ.get("COMSPEC") or shutil.which("pwsh") or shutil.which("powershell") or "powershell"
+        # Prefer PowerShell on Windows: it is POSIX-friendlier (pwd/ls/cat
+        # aliases) and the only shell with a dedicated branch in
+        # _shell_command_args. COMSPEC (cmd.exe) is kept as a last resort.
+        # An operator can still force a specific shell via SHELL.
+        return (
+            os.environ.get("SHELL")
+            or shutil.which("pwsh")
+            or shutil.which("powershell")
+            or os.environ.get("COMSPEC")
+            or "powershell"
+        )
     return os.environ.get("SHELL", "/bin/zsh")
 
 
@@ -81,13 +91,41 @@ def _shell_command_args(command: str) -> list[str]:
 
 
 def _direct_python_command_args(command: str) -> list[str] | None:
+    """On Windows, turn ``<python> -c <code>`` into exec args directly.
+
+    Routing ``python -c "print('x')"`` through PowerShell ``-Command`` mangles
+    the inner quotes and yields empty stdout. We instead detect a python
+    interpreter invocation (bare ``python``/``python3``/``py`` OR a full
+    executable path whose stem starts with ``python``) followed by ``-c`` and
+    a single code argument, and return direct exec args so no shell quoting is
+    involved. Handles both single- and double-quoted code.
+    """
     if os.name != "nt":
         return None
-    match = re.fullmatch(r"\s*(python|python3|py)\s+-c\s+'([\s\S]*)'\s*", str(command or ""))
-    if not match:
+    text = str(command or "").strip()
+    if not text:
         return None
-    exe = shutil.which(match.group(1)) or match.group(1)
-    return [exe, "-c", match.group(2)]
+    # Use non-posix split so Windows backslash paths (F:\...\python.exe) are
+    # preserved; posix mode would strip the backslashes. We then strip the
+    # surrounding quotes from the code argument ourselves.
+    try:
+        tokens = shlex.split(text, posix=False)
+    except ValueError:
+        return None
+    if len(tokens) < 3 or tokens[1] != "-c":
+        return None
+    interpreter = tokens[0].strip('"').strip("'")
+    stem = Path(interpreter).stem.lower()
+    is_python = stem in {"python", "python3", "py"} or stem.startswith("python")
+    if not is_python:
+        return None
+    raw_code = tokens[2]
+    if len(raw_code) >= 2 and raw_code[0] == raw_code[-1] and raw_code[0] in {"'", '"'}:
+        code = raw_code[1:-1]
+    else:
+        code = raw_code
+    exe = interpreter if (os.sep in interpreter or "/" in interpreter) else (shutil.which(interpreter) or interpreter)
+    return [exe, "-c", code]
 
 
 def _safe_name(prefix: str) -> str:
@@ -313,6 +351,11 @@ class WrapperCommandBackend(TerminalBackend):
             cwd=shlex.quote(invocation.cwd or "."),
             image=shlex.quote(str(invocation.image or "")),
         )
+        # Prefer a direct python exec on Windows so quoted -c code is not
+        # mangled by the PowerShell -Command path (mirrors the local backend).
+        direct = _direct_python_command_args(rendered)
+        if direct is not None:
+            return direct, {"sandbox_id": self.name, "runner": self.command_env, "direct_command": "python_c"}
         return _shell_command_args(rendered), {"sandbox_id": self.name, "runner": self.command_env}
 
     def local_cwd(self, invocation: TerminalInvocation) -> str | None:

@@ -186,6 +186,53 @@ def test_no_partial_llm_when_below_thresholds() -> None:
 # Priority — multiple conditions
 # ---------------------------------------------------------------------------
 
+def test_no_partial_llm_for_single_provider_error_below_threshold() -> None:
+    summary = {
+        "gate_3_passed": 1,
+        "submitted": 1,
+        "autonomy_task_count": 6,
+        "task_timeout_skip_count": 1,  # 1/6 = 0.167 < 0.30
+        "llm_status_counts": {
+            "succeeded": 4,
+            "provider_error": 1,  # 1/6 = 0.167 < 0.30
+            "non_executable": 1,  # 1/6 = 0.167 < 0.50
+        },
+    }
+    status = resolve_run_status("success", _ok_stages(), summary=summary)
+    assert status == FactoryRunStatus.SUCCESS
+
+
+def test_partial_llm_when_provider_error_ratio_above_threshold() -> None:
+    summary = {
+        "gate_3_passed": 1,
+        "submitted": 1,
+        "autonomy_task_count": 4,
+        "llm_status_counts": {
+            "succeeded": 2,
+            "provider_error": 2,  # 2/4 = 0.50 > 0.30
+        },
+    }
+    status = resolve_run_status("success", _ok_stages(), summary=summary)
+    assert status == FactoryRunStatus.PARTIAL_LLM
+
+
+def test_pipeline_empty_skip_and_cooldown_skip_are_not_partial_llm() -> None:
+    summary = {
+        "gate_3_passed": 0,
+        "submitted": 0,
+        "autonomy_task_count": 6,
+        "task_timeout_skip_count": 0,
+        "llm_status_counts": {
+            "succeeded": 1,
+            "skipped_after_pipeline_empty": 4,
+            "fallback_only": 1,
+            "provider_cooldown_skip": 3,
+        },
+    }
+    status = resolve_run_status("success", _ok_stages(), summary=summary)
+    assert status == FactoryRunStatus.SUCCESS_NO_STRATEGY
+
+
 def test_priority_infra_over_llm() -> None:
     """When both infra and LLM are degraded, infra wins."""
     stages = _ok_stages()

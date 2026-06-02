@@ -1,0 +1,125 @@
+{
+  "scenario_id": "N43",
+  "title": "AI 工作流-预测诊断/数据质量/治理 (prediction_diagnosis_workflow / data_quality_workflow / data_validation / governance_check_workflow / experiment_tracker / ai_workflow_artifact)",
+  "ran_at": "2026-05-30T17:46:00+08:00",
+  "tool_call_count": 31,
+  "standing_caveat": "全部受控合成输入(不依赖DB真实数据); persist_artifact=false 全程未落盘产物; 隔离: experiment_name=redteam_n43_exp / run-5b58a6b19e9e + governance target_id=redteam_n43_* 仅写入 governance snapshot(只读评估快照, 不影响策略/因子库); DB 仍是约250根日线/8只标的样本; 校准用 outcomes/labels 均为 36 样本合成二分类标签",
+  "tool_status_rows": [
+    {"tool": "prediction_diagnosis_workflow(probabilities=[1.5,-0.2,0.5,2] 越界)", "verdict": "Fail-graceful", "extra": "★护栏正确: 'probabilities must stay within [0,1]' PARAM_ERROR; 越界值被拒"},
+    {"tool": "prediction_diagnosis_workflow(probabilities=[] 空数组)", "verdict": "Fail-schema", "extra": "★空数组触发裸 Pydantic 'probabilities Field required' 校验错误, 非标准化 PARAM_ERROR envelope; 与越界/长度不匹配的干净 PARAM_ERROR 路径不一致 (F-N43-1)"},
+    {"tool": "prediction_diagnosis_workflow(10样本 raw)", "verdict": "Fail-graceful", "extra": "★★护栏优秀: insufficient_sample_size=10<30, refusing to compute platt/isotonic; 样本不足拒绝校准而非硬算"},
+    {"tool": "prediction_diagnosis_workflow(36样本 platt)", "verdict": "Degraded", "extra": "⚠sklearn_calibration_failed:ValueError 降级 builtin_lightweight; platt 把 ECE 从 raw 0.19 抬高到 0.265(quality_band=poor 校准反而更差), 但已诚实标注 poor + 建议重新校准"},
+    {"tool": "prediction_diagnosis_workflow(36样本 raw)", "verdict": "Pass", "extra": "ECE=0.19 brier=0.110 quality_band=fair; calibration_bins/conformal(mapie)/wilson 区间齐全; warnings 标注'未校准可能系统性偏差'"},
+    {"tool": "prediction_diagnosis_workflow(36样本 isotonic)", "verdict": "Pass", "extra": "★isotonic 真实改善校准: ECE 0.19→0.085, brier 0.110→0.059; 虽 sklearn 失败降级 builtin 但 isotonic 回归有效"},
+    {"tool": "prediction_diagnosis_workflow(probabilities36/outcomes5 长度不匹配)", "verdict": "Fail-graceful", "extra": "★干净 PARAM_ERROR 'probabilities and labels/outcomes must be non-empty and share the same length'; 对比空数组裸栈, 此路径标准化"},
+    {"tool": "prediction_diagnosis_workflow(platt_a/platt_b 两组不同系数)", "verdict": "Fail-schema", "extra": "★★传 (1.2,-0.3) 与 (3.0,-1.5) 两次 platt, calibrated_probability 输出逐位完全相同; sklearn 路径恒失败, builtin 自拟 sigmoid 无视用户传入 platt 系数→platt_a/platt_b 为死参数 (F-N43-2 HIGH)"},
+    {"tool": "prediction_diagnosis_workflow(coverage_target=0.5)", "verdict": "Pass", "extra": "★coverage_target 正确传播: wilson 区间宽度随 0.9→0.5 变化(0.2644→0.3105 raw prob), conformal coverage_target=0.501"},
+    {"tool": "prediction_diagnosis_workflow(platt + raw_scores)", "verdict": "Pass", "extra": "★提供 raw_scores(与标签单调相关)后 platt 拟合改善: ECE 0.265→0.114; 表明 platt 在有 logit 分数时有效, 仅靠 probabilities 时退化"},
+    {"tool": "data_quality_workflow(5行 40%必填缺失)", "verdict": "Fail-schema", "extra": "★★子系统判定打架: 字段级 accepted_ratio=0.6 + quality_gate_failed 正确(close/volume 各缺1), 但内嵌 GX validation_result.passed=true/quality_score=1.0(仅查列存在不查 null 内容); 同一响应两套互斥质量结论 (F-N43-4 HIGH)"},
+    {"tool": "data_quality_workflow(records=[] 空)", "verdict": "Degraded", "extra": "⚠空 records→success=true accepted_ratio=1.0(空集真空通过), 仅靠 minimum_quality_passed=false + quality_gate_failed 兜底; 对比 data_validation 空集直接 PARAM_ERROR (F-N43-5 跨工具不一致)"},
+    {"tool": "data_quality_workflow(required_fields=[] 无必填)", "verdict": "Degraded", "extra": "⚠required_fields=[] 时仅跑 row_count 期望, quality_score=1.0 真空通过; 无必填即无内容校验"},
+    {"tool": "data_quality_workflow(3行 as_of=2026-05-29)", "verdict": "Pass", "extra": "★freshness_sec=150300 正确算出+标 stale; accepted_ratio=0.667(1行缺date), threshold=0.5→minimum_quality_passed=true 门控正确"},
+    {"tool": "data_validation(action=backend)", "verdict": "Pass", "extra": "backend=great_expectations; 但 side_effect.level=stateful(仅查询后端名应为 read_only, 元数据偏严, 次要)"},
+    {"tool": "data_validation(validate 5行 含 non_null_fields 期望)", "verdict": "Fail-schema", "extra": "★传 expectations.non_null_fields=[close,volume] 但运行时仅评估 3 个 expect_column_to_exist, non_null_fields 被静默忽略; passed=true 尽管 close/volume 有 null; null 内容从未被校验 (并入 F-N43-4 HIGH)"},
+    {"tool": "data_validation(validate records=[] 空)", "verdict": "Fail-graceful", "extra": "★干净拒绝 'records is required and must be non-empty' PARAM_ERROR(与 data_quality_workflow 空集真空通过形成对照)"},
+    {"tool": "governance_check_workflow(factor: decay+crowding+consistency)", "verdict": "Fail-schema", "extra": "★crowding_score=0.85/band=high 但 similar_factor_count=0/token_hits=0(无相似因子却报拥挤); factor_decay rolling_ic_trend=decaying+recent_ic=-0.006+half_life=1.4 却 decay_status=stable/continue_monitoring (F-N43-6 + F-N43-9)"},
+    {"tool": "governance_check_workflow(model: model_drift+strategy_health)", "verdict": "Fail-schema", "extra": "★model_drift 静默忽略传入 auc/ic/sharpe(全维度 unknown 无'未识别键'告警); strategy_health 硬编码 strategy_id='system' 无视 target_id=redteam_n43_model(归属错标) (F-N43-7 + F-N43-8)"},
+    {"tool": "governance_check_workflow(strategy: consistency)", "verdict": "Pass", "extra": "★★线上线下一致性优秀: 检出 slippage_bps gap=20 + market_impact_bps gap=3, warnings '回测零滑点/零市场冲击与执行差距显著'; consistency_status=inconsistent 正确"},
+    {"tool": "governance_check_workflow(crowding 池含精确重复因子)", "verdict": "Fail-schema", "extra": "★10因子池(含与目标表达式完全相同的 'close/ma_20-1')仍 crowding_score=0.85/similar_factor_count=0; 与空池结果逐字相同→crowding 是常量占位非真实相似度计算 (并入 F-N43-6 HIGH)"},
+    {"tool": "governance_check_workflow(factor: 上升IC decay)", "verdict": "Pass", "extra": "★IC递增序列→rolling_ic_trend=improving/decay_status=stable/overall=healthy/issue_count=0; 健康路径判定正确, 与衰减路径对照"},
+    {"tool": "experiment_tracker(log_run)", "verdict": "Degraded", "extra": "run-5b58a6b19e9e 创建; backend mlflow_not_installed 降级 builtin_fallback(诚实标注 fallback_used=true)"},
+    {"tool": "experiment_tracker(backend)", "verdict": "Pass", "extra": "backend_requested=mlflow/backend_used=builtin/fallback_reason=mlflow_not_installed 透明"},
+    {"tool": "experiment_tracker(log_metric step1)", "verdict": "Pass", "extra": "ic_mean=0.042 记录成功"},
+    {"tool": "experiment_tracker(log_artifact)", "verdict": "Pass", "extra": "n43_probe 产物记录成功(轻量 dict)"},
+    {"tool": "experiment_tracker(get_run nonexistent)", "verdict": "Fail-graceful", "extra": "★'run not found' NOT_FOUND error_code 规范"},
+    {"tool": "experiment_tracker(list_runs)", "verdict": "Pass", "extra": "★返回1条 run, params/tags/metrics/metric_history/artifacts/status=running 完整"},
+    {"tool": "experiment_tracker(get_run real)", "verdict": "Pass", "extra": "run 全字段回读一致(metric_history 含 step+timestamp)"},
+    {"tool": "experiment_tracker(log_metric step2)", "verdict": "Pass", "extra": "ic_mean=0.051 同 key 多 step 追加成功"},
+    {"tool": "ai_workflow_artifact(nonexistent)", "verdict": "Fail-graceful", "extra": "★'artifact not found' NOT_FOUND, source_chain=services.artifact_registry 规范"}
+  ],
+  "summary": {"Pass": 14, "Degraded": 4, "Fail-graceful": 6, "Fail-schema": 7},
+  "findings": [
+    {
+      "id": "F-N43-1",
+      "severity": "medium",
+      "title": "prediction_diagnosis_workflow 空数组 probabilities 暴露裸 Pydantic 校验栈而非标准化 PARAM_ERROR",
+      "evidence": "probabilities=[] → 裸 Pydantic 'probabilities Field required' validation error; 对比 probabilities=[1.5,-0.2,..](越界) → 干净 'probabilities must stay within [0,1]' PARAM_ERROR; probabilities36/outcomes5(长度不匹配) → 干净 'must be non-empty and share the same length' PARAM_ERROR。",
+      "impact": "空数组走 MCP framework 层 pydantic 校验(字段被判缺失), 其余非法输入走业务层标准化错误。AI 看到的错误结构不一致(裸栈 vs envelope), 难以统一处理边界。应在业务入口对空数组也返回标准化 PARAM_ERROR。",
+      "type": "error_envelope_inconsistency"
+    },
+    {
+      "id": "F-N43-2",
+      "severity": "high",
+      "title": "★platt_a / platt_b 为死参数, 用户传入的 Platt 系数被静默忽略",
+      "evidence": "method=platt 下分别传 platt_a=1.2/platt_b=-0.3 与 platt_a=3.0/platt_b=-1.5, 两次 calibration_report.probabilities 与 uncertainty.calibrated_probability 输出逐位完全相同(0.37396466519957855... 一字不差)。原因: backend_requested=sklearn_calibrated_classifier_cv 恒抛 ValueError 降级 builtin_lightweight, builtin 自行用数据拟合 sigmoid, 完全无视外部传入的 platt_a/platt_b。",
+      "impact": "工具签名暴露 platt_a/platt_b 参数, AI 据此期望可注入预先标定的 Platt 系数(常见于离线标定线上推断场景), 但参数完全无效果。属契约-实现脱节: 文档化参数 no-op。应让 builtin 路径尊重传入系数, 或在签名/响应明示这些参数仅 sklearn 路径生效(而 sklearn 又恒失败)。",
+      "type": "documented_param_noop"
+    },
+    {
+      "id": "F-N43-3",
+      "severity": "medium",
+      "title": "sklearn 校准后端恒失败(ValueError), 每次 platt/isotonic 都静默降级 builtin_lightweight",
+      "evidence": "所有 platt/isotonic 调用均返回 backend_requested=sklearn_calibrated_classifier_cv / backend_used=builtin_lightweight / fallback_used=true / fallback_reason='sklearn_calibration_failed:ValueError'; 主校准后端 100% 不可用。",
+      "impact": "主校准实现(sklearn CalibratedClassifierCV)在该环境恒抛 ValueError(疑似 36 样本不足以做内部 CV 折叠或 1D 输入问题), 校准始终走轻量回退。虽有 fallback 标注, 但'主路径从不工作'本身应作为运维告警上报, 而非每次静默降级。建议修复 sklearn 调用(增大样本/调整 cv)或显式停用该后端避免每次 try-fail 开销。",
+      "type": "primary_backend_persistent_failure"
+    },
+    {
+      "id": "F-N43-4",
+      "severity": "high",
+      "title": "★数据质量子系统判定互斥: 字段级缺失校验 vs GX 仅查列存在不查 null 内容",
+      "evidence": "data_quality_workflow(5行, close/volume 各含1个 null) → 顶层 accepted_ratio=0.6 + failed_row_indices=[2,3] + quality_gate_failed(字段级正确); 但同响应内嵌 validation_result.passed=true / quality_score=1.0(GX 仅跑 expect_column_to_exist, 列存在即通过)。另 data_validation 传 expectations.non_null_fields=[close,volume] 被静默忽略, 仅评估 3 个 expect_column_to_exist, passed=true 尽管有 null。",
+      "impact": "(a) 同一工具响应给出两套互斥质量结论(0.6 失败 vs 1.0 通过), AI 取哪个? (b) 更严重: GX/data_validation 路径从不校验单元格 null 内容(non_null_fields 期望被丢弃), 下游若信任 validation_result.passed=true 会放行含 null 的脏数据。应让 GX 套件包含 expect_column_values_to_not_be_null 并真正消费 non_null_fields。",
+      "type": "quality_subsystem_disagreement_and_null_check_missing"
+    },
+    {
+      "id": "F-N43-5",
+      "severity": "medium",
+      "title": "空 records 跨工具处理不一致: data_quality_workflow 真空通过 vs data_validation 干净拒绝",
+      "evidence": "data_quality_workflow(records=[]) → success=true / accepted_ratio=1.0(真空通过, 仅靠 minimum_quality_passed=false 兜底); data_validation(records=[]) → success=false 'records is required and must be non-empty' PARAM_ERROR。required_fields=[] 时 data_quality_workflow 亦真空通过(quality_score=1.0 仅 row_count 检查)。",
+      "impact": "两个数据质量工具对'空输入'语义相反, AI 行为依工具而异。data_quality_workflow 的 accepted_ratio=1.0 对空集有误导性(应为 0 或拒绝)。建议统一空输入语义(都拒绝或都标 0 接受率)。",
+      "type": "empty_input_cross_tool_inconsistency"
+    },
+    {
+      "id": "F-N43-6",
+      "severity": "high",
+      "title": "★governance crowding_score 疑为常量占位(恒 0.85), 与因子池内容无关",
+      "evidence": "include_crowding 三次调用: (a) 无 existing_factor_pool, (b) pool=[rsi_14,macd,momentum_20d], (c) pool=10因子且含与目标 factor_expression 完全相同的 'close/ma_20-1' —— 三次 crowding_score 均=0.85 / crowding_band=high / similar_factor_count=0 / token_hits=0, 且 warnings 恒为'拥挤度高(0.85)alpha衰减风险大'。",
+      "impact": "crowding 维度未真正基于因子池做相似度/重复检测(传入完全重复因子仍 similar_factor_count=0), crowding_score 是写死的 0.85。对所有 momentum 类因子一律误报'高拥挤', 属虚假风险信号, 会误导 AI 否决正常因子。应实现基于 existing_factor_pool 的真实相似度/token 命中计算。",
+      "type": "hardcoded_crowding_false_signal"
+    },
+    {
+      "id": "F-N43-7",
+      "severity": "medium",
+      "title": "governance model_drift 静默忽略不识别的指标键, 无'未识别键'告警",
+      "evidence": "传 baseline_metrics={auc,ic,sharpe} / current_metrics={auc,ic,sharpe}(AUC从0.68掉0.51, IC从0.05掉0.005, 明显漂移), 但 model_drift 全维度(brier_score/ece/rank_ic_mean/stability_ratio/total_score)=unknown, drift_status=unknown, degraded_dimensions=[], 无任何'传入键不被识别'提示。",
+      "impact": "model_drift 仅认特定键名(brier/ece/rank_ic/stability), 用户传 auc/ic/sharpe 被整体丢弃且无告警, 一个明显漂移的模型被判 drift_status=unknown/severity=low/continue_monitoring。与全局'静默忽略非预期输入'模式同源(参见非法股票码坐标化)。应回显未识别键或文档化支持键名。",
+      "type": "silent_unrecognized_keys"
+    },
+    {
+      "id": "F-N43-8",
+      "severity": "medium",
+      "title": "governance strategy_health 硬编码 strategy_id='system' 无视 target_id",
+      "evidence": "governance_check_workflow(target_type=model, target_id=redteam_n43_model, include_strategy_health=true) → report.strategy_health.strategy_id='system'(非 redteam_n43_model); 顶层 target_id 正确但内层 strategy_health 归属写死 system。",
+      "impact": "strategy_health 子报告归属标错(始终 system), 多目标治理时无法区分是哪个策略的健康度; 与 N42 factory_run 错误血缘归属同族(内层实体 id 与顶层 target 脱节)。应让 strategy_health.strategy_id 反映 target_id。",
+      "type": "lineage_misattribution"
+    },
+    {
+      "id": "F-N43-9",
+      "severity": "low",
+      "title": "factor_decay 对近期 IC 转负 + 半衰期1.4周期的因子仍判 decay_status=stable",
+      "evidence": "factor(IC序列 0.05→-0.05 递减): all_time_ic_mean=0.004, recent_ic_mean=-0.00625(已转负), rolling_ic_trend=decaying, half_life_estimate_periods=1.4, 但 decay_status=stable / action_recommended=continue_monitoring / overall=warning(仅因 crowding)。",
+      "impact": "近期 IC 已转负且滚动趋势 decaying、半衰期仅 1.4 周期的因子被判 stable, decay 维度欠告警(若无 crowding 触发, overall 可能 healthy)。decay_status 阈值偏宽松。建议 recent_ic 转负或半衰期过短时升级 decay_status。",
+      "type": "decay_under_alerting"
+    }
+  ],
+  "positive_notes": [
+    "★★ 样本不足护栏优秀: 10<30 样本时拒绝计算 platt/isotonic('insufficient_sample_size...refusing to compute'), 不强行校准小样本",
+    "★★ 线上线下一致性检查工程质量高: 自动检出 slippage_bps/market_impact_bps gap 并 warnings 提示'回测零滑点/零市场冲击与执行差距显著', consistency_status=inconsistent + gap_count 精确",
+    "★ isotonic 校准真实有效(ECE 0.19→0.085, brier 0.110→0.059); platt 在提供 raw_scores(logit)时亦改善(ECE 0.265→0.114); 校准算法本身正确, 问题在 sklearn 后端恒失败与 platt 系数无效",
+    "★ 越界/长度不匹配输入均干净 PARAM_ERROR 拒绝; coverage_target 正确传播到 wilson 区间宽度与 conformal; calibration_bins/quality_band(poor/fair)/recommendations 诚实标注校准质量",
+    "★ experiment_tracker 全生命周期稳健(log_run/log_metric 多step/log_artifact/get_run/list_runs + 不存在 run→NOT_FOUND), mlflow 未装诚实降级 builtin_fallback; ai_workflow_artifact 不存在→NOT_FOUND 规范",
+    "★ data_quality_workflow 的 freshness 计算与 stale 标注正确(as_of=2026-05-29→freshness_sec=150300+stale), minimum_quality_threshold 门控有效(0.5 通过/0.95 失败), remediation_hints 可执行",
+    "★ governance 健康路径判定正确(IC递增→improving/healthy/issue_count=0), snapshot_id 递增持久化, side_effect 多为 read_only"
+  ],
+  "verdict": "fail_schema_platt_param_noop_and_quality_subsystem_disagreement_and_hardcoded_crowding"
+}

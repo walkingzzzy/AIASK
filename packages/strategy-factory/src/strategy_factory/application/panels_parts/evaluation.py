@@ -61,7 +61,7 @@ def _build_family_returns(
     return np.column_stack(series_family) if series_family else None
 
 
-async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_size: int = 6) -> dict:
+async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_size: int = FACTORY_VALIDATION_PANEL_SAMPLE_SIZE) -> dict:
     strategy_registry = get_strategy_registry()
     normalize_klines = get_normalize_klines()
     strategy_instance_exists = False

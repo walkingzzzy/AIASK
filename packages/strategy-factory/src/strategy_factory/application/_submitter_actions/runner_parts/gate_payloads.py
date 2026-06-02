@@ -28,6 +28,7 @@
             self._diagnostic_observation_lock = asyncio.Lock()
             self._diagnostic_observation_claimed = 0
             self._diagnostic_observation_limit = _diagnostic_observation_batch_limit()
+            self._diagnostic_observation_fingerprints = set()
             incubation_budget_plan = IncubationBudgeter.plan(candidates, snapshot)
             incubation_budget_summary = dict(incubation_budget_plan.get("summary") or {})
             for candidate in candidates:
@@ -159,7 +160,7 @@
                 "persistence_dlq": persistence_dlq,
             }
 
-        async def _claim_diagnostic_observation_slot(self) -> bool:
+        async def _claim_diagnostic_observation_slot(self, *, fingerprint: str | None = None) -> bool:
             if not _diagnostic_observation_enabled():
                 return False
             lock = getattr(self, "_diagnostic_observation_lock", None)
@@ -175,8 +176,72 @@
                     )
                     or 0
                 )
+                token = str(fingerprint or "").strip()
+                claimed_fingerprints = getattr(self, "_diagnostic_observation_fingerprints", None)
+                if claimed_fingerprints is None:
+                    claimed_fingerprints = set()
+                    self._diagnostic_observation_fingerprints = claimed_fingerprints
+                if token and token in claimed_fingerprints:
+                    return False
                 claimed = int(getattr(self, "_diagnostic_observation_claimed", 0) or 0)
                 if claimed >= max(1, limit):
                     return False
+                if token:
+                    claimed_fingerprints.add(token)
                 self._diagnostic_observation_claimed = claimed + 1
                 return True
+
+        async def _diagnostic_observation_admission_guard(
+            self,
+            db,
+            *,
+            candidate: dict,
+            reason: str,
+            fingerprint: str,
+        ) -> dict[str, Any]:
+            guard = {
+                "allowed": True,
+                "reason": "accepted",
+                "diagnostic_reason": str(reason or "diagnostic_observation"),
+                "diagnostic_fingerprint": str(fingerprint or ""),
+                "health_guard_enabled": _diagnostic_observation_health_guard_enabled(),
+                "dedupe_enabled": _diagnostic_observation_dedupe_enabled(),
+                "ttl_days": _diagnostic_observation_ttl_days(),
+            }
+
+            if _diagnostic_observation_health_guard_enabled():
+                max_age_hours = _diagnostic_observation_health_max_age_hours()
+                guard["health_max_age_hours"] = max_age_hours
+                health = await self._call_optional_db_method(
+                    db,
+                    "get_incubation_factory_health",
+                    max_age_hours=max_age_hours,
+                )
+                if isinstance(health, dict):
+                    guard["incubation_factory_health"] = dict(health)
+                    if not bool(health.get("healthy")):
+                        guard["allowed"] = False
+                        guard["reason"] = "incubation_factory_stale"
+                        return guard
+                else:
+                    guard["incubation_factory_health"] = {
+                        "supported": False,
+                        "healthy": True,
+                    }
+
+            if _diagnostic_observation_dedupe_enabled() and fingerprint:
+                existing = await self._call_optional_db_method(
+                    db,
+                    "find_active_diagnostic_observation_by_fingerprint",
+                    str(fingerprint),
+                    ttl_days=_diagnostic_observation_ttl_days(),
+                )
+                if existing:
+                    payload = dict(existing or {})
+                    guard["allowed"] = False
+                    guard["reason"] = "diagnostic_fingerprint_duplicate"
+                    guard["existing_strategy_id"] = payload.get("id") or payload.get("strategy_id")
+                    guard["existing_account_id"] = payload.get("diagnostic_account_id") or payload.get("account_id")
+                    return guard
+
+            return guard

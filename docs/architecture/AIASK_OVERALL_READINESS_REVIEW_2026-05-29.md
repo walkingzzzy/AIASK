@@ -396,3 +396,48 @@ cd desktop && npm run build
 AIASK 的实际完成度比“问题报告”能体现的要高得多：它已经具备桌面、Agent、MCP、量化核心、策略生产、因子挖掘、孵化反馈、外部金融软件连接器和插件/网关扩展的整体架构。它现在最适合承担我们项目的**金融 Agent 工作台和策略生产底座**。
 
 但上线口径必须务实：**内部受限使用可以推进，无约束生产和真实交易暂不应开放。** 下一步最重要的不是继续堆功能，而是把已有能力的验收、契约、数据质量、运行观测和风控闭环补齐。
+
+
+---
+
+## 修复落地记录（2026-05-29 增补）
+
+本节记录针对上述风险清单实际执行的修复。区分三类：**已落地可验证**、**已具备能力待运行回归**、**需外部条件无法仅靠改码完成**。
+
+### 已落地并通过验证
+
+| 风险 | 动作 | 交付物 | 验证 |
+| --- | --- | --- | --- |
+| P0-1 | 新建 CI + **本机实跑完整验收闭环并修复 3 个真实缺陷** | `.github/workflows/ci.yml`；验收报告 `reports/acceptance-run-2026-05-29.md` | **Agent 196 passed / Finance 10 passed / Desktop 40 passed + typecheck + build 全绿（退出码 0）**；首跑发现 3 个 Windows 终端跨平台 bug 已修复 |
+| P1-1 | 端点漂移从"未解释数字"变为受控契约 | `reports/code-graph/endpoint-allowlist.json`（逐条分类 42 server-only + 13 desktop-only）、`scripts/code_graph/check_endpoint_drift.py`、`packages/agent/tests/test_endpoint_drift_gate.py` | 检查器：0 未解释 / 0 stale；测试通过 |
+| P0-4 | 增加回归守门，锁定"策略工厂不可直连实盘"约束 | `packages/strategy-factory/tests/test_no_live_trading_boundary.py` | 3 项断言通过（允许 paper、禁止 live/broker import/token） |
+| P1-3 | 确认跨包契约守门已存在（无需新增） | `test_package_decoupling_boundary.py` + `test_public_contracts.py` | 通过 |
+| P1-4 / P2-1 / P2-5 | 统一运维 runbook + SLO/告警映射 + root-runner 安全默认值 | `docs/runbook/AIASK_OPERATIONS_RUNBOOK.md`、`docs/runbook/SLO.md` | 文档化完成 |
+| P1-6 | 历史红队 7 项 fix 现代码复验 | 复验记录见 `red-team-reports/codex_full_mcp_20260526/final/fixes_round2.md` 末尾 | 7/7 仍在；记录 1 处阈值调整（15000→30000，代码内有据） |
+| P0-2（单元层） | 确认 trade_guard 负向测试已覆盖 | `packages/finance-mcp-servers/tests/test_trade_guard.py` | 缺/错/正确 token + envelope 5 项通过 |
+| 跨平台缺陷（验收副产物） | 修复 Windows 终端 3 个真实 bug（shell 选择 / python -c 双引号 / 全路径解释器） | `packages/agent/src/aiask_agent/terminal_backends.py`、回归测试 `test_terminal_cross_platform.py` | 10 项回归测试通过；Agent 全量重跑无回归 |
+
+### 已具备能力，待运行回归
+
+- **P0-3 数据 freshness**：`db_freshness.py`（`check_freshness` / `ensure_fresh_klines`）已具备；待将关键表 freshness/placeholder/fallback 全量上 UI/API 门禁。
+- **P1-5 DB soak + retention 工具**：交付 `scripts/ops/db_soak.py`（只读采样）与 `scripts/ops/db_retention.py`（dry-run 默认的运营表保留期裁剪），并补 `test_db_retention_tool.py` 4 项安全测试。
+
+### P1-5 根因澄清（2026-05-29 表级剖析）
+
+最初把"现库 3273 MB > 100 MB 目标"当作硬缺口，经表级剖析后修正：
+
+- 3.2GB 主体是 `kline_1d`（约 **870 万行**）合法行情数据，是**行情仓库**而非膨胀；freelist 仅 ~3 MB，VACUUM 几乎收不回空间。
+- 真正可治理的是运营/实验/事件三张表的无界 JSON 日志：`strategy_task_runs` ~308 MB、`strategy_generation_experiments` ~281 MB、`strategy_domain_events` ~87 MB。字段级大 payload 已有 `bounded_json_text` 上限保护。
+- dry-run 显示三表当前 deletable=0（数据都在保留窗口内），说明现状是"近期工作数据"，不是陈旧日志堆积。
+- **修正动作**：(a) SLO 从"单库 < 100MB"改为"运营表分表保留 + 行情库独立核算 + 单行 ≤256KB"；(b) 把 `db_retention.py` 接入工厂常驻定期运行，防止运营表长期累积。
+- 此前 P1-5 "已实测未达标"的措辞过严——准确结论是"**容量门禁定义错误已修正，运营表增长有了可执行的裁剪与监控手段**"。
+
+### 需外部条件 / 运行时执行，无法仅靠改码完成
+
+- **P0-2 broker sandbox 端到端**：需券商沙箱账号，缺/错/正确 token 全链路 + 审计的 e2e 仍未做（单元层已覆盖）。
+- **P0-1 执行侧**：CI 已建，但需在远端跑绿一次才算闭环。
+- **P0-3 / P1-7 收敛**：freshness 全量上 UI/API、mock/live parity fixture 生成，待继续。
+
+### 结论修正
+
+上一版结论中 P0-1 偏保守：真实情况是"**项目此前无 CI、`test-finance` 仅精选子集**"，本次已补 CI 与门禁脚本。**进一步：本次已在本机实跑完整验收闭环（Agent 196 / Finance 10 / Desktop 40 + typecheck + build 全绿），并在首跑中发现并修复了 3 个真实的 Windows 终端跨平台缺陷**——这是从"未验证"推进到"已验证且修了真 bug"。P0-5（DB）经表级剖析后**从"实测未达标"修正为"门禁定义错误"**。剩余真正受外部条件约束的是 P0-2 的 broker sandbox e2e 与 6h DB soak。

@@ -325,18 +325,21 @@ class ModelProviderRegistry:
         api_keys = _split_env_list(str(self.env.get("OPENAI_API_KEYS") or ""))
         if api_key and api_key not in api_keys:
             api_keys.insert(0, api_key)
-        if provider_env not in {"", "openai"} and not api_keys:
+        direct_providers = {"", "openai", "anthropic", "anthropic_messages"}
+        if provider_env not in direct_providers and not api_keys:
             return None
+        provider_name = provider_env if provider_env in {"anthropic", "anthropic_messages"} else "openai"
         credentials = [
-            ProviderCredential("openai", f"openai:{_hash_secret(value)}", "OPENAI_API_KEYS" if index else "OPENAI_API_KEY", True, value)
+            ProviderCredential(provider_name, f"{provider_name}:{_hash_secret(value)}", "OPENAI_API_KEYS" if index else "OPENAI_API_KEY", True, value)
             for index, value in enumerate(api_keys)
         ]
         if not credentials:
-            credentials = [ProviderCredential("openai", "openai:missing", "OPENAI_API_KEY", False, None)]
+            credentials = [ProviderCredential(provider_name, f"{provider_name}:missing", "OPENAI_API_KEY", False, None)]
         base_url = str(self.env.get("OPENAI_BASE_URL") or "").strip() or None
+        provider_type = "anthropic_messages" if provider_env in {"anthropic", "anthropic_messages"} else ("openai_compatible" if base_url else "openai")
         return ProviderSpec(
-            name="openai",
-            provider_type="openai_compatible" if base_url else "openai",
+            name=provider_name,
+            provider_type=provider_type,
             model=str(self.env.get("AIASK_AGENT_MODEL") or "gpt-4.1-mini"),
             base_url=base_url,
             enabled=True,

@@ -12,6 +12,70 @@ from .technical_analysis import TechnicalAnalysis
 from . import screen_conditions as _screen_conditions  # noqa: F401
 
 
+# FIX-6: 显式声明 _declared_condition_value 能识别的直读字段集合与前缀，
+# 用于在工具层对 dict 形式条件做 field/op 校验，避免「未识别字段静默返回 0 匹配」。
+_DECLARED_SCALAR_FIELDS = {
+    "open", "high", "low", "close", "volume", "amount", "turnover",
+    "pct_change", "change_pct", "return_1d", "volume_ratio",
+}
+_DECLARED_FIELD_PREFIXES = ("ma_", "ema_", "rsi_", "roc_")
+_SUPPORTED_OPS = {
+    ">", "gt", ">=", "gte", "<", "lt", "<=", "lte",
+    "!=", "<>", "ne", "==", "=", "eq",
+}
+
+
+def _is_supported_declared_field(field: str) -> bool:
+    """判断字段是否能被 _declared_condition_value 识别（含 ma_/ema_/rsi_/roc_ 前缀）。"""
+    key = str(field or "").strip().lower()
+    if not key:
+        return False
+    if key in _DECLARED_SCALAR_FIELDS:
+        return True
+    for prefix in _DECLARED_FIELD_PREFIXES:
+        if key.startswith(prefix):
+            suffix = key[len(prefix):]
+            return suffix.isdigit() and int(suffix) > 0
+    return False
+
+
+def validate_conditions(conditions: Any, logic: str = "AND") -> tuple[bool, str | None]:
+    """校验条件中的 field / op 合法性（FIX-6）。
+
+    仅校验 dict 形式且带 `field` 的「直读条件」；带 `id` 的 screen_engine 条件
+    与纯字符串条件交由引擎自行处理，不在此拦截。
+
+    Returns:
+        (ok, error_msg)。ok=False 时 error_msg 含支持列表，供 AI 区分
+        「真无匹配」与「字段/运算符拼错」。
+    """
+    items = _normalize_conditions(conditions)
+    for cond in items:
+        # 引擎条件（id / 字符串）跳过，由 screen_engine 处理
+        if isinstance(cond, str):
+            continue
+        if isinstance(cond, dict) and cond.get("id") and cond.get("field") is None:
+            continue
+        if not isinstance(cond, dict):
+            return False, f"条件必须为对象（含 field/op/value），收到: {type(cond).__name__}"
+        field = cond.get("field")
+        if field is None:
+            continue
+        if not _is_supported_declared_field(str(field)):
+            supported = sorted(_DECLARED_SCALAR_FIELDS) + [f"{p}<N>" for p in _DECLARED_FIELD_PREFIXES]
+            return False, (
+                f"未识别的 field='{field}'。支持的直读字段: {', '.join(supported)}"
+                f"（如需技术形态/选股条件请用带 id 的条件）"
+            )
+        op = cond.get("op")
+        if op is not None and str(op).strip().lower() not in _SUPPORTED_OPS:
+            return False, (
+                f"非法的 op='{op}'（field='{field}'）。支持的运算符: "
+                f"{', '.join(sorted({'>', '>=', '<', '<=', '==', '!='}))}"
+            )
+    return True, None
+
+
 def _normalize_klines(klines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items = [dict(k) for k in (klines or []) if isinstance(k, dict) and k.get("close") is not None]
     if len(items) < 2:

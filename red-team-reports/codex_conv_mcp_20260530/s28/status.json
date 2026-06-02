@@ -1,0 +1,57 @@
+{
+  "scenario_id": "N28",
+  "title": "向量相似检索 (search_by_kline / search_similar_stocks / vector_search_manager / find_similar_patterns)",
+  "ran_at": "2026-05-30T16:42:00+08:00",
+  "tool_call_count": 33,
+  "standing_caveat": "周末非交易; K线/画像向量索引库为空(db_empty_result), 全部回退 python 余弦计算(degraded); market_docs 走真正混合检索向量库(可用); DB约250根日线/8只标的核心+50只热门池",
+  "tool_status_rows": [
+    {"tool": "search_by_kline(600519/000001/000651/000858/601318/002594/002304)", "verdict": "Degraded", "extra": "★行业聚类全部正确: 茅台→五粮液0.83/金徽酒/泸州老窖(白酒); 格力→澳柯玛/美的/海信/海尔(家电); 平安→太保0.96/新华/人寿(保险); 比亚迪→上汽/广汽/长城(整车); 洋河→古井贡0.93/口子窖/舍得(白酒)。fallback_used=true/db_empty_result, actual_backend=python"},
+    {"tool": "search_by_kline excluded_st_count", "verdict": "Pass", "extra": "★白酒类查询稳定排除6只ST/退市(quality_filter=st_delisted_excluded_at_input); 保险/家电类 excluded=0"},
+    {"tool": "search_by_kline(ZZZ999/999999) 非法码", "verdict": "Fail-graceful", "extra": "★非法/不存在代码→success=false error='Insufficient kline data for ZZZ999', quality_flags=[failed,degraded], 不坐标化(与vector_search_manager不一致, 见F-N28-1)"},
+    {"tool": "search_by_kline(allow_fallback=false)", "verdict": "Fail-schema", "extra": "⚠⚠ allow_fallback=false→data.results=[]空+data.fallback_used=false+actual_backend=db, 但顶层envelope仍 fallback_used=true/quality_flags=[degraded,fallback] 与内层矛盾 (F-N28-2)"},
+    {"tool": "search_similar_stocks(both/technical/fundamental) 601318/002594/000651/300750", "verdict": "Degraded", "extra": "★similarity_type维度分流正确: technical=momentum/volatility/trend; fundamental=roe/debt_ratio/pe/pb/revenue_growth; both=全维度合并。candidate_scope=industry, 同业候选; fallback python"},
+    {"tool": "search_similar_stocks(ZZZ888) 非法码", "verdict": "Fail-graceful", "extra": "★正确: name空+candidate_scope=unknown+similar_stocks=[]+fallback_reason=target_stock_profile_missing+quality_flags=[empty_upstream,target_missing] (与vector_search_manager坐标化对照, 此为正确路径)"},
+    {"tool": "vector_search_manager(market_docs) 600519/000001/300750 + doc_types过滤", "verdict": "Pass", "extra": "★真正混合检索: retrieval_mode=hybrid, dense_score+fts_score+lexical_score+hybrid_score, fallback_used=false! 茅台研报/平安分红公告/宁德电池研报命中精准; doc_types=[notice]过滤生效(独立董事 lexical_score=1.0)"},
+    {"tool": "vector_search_manager(similar_stocks/similar_patterns)", "verdict": "Degraded", "extra": "含 retrieval_quality(score_mean/std/min/max/top_score)质量统计; meta含trace_id/audit_event_id/side_effect(read_only); 但底层K线索引空→python fallback"},
+    {"tool": "vector_search_manager(similar_patterns/similar_stocks) 非法码 INVALID1/XYZ7/ABC519", "verdict": "Fail-schema", "extra": "⚠⚠⚠ 静默坐标化: INVALID1→000001(银行股), XYZ7→000007, ABC519→000519, 抽取数字+补零, success=true返回完全无关股票零告警 (F-N28-1, 对照F-N17-1批量回测BAD1→000001同类bug)"},
+    {"tool": "vector_search_manager(help)", "verdict": "Pass", "extra": "★supported_actions: similar_patterns/similar_stocks/market_docs/help, 描述清晰"},
+    {"tool": "find_similar_patterns(600519/000001/000651) window10/15/20", "verdict": "Pass", "extra": "★★独立工具真正可用! fallback_used=false; 自相似历史窗口检索, 返回 matches[pattern_end_date/similarity/market_regime/forward_returns 5d10d20d] + aggregate_prediction[samples/avg_return/hit_rate]; 茅台5d hit_rate0.6/avg+2.77%, 平安全neutral regime; 提供条件未来收益证据"}
+  ],
+  "summary": {"Pass": 4, "Degraded": 3, "Fail-graceful": 2, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N28-1",
+      "severity": "high",
+      "title": "vector_search_manager 对非法代码静默坐标化为合法股票代码",
+      "evidence": "vector_search_manager(action='similar_patterns', code='INVALID1')→data.code='000001'返回银行股; code='XYZ7'→'000007'返回轻纺城/美凯龙; (action='similar_stocks') code='ABC519'→'000519'返回内蒙一机/建设工业。规律: 抽取代码中数字+左补零到6位, success=true 零告警。对照: search_similar_stocks(ZZZ888) 正确返回 target_missing/空。",
+      "impact": "AI 传入拼写错误/非法代码时, vector_search_manager 不报错而是返回一只完全无关股票的相似检索结果, AI 与用户均无从察觉错位。这与 F-N17-1(批量回测 BAD1→000001)是同一类'垃圾代码静默坐标化'缺陷在向量检索路径的扩散。三个向量工具(search_by_kline 正确报错 / search_similar_stocks 正确 target_missing / vector_search_manager 错误坐标化)对非法代码处理不一致。确凿代码 bug。",
+      "type": "garbage_code_silent_coercion"
+    },
+    {
+      "id": "F-N28-2",
+      "severity": "medium",
+      "title": "search_by_kline(allow_fallback=false) 顶层 envelope 与 data 内层 fallback 标志矛盾",
+      "evidence": "search_by_kline(600519, allow_fallback=false)→data.results=[]空, data.fallback_used=false, data.actual_backend=db; 但顶层 envelope fallback_used=true + quality_flags=[degraded,fallback] + meta.quality.fallback_used=true。内外层 fallback 标志互相矛盾。",
+      "impact": "禁用 fallback 后内层正确标 fallback_used=false 但返回空结果, 而顶层 envelope 仍声称 fallback_used=true。AI 依赖顶层 envelope 判定时会误以为发生了回退。属 envelope 一致性缺陷(对照 F-N01-2 list_skills 顶层掩盖内层)。",
+      "type": "envelope_consistency"
+    },
+    {
+      "id": "F-N28-3",
+      "severity": "low",
+      "title": "K线/股票画像向量索引库为空, 全部回退 python 余弦计算",
+      "evidence": "search_by_kline / search_similar_stocks / vector_search_manager(similar_patterns/similar_stocks) 一律 fallback_used=true / fallback_reason='db_empty_result' / backend_used=python。仅 market_docs 与 find_similar_patterns 走真正向量/历史检索(fallback_used=false)。",
+      "impact": "向量索引未构建, 相似检索退化为实时 python 余弦, 候选范围受 DB 已有标的限制(同行业)。结果语义仍合理但非真正向量检索。已知架构/数据未灌库限制, 非代码 bug。",
+      "type": "known_arch_empty_index"
+    }
+  ],
+  "positive_notes": [
+    "★★ find_similar_patterns(独立工具)真正可用且高质量: fallback_used=false, 自相似历史窗口检索, 返回每个匹配的 pattern_end_date/similarity/market_regime/forward_returns(5d/10d/20d) + aggregate_prediction(samples/avg_return/hit_rate), 为 AI 提供'相似形态后续收益'的条件概率证据",
+    "★ vector_search_manager(market_docs)混合检索完整: retrieval_mode=hybrid, dense_score+fts_score+lexical_score+hybrid_score 三路融合, fallback_used=false, 研报/公告命中精准, doc_types 过滤生效(lexical 精确匹配)",
+    "★ search_by_kline 行业聚类语义全部正确: 白酒/家电/保险/整车各自聚类, 相似度排序合理(同业0.9+)",
+    "★ similarity_type 维度分流清晰: technical(momentum/volatility/trend) / fundamental(roe/debt/pe/pb) / both(全维度), features 字段随类型变化",
+    "★ ST/退市股质量过滤: search_by_kline excluded_st_count + quality_filter=st_delisted_excluded_at_input, 白酒类稳定排除6只",
+    "★ vector_search_manager meta 治理完整: trace_id/audit_event_id/tool_version/side_effect(read_only)/retrieval_quality(score统计)",
+    "search_similar_stocks 对非法代码处理正确(target_missing/空), 是 F-N28-1 的正确对照路径"
+  ],
+  "verdict": "pass_with_high_finding"
+}

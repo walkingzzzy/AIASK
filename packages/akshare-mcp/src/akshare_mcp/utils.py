@@ -67,6 +67,22 @@ def enrich_response_meta(
     resolved_degraded = bool(degraded) if degraded is not None else bool(result.get("degraded"))
     resolved_degraded = resolved_degraded or "degraded" in flag_set
     resolved_degraded = resolved_degraded or (not success)
+
+    # F-N01-2 fix (诊断报告 §N01/N21/N24/N26/N28/N29): 顶层 envelope 不应掩盖
+    # data 内层的 fallback_used/degraded。许多工具把 backend_used/fallback_used 直接
+    # 合并进 data（如 skills 的 _skill_payload），导致 data.fallback_used=true 但顶层
+    # fallback_used=false。此处把内层一层标志上浮，使顶层与内层一致。
+    inner = result.get("data")
+    if isinstance(inner, dict):
+        inner_fallback = bool(inner.get("fallback_used")) or inner.get("fallback_reason") not in (None, "", [])
+        inner_degraded = bool(inner.get("degraded"))
+        if inner_fallback:
+            resolved_fallback = True
+        if inner_degraded:
+            resolved_degraded = True
+        if inner.get("fallback_reason") not in (None, "", []) and result.get("fallback_reason") in (None, "", []):
+            result["fallback_reason"] = inner.get("fallback_reason")
+
     if resolved_fallback and "fallback" not in flag_set:
         flags.append("fallback")
         flag_set.add("fallback")

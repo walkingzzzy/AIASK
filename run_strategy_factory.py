@@ -213,7 +213,7 @@ def _resolve_runner_interval_sec(
         return _env_int(
             "STRATEGY_FACTORY_NON_TRADING_DAY_INTERVAL_SEC",
             7200,
-            minimum=600,
+            minimum=300,
             maximum=86400,
         )
     if _is_market_hours_now(current):

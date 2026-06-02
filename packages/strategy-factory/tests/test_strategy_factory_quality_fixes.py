@@ -269,7 +269,263 @@ def test_success_summary_maps_llm_provider_diagnostics_into_status_counts():
 
     counts = summary["llm_status_counts"]
     assert counts["non_executable"] == 2
-    assert counts["provider_cooldown_skip"] == 3
+    assert counts["provider_cooldown_skip"] == 2
     assert counts["provider_http_502"] == 4
+    assert summary["pipeline_fallback_counts"]["cooldown_skip"] == 3
     assert "local_fallback_preferred_or_skip" not in counts
     assert "target_context_blocked" not in counts
+
+
+def test_scheduler_feedback_uses_gate3_failure_results():
+    from strategy_factory.application._factory_scheduler_loop import (
+        update_scheduler_family_gate_feedback,
+    )
+
+    results = {
+        "stages": {
+            "submit": {
+                "gate_3_input": 3,
+                "gate_3_passed": 0,
+                "gate_3_failed": 3,
+                "submitted": 0,
+                "created_audit_only": 3,
+                "gate_3_failure_reason_topn": [
+                    {"reason_code": "weak_wf_ic_ir", "count": 3}
+                ],
+                "incubation_budget_summary": {
+                    "family_counts": {"ma_cross": 3},
+                },
+            },
+        },
+        "summary": {},
+    }
+
+    feedback, update = update_scheduler_family_gate_feedback({}, results, cycle_count=1)
+
+    ma_cross = feedback["ma_cross"]
+    assert ma_cross["ema_submit_count"] == 0.0
+    assert ma_cross["gate_3_input_count"] == 3
+    assert ma_cross["gate_3_passed_count"] == 0
+    assert ma_cross["gate_failure_rate"] == 1.0
+    assert ma_cross["cooldown_active"] is True
+    assert ma_cross["suppressed"] is True
+    assert update["control_counts"]["suppress"] == 1
+
+
+def test_scheduler_feedback_exploration_reset_skips_cycle_zero():
+    from strategy_factory.application._factory_scheduler_loop import (
+        update_scheduler_family_gate_feedback,
+    )
+
+    feedback, update = update_scheduler_family_gate_feedback(
+        {"ma_cross": {"ema_submit_count": 0.0}},
+        {"stages": {"submit": {"gate_3_input": 0}}},
+        cycle_count=0,
+        ema_floor=0.15,
+        exploration_reset_interval=20,
+    )
+
+    assert feedback["ma_cross"]["ema_submit_count"] == 0.15
+    assert feedback["ma_cross"]["ema_submit_count"] != 0.5
+    assert update["control_counts"]["normal"] == 1
+
+
+def test_budget_feedback_controls_gate3_failure_rate():
+    from strategy_factory.application._budget_feedback import resolve_feedback_metrics
+
+    cooldown = resolve_feedback_metrics(
+        {
+            "ma_cross": {
+                "strategy_count": 2,
+                "gate_failure_rate": 0.75,
+                "gate_3_input_count": 2,
+            }
+        },
+        family="ma_cross",
+    )
+    suppressed = resolve_feedback_metrics(
+        {
+            "ma_cross": {
+                "strategy_count": 3,
+                "gate_failure_rate": 1.0,
+                "gate_3_input_count": 3,
+            }
+        },
+        family="ma_cross",
+    )
+
+    assert cooldown["family_control_mode"] == "cooldown"
+    assert "family_gate_failure_rate_cooldown" in cooldown["control_reasons"]
+    assert suppressed["family_control_mode"] == "suppress"
+    assert suppressed["control_mode"] == "suppress"
+    assert "family_gate_failure_rate_suppress" in suppressed["control_reasons"]
+
+
+def test_spawner_feedback_blocks_failed_family_signal_variants():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+    signal_candidates = [
+        {
+            "strategy_type": "ma_cross",
+            "params": {"fast": 5},
+            "trigger_thresholds": [{}, {}, {}],
+        },
+        {
+            "strategy_type": "ma_cross",
+            "params": {"fast": 10},
+            "trigger_thresholds": [{}, {}, {}],
+        },
+    ]
+    base_snapshot = {
+        "fear_greed_index": 70,
+        "north_fund_3d_net": 6_000_000_000,
+    }
+
+    expanded_without_feedback = spawner._expand_signal_variants(
+        {**base_snapshot, "family_gate_feedback": {"ma_cross": {"ema_submit_count": 2.0}}},
+        signal_candidates,
+    )
+    expanded_with_failed_feedback = spawner._expand_signal_variants(
+        {
+            **base_snapshot,
+            "family_gate_feedback": {
+                "ma_cross": {
+                    "ema_submit_count": 2.0,
+                    "gate_failure_rate": 1.0,
+                    "cooldown_active": True,
+                }
+            },
+        },
+        signal_candidates,
+    )
+
+    assert len(expanded_without_feedback) > 0
+    assert expanded_with_failed_feedback == []
+
+
+def test_spawner_feedback_blocks_failed_family_quota_fill():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+    current_candidates = [
+        {
+            "strategy_type": "quality_factor",
+            "params": {},
+            "trigger_thresholds": [{}],
+        }
+    ]
+    base_snapshot = {
+        "fear_greed_index": 50,
+        "north_fund_3d_net": 0,
+        "margin_5d_change_pct": 0,
+        "completeness": {"completion_ratio": 1.0},
+    }
+
+    fill_without_feedback = spawner._fill_gaps(base_snapshot, current_candidates)
+    assert "ma_cross" in {candidate["strategy_type"] for candidate in fill_without_feedback}
+    assert any(
+        candidate["strategy_type"] == "ma_cross"
+        and candidate.get("quota_fill", {}).get("parameter_source") == "fixed_defaults"
+        for candidate in fill_without_feedback
+    )
+
+    fill_with_failed_feedback = spawner._fill_gaps(
+        {
+            **base_snapshot,
+            "family_gate_feedback": {
+                "ma_cross": {
+                    "ema_submit_count": 2.0,
+                    "gate_failure_rate": 1.0,
+                    "cooldown_active": True,
+                }
+            },
+        },
+        current_candidates,
+    )
+
+    filled_types = {candidate["strategy_type"] for candidate in fill_with_failed_feedback}
+    assert "ma_cross" not in filled_types
+    assert "gap_fill" in filled_types
+
+
+def test_spawner_feedback_filters_failed_family_from_raw_signals():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+
+    candidates = spawner.spawn(
+        {
+            "fear_greed_index": 50,
+            "north_fund_3d_net": 0,
+            "margin_5d_change_pct": 0,
+            "completeness": {"completion_ratio": 1.0},
+            "family_gate_feedback": {
+                "ma_cross": {
+                    "ema_submit_count": 2.0,
+                    "gate_failure_rate": 1.0,
+                    "cooldown_active": True,
+                }
+            },
+        }
+    )
+
+    report_summary = spawner.get_last_report()["summary"]
+    candidate_types = {candidate["strategy_type"] for candidate in candidates}
+    assert "ma_cross" not in candidate_types
+    assert report_summary["source_raw_counts"]["fear_greed"] >= 1
+    assert report_summary["signal_feedback_limited_count"] >= 1
+    assert report_summary["signal_feedback_limited_type_counts"]["ma_cross"] >= 1
+    assert report_summary["signal_feedback_factor_by_type"]["ma_cross"] < 1.0
+
+
+def test_spawner_missing_feedback_keeps_normal_quota_fill_budget():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+    assert spawner._family_negative_feedback_factor("ma_cross", {}) == 1.0
+    assert spawner._family_negative_feedback_factor(
+        "ma_cross",
+        {"family_gate_feedback": {}},
+    ) == 1.0
+
+
+def test_strategy_factory_run_summary_compaction_preserves_feedback_diagnostics():
+    import json
+
+    from aiask_quant_core.storage.sqlite.strategy_factory_json_budget import bounded_json_text
+
+    summary = {
+        "trace_id": "trace_quality_compaction",
+        "gate_3_input": 3,
+        "gate_3_passed": 0,
+        "gate_3_failed": 3,
+        "scheduler_cycle_count": 2,
+        "family_gate_feedback_control_counts": {"suppress": 2, "cooldown": 1},
+        "family_gate_feedback_updated_family_count": 3,
+        "family_gate_feedback_active_families": ["momentum", "ma_cross", "value_factor"],
+        "family_gate_feedback_gate_3_input": 3,
+        "family_gate_feedback_gate_3_passed": 0,
+        "family_gate_feedback_gate_3_failed": 3,
+        "family_gate_feedback_failure_reason_topn": [
+            {"reason_code": "weak_wf_ic_ir", "count": 3}
+        ],
+        "raw_results": [{"candidate_id": f"candidate_{index}", "payload": "x" * 256} for index in range(80)],
+    }
+
+    stored = json.loads(
+        bounded_json_text("strategy_factory_runs.summary", summary, max_bytes=4096)
+    )
+
+    assert stored["storage_mode"] == "compact_json"
+    assert stored["trace_id"] == "trace_quality_compaction"
+    assert stored["gate_3_input"] == 3
+    assert stored["gate_3_failed"] == 3
+    assert stored["scheduler_cycle_count"] == 2
+    assert stored["family_gate_feedback_control_counts"] == {"suppress": 2, "cooldown": 1}
+    assert stored["family_gate_feedback_updated_family_count"] == 3
+    assert stored["family_gate_feedback_active_families"] == ["momentum", "ma_cross", "value_factor"]
+    assert stored["family_gate_feedback_failure_reason_topn"] == [
+        {"reason_code": "weak_wf_ic_ir", "count": 3}
+    ]
+    assert "raw_results" not in stored

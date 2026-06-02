@@ -1,0 +1,48 @@
+{
+  "scenario_id": "N07",
+  "title": "估值多方法 consensus (DCF/DDM/相对/scenario/consensus)",
+  "ran_at": "2026-05-30T08:54:12+08:00",
+  "tool_call_count": 31,
+  "tool_status_rows": [
+    {"tool": "dcf_valuation(600519/000651/000858/002594)", "verdict": "Pass", "extra": "★driver_v2完整: WACC分解+5年projection+terminal+profit_basis, 茅台内在4019亿, 比亚迪含27点敏感性矩阵"},
+    {"tool": "ddm_valuation(600519/000651/000001/000858 多参数)", "verdict": "Pass", "extra": "Gordon模型, 茅台548元(g=5%)/705元(g=8%,r=12%), 参数敏感正确"},
+    {"tool": "relative_valuation(600519/000651/000001/000858/300750)", "verdict": "Pass", "extra": "★peer_pool_build透明(候选/过滤/放松原因), 茅台PB溢价140% deviation=extreme, 宁德PE折价80%"},
+    {"tool": "scenario_dcf_valuation(600519白酒/000651消费)", "verdict": "Pass", "extra": "★Bull/Base/Bear概率加权, 茅台per_share=929.5元(shares输入后), 三情景intrinsic完整"},
+    {"tool": "valuation_consensus(600519/000001/000651/000858)", "verdict": "Degraded", "extra": "⚠ 全部仅 relative_pe 成功, dcf='non_positive_net_income_or_shares' ddm='dividend_unavailable' 失败 (F-N07-1), 但独立调用全成功!"},
+    {"tool": "list_industry_templates", "verdict": "Pass", "extra": "19行业模板(银行/白酒/半导体...)含growth/margin/beta/wacc参数"}
+  ],
+  "summary": {"Pass": 23, "Degraded": 8, "Fail-graceful": 0, "Fail-schema": 0},
+  "findings": [
+    {
+      "id": "F-N07-1",
+      "severity": "high",
+      "title": "valuation_consensus 内部 DCF/DDM 全部失败, 但独立 dcf_valuation/ddm_valuation 对同标的全部成功",
+      "evidence": "valuation_consensus(600519) → failed_methods={dcf:'non_positive_net_income_or_shares', ddm:'dividend_unavailable_or_non_positive'}, 仅 relative_pe 成功; 但同会话独立 dcf_valuation(600519)=4019亿成功、ddm_valuation(600519)=548元成功。000001/000651/000858 同样: consensus 内 DCF/DDM 全 fail, 独立调用全 pass。",
+      "impact": "consensus(号称汇聚5路估值)实际退化为单一 relative_pe, n=1, stdev=0, dispersion无意义, 但仍输出 confidence='medium' 误导。这是 v2 §3.2 宣称'完美修复'的工具的回归——consensus 内部调用与独立工具的数据契约不一致(疑似 consensus 内部传参或净利润/股本字段映射 bug)。",
+      "type": "cross_tool_consistency_regression"
+    },
+    {
+      "id": "F-N07-2",
+      "severity": "medium",
+      "title": "valuation_consensus 单方法仍报 confidence=medium + 'across 5 valuation methods'",
+      "evidence": "n=1(仅relative_pe), statistics.stdev=0, 但 consensus_recommendation.confidence='medium' 且 rationale='median is robust ... across 5 valuation methods'。",
+      "impact": "措辞声称跨5方法但实际仅1方法, confidence 未因 n=1 降级。AI 会高估该单点估值可信度。",
+      "type": "misleading_confidence"
+    },
+    {
+      "id": "F-N07-3",
+      "severity": "low",
+      "title": "DCF intrinsic_value 为企业价值(元)而非每股, 单位易混淆",
+      "evidence": "dcf_valuation(600519).intrinsic_value=401893458750(4019亿元, 企业价值), 而 ddm_valuation.intrinsic_value=548(每股元)。两工具 intrinsic_value 字段同名但量纲不同(企业价值 vs 每股)。",
+      "impact": "AI 若直接比较两者数值会量纲错配。scenario_dcf 有 per_share_value 字段更清晰, 但 dcf_valuation 缺每股换算。",
+      "type": "unit_consistency"
+    }
+  ],
+  "positive_notes": [
+    "dcf_valuation driver_v2 证据极完整(WACC分解/逐年FCF/profit_basis/敏感性27点矩阵)",
+    "relative_valuation 的 peer_pool_build 完全透明(候选数/各过滤阶段/放松原因/质量阈值)",
+    "scenario_dcf Bull/Base/Bear 概率加权 + per_share 换算清晰",
+    "19个行业DCF模板参数齐全"
+  ],
+  "verdict": "pass_with_high_finding"
+}

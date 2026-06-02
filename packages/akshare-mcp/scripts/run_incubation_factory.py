@@ -40,6 +40,16 @@ def _ensure_src_path() -> None:
         sys.path.insert(0, str(src))
 
 
+def _load_project_env() -> None:
+    _ensure_src_path()
+    try:
+        from akshare_mcp.env_loader import load_mcp_env
+
+        load_mcp_env(override=False)
+    except Exception:
+        pass
+
+
 def _setup_logging(verbose: bool = False) -> None:
     """配置日志。"""
     log_dir = Path(__file__).resolve().parents[1] / "logs"
@@ -250,6 +260,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    _load_project_env()
     _setup_logging(verbose=args.verbose)
 
     if args.status:

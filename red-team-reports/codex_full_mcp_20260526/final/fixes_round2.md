@@ -84,3 +84,23 @@ python -X utf8 _verify_v2_fixes.py
 ## 🔮 Round 3 后续建议
 
 剩余 finding 已修复。**§2.5 数据回灌**:目前 sh000001 表为空,需要从指数源(eastmoney_index_single 或 sina_index)重新同步,这是下次 data sync 任务自然会处理的事。
+
+
+---
+
+## 🔁 现代码复验（2026-05-29，P1-6）
+
+就绪评审 P1-6 要求"MCP 历史 P0/P1 修复需现代码复验"。本次对上述 7 项 fix 做了现代码抽样核对：
+
+| Fix | 现代码核对 | 结论 |
+|---|---|---|
+| Fix1 GBK 乱码 | `tools/market/quote.py` 含 `_safe_index_name` / `_looks_like_gbk_garbled` | ✅ 在 |
+| Fix2 指数 close 护栏 | `aiask_quant_core/core/validators.py` 含 `_check_index_close_in_range` / `_is_chinese_index_code` | ✅ 在（**区间已从 [1000,15000] 调整为 [1000,30000]**，代码内有 2026-05-28 注释说明：深证成指/创业板突破 15000，故放宽上限；拦截 cross-symbol 污染的目的不变） |
+| Fix3 一致性判定 | `services/governance_monitor.py` `check_online_offline_consistency` | ✅ 在 |
+| Fix4 数据清洗 | `data/db/sh000001_corrupt_snapshot_20260526.sql` 备份在 | ✅ 在 |
+| Fix5 北向资金 RFC-001 | `tools/fund_flow_north.py` | ✅ 在 |
+| Fix6 龙虎榜第三源 | `tools/fund_flow_market.py` | ✅ 在 |
+| Fix7 质量档位 | `factor_mining_factory/quality.py` `AKSHARE_QUALITY_PROFILE` / `_LITE_THRESHOLDS` / `_resolve_quality_profile` | ✅ 在 |
+| 验证脚本 | `packages/akshare-mcp/_verify_v2_fixes.py` | ✅ 在 |
+
+**结论**：7 项 fix 全部仍在现代码中。唯一与本报告文字不一致处为 Fix2 的阈值上限（15000 → 30000），属代码侧有据可查的后续调整，本报告作为时点记录保留原值，以此复验记录为准。

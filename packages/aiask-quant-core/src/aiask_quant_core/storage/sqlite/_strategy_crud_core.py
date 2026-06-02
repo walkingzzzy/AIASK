@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -148,7 +148,7 @@ class _StrategyCrudCoreMixin:
                            a.bound_at AS diagnostic_bound_at
                     FROM strategies s
                     JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
-                    WHERE s.status = 'submitted'
+                    WHERE s.status IN ('diagnostic', 'submitted')
                       AND a.stage = 'diagnostic'
                       AND a.status = 'active'
                       AND NOT EXISTS (
@@ -163,6 +163,115 @@ class _StrategyCrudCoreMixin:
                     max(1, min(int(limit or 5), 50)),
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
+
+        async def find_active_diagnostic_observation_by_fingerprint(
+            self,
+            fingerprint: str,
+            ttl_days: int = 7,
+        ) -> Optional[dict]:
+            token = str(fingerprint or "").strip()
+            if not token:
+                return None
+            try:
+                ttl = max(1, min(int(ttl_days or 7), 30))
+            except Exception:
+                ttl = 7
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl)).strftime("%Y-%m-%d %H:%M:%S")
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           a.account_id AS diagnostic_account_id,
+                           a.bound_at AS diagnostic_bound_at,
+                           a.metadata AS diagnostic_account_metadata
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    WHERE s.status IN ('diagnostic', 'submitted')
+                      AND a.stage = 'diagnostic'
+                      AND a.status = 'active'
+                      AND datetime(COALESCE(a.bound_at, a.updated_at)) >= datetime($1)
+                    ORDER BY datetime(a.bound_at) DESC
+                    LIMIT 200
+                    """,
+                    cutoff,
+                )
+            for row in rows:
+                payload = dict(row)
+                strategy = self._decode_strategy_row(payload)
+                params = dict(strategy.get("params") or {})
+                account_metadata = self._decode_json_field(
+                    payload.get("diagnostic_account_metadata"),
+                    {},
+                )
+                if (
+                    str(params.get("diagnostic_fingerprint") or "").strip() == token
+                    or str((account_metadata or {}).get("diagnostic_fingerprint") or "").strip() == token
+                    or str(dict((account_metadata or {}).get("trace") or {}).get("diagnostic_fingerprint") or "").strip() == token
+                ):
+                    if account_metadata:
+                        strategy["diagnostic_account_metadata"] = account_metadata
+                    return strategy
+            return None
+
+        async def get_incubation_factory_health(self, max_age_hours: int = 24) -> dict:
+            try:
+                max_age = max(1, min(int(max_age_hours or 24), 168))
+            except Exception:
+                max_age = 24
+            event_types = [
+                "incubation_factory.heartbeat",
+                "incubation_factory.hit_rate_report_generated",
+                "incubation_factory.diagnostic_observation_processed",
+                "incubation.metric_recorded",
+            ]
+            async with self.acquire() as conn:
+                latest_event = await conn.fetchrow(
+                    """
+                    SELECT event_type, created_at
+                    FROM strategy_domain_events
+                    WHERE event_type IN ($1)
+                    ORDER BY datetime(created_at) DESC
+                    LIMIT 1
+                    """,
+                    event_types,
+                )
+                latest_metric = await conn.fetchrow(
+                    """
+                    SELECT created_at
+                    FROM strategy_incubation_metrics
+                    ORDER BY datetime(created_at) DESC
+                    LIMIT 1
+                    """
+                )
+
+            def _normalize_ts(value: Any) -> Optional[datetime]:
+                resolved = self._coerce_timestamp(value)
+                if resolved is None:
+                    return None
+                if resolved.tzinfo is None:
+                    return resolved.replace(tzinfo=timezone.utc)
+                return resolved.astimezone(timezone.utc)
+
+            latest_event_at = _normalize_ts(dict(latest_event or {}).get("created_at"))
+            latest_metric_at = _normalize_ts(dict(latest_metric or {}).get("created_at"))
+            candidates = [item for item in (latest_event_at, latest_metric_at) if item is not None]
+            latest_activity_at = max(candidates) if candidates else None
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=max_age)
+            healthy = latest_activity_at is not None and latest_activity_at >= cutoff_dt
+            stale_reason = None
+            if latest_activity_at is None:
+                stale_reason = "no_incubation_activity"
+            elif not healthy:
+                stale_reason = "incubation_activity_stale"
+            return {
+                "healthy": healthy,
+                "max_age_hours": max_age,
+                "latest_activity_at": latest_activity_at.isoformat() if latest_activity_at else None,
+                "latest_event_at": latest_event_at.isoformat() if latest_event_at else None,
+                "latest_event_type": dict(latest_event or {}).get("event_type"),
+                "latest_metric_at": latest_metric_at.isoformat() if latest_metric_at else None,
+                "stale_reason": stale_reason,
+            }
 
         async def update_strategy_status(
             self,

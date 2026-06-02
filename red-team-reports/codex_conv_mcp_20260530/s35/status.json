@@ -1,0 +1,45 @@
+{
+  "scenario_id": "N35",
+  "title": "实盘 dry_run 护栏 (live_trading_manager) — 重点验证 F-N01-1 CONFIRMATION_REQUIRED 兜底",
+  "ran_at": "2026-05-30T17:08:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "护栏铁律遵守: 全程仅 dry_run 预览或被护栏拦截, 无任何真实下单(broker gateway not configured + read_only mode + write_enabled=false, 三层保证); confirm_token 即使提供也因网关只读不会成交",
+  "tool_status_rows": [
+    {"tool": "live_trading_manager(help)", "verdict": "Pass", "extra": "★15 action + action_params(submit_order required/optional)+safety_notes('写操作默认dry_run=true; execute=true必须配confirm_token'); doc明确"},
+    {"tool": "gateway_status / monitor", "verdict": "Degraded", "extra": "★configured=false/connected=false/read_only=true/write_enabled=false/allow_write=false; provider=alpaca paper; 多重只读护栏标志; monitor是gateway_status别名"},
+    {"tool": "account/positions/orders/fills/order_status 只读", "verdict": "Fail-graceful", "extra": "★gateway未配置→'live broker gateway not configured' success=false 优雅; 只读类不伪造数据"},
+    {"tool": "submit_order(dry_run=true)", "verdict": "Pass", "extra": "★★dry_run预览: accepted=true/submitted=false/mode=dry_run/'已生成下单预览'; preview完整(symbol/side/qty/type/tif); sanity_warnings(qty非100整数倍); 不触达broker"},
+    {"tool": "submit_order(execute=true, 无confirm_token)", "verdict": "Fail-graceful", "extra": "★★★F-N01-1兜底验证成功! error_code=CONFIRMATION_REQUIRED+'confirmation required: provide confirm_token=I_UNDERSTAND_THE_RISK'; ★meta.side_effect运行时正确标 level=trade_risk/confirmation_required=true(纠正了契约里read_only的错误标注F-N01-1)"},
+    {"tool": "submit_order(execute=true, 错误confirm_token)", "verdict": "Fail-graceful", "extra": "★WRONG_TOKEN_123→仍CONFIRMATION_REQUIRED要求正确token; token校验生效"},
+    {"tool": "submit_order(execute=true, 正确confirm_token) 网关只读兜底", "verdict": "Pass", "extra": "★★★第三层护栏: 即便confirm_token=I_UNDERSTAND_THE_RISK+execute=true, 因网关write_enabled=false→mode=read_only/submitted=false/'网关处于只读模式,返回下单预览'; 绝不真实下单; buy/sell均如此"},
+    {"tool": "cancel_order(execute=true,无token)", "verdict": "Fail-graceful", "extra": "★同submit, CONFIRMATION_REQUIRED拦截; cancel_order(dry_run)→cancelled=false/mode=dry_run撤单预览"},
+    {"tool": "submit_order 参数校验", "verdict": "Fail-graceful", "extra": "★缺qty/notional→'qty/quantity or notional is required'; 缺symbol→'symbol/code is required'; 缺type默认market; 校验先于gateway检查"},
+    {"tool": "submit_order(dry_run) 负数量sanity缺失", "verdict": "Degraded", "extra": "⚠ dry_run预览 qty=-50→accepted=true, sanity_warnings仅提示lot_size(非100整数倍)未提示负数量; 负qty未被sanity拦截(dry_run阶段) (F-N35-1)"},
+    {"tool": "submit_order(notional/limit/sell) 多形态", "verdict": "Pass", "extra": "★notional=5000(按金额)/limit_price=150 sell/market均正确生成预览, time_in_force=day默认"},
+    {"tool": "mirror_to_paper / sync_order_events / broker_receipts / sync_positions", "verdict": "Fail-graceful", "extra": "★需gateway的操作均'gateway not configured'优雅; mirror_to_paper(dry_run)/sync_order_events 不崩溃"},
+    {"tool": "order_events(无order_id)", "verdict": "Fail-graceful", "extra": "★缺order_id→'order_id is required'(参数校验); 带order_id→gateway未配置报错"},
+    {"tool": "bogus_action", "verdict": "Fail-graceful", "extra": "★success=false 列出15个supported action"}
+  ],
+  "summary": {"Pass": 4, "Degraded": 2, "Fail-graceful": 7, "Fail-schema": 0},
+  "findings": [
+    {
+      "id": "F-N35-1",
+      "severity": "low",
+      "title": "submit_order dry_run 预览阶段不校验负数量",
+      "evidence": "submit_order(dry_run=true, qty=-50, side=buy)→accepted=true, sanity_warnings 仅含 'lot_size:qty=-50 not multiple of 100', 未对负数量(qty<0)给出 sanity 警告或拒绝。preview 照常生成 qty=-50。",
+      "impact": "dry_run 阶段负数量未被 sanity check 标记, 虽然真实下单会被 broker 拒(且网关只读), 但预览给出负数量订单会误导。建议 sanity check 增加正负校验。低危(被多层护栏兜底, 实盘不会成交)。",
+      "type": "missing_negative_qty_sanity"
+    }
+  ],
+  "positive_notes": [
+    "★★★ F-N01-1 运行时兜底验证成功: 虽然 get_tool_contract(live_trading_manager) 契约标 side_effect=read_only/confirmation_required=false(N01发现), 但运行时 submit_order(execute=true) 被 risk_guard.require_confirmation_if_needed 拦截, error_code=CONFIRMATION_REQUIRED, 且运行时 meta.side_effect 正确标 level=trade_risk/confirmation_required=true; 护栏在运行时可靠, 契约元数据缺陷不影响实际安全",
+    "★★★ 三层护栏纵深防御: (1)写操作默认dry_run=true只预览; (2)execute=true必须配confirm_token=I_UNDERSTAND_THE_RISK否则CONFIRMATION_REQUIRED; (3)即便token正确, 网关write_enabled=false→read_only模式仍只返回预览不下单; 三层任一即可阻止误下单",
+    "★★ confirm_token 校验: 错误token(WRONG_TOKEN_123)被拒, 要求精确token值",
+    "★★ submit_order/cancel_order dry_run 预览完整且 submitted=false/cancelled=false, 不触达 broker",
+    "★ 参数校验完整: 缺symbol/qty/notional/order_id 均明确报错; 非法action列出15个supported",
+    "★ gateway_status 暴露完整能力矩阵(read_only/write_enabled/allow_write/capabilities), AI可据此判断写权限",
+    "★ sanity_warnings 机制(lot_size检查), notional/limit/market/buy/sell 多形态预览正确",
+    "★ 只读类(account/positions/orders/fills)gateway未配置时优雅报错不伪造"
+  ],
+  "verdict": "pass"
+}

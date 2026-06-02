@@ -52,9 +52,22 @@ async def should_i_sell(
         risk_ctx = _context_section(analysis_context, 'risk')
 
         # 3. 计算盈亏（仅在提供买入价时）
+        buy_price_warning = None
         if has_buy_price:
             profit_pct = (current_price - buy_price) / buy_price * 100
             profit_amount = current_price - buy_price
+            # F-N22-7 fix (诊断报告 §N22): buy_price 合理性 sanity check。
+            # 历史问题: should_i_sell(002594当前96, buy_price=1326) 算出 profit_pct=-92.75%
+            # 并据此 sell，无任何告警（典型场景：把茅台价误填给比亚迪）。
+            # 修复: buy_price 与当前价数量级严重不符时附告警（不拒绝，提示用户核对）。
+            if current_price > 0:
+                ratio = buy_price / current_price
+                if ratio >= 5.0 or ratio <= 0.2:
+                    buy_price_warning = (
+                        f"buy_price={buy_price} 与当前价 {current_price} 数量级严重不符"
+                        f"（相差 {ratio:.1f}x），请核对是否填错代码或买入价；"
+                        f"基于此 buy_price 的盈亏({profit_pct:.1f}%)与止损位可能无意义"
+                    )
         else:
             profit_pct = 0.0
             profit_amount = 0.0
@@ -246,6 +259,8 @@ async def should_i_sell(
             'failed_modules': ([f"investment_analysis:{context_error}"] if context_error else []),
             'analysis_mode': 'technical_only' if not has_buy_price else 'full',
         }
+        if buy_price_warning:
+            payload['buy_price_warning'] = buy_price_warning
 
         if analysis_context:
             payload['analysis_context'] = analysis_context

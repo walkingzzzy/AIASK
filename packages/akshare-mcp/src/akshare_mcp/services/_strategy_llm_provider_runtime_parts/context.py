@@ -219,7 +219,7 @@
                 return True
             if not isinstance(payload, dict):
                 return False
-            return "choices" not in payload and "output" not in payload
+            return "choices" not in payload and "output" not in payload and "content" not in payload
 
         @classmethod
         def _append_text_fragments(cls, fragments: list[str], value: Any) -> None:

@@ -169,8 +169,22 @@
                 refresh_existing=refresh_existing,
                 read_only=read_only,
             )
-            if diagnostic_ok and await self._claim_diagnostic_observation_slot():
+            diagnostic_guard: dict[str, Any] = {}
+            diagnostic_fingerprint = ""
+            if diagnostic_ok:
                 diagnostic_reason = diagnostic_reason or "diagnostic_observation"
+                diagnostic_fingerprint = _diagnostic_observation_fingerprint(candidate, diagnostic_reason)
+                diagnostic_guard = await self._diagnostic_observation_admission_guard(
+                    db,
+                    candidate=candidate,
+                    reason=diagnostic_reason,
+                    fingerprint=diagnostic_fingerprint,
+                )
+            if (
+                diagnostic_ok
+                and bool(diagnostic_guard.get("allowed"))
+                and await self._claim_diagnostic_observation_slot(fingerprint=diagnostic_fingerprint)
+            ):
                 submission_action = _diagnostic_observation_submission_action(
                     submission_action,
                     reason=diagnostic_reason,
@@ -180,10 +194,19 @@
                 diagnostic_params = {
                     "admission_layer": "diagnostic",
                     "diagnostic_observation": True,
+                    "diagnostic_fingerprint": diagnostic_fingerprint,
+                    "diagnostic_guard": dict(diagnostic_guard or {}),
                     "diagnostic_reason": diagnostic_reason,
                     "diagnostic_reason_code": diagnostic_reason,
                     "diagnostic_ttl_days": _diagnostic_observation_ttl_days(),
                     "source_lane": "diagnostic_observation",
+                }
+                nested_action = dict(submission_action.get("submission_action") or {})
+                nested_action.update(diagnostic_params)
+                submission_action = {
+                    **dict(submission_action or {}),
+                    **diagnostic_params,
+                    "submission_action": nested_action,
                 }
                 candidate = {
                     **dict(candidate or {}),

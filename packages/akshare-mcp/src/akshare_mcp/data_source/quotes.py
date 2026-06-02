@@ -9,8 +9,10 @@ import datetime
 import io
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
+from typing import Optional
 
 from ..date_utils import format_date_dash, get_latest_trading_date
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
@@ -62,6 +64,83 @@ def _to_tushare_ts_code(code: str) -> str:
     if normalized.startswith(("5", "6")) or normalized.startswith("11"):
         return f"{normalized}.SH"
     return f"{normalized}.SZ"
+
+
+# ---------------------------------------------------------------------------
+# 指数代码识别与路由（FIX-12）
+#
+# 历史缺陷：data_source.get_kline 首行 normalize_code() 把 sh000001 / 000001.SH
+# 碾平为裸 000001，再经 tqcenter 取成深市个股 000001（平安银行 11 元），导致
+# 上证/深证指数 K 线全部污染为个股。根因是“归一化丢弃市场标识”。
+#
+# 修复策略：在 normalize_code 之前先判定证券类型。仅“带显式市场标识(前缀 sh/sz
+# 或后缀 .SH/.SZ)且代码落在指数号段”的输入才判为指数；裸 6 位代码一律按个股，
+# 保持 000001=平安银行 的向后兼容语义。
+# ---------------------------------------------------------------------------
+
+# 已知主流指数 → 标准存储前缀码（与 storage.get_index_klines / market.kline 对齐）
+_INDEX_PREFIXED_CODES = {
+    "000001": "sh000001",  # 上证指数
+    "000016": "sh000016",  # 上证50
+    "000300": "sh000300",  # 沪深300
+    "000688": "sh000688",  # 科创50
+    "000852": "sh000852",  # 中证1000
+    "000905": "sh000905",  # 中证500
+    "399001": "sz399001",  # 深证成指
+    "399005": "sz399005",  # 中小100
+    "399006": "sz399006",  # 创业板指
+    "399300": "sz399300",  # 沪深300(深)
+}
+
+
+def _resolve_index_storage_code(raw_code: str) -> Optional[str]:
+    """判定输入是否为指数代码，返回标准存储前缀码（sh000001/sz399006）或 None。
+
+    判定规则（仅带显式市场标识才判指数，避免误伤裸个股）：
+    - 前缀 ``sh``/``sz`` 或后缀 ``.SH``/``.SZ``（大小写不敏感）提取市场 + 6 位数字；
+    - 市场=SH 且代码 ``000`` 开头（上证系列），或市场=SZ 且代码 ``399`` 开头（深证系列）
+      → 视为指数；
+    - 命中 ``_INDEX_PREFIXED_CODES`` 的已知指数号段优先返回其标准码；
+    - 其余（裸 6 位、sz000001=平安银行、sh600519=个股等）返回 None（按个股处理）。
+    """
+    s = str(raw_code or "").strip()
+    if not s:
+        return None
+    lower = s.lower()
+
+    market: Optional[str] = None
+    digits: Optional[str] = None
+
+    # 前缀形式：sh000001 / sz399006
+    if lower.startswith(("sh", "sz")):
+        market = lower[:2]
+        rest = lower[2:].lstrip(".")
+        m = re.match(r"^(\d{6})$", rest)
+        if m:
+            digits = m.group(1)
+    # 后缀形式：000001.SH / 399006.SZ
+    elif "." in lower:
+        head, _, tail = lower.partition(".")
+        m = re.match(r"^(\d{6})$", head)
+        if m and tail in ("sh", "sz"):
+            market = tail
+            digits = m.group(1)
+
+    if not market or not digits:
+        return None
+
+    # 已知指数号段：直接返回标准存储码（要求市场一致，防止 sz000001 误判）
+    known = _INDEX_PREFIXED_CODES.get(digits)
+    if known is not None and known.startswith(market):
+        return known
+
+    # 通用规则：沪市 000 段 / 深市 399 段
+    if market == "sh" and digits.startswith("000"):
+        return f"sh{digits}"
+    if market == "sz" and digits.startswith("399"):
+        return f"sz{digits}"
+
+    return None
 
 
 def _previous_business_day(current: datetime.date) -> datetime.date:
@@ -265,6 +344,21 @@ class QuotesMixin:
         4. 旧降级链 Tushare Pro → legacy → Baostock → eFinance（仅当
            ``DATA_SOURCE_KEEP_LEGACY_FALLBACK=1``）
         """
+        # FIX-12: 指数代码（带 sh/sz 前缀或 .SH/.SZ 后缀且落在指数号段）必须在
+        # normalize_code 碾平市场标识之前拦截，改走指数专用取数，避免被解析成
+        # 同号段深市个股（如 sh000001 上证指数被误取成 000001 平安银行）。
+        index_storage_code = _resolve_index_storage_code(code)
+        if index_storage_code is not None:
+            index_rows = self._get_index_kline(index_storage_code, period=period, limit=limit)
+            if index_rows:
+                return index_rows
+            # 指数取数失败时不回退到个股链（避免再次污染），返回空让上层显性处理
+            safe_stderr_print(
+                f"[DataSource] index kline empty for {code} -> {index_storage_code}; "
+                f"not falling back to stock path to avoid cross-symbol contamination"
+            )
+            return []
+
         code = normalize_code(code)
 
         # 0. 本地 SQLite 优先（DB-first 策略）
@@ -447,5 +541,98 @@ class QuotesMixin:
                 safe_stderr_print(f"[DataSource] eFinance KLine timed out (>{_EFINANCE_TIMEOUT}s) for {code}")
             except Exception as e:
                 safe_stderr_print(f"[DataSource] eFinance KLine failed: {e}")
+
+        return []
+
+    def _get_index_kline(self, index_storage_code: str, period: str = "daily", limit: int = 100) -> list[dict]:
+        """获取指数 K 线（FIX-12 专用，避免与个股代码串码）。
+
+        数据源优先级: 本地 SQLite(前缀码) → Tushare index_daily → AkShare
+        index_storage_code 形如 ``sh000001`` / ``sz399006``（已带市场前缀）。
+        """
+        digits = re.sub(r"\D", "", index_storage_code)[:6]
+
+        # 0. 本地 SQLite 优先：用带前缀码直接查，命中即返回（已存的指数行不会与个股串码）
+        if period == "daily":
+            try:
+                from ..storage import get_db
+                db = get_db()
+                rows = None
+                if hasattr(db, "get_klines_sync"):
+                    rows = db.get_klines_sync(index_storage_code, limit=limit)
+                elif hasattr(db, "conn"):
+                    cursor = db.conn.execute(
+                        "SELECT time, code, open, high, low, close, volume, amount, turnover, change_pct "
+                        "FROM kline_1d WHERE code = ? ORDER BY time DESC LIMIT ?",
+                        (index_storage_code, limit),
+                    )
+                    fetched = cursor.fetchall()
+                    if fetched:
+                        rows = []
+                        for row in reversed(fetched):
+                            raw_date = str(row[0] or "")
+                            rows.append({
+                                "date": raw_date[:10] if len(raw_date) >= 10 else raw_date,
+                                "code": row[1],
+                                "open": row[2], "high": row[3], "low": row[4], "close": row[5],
+                                "volume": row[6], "amount": row[7], "turnover": row[8],
+                                "change_pct": row[9], "source": "sqlite_index",
+                            })
+                if rows and len(rows) >= min(limit, 10):
+                    return rows
+            except Exception as e:
+                safe_stderr_print(f"[DataSource] index DB read failed for {index_storage_code}: {e}")
+
+        # 1. Tushare index_daily（仅日线）
+        if self.ts_pro is not None and period == "daily":
+            try:
+                ts_code = f"{digits}.SZ" if digits.startswith("39") else f"{digits}.SH"
+                end_date = datetime.datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.datetime.now() - datetime.timedelta(days=limit * 2 + 30)).strftime("%Y%m%d")
+                df = self.ts_pro.index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+                if df is not None and not df.empty:
+                    df = df.iloc[::-1].tail(limit)
+                    results = []
+                    for _, row in df.iterrows():
+                        td = str(row.get("trade_date", ""))
+                        results.append({
+                            "date": f"{td[:4]}-{td[4:6]}-{td[6:]}" if len(td) >= 8 else td,
+                            "open": safe_float(row.get("open")),
+                            "close": safe_float(row.get("close")),
+                            "high": safe_float(row.get("high")),
+                            "low": safe_float(row.get("low")),
+                            "volume": safe_float(row.get("vol")),
+                            "amount": safe_float(row.get("amount")),
+                            "change_pct": safe_float(row.get("pct_chg")),
+                            "source": "tushare_index",
+                        })
+                    if results:
+                        return results
+            except Exception as e:
+                safe_stderr_print(f"[DataSource] Tushare index_daily failed for {index_storage_code}: {e}")
+
+        # 2. AkShare 指数专用接口（lazy import，仅指数分支触发）
+        try:
+            import akshare as _ak
+            df = _ak.stock_zh_index_daily_em(symbol=index_storage_code)
+            if df is not None and not df.empty:
+                df = df.tail(int(limit))
+                results = []
+                for _, row in df.iterrows():
+                    date_val = row.get("date") or row.get("日期") or ""
+                    results.append({
+                        "date": str(date_val)[:10],
+                        "open": safe_float(row.get("open") or row.get("开盘")),
+                        "close": safe_float(row.get("close") or row.get("收盘")),
+                        "high": safe_float(row.get("high") or row.get("最高")),
+                        "low": safe_float(row.get("low") or row.get("最低")),
+                        "volume": safe_int(row.get("volume") or row.get("成交量")),
+                        "amount": safe_float(row.get("amount") or row.get("成交额")),
+                        "source": "akshare_index",
+                    })
+                if results:
+                    return results
+        except Exception as e:
+            safe_stderr_print(f"[DataSource] AkShare index kline failed for {index_storage_code}: {e}")
 
         return []

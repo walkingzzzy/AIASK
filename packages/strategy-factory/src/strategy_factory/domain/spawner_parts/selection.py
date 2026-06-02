@@ -211,6 +211,7 @@
         source_raw_counts: Optional[Dict[str, int]] = None,
         source_budget_caps: Optional[Dict[str, Optional[int]]] = None,
         source_budget_weights: Optional[Dict[str, Optional[float]]] = None,
+        signal_feedback_summary: Optional[dict] = None,
     ) -> dict:
         source_counts: Dict[str, int] = {}
         strategy_type_counts: Dict[str, int] = {}
@@ -220,6 +221,8 @@
         parameter_source_counts: Dict[str, int] = {}
         quota_fill_mode_counts: Dict[str, int] = {}
         quota_fill_quality_counts: Dict[str, int] = {}
+        quota_fill_feedback_limited_count = 0
+        quota_fill_feedback_limited_type_counts: Dict[str, int] = {}
         historical_quota_fill_count = 0
         signal_aligned_quota_fill_count = 0
         no_signal_quota_fill_count = 0
@@ -238,6 +241,11 @@
                 fill_meta = dict(candidate.get("quota_fill") or {})
                 fill_mode = str(fill_meta.get("fill_source_mode") or "unknown").strip()
                 fill_quality = str(fill_meta.get("fill_quality_tier") or "unknown").strip()
+                if bool(fill_meta.get("feedback_limited")):
+                    quota_fill_feedback_limited_count += 1
+                    quota_fill_feedback_limited_type_counts[strategy_type] = (
+                        quota_fill_feedback_limited_type_counts.get(strategy_type, 0) + 1
+                    )
                 if fill_mode:
                     quota_fill_mode_counts[fill_mode] = quota_fill_mode_counts.get(fill_mode, 0) + 1
                 if fill_quality:
@@ -253,6 +261,7 @@
         raw_counts = dict(source_raw_counts or {})
         budget_caps = dict(source_budget_caps or {})
         budget_weights = dict(source_budget_weights or {})
+        signal_feedback = dict(signal_feedback_summary or {})
         trimmed_count = sum(
             max(0, int(raw_counts.get(source, 0) or 0) - int(source_counts.get(source, 0) or 0))
             for source in raw_counts
@@ -274,10 +283,19 @@
                 "source_budget_caps": budget_caps,
                 "source_budget_weights": budget_weights,
                 "source_trimmed_count": trimmed_count,
+                "signal_feedback_limited_count": int(signal_feedback.get("signal_feedback_limited_count") or 0),
+                "signal_feedback_limited_type_counts": dict(
+                    signal_feedback.get("signal_feedback_limited_type_counts") or {}
+                ),
+                "signal_feedback_factor_by_type": dict(
+                    signal_feedback.get("signal_feedback_factor_by_type") or {}
+                ),
                 "parameter_source_counts": parameter_source_counts,
                 "historical_distribution_count": int(parameter_source_counts.get("historical_distribution") or 0),
                 "quota_fill_mode_counts": quota_fill_mode_counts,
                 "quota_fill_quality_counts": quota_fill_quality_counts,
+                "quota_fill_feedback_limited_count": quota_fill_feedback_limited_count,
+                "quota_fill_feedback_limited_type_counts": quota_fill_feedback_limited_type_counts,
                 "historical_guided_quota_fill_count": historical_quota_fill_count,
                 "signal_aligned_quota_fill_count": signal_aligned_quota_fill_count,
                 "no_signal_quota_fill_count": no_signal_quota_fill_count,

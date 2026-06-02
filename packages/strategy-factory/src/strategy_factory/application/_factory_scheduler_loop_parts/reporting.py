@@ -497,6 +497,17 @@
                 else:
                     async def _execute_once() -> dict:
                         resolved_db = self._load_db() if db is None else db
+                        try:
+                            restore_scheduler_state = getattr(self, "_restore_scheduler_state", None)
+                            if callable(restore_scheduler_state):
+                                restore_result = restore_scheduler_state(resolved_db)
+                                if inspect.isawaitable(restore_result):
+                                    await restore_result
+                        except Exception as restore_exc:
+                            logger.debug(
+                                "StrategyFactory run_once: scheduler state restore failed: %s",
+                                restore_exc,
+                            )
                         previous_result = self.last_result
                         resolved_mode = resolve_factory_execution_mode(
                             execution_mode,
@@ -684,6 +695,61 @@
                                 results.get("run_id"),
                                 results.get("status"),
                             )
+                            try:
+                                _alpha = 0.3
+                                _ema_floor = float(os.getenv("STRATEGY_FACTORY_EMA_FLOOR", "0.15") or 0.15)
+                                _exploration_reset_interval = int(
+                                    os.getenv("STRATEGY_FACTORY_EMA_EXPLORATION_RESET_INTERVAL", "20") or 20
+                                )
+                                completed_cycle_count = max(0, int(getattr(self, "_cycle_count", 0) or 0)) + 1
+                                updated_feedback, feedback_update = update_scheduler_family_gate_feedback(
+                                    dict(getattr(self, "_family_gate_feedback", {}) or {}),
+                                    results,
+                                    cycle_count=completed_cycle_count,
+                                    alpha=_alpha,
+                                    ema_floor=_ema_floor,
+                                    exploration_reset_interval=_exploration_reset_interval,
+                                )
+                                self._family_gate_feedback = updated_feedback
+                                self._cycle_count = completed_cycle_count
+                                summary = dict(results.get("summary") or {})
+                                summary["family_gate_feedback_update"] = feedback_update
+                                summary["scheduler_cycle_count"] = self._cycle_count
+                                feedback_control_counts = dict(feedback_update.get("control_counts") or {})
+                                summary["family_gate_feedback_control_counts"] = feedback_control_counts
+                                summary["family_gate_feedback_updated_family_count"] = int(
+                                    feedback_update.get("updated_family_count") or 0
+                                )
+                                summary["family_gate_feedback_tracked_family_count"] = int(
+                                    feedback_update.get("tracked_family_count") or 0
+                                )
+                                summary["family_gate_feedback_active_families"] = list(
+                                    feedback_update.get("active_families") or []
+                                )
+                                summary["family_gate_feedback_gate_3_input"] = int(
+                                    feedback_update.get("gate_3_input") or 0
+                                )
+                                summary["family_gate_feedback_gate_3_passed"] = int(
+                                    feedback_update.get("gate_3_passed") or 0
+                                )
+                                summary["family_gate_feedback_gate_3_failed"] = int(
+                                    feedback_update.get("gate_3_failed") or 0
+                                )
+                                summary["family_gate_feedback_submitted"] = int(
+                                    feedback_update.get("submitted") or 0
+                                )
+                                summary["family_gate_feedback_created_audit_only"] = int(
+                                    feedback_update.get("created_audit_only") or 0
+                                )
+                                summary["family_gate_feedback_failure_reason_topn"] = list(
+                                    feedback_update.get("gate_3_failure_reason_topn") or []
+                                )
+                                results["summary"] = summary
+                            except Exception as feedback_exc:
+                                logger.debug(
+                                    "StrategyFactory run_once: family gate feedback update failed: %s",
+                                    feedback_exc,
+                                )
                             if task_board is not None and board_task is not None:
                                 task_board.heartbeat(
                                     board_task["task_id"],
@@ -765,7 +831,7 @@
                             family_counts: Dict[str, int] = dict(
                                 (results.get("summary") or {}).get("incubation_budget_family_counts") or {}
                             )
-                            if family_counts:
+                            if False and family_counts:
                                 _alpha = 0.3
                                 _ema_floor = float(os.getenv("STRATEGY_FACTORY_EMA_FLOOR", "0.15") or 0.15)
                                 _exploration_reset_interval = int(

@@ -279,6 +279,28 @@ def register_watchlist_manager(mcp):
                 if not codes:
                     return fail("需要提供 code 或 codes 参数（股票代码）")
 
+                # F-N32-1 fix (诊断报告 §N32): add_stocks 必须校验代码合法性。
+                # 历史问题: ZZZ999/BADCODE 等任意字符串直接入库，自选股变成垃圾桶。
+                # 修复: 逐个用 resolve_existing_security_code_async 校验存在性，
+                # 非法/不存在的代码拒绝入库并回显，已存在的标准化后入库。
+                from ...utils import resolve_existing_security_code_async
+
+                validated_codes: list[str] = []
+                invalid_codes: list[dict[str, str]] = []
+                for raw in codes:
+                    resolved, _info, err = await resolve_existing_security_code_async(raw)
+                    if err or not resolved:
+                        invalid_codes.append({"code": raw, "reason": err or "代码不存在"})
+                    else:
+                        if resolved not in validated_codes:
+                            validated_codes.append(resolved)
+                if invalid_codes:
+                    return fail(
+                        "以下代码非法或不存在，已拒绝入库（自选股不接受未知代码）："
+                        + ", ".join(f"{item['code']}({item['reason']})" for item in invalid_codes)
+                    )
+                codes = validated_codes
+
                 group_id = _safe_group_id(kwargs.get("group_id"))
                 group_name = str(kwargs.get("group_name") or kwargs.get("name") or group_id).strip() or group_id
                 color = str(kwargs.get("color")).strip() if kwargs.get("color") is not None else None

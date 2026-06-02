@@ -391,13 +391,15 @@ def register(mcp):
         return _skill_ok(
             {
                 "skill": skill,
-                "execution": execution,
                 "skill_id": skill_id,
                 "skill_name": skill.get("name", ""),
                 "params": normalized_params,
                 "skill_path": skill.get("path", ""),
                 "execution_mode": skill.get("execution_mode", "orchestrated"),
+                # N45 payload 去重: 历史上 execution 与 result 是同一对象的两份完整副本。
+                # 现仅保留 result 为权威键，execution 改为指针说明，避免 payload 翻倍。
                 "result": execution,
+                "execution_ref": "result",
                 "message": "Skill executed via built-in orchestrator",
                 "source": source,
             },

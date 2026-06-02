@@ -550,17 +550,24 @@ def register_data_sync_manager(mcp):
                 # 历史问题:重复调用 schedule 同 task_type+codes 会创建多个 schedule_id,运维难清理
                 # 修复:先检查是否存在同 task_type + codes_signature 的 enabled schedule,有则更新而非新建
                 codes_signature = ",".join(sorted(codes or []))
+                # FIX-15: 去重比较改为 Python 端，避免 PostgreSQL 专有的数组拼接函数
+                # 在 SQLite 上报 'no such function'。codes 列的序列化形式（list / JSON /
+                # 逗号串）统一交给 _normalize_codes 解码后再比较 signature，跨方言安全。
+                existing = None
                 async with db.acquire() as conn:
-                    existing = await conn.fetchrow(
+                    candidate_rows = await conn.fetch(
                         """
-                        SELECT schedule_id FROM sync_schedules
+                        SELECT schedule_id, codes FROM sync_schedules
                         WHERE task_type = $1 AND enabled = true
-                          AND COALESCE(array_to_string(codes, ',', ''), '') = $2
-                        ORDER BY created_at DESC LIMIT 1
+                        ORDER BY created_at DESC
                         """,
                         task_type,
-                        codes_signature,
-                    ) if hasattr(conn, 'fetchrow') else None
+                    ) if hasattr(conn, 'fetch') else []
+                for row in candidate_rows or []:
+                    row_codes = _normalize_codes(row["codes"] if "codes" in row.keys() else None)
+                    if ",".join(sorted(row_codes)) == codes_signature:
+                        existing = row
+                        break
 
                 if existing:
                     # 已存在同任务,更新 schedule + next_run

@@ -95,6 +95,10 @@ def test_supervisor_does_not_force_strategy_interval_by_default() -> None:
         incubation_dry_run=False,
         incubation_verbose=False,
         incubation_silent_restart=0,
+        no_signal_tracker=True,
+        signal_tracker_run_time="17:00",
+        signal_tracker_verbose=False,
+        signal_tracker_silent_restart=0,
     )
 
     specs = _build_specs(args)
@@ -132,6 +136,10 @@ def test_supervisor_preserves_explicit_strategy_interval() -> None:
         incubation_dry_run=False,
         incubation_verbose=False,
         incubation_silent_restart=0,
+        no_signal_tracker=True,
+        signal_tracker_run_time="17:00",
+        signal_tracker_verbose=False,
+        signal_tracker_silent_restart=0,
     )
 
     specs = _build_specs(args)

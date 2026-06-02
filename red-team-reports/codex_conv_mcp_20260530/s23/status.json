@@ -1,0 +1,48 @@
+{
+  "scenario_id": "N23",
+  "title": "统一决策 (decision_consensus / get_unified_decision_summary/details/wrapper)",
+  "ran_at": "2026-05-30T16:23:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易时段, 统一决策因合规闸门一律 action=watch; 跨标的 quant/event context 新鲜度不一(05-13~05-29)",
+  "tool_status_rows": [
+    {"tool": "decision_consensus(8标的 x 多style)", "verdict": "Pass", "extra": "★★暴露并解决跨工具分歧: should_i_buy(watch/hold)↔build_stock_context(sell)系统性split→actionable=hold; directions_distribution+agreement_ratio+tools_agree/split+rationale 透明"},
+    {"tool": "decision_consensus(+buy_price+holding_days)", "verdict": "Pass", "extra": "★引入 should_i_sell 第3工具, 600519/000651/000858亏损时 2/3 agree 'sell'→actionable=sell; 300750盈利时 should_i_sell=hold→2/3 'hold'; 按持仓P&L自适应"},
+    {"tool": "decision_consensus(min_agreement_ratio=0.5)", "verdict": "Pass", "extra": "★阈值参数生效: 002594默认0.6→split/hold, 传0.5→agree/watch; min_agreement_ratio_threshold 正确回显并改变 consensus 判定"},
+    {"tool": "decision_consensus(BADX)", "verdict": "Fail-graceful", "extra": "★两工具均 available=false 附各自error('Stock not found'/'代码格式无效'), cross_tool_consensus=no_data, actionable=no_recommendation, 优雅"},
+    {"tool": "get_unified_decision_summary(多标的多style)", "verdict": "Degraded", "extra": "★结构完整: action/confidence/final_score/summary/reasons/risks/gate_flags/position_signal/data_provenance/compliance_notice/details_hint/diagnostics/weights; 但 quality_flags=[fallback,partial,degraded] 顶层(见F-N23-2)"},
+    {"tool": "get_unified_decision_details", "verdict": "Pass", "extra": "★最全: summary + details(stock_context+quant_context+event_context+user_context+gate_result+fusion 全量); 但payload极大(最重工具)"},
+    {"tool": "get_unified_decision(detail_level=summary)", "verdict": "Pass", "extra": "★兼容包装器, detail_level=summary 返回与 get_unified_decision_summary 一致结构"},
+    {"tool": "统一决策因合规一律 watch", "verdict": "Degraded", "extra": "⚠ 8标的所有style的 get_unified_decision*.action 均=watch(gate阻断), position_signal.suggested_position_pct=0.0; 周末非交易时段决策链对买入全阻断(同N21 F-N21-1)"},
+    {"tool": "decision_consensus 与 fuse 方向一致性", "verdict": "Pass", "extra": "★decision_consensus(should_i_buy/build_stock_context)与 fuse_decision_payload(三上下文融合)虽用不同工具集但方向一致(均偏谨慎hold/watch), 无系统性矛盾"},
+    {"tool": "data_provenance 各源时间戳", "verdict": "Degraded", "extra": "⚠ data_provenance 暴露各源新鲜度: stock实时, quant=05-29, event=05-13~05-23(部分17天stale); 透明但底层数据陈旧(同N22 F-N22-6)"}
+  ],
+  "summary": {"Pass": 6, "Degraded": 3, "Fail-graceful": 1, "Fail-schema": 0},
+  "findings": [
+    {
+      "id": "F-N23-1",
+      "severity": "medium",
+      "title": "统一决策链对所有买入一律合规阻断 (周末非交易时段) 且 action 恒为 watch",
+      "evidence": "decision_consensus / get_unified_decision_summary/details 对全部8标的全部style, gate_flags 均含 compliance blocked(detail={}), action=watch, position_cap_pct>0 但 suggested_position_pct=0.0。无任何标的能产生 buy 动作。",
+      "impact": "在周末/非交易时段, 整条统一决策链失去区分度(全部 watch), 决策融合的 raw_ai_action 也被 gate 覆盖为 watch。AI 无法据此做买入决策。合规阻断本身合理(不能盘后下单), 但 detail 空+无 market_closed 明示, 且统一决策应区分'信号层判断'与'当前可执行性'。与 N21 F-N21-1 同源。",
+      "type": "gate_blocks_all_unified_decisions"
+    },
+    {
+      "id": "F-N23-2",
+      "severity": "low",
+      "title": "统一决策顶层 degraded=true (user_profile_fallback) 但核心数据可用",
+      "evidence": "get_unified_decision_summary/details 顶层 data_quality.degraded=true, quality_flags=[fallback,partial,degraded], fallback_reason=[user_profile_fallback], missing_fields=[industry_chain_snapshot, weighted_profile]。但 stock/quant/event 三大上下文核心字段完整。degraded 主因是未建用户画像(隔离user_id)+产业链未匹配。",
+      "impact": "顶层 degraded 主要由 user_profile_fallback 与 industry_chain 未匹配触发, 而非核心决策数据缺失。AI 仅看顶层 degraded 可能高估降级程度。建议区分'关键数据降级'与'可选增强数据缺失'。",
+      "type": "envelope_degraded_overstated"
+    }
+  ],
+  "positive_notes": [
+    "★★decision_consensus 是解决跨工具分歧的核心机制: 系统性暴露 should_i_buy(watch/hold)↔build_stock_context(sell) 的 split, 输出 directions_distribution/agreement_ratio/tools_agree/tools_split/rationale, 把历史已知的'sell vs hold矛盾'转为透明的可审计共识",
+    "★decision_consensus 持仓感知: 传 buy_price+holding_days 引入 should_i_sell, 亏损持仓→2/3 sell, 盈利持仓→2/3 hold, actionable 随 P&L 自适应",
+    "★min_agreement_ratio 参数生效: 0.5 vs 0.6 改变 consensus(agree/watch vs split/hold), 阈值可调",
+    "get_unified_decision_summary 输出 data_provenance(各源时间戳)+compliance_notice('不构成投资建议')+details_hint(引导取详情), 合规与可追溯性优秀",
+    "get_unified_decision_details 提供全量证据(stock/quant/event/user context+gate+fusion), 一站式审计",
+    "get_unified_decision(detail_level) 兼容包装正确; BADX 在所有统一决策工具均优雅拒绝(no_data/no_recommendation)",
+    "三分量 diagnostics(stock/quant/event score)与 weights(随style变化)与 N21 fuse 完全一致, 跨工具分数传递确定"
+  ],
+  "verdict": "pass"
+}

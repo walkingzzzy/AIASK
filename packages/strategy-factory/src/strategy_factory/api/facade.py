@@ -86,6 +86,16 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "StrategyFactoryScheduler": ("..application.factory_scheduler", "StrategyFactoryScheduler"),
     "StrategySpawner": ("..application.research.spawner", "StrategySpawner"),
     "StrategySubmitter": ("..application.submitter", "StrategySubmitter"),
+    # Theme-graph / event-driven research public exports (so akshare-mcp does not
+    # need to reach into strategy_factory.application.research.* internals; see
+    # tests/test_factory_db_only_boundary.py boundary contract).
+    "NormalizedEvent": ("..application.research.theme_graph", "NormalizedEvent"),
+    "propagate_event_to_themes": ("..application.research.theme_graph", "propagate_event_to_themes"),
+    "resolve_target_basket": ("..application.research.target_basket", "resolve_target_basket"),
+    "ThemeExposureBuilder": ("..application.research.theme_exposure_builder", "ThemeExposureBuilder"),
+    "seed_default_theme_graph": ("..application.research.theme_seed", "seed_default_theme_graph"),
+    "generate_tasks_from_active_events": ("..application.research.event_task_generator", "generate_tasks_from_active_events"),
+    "ThemeResponseRegression": ("..application.research.theme_response_regression", "ThemeResponseRegression"),
     "_call_optional_async": ("..application.runtime", "_call_optional_async"),
     "get_local_event_engine": ("..application.event_engine", "get_local_event_engine"),
 }
@@ -117,6 +127,13 @@ __all__ = [
     "Deduplicator",
     "StrategySubmitter",
     "EliminationChecker",
+    "NormalizedEvent",
+    "propagate_event_to_themes",
+    "resolve_target_basket",
+    "ThemeExposureBuilder",
+    "seed_default_theme_graph",
+    "generate_tasks_from_active_events",
+    "ThemeResponseRegression",
     "_call_optional_async",
     "call_optional_async",
     "auto_name",

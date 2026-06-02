@@ -1,0 +1,116 @@
+{
+  "scenario_id": "N46",
+  "title": "交易计划与关键价位 (get_key_levels / calculate_stop_levels / generate_trade_plan: 多标的×方向×参数 + 仓位/RR校验 + 非法输入边界)",
+  "ran_at": "2026-05-30T19:54:30+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "DB 约250根日线/8标的样本; 非交易时段(周末), 实时价来自最近交易日快照(600519=1326元/2026-05-29); ★关键: get_key_levels(000001) 把平安银行(K线~10.78元)校准到上证指数(4068元 factor=377.4), 而 calculate_stop_levels(000001) 与 generate_trade_plan(000001) 用正确的~11元 — 000001↔sh000001 污染是 get_key_levels 工具特有(N34/N36/N38/N39 同源); generate_trade_plan 各标的 signal_decay 恒报'近60日命中率0%'(recent_n=0 触发的误报警, 非真实衰减)",
+  "tool_status_rows": [
+    {"tool": "get_key_levels(600519, lookback=120)", "verdict": "Pass", "extra": "★多算法投票(pivot/volume_cluster/fib/swing/MA), strength1-5分级, sources明示, breach_action含突破/跌破操作; nearest_support1317.3/resistance1340.76; price_calibration.calibrated=false(正确, 茅台无需校准)"},
+    {"tool": "calculate_stop_levels(600519 long entry1326 atr2 cap100w risk0.02)", "verdict": "Pass", "extra": "★atr14=28.51/结构止损1304.13/RR 1:1/1:2/1:3(1347.87/1369.74/1391.61)正确; 仓位max_shares200(整手)/max_amount26.5万/risk_budget2万; trailing_stop ATR×1.5"},
+    {"tool": "calculate_stop_levels(000001 short entry11.5 cap0)", "verdict": "Fail-schema", "extra": "★short止损11.75(正确在entry上方) 但 method label='结构止损(最近支撑位下方1%)' — short应是阻力位上方, 方向标签未适配; cap0→position_sizing=null(正确不算仓位) (F-N46-3 label_direction_bug)"},
+    {"tool": "calculate_stop_levels(000651 long entry45 risk0.05)", "verdict": "Pass", "extra": "risk0.05→risk_budget5万/max_shares6600/position29.7%; atr止损recommended(43.35>结构38.64取近者)"},
+    {"tool": "get_key_levels(000001, lookback=60)", "verdict": "Fail-schema", "extra": "★★current_price=4068.57 + price_calibration{kline_close:10.78, realtime_price:4068.57, factor:377.4184, calibrated:true} — 把平安银行K线(10.78元)用377倍factor校准到上证指数点位(4068); 关键价位全部锚定错误标的(上证指数), 平安银行实际~11元 (F-N46-1 HIGH 000001污染)"},
+    {"tool": "calculate_stop_levels(300750 long entry240 atr3 cap50w)", "verdict": "Pass", "extra": "atr14=15.16/atr3倍止损194.53; structure_stop=null(无近支撑则纯ATR); max_shares200/position9.6%; entry240与实际424差异大但按用户entry计算正确"},
+    {"tool": "calculate_stop_levels(600519 direction=sideways_invalid)", "verdict": "Fail-graceful", "extra": "★'direction 必须为 long 或 short' 清晰拒绝非法方向"},
+    {"tool": "get_key_levels(999999 非法码)", "verdict": "Fail-schema", "extra": "★★非法代码999999→success=true, current_price=4068.57(又是上证指数!), 返回完整关键价位; 非法代码静默坐标化到指数数据而非拒绝 (F-N46-2 非法码坐标化, N17/N18/N28/N30/N36/N41 同源)"},
+    {"tool": "calculate_stop_levels(600519 risk_per_trade=5 即500%)", "verdict": "Fail-schema", "extra": "★risk_per_trade=5(500%)无校验→risk_budget=500万(>capital100万); max_shares仍200(被max_amount30%上限兜住), 但risk_budget=5M荒谬值未拒绝 (F-N46-4 risk_per_trade无上界校验)"},
+    {"tool": "calculate_stop_levels(600519 entry_price=0)", "verdict": "Fail-schema", "extra": "★★entry=0→atr_stop=-57.01(负止损价)/recommended=-57.01; tp_1x=57.01; entry=0物理无意义应拒绝, 却算出负价 (F-N46-5 非正entry无校验)"},
+    {"tool": "generate_trade_plan(600519 balanced cap100w)", "verdict": "Degraded", "extra": "★★信息极丰富(regime_adaptive/Kelly/scenario/cross_validation/hit_rate_by_regime/risk_VaR); 但 ⚠顶层confidence=0.79 vs confidence_breakdown.final=0.93 不一致(F-N46-6); ⚠signal_decay恒报'近60日0%'误警(recent_n=0)(F-N46-7); direction=avoid/Kelly负不建仓 决策合理"},
+    {"tool": "generate_trade_plan(000001 aggressive cap100w)", "verdict": "Pass", "extra": "★current_price=10.78(正确平安银行!与get_key_levels(000001)的4068矛盾→证明污染是工具特有); regime=range_calm/direction=avoid; aggressive max_position25%/risk0.02"},
+    {"tool": "generate_trade_plan(000651 conservative cap30w)", "verdict": "Fail-schema", "extra": "★conservative风格 max_position_pct=25%, 但3个scenario的entry position_pct均≈29.4-29.9%(超过声明的25%上限); scenario仓位与position_management.max_position_pct不一致 (F-N46-8 scenario仓位超风格上限)"},
+    {"tool": "get_key_levels(002594, lookback=250)", "verdict": "Pass", "extra": "比亚迪96.18元正确; 250根lookback; nearest_support95.36/resistance97.14; calibrated=false"},
+    {"tool": "calculate_stop_levels(600519 entry=-50 负价)", "verdict": "Fail-schema", "extra": "★★entry=-50→atr_stop=-107.01/recommended=-107.01(负止损); ★max_shares=-6000(负股数!)/max_amount30万; 负entry应拒绝却产出负股数 (并入F-N46-5)"},
+    {"tool": "calculate_stop_levels(999999 非法码 entry100)", "verdict": "Fail-schema", "extra": "★★非法码999999→atr14=52.33(在垃圾/指数数据上算ATR)/atr_pct=52.33; atr_stop=-4.65(负); 非法码未拒绝, 在错误数据上计算 (并入F-N46-2)"},
+    {"tool": "get_key_levels(601318)", "verdict": "Pass", "extra": "中国平安53.5元正确; nearest_support52.78/resistance53.73; calibrated=false"},
+    {"tool": "get_key_levels(002304)", "verdict": "Pass", "extra": "002304 45.39元; support/resistance分层合理; calibrated=false"},
+    {"tool": "calculate_stop_levels(000858 long entry120 atr1.5 risk0.01)", "verdict": "Pass", "extra": "★entry120(实际84.89)按用户值计算; atr止损116.59(structure83.1过远取ATR); ★recommended正确取较近止损; max_shares2500/position30%"},
+    {"tool": "get_key_levels(000858)", "verdict": "Pass", "extra": "五粮液84.89元正确; nearest_support83.94/resistance85.22; calibrated=false"},
+    {"tool": "calculate_stop_levels(601318 long entry53.5 atr2)", "verdict": "Pass", "extra": "atr14=1.25/结构止损52.25/RR比正确; max_shares5600/position29.96%(≈30%上限)"},
+    {"tool": "calculate_stop_levels(002304 short entry45.39)", "verdict": "Pass", "extra": "★short: 止损46.79(entry上方正确)/止盈43.99-41.19(下方正确); 此处method label仍'支撑位下方'但值正确(同F-N46-3, label与short不符)"},
+    {"tool": "calculate_stop_levels(002594 short entry96.18)", "verdict": "Pass", "extra": "★short止损98.25(上方)/止盈94.11-89.97(下方); RR方向正确"},
+    {"tool": "calculate_stop_levels(000001 long entry11.5 atr2)", "verdict": "Pass", "extra": "★★current按~11元(atr14=0.14)计算正确(平安银行); 与 get_key_levels(000001)的4068指数污染形成直接对照→证明 calculate_stop_levels 用对了标的, get_key_levels 用错 (F-N46-1 关键证据)"},
+    {"tool": "get_key_levels(600519, lookback=20)", "verdict": "Pass", "extra": "20根lookback仍能算(kline_count=20); 价位略不同于120根(更近期); 数据充足边界"},
+    {"tool": "calculate_stop_levels(600519 cap=50000 小资金)", "verdict": "Pass", "extra": "★cap5万买茅台(1手13.26万买不起)→max_shares=0/max_amount0/position0%; 小资金不足1手优雅返回0仓 (正确)"},
+    {"tool": "get_key_levels(300750)", "verdict": "Pass", "extra": "宁德时代424元; 8档支撑/4档阻力(下跌趋势支撑密集); calibrated=false"},
+    {"tool": "get_key_levels(000651)", "verdict": "Pass", "extra": "格力39.17元; strength5支撑37.39/38.32密集; calibrated=false"},
+    {"tool": "generate_trade_plan(999999 非法码 balanced)", "verdict": "Fail-schema", "extra": "★★非法码999999→success=true, current_price=4068.57(上证指数), name='', 返回完整交易计划(regime/scenario/key_levels全基于指数数据); hit_rate samples=9 reliable=false 但仍给方案; 非法标的应拒绝 (并入F-N46-2); ★signal_decay full_sample_hr=1.0却仍warning'近60日0%'(F-N46-7误警铁证)"},
+    {"tool": "calculate_stop_levels(300750 long entry424 atr2)", "verdict": "Pass", "extra": "atr14=15.16/结构止损412.58/RR正确; max_shares700/position29.68%"},
+    {"tool": "calculate_stop_levels(000651 long entry39.17 risk_per_trade=0)", "verdict": "Pass", "extra": "★risk=0→risk_budget0/max_shares0/position0%(正确: 零风险预算=零仓位); 与risk=5(F-N46-4)对照, 下界0处理正确但上界无校验"},
+    {"tool": "get_key_levels(600519, lookback=5)", "verdict": "Fail-graceful", "extra": "★lookback=5→'K线数据不足，无法计算关键价位' 清晰拒绝(数据不足边界正确)"}
+  ],
+  "summary": {"Pass": 19, "Degraded": 1, "Fail-graceful": 2, "Fail-schema": 8},
+  "findings": [
+    {
+      "id": "F-N46-1",
+      "severity": "high",
+      "title": "★get_key_levels(000001) 把平安银行 K线 用 377 倍 factor 校准到上证指数点位, 而同代码在 calculate_stop_levels/generate_trade_plan 用对了标的",
+      "evidence": "get_key_levels('000001') → current_price=4068.57, price_calibration={kline_close:10.78, realtime_price:4068.57, factor:377.4184, calibrated:true}; 所有支撑/阻力位锚定在 4042-4268(上证指数点位)。对比: calculate_stop_levels('000001', entry=11.5) → atr14=0.14 基于~11元(平安银行正确); generate_trade_plan('000001') → current_price=10.78(平安银行正确)。",
+      "impact": "get_key_levels 的 realtime 价获取把 000001 解析成上证指数(sh000001)而非平安银行(sz000001), 再用 377 倍 factor 把 K线强行校准, 产出完全错误的关键价位(指数点位)。同一代码三个交易决策工具有两种标的认知, AI 据 get_key_levels 给平安银行用户的支撑位会是 4042 点(荒谬)。是 N34/N36/N38/N39 000001↔sh000001 污染在本工具的复现, 且 calculate_stop_levels/generate_trade_plan 已修对、get_key_levels 未修, 说明修复不彻底。应统一 000001 解析为深市平安银行。",
+      "type": "index_stock_symbol_contamination"
+    },
+    {
+      "id": "F-N46-2",
+      "severity": "high",
+      "title": "★非法股票代码 999999 在三个工具均静默坐标化到上证指数数据而非拒绝",
+      "evidence": "get_key_levels('999999')→success=true/current_price=4068.57/完整关键价位; calculate_stop_levels('999999', entry=100)→atr14=52.33(垃圾数据)/atr_stop=-4.65; generate_trade_plan('999999')→success=true/current_price=4068.57/name=''/完整交易计划(scenario/key_levels基于指数)。",
+      "impact": "999999 不是有效 A 股代码, 三个工具都不校验存在性, 静默回退到上证指数(sh000001)数据并产出'看似正常'的完整结果(name='' 是唯一线索)。AI/用户对不存在标的会得到基于指数的虚假交易计划。是跨场景非法码坐标化模式(N17/N18/N28/N30/N36/N41)在交易决策工具的复现。应校验代码存在性并返回 NOT_FOUND。",
+      "type": "invalid_code_coordinatization"
+    },
+    {
+      "id": "F-N46-3",
+      "severity": "medium",
+      "title": "calculate_stop_levels 做空(short)时止损 method 标签仍写'支撑位下方'(应为阻力位上方)",
+      "evidence": "calculate_stop_levels('000001'/'002304'/'002594', direction='short') → stop_loss.recommended 数值正确(位于 entry 上方), 但 method='结构止损 (最近支撑位下方 1%)'。做空的结构止损应基于阻力位(entry 上方), 标签写'支撑位下方'方向相反。",
+      "impact": "止损价数值正确(功能无误), 但 method 文案对做空方向描述错误(支撑 vs 阻力), AI/用户读 method 解释会困惑。应按 direction 适配 method 文案(short→阻力位上方)。",
+      "type": "short_stop_method_label_mismatch"
+    },
+    {
+      "id": "F-N46-4",
+      "severity": "medium",
+      "title": "★calculate_stop_levels risk_per_trade 无上界校验(传 5=500% 仍接受, risk_budget=500万>本金)",
+      "evidence": "calculate_stop_levels('600519', capital=1000000, risk_per_trade=5) → risk_budget=5000000.0(=本金5倍); max_shares 仍 200(被 max_amount 30% 仓位上限兜住, 未真按 500% 风险开仓), 但 risk_budget=5M 荒谬值入算未拒绝。对比 risk_per_trade=0→risk_budget=0(下界正常)。",
+      "impact": "risk_per_trade 是单笔风险占比, 合理范围(0,~0.1]。传 5(500%)不校验, risk_budget 算出 5M 超本金。虽 max_amount 30% 仓位上限意外兜住了实际开仓, 但 risk_budget 字段输出荒谬值会误导。应校验 risk_per_trade ∈ (0,1] 或更严上界。",
+      "type": "risk_per_trade_no_upper_bound"
+    },
+    {
+      "id": "F-N46-5",
+      "severity": "high",
+      "title": "★calculate_stop_levels 非正 entry_price(0/负) 不校验, 产出负止损价与负股数",
+      "evidence": "entry_price=0 → atr_stop=-57.01/recommended=-57.01(负止损价)/tp_1x=57.01; entry_price=-50 → atr_stop=-107.01/recommended=-107.01 + ★max_shares=-6000(负股数)/max_amount=300000。",
+      "impact": "股价不可能 ≤0, entry_price=0/负 应直接拒绝。当前算出负止损价(物理无意义)且负 entry 还产出 max_shares=-6000(负股数), 若下游据此下单将异常。应在入口校验 entry_price>0 返回 PARAM_ERROR。",
+      "type": "nonpositive_entry_no_validation"
+    },
+    {
+      "id": "F-N46-6",
+      "severity": "low",
+      "title": "generate_trade_plan 顶层 confidence 与 confidence_breakdown.final 不一致",
+      "evidence": "generate_trade_plan('600519') → 顶层 confidence=0.79, 但 confidence_breakdown.final=0.93; '000001'→0.78 vs 0.92; '000651'→0.82 vs 0.96; '999999'→0.71 vs 0.84。两者系统性偏差约 0.14。",
+      "impact": "顶层 confidence 与 breakdown.final 不一致(顶层更保守), AI 不知该用哪个。可能是顶层叠加了额外折减(如 cross_validation 低 confidence), 但未说明关系。应明确两者口径或统一。",
+      "type": "confidence_field_inconsistency"
+    },
+    {
+      "id": "F-N46-7",
+      "severity": "medium",
+      "title": "★generate_trade_plan signal_decay 恒报'近60日命中率仅为历史的0%'误警(recent_n=0 时无差别触发)",
+      "evidence": "所有 generate_trade_plan 调用 signal_decay.warning='信号严重衰减：近60日命中率仅为历史的0%，建议降低仓位或切换信号', 但 recent_n=0(近60日无样本)/recent_hr=null/decay_ratio=0。999999 案例 full_sample_hr=1.0(100%命中)仍报此警。",
+      "impact": "近60日无信号样本(recent_n=0)被误判为'命中率0%衰减', 即便全样本命中率100%也照报严重衰减警告并建议降仓。这是把'无近期数据'当成'近期表现差', 会系统性误导 AI 降低所有标的仓位。应区分 recent_n=0(数据不足, 不可判)与真实 recent_hr 低(衰减)。",
+      "type": "signal_decay_false_alarm_on_no_recent_samples"
+    },
+    {
+      "id": "F-N46-8",
+      "severity": "medium",
+      "title": "★generate_trade_plan scenario 入场仓位 position_pct 超过 position_management.max_position_pct(风格上限)",
+      "evidence": "generate_trade_plan('000651', style='conservative') → position_management.max_position_pct=25.0, 但 scenarios[A/B/C].entry.position_pct 分别为 29.92/29.35/29.38(均>25%)。",
+      "impact": "声明 conservative 风格仓位上限 25%, 但具体场景入场仓位算到 ~30%, 超出自身声明的风险上限。AI/用户照场景 position_pct 开仓会突破风格约束。scenario 仓位计算应受 max_position_pct 约束。",
+      "type": "scenario_position_exceeds_style_cap"
+    }
+  ],
+  "positive_notes": [
+    "★★ calculate_stop_levels 核心逻辑正确: ATR 止损/结构止损取较近者、RR 1:1/1:2/1:3 止盈方向随 long/short 正确翻转、A股整手(100股倍数)、max_amount 30% 仓位上限、risk_budget=capital×risk_per_trade、trailing_stop ATR 倍数; 小资金不足1手→0仓, risk=0→0仓 均优雅",
+    "★★ get_key_levels 多算法投票工程质量高: pivot+volume_cluster+fibonacci+swing_cluster+MA 5方法汇聚, strength1-5(汇聚越多越强), sources明示来源, confirmation确认条件, breach_action突破/跌破操作建议, 分级清晰可执行",
+    "★★ generate_trade_plan 信息极丰富且诚实: regime_adaptive_params(按市场状态调仓)、Kelly sizing(负Kelly→不建仓)、多scenario(条件/入场/止损/止盈/if_wrong)、cross_validation、hit_rate_by_regime/holding_period(标 reliable)、risk VaR95/99、daily_checklist; direction=avoid 在偏空+Kelly负时合理保守",
+    "★ 错误路径多数规范: 非法 direction→'必须为long或short', lookback不足→'K线数据不足', risk=0→0仓; 边界(数据充足/不足)处理得当",
+    "★ 000001 在 calculate_stop_levels(~11元) 与 generate_trade_plan(10.78元) 已正确解析为平安银行 — 说明污染修复在这两个工具已完成, 仅 get_key_levels 残留(F-N46-1), 修复方向明确"
+  ],
+  "verdict": "fail_schema_index_contamination_and_invalid_input_validation_gaps_but_core_stop_rr_position_logic_sound"
+}

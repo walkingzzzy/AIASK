@@ -54,6 +54,13 @@ _VALIDATION_PEER_UNIVERSE_BY_FAMILY: Dict[str, List[str]] = {
 
 _FACTOR_RANK_VALIDATION_SAMPLE_MIN = 12
 
+# 统计验证可行下限：任何策略的验证面板有效股票数都必须高于 IC 引擎每期最小样本数
+# (aiask_quant_core.validation 的 min_samples_per_period=10)。低于该值时每个截面期的
+# IC 会被丢弃 → walk_forward n_folds=0 / oos_ic_mean=0 → Gate-3 误判"无统计证据"。
+# 留 2 只裕量（12 > 10），且 _build_strategy_panels 取数后还会因 K 线长度不足再过滤，
+# 故面板默认会取更多（见 FACTORY_VALIDATION_PANEL_SAMPLE_SIZE）。
+_STATISTICAL_PANEL_MIN_STOCKS = 12
+
 
 def _primary_strategy_family(payload: Optional[dict]) -> str:
     item = dict(payload or {})
@@ -211,10 +218,12 @@ def _resolve_strategy_sample_selection(
     validation_profile = dict(params.get("validation_profile") or {})
     profile_name = str(validation_profile.get("profile") or "").strip().lower()
     requested_sample_size = max(1, int(sample_size or 6))
-    effective_sample_size = requested_sample_size
-    statistical_sample_min = 0
+    # 兜底防线：任何调用点（含 dedup 的 sample_size=4）传入的样本数都不得低于统计可行下限，
+    # 否则 IC 引擎每期样本 < 10 → OOS 证据恒空 → Gate-3 全拒（策略工厂零产出主因）。
+    effective_sample_size = max(requested_sample_size, _STATISTICAL_PANEL_MIN_STOCKS)
+    statistical_sample_min = _STATISTICAL_PANEL_MIN_STOCKS
     if profile_name == "factor_rank_validation":
-        statistical_sample_min = _FACTOR_RANK_VALIDATION_SAMPLE_MIN
+        statistical_sample_min = max(_STATISTICAL_PANEL_MIN_STOCKS, _FACTOR_RANK_VALIDATION_SAMPLE_MIN)
         effective_sample_size = max(effective_sample_size, statistical_sample_min)
     research_task = dict(params.get("research_task") or {})
     validation_focus = str(

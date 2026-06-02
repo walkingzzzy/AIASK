@@ -244,7 +244,6 @@
                             self._circuit_open_until = None
                             self._circuit_open_backoff_sec = self._circuit_open_backoff_sec_initial
                             self._daily_run_count += 1
-                            self._cycle_count += 1
                             self._metrics.record_cycle_success(
                                 (self._now() - now).total_seconds(), self._now()
                             )
@@ -290,7 +289,6 @@
                         await self._run_event_theme_maintenance_if_due()
                         await self.run_once()
                         self._daily_run_count += 1
-                        self._cycle_count += 1
                         # 成功 → 重置断路器
                         self._consecutive_failures = 0
                         self._circuit_open_until = None

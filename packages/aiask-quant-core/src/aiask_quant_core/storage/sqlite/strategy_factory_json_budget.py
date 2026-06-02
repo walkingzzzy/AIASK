@@ -232,6 +232,7 @@ def strategy_factory_sql_json_field_limits() -> dict[tuple[str, str], int]:
         ("strategy_quality_reports", "backtest_metrics"): strategy_json_field_max_bytes(),
         ("strategy_quality_reports", "snapshot"): strategy_json_field_max_bytes(),
         ("strategy_factory_run_artifacts", "payload_json"): strategy_json_field_max_bytes(),
+        ("strategy_factory_scheduler_state", "payload_json"): strategy_json_field_max_bytes(),
         ("strategy_factory_runs", "summary"): strategy_json_field_max_bytes(),
         ("strategy_factory_runs", "stages"): strategy_json_field_max_bytes() * 2,
         ("strategy_factory_runs", "snapshot_summary"): strategy_json_field_max_bytes(),
@@ -480,6 +481,84 @@ def compact_factor_research(value: Any, *, field_name: str, original_size: int) 
     return compact
 
 
+def compact_strategy_factory_run_summary(value: Any, *, field_name: str, original_size: int) -> dict[str, Any]:
+    payload = dict(value or {}) if isinstance(value, Mapping) else {}
+    compact: dict[str, Any] = {
+        "storage_mode": "compact_json",
+        "field_name": field_name,
+        "truncated": True,
+        "original_size_bytes": int(original_size),
+        "payload_hash": stable_json_hash(value),
+        "top_level_keys": sorted(str(key) for key in payload.keys())[:80],
+    }
+    priority_keys = (
+        "trace_id",
+        "runtime_enabled",
+        "event_runtime_mode",
+        "fear_greed",
+        "listed_count",
+        "snapshot_degraded",
+        "snapshot_completion_ratio",
+        "snapshot_failure_reason_count",
+        "candidates_spawned",
+        "autonomy_generated",
+        "autonomy_task_count",
+        "autonomy_completed_task_count",
+        "autonomy_failed_task_count",
+        "llm_status_counts",
+        "pipeline_fallback_counts",
+        "task_timeout_skip_count",
+        "gate_3_input",
+        "gate_3_passed",
+        "gate_3_failed",
+        "submitted",
+        "created_audit_only",
+        "gate_3_failure_reason_topn",
+        "gate_3_failure_topn",
+        "scheduler_cycle_count",
+    )
+    preserve_keys = [
+        key for key in priority_keys if key in payload
+    ] + [
+        key
+        for key in payload.keys()
+        if str(key).startswith("family_gate_feedback")
+    ]
+
+    def assign_compact(key: str, item: Any, *, nested_limit: int = 80) -> None:
+        if item in (None, "", [], {}):
+            return
+        if _is_scalar(item):
+            compact[key] = item
+            return
+        if isinstance(item, list):
+            compact[key] = preview_list(item, limit=16)
+            compact[f"{key}_count"] = len(item)
+            return
+        if isinstance(item, Mapping):
+            compact[key] = _scalar_mapping(item, limit=nested_limit)
+            return
+        compact[key] = str(item)
+
+    for key in preserve_keys:
+        assign_compact(str(key), payload.get(key), nested_limit=120)
+
+    scalar_preview_count = 0
+    for raw_key, item in payload.items():
+        key = str(raw_key)
+        if key in compact or f"{key}_count" in compact:
+            continue
+        if not _is_scalar(item):
+            continue
+        assign_compact(key, item)
+        scalar_preview_count += 1
+        if scalar_preview_count >= 40:
+            break
+    if len(payload) > len(compact):
+        compact["truncated_key_count"] = max(0, len(payload) - len(compact))
+    return compact
+
+
 def compact_strategy_params(value: Any, *, field_name: str, original_size: int) -> dict[str, Any]:
     payload = dict(value or {}) if isinstance(value, Mapping) else {}
     compact: dict[str, Any] = {}
@@ -565,6 +644,8 @@ def compact_for_field(field_name: str, value: Any, *, max_bytes: int) -> Any:
     normalized = str(field_name or "").strip().lower()
     if "factor_research" in normalized:
         compacted = compact_factor_research(value, field_name=field_name, original_size=original_size)
+    elif normalized == "strategy_factory_runs.summary":
+        compacted = compact_strategy_factory_run_summary(value, field_name=field_name, original_size=original_size)
     elif normalized.endswith("strategies.params") or normalized == "strategies.params":
         compacted = compact_strategy_params(value, field_name=field_name, original_size=original_size)
     else:

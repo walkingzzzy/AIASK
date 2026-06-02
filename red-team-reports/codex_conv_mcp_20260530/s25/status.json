@@ -1,0 +1,82 @@
+{
+  "scenario_id": "N25",
+  "title": "可转债与新股 (get_cb_info / get_ipo_info / get_stock_capital / get_trading_dates / sync_trading_calendar)",
+  "ran_at": "2026-05-30T16:29:30+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易时段; cb_info 后端 tqcenter 对部分债(SH 11xxxx/已退市)不可用(tdx_only_mode); 数据源主用 tqcenter(tushare_pro 降级)",
+  "tool_status_rows": [
+    {"tool": "get_trading_dates(count=3/5/10 / 日期区间)", "verdict": "Degraded", "extra": "★功能正确: count返回最近N交易日, start/end区间过滤(2026H1=95日); 但 backend_requested=tushare_pro→tqcenter fallback, 顶层 degraded=true(provider降级) (F-N25-3)"},
+    {"tool": "get_trading_dates provider_contract", "verdict": "Pass", "extra": "★完整 provider_contract(标准模型TradingCalendar+provider_requested/used+freshness+quality_gate), 契约化元数据优秀"},
+    {"tool": "sync_trading_calendar(2026)", "verdict": "Pass", "extra": "★95个交易日, 含note说明'当前年份截至今日后续自动更新', degraded=false(不降级)"},
+    {"tool": "get_ipo_info(type=0/1/2)", "verdict": "Degraded", "extra": "⚠ type=2返2条(301669股票SGDate0529/370881 SGDate0601), type=0返股票, type=1返370881但其type字段标'stock'(370xxx应为可转债申购), 债被误标stock (F-N25-1)"},
+    {"tool": "get_ipo_info code/name 空", "verdict": "Degraded", "extra": "⚠ ipo_list 每条 code/name 均为空字符串, 仅 SGCode/SGDate/SGPrice/PE_Issue 有值; 申购标的名称缺失 (F-N25-2)"},
+    {"tool": "get_ipo_info(type=5 非法 / include_future=false)", "verdict": "Fail-graceful", "extra": "★type=5非法值→空列表'当前暂无新股/新债申购信息'(宽松不报错); include_future=false 正确过滤未来申购"},
+    {"tool": "get_cb_info(128136/127045 深市活跃债)", "verdict": "Pass", "extra": "★★完整: KZZCode/转股价ZGPrice/转股日ZGDate/到期日EndDate/剩余规模/回售价PutBack/强赎价ForceRedeem/评级KZZScore(AA+/AAA)/转股价值ZGValue/转股溢价KZZYj"},
+    {"tool": "get_cb_info(123039/123100/113050/113537/128095 SH或退市债)", "verdict": "Degraded", "extra": "⚠ 多个债码返回 cb_info={} degraded=true 'tqcenter不可用且未启用旧降级'(tdx_only_mode); 推测SH债(11xxxx)/已退市债 tqcenter无数据 (F-N25-4)"},
+    {"tool": "get_cb_info HSCode 缺前导零", "verdict": "Degraded", "extra": "⚠ 128136 正股 HSCode='2475'(应为002475), 127045 HSCode='2714'(应为002714); 正股代码缺前导零, 与6位标准代码不一致 (F-N25-5)"},
+    {"tool": "get_cb_info(空code)", "verdict": "Fail-graceful", "extra": "★success=false error_code=PARAM_ERROR '可转债代码不能为空（支持 code/stock_code/symbol）', 校验正确"},
+    {"tool": "get_cb_info(600519 股票码当债码 / 123039.SZ 带后缀)", "verdict": "Degraded", "extra": "⚠ 600519(股票码)→空degraded; 123039.SZ(带后缀)归一化为123039但仍degraded; 后缀剥离正确但底层数据缺"},
+    {"tool": "get_stock_capital(8标的)", "verdict": "Pass", "extra": "★ltgb(流通股)/zgb(总股本)正确: 茅台12.5亿全流通(ltgb=zgb); 平安银行194亿; 中国平安/BYD/五粮液 ltgb<zgb(H股或限售); 历史日期list返2点"},
+    {"tool": "get_stock_capital(BADX 非法码)", "verdict": "Fail-schema", "extra": "⚠ 非法代码 BADX 返回 ltgb=0/zgb=0, success=true 无error; 零股本静默返回而非报错(同其他工具silent-zero模式) (F-N25-6)"}
+  ],
+  "summary": {"Pass": 4, "Degraded": 6, "Fail-graceful": 2, "Fail-schema": 1},
+  "findings": [
+    {
+      "id": "F-N25-1",
+      "severity": "medium",
+      "title": "get_ipo_info 可转债申购被误标 type='stock'",
+      "evidence": "ipo_type=1('仅新发债')返回 SGCode=370881(370xxx 为深市可转债申购代码)但其 type 字段='stock'。ipo_type=0('仅新股')返回 301669(真股票)。债项被正确按 type=1 过滤出来, 但 type 字段标注为 stock 而非 bond/cb。",
+      "impact": "AI 依据 type 字段区分新股/新债会误判 370881 为股票。建议修正 type 字段为 convertible_bond/bond。",
+      "type": "type_field_mislabel"
+    },
+    {
+      "id": "F-N25-4",
+      "severity": "medium",
+      "title": "get_cb_info 对 SH/已退市可转债不可用 (tdx_only_mode)",
+      "evidence": "get_cb_info 对 123039/123100/113050/113537/128095 返回 cb_info={} + degraded=true + 'tqcenter不可用且未启用旧降级'(fallback_reason=tdx_only_mode), 而 128136/127045(深市活跃债)正常返回完整数据。推测 SH 债(11xxxx)及部分已退市债在 tqcenter 无覆盖。",
+      "impact": "可转债信息覆盖不全(仅深市活跃债可查), AI 查 SH 可转债或退市债会得空结果。属数据源覆盖限制, degraded 标注正确但无替代源。",
+      "type": "data_source_coverage_gap"
+    },
+    {
+      "id": "F-N25-6",
+      "severity": "medium",
+      "title": "get_stock_capital 非法代码返回零股本而非报错",
+      "evidence": "get_stock_capital(code='BADX') 返回 capital_data=[{Date:20260530, ltgb:0.0, zgb:0.0}], success=true, 无 error/警告。",
+      "impact": "非法/不存在代码返回零股本且 success=true, AI 可能把 0 股本当真实数据(如算市值会得0)。建议非法代码返回 error 或空列表+degraded。与 run_batch_backtest(F-N17-1)等 silent-zero/coercion 模式同源。",
+      "type": "silent_zero_invalid_code"
+    },
+    {
+      "id": "F-N25-2",
+      "severity": "low",
+      "title": "get_ipo_info 申购标的 code/name 字段为空",
+      "evidence": "ipo_list 每条记录 code='' / name='' 均空, 实际申购代码在 SGCode 字段, 但名称完全缺失(无法知道是哪只新股/债)。",
+      "impact": "AI 无法向用户展示申购标的名称, 只能给代码。建议填充 name 或说明 SGCode 为申购代码。",
+      "type": "missing_name_field"
+    },
+    {
+      "id": "F-N25-5",
+      "severity": "low",
+      "title": "get_cb_info 正股 HSCode 缺前导零",
+      "evidence": "128136 的 HSCode='2475'(应为 002475 兆易创新), 127045 的 HSCode='2714'(应为 002714)。正股代码去掉了前导零, 与系统其他地方的6位标准代码格式不一致。",
+      "impact": "AI 用 HSCode 去查正股行情会因缺前导零失败(2475 vs 002475)。建议补齐到6位。",
+      "type": "code_format_missing_leading_zero"
+    },
+    {
+      "id": "F-N25-3",
+      "severity": "low",
+      "title": "get_trading_dates 顶层 degraded=true (tushare_pro→tqcenter 降级)",
+      "evidence": "get_trading_dates 所有调用 backend_requested=tushare_pro 但 backend_used=tqcenter, fallback_used=true, 顶层 degraded=true。数据本身正确(交易日历准确), 仅因首选源降级。",
+      "impact": "交易日历数据正确但因 tushare_pro 不可用一律标 degraded, AI 可能高估问题。属首选数据源不可用, tqcenter 兜底有效。",
+      "type": "provider_fallback_degraded"
+    }
+  ],
+  "positive_notes": [
+    "★get_cb_info(深市活跃债)数据极完整: 转股价/转股日/到期日/剩余规模/回售触发价/强赎触发价/信用评级(债AA+~AAA/正股AAA)/转股价值/转股溢价率, 可转债分析所需字段齐全",
+    "get_stock_capital 流通股/总股本准确: 茅台全流通(ltgb=zgb), H股公司(中国平安/BYD/五粮液)ltgb<zgb 正确反映限售/H股; 支持历史日期列表查询",
+    "get_trading_dates 提供完整 provider_contract(TradingCalendar标准模型+freshness契约+quality_gate); count 与 start/end 区间两种查询模式正确",
+    "sync_trading_calendar 含人性化 note(当前年份截至今日后续自动更新), 2026 H1 95交易日准确(含春节/清明/劳动节休市)",
+    "边界处理: 空cb code→PARAM_ERROR; 非法ipo_type→空列表友好提示; 123039.SZ后缀正确归一化",
+    "get_ipo_info 正确按 ipo_type(0新股/1新债/2全部)过滤, include_future 参数生效"
+  ],
+  "verdict": "pass"
+}

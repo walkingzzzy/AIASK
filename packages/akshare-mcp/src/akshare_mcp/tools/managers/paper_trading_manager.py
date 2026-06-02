@@ -155,6 +155,15 @@ def register_paper_trading_manager(mcp):
 
                 if not code:
                     return fail('需要提供 code 参数')
+                # F-N34-2 fix (诊断报告 §N34): place_order 必须校验代码合法性。
+                # 历史问题: 市价单因取不到价格而失败，但限价单(显式 price)绕过价格获取，
+                # INVALIDXX@50 挂单成功 → 限价单成为非法代码的旁路。
+                # 修复: 在 order_type 分支之前统一做存在性校验，市价/限价/止损一致拒绝非法代码。
+                from ...utils import resolve_existing_security_code_async
+                _resolved_code, _stock_info, _code_err = await resolve_existing_security_code_async(code)
+                if _code_err or not _resolved_code:
+                    return fail(_code_err or f'代码不存在或非法: {code}')
+                code = _resolved_code
                 if shares is None:
                     return fail('需要提供 shares 参数')
                 try:

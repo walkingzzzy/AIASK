@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .._runtime_toggles import diagnostic_observation_final_status
+
 
 @dataclass(slots=True)
 class SubmissionExecutionOptions:
@@ -35,19 +37,35 @@ class StrategyUpsertService:
         should_persist_strategy = not refresh_existing or bool(gate.get("passed"))
         if read_only or not should_persist_strategy:
             return should_persist_strategy
+        initial_status = None
+        if not refresh_existing:
+            is_diagnostic_observation = bool(candidate.get("diagnostic_observation"))
+            initial_status = (
+                diagnostic_observation_final_status()
+                if is_diagnostic_observation
+                else "submitted"
+            )
+            data = {**dict(data or {}), "status": initial_status}
         await db.save_strategy(data)
         await self._submitter._persist_metrics(strategy_id, metrics, validation_report, risk_report, db)
         if not refresh_existing:
             await self._submitter._update_strategy_status(
                 db,
                 strategy_id,
-                "submitted",
+                initial_status,
                 actor_id="strategy_factory",
-                reason="factory_submit",
+                reason=(
+                    "factory_submit_diagnostic_observation"
+                    if is_diagnostic_observation
+                    else "factory_submit"
+                ),
                 metadata={
                     "spawn_reason": candidate.get("spawn_reason"),
                     "dedup_result": candidate.get("dedup_result") or {},
                     "incubation_budget": dict(candidate.get("incubation_budget") or {}),
+                    "diagnostic_observation": bool(candidate.get("diagnostic_observation")),
+                    "diagnostic_fingerprint": candidate.get("diagnostic_fingerprint"),
+                    "diagnostic_reason": candidate.get("diagnostic_reason"),
                 },
             )
         return should_persist_strategy

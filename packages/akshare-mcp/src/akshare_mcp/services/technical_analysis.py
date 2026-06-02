@@ -113,16 +113,49 @@ class TechnicalAnalysis:
     @staticmethod
     def calculate_rsi(closes: List[float], period: int = 14) -> Dict[str, Any]:
         """计算RSI指标"""
+        # F-N04-1 修复：warmup 不足时不得伪造 RSI=0/100 并给出超卖买入/超买卖出信号。
+        # RSI(period) 至少需要 period+1 个收盘价才能形成一个有效值。
+        n_closes = len([c for c in (closes or []) if c is not None])
+        if n_closes < period + 1:
+            return {
+                'value': None,
+                'signal': 'unknown',
+                'overbought': None,
+                'oversold': None,
+                'reliable': False,
+                'warning': (
+                    f'数据不足：RSI({period}) 至少需要 {period + 1} 根K线，实际 {n_closes} 根；'
+                    f'不输出超买/超卖信号（避免虚假 oversold buy）'
+                ),
+                'data_points': n_closes,
+                'required_points': period + 1,
+            }
+
+        rsi_value = None
         if TALIB_AVAILABLE:
             rsi = talib.RSI(_float_array(closes), timeperiod=period)
-            rsi_value = float(rsi[-1]) if not np.isnan(rsi[-1]) else 0
+            rsi_value = float(rsi[-1]) if not np.isnan(rsi[-1]) else None
         elif PANDAS_TA_AVAILABLE:
             df = pd.DataFrame({'close': closes})
             rsi_series = df.ta.rsi(length=period)
-            rsi_value = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 0
+            last = rsi_series.iloc[-1] if rsi_series is not None and len(rsi_series) else None
+            rsi_value = float(last) if last is not None and not pd.isna(last) else None
         else:
             rsi_value = TechnicalAnalysis._calculate_rsi_numpy(closes, period)
-        
+
+        # 计算结果仍可能为 NaN/None（边界），同样按数据不足处理，不伪造信号
+        if rsi_value is None or (isinstance(rsi_value, float) and np.isnan(rsi_value)):
+            return {
+                'value': None,
+                'signal': 'unknown',
+                'overbought': None,
+                'oversold': None,
+                'reliable': False,
+                'warning': f'RSI({period}) 计算结果无效（warmup 不足或数据异常）',
+                'data_points': n_closes,
+                'required_points': period + 1,
+            }
+
         # 生成信号
         signal = 'hold'
         if rsi_value < 30:
@@ -135,22 +168,27 @@ class TechnicalAnalysis:
             'signal': signal,
             'overbought': rsi_value > 70,
             'oversold': rsi_value < 30,
+            'reliable': True,
         }
     
     @staticmethod
-    def _calculate_rsi_numpy(closes: List[float], period: int) -> float:
-        """NumPy实现的RSI（fallback）"""
+    def _calculate_rsi_numpy(closes: List[float], period: int) -> float | None:
+        """NumPy实现的RSI（fallback）。数据不足返回 None，不伪造 0/100。"""
         closes_arr = _float_array(closes)
+        if len(closes_arr) < period + 1:
+            return None
         deltas = np.diff(closes_arr)
         
         gains = np.where(deltas > 0, deltas, 0)
         losses = np.where(deltas < 0, -deltas, 0)
         
-        avg_gain = np.mean(gains[-period:]) if len(gains) >= period else 0
-        avg_loss = np.mean(losses[-period:]) if len(losses) >= period else 0
+        if len(gains) < period:
+            return None
+        avg_gain = np.mean(gains[-period:])
+        avg_loss = np.mean(losses[-period:])
         
         if avg_loss == 0:
-            return 100.0
+            return 100.0 if avg_gain > 0 else 50.0
         
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))

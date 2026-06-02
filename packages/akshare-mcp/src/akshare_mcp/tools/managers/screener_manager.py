@@ -597,7 +597,7 @@ def register_screener_manager(mcp):
                         preset = PRESET_STRATEGIES[preset_key]
                         result = await screener_manager(
                             action='screen',
-                            criteria=preset['criteria']
+                            kwargs={'criteria': preset['criteria']},
                         )
 
                         if result.get('success') and isinstance(result.get('data'), dict):
@@ -628,7 +628,7 @@ def register_screener_manager(mcp):
 
                 result = await screener_manager(
                     action='screen',
-                    criteria=criteria
+                    kwargs={'criteria': criteria},
                 )
 
                 if result.get('success') and isinstance(result.get('data'), dict):

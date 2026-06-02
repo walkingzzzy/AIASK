@@ -1,0 +1,67 @@
+{
+  "scenario_id": "N15",
+  "title": "因子稳健性与分组回测 (factor_robustness_check / backtest_factor)",
+  "ran_at": "2026-05-30T09:19:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "测试 DB 仅约250根日线/8只标的, 分组回测各组1-2只样本极小, 收益指标(sharpe/annual)仅供工具行为审计, 不代表因子真实有效性",
+  "tool_status_rows": [
+    {"tool": "factor_robustness_check(momentum/rsi_14/volatility/net_margin x6 各种参数)", "verdict": "Fail-schema", "extra": "⚠⚠ 全部调用(含多窗口/param_variations/小标的池)均崩 \"'str' object has no attribute 'get'\" 未捕获AttributeError, 工具100%不可用 (F-N15-1)"},
+    {"tool": "backtest_factor(momentum/volatility/rsi_14/net_margin/roe_ttm/downside_vol/willr_14/cci_20/mom_60d/obv_slope/stoch_k/vwap_deviation/debt_to_equity/rsi_6/atr_14/mfi_14/vol_60d/bollinger_width/roc_10 共19因子多参数)", "verdict": "Pass", "extra": "★分组收益+period_group_results+equity_curve+sharpe+max_dd+win_rate+costs+tradability+perf_breakdown 结构完整"},
+    {"tool": "backtest_factor(turnover_20d / volume_ratio)", "verdict": "Fail-schema", "extra": "⚠⚠ 'index -21 is out of bounds for axis 0 with size 20' 未捕获IndexError, 与N14(IC管道)同源, turnover_20d/volume_ratio跨IC+backtest双管道越界 (F-N15-2)"},
+    {"tool": "backtest_factor 滑点模型(fixed/volume_aware)", "verdict": "Degraded", "extra": "⚠ fixed生效(cost 0.0006→0.0026); 但 volume_aware 请求后 costs.slippage_model 回显为空字符串, 模型名未记录 (F-N15-4)"},
+    {"tool": "backtest_factor(stoch_k) vs backtest_factor(willr_14)", "verdict": "Degraded", "extra": "⚠ 两个不同因子回测结果完全逐位相同(group_returns/equity_curve/sharpe=2.447全等), 分组排序退化为相同序 (F-N15-3)"},
+    {"tool": "backtest_factor(2只<5组 / bogus_factor_zzz)", "verdict": "Fail-graceful", "extra": "★'Not enough stocks for grouping valid=2 required>=5'+完整stats; 'Unsupported factor'+supported列表, 边界处理优秀"},
+    {"tool": "backtest_factor 分组不均衡(8只分5组→group5固定4只)", "verdict": "Degraded", "extra": "⚠ 8只分5组时 group1-4各1只/group5有4只, floor分配不均; groups=2时各4只均衡, groups=4时各2只均衡 (F-N15-5)"}
+  ],
+  "summary": {"Pass": 19, "Degraded": 4, "Fail-graceful": 2, "Fail-schema": 5},
+  "findings": [
+    {
+      "id": "F-N15-1",
+      "severity": "high",
+      "title": "factor_robustness_check 全部调用崩溃: \"'str' object has no attribute 'get'\"",
+      "evidence": "factor_robustness_check 对 momentum/rsi_14/volatility/net_margin 等所有因子, 无论是否传 windows/param_variations, 无论标的池大小(8只或4只), 一律返回 success=false error=\"'str' object has no attribute 'get'\"(未捕获 AttributeError)。该工具 100% 不可用。",
+      "impact": "整个因子稳健性检验工具完全不可用(类似 N11 research_manager 的 UnboundLocalError)。AI 无法做多窗口IC稳定性/参数敏感性/子样本一致性分析。确凿代码 bug: 某处把 str 当 dict 调 .get()。",
+      "type": "code_bug_attribute_error"
+    },
+    {
+      "id": "F-N15-2",
+      "severity": "high",
+      "title": "backtest_factor(turnover_20d/volume_ratio) 未捕获 IndexError",
+      "evidence": "backtest_factor(factor='turnover_20d') 与 (factor='volume_ratio') 均返回 'index -21 is out of bounds for axis 0 with size 20'(裸 IndexError)。与 N14 中 calculate_factor_ic 对这两个因子的 'list index out of range' 同源。这两个因子在 IC 与 backtest 两条独立管道均越界。",
+      "impact": "turnover_20d/volume_ratio 这两个量价因子在所有 quant 计算管道(IC/backtest)均不可用, 裸异常无 error_code。确凿代码 bug(因子窗口长度对齐越界)。",
+      "type": "uncaught_index_error"
+    },
+    {
+      "id": "F-N15-3",
+      "severity": "medium",
+      "title": "backtest_factor 对 stoch_k 与 willr_14 产出完全相同结果",
+      "evidence": "backtest_factor(stoch_k) 与 backtest_factor(willr_14) 的 group_returns / period_group_results / equity_curve / sharpe_ratio(2.447) / max_drawdown(0.0394) 完全逐位相同。两个数学定义不同的因子(随机指标K vs 威廉指标)回测应不同。",
+      "impact": "分组只依赖因子的截面排序, 当两因子在该标的池产生相同排序时结果一致——但 willr_14 与 stoch_k 在8只股票上长期同序概率极低, 疑似分组逻辑或因子取值在某步被覆盖/混淆。AI 若对比这两个因子会误以为同质。建议核对因子取数管道。",
+      "type": "factor_result_collision"
+    },
+    {
+      "id": "F-N15-4",
+      "severity": "low",
+      "title": "backtest_factor slippage_model 参数未回显 (volume_aware 丢失)",
+      "evidence": "传 slippage_model='volume_aware' + slippage=0.002 后, 返回 costs.slippage_model='' (空字符串), 仅 avg_impact_cost_rate=0.004 反映了滑点数值。传 'fixed' 时也回显空。slippage 数值生效但 model 名未记录。",
+      "impact": "AI 无法从返回确认使用了哪种滑点模型, 审计链不完整。建议回显实际采用的 slippage_model。",
+      "type": "param_echo_missing"
+    },
+    {
+      "id": "F-N15-5",
+      "severity": "low",
+      "title": "backtest_factor 8只分5组不均衡 (group5 固定多只)",
+      "evidence": "8只股票 groups=5 时, group1-4 各1只, group5 有4只(floor向下取整+余数全给最后组)。groups=2时各4只、groups=4时各2只均衡。分组用 floor(n/groups) 导致 group5 吞掉余数。",
+      "impact": "分组不均衡使 long-short 的多头(group5, 4只)与空头(group1, 1只)样本量悬殊, long-short 收益被 group5 主导, 削弱因子分层有效性的可解释性。属小样本下分组算法的已知限制。",
+      "type": "grouping_imbalance"
+    }
+  ],
+  "positive_notes": [
+    "backtest_factor 结构完整: group_returns + period_group_results(逐期分组) + equity_curve + long_short_return + sharpe + max_drawdown + win_rate + costs + tradability(fill_ratio/untradable) + perf_breakdown",
+    "滑点数值生效: fixed模型 avg_transaction_cost_rate 0.0006→0.0026, commission/slippage 叠加正确",
+    "边界处理优秀: 2只<5组 graceful('Not enough stocks for grouping required>=5')+完整stats; 非法因子 Unsupported+supported列表",
+    "tradability 字段(candidate_signals/filled_signals/fill_ratio/untradable_ratio)提供成交可行性审计",
+    "max_drawdown 基于实际 long-short equity curve 计算并在 notes 说明方法"
+  ],
+  "verdict": "pass_with_high_finding"
+}

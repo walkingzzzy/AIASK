@@ -96,6 +96,10 @@
             event_ready=event_ready,
             event_ready_supplemental=event_ready_supplemental,
         )
+        signal_candidates, signal_feedback_summary = self._apply_family_feedback_to_signal_candidates(
+            snapshot,
+            signal_candidates,
+        )
         signal_candidates += self._expand_signal_variants(snapshot, signal_candidates)
         quota_candidates = self._fill_gaps(snapshot, signal_candidates)
         candidates = [
@@ -109,6 +113,7 @@
             source_raw_counts=source_raw_counts,
             source_budget_caps=source_budget_caps,
             source_budget_weights=source_budget_weights,
+            signal_feedback_summary=signal_feedback_summary,
         )
         return candidates
 
@@ -120,6 +125,70 @@
             "factor_pool": self._from_factor_pool(snapshot),
             "volatility": self._from_volatility(snapshot),
             "fund_flow": self._from_fund_flow(snapshot),
+        }
+
+    def _apply_family_feedback_to_signal_candidates(
+        self,
+        snapshot: dict,
+        signal_candidates: List[dict],
+    ) -> tuple[List[dict], dict]:
+        candidates = [dict(item or {}) for item in list(signal_candidates or []) if isinstance(item, dict)]
+        if not candidates:
+            return [], {
+                "signal_feedback_limited_count": 0,
+                "signal_feedback_limited_type_counts": {},
+                "signal_feedback_factor_by_type": {},
+            }
+
+        type_counts: Dict[str, int] = {}
+        type_labels: Dict[str, str] = {}
+        for item in candidates:
+            strategy_type = str(item.get("strategy_type") or "").strip()
+            if not strategy_type:
+                continue
+            normalized = strategy_type.lower()
+            type_counts[normalized] = type_counts.get(normalized, 0) + 1
+            type_labels.setdefault(normalized, strategy_type)
+
+        allowed_by_type: Dict[str, int] = {}
+        factor_by_type: Dict[str, float] = {}
+        for normalized, count in type_counts.items():
+            label = type_labels.get(normalized, normalized)
+            factor = self._family_negative_feedback_factor(label, snapshot)
+            factor_by_type[normalized] = factor
+            if factor >= 1.0:
+                allowed_by_type[normalized] = count
+            elif factor <= 0:
+                allowed_by_type[normalized] = 0
+            else:
+                allowed_by_type[normalized] = max(0, int(round(count * factor)))
+
+        kept: List[dict] = []
+        kept_counts: Dict[str, int] = {}
+        filtered_counts: Dict[str, int] = {}
+        for item in candidates:
+            strategy_type = str(item.get("strategy_type") or "").strip()
+            normalized = strategy_type.lower()
+            if not normalized:
+                kept.append(item)
+                continue
+            allowed = allowed_by_type.get(normalized, type_counts.get(normalized, 0))
+            current = kept_counts.get(normalized, 0)
+            if current < allowed:
+                kept.append(item)
+                kept_counts[normalized] = current + 1
+                continue
+            filtered_counts[strategy_type] = filtered_counts.get(strategy_type, 0) + 1
+
+        limited_factors = {
+            type_labels.get(normalized, normalized): round(float(factor), 4)
+            for normalized, factor in factor_by_type.items()
+            if factor < 1.0
+        }
+        return kept, {
+            "signal_feedback_limited_count": sum(filtered_counts.values()),
+            "signal_feedback_limited_type_counts": filtered_counts,
+            "signal_feedback_factor_by_type": limited_factors,
         }
 
     @staticmethod
@@ -298,6 +367,44 @@
             return 0
         return min(remaining, SPAWNER_FILL_BUDGET_MAX, max(1, signal_strength + 1))
 
+    @staticmethod
+    def _family_negative_feedback_factor(strategy_type: str, snapshot: dict) -> float:
+        family_feedback = dict((snapshot or {}).get("family_gate_feedback") or {})
+        normalized_type = str(strategy_type or "").strip().lower()
+        if not normalized_type:
+            return 1.0
+        entry = dict(
+            family_feedback.get(normalized_type)
+            or family_feedback.get(str(strategy_type or "").strip())
+            or {}
+        )
+        if not entry:
+            return 1.0
+        try:
+            ema = float(entry.get("ema_submit_count") or 0.0)
+        except (TypeError, ValueError):
+            ema = 1.0
+        try:
+            raw_failure_rate = entry.get("gate_failure_rate")
+            if raw_failure_rate is None:
+                raw_failure_rate = entry.get("submission_gate_failure_rate")
+            gate_failure_rate = float(raw_failure_rate or 0.0)
+        except (TypeError, ValueError):
+            gate_failure_rate = 0.0
+        if bool(entry.get("freeze_active")):
+            return 0.0
+        if bool(entry.get("suppressed")) or bool(entry.get("suppress_active")):
+            return 0.15
+        if bool(entry.get("cooldown_active")) or gate_failure_rate >= 0.95:
+            return 0.25
+        if gate_failure_rate >= 0.75:
+            return 0.5
+        if ema >= 1.0:
+            return 1.0
+        if ema >= 0.3:
+            return 0.6
+        return 0.25
+
     def _expand_signal_variants(self, snapshot: dict, signal_candidates: List[dict]) -> List[dict]:
         expansion_budget = self._signal_expansion_budget(snapshot, len(signal_candidates))
         if expansion_budget <= 0:
@@ -312,22 +419,6 @@
             if not strategy_type:
                 continue
             threshold_hits[strategy_type] = threshold_hits.get(strategy_type, 0) + len(item.get("trigger_thresholds") or [])
-
-        # PR-S12: 历史失败负反馈——读取 snapshot.family_gate_feedback，对 EMA 低的策略类型缩减预算
-        family_feedback = dict(snapshot.get("family_gate_feedback") or {})
-
-        def _negative_feedback_factor(strategy_type: str) -> float:
-            entry = dict(family_feedback.get(strategy_type) or {})
-            try:
-                ema = float(entry.get("ema_submit_count") or 0.0)
-            except (TypeError, ValueError):
-                return 1.0
-            # EMA >= 1.0：正常预算；0.3-1.0：缩减到 60%；< 0.3：缩减到 25%
-            if ema >= 1.0:
-                return 1.0
-            if ema >= 0.3:
-                return 0.6
-            return 0.25
 
         ranked_types = sorted(
             current_counts.keys(),
@@ -366,7 +457,7 @@
                 ),
             )
             # PR-S12: 按负反馈系数缩减（最少 0，跳过该 type）
-            feedback_factor = _negative_feedback_factor(strategy_type)
+            feedback_factor = self._family_negative_feedback_factor(strategy_type, snapshot)
             desired_variants = max(0, int(round(desired_variants * feedback_factor)))
             if generation_cap is not None:
                 desired_variants = min(desired_variants, max(0, generation_cap - existing_total_for_type))

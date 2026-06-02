@@ -705,6 +705,17 @@ GATE1_SHARPE_MIN: float = _env_float("STRATEGY_FACTORY_GATE1_SHARPE_MIN", 0.15, 
 # Gate-1 使用的代表性股票数量
 GATE1_REPRESENTATIVE_COUNT: int = _env_int("STRATEGY_FACTORY_GATE1_REPRESENTATIVE_COUNT", 3, minimum=1, maximum=10)
 
+# 统计验证面板默认选股数（Gate-3 OOS 证据计算用）。
+# 旧默认值 6 < IC 引擎每期最小样本数 10 → 每期 IC 被丢弃 → n_folds=0 → Gate-3 全拒
+# （策略工厂零产出主因）。提到 20 给足裕量：取数后会因 K 线长度不足 (<90) 再过滤，
+# 仍能稳定保留 ≥12 列有效股票。下限锁定在 12（> 引擎 min_samples 10），设回 6 可一键回滚。
+FACTORY_VALIDATION_PANEL_SAMPLE_SIZE: int = _env_int(
+    "STRATEGY_FACTORY_VALIDATION_PANEL_SAMPLE_SIZE",
+    20,
+    minimum=6,
+    maximum=60,
+)
+
 # --- LLM fan-out (Phase 2) ---
 LLM_FAN_OUT_COUNT: int = _env_int("STRATEGY_FACTORY_LLM_FAN_OUT_COUNT", 2, minimum=1, maximum=4)
 

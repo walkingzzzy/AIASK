@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 import re
 import time as _time
@@ -48,7 +50,13 @@ from ..services.submission_coordinator import SubmissionExecutionOptions
 from ..services.admission_authority import SubmissionAdmissionAuthority
 from .._runtime_toggles import (
     diagnostic_observation_batch_limit as _diagnostic_observation_batch_limit,
+    diagnostic_observation_dedupe_enabled as _diagnostic_observation_dedupe_enabled,
     diagnostic_observation_enabled as _diagnostic_observation_enabled,
+    diagnostic_observation_final_status as _diagnostic_observation_final_status,
+    diagnostic_observation_health_guard_enabled as _diagnostic_observation_health_guard_enabled,
+    diagnostic_observation_health_max_age_hours as _diagnostic_observation_health_max_age_hours,
+    diagnostic_observation_min_trade_count as _diagnostic_observation_min_trade_count,
+    diagnostic_observation_min_win_rate as _diagnostic_observation_min_win_rate,
     diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
     observe_d_grade_enabled as _observe_d_grade_enabled,
 )
@@ -593,6 +601,124 @@ def _parse_win_rate_from_reason(reason: str) -> Optional[float]:
         return None
 
 
+def _diagnostic_observation_target_symbols(candidate: dict[str, Any]) -> list[str]:
+    payload = dict(candidate or {})
+    params = dict(payload.get("params") or {})
+    return _normalize_target_codes(
+        [
+            payload.get("target_symbols"),
+            payload.get("stock_pool"),
+            params.get("target_symbols"),
+            params.get("stock_pool"),
+            (params.get("dsl") or {}).get("metadata") if isinstance(params.get("dsl"), dict) else None,
+        ],
+        limit=16,
+    )
+
+
+_DIAGNOSTIC_FINGERPRINT_VOLATILE_KEYS = {
+    "id",
+    "strategy_id",
+    "trace_id",
+    "prediction_trace_id",
+    "correlation_id",
+    "task_run_id",
+    "factory_run_id",
+    "experiment_id",
+    "source_run_id",
+    "created_at",
+    "updated_at",
+    "generated_at",
+    "timestamp",
+    "source_candidate_artifact_id",
+    "source_generation_artifact_id",
+    "source_validation_artifact_id",
+    "candidate_memory_record_id",
+    "multiple_testing_registry_record_id",
+}
+
+
+def _diagnostic_observation_stable_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        stable: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key or "").strip()
+            if not key or key in _DIAGNOSTIC_FINGERPRINT_VOLATILE_KEYS:
+                continue
+            cleaned = _diagnostic_observation_stable_value(raw_value)
+            if cleaned in (None, "", [], {}):
+                continue
+            stable[key] = cleaned
+        return stable
+    if isinstance(value, (list, tuple)):
+        cleaned_items = [
+            _diagnostic_observation_stable_value(item)
+            for item in list(value)
+        ]
+        return [item for item in cleaned_items if item not in (None, "", [], {})]
+    return value
+
+
+def _diagnostic_observation_core_params(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    params = dict(payload.get("params") or {})
+    core_keys = (
+        "fast_window",
+        "slow_window",
+        "short_window",
+        "long_window",
+        "lookback",
+        "lookback_days",
+        "period",
+        "period_days",
+        "rebalance_days",
+        "holding_days",
+        "holding_period",
+        "threshold",
+        "entry_threshold",
+        "exit_threshold",
+        "factor_name",
+        "factor_names",
+        "factor_weights",
+        "signal_rule",
+        "dsl",
+    )
+    compact: dict[str, Any] = {}
+    for key in core_keys:
+        value = params.get(key, payload.get(key))
+        if value in (None, "", [], {}):
+            continue
+        stable_value = _diagnostic_observation_stable_value(value)
+        if stable_value not in (None, "", [], {}):
+            compact[key] = stable_value
+    for key in ("logic_signature", "dsl_signature", "factor_signature", "entry_exit_signature"):
+        value = payload.get(key) or params.get(key)
+        if value not in (None, "", [], {}):
+            compact[key] = value
+    return compact
+
+
+def _diagnostic_observation_fingerprint(candidate: dict[str, Any], reason: str) -> str:
+    payload = dict(candidate or {})
+    params = dict(payload.get("params") or {})
+    provenance = dict(payload.get("candidate_provenance") or params.get("candidate_provenance") or {})
+    fingerprint_payload = {
+        "strategy_type": str(payload.get("strategy_type") or "").strip().lower(),
+        "candidate_family": str(
+            provenance.get("candidate_family")
+            or payload.get("candidate_family")
+            or params.get("candidate_family")
+            or ""
+        ).strip().lower(),
+        "target_symbols": _diagnostic_observation_target_symbols(payload),
+        "core_params": _diagnostic_observation_core_params(payload),
+        "reason": str(reason or "diagnostic_observation").strip().lower(),
+    }
+    raw = json.dumps(fingerprint_payload, sort_keys=True, ensure_ascii=False, default=str)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+    return f"diag_{digest}"
+
+
 def _has_gate_2_full_backtest_evidence(candidate: dict[str, Any]) -> bool:
     payload = dict(candidate or {})
     for key in (
@@ -695,7 +821,8 @@ def _is_diagnostic_observation_candidate(
         _diagnostic_metric(candidate_payload, metrics, gate_payload, "trade_count", "trades_count", "total_trades"),
         default=0,
     ) or 0
-    if trade_count < 2:
+    min_trade_count = _diagnostic_observation_min_trade_count()
+    if trade_count < min_trade_count:
         return False, None
     max_drawdown = abs(
         _safe_float(
@@ -715,7 +842,8 @@ def _is_diagnostic_observation_candidate(
     parsed_win_rates = [value for value in parsed_win_rates if value is not None]
     if win_rate is None and parsed_win_rates:
         win_rate = parsed_win_rates[0]
-    if win_rate is not None and 0.30 <= float(win_rate) < 0.40:
+    min_win_rate = _diagnostic_observation_min_win_rate()
+    if win_rate is not None and min_win_rate <= float(win_rate) < 0.40:
         return True, next((r for r in reason_codes if r.startswith("win_rate_")), "win_rate_near_threshold")
 
     allowed_fragments = (
@@ -728,7 +856,7 @@ def _is_diagnostic_observation_candidate(
             return True, reason
         if reason.startswith("period_robustness_"):
             return True, reason
-        if reason.startswith("trade_count_") or "trade_count" in reason:
+        if (reason.startswith("trade_count_") or "trade_count" in reason) and trade_count >= min_trade_count:
             return True, reason
     return False, None
 
@@ -739,6 +867,7 @@ def _diagnostic_observation_submission_action(
     reason: str,
 ) -> dict[str, Any]:
     ttl_days = _diagnostic_observation_ttl_days()
+    final_status = _diagnostic_observation_final_status()
     action = dict(base_action or {})
     nested = dict(action.get("submission_action") or {})
     nested.update(
@@ -747,7 +876,7 @@ def _diagnostic_observation_submission_action(
             "trigger_reason": "diagnostic_observation_gate3_failed",
             "next_step": "diagnostic_observation",
             "submission_lane": "diagnostic_observation",
-            "final_status": "submitted",
+            "final_status": final_status,
             "completed": False,
             "diagnostic_observation": True,
             "diagnostic_reason": reason,
@@ -763,7 +892,7 @@ def _diagnostic_observation_submission_action(
             "submission_action_next_step": "diagnostic_observation",
             "submission_action_completed": False,
             "submission_lane": "diagnostic_observation",
-            "final_status": "submitted",
+            "final_status": final_status,
             "admission_decision": "diagnostic",
             "admission_layer": "diagnostic",
             "diagnostic_observation": True,

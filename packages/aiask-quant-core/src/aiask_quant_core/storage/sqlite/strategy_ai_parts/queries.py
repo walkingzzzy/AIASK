@@ -120,6 +120,78 @@
             )
         return [dict(row) for row in rows]
 
+    async def save_scheduler_state(self, payload: dict) -> dict:
+        data = dict(payload or {})
+        state_key = str(data.pop("state_key", "") or "strategy_factory_scheduler").strip()
+        if not state_key:
+            state_key = "strategy_factory_scheduler"
+        encoded_payload = bounded_json_text(
+            "strategy_factory_scheduler_state.payload_json",
+            data,
+            max_bytes=strategy_json_field_max_bytes(),
+        )
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_factory_scheduler_state (
+                    state_key TEXT PRIMARY KEY,
+                    payload_json TEXT DEFAULT '{}',
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_factory_scheduler_state_updated_at
+                ON strategy_factory_scheduler_state(updated_at DESC);
+                """
+            )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO strategy_factory_scheduler_state
+                    (state_key, payload_json, updated_at)
+                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT (state_key) DO UPDATE SET
+                    payload_json = EXCLUDED.payload_json,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING state_key, payload_json, updated_at
+                """,
+                state_key,
+                encoded_payload,
+            )
+        result = dict(row or {})
+        result["payload_json"] = self._decode_json_field(result.get("payload_json"), {})
+        return result
+
+    async def load_scheduler_state(self, state_key: str = "strategy_factory_scheduler") -> dict:
+        resolved_key = str(state_key or "strategy_factory_scheduler").strip() or "strategy_factory_scheduler"
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_factory_scheduler_state (
+                    state_key TEXT PRIMARY KEY,
+                    payload_json TEXT DEFAULT '{}',
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_factory_scheduler_state_updated_at
+                ON strategy_factory_scheduler_state(updated_at DESC);
+                """
+            )
+            row = await conn.fetchrow(
+                """
+                SELECT state_key, payload_json, updated_at
+                FROM strategy_factory_scheduler_state
+                WHERE state_key = $1
+                LIMIT 1
+                """,
+                resolved_key,
+            )
+        if not row:
+            return {}
+        result = dict(row)
+        payload = self._decode_json_field(result.get("payload_json"), {})
+        if not isinstance(payload, dict):
+            return {}
+        payload.setdefault("state_key", result.get("state_key"))
+        payload.setdefault("updated_at", result.get("updated_at"))
+        return payload
+
     def _decode_factory_dispatch(self, row: dict) -> dict:
         result = dict(row)
         result["metadata"] = self._decode_json_field(result.get("metadata"), {})

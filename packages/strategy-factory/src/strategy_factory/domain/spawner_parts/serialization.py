@@ -430,6 +430,13 @@
                     return False
             current = int(current_counts.get(strategy_type) or 0) + int(fill_counts.get(strategy_type) or 0)
             desired_generated_count = 1 if preferred_rank > 2 else 2
+            original_desired_generated_count = desired_generated_count
+            feedback_factor = self._family_negative_feedback_factor(strategy_type, snapshot)
+            if feedback_factor <= 0:
+                return False
+            desired_generated_count = max(0, int(round(desired_generated_count * feedback_factor)))
+            if desired_generated_count <= 0:
+                return False
             generation_cap = self._local_generation_cap(strategy_type)
             if generation_cap is not None:
                 desired_generated_count = min(desired_generated_count, generation_cap)
@@ -469,6 +476,9 @@
                 "current_count": int(current_counts.get(strategy_type) or 0),
                 "minimum_required": CATEGORY_MINIMUMS.get(strategy_type, 0),
                 "desired_generated_count": desired_generated_count,
+                "original_desired_generated_count": original_desired_generated_count,
+                "feedback_factor": feedback_factor,
+                "feedback_limited": feedback_factor < 1.0,
                 "fill_budget": fill_budget,
                 "preferred_rank": preferred_rank,
                 "slot_index": slot_index,

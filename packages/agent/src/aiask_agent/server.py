@@ -505,6 +505,35 @@ async def _ai_models_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any
             "error_code": "AI_MODEL_UNCONFIGURED",
             "error": "OPENAI_API_KEY is not configured.",
         }
+    if str(status.get("provider") or "").strip().lower() in {"anthropic", "anthropic_messages"}:
+        try:
+            import httpx
+
+            base_url = str(os.getenv("OPENAI_BASE_URL", "")).strip().rstrip("/")
+            if not base_url:
+                base_url = "https://api.anthropic.com/v1"
+            elif base_url.lower().endswith("/messages"):
+                base_url = base_url.rsplit("/", 1)[0]
+            elif not base_url.lower().endswith("/v1") and not base_url.lower().endswith("/models"):
+                base_url = f"{base_url}/v1"
+            url = base_url if base_url.lower().endswith("/models") else f"{base_url}/models"
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(url, headers={"Authorization": f"Bearer {str(os.getenv('OPENAI_API_KEY', '')).strip()}"})
+                response.raise_for_status()
+                body = response.json()
+            data = list((body or {}).get("data") or []) if isinstance(body, dict) else []
+            return {"object": "list", "configured": True, "provider": status["provider"], "unsupported": False, "data": data}
+        except Exception as exc:
+            result = _ai_error_payload(exc, configured=True)
+            return {
+                "object": "list",
+                "configured": True,
+                "provider": status["provider"],
+                "unsupported": True,
+                "data": [],
+                "error_code": result["error_code"],
+                "error": result["error"],
+            }
     client = None
     try:
         from openai import AsyncOpenAI

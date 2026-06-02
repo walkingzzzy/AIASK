@@ -258,6 +258,8 @@
                 "diagnostic_lane_ready",
                 "diagnostic_account_id",
                 "diagnostic_account_status",
+                "diagnostic_fingerprint",
+                "diagnostic_guard",
                 "diagnostic_reason",
                 "diagnostic_reason_code",
                 "diagnostic_ttl_days",
@@ -369,6 +371,12 @@
                     or trace.get("diagnostic_reason_code")
                     or strategy.get("diagnostic_reason")
                     or trace.get("diagnostic_reason"),
+                    "diagnostic_fingerprint": strategy.get("diagnostic_fingerprint")
+                    or trace.get("diagnostic_fingerprint")
+                    or dict(strategy.get("params") or {}).get("diagnostic_fingerprint"),
+                    "diagnostic_guard": strategy.get("diagnostic_guard")
+                    or trace.get("diagnostic_guard")
+                    or dict(strategy.get("params") or {}).get("diagnostic_guard"),
                     "diagnostic_ttl_days": strategy.get("diagnostic_ttl_days")
                     or trace.get("diagnostic_ttl_days")
                     or _diagnostic_observation_ttl_days(),
@@ -409,6 +417,8 @@
                 "diagnostic_lane_ready": bool(diagnostic_account_id),
                 "diagnostic_account_id": diagnostic_account_id,
                 "diagnostic_account_status": diagnostic_account_status or ("active" if diagnostic_account_id else None),
+                "diagnostic_fingerprint": trace.get("diagnostic_fingerprint"),
+                "diagnostic_guard": trace.get("diagnostic_guard"),
                 "diagnostic_reason": trace.get("diagnostic_reason"),
                 "diagnostic_reason_code": trace.get("diagnostic_reason_code"),
                 "diagnostic_ttl_days": trace.get("diagnostic_ttl_days"),

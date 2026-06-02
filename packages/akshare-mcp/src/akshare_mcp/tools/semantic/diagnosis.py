@@ -39,49 +39,77 @@ def _build_evidence(context: dict) -> tuple[list[dict], list[str], list[str], st
     pe = _maybe_float(valuation.get("pe"))
     relative_pe = _maybe_float(valuation.get("industry_relative_pe"))
     if pe is not None:
-        add("valuation", "pe", round(pe, 2), f"PE为{pe:.2f}", positive=0 < pe < 20)
+        # 三态：低估(<20)利好 / 高估(>50)风险 / 20~50 中性
+        pe_pos = True if 0 < pe < 20 else (False if pe > 50 else None)
+        add("valuation", "pe", round(pe, 2), f"PE为{pe:.2f}", positive=pe_pos)
     if relative_pe is not None:
-        add("valuation", "industry_relative_pe", round(relative_pe, 4), "相对行业估值偏低" if relative_pe < 0.9 else "相对行业估值偏高", positive=relative_pe < 0.9)
+        rel_pos = True if relative_pe < 0.9 else (False if relative_pe > 1.2 else None)
+        rel_text = "相对行业估值偏低" if relative_pe < 0.9 else ("相对行业估值偏高" if relative_pe > 1.2 else "相对行业估值中性")
+        add("valuation", "industry_relative_pe", round(relative_pe, 4), rel_text, positive=rel_pos)
 
     roe = _maybe_float(fundamentals.get("roe"))
     debt_ratio = _maybe_float(fundamentals.get("debt_ratio"))
     revenue_yoy = _maybe_float(fundamentals.get("revenue_yoy"))
     if roe is not None:
-        add("fundamental", "roe", round(roe, 2), f"ROE为{roe:.2f}", positive=roe >= 12)
+        # 三态：高ROE(>=15)利好 / 低ROE(<8)风险 / 8~15 中性
+        roe_pos = True if roe >= 15 else (False if roe < 8 else None)
+        add("fundamental", "roe", round(roe, 2), f"ROE为{roe:.2f}", positive=roe_pos)
     if revenue_yoy is not None:
-        add("fundamental", "revenue_yoy", round(revenue_yoy, 2), f"营收增速为{revenue_yoy:.2f}%", positive=revenue_yoy >= 10)
+        rev_pos = True if revenue_yoy >= 10 else (False if revenue_yoy < 0 else None)
+        add("fundamental", "revenue_yoy", round(revenue_yoy, 2), f"营收增速为{revenue_yoy:.2f}%", positive=rev_pos)
     if debt_ratio is not None:
-        add("fundamental", "debt_ratio", round(debt_ratio, 2), f"负债率为{debt_ratio:.2f}%", positive=debt_ratio < 60)
+        # 三态：低负债(<40)利好 / 高负债(>70)风险 / 40~70 中性
+        debt_pos = True if debt_ratio < 40 else (False if debt_ratio > 70 else None)
+        add("fundamental", "debt_ratio", round(debt_ratio, 2), f"负债率为{debt_ratio:.2f}%", positive=debt_pos)
 
     rsi = _maybe_float(technical.get("rsi_14"))
     ma_alignment = technical.get("ma_alignment")
     if rsi is not None:
-        add("technical", "rsi_14", round(rsi, 2), f"RSI为{rsi:.2f}", positive=rsi < 35)
+        # 三态：超卖(<30)反转机会 / 超买(>70)风险 / 30~70 中性（不再把中性 RSI 当风险）
+        rsi_pos = True if rsi < 30 else (False if rsi > 70 else None)
+        rsi_text = f"RSI为{rsi:.2f}（超卖）" if rsi < 30 else (f"RSI为{rsi:.2f}（超买）" if rsi > 70 else f"RSI为{rsi:.2f}（中性）")
+        add("technical", "rsi_14", round(rsi, 2), rsi_text, positive=rsi_pos)
     if ma_alignment:
-        add("technical", "ma_alignment", ma_alignment, f"均线结构为{ma_alignment}", positive=ma_alignment == "bullish")
+        # 三态：多头利好 / 空头风险 / mixed 等中性
+        ma_pos = True if ma_alignment == "bullish" else (False if ma_alignment == "bearish" else None)
+        add("technical", "ma_alignment", ma_alignment, f"均线结构为{ma_alignment}", positive=ma_pos)
 
     mom_20d = _maybe_float(momentum.get("mom_20d"))
     market_regime = momentum.get("market_regime")
     if mom_20d is not None:
-        add("momentum", "mom_20d", round(mom_20d, 4), f"20日动量为{mom_20d:.4f}", positive=mom_20d > 0)
+        # 三态：明显正动量(>2%)利好 / 明显负动量(<-2%)风险 / ±2% 内中性
+        mom_pos = True if mom_20d > 0.02 else (False if mom_20d < -0.02 else None)
+        add("momentum", "mom_20d", round(mom_20d, 4), f"20日动量为{mom_20d:.4f}", positive=mom_pos)
     if market_regime:
-        add("momentum", "market_regime", market_regime, f"市场环境判定为{market_regime}", positive=market_regime != "bearish")
+        # 三态：bullish 利好 / bearish 风险 / neutral 中性（不再把 neutral 当利好）
+        regime_pos = True if market_regime == "bullish" else (False if market_regime == "bearish" else None)
+        add("momentum", "market_regime", market_regime, f"市场环境判定为{market_regime}", positive=regime_pos)
 
     vol20 = _maybe_float(risk.get("volatility_20d"))
     max_dd = _maybe_float(risk.get("max_drawdown_250d"))
     if vol20 is not None:
-        add("risk", "volatility_20d", round(vol20, 4), f"20日波动率为{vol20:.4f}", positive=vol20 < 0.04)
+        # 三态：低波动(<4%)利好 / 高波动(>8%)风险 / 中间中性
+        vol_pos = True if vol20 < 0.04 else (False if vol20 > 0.08 else None)
+        add("risk", "volatility_20d", round(vol20, 4), f"20日波动率为{vol20:.4f}", positive=vol_pos)
     if max_dd is not None:
-        add("risk", "max_drawdown_250d", round(max_dd, 4), f"250日最大回撤为{max_dd:.4f}", positive=max_dd < 0.25)
+        # 三态：小回撤(<25%)利好 / 大回撤(>40%)风险 / 中间中性
+        dd_pos = True if max_dd < 0.25 else (False if max_dd > 0.40 else None)
+        add("risk", "max_drawdown_250d", round(max_dd, 4), f"250日最大回撤为{max_dd:.4f}", positive=dd_pos)
 
-    if len(highlights) >= 4 and len(risks) <= 1:
+    # F-N40-1 修复：基于净证据（利好 vs 风险）相对判定，而非"risks 绝对计数>=4 一刀切 sell"。
+    # 旧逻辑把中性指标全塞 risk 桶 + 绝对阈值 → 对几乎所有标的输出 sell。
+    pos_n, risk_n = len(highlights), len(risks)
+    net = pos_n - risk_n
+    if pos_n >= 4 and risk_n <= 1:
         recommendation, recommendation_text = "buy", "偏积极，可重点跟踪或分批布局"
-    elif len(risks) >= 4:
-        recommendation, recommendation_text = "sell", "风险偏高，建议回避或降低仓位"
-    elif len(highlights) >= len(risks):
-        recommendation, recommendation_text = "hold", "多空因素交织，适合继续持有观察"
+    elif net >= 2:
+        recommendation, recommendation_text = "buy", "利好证据明显多于风险，可分批布局"
+    elif net <= -3:
+        recommendation, recommendation_text = "sell", "风险证据显著多于利好，建议回避或降低仓位"
+    elif net <= -1:
+        recommendation, recommendation_text = "wait", "风险略多于利好，建议等待更明确信号"
     else:
-        recommendation, recommendation_text = "wait", "证据尚不充分，建议等待更明确信号"
+        recommendation, recommendation_text = "hold", "多空因素交织，适合继续持有观察"
     return evidence, highlights, risks, recommendation, recommendation_text
 
 

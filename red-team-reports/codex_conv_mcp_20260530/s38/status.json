@@ -1,0 +1,82 @@
+{
+  "scenario_id": "N38",
+  "title": "数据同步与新鲜度 (data_sync_manager / check_db_freshness / sync_stale_klines / sync_kline_data / batch_sync_klines / sync_trading_calendar / get_sync_status)",
+  "ran_at": "2026-05-30T17:19:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易但 tqcenter/api 对部分标的可同步(05-29数据可拉); quote_snapshot freshness_ttl=30秒导致周末全部5525只stale; 核心8标的+指数日K新鲜(05-29)",
+  "tool_status_rows": [
+    {"tool": "data_sync_manager(help)", "verdict": "Pass", "extra": "★11 action(status/sync/get_task/list_tasks/cancel_task/schedule/list_schedules/cancel_schedule/run_due_schedules/help); sync支持多种数据类型(kline/financial/core_market/vector_*)"},
+    {"tool": "data_sync_manager(status)", "verdict": "Pass", "extra": "★★信息丰富: last_sync(kline/quote/financial)+market_aux(各表count/min/max date)+quote_snapshot+★critical_table_stale_alerts(north_fund_flow 652天high/dragon_tiger no_data)+critical_alerts_summary; 主动暴露关键表过期"},
+    {"tool": "data_sync_manager(status) quote_snapshot 全stale", "verdict": "Degraded", "extra": "⚠ quote_snapshot fresh_code_count=0/stale_code_count=5525(全市场), freshness_ttl_seconds=30; 周末非交易所有行情超30秒TTL判stale, TTL对周末/盘后过于严格 (F-N38-4)"},
+    {"tool": "check_db_freshness(核心标的, max_stale 5/2/0)", "verdict": "Pass", "extra": "★★准确: max_stale=5→600519/000651/000858/002594(05-29,1天)fresh, 000001(05-26,4天)fresh; max_stale=2→300750/601318/002304(05-20,10天)stale; max_stale=0→全stale; fresh/stale/missing分类清晰"},
+    {"tool": "check_db_freshness(含非法码ZZZ888)", "verdict": "Fail-graceful", "extra": "★含非法码 ZZZ888→整批 success=false'存在无效股票代码: ZZZ888'(校验入参, 对照watchlist无校验)"},
+    {"tool": "check_db_freshness(无codes全扫描)", "verdict": "Fail-schema", "extra": "⚠⚠ 全市场扫描5217只, fresh列表中出现 code='[\"600519\"]'(双重序列化字符串作为股票代码污染kline表)+code='999999'(05-21)+'sh000001'指数; 双重序列化污染DB (F-N38-1)"},
+    {"tool": "data_sync_manager(list_tasks) codes双重序列化", "verdict": "Degraded", "extra": "⚠ list_tasks 历史任务 codes 字段='[\"[]\"]'(空数组双重JSON序列化); get_task(sync_kline)codes='[\"[\\\"600519\\\"]\"]'(三重嵌套); 任务codes存储序列化异常 (并入F-N38-1)"},
+    {"tool": "data_sync_manager(list_schedules)", "verdict": "Pass", "extra": "★7条调度: schedule_id/task_type/codes/schedule(daily)/params/enabled/last_run/next_run; runtime_core_market/factor_context 系统调度正常运行(last_run今日)"},
+    {"tool": "data_sync_manager(get_task) 存在/不存在", "verdict": "Fail-graceful", "extra": "★存在任务→完整详情(status/progress/created/completed); 不存在→success=false'未找到任务'"},
+    {"tool": "data_sync_manager(cancel_task/cancel_schedule) 不存在", "verdict": "Degraded", "extra": "⚠ cancel_task(不存在)→cancelled=true; cancel_schedule(不存在)→deleted=true/enabled=false; 取消不存在任务/调度返回成功(虚假幂等, 同N32/N33) (F-N38-3)"},
+    {"tool": "data_sync_manager(schedule) 创建", "verdict": "Fail-schema", "extra": "⚠⚠ schedule(创建调度)→success=false'no such function: array_to_string'; SQLite不支持array_to_string(PostgreSQL语法), SQL方言不兼容导致创建调度失败 (F-N38-2)"},
+    {"tool": "data_sync_manager(run_due_schedules)", "verdict": "Pass", "extra": "★执行2个到期调度均成功(matched2/executed2), 每个返回task详情(results.success); 调度执行引擎正常"},
+    {"tool": "sync_kline_data(600519/000001 use_cache=true)", "verdict": "Pass", "extra": "★走sqlite缓存返回K线(date/ohlc/volume/amount/change_pct/source=sqlite); 资金/价格合理"},
+    {"tool": "sync_kline_data(300750 use_cache=false)", "verdict": "Pass", "extra": "★走api(tqcenter)实时返回, change_pct计算正确(424 vs pre_close415.68=+2.0%, 含pre_close字段)"},
+    {"tool": "sync_kline_data(600519) 05-29 change_pct异常", "verdict": "Degraded", "extra": "⚠ 600519 05-29 close1326>前日close1275.98(实应+3.92%)但change_pct=-4.2454%; 当日high1388/low1250.1振幅大, change_pct符号/基准疑似异常 (F-N38-5)"},
+    {"tool": "sync_stale_klines(300750)", "verdict": "Pass", "extra": "★★真实同步成功: staleness_before10→after1, 拉取250根K线; detail含status/staleness/kline_count; 离线环境对该标的可用"},
+    {"tool": "batch_sync_klines(601318/002304)", "verdict": "Pass", "extra": "★批量同步 success2/failed0; 同步后两标的均fresh(05-29)"},
+    {"tool": "sync_trading_calendar(2026)", "verdict": "Pass", "extra": "★返回95个交易日(截至05-29)+message说明(当前年份截至今日); source=tqcenter"},
+    {"tool": "get_sync_status", "verdict": "Pass", "extra": "★metrics(pending/success/fail/retry/lag/dead_letter)+dead_letter_path; success计数随同步活动累计(7→11); dead-letter追踪(.mcp_cache/dead_letters/kline_save_failures.jsonl)"},
+    {"tool": "data_sync_manager(bogus_action)", "verdict": "Fail-graceful", "extra": "★success=false 列出11个supported action"}
+  ],
+  "summary": {"Pass": 11, "Degraded": 4, "Fail-graceful": 3, "Fail-schema": 2},
+  "findings": [
+    {
+      "id": "F-N38-1",
+      "severity": "high",
+      "title": "codes 字段双重/多重 JSON 序列化污染 kline 表与任务记录",
+      "evidence": "check_db_freshness 全市场扫描发现 kline 表存在 stock_code='[\"600519\"]'(JSON字符串字面量作为股票代码)。list_tasks 历史任务 codes 字段='[\"[]\"]'(空数组双重序列化), get_task(sync_kline)的 codes='[\"[\\\"600519\\\"]\"]'(三重嵌套序列化)。说明 sync 任务的 codes 参数被反复 JSON.dumps, 最终把序列化字符串当成股票代码写入 kline。",
+      "impact": "垃圾'股票代码'(如 [\"600519\"])被同步并写入 K线表, 污染数据。后续按代码查询/遍历会遇到这些非法 code。任务 codes 的多重序列化使 codes 内容无法正确解析(空数组变 '[\"[]\"]')。数据完整性缺陷, 根因是 codes 参数序列化处理错误。",
+      "type": "double_serialization_pollution"
+    },
+    {
+      "id": "F-N38-2",
+      "severity": "high",
+      "title": "data_sync_manager(schedule) 创建调度 SQL 方言不兼容报错",
+      "evidence": "data_sync_manager(action='schedule', codes=['600519'], schedule='daily', task_type='kline')→success=false error='no such function: array_to_string'。array_to_string 是 PostgreSQL 函数, SQLite(akshare_mcp.sqlite3)不支持。",
+      "impact": "通过 data_sync_manager 创建新调度任务完全不可用(SQL 报错), AI 无法新增定时同步调度。已有调度(list_schedules 显示7条)可运行但无法新增。SQL 方言移植缺陷(PostgreSQL 语法用在 SQLite)。确凿代码 bug。",
+      "type": "sql_dialect_incompatible"
+    },
+    {
+      "id": "F-N38-4",
+      "severity": "medium",
+      "title": "quote_snapshot freshness_ttl=30秒导致周末/盘后全市场误判 stale",
+      "evidence": "data_sync_manager(status).quote_snapshot: fresh_code_count=0/stale_code_count=5525(全市场5532只)/freshness_ttl_seconds=30/latest_quote_time='2026-05-30 08:43:39'。30秒TTL对实时行情合理, 但周末/盘后最近行情必然超30秒, 导致全部标的判 stale。",
+      "impact": "周末/盘后查 status 会显示'全市场行情全部过期', coverage_ratio=0.9987 但 fresh=0, 误导 AI 以为行情系统全面失效。建议 TTL 区分交易/非交易时段或按交易日计算新鲜度。",
+      "type": "ttl_too_strict_offhours"
+    },
+    {
+      "id": "F-N38-3",
+      "severity": "low",
+      "title": "cancel_task/cancel_schedule 取消不存在对象返回成功",
+      "evidence": "cancel_task(task_id='nonexistent_task_zzz')→cancelled=true; cancel_schedule(schedule_id='nonexistent_sched_zzz')→deleted=true/enabled=false。取消不存在的任务/调度均报成功。",
+      "impact": "幂等设计但虚假成功, AI 无法区分'真取消'与'对象不存在'。与 N32/N33 同类幂等误导问题。",
+      "type": "misleading_idempotent_success"
+    },
+    {
+      "id": "F-N38-5",
+      "severity": "low",
+      "title": "sync_kline_data 600519 05-29 change_pct 符号/基准存疑",
+      "evidence": "sync_kline_data(600519) 05-29: open1365.1/high1388/low1250.1/close1326, change_pct=-4.2454%。但前一日(05-28)close=1275.98, 1326 相对 1275.98 应为 +3.92%。change_pct 显示 -4.25% 与收盘价环比矛盾(疑似相对当日 open 或 high 计算, 或数据异常)。",
+      "impact": "change_pct 与收盘价环比方向相反, AI 据 change_pct 判涨跌会错。可能该日数据异常(振幅1250-1388极大)或 change_pct 基准不一致。建议核查。",
+      "type": "change_pct_anomaly"
+    }
+  ],
+  "positive_notes": [
+    "★★ data_sync_manager(status) 信息极丰富: last_sync+market_aux(各表数据范围)+quote_snapshot+critical_table_stale_alerts(主动暴露 north_fund 652天/dragon_tiger no_data 等关键表过期, 分 high/warning 级)+critical_alerts_summary",
+    "★★ check_db_freshness 准确: fresh/stale/missing 三分类, staleness_days 精确, max_stale_days 阈值生效, 含非法码整批校验拒绝",
+    "★★ sync_stale_klines/batch_sync_klines/sync_kline_data 真实同步可用: 离线环境对 tqcenter/api 可达标的成功拉取(300750 staleness10→1拉250根, 601318/002304批量成功)",
+    "★ sync_trading_calendar 准确(95个交易日截至05-29)+清晰message",
+    "★ get_sync_status 运维指标完整(pending/success/fail/retry/lag/dead_letter)+dead-letter 落盘追踪",
+    "★ run_due_schedules 调度执行引擎正常; list_schedules 系统调度(core_market/factor_context)正常运行",
+    "★ 边界优雅: 非法action列11个supported, 非法码整批拒绝, 不存在任务报错"
+  ],
+  "verdict": "pass_with_high_finding"
+}

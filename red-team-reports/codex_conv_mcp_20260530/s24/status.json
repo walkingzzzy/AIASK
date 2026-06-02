@@ -1,0 +1,66 @@
+{
+  "scenario_id": "N24",
+  "title": "期权希腊字母链 (options_manager greeks/price/iv/smirk/list)",
+  "ran_at": "2026-05-30T16:26:20+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "周末非交易时段, 真实期权链(list/volatility_smirk)上游Sina无数据返回空; Black-Scholes 解析计算不依赖实时数据可正常验证",
+  "tool_status_rows": [
+    {"tool": "calculate_greeks(call/put 多K/S/T/sigma)", "verdict": "Pass", "extra": "★★BS数学正确: ATM call delta≈0.55/put≈-0.45, 深ITM call delta 0.95, 深OTM put≈0; call/put gamma相同; put-call delta parity(call_delta-put_delta≈1.0)严格成立"},
+    {"tool": "calculate_greeks gamma 期限/价位结构", "verdict": "Pass", "extra": "★gamma 在ATM最大(K=S:1.13 vs ITM:0.28), 临近到期spike(T=0.02→gamma=4.03); vega/rho随T增大(T=1,σ=0.4→vega0.011/rho0.018), 符合理论"},
+    {"tool": "calculate_price(call/put)", "verdict": "Pass", "extra": "★返回 intrinsic_value/time_value/moneyness(ITM/ATM/OTM); ITM call(K3,S3.5)intrinsic=0.5+time0.03; expiry_date='2026-08-29'覆盖T(算出0.1514 vs T=0.25的0.1525)"},
+    {"tool": "implied_volatility 往返一致性", "verdict": "Pass", "extra": "★IV反演精确: 按σ=0.2定价0.5296→IV解出19.99%; 0.3→41.3%, 0.5→70.35%, 0.2→26.85%; market_price/price/option_price 三种参数别名均支持"},
+    {"tool": "implied_volatility(不可能价格 0.1<intrinsic0.5)", "verdict": "Fail-graceful", "extra": "★success=false '隐含波动率计算未收敛' + degraded=true, 正确拒绝无解输入"},
+    {"tool": "calculate_greeks(option_type='CALL'/'straddle')", "verdict": "Fail-schema", "extra": "⚠⚠ 大写'CALL'、未知'straddle' 均被静默当作 PUT 计算(delta=-0.4503 而非call的+0.55); 仅小写'call'识别为看涨, 其余全fallthrough到put, 期权方向静默误判 (F-N24-1)"},
+    {"tool": "calculate_greeks(K=-3 负行权价)", "verdict": "Fail-schema", "extra": "⚠⚠ 负行权价 K=-3 返回 option_price='nan'+全部greeks='nan', success=true 无校验/无error; NaN污染输出 (F-N24-2)"},
+    {"tool": "calculate_greeks(sigma=0 / T=0 边界静默替换)", "verdict": "Fail-schema", "extra": "⚠⚠ sigma=0 被静默替换为25%(显示volatility=25%), T=0 被静默替换为0.25(显示91天); 边界值0被默认值覆盖且无提示 (F-N24-3)"},
+    {"tool": "calculate_greeks(K缺失)", "verdict": "Degraded", "extra": "⚠ 缺失必填 strike 时静默默认 K=3.5(=S, ATM), 未报缺参; 与 sigma/T 默认替换同类 (F-N24-3 关联)"},
+    {"tool": "calculate_greeks(r=-0.01 负利率)", "verdict": "Pass", "extra": "★负无风险利率被接受(合理, 真实存在负利率), call delta 0.51 计算正常"},
+    {"tool": "list(510050) / volatility_smirk(510050)", "verdict": "Degraded", "extra": "⚠ 周末上游无数据: list count=0/options=[], volatility_smirk data.degraded=true/curve=[]/atm_iv=null; 但 list 顶层 degraded=false, smirk 顶层 envelope degraded=false 与内层不一致 (F-N24-4)"},
+    {"tool": "options_manager(bogus_action_zzz)", "verdict": "Fail-graceful", "extra": "★success=false 'Unknown action: xxx. Supported: help,list,calculate_greeks,calculate_price,implied_volatility,volatility_smirk', 列出6合法action"},
+    {"tool": "calculate_greeks(sigma=1.5 极高波动)", "verdict": "Pass", "extra": "★150%波动率被接受, ATM call price=1.03/delta0.65, 计算稳定无溢出"}
+  ],
+  "summary": {"Pass": 6, "Degraded": 2, "Fail-graceful": 2, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N24-1",
+      "severity": "high",
+      "title": "options_manager 期权类型仅识别小写 'call', 其余(含 'CALL'/拼写/未知)静默当 put",
+      "evidence": "option_type='CALL'(大写)与 'straddle'(未知类型)均返回与 put 完全相同的结果(ATM delta=-0.4503, 即看跌delta), 而小写 'call' 返回 +0.5497。'Put'(首字母大写)正确识别为 put。说明匹配逻辑为 'call'==lower 则看涨, 否则一律按 put 处理。",
+      "impact": "AI 或用户传入 'Call'/'CALL'/'C'/拼写错误时, 会静默得到看跌期权的希腊字母与定价, 方向完全相反且无任何告警。期权方向误判是严重的金融计算错误。建议大小写归一化 + 严格枚举校验(仅接受 call/put)。",
+      "type": "silent_option_type_misinterpretation"
+    },
+    {
+      "id": "F-N24-2",
+      "severity": "medium",
+      "title": "calculate_greeks 负行权价产生 NaN 输出无校验",
+      "evidence": "K=-3(负行权价)返回 option_price='nan', greeks 全为 'nan'(delta/gamma/theta/vega/rho), success=true, 无 error/警告。interpretation 文案也填入 'nan元'。",
+      "impact": "非法行权价(负数)未被拒绝, 产生 NaN 污染整个响应且 success=true, AI 可能把 nan 当数值传递。建议校验 K>0 并返回 error_code。",
+      "type": "nan_output_no_validation"
+    },
+    {
+      "id": "F-N24-3",
+      "severity": "medium",
+      "title": "calculate_greeks 边界/缺失参数被静默替换为默认值",
+      "evidence": "sigma=0 被替换为 25%(volatility 显示 25.00%); T=0 被替换为 0.25(显示 91 days); 缺失 K 被默认为 3.5(=S)。这些边界/缺失输入未报错, 静默用默认值计算并返回看似正常的结果。",
+      "impact": "用户传 sigma=0(确定性)或 T=0(到期日)等边界值, 或漏传 strike, 会得到基于默认参数的结果而非预期, 且无任何提示。AI 无法察觉输入被篡改。建议对 0/缺失值显式报错或在 meta 标注 applied_default。",
+      "type": "silent_default_substitution"
+    },
+    {
+      "id": "F-N24-4",
+      "severity": "low",
+      "title": "list/volatility_smirk 空数据时顶层 envelope degraded 与内层不一致",
+      "evidence": "周末 list(510050) 返回 count=0/options=[]/data.degraded=false; volatility_smirk 返回 data.degraded=true/curve=[]/atm_iv=null 但顶层 meta.degraded=false。空结果未在顶层 envelope 标 degraded。",
+      "impact": "AI 仅看顶层 degraded=false 会以为数据可用, 实际期权链为空(周末上游无数据)。建议空结果时顶层标 degraded + quality_flags。与 N01 F-N01-2/N21 F-N21-2 同类 envelope 一致性问题。",
+      "type": "envelope_consistency"
+    }
+  ],
+  "positive_notes": [
+    "★★Black-Scholes 解析计算完全正确: call/put delta、gamma(ATM峰值+临近到期spike)、theta、vega、rho 全部符合理论; put-call delta parity(call-put≈1.0)严格成立",
+    "★IV 反演高精度往返: 按给定σ定价后反解 IV 误差<0.01%(σ=0.2→19.99%), 多波动率档(0.2/0.3/0.4/0.5/1.5)均收敛",
+    "calculate_price 提供 intrinsic_value/time_value/moneyness 分解, expiry_date 可覆盖 T(按日期算 time_to_maturity)",
+    "边界优雅: 不可能价格(price<intrinsic)→'未收敛'拒绝; 非法action→列出6合法action; 负利率/极高波动率(150%)被合理接受",
+    "IV 参数多别名兼容(market_price/price/option_price); 负无风险利率支持(真实负利率场景)",
+    "希腊字母 interpretation 中文解读清晰(delta/gamma/theta/vega/rho 每项附业务含义)"
+  ],
+  "verdict": "pass_with_high_finding"
+}

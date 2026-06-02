@@ -12,8 +12,9 @@
   https://scikit-learn.org/stable/modules/calibration.html
 - MAPIE Documentation: https://mapie.readthedocs.io/
 
-注意：本模块为纯 Python 实现（不依赖 sklearn），适合在 MCP 服务中轻量使用。
-如需生产级校准，应使用 CalibratedClassifierCV + isotonic/sigmoid。
+注意：本模块同时提供纯 Python 兜底实现与 sklearn 主路径。
+sklearn 主路径用 LogisticRegression(Platt/sigmoid) / IsotonicRegression 直接拟合
+(score -> label)，不依赖 CalibratedClassifierCV 的内部 CV 折叠（在 sklearn>=1.6 易碎）。
 """
 
 from __future__ import annotations
@@ -364,46 +365,46 @@ def calibrate_probability_series(
         normalized_method = "sigmoid"
 
     if prefer_sklearn:
+        # F-N43-3 fix (诊断报告 §N43): 旧实现用 CalibratedClassifierCV + 自定义假估计器
+        # (_RawScoreEstimator)，在 sklearn>=1.6 的 tag 体系下被判为 regressor 而恒抛
+        # ValueError，导致 platt/isotonic 每次都静默降级 builtin。
+        # 修复: 后验校准已持有 (score -> label) 对，直接拟合 LogisticRegression(Platt/sigmoid)
+        # 或 IsotonicRegression，这是标准且稳健的 post-hoc 校准方式，不再依赖 CV 折叠假估计器。
         try:
             import numpy as _np
-            from sklearn.base import BaseEstimator, ClassifierMixin
-            from sklearn.calibration import CalibratedClassifierCV
-
-            class _RawScoreEstimator(BaseEstimator, ClassifierMixin):
-                def fit(self, X, y):  # noqa: N802
-                    self.classes_ = _np.array(sorted(set(int(item) for item in y)))
-                    return self
-
-                def decision_function(self, X):  # noqa: N802
-                    return _np.asarray(X, dtype=float).reshape(-1)
-
-                def predict(self, X):  # noqa: N802
-                    return (self.decision_function(X) >= 0.5).astype(int)
 
             class_values = [int(round(item)) for item in ys]
             if len(set(class_values)) >= 2:
-                min_class_count = min(class_values.count(0), class_values.count(1))
-                resolved_cv = max(2, min(int(cv or 3), min_class_count))
                 X = _np.asarray(scores, dtype=float).reshape(-1, 1)
                 y = _np.asarray(class_values, dtype=int)
-                calibrator = CalibratedClassifierCV(
-                    estimator=_RawScoreEstimator(),
-                    method=normalized_method,
-                    cv=resolved_cv,
-                )
-                calibrated = calibrator.fit(X, y).predict_proba(X)[:, 1].tolist()
+                if normalized_method == "isotonic":
+                    from sklearn.isotonic import IsotonicRegression
+
+                    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+                    calibrated = iso.fit_transform(
+                        _np.asarray(scores, dtype=float), y.astype(float)
+                    ).tolist()
+                    backend_name = "sklearn_isotonic_regression"
+                else:
+                    from sklearn.linear_model import LogisticRegression
+
+                    # C 很大 ≈ 无正则，等价于经典 Platt scaling
+                    lr = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000)
+                    lr.fit(X, y)
+                    calibrated = lr.predict_proba(X)[:, 1].tolist()
+                    backend_name = "sklearn_logistic_platt"
                 return CalibrationSeriesResult(
                     probabilities=[_clamp(value) for value in calibrated],
                     method=normalized_method,
-                    backend_requested="sklearn_calibrated_classifier_cv",
-                    backend_used="sklearn_calibrated_classifier_cv",
+                    backend_requested=backend_name,
+                    backend_used=backend_name,
                     fallback_used=False,
-                    cv_folds=resolved_cv,
+                    cv_folds=None,
                 )
+            else:
+                fallback_reason = "sklearn_calibration_insufficient_class_support"
         except Exception as exc:
             fallback_reason = f"sklearn_calibration_failed:{type(exc).__name__}"
-        else:
-            fallback_reason = "sklearn_calibration_insufficient_class_support"
     else:
         fallback_reason = "sklearn_disabled"
 

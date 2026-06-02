@@ -92,8 +92,12 @@ export function App() {
   const [connectionBusy, setConnectionBusy] = useState(false);
 
   const normalizedEndpoint = normalizeEndpoint(endpoint);
-  const canLoadAgentHistory =
+  // /v1/hermes/sessions is control-gated (require_full). Only attempt to load
+  // session history when we have a control token (or in mock mode); otherwise
+  // the request 401s on initial load and floods the console with noise.
+  const agentReachable =
     mockMode || !!health || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1");
+  const canLoadAgentHistory = agentReachable && (mockMode || !!controlToken.trim());
   const api = useMemo(() => new AiaskApi({ endpoint: normalizedEndpoint, apiToken, controlToken }), [apiToken, controlToken, normalizedEndpoint]);
   const hermes = useHermesConsole(normalizedEndpoint, apiToken, controlToken);
   const workbench = useAgentWorkbench({

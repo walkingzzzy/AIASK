@@ -161,7 +161,9 @@ def register_options_manager(mcp):
                 time_to_maturity = kwargs.get('time_to_maturity')
                 risk_free_rate = kwargs.get('risk_free_rate')
                 volatility = kwargs.get('volatility')
-                option_type = kwargs.get('option_type', 'call')
+                option_type = str(kwargs.get('option_type', 'call') or 'call').lower().strip()
+                if option_type not in ('call', 'put'):
+                    return fail('option_type 必须为 call 或 put')
                 dividend_yield = kwargs.get('dividend_yield')
                 
                 # 类型转换（参数可能以字符串形式传入）— 使用默认值

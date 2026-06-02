@@ -147,20 +147,22 @@ def validate_quote(data: dict) -> StockQuote:
 def _is_chinese_index_code(code: object) -> bool:
     """Detect Chinese A-share index codes that need numeric sanity range check.
 
-    Indexes (沪指/深指/创业板/300/500/1000) have close values typically in
-    [1000, 10000] range; if upstream data accidentally lands stock-like quote
-    (e.g. 平安银行 close=10.68) on an index code, it must be rejected.
+    FIX-10 (2026-06-02): 指数 K 线在本系统中**始终以带市场前缀的代码入库**
+    （如 ``sh000001`` / ``sz399006``，见 storage.sqlite.kline.get_index_klines 文档），
+    以避免与个股代码冲突。因此**裸 6 位代码一律视为个股**，不再套用指数价格区间。
+
+    历史 bug：旧实现把裸 ``000001`` 等纳入 bare_index 集合，导致深市个股
+    000001（平安银行，股价≈11 元）入库时被当成上证指数、按 [1000,30000] 拒绝
+    （dead-letter 持续证据）。修复后仅对显式带市场前缀的指数代码做区间校验，
+    个股 000001.SZ 不再被误判。
+
+    判定保留：``sh000``（上证系列指数）/ ``sz399``（深证系列指数）/ ``index_`` 前缀。
     """
     if not code:
         return False
-    text = str(code).lower()
-    # Common prefixes
+    text = str(code).strip().lower()
+    # 仅显式市场前缀的指数代码参与区间校验；裸 6 位代码视为个股，不在此拦截。
     if text.startswith("sh000") or text.startswith("sz399") or text.startswith("index_"):
-        return True
-    # Bare normalized index codes (上证 000xxx 系列、深证 399xxx 系列、科创 000688)
-    bare_index = {"000001", "000016", "000300", "000688", "000852", "000905",
-                  "399001", "399005", "399006", "399330"}
-    if text in bare_index:
         return True
     return False
 

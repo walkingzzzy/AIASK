@@ -95,6 +95,47 @@ def diagnostic_observation_ttl_days() -> int:
     return max(1, min(value, 30))
 
 
+def diagnostic_observation_final_status() -> str:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_STATUS", "diagnostic")
+    value = str(raw or "").strip().lower()
+    return value if value in {"diagnostic", "submitted"} else "diagnostic"
+
+
+def diagnostic_observation_min_win_rate() -> float:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_WIN_RATE", "0.36")
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        value = 0.36
+    return max(0.0, min(value, 0.399))
+
+
+def diagnostic_observation_min_trade_count() -> int:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_MIN_TRADE_COUNT", "4")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 4
+    return max(1, min(value, 100))
+
+
+def diagnostic_observation_health_guard_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_GUARD_ENABLED", default=True)
+
+
+def diagnostic_observation_health_max_age_hours() -> int:
+    raw = os.getenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_MAX_AGE_HOURS", "24")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 24
+    return max(1, min(value, 168))
+
+
+def diagnostic_observation_dedupe_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_DEDUPE_ENABLED", default=True)
+
+
 __all__ = [
     "observe_d_grade_enabled",
     "trade_aware_extra_families",
@@ -103,4 +144,10 @@ __all__ = [
     "diagnostic_observation_enabled",
     "diagnostic_observation_batch_limit",
     "diagnostic_observation_ttl_days",
+    "diagnostic_observation_final_status",
+    "diagnostic_observation_min_win_rate",
+    "diagnostic_observation_min_trade_count",
+    "diagnostic_observation_health_guard_enabled",
+    "diagnostic_observation_health_max_age_hours",
+    "diagnostic_observation_dedupe_enabled",
 ]

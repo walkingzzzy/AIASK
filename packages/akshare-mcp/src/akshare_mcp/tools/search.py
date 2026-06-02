@@ -450,8 +450,10 @@ def register(mcp):
                                WHERE REPLACE(REPLACE(stock_name, ' ', ''), '　', '') LIKE $1
                                   OR stock_name LIKE $2
                                   OR stock_code LIKE $3
-                               LIMIT $4""",
+                                  OR industry LIKE $4
+                               LIMIT $5""",
                             f"%{keyword_no_space}%",
+                            f"%{keyword_clean}%",
                             f"%{keyword_clean}%",
                             f"%{keyword_clean}%",
                             int(limit),
@@ -465,6 +467,34 @@ def register(mcp):
                     try:
                         from ..utils import safe_stderr_print
                         safe_stderr_print(f"[search_stocks] db like fallback failed: {type(exc_search).__name__}: {exc_search}")
+                    except Exception:
+                        pass
+
+            # FIX-11: 行业语义兜底 — 关键词检索仍 0 命中时回退到 semantic_stock_search
+            # 历史问题: search_stocks('白酒')=0(仅代码/名称/industry LIKE), 而行业别名
+            #   (如 "白酒"->酿酒/食品饮料) 需语义匹配。回退确保行业词不再 0 命中。
+            if not results and keyword and keyword.strip():
+                try:
+                    from . import _vector_search_semantic as _sem_mod
+                    sem = await _sem_mod.semantic_stock_search(keyword.strip(), limit=limit)
+                    sem_results = (sem or {}).get("data", {}).get("results") or []
+                    if sem_results:
+                        results = [
+                            {
+                                "code": r.get("code"),
+                                "name": r.get("name"),
+                                "industry": r.get("industry"),
+                                "market_cap": r.get("market_cap"),
+                                "match_type": r.get("match_type"),
+                            }
+                            for r in sem_results
+                        ]
+                        fallback_used = True
+                        source_chain.append("semantic_stock_search")
+                except Exception as exc_sem:
+                    try:
+                        from ..utils import safe_stderr_print
+                        safe_stderr_print(f"[search_stocks] semantic fallback failed: {type(exc_sem).__name__}: {exc_sem}")
                     except Exception:
                         pass
             

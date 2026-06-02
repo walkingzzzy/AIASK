@@ -86,6 +86,170 @@ class OpenAIChatClient:
         )
 
 
+def _anthropic_messages_api_base(base_url: str | None) -> str:
+    base = str(base_url or "").rstrip("/")
+    if not base:
+        return "https://api.anthropic.com/v1"
+    lowered = base.lower()
+    if lowered.endswith("/messages"):
+        return base.rsplit("/", 1)[0]
+    remainder = base.split("://", 1)[1] if "://" in base else base
+    path = remainder.split("/", 1)[1] if "/" in remainder else ""
+    if not path:
+        return f"{base}/v1"
+    return base
+
+
+class AnthropicMessagesClient:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        transport: Any | None = None,
+    ) -> None:
+        import httpx
+
+        self.api_key = api_key or ""
+        self.base_url = _anthropic_messages_api_base(base_url)
+        self.client = httpx.AsyncClient(transport=transport, follow_redirects=True, http2=False)
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
+    @staticmethod
+    def _content_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                text = AnthropicMessagesClient._content_text(item)
+                if text:
+                    parts.append(text)
+            return "\n".join(parts)
+        if isinstance(value, dict):
+            if isinstance(value.get("text"), str):
+                return str(value.get("text") or "")
+            if "content" in value:
+                return AnthropicMessagesClient._content_text(value.get("content"))
+        return str(value)
+
+    def _adapt_messages(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+        adapted: list[dict[str, Any]] = []
+        system_parts: list[str] = []
+        for message in messages or []:
+            role = str(message.get("role") or "user").strip().lower()
+            content = self._content_text(message.get("content"))
+            if role == "system":
+                if content:
+                    system_parts.append(content)
+                continue
+            if role == "tool":
+                name = message.get("name") or message.get("tool_call_id") or "tool"
+                adapted.append({"role": "user", "content": f"Tool result ({name}):\n{content}"})
+                continue
+            if role not in {"user", "assistant"}:
+                role = "user"
+            if role == "assistant" and message.get("tool_calls"):
+                tool_lines = []
+                for call in list(message.get("tool_calls") or []):
+                    function = dict(call.get("function") or {})
+                    tool_lines.append(
+                        f"Tool requested: {function.get('name') or call.get('name') or 'tool'} "
+                        f"arguments={function.get('arguments') or call.get('arguments') or '{}'}"
+                    )
+                content = "\n".join([part for part in [content, *tool_lines] if part])
+            adapted.append({"role": role, "content": content})
+        if not adapted:
+            adapted.append({"role": "user", "content": ""})
+        system = "\n\n".join(system_parts) if system_parts else None
+        return adapted, system
+
+    @staticmethod
+    def _adapt_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        adapted: list[dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            function = dict(tool.get("function") or {})
+            name = str(function.get("name") or "").strip()
+            if not name:
+                continue
+            adapted.append(
+                {
+                    "name": name,
+                    "description": str(function.get("description") or ""),
+                    "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
+                }
+            )
+        return adapted
+
+    @staticmethod
+    def _extract_response(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        for item in list(body.get("content") or []):
+            if not isinstance(item, dict):
+                if item not in (None, ""):
+                    text_parts.append(str(item))
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "text" or item.get("text") is not None:
+                text = item.get("text")
+                if text not in (None, ""):
+                    text_parts.append(str(text))
+                continue
+            if item_type == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": str(item.get("id") or f"call_{uuid4().hex[:12]}"),
+                        "type": "function",
+                        "function": {
+                            "name": str(item.get("name") or ""),
+                            "arguments": json.dumps(item.get("input") or {}, ensure_ascii=False),
+                        },
+                    }
+                )
+        return "\n".join(text_parts), tool_calls
+
+    async def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str,
+    ) -> ModelResponse:
+        adapted_messages, system = self._adapt_messages(messages)
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": adapted_messages,
+            "max_tokens": max(1, int(os.getenv("AIASK_AGENT_MAX_TOKENS", "2048") or 2048)),
+        }
+        if system:
+            payload["system"] = system
+        adapted_tools = self._adapt_tools(tools)
+        if adapted_tools:
+            payload["tools"] = adapted_tools
+        response = await self.client.post(
+            f"{self.base_url}/messages",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+            timeout=max(5.0, float(os.getenv("AIASK_AGENT_MODEL_TIMEOUT", "120") or 120)),
+        )
+        response.raise_for_status()
+        body = response.json()
+        content, tool_calls = self._extract_response(body if isinstance(body, dict) else {})
+        usage = dict(body.get("usage") or {}) if isinstance(body, dict) else {}
+        return ModelResponse(content=content, tool_calls=tool_calls, usage=usage, raw=body)
+
+
 class MockModelClient:
     """Deterministic local model used when no external provider is configured."""
 
@@ -175,7 +339,10 @@ class ProviderPoolModelClient:
             for credential in self._credentials_for(provider):
                 if not credential.secret_value:
                     continue
-                client = OpenAIChatClient(api_key=credential.secret_value, base_url=provider.base_url)
+                if provider.provider_type in {"anthropic_messages", "anthropic"}:
+                    client = AnthropicMessagesClient(api_key=credential.secret_value, base_url=provider.base_url)
+                else:
+                    client = OpenAIChatClient(api_key=credential.secret_value, base_url=provider.base_url)
                 try:
                     response = await client.complete(messages=messages, tools=tools, model=provider.model or model)
                     self.registry.record_attempt(provider=provider.name, credential_id=credential.credential_id, success=True)
@@ -216,6 +383,8 @@ def build_model_client_from_env() -> ModelClient:
     has_provider_pool = bool(str(os.getenv("OPENAI_API_KEYS", "")).strip() or str(os.getenv("AIASK_AGENT_MODEL_PROVIDERS", "")).strip())
     if provider == "mock" or (not provider and not api_key and not has_provider_pool):
         return MockModelClient()
+    if provider in {"anthropic_messages", "anthropic"}:
+        return AnthropicMessagesClient(api_key=api_key or None, base_url=base_url)
     if has_provider_pool or provider not in {"", "openai"}:
         registry = ModelProviderRegistry(usage_store=ProviderUsageStore())
         if has_provider_pool and provider in {"", "openai"}:

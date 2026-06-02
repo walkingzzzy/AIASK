@@ -43,6 +43,7 @@
             # 多阶段 pipeline 路径
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
+            monolithic_external_provider_skip_reason: Optional[str] = None
             suppress_post_pipeline_fallback = False
             post_pipeline_suppression_reason: Optional[str] = None
             pipeline_run_timeout_sec: Optional[float] = None
@@ -141,12 +142,25 @@
                     allow_empty_monolithic_fallback = str(
                         os.getenv('STRATEGY_FACTORY_ALLOW_PIPELINE_EMPTY_MONOLITHIC_FALLBACK', '0') or '0'
                     ).strip().lower() in {'1', 'true', 'yes', 'on'}
+                    skip_empty_monolithic_fallback = str(
+                        os.getenv('STRATEGY_FACTORY_PIPELINE_EMPTY_SKIP_MONOLITHIC_FALLBACK', '1') or '1'
+                    ).strip().lower() in {'1', 'true', 'yes', 'on'}
                     if provider_output_format_failed:
                         suppress_post_pipeline_fallback = True
                         post_pipeline_suppression_reason = 'provider_output_format_failure'
                         logger.warning(
                             'Pipeline staged mode returned no specs after provider output format failure; '
                             'suppressing monolithic/local fallback. reason=%s stage_reasons=%s fallback_counts=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                        )
+                    elif skip_empty_monolithic_fallback:
+                        skip_monolithic_external_provider = True
+                        monolithic_external_provider_skip_reason = 'staged_pipeline_empty'
+                        logger.info(
+                            'Pipeline staged mode returned no specs; skipping monolithic external provider '
+                            'and continuing with local fallback. reason=%s stage_reasons=%s fallback_counts=%s',
                             empty_reason,
                             pipeline_stage_reasons,
                             pipeline_fallback_counts,
@@ -172,6 +186,7 @@
                 except asyncio.TimeoutError as exc:
                     _pipeline_fallback_reason = 'pipeline_timeout'
                     skip_monolithic_external_provider = True
+                    monolithic_external_provider_skip_reason = 'pipeline_timeout'
                     suppress_post_pipeline_fallback = True
                     post_pipeline_suppression_reason = 'pipeline_timeout'
                     logger.warning(
@@ -278,9 +293,21 @@
                 self.last_report = report
                 return []
             if skip_monolithic_external_provider:
-                report['external_provider']['status'] = 'skipped_after_pipeline_timeout'
-                report['external_provider']['last_error_type'] = 'PipelineTimeout'
-                report['external_provider']['last_error'] = 'staged pipeline timed out; monolithic external provider skipped for this task'
+                if monolithic_external_provider_skip_reason == 'staged_pipeline_empty':
+                    report['external_provider']['status'] = 'skipped_after_pipeline_empty'
+                    report['external_provider']['last_error_type'] = 'NoExecutableCandidates'
+                    report['external_provider']['last_error'] = (
+                        'staged pipeline returned no executable specs; monolithic external provider skipped '
+                        'and local fallback allowed for this task'
+                    )
+                else:
+                    report['external_provider']['status'] = 'skipped_after_pipeline_timeout'
+                    report['external_provider']['last_error_type'] = 'PipelineTimeout'
+                    report['external_provider']['last_error'] = 'staged pipeline timed out; monolithic external provider skipped for this task'
+                report['external_provider']['monolithic_external_provider_skipped'] = True
+                report['external_provider']['monolithic_external_provider_skip_reason'] = (
+                    monolithic_external_provider_skip_reason or 'pipeline_timeout'
+                )
             elif frame is not None and not frame.empty and self.external_provider.is_enabled():
                 base_request_limit = max(2, min(int(limit or 3), 3))
                 request_limits = [base_request_limit for _ in range(max(1, min(int(LLM_FAN_OUT_COUNT or 1), 4)))]

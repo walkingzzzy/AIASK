@@ -1,0 +1,126 @@
+name: AIASK CI
+
+# P0-1 fix: provide an automated acceptance pipeline so the readiness
+# commands in the Makefile (test-agent / test-finance / desktop
+# test+typecheck+build / code-graph) run on every push and PR instead of
+# relying on manual local execution.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent-tests:
+    name: Agent + Quant + Strategy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync agent environment
+        working-directory: packages/agent
+        run: uv sync
+
+      - name: Run agent test suite (make test-agent)
+        run: make test-agent
+
+  finance-tests:
+    name: AKShare MCP finance targeted tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync akshare-mcp environment
+        working-directory: packages/akshare-mcp
+        run: uv sync
+
+      - name: Run finance targeted tests (make test-finance)
+        run: make test-finance
+
+  boundary-and-drift:
+    name: Package boundaries + endpoint drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal deps
+        run: python -m pip install --upgrade pip pytest
+
+      # Package-decoupling + no-live-trading boundary guards do not need
+      # heavy runtime deps; they statically scan source files.
+      - name: Strategy-factory boundary guards
+        env:
+          PYTHONPATH: packages/strategy-factory/src:packages/aiask-quant-core/src
+        run: |
+          pytest -q \
+            packages/strategy-factory/tests/test_package_decoupling_boundary.py \
+            packages/strategy-factory/tests/test_no_live_trading_boundary.py
+
+      - name: Endpoint drift gate (P1-1)
+        run: python scripts/code_graph/check_endpoint_drift.py
+
+      - name: DB retention tool safety tests (P1-5)
+        env:
+          PYTHONPATH: packages/agent/src
+        run: pytest -q packages/agent/tests/test_db_retention_tool.py
+
+  desktop:
+    name: Desktop test + typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Desktop unit tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Desktop typecheck
+        working-directory: desktop
+        run: npm run typecheck
+
+      - name: Desktop build
+        working-directory: desktop
+        run: npm run build

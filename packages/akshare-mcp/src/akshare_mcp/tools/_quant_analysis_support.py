@@ -332,10 +332,12 @@ async def run_factor_robustness_check(
     # 历史问题:windows=[10,20,60] IC=-0.999/+0.81/+0.05,因子在不同时间尺度方向相反但仅 grade=weak
     # 修复:emit warning 'factor_sign_inversion_across_horizons'
     horizon_ics = []
-    for r in multi_window_results:
+    for window_key, r in multi_window_results.items():
+        if not isinstance(r, dict):
+            continue
         ic_val = r.get("ic")
         if isinstance(ic_val, (int, float)) and r.get("sample_size", 0) >= 10:
-            horizon_ics.append((r.get("window"), float(ic_val)))
+            horizon_ics.append((r.get("window", window_key), float(ic_val)))
     if len(horizon_ics) >= 2:
         signs = {1 if ic > 0.05 else (-1 if ic < -0.05 else 0) for _, ic in horizon_ics}
         # 既有正又有负 → 倒挂

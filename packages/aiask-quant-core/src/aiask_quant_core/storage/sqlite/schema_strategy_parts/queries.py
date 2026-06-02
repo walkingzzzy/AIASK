@@ -162,6 +162,17 @@
     )
 
     await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_factory_scheduler_state (
+            state_key TEXT PRIMARY KEY,
+            payload_json TEXT DEFAULT '{}',
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_strategy_factory_scheduler_state_updated_at ON strategy_factory_scheduler_state(updated_at DESC);"
+    )
+
+    await conn.execute("""
         CREATE TABLE IF NOT EXISTS strategy_factory_dispatches (
             id INTEGER PRIMARY KEY,
             dispatch_id TEXT NOT NULL UNIQUE,

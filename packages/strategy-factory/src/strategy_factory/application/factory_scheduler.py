@@ -252,7 +252,7 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._metrics.consecutive_failures = self._consecutive_failures
             return self._metrics.to_dict()
 
-        async def _restore_scheduler_state(self) -> None:
+        async def _restore_scheduler_state_legacy(self) -> None:
             """PR-S4: 启动时尝试从 DB 恢复 EMA 反馈 / 断路器 / cycle_count 状态。
 
             DB 未提供 ``load_scheduler_state`` 时静默跳过；任何异常都降级为干净启动。
@@ -275,6 +275,66 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
                         str(k): {"ema_submit_count": float((v or {}).get("ema_submit_count") or 0.0)}
                         for k, v in feedback.items()
                     }
+                try:
+                    self._cycle_count = max(0, int(state.get("cycle_count") or 0))
+                except Exception:
+                    pass
+                try:
+                    self._consecutive_failures = max(0, int(state.get("consecutive_failures") or 0))
+                except Exception:
+                    pass
+                circuit_state = str(state.get("circuit_state") or "closed").strip().lower()
+                if circuit_state in {"closed", "open", "half_open"}:
+                    self._circuit_state = circuit_state
+                logger.info(
+                    "StrategyFactory: restored scheduler state, families=%d cycle=%d",
+                    len(self._family_gate_feedback),
+                    self._cycle_count,
+                )
+            except Exception as exc:
+                logger.debug("StrategyFactory: scheduler state restore failed: %s", exc)
+
+        async def _restore_scheduler_state(self, db=None) -> None:
+            try:
+                resolved_db = db
+                if resolved_db is None and callable(getattr(self, "_load_db", None)):
+                    resolved_db = self._load_db()
+                if resolved_db is None:
+                    return
+                loader = getattr(resolved_db, "load_scheduler_state", None)
+                if not callable(loader):
+                    return
+                state = loader()
+                if inspect.isawaitable(state):
+                    state = await state
+                if not isinstance(state, dict) or not state:
+                    return
+
+                feedback = state.get("family_gate_feedback")
+                if isinstance(feedback, dict):
+                    restored: Dict[str, Dict[str, Any]] = {}
+                    for family, raw_entry in feedback.items():
+                        family_token = str(family or "").strip()
+                        if not family_token or not isinstance(raw_entry, dict):
+                            continue
+                        entry: Dict[str, Any] = {}
+                        for key, value in raw_entry.items():
+                            key_token = str(key or "").strip()
+                            if not key_token:
+                                continue
+                            if isinstance(value, bool):
+                                entry[key_token] = bool(value)
+                            elif isinstance(value, (int, float)):
+                                entry[key_token] = float(value)
+                            elif isinstance(value, str):
+                                entry[key_token] = value
+                            elif isinstance(value, list):
+                                entry[key_token] = list(value)
+                            elif isinstance(value, dict):
+                                entry[key_token] = dict(value)
+                        if entry:
+                            restored[family_token] = entry
+                    self._family_gate_feedback = restored
                 try:
                     self._cycle_count = max(0, int(state.get("cycle_count") or 0))
                 except Exception:

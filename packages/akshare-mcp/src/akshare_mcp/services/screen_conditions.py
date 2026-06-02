@@ -244,7 +244,9 @@ def cond_rsi_oversold(klines, params):
     period = params.get('period', 14)
     threshold = params.get('threshold', 30)
     rsi_result = ta.calculate_rsi(closes, period)
-    rsi_val = rsi_result.get('value', 50) if isinstance(rsi_result, dict) else 50
+    rsi_val = rsi_result.get('value') if isinstance(rsi_result, dict) else None
+    if rsi_val is None:  # F-N04-1: warmup 不足，不视为超卖命中
+        return False
     return rsi_val < threshold
 
 @engine.register('rsi_overbought', 'RSI超买', 'indicator', 'RSI>阈值',
@@ -254,7 +256,9 @@ def cond_rsi_overbought(klines, params):
     period = params.get('period', 14)
     threshold = params.get('threshold', 70)
     rsi_result = ta.calculate_rsi(closes, period)
-    rsi_val = rsi_result.get('value', 50) if isinstance(rsi_result, dict) else 50
+    rsi_val = rsi_result.get('value') if isinstance(rsi_result, dict) else None
+    if rsi_val is None:  # F-N04-1: warmup 不足，不视为超买命中
+        return False
     return rsi_val > threshold
 
 @engine.register('boll_squeeze', '布林带收窄', 'indicator', '带宽<历史均值的指定比例',

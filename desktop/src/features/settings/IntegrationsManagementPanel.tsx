@@ -7,7 +7,23 @@ import { AiaskApi } from "../../services/aiaskApi";
 import type { ConnectorDetail, GatewayDaemonStatus, GatewayMessage, GatewayPlatform } from "../../types";
 
 function connectorKey(connector: ConnectorDetail): string {
-  return `${connector.type}:${connector.name}`;
+  return connector.id || `${connector.type}:${connectorRef(connector)}`;
+}
+
+/**
+ * Resolve the backend connector identifier segment.
+ *
+ * The backend keys connectors as `${type}:${defId}` (e.g. "financial:tongdaxin")
+ * and its routes expect the def-id segment (`tongdaxin`), NOT the localized
+ * display name (`connector.name` = "通达信"). Passing the display name produces
+ * 404s on `/v1/connectors/{type}/{name}` and misses ConnectorWizard configs.
+ */
+function connectorRef(connector: ConnectorDetail): string {
+  if (connector.id && connector.id.includes(":")) {
+    return connector.id.slice(connector.id.indexOf(":") + 1);
+  }
+  if (connector.id) return connector.id;
+  return connector.name;
 }
 
 export function IntegrationsManagementPanel({
@@ -66,7 +82,7 @@ export function IntegrationsManagementPanel({
   async function testConnector(connector: ConnectorDetail) {
     setBusy(true);
     try {
-      const payload = await api.connectorTest(connector.type, connector.name);
+      const payload = await api.connectorTest(connector.type, connectorRef(connector));
       setSelected(payload.data || connector);
       setResult(payload);
       setMessage("CONNECTOR_TESTED");
@@ -196,7 +212,7 @@ export function IntegrationsManagementPanel({
       {wizard && (
         <section className="capability-section">
           <ConnectorWizard
-            connectorName={wizard.name}
+            connectorName={connectorRef(wizard)}
             connectorType={wizard.type}
             onClose={() => setWizard(null)}
             onSave={(config) => {

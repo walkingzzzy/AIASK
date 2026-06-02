@@ -35,6 +35,36 @@ def _latest(items: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     return items[0] if items else None
 
 
+def _summarize_factory_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Build a lightweight summary of a strategy-factory run.
+
+    F-N42-2 fix (诊断报告 §N42): closure_review/detail/factory_status 内嵌
+    最近 5 个**完整** factory run（每个含全 stages，110-119KB），单响应数十万 token。
+    复核单个用户草稿不应拖入全市场 factory 调度历史。此助手仅保留 run 的标量摘要
+    （run_id/status/时间/计数/summary 顶层标量），剔除 stages 等重字段。
+    """
+    if not isinstance(run, dict):
+        return {}
+    summary = run.get("summary")
+    summary_scalars: dict[str, Any] = {}
+    if isinstance(summary, dict):
+        for key, value in summary.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                summary_scalars[key] = value
+    return {
+        "run_id": run.get("run_id") or run.get("id"),
+        "status": run.get("status"),
+        "task": run.get("task") or run.get("run_type"),
+        "started_at": run.get("started_at") or run.get("created_at"),
+        "completed_at": run.get("completed_at"),
+        "submitted_count": run.get("submitted_count"),
+        "spawned_count": run.get("spawned_count"),
+        "eliminated_count": run.get("eliminated_count"),
+        "summary": summary_scalars or None,
+    }
+
+
+
 def _coerce_as_of(value: Any) -> Optional[str]:
     if value in (None, ""):
         return None
@@ -455,10 +485,26 @@ async def build_closure_review(
         or _string((runtime_control or {}).get("metadata", {}).get("correlation_id") if isinstance(runtime_control, dict) else None)
         or None
     )
-    resolved_factory_run_id = (
+    # F-N42-2 fix (诊断报告 §N42): 仅当策略与某 factory run 有**真实关联**时才归属
+    # factory_run_id。历史问题: 手工 create 的 draft（与任何 run 无关）被赋全局
+    # latest_factory_run.run_id，AI 据此误判该 draft 是工厂产出。
+    # 真实关联来源: (a) execution_audit_snapshot.factory_run_id；
+    # (b) 策略自身 metadata/params 记录的 factory_run_id/source_factory_run_id。
+    _strategy_meta: dict[str, Any] = {}
+    if isinstance(strategy, dict):
+        _strategy_params_meta = dict(dict(strategy.get("params") or {}).get("metadata") or {})
+        _strategy_meta = {**_strategy_params_meta, **dict(strategy.get("metadata") or {})}
+    _strategy_linked_run = (
         _string((execution_audit_snapshot or {}).get("factory_run_id"))
-        or _string((latest_factory_run or {}).get("run_id"))
+        or _string(_strategy_meta.get("factory_run_id"))
+        or _string(_strategy_meta.get("source_factory_run_id"))
         or None
+    )
+    resolved_factory_run_id = _strategy_linked_run or None
+    factory_run_lineage_basis = (
+        "execution_audit_snapshot" if _string((execution_audit_snapshot or {}).get("factory_run_id"))
+        else "strategy_metadata" if _strategy_linked_run
+        else "unlinked"
     )
     resolved_as_of = (
         _coerce_as_of(as_of)
@@ -553,8 +599,14 @@ async def build_closure_review(
         factory={
             "research_window": research_window,
             "full_market_topn": latest_topn_snapshot,
-            "latest_run": latest_factory_run,
-            "runs": list(factory_runs or []),
+            "latest_run": _summarize_factory_run(latest_factory_run or {}) if latest_factory_run else None,
+            "runs": [_summarize_factory_run(run) for run in list(factory_runs or [])],
+            "runs_truncated": True,
+            "runs_note": (
+                "仅返回 factory run 标量摘要（run_id/status/计数）；"
+                "完整 stages 请用 factory_run_detail(run_id) 单独获取"
+            ),
+            "factory_run_lineage_basis": factory_run_lineage_basis,
         },
     )
     return dto.to_dict()

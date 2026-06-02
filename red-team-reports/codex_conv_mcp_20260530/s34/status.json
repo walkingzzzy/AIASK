@@ -1,0 +1,62 @@
+{
+  "scenario_id": "N34",
+  "title": "模拟交易全流程 (paper_trading_manager 全 action)",
+  "ran_at": "2026-05-30T17:04:00+08:00",
+  "tool_call_count": 31,
+  "standing_caveat": "隔离 user_id=redteam_conv_20260530, account_id=1d36a1c1; 挂单已撤销; 600519 100股持仓因T+1当日不可卖+账户有持仓不可归档, 隔离账户残留下个交易日可清; 撮合/NAV引擎未运行(市价单直接成交,限价单卡pending)",
+  "tool_status_rows": [
+    {"tool": "create_account / list_accounts / help", "verdict": "Pass", "extra": "★创建账户(account_id+initial_capital100万+user_id)→list_accounts含current_capital/total_value; help列出20个action"},
+    {"tool": "place_order(market buy 600519)", "verdict": "Pass", "extra": "★市价买100股茅台→filled, price1326/amount132600/commission39.78(0.03%); ★engine_warnings诚实标注'撮合引擎未运行,市价单直接成交未经撮合,limit卡pending'+'NAV引擎未运行'"},
+    {"tool": "资金扣减/持仓更新准确", "verdict": "Pass", "extra": "★买入后 current_capital=867360.22(=1000000-132600-39.78)精确; get_positions 600519 100股 cost1326/market_value132600/sellable=0(T+1)"},
+    {"tool": "place_order(limit 000001 @11.5) 涨跌停基准错误", "verdict": "Fail-schema", "extra": "⚠⚠⚠ 限价买000001@11.5(平安银行真实价~11.5元)被拒'涨跌停限制:价格11.50超出允许范围[3688.78,4508.50]'; 该范围[3688,4508]是上证指数点位级别, 涨跌停参考价取错(用了无关标的/指数基准) (F-N34-1)"},
+    {"tool": "place_order(sell 未持有/T+1)", "verdict": "Pass", "extra": "★★A股规则正确: 卖未持有000651→'持仓不足,无法卖出'; 卖当日买入600519→'T+1限制:可卖0股,请求卖出100股' T+1正确"},
+    {"tool": "place_order 数量边界", "verdict": "Fail-graceful", "extra": "★★校验完整: 负数量-100→'shares必须大于0'; 150股(非整百)→'买入数量必须为100的整数倍(1手=100股)'; 10000股→'风控拒绝:单股仓位超限1326.1%>30%'"},
+    {"tool": "place_order(market INVALIDXX) 非法码拒绝", "verdict": "Pass", "extra": "★★市价单非法代码 INVALIDXX→'市价单无法获取当前价格,请手动指定price'(未坐标化, 正确拒绝, 对照N28/N30坐标化)"},
+    {"tool": "place_order(limit INVALIDXX @50) 非法码挂单成功", "verdict": "Fail-schema", "extra": "⚠⚠ 限价单非法代码 INVALIDXX@50→status=pending(order_id26)挂单成功! 限价单完全不校验代码合法性, 任意字符串可挂单(市价单拒但限价单放行) (F-N34-2)"},
+    {"tool": "place_order(limit 000001 @4000) 错误基准放行", "verdict": "Fail-schema", "extra": "⚠ 限价000001@4000(远超真实价11.5)→pending成功; 因涨跌停范围错为[3688,4508], @4000在错误范围内反而通过, @11.5(真实合理)被拒 (并入F-N34-1)"},
+    {"tool": "pending_orders / cancel_order / order_events", "verdict": "Pass", "extra": "★★订单生命周期完整: pending_orders列挂单; cancel_order→cancelled; order_events记录created→cancelled事件链(schema_version v1/event_category order_lifecycle/transition from→to/by_type汇总)"},
+    {"tool": "orders 成交记录", "verdict": "Pass", "extra": "★orders含成交(600519 buy price1326/commission/trade_time/position_id); 与持仓/资金一致"},
+    {"tool": "nav_status / nav_history / matching_status", "verdict": "Degraded", "extra": "★引擎状态查询正常: nav/matching running=false(与engine_warnings一致); nav_history空(NAV引擎未运行未生成快照); matching含scan_interval/worker_id/lease"},
+    {"tool": "update_prices / reconcile", "verdict": "Pass", "extra": "★update_prices refresh_success_rate=1.0; reconcile账实校准 drift_detected=false(账本与持仓一致)"},
+    {"tool": "set_risk_rules 输入未生效", "verdict": "Degraded", "extra": "⚠ set_risk_rules(传 max_loss_pct=0.1/max_position_pct=0.5)返回默认规则(max_position_pct30/max_drawdown20/stop_loss10), 我的输入未应用; risk_rules_note说明0~1会×100但输入未生效(可能kwargs传参未识别) (F-N34-3)"},
+    {"tool": "archive_account 有持仓拒绝", "verdict": "Fail-graceful", "extra": "★★archive_account(有持仓)→'账户存在持仓或待撤订单,拒绝归档'+positions_count=1; 保护正确"},
+    {"tool": "summary / 不存在账户 / 非法action", "verdict": "Fail-graceful", "extra": "★summary完整(account/positions_count/total_return_pct); 不存在账户→'账户不存在'; bogus_action→列出20个supported action"}
+  ],
+  "summary": {"Pass": 8, "Degraded": 2, "Fail-graceful": 4, "Fail-schema": 3},
+  "findings": [
+    {
+      "id": "F-N34-1",
+      "severity": "high",
+      "title": "place_order 涨跌停参考价取错, 用无关标的/指数基准校验",
+      "evidence": "limit buy 000001(平安银行,真实价~11.5元) @11.5 被拒'涨跌停限制:价格11.50超出允许范围[3688.78,4508.50]'; 而 @4000(远超真实价)反而通过挂单。[3688,4508]范围是上证指数(sh000001)点位±10%级别, 即 000001 的涨跌停参考价误用了 sh000001 指数昨收(~4090点)。",
+      "impact": "对 000001 等代码与指数代码混淆的标的, 涨跌停校验用错基准价, 导致合理价格被拒、离谱价格放行。AI/用户无法对平安银行下正常限价单(11元被判超范围), 却能挂4000元的荒谬单。确凿的涨跌停基准价取数 bug(可能 000001↔sh000001 混淆)。",
+      "type": "wrong_limit_price_reference"
+    },
+    {
+      "id": "F-N34-2",
+      "severity": "high",
+      "title": "place_order 限价单不校验股票代码合法性",
+      "evidence": "place_order(limit, code='INVALIDXX', price=50)→status=pending 挂单成功(order_id26); 而同代码市价单→'市价单无法获取当前价格,请手动指定price'拒绝。限价单路径完全不校验代码格式/存在性。",
+      "impact": "限价单可对任意非法代码(INVALIDXX)挂单, 撮合时会失败或坐标化。市价单有校验(取价失败拒绝)但限价单无, 两路径校验不一致。与F-N32-1(watchlist无校验)同类。建议限价单也校验代码。",
+      "type": "no_code_validation_limit_order"
+    },
+    {
+      "id": "F-N34-3",
+      "severity": "medium",
+      "title": "set_risk_rules 传入规则未生效, 返回默认值",
+      "evidence": "set_risk_rules 传入 risk_rules={max_loss_pct:0.1, max_position_pct:0.5}(经kwargs), 返回 risk_rules={max_position_pct:30, max_drawdown_pct:20, stop_loss_pct:10}(系统默认), 我的输入未应用。后续 summary 显示存储的也是默认规则。",
+      "impact": "用户自定义风控规则未生效, 静默返回默认。可能 kwargs 传参方式未被识别或字段名不匹配(max_loss_pct vs stop_loss_pct)。AI 以为设置成功实则用默认。建议明确字段名或报错未识别字段。",
+      "type": "risk_rules_input_ignored"
+    }
+  ],
+  "positive_notes": [
+    "★★ A股交易规则完整正确: T+1(当日买入sellable=0,卖出'可卖0股')+持仓不足拒绝卖空+整手100股+负数量拒绝+单股仓位30%风控",
+    "★★ engine_warnings 诚实透明: 明确告知撮合引擎/NAV引擎未运行(市价单直接成交,限价单卡pending,NAV不自动更新), 不掩盖引擎状态",
+    "★★ 资金/持仓/账本精确一致: 买入扣减 current_capital=1000000-132600-39.78=867360.22 精确; reconcile drift_detected=false 账实相符; commission 0.03%",
+    "★★ 订单生命周期完整: place_order→pending/filled, cancel_order→cancelled, order_events 完整事件链(schema_version/event_category/transition/by_type汇总)",
+    "★★ 市价单非法代码正确拒绝(无法取价), 未坐标化(对照N28/N30/N32坐标化或无校验)",
+    "★ archive_account 保护(有持仓拒绝归档); 不存在账户/非法action 优雅报错",
+    "★ user_id 隔离; risk_rules_unit=percent 单位说明清晰; update_prices/reconcile/nav_status/matching_status 运维接口完整"
+  ],
+  "verdict": "pass_with_high_finding"
+}

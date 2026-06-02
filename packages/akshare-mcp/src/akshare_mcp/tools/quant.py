@@ -12,7 +12,10 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from ..services.conditional_returns import calculate_conditional_returns
+from ..services.conditional_returns import (
+    calculate_conditional_returns,
+    validate_conditions as _validate_conditional_fields,
+)
 from ..services.data_pipeline import compute_signal_hit_rate, normalize_klines
 from ..storage import get_db
 from ..utils import (
@@ -500,6 +503,10 @@ def register(mcp):
                 return fail("conditions 必须是对象或对象数组")
             if str(logic or "AND").strip().upper() not in {"AND", "OR"}:
                 return fail("logic 必须为 AND 或 OR")
+            # FIX-6: 校验 field/op 合法性，未识别字段/非法运算符显性报错而非静默 0 匹配
+            valid, validation_error = _validate_conditional_fields(conditions, logic)
+            if not valid:
+                return fail(validation_error)
             lookback = max(30, int(lookback_days))
             db = get_db()
             klines = await db.get_klines(code, limit=lookback)

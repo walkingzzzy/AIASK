@@ -11,7 +11,7 @@ _SQL_DIAGNOSTIC_OBS = """
 SELECT s.id, s.strategy_type, a.bound_at AS diagnostic_bound_at
 FROM strategies s
 JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
-WHERE s.status = 'submitted'
+WHERE s.status IN ('diagnostic', 'submitted')
   AND a.stage = 'diagnostic'
   AND a.status = 'active'
   AND NOT EXISTS (
@@ -67,21 +67,23 @@ def _run(con, limit: int = 5):
     return con.execute(_SQL_DIAGNOSTIC_OBS, (limit,)).fetchall()
 
 
-def test_select_only_active_diagnostic_submitted(temp_db):
+def test_select_only_active_diagnostic_statuses(temp_db):
     con, _ = temp_db
     con.executescript(
         """
         INSERT INTO strategies VALUES ('s1', 'n1', 'volatility_breakout', 'submitted', '{}', '{}', '', '');
-        INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'rejected',  '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'diagnostic','{}', '{}', '', '');
         INSERT INTO strategies VALUES ('s3', 'n3', 'momentum',            'submitted', '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s4', 'n4', 'rsi',                 'rejected',  '{}', '{}', '', '');
         INSERT INTO strategy_incubation_accounts VALUES
             (NULL, 's1', 'acc1', 'diagnostic', 'active', '', '{}', '2026-05-29 10:00:00', ''),
             (NULL, 's2', 'acc2', 'diagnostic', 'active', '', '{}', '2026-05-29 11:00:00', ''),
-            (NULL, 's3', 'acc3', 'paper',      'active', '', '{}', '2026-05-29 12:00:00', '');
+            (NULL, 's3', 'acc3', 'paper',      'active', '', '{}', '2026-05-29 12:00:00', ''),
+            (NULL, 's4', 'acc4', 'diagnostic', 'active', '', '{}', '2026-05-29 13:00:00', '');
         """
     )
 
-    assert [row[0] for row in _run(con)] == ["s1"]
+    assert [row[0] for row in _run(con)] == ["s2", "s1"]
 
 
 @pytest.mark.parametrize("stage", ["paper", "candidate", "listed", "incubating", "promoted"])

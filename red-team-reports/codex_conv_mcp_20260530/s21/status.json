@@ -1,0 +1,56 @@
+{
+  "scenario_id": "N21",
+  "title": "决策门控与融合 (build_*_context / run_decision_gate / fuse_decision_payload)",
+  "ran_at": "2026-05-30T16:15:00+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "测试在周末非交易时段进行, 所有指示性买入订单被合规闸门阻断(indicative_order_blocked); event/quant context 数据 stale(asof 2026-05-20~05-23)",
+  "tool_status_rows": [
+    {"tool": "build_stock_context(600519)", "verdict": "Degraded", "extra": "★结构极完整: price/basic/valuation/fundamentals/technical/momentum/risk + market/fund_flow/industry_chain/security snapshot + recommendation+score+evidence; quality_flags=[fallback,partial,degraded], industry_chain未匹配列入missing_fields"},
+    {"tool": "build_quant_context(600519)", "verdict": "Degraded", "extra": "★超丰富: rsi/macd/momentum因子画像(30日序列+分位+zscore)+signal_stats+conditional_returns+similar_patterns+oos_validation+probability_targets(5期)+prediction_interval; stale(asof05-29)"},
+    {"tool": "build_event_context(600519/000001/000651)", "verdict": "Pass", "extra": "★新闻/公告/研报聚合+事件分类(业绩景气/资本运作)+veto_candidates+headline_labels+raw_texts; 标的隔离正确(000001→平安/000651→格力/600519→茅台)"},
+    {"tool": "run_decision_gate(600519/000001/000651/300750/002594/601318/000858/002304 多style)", "verdict": "Pass", "extra": "★紧凑: blocked/veto_reason/flags/market_gate/event_gate/position_cap_pct; style映射position_cap(balanced0.2/conservative0.1); quant_stability warn触发gate_adjustment=-3.0"},
+    {"tool": "run_decision_gate 全部 blocked by compliance", "verdict": "Degraded", "extra": "⚠ 所有标的所有style均 blocked=true veto_reason='indicative_order_blocked' source=compliance_manager, 但 detail={} 空, 无具体合规失败原因(疑因周末非交易时段) (F-N21-1)"},
+    {"tool": "run_decision_gate(BADX) / fuse_decision_payload(BADX)", "verdict": "Pass", "extra": "★★正确校验: success=false '股票代码格式无效: BADX。需为6位数字或带sh/sz/bj前后缀'; 与 run_batch_backtest(F-N17-1坐标化)/optimize_portfolio(F-N18-1)形成对照, 证明决策链有严格校验"},
+    {"tool": "fuse_decision_payload(多标的多style)", "verdict": "Pass", "extra": "★action/confidence/final_score/summary/reasons/risks/score_breakdown(stock/quant/event)/weights(随style变化)/raw_ai_output/fusion_reasoning(dispersion); 因gate阻断action统一为watch+暂不出手"},
+    {"tool": "fuse 权重随 style 自适应", "verdict": "Pass", "extra": "★balanced(stock0.55/quant0.25/event0.2), conservative(0.5/0.15/0.35加重事件), aggressive(0.45/0.35/0.2加重量化); 权重和=1.0, 体现风格差异"},
+    {"tool": "fuse score_breakdown 与 build_*context score 一致性", "verdict": "Pass", "extra": "★fuse.score_breakdown.stock_context=17.5 与 build_stock_context.score=17.5 一致; quant=42.0与build_quant_context.score=42.0一致; event=63.7与build_event_context.score=63.7一致, 跨工具分数传递正确"},
+    {"tool": "run_decision_gate 不同 user_id", "verdict": "Degraded", "extra": "⚠ user_id=redteam_conv_20260530 与 another_user_test 均 user_risk_level='moderate'(默认), 未建画像的user统一moderate, KYC风险等级未个性化(N37待深究)"}
+  ],
+  "summary": {"Pass": 6, "Degraded": 4, "Fail-graceful": 0, "Fail-schema": 0},
+  "findings": [
+    {
+      "id": "F-N21-1",
+      "severity": "medium",
+      "title": "run_decision_gate 合规阻断 detail 为空, 无可操作原因",
+      "evidence": "所有标的(8只)所有style(aggressive/balanced/conservative)的 run_decision_gate 均返回 blocked=true, blocking_flags[0]={name:compliance, message:'指示性买入订单未通过合规校验', source:compliance_manager, detail:{}}。detail 始终为空字典, 未说明具体哪条合规规则失败(疑因周末非交易时段无法下单, 但未明示)。",
+      "impact": "AI 收到统一'合规阻断'但无法得知具体原因(是非交易时段?T+1?涨跌停?额度?), 无法向用户解释或调整。建议 detail 填充具体规则码与原因(如 market_closed/non_trading_hours)。当前周末测试下决策链对所有买入一律阻断, 决策融合的 action 恒为 watch。",
+      "type": "empty_blocking_detail"
+    },
+    {
+      "id": "F-N21-2",
+      "severity": "low",
+      "title": "context builders 顶层 degraded=true 但内层 data 实际可用",
+      "evidence": "build_stock_context/build_quant_context/build_event_context 顶层 quality_flags 含 [fallback,partial,degraded] 且 fallback_used=true, 但 data 主体字段完整可用, data_quality.degraded 在 quant/event 实为 false(仅 stock_context 为 true)。顶层与内层 degraded 标志不一致。",
+      "impact": "AI 仅看顶层 envelope 的 degraded=true 可能误判上下文不可用, 而实际数据完整。与 N01 F-N01-2(envelope一致性)同类。建议顶层 degraded 反映真实数据可用性。",
+      "type": "envelope_consistency"
+    },
+    {
+      "id": "F-N21-3",
+      "severity": "low",
+      "title": "未建画像 user_id 统一 moderate 风险等级",
+      "evidence": "run_decision_gate 传 user_id=redteam_conv_20260530 与 another_user_test(均未在系统建立画像)均返回 user_risk_level='moderate'。aggressive style 的 position_cap_pct=0.2 与 balanced 相同, 未因激进风格放大上限。",
+      "impact": "未建画像用户默认 moderate 合理, 但 aggressive 与 balanced 的 position_cap 相同(均0.2)说明 style 对仓位上限的区分仅在 conservative(0.1)生效, 激进与均衡无差异。建议 N37 深究画像-风格-仓位映射。",
+      "type": "risk_level_default"
+    }
+  ],
+  "positive_notes": [
+    "★决策链严格校验股票代码: BADX 在 run_decision_gate/fuse_decision_payload 均被拒('代码格式无效'), 与 run_batch_backtest(F-N17-1坐标化)、optimize_portfolio(F-N18-1)形成鲜明对照, 证明量价工具的坐标化是局部bug",
+    "★跨工具分数传递一致: fuse.score_breakdown 的 stock/quant/event 三分量与各自 build_*_context 的 score 逐一吻合(17.5/42.0/63.7)",
+    "fuse 权重随 investment_style 自适应(conservative加重event0.35, aggressive加重quant0.35), 权重和=1.0",
+    "三大 context builder 结构极其丰富: stock(行情+估值+基本面+技术+动量+资金流+产业链), quant(因子画像+条件收益+相似形态+OOS+概率目标), event(新闻公告研报聚合+事件分类+veto候选)",
+    "run_decision_gate 紧凑高效: market_gate/event_gate/position_cap/gate_adjustment, quant_stability 弱时正确触发 -3.0 调整",
+    "event_context 标的隔离正确(000001→平安银行/000651→格力/000858→五粮液/600519→茅台), 无张冠李戴",
+    "fuse_decision_payload 输出完整决策包: action+confidence+summary+reasons+risks+position_signal+raw_ai_output+fusion_reasoning(dispersion离散度)"
+  ],
+  "verdict": "pass"
+}

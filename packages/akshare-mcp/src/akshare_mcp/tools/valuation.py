@@ -903,10 +903,62 @@ def register(mcp):
                 **result,
             }
 
+            # F-N08-1 fix (诊断报告 §N08): 内在价值合理性护栏。
+            # 历史问题: 负利润率×高 capex 情景使 FCF 为负，终值公式放大成巨额负内在价值
+            # (如 -2744亿)、负每股 (-53元)，工具仍 success=true 输出数学上无意义的负估值。
+            # 修复: 检测 weighted/scenario 内在价值 <=0 时标注 quality_flags + valuation_reliable=false，
+            # 并在 warnings 提示「负内在价值不可作为估值结论」(不静默放行荒谬值)。
+            scenario_rows = result.get("scenarios") or []
+            negative_scenarios = [
+                r.get("scenario")
+                for r in scenario_rows
+                if isinstance(r, dict) and float(r.get("intrinsic_value", 0.0) or 0.0) <= 0.0
+            ]
+            weighted_iv = float(result.get("weighted_intrinsic_value", 0.0) or 0.0)
+            quality_flags: list[str] = []
+            valuation_reliable = True
+            valuation_warnings: list[str] = []
+
+            if weighted_iv <= 0.0:
+                valuation_reliable = False
+                quality_flags.append("non_positive_intrinsic_value")
+                valuation_warnings.append(
+                    "概率加权内在价值 <= 0（FCF 为负被终值公式放大），"
+                    "数学上无意义，不可作为估值结论；通常因利润率过低/资本开支过高，"
+                    "请核对 profit_margin / capex_ratio 或改用相对估值"
+                )
+            elif negative_scenarios:
+                quality_flags.append("partial_negative_scenarios")
+                valuation_warnings.append(
+                    f"以下情景内在价值为负：{negative_scenarios}；"
+                    "加权结果虽为正，但负情景表明参数假设可能不合理"
+                )
+
+            # 极端离散度也降级可靠性（F-N08-3 关联）
+            w_interval = result.get("weighted_valuation_interval") or {}
+            if isinstance(w_interval, dict) and w_interval.get("spread_risk") == "extreme":
+                quality_flags.append("extreme_dispersion")
+                valuation_warnings.append(
+                    "蒙特卡洛离散度 extreme（std 远大于 mean），点估计不可靠"
+                )
+
+            payload["valuation_reliable"] = valuation_reliable
+            if quality_flags:
+                payload["quality_flags"] = quality_flags
+            if valuation_warnings:
+                payload["valuation_warnings"] = valuation_warnings
+
             if shares_outstanding and shares_outstanding > 0:
                 per_share = result["weighted_intrinsic_value"] / shares_outstanding
                 payload["per_share_value"] = float(per_share)
                 payload["shares_outstanding"] = shares_outstanding
+                if per_share <= 0.0:
+                    payload["valuation_reliable"] = False
+                    if "non_positive_intrinsic_value" not in quality_flags:
+                        payload.setdefault("quality_flags", []).append("non_positive_per_share")
+                    payload.setdefault("valuation_warnings", []).append(
+                        f"每股内在价值为负 ({per_share:.2f} 元)，股价不可能为负，结果不可用"
+                    )
 
             return ok(payload)
 

@@ -196,7 +196,18 @@ class ActionIntentStore:
         if item and item.get("status") == "awaiting_confirmation":
             expires_at = datetime.fromisoformat(str(item["expires_at"]))
             if expires_at < now_utc():
-                return self.update_status(item["intent_id"], "expired", error="intent expired")
+                # Use transition() (guarded UPDATE) instead of update_status(),
+                # which would re-enter get() and recurse infinitely on an
+                # already-expired intent (the row stays awaiting_confirmation
+                # until the UPDATE lands). transition() flips the row directly
+                # and returns the refreshed (now "expired") intent.
+                transition = self.transition(
+                    item["intent_id"],
+                    expected_status="awaiting_confirmation",
+                    next_status="expired",
+                    error="intent expired",
+                )
+                return transition.intent if transition.intent is not None else item
         return item
 
     def list(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

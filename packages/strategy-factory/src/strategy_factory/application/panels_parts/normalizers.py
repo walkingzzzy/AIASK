@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 
 from ..domain.targets import _resolve_strategy_sample_selection, _resolve_validation_focus_layer
+from ..domain.constants import FACTORY_VALIDATION_PANEL_SAMPLE_SIZE
 from ..infrastructure.mcp_services import (
     get_normalize_klines,
     get_risk_model_class,

@@ -35,6 +35,39 @@ async def compute_stop_levels(
         klines: 外部传入的 K 线数据，传入时跳过内部获取。
         levels: 外部传入的关键价位列表，传入时跳过 compute_key_levels 调用。
     """
+    # FIX-4: 入口参数校验（K线获取之前），失败显性化而非裸抛/产出负值
+    try:
+        entry_price = float(entry_price)
+    except (TypeError, ValueError):
+        return fail("entry_price 必须为数字")
+    if not math.isfinite(entry_price) or entry_price <= 0:
+        return fail("entry_price 必须为正数（股票入场价不能为 0 或负）")
+
+    direction = str(direction or "long").strip().lower()
+    if direction not in {"long", "short"}:
+        return fail("direction 必须为 long 或 short")
+
+    try:
+        atr_multiplier = float(atr_multiplier)
+    except (TypeError, ValueError):
+        return fail("atr_multiplier 必须为数字")
+    if not math.isfinite(atr_multiplier) or atr_multiplier <= 0:
+        return fail("atr_multiplier 必须为正数")
+
+    try:
+        capital = float(capital)
+    except (TypeError, ValueError):
+        return fail("capital 必须为数字")
+    if not math.isfinite(capital) or capital < 0:
+        return fail("capital 不能为负数")
+
+    try:
+        risk_per_trade = float(risk_per_trade)
+    except (TypeError, ValueError):
+        return fail("risk_per_trade 必须为数字")
+    if not math.isfinite(risk_per_trade) or not (0 < risk_per_trade <= 1):
+        return fail("risk_per_trade 必须在 (0, 1] 区间（单笔风险占比，如 0.02 表示 2%）")
+
     if klines is None:
         db = get_db()
         klines = await db.get_klines(code, limit=120)

@@ -1,0 +1,50 @@
+{
+  "scenario_id": "N03",
+  "title": "多股批量行情对比 + 全市场扫描 + 股本",
+  "ran_at": "2026-05-30T08:47:06+08:00",
+  "tool_call_count": 33,
+  "tool_status_rows": [
+    {"tool": "get_batch_quotes([])", "verdict": "Fail-schema", "extra": "空列表→pydantic 'Field required'校验抛错 (F-N03-1: 与文档'空返回success=false'不符)"},
+    {"tool": "get_batch_quotes(5只/8只)", "verdict": "Degraded", "extra": "found=8 missing=0, tqcenter全量快照, name='' 空"},
+    {"tool": "get_batch_quotes(含999999/888888非法)", "verdict": "Degraded", "extra": "found=2 missing=[888888] rejected_count=1, 999999被当指数返回price=4068.57 (F-N03-2)"},
+    {"tool": "get_batch_quotes_compat(3只)", "verdict": "Degraded", "extra": "002304 走 tqcenter fallback, 600519/000858 db.stock_quotes"},
+    {"tool": "get_stock_capital(600519/000001/000858/002594/300750/000651/002371/601318/002304)", "verdict": "Pass", "extra": "9只股本均成功 tqcenter, 比亚迪zgb=91.17亿 ltgb=34.87亿 合理"},
+    {"tool": "get_stock_list(offset 0/100/3000/5000/5530)", "verdict": "Degraded", "extra": "total=5532分页正确, truncated标志正确, 但 fallback_used=true reason='未获取到A股股票列表'(db兜底, F-N03-3)"},
+    {"tool": "get_stock_list(offset 99999)", "verdict": "Pass", "extra": "越界offset→空列表 count=0 truncated=false 正确边界处理"},
+    {"tool": "get_stock_info(000001/000651/300750)", "verdict": "Degraded", "extra": "名称/行业/PE/PB完整, quality_gate report_only degraded, raw含tdx股本"},
+    {"tool": "search_stocks(宁德/比亚迪/银行/医药/证券/600036/茅/ZZZZNOTEXIST)", "verdict": "Pass", "extra": "中文全称/简称/单字/代码/行业词均命中, ZZZZ空结果not_found正确"}
+  ],
+  "summary": {"Pass": 18, "Degraded": 13, "Fail-graceful": 0, "Fail-schema": 1},
+  "findings": [
+    {
+      "id": "F-N03-1",
+      "severity": "medium",
+      "title": "get_batch_quotes 空列表抛 pydantic 校验错误而非文档承诺的 success=false",
+      "evidence": "get_batch_quotes(stock_codes=[]) → 'MCP Tool Error: 1 validation error ... stock_codes Field required'。但工具文档声明'stock_codes 为空时返回 success=false'。空数组被 pydantic 当作缺失字段。",
+      "impact": "AI 传空数组期望优雅错误，却得到 schema 异常栈。属边界输入处理 schema 缺陷。",
+      "type": "schema_validation"
+    },
+    {
+      "id": "F-N03-2",
+      "severity": "medium",
+      "title": "get_batch_quotes 把非法代码 999999 当指数返回有效价格",
+      "evidence": "get_batch_quotes(['999999','888888','600519']) → 999999 返回 price=4068.57(实为上证指数点位) fallback_reason=db_snapshot_missing; 888888 进 missing。999999 应判非法却返回了指数数据。",
+      "impact": "代码校验在 batch 路径不一致(get_realtime_quote(999999) 正确报未找到, batch 却返回指数值), 可能误导。",
+      "type": "cross_tool_consistency"
+    },
+    {
+      "id": "F-N03-3",
+      "severity": "low",
+      "title": "get_stock_list 恒 degraded + fallback_reason='未获取到A股股票列表'",
+      "evidence": "所有分页 fallback_used=true, 实际从 db.stocks 正确返回数据(total=5532), 但 reason 文案误导(像是失败)。",
+      "impact": "db 兜底成功但 reason 文案像失败, AI 可能误判。文案与实际状态不符。",
+      "type": "envelope_wording"
+    }
+  ],
+  "positive_notes": [
+    "股本数据 9 只全部成功且数值合理(平安银行总股本194亿/比亚迪91亿)",
+    "search_stocks 中文分词强: 单字'茅'命中茅台, 行业词'银行/证券/医药'返回市值排序TOP",
+    "分页 total/offset/truncated 边界处理正确(越界返回空)"
+  ],
+  "verdict": "pass_with_schema_finding"
+}

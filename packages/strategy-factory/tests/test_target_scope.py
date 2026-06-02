@@ -115,3 +115,53 @@ def test_factor_rank_validation_expands_sample_panel_for_statistical_gate():
     assert selection["sample_code_count"] >= 10
     assert selection["sample_codes"][:4] == ["603979", "603993", "688009", "688187"]
     assert selection["sample_selection_mode"] == "target_plus_dynamic_family_peer"
+
+
+def test_non_factor_profile_panel_floors_at_statistical_minimum():
+    """策略工厂零产出主因回归：trade_rule_validation（momentum/ma_cross 用）等
+    非 factor_rank 档位，旧实现 effective_sample_size 直接等于 requested(6)，
+    导致面板 < IC 引擎 min_samples(10) → OOS 证据恒空 → Gate-3 全拒。
+    修复后任何 profile 的验证面板都被抬到统计可行下限 12。"""
+    from strategy_factory.domain.targets import (
+        _STATISTICAL_PANEL_MIN_STOCKS,
+        _resolve_strategy_sample_selection,
+    )
+
+    assert _STATISTICAL_PANEL_MIN_STOCKS > 10  # 必须严格大于 IC 引擎 min_samples_per_period
+
+    for sample_size in (4, 6):
+        selection = _resolve_strategy_sample_selection(
+            "momentum",
+            {
+                "validation_profile": {
+                    "profile": "trade_rule_validation",
+                    "validation_focus": "target_plus_family_peer",
+                },
+            },
+            sample_size=sample_size,
+        )
+        assert selection["requested_sample_size"] == sample_size
+        assert selection["effective_sample_size"] >= _STATISTICAL_PANEL_MIN_STOCKS
+        assert selection["statistical_sample_min"] == _STATISTICAL_PANEL_MIN_STOCKS
+        assert selection["statistical_sample_expanded"] is True
+        # 面板有效股票数必须达到 IC 引擎要求，否则 n_folds 恒为 0
+        assert selection["sample_code_count"] >= 10
+
+
+def test_large_requested_sample_size_is_not_capped_by_floor():
+    """请求样本数已超过下限时，floor 不应反向压低它。"""
+    from strategy_factory.domain.targets import _resolve_strategy_sample_selection
+
+    selection = _resolve_strategy_sample_selection(
+        "momentum",
+        {
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_family_peer",
+            },
+        },
+        sample_size=30,
+    )
+    assert selection["requested_sample_size"] == 30
+    assert selection["effective_sample_size"] == 30
+    assert selection["statistical_sample_expanded"] is False

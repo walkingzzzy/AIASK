@@ -1,0 +1,90 @@
+{
+  "scenario_id": "N22",
+  "title": "买卖单点决策 (should_i_buy / should_i_sell 多 style)",
+  "ran_at": "2026-05-30T16:18:40+08:00",
+  "tool_call_count": 30,
+  "standing_caveat": "测试 DB 仅约250根日线/8只标的; 各标的 analysis_date 不一(05-20~05-29); buy_probability 校准样本小(1-43条)",
+  "tool_status_rows": [
+    {"tool": "should_i_buy(8标的 x aggressive/balanced/conservative)", "verdict": "Pass", "extra": "★recommendation+score+confidence+score_breakdown(valuation/technical/fundamental/factor)+signal_breakdown(逐条delta+source)+decision_probability+threshold_backtest+prediction_interval+evidence_summary, 结构极完整"},
+    {"tool": "should_i_buy decision_probability 严重校准失真", "verdict": "Fail-schema", "extra": "⚠⚠ 002594 buy_probability=0.13% 但 empirical_hit_rate=54.8%, calibration_gap=-0.546/ECE=0.546/brier=0.298; 300750 buy_prob=0.4%但hit_rate=75%/ECE=0.746; logit概率与历史实证严重背离 (F-N22-1)"},
+    {"tool": "should_i_buy 结论与offline_baseline矛盾", "verdict": "Fail-schema", "extra": "⚠⚠ 002594 recommendation='avoid'(score=-5)但offline_decision_baseline.benchmark_delta=+0.328/hit_rate=0.778(threshold80); 'avoid'与历史正收益证据直接矛盾 (F-N22-2)"},
+    {"tool": "should_i_buy score↔recommendation 映射不一致", "verdict": "Degraded", "extra": "⚠ 601318 score=60.0(达balanced/aggressive阈值)+7条证据(PE低/PB低/RSI超卖/布林下轨/支撑)却 recommendation='avoid'; score 60 应≥hold, 评分到建议的映射存在割裂 (F-N22-3)"},
+    {"tool": "threshold_backtest threshold_inversion", "verdict": "Degraded", "extra": "⚠ 000651/000001/300750 均出现 'threshold_inversion: stricter threshold 60 hit_rate < lenient 40', 更严格阈值反而胜率更低, 评分非单调 (F-N22-4)"},
+    {"tool": "should_i_buy 三style score相同", "verdict": "Degraded", "extra": "⚠ 同标的(600519)aggressive/balanced/conservative 的 score 完全相同(10.0), 仅 selected_style_threshold 不同(40/60/80); style 不影响打分仅影响阈值判定, recommendation 可能因阈值不同而变(但600519三style均avoid)"},
+    {"tool": "should_i_buy(bogus_style_zzz)", "verdict": "Degraded", "extra": "⚠ 非法 investment_style 被静默接受(回显 style:bogus_style_zzz), 使用 balanced 默认阈值(buy=60), 无校验/告警 (F-N22-5)"},
+    {"tool": "should_i_buy analysis_date 各标的不一致", "verdict": "Degraded", "extra": "⚠ 600519/000651/002594=05-29, 000001=05-26, 601318/002304/300750=05-20(9日stale); 同次会话不同标的数据新鲜度差9天, data_freshness_warning 恒为 null 未告警 (F-N22-6)"},
+    {"tool": "should_i_buy(BADX)", "verdict": "Fail-graceful", "extra": "★success=false 'Stock BADX not found' + error路径正确"},
+    {"tool": "should_i_sell(多profit/holding场景)", "verdict": "Pass", "extra": "★★自适应优秀: 盈利10.5%→reduce; 盈利65.8%→sell止盈; 亏损11.6%+ATR→sell止损; profit 0%→consider_sell; 持仓<5天→holding惩罚-10; ATR止损位+target_sell_price 合理"},
+    {"tool": "should_i_sell(无buy_price)", "verdict": "Pass", "extra": "★analysis_mode=technical_only, 仅技术面给 consider_sell, profit_pct=null 优雅降级"},
+    {"tool": "should_i_sell(buy_price=1326 for 002594当前96)", "verdict": "Degraded", "extra": "⚠ 接受与标的价格区间严重不符的 buy_price(1326 vs 实际96)算出 profit_pct=-92.75%, 无合理性校验/告警 (F-N22-7)"},
+    {"tool": "should_i_buy(explain=false / strict_mode=true)", "verdict": "Pass", "extra": "★explain=false 省略 evidence_summary 明细(保留trace_id); strict_mode=true 在 data_quality.strict_mode 正确回显"}
+  ],
+  "summary": {"Pass": 5, "Degraded": 7, "Fail-graceful": 1, "Fail-schema": 2},
+  "findings": [
+    {
+      "id": "F-N22-1",
+      "severity": "high",
+      "title": "should_i_buy 的 decision_probability 与历史实证严重失校准 (ECE 高达 0.75)",
+      "evidence": "002594: buy_probability=0.13% 但 prediction_quality.empirical_hit_rate=54.76%, calibration_gap=-0.546, ECE=0.546, brier_score=0.298。300750: buy_probability=0.40% 但 empirical_hit_rate=75%, ECE=0.746, brier=0.557。600519: 0.42% vs 实际31%。logit(score,confidence,volatility) 产出的买入概率系统性地远低于历史实证胜率。",
+      "impact": "decision_probability 作为面向用户/AI 的核心概率输出严重失真(ECE 0.5-0.75 极高), 把历史胜率50-75%的标的标为 buy_probability<1%。AI/用户若信任该概率会系统性错失机会。模型本身已通过 ECE/calibration_gap 暴露失校准但仍输出该概率。建议重新拟合或用 Platt/isotonic 校准。",
+      "type": "probability_miscalibration"
+    },
+    {
+      "id": "F-N22-2",
+      "severity": "high",
+      "title": "should_i_buy 'avoid' 结论与自身 offline_decision_baseline 正收益证据矛盾",
+      "evidence": "002594(比亚迪) recommendation='avoid'(score=-5), 但同一响应 offline_decision_baseline.benchmark_delta=+0.328, threshold_backtest threshold=80 hit_rate=0.778/avg_forward_return=+4.59%, threshold=60 hit_rate=0.545/+1.81%。'回避'建议与历史回测的正向超额收益直接冲突。",
+      "impact": "工具一边给 avoid 一边自带证据显示该标的历史高胜率高正收益, 决策与证据自相矛盾。AI 同时看到 avoid 和 benchmark_delta>0 无法判断该信谁。建议决策逻辑纳入 offline_baseline 一致性校验。",
+      "type": "recommendation_evidence_contradiction"
+    },
+    {
+      "id": "F-N22-3",
+      "severity": "medium",
+      "title": "should_i_buy score↔recommendation 映射不一致 (score=60 仍 avoid)",
+      "evidence": "601318 total_score=60.0(达 balanced buy 阈值60、aggressive阈值40), 7条证据多为正面(PE7.4/PB1.0/RSI超卖27.4/布林下轨/接近支撑), 但 recommendation='avoid'。对比 000651 score=45→hold, 002594 score=-5→avoid。score 60 高于 45 却得到比 hold 更差的 avoid。",
+      "impact": "评分到建议档位的映射非单调, score 60 反而比 score 45 的建议更悲观。AI 无法用 score 推断 recommendation。建议明确 score→recommendation 的单调映射规则。",
+      "type": "score_recommendation_mapping"
+    },
+    {
+      "id": "F-N22-4",
+      "severity": "medium",
+      "title": "threshold_backtest 普遍出现 threshold_inversion (评分非单调)",
+      "evidence": "000651/000001/300750 的 threshold_backtest 均含 warning 'threshold_inversion: stricter threshold 60 hit_rate < lenient 40 hit_rate'(如300750: 60→0.467 < 40→0.560; 000651: 60→0.0 < 40→0.326)。更高分数桶的历史胜率反而更低。",
+      "impact": "打分越高(越接近买入)历史胜率反而越低, 说明评分模型与未来收益负相关或无效。工具自检已标 inversion warning(优秀), 但 recommendation 仍基于该评分。AI 应高度警惕该标的评分。",
+      "type": "non_monotonic_score"
+    },
+    {
+      "id": "F-N22-6",
+      "severity": "medium",
+      "title": "should_i_buy 各标的 analysis_date 不一致且 data_freshness_warning 恒为 null",
+      "evidence": "同次会话: 600519/000651/002594 analysis_date=2026-05-29, 000001=05-26, 601318/002304/300750=05-20(9天stale)。所有响应 data_freshness_warning=null, 未对9天陈旧数据告警。DB 各标的 kline 同步进度不一。",
+      "impact": "AI 横向对比标的时, 部分标的用的是9天前的价格/技术指标, 决策可比性受损且无告警。建议对超过 N 日的 analysis_date 填充 data_freshness_warning。",
+      "type": "stale_data_no_warning"
+    },
+    {
+      "id": "F-N22-5",
+      "severity": "low",
+      "title": "should_i_buy 非法 investment_style 被静默接受",
+      "evidence": "investment_style='bogus_style_zzz' 被接受, 回显 style:bogus_style_zzz, selected_style_threshold 回退为 balanced(buy=60), 无报错/告警。",
+      "impact": "拼错的 style 不报错而静默用 balanced, AI 可能误以为用了自定义风格。建议校验 style 枚举。",
+      "type": "missing_enum_validation"
+    },
+    {
+      "id": "F-N22-7",
+      "severity": "low",
+      "title": "should_i_sell 接受与标的价格严重不符的 buy_price 无校验",
+      "evidence": "should_i_sell(code=002594当前96元, buy_price=1326) 算出 profit_pct=-92.75% 并据此 sell, target_sell_price=1321(基于错误buy_price的ATR)。无 buy_price 合理性(数量级/区间)校验。",
+      "impact": "用户误输 buy_price(如把茅台价填给比亚迪)会得到离谱的盈亏与止损位且无提示。属用户输入项, 但建议加价格区间 sanity check。",
+      "type": "missing_input_sanity_check"
+    }
+  ],
+  "positive_notes": [
+    "★should_i_sell 自适应逻辑优秀: 按 profit_pct 分档(止盈/减仓/持有/止损)+ATR止损位+持仓时间惩罚+技术面, 多场景结论合理(盈利65.8%→止盈, 亏损21.7%+ATR→sell)",
+    "should_i_buy 结构极完整: score_breakdown 四维+signal_breakdown 逐条(delta_score+confidence_delta+source)+evidence_summary(metric/score/weight/contribution/confidence)+diagnostic.trace",
+    "★工具自带强自检: threshold_backtest 标 threshold_inversion/insufficient_sample warnings, prediction_quality 暴露 calibration_gap/ECE/brier, offline_decision_baseline 提供 benchmark_delta——诚实披露模型缺陷(虽然该缺陷本身是 F-N22-1/2)",
+    "explain=false 正确精简输出; strict_mode 正确回显; PIT guard(pit_passed/filtered_rows)完整",
+    "BADX 优雅拒绝('Stock not found'); should_i_sell 无 buy_price 时 technical_only 模式降级",
+    "should_i_buy 与 build_stock_context(N21)结论一致: 600519 均偏空(avoid/sell), 跨工具方向一致无矛盾"
+  ],
+  "verdict": "pass_with_high_finding"
+}

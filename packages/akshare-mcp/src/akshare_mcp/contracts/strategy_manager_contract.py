@@ -241,7 +241,6 @@ STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "submission_replay": ("strategy_id", "id", "strategy_ids"),
     "submit": ("strategy_id", "id"),
     "events": ("strategy_id", "id"),
-    "incubation_overview": ("strategy_id", "id"),
     "closure_review": ("strategy_id", "id"),
     "paper_session_get": ("strategy_id", "id"),
     "paper_session_get_or_create": ("strategy_id", "id"),

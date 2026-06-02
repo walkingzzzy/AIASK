@@ -173,6 +173,31 @@ class BuiltinValidationAdapter(DataValidationAdapter):
                 "missing": missing,
             })
 
+        # Check 2b: non_null_fields — F-N43-4 fix (诊断报告 §N43):
+        # 历史问题: validate_dataset 仅查列存在(expect_column_to_exist)，从不校验单元格 null，
+        # 导致含 null 的脏数据 passed=true/quality_score=1.0，与字段级 accepted_ratio 互斥。
+        # 修复: non_null_fields 真正逐行校验内容非空，使两套质量结论一致。
+        non_null_fields = [
+            str(item).strip()
+            for item in list(exp.get("non_null_fields") or [])
+            if str(item).strip()
+        ]
+        for fld in non_null_fields:
+            total_checks += 1
+            null_count = sum(
+                1 for r in records
+                if not isinstance(r, dict) or r.get(fld) is None or r.get(fld) == ""
+            )
+            ok = bool(records) and null_count == 0
+            if ok:
+                passed_checks += 1
+            details.append({
+                "expectation": f"non_null_fields:{fld}",
+                "passed": ok,
+                "null_or_missing_count": null_count,
+                "total_count": len(records),
+            })
+
         # Check 3: max_null_ratio (per field)
         max_null = float(exp.get("max_null_ratio", 1.0))
         if records and max_null < 1.0:
@@ -360,6 +385,21 @@ class GreatExpectationsAdapter(DataValidationAdapter):
             suite_expectations.append(
                 ExpectationConfiguration(
                     type="expect_column_to_exist",
+                    kwargs={"column": field},
+                )
+            )
+
+        # F-N43-4 fix (诊断报告 §N43): non_null_fields 必须生成真正的「值非空」期望，
+        # 否则 GX 仅查列存在，含 null 的脏数据仍 passed=true（与字段级结论互斥）。
+        non_null_fields = [
+            str(item).strip()
+            for item in list(exp.get("non_null_fields") or [])
+            if str(item).strip()
+        ]
+        for field in non_null_fields:
+            suite_expectations.append(
+                ExpectationConfiguration(
+                    type="expect_column_values_to_not_be_null",
                     kwargs={"column": field},
                 )
             )
