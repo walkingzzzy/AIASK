@@ -167,7 +167,12 @@ def gate_0_structural(candidate: dict) -> GateResult:
     if missing_trade_fields:
         reasons.append(f"missing_trade_fields:{','.join(missing_trade_fields)}")
 
-    # DSL 编译检查（可选）
+    # DSL 编译检查（可选）。
+    # 注意：此分支仅在 strategy_type == "dsl_rule" 时触发。自治 spawner（spawner_parts/factories.py
+    # 的 _make / _preferred_fill_types）只产出具体策略族（value_factor / momentum / ma_cross / rsi /
+    # quality_factor / event_structure_breakout / north_capital_track / sector_rotation / gap_fill /
+    # macro_timing），从不产出 dsl_rule，故本 gate 不参与自治零产出链路。
+    # 若 compile 抛 ModuleNotFoundError，属外部 DSL 提交路径或 PYTHONPATH 环境问题，非自治漏斗堵点。
     if strategy_type == "dsl_rule":
         dsl = (params or {}).get("dsl") if isinstance(params, dict) else None
         if not dsl or not isinstance(dsl, dict):

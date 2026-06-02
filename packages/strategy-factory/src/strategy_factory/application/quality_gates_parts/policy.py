@@ -397,7 +397,13 @@ def _resolve_gate_2_top_k(total_passed: int, pass_ratio: float) -> int:
     if total_passed <= 0:
         return 0
     scaled = float(total_passed) * max(0.0, float(pass_ratio or 0.0))
-    return max(1, min(int(total_passed), int(round(scaled))))
+    # 默认 floor=1 + use_ceil=False ⇒ 与 max(1, round(...)) 逐位等价；toggle 打开后抬高小样本下限
+    floor = int(_compat_setting("GATE2_TOPK_FLOOR", GATE2_TOPK_FLOOR) or GATE2_TOPK_FLOOR)
+    use_ceil = bool(_compat_setting("GATE2_TOPK_USE_CEIL", GATE2_TOPK_USE_CEIL))
+    base = int(math.ceil(scaled)) if use_ceil else int(round(scaled))
+    # floor 不得超过候选池大小（否则 top_k 会大于 total_passed，违反"取前 k 个"语义）
+    effective_floor = min(floor, int(total_passed))
+    return max(effective_floor, min(int(total_passed), base))
 
 
 def _collect_symbol_summaries(candidate: dict, research_task: dict) -> list[dict[str, Any]]:

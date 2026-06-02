@@ -650,7 +650,7 @@ def _resolve_execution_semantic_contract(
 
     if dsl_payload:
         try:
-            from .strategy_dsl import compile_strategy_blueprint
+            from ..strategy_dsl import compile_strategy_blueprint
 
             compiled = compile_strategy_blueprint(
                 {
@@ -676,7 +676,9 @@ def _resolve_execution_semantic_contract(
             if not trade_plan_to_dsl_map or int(dict(trade_plan_to_dsl_map).get("mapped_trade_step_count") or 0) <= 0:
                 trade_plan_to_dsl_map = dict(compiled_meta.get("trade_plan_to_dsl_map") or {})
         except Exception as exc:
-            compile_failure_reasons.append(f"dsl_compile_failed:{type(exc).__name__}")
+            _exc_detail = getattr(exc, "name", None) or str(exc) or ""
+            _exc_suffix = f":{_exc_detail}" if _exc_detail else ""
+            compile_failure_reasons.append(f"dsl_compile_failed:{type(exc).__name__}{_exc_suffix}")
 
     dsl_compiled = bool(compiled_dsl)
     mapped_trade_step_count = int(dict(trade_plan_to_dsl_map or {}).get("mapped_trade_step_count") or 0)

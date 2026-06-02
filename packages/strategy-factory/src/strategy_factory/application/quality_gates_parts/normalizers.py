@@ -15,6 +15,8 @@ from ..domain.constants import (
     GATE1_PASS_RATIO,
     GATE1_REPRESENTATIVE_COUNT,
     GATE1_SHARPE_MIN,
+    GATE2_TOPK_FLOOR,
+    GATE2_TOPK_USE_CEIL,
     REPRESENTATIVE_STOCKS,
 )
 from ..domain.strategy_profile import candidate_signature, infer_candidate_strategy_profile

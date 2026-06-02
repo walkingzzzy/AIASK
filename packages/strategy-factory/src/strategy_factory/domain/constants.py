@@ -704,6 +704,10 @@ GATE1_PASS_RATIO: float = _env_float("STRATEGY_FACTORY_GATE1_PASS_RATIO", 0.45, 
 GATE1_SHARPE_MIN: float = _env_float("STRATEGY_FACTORY_GATE1_SHARPE_MIN", 0.15, minimum=-5.0, maximum=10.0)
 # Gate-1 使用的代表性股票数量
 GATE1_REPRESENTATIVE_COUNT: int = _env_int("STRATEGY_FACTORY_GATE1_REPRESENTATIVE_COUNT", 3, minimum=1, maximum=10)
+# Gate-2 top-k 下限：默认 1 与历史行为逐位等价；调高可消除小样本 3→1 退化（漏斗瓶颈）
+GATE2_TOPK_FLOOR: int = _env_int("STRATEGY_FACTORY_GATE2_TOPK_FLOOR", 1, minimum=1, maximum=50)
+# Gate-2 top-k 取整方式：默认 False 用 round（行为不变）；True 用 ceil，避免小样本向下取整吃掉候选
+GATE2_TOPK_USE_CEIL: bool = _env_bool("STRATEGY_FACTORY_GATE2_TOPK_USE_CEIL", False)
 
 # 统计验证面板默认选股数（Gate-3 OOS 证据计算用）。
 # 旧默认值 6 < IC 引擎每期最小样本数 10 → 每期 IC 被丢弃 → n_folds=0 → Gate-3 全拒
