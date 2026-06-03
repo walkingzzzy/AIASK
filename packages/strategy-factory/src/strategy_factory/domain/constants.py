@@ -571,6 +571,26 @@ STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N: int = _env_int(
     minimum=1,
     maximum=10000,
 )
+# ALPHA-WIRING-V1 (P-D a)：factor_pool 因子进 observe 前的 OOS/鲁棒证据门。
+# 默认 OFF，保持 _from_factor_pool 历史行为（零变化）。
+# ON 时，只放行 validation_summary.evidence_summary 满足 OOS 质量的因子：
+#   sample_dates ≥ MIN_SAMPLE_DATES 且 rank_ic_ir ≥ MIN_RANK_IC_IR 且 lookahead_risk != high。
+STRATEGY_FACTORY_FACTOR_POOL_OOS_GATE_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_FACTOR_POOL_OOS_GATE_ENABLED",
+    False,
+)
+STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_SAMPLE_DATES: int = _env_int(
+    "STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_SAMPLE_DATES",
+    60,
+    minimum=1,
+    maximum=100000,
+)
+STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_RANK_IC_IR: float = _env_float(
+    "STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_RANK_IC_IR",
+    0.3,
+    minimum=0.0,
+    maximum=10.0,
+)
 STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE: str = str(
     _env_raw("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", "revise") or "revise"
 ).strip().lower() or "revise"

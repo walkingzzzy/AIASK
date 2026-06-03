@@ -225,3 +225,64 @@ def test_factor_ic_classic_threshold_configurable_tighten(monkeypatch):
     # 阈值收紧到 0.05：value(0.04) 被挡，quality(0.10) 仍放行
     assert "value_factor" not in types
     assert "quality_factor" in types
+
+
+# ALPHA-WIRING-V1 (P-D a)：factor_pool OOS/鲁棒证据门（默认 OFF，零变化）。
+def _factor_pool_snapshot():
+    def _f(fid, evidence):
+        rec = {
+            "factor_id": fid,
+            "name": fid,
+            "family": "momentum",
+            "expression_dsl": "ts_mean(close, 5)",
+            "fitness": 1.0,
+        }
+        if evidence is not None:
+            rec["validation_summary"] = {"evidence_summary": evidence}
+        return rec
+
+    return {
+        "fear_greed_index": 50,
+        "fg_level": "neutral",
+        "factor_research": {
+            "factory_pool_payload": {
+                "available": True,
+                "factors": [
+                    # 通过：sample_dates 充足、IR 达标、无前视
+                    _f("gp_ok", {"sample_dates": 120, "rank_ic_ir": 0.5, "lookahead_risk": "low"}),
+                    # 不过：样本期不足
+                    _f("gp_short", {"sample_dates": 20, "rank_ic_ir": 0.5, "lookahead_risk": "low"}),
+                    # 不过：IR 太低
+                    _f("gp_lowir", {"sample_dates": 120, "rank_ic_ir": 0.1, "lookahead_risk": "low"}),
+                    # 不过：前视风险高
+                    _f("gp_look", {"sample_dates": 120, "rank_ic_ir": 0.5, "lookahead_risk": "high"}),
+                    # 不过：无 evidence_summary
+                    _f("gp_noev", None),
+                ],
+            }
+        },
+        "event_driven": {},
+        "sources": {},
+    }
+
+
+def _pool_factor_ids(candidates: list) -> set:
+    return {c.get("factor_pool_factor_id") for c in candidates if c.get("factor_pool_factor_id")}
+
+
+def test_factor_pool_oos_gate_off_is_zero_change(monkeypatch):
+    monkeypatch.delenv("STRATEGY_FACTORY_FACTOR_POOL_OOS_GATE_ENABLED", raising=False)
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_pool(_factor_pool_snapshot())
+    # OFF：全部 5 个因子都出货（含 evidence 缺失的）
+    assert _pool_factor_ids(candidates) == {"gp_ok", "gp_short", "gp_lowir", "gp_look", "gp_noev"}
+
+
+def test_factor_pool_oos_gate_on_filters_failures(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_POOL_OOS_GATE_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_SAMPLE_DATES", "60")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_RANK_IC_IR", "0.3")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_pool(_factor_pool_snapshot())
+    # ON：只有 gp_ok 通过
+    assert _pool_factor_ids(candidates) == {"gp_ok"}

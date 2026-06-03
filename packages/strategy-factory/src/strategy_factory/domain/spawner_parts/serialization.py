@@ -1,4 +1,28 @@
 
+    def _factor_pool_oos_passed(self, factor: dict) -> bool:
+        """ALPHA-WIRING-V1 (P-D a)：因子是否满足 OOS/鲁棒证据门。
+
+        读 validation_summary.evidence_summary（factory.py 在 promote 时写入），要求：
+        - sample_dates ≥ MIN_SAMPLE_DATES（样本期足够，OOS 才有意义）
+        - rank_ic_ir ≥ MIN_RANK_IC_IR（信息比率达标，剔除噪声因子）
+        - lookahead_risk != 'high'（无前视风险）
+        evidence_summary 缺失视为未过（保守）。
+        """
+        validation_summary = dict(factor.get("validation_summary") or {})
+        evidence = dict(validation_summary.get("evidence_summary") or {})
+        if not evidence:
+            return False
+        sample_dates = self._safe_float(evidence.get("sample_dates"))
+        rank_ic_ir = self._safe_float(evidence.get("rank_ic_ir"))
+        lookahead_risk = str(evidence.get("lookahead_risk") or "").strip().lower()
+        if sample_dates < float(STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_SAMPLE_DATES):
+            return False
+        if rank_ic_ir < float(STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_RANK_IC_IR):
+            return False
+        if lookahead_risk == "high":
+            return False
+        return True
+
     def _from_factor_pool(self, snapshot: dict) -> List[dict]:
         out: List[dict] = []
         factor_research = dict(snapshot.get("factor_research") or {})
@@ -32,6 +56,11 @@
                 or ""
             ).strip()
             if not factor_id or not factor_name or not factor_dsl:
+                continue
+
+            # ALPHA-WIRING-V1 (P-D a)：OOS/鲁棒证据门（默认 OFF，零变化）。
+            # ON 时只放行 validation_summary.evidence_summary 满足 OOS 质量的因子。
+            if STRATEGY_FACTORY_FACTOR_POOL_OOS_GATE_ENABLED and not self._factor_pool_oos_passed(factor):
                 continue
 
             family = str(factor.get("family") or factor_name).strip().lower()
