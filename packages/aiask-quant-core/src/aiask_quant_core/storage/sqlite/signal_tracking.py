@@ -464,6 +464,55 @@ class SignalTrackingMixin:
             )
         return len(payload)
 
+    async def list_signal_forward_returns(
+        self,
+        strategy_id: str,
+        *,
+        forward_days: int = 5,
+        lookback_days: Optional[int] = None,
+        limit: int = 2000,
+    ) -> List[dict]:
+        """INVERT-DESIGN P3：返回某策略在指定主窗口的原始前向收益序列。
+
+        供 PromotionGate（DSR）消费。按 signal_date 升序，每条 {signal_id, signal_date,
+        actual_return}。lookback_days 限定最近窗口（按最新 signal_date 回溯）。
+        """
+        batch_limit = max(1, min(int(limit or 2000), 20000))
+        async with self.acquire() as conn:
+            cutoff = None
+            if lookback_days and int(lookback_days) > 0:
+                latest = await conn.fetchrow(
+                    "SELECT MAX(signal_date) AS d FROM strategy_signals WHERE strategy_id = $1",
+                    strategy_id,
+                )
+                latest_date = (latest or {}).get("d")
+                if isinstance(latest_date, date):
+                    cutoff = latest_date - timedelta(days=int(lookback_days))
+            if cutoff is None:
+                rows = await conn.fetch(
+                    """SELECT ss.id AS signal_id, ss.signal_date, sfr.actual_return
+                       FROM strategy_signals ss
+                       JOIN signal_forward_returns sfr ON sfr.signal_id = ss.id
+                       WHERE ss.strategy_id = $1 AND sfr.forward_days = $2
+                         AND sfr.actual_return IS NOT NULL
+                       ORDER BY ss.signal_date, ss.id
+                       LIMIT $3""",
+                    strategy_id, int(forward_days), batch_limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """SELECT ss.id AS signal_id, ss.signal_date, sfr.actual_return
+                       FROM strategy_signals ss
+                       JOIN signal_forward_returns sfr ON sfr.signal_id = ss.id
+                       WHERE ss.strategy_id = $1 AND sfr.forward_days = $2
+                         AND ss.signal_date >= $3
+                         AND sfr.actual_return IS NOT NULL
+                       ORDER BY ss.signal_date, ss.id
+                       LIMIT $4""",
+                    strategy_id, int(forward_days), cutoff, batch_limit,
+                )
+        return [dict(r) for r in rows]
+
     async def get_pending_forward_returns(
         self,
         forward_days: int,
