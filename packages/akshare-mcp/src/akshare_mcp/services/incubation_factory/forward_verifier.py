@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 # 前向验证的时间窗口（交易日）
 FORWARD_HORIZONS = [5, 10, 20]
 
+# === INVERT-DESIGN P1 改动D：市场状态（regime）标签维度 ===
+# 每条信号 evidence 可携带三类 regime 标签，verify 据此分组聚合命中率，
+# 破除 regime-blind（120 天平均）这宗原罪。标签缺失时归入 "unknown"。
+REGIME_DIMENSIONS: tuple[str, ...] = ("trend_regime", "vol_regime", "sentiment_regime")
+_REGIME_UNKNOWN = "unknown"
+
 # 孵化周期配置：不同策略类型有不同的孵化特性
 INCUBATION_PROFILES: dict[str, dict[str, Any]] = {
     "high_frequency": {
@@ -95,10 +101,15 @@ class ForwardVerifier:
         all_returns: list[float] = []
         primary_directions: list[float] = []
         primary_raw_returns: list[float] = []
+        # 改动D：按 regime 维度分桶收集主窗口命中
+        regime_hits: dict[str, dict[str, list[float]]] = {
+            dimension: {} for dimension in REGIME_DIMENSIONS
+        }
 
         for evidence in evidence_list:
             forward_returns = dict(evidence.get("forward_returns") or {})
             direction = self._normalize_direction(evidence.get("direction"))
+            regime_labels = self._resolve_regime_labels(evidence)
 
             # 主时间窗口
             primary_return = self._extract_forward_return(
@@ -108,10 +119,14 @@ class ForwardVerifier:
                 hit = (primary_return > 0 and direction > 0) or (
                     primary_return < 0 and direction < 0
                 )
-                primary_hits.append(1.0 if hit else 0.0)
+                hit_value = 1.0 if hit else 0.0
+                primary_hits.append(hit_value)
                 primary_directions.append(float(direction))
                 primary_raw_returns.append(float(primary_return))
                 all_returns.append(float(primary_return) * float(direction))
+                for dimension in REGIME_DIMENSIONS:
+                    label = regime_labels.get(dimension) or _REGIME_UNKNOWN
+                    regime_hits[dimension].setdefault(label, []).append(hit_value)
 
             # 次时间窗口
             secondary_return = self._extract_forward_return(
@@ -149,12 +164,16 @@ class ForwardVerifier:
         forward_sharpe = self._compute_forward_sharpe(all_returns, primary_horizon)
         forward_ic = self._compute_forward_ic(primary_directions, primary_raw_returns)
 
+        # 改动D：分 regime 命中率聚合（破 regime-blind）
+        hit_rate_by_regime = self._aggregate_hit_rate_by_regime(regime_hits)
+
         return {
             "strategy_id": sid,
             "profile": profile["profile_name"],
             "primary_horizon": primary_horizon,
             "secondary_horizon": secondary_horizon,
             "primary_effective_n": primary_n,
+            "hit_rate_by_regime": hit_rate_by_regime,
             "secondary_effective_n": secondary_n,
             "primary_hit_rate": round(primary_hit_rate, 4),
             "secondary_hit_rate": round(secondary_hit_rate, 4),
@@ -206,6 +225,51 @@ class ForwardVerifier:
             return 1 if float(direction) >= 0 else -1
         except (TypeError, ValueError):
             return 1
+
+    def _resolve_regime_labels(self, evidence: dict[str, Any]) -> dict[str, str]:
+        """改动D：从一条 evidence 解析市场状态标签。
+
+        标签来源优先级：evidence 顶层字段 → evidence_payload 内嵌 → regime 子字典。
+        任一维度缺失时归入 "unknown"，保证聚合永不丢信号。
+        """
+        payload = dict(evidence or {})
+        nested = dict(payload.get("evidence_payload") or {})
+        regime_block = dict(payload.get("regime") or nested.get("regime") or {})
+        labels: dict[str, str] = {}
+        for dimension in REGIME_DIMENSIONS:
+            raw = (
+                payload.get(dimension)
+                if payload.get(dimension) is not None
+                else nested.get(dimension)
+                if nested.get(dimension) is not None
+                else regime_block.get(dimension)
+            )
+            label = str(raw or "").strip().lower()
+            labels[dimension] = label or _REGIME_UNKNOWN
+        return labels
+
+    def _aggregate_hit_rate_by_regime(
+        self, regime_hits: dict[str, dict[str, list[float]]]
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """改动D：按每个 regime 维度的每个标签聚合命中率 + skill_lcb + n。
+
+        晋升门（改动B/P3）将要求"跨主要 regime 都有正 skill"，本结构是其输入。
+        """
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for dimension in REGIME_DIMENSIONS:
+            buckets = regime_hits.get(dimension) or {}
+            dimension_summary: dict[str, dict[str, Any]] = {}
+            for label, hits in buckets.items():
+                if not hits:
+                    continue
+                hit_rate = float(np.mean(hits))
+                dimension_summary[label] = {
+                    "hit_rate": round(hit_rate, 4),
+                    "skill_lcb": round(self._compute_skill_lcb(hits), 4),
+                    "n": len(hits),
+                }
+            result[dimension] = dimension_summary
+        return result
 
     def _extract_forward_return(
         self, forward_returns: dict[str, Any], horizon: int
@@ -324,6 +388,7 @@ class ForwardVerifier:
             "coverage_ratio": 0.0,
             "forward_ic": 0.0,
             "forward_sharpe": 0.0,
+            "hit_rate_by_regime": {dimension: {} for dimension in REGIME_DIMENSIONS},
             "total_signals": 0,
             "min_days_remaining": profile["min_days"],
             "min_trades_remaining": profile["min_trades"],

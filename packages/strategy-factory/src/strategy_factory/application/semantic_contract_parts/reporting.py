@@ -84,6 +84,20 @@ def build_candidate_evidence_records(
     return records
 
 
+# INVERT-DESIGN P1 改动D：信号 evidence 的市场状态（regime）维度。
+_REGIME_DIMENSIONS: tuple[str, ...] = ("trend_regime", "vol_regime", "sentiment_regime")
+
+
+def _normalize_regime_labels(regime: Optional[Mapping[str, Any]]) -> dict[str, str]:
+    """把传入的 regime 字典规整为三维标签，缺失维度填 'unknown'。"""
+    source = dict(regime or {})
+    labels: dict[str, str] = {}
+    for dimension in _REGIME_DIMENSIONS:
+        label = str(source.get(dimension) or "").strip().lower()
+        labels[dimension] = label or "unknown"
+    return labels
+
+
 def build_signal_evidence_records(
     strategy: Optional[Mapping[str, Any]],
     *,
@@ -92,11 +106,15 @@ def build_signal_evidence_records(
     account_id: Optional[str] = None,
     signal_date: Any = None,
     code: Optional[str] = None,
+    regime: Optional[Mapping[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     payload = dict(strategy or {})
     params = _as_dict(payload.get("params"))
     evidence_chain = _as_dict(payload.get("evidence_chain") or params.get("evidence_chain"))
     prediction_contract = _as_dict(payload.get("prediction_contract") or params.get("prediction_contract"))
+    # INVERT-DESIGN P1 改动D：解析当日市场状态标签（regime），写入每条 evidence。
+    # 缺失时各维度归入 "unknown"，ForwardVerifier 据此分 regime 聚合命中率。
+    regime_labels = _normalize_regime_labels(regime)
     claim_to_trade_plan_map = _as_dict(
         payload.get("claim_to_trade_plan_map") or params.get("claim_to_trade_plan_map")
     )
@@ -178,6 +196,7 @@ def build_signal_evidence_records(
                         "doc_uid": _string(evidence.get("doc_uid")) or None,
                         "headline_label_id": _string(evidence.get("headline_label_id")) or None,
                         "weight": _safe_float(evidence.get("raw_confidence"), 0.0),
+                        **regime_labels,
                         "evidence_payload": {
                             **evidence,
                             "strategy_id": strategy_id,
@@ -188,6 +207,7 @@ def build_signal_evidence_records(
                             "applied_trade_step_id": _string(applied_trade_step_id) or None,
                             "signal_ts": signal_ts,
                             "code": resolved_code,
+                            **regime_labels,
                         },
                     }
                 )

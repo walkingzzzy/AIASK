@@ -495,6 +495,43 @@ async def _record_trade_audit_fill(db, order: dict, trade: dict) -> Optional[dic
     )
 
 
+def _resolve_signal_regime(strategy: dict, regime: Optional[dict]) -> dict:
+    """INVERT-DESIGN P1 改动D：解析信号当日市场状态标签。
+
+    优先用显式传入的 regime；否则从策略快照的 fear_greed 推断 sentiment_regime。
+    trend_regime / vol_regime 需逐标的行情(后续接入)，当前缺省为 unknown。
+    任何异常都不阻断信号落库。
+    """
+    labels = {"trend_regime": "unknown", "vol_regime": "unknown", "sentiment_regime": "unknown"}
+    try:
+        if regime:
+            for key in labels:
+                value = str(dict(regime).get(key) or "").strip().lower()
+                if value:
+                    labels[key] = value
+        if labels["sentiment_regime"] == "unknown":
+            payload = dict(strategy or {})
+            params = dict(payload.get("params") or {})
+            snapshot = dict(payload.get("snapshot") or params.get("snapshot") or {})
+            fg = (
+                snapshot.get("fear_greed_index")
+                or snapshot.get("fear_greed")
+                or payload.get("fear_greed_index")
+                or params.get("fear_greed_index")
+            )
+            if fg is not None:
+                try:
+                    fg_val = float(fg)
+                    labels["sentiment_regime"] = (
+                        "fear" if fg_val < 30 else "greed" if fg_val > 70 else "neutral"
+                    )
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        pass
+    return labels
+
+
 async def _persist_signal_evidence(
     db,
     strategy: dict,
@@ -504,10 +541,13 @@ async def _persist_signal_evidence(
     account_id: str,
     signal_date: date,
     code: str,
+    regime: Optional[dict] = None,
 ) -> None:
     save_method = _get_async_db_method(db, "save_strategy_signal_evidence")
     if save_method is None:
         return
+    # regime 缺省时由 _resolve_signal_regime 兜底（各维度 unknown），不阻断主流程。
+    regime_labels = _resolve_signal_regime(strategy, regime)
     for evidence in build_signal_evidence_records(
         strategy,
         signal_id=signal_id,
@@ -515,6 +555,7 @@ async def _persist_signal_evidence(
         account_id=account_id,
         signal_date=signal_date,
         code=code,
+        regime=regime_labels,
     ):
         try:
             await save_method(
@@ -538,6 +579,8 @@ async def _persist_signal_evidence(
                     "proxy_only": evidence.get("proxy_only"),
                     "doc_uid": evidence.get("doc_uid"),
                     "headline_label_id": evidence.get("headline_label_id"),
+                    # 改动D：regime 标签随 payload(JSON) 落库，避免依赖表新增列；
+                    # ForwardVerifier 从 evidence_payload 读取分 regime 聚合。
                     "payload": evidence.get("evidence_payload") or evidence,
                 }
             )
