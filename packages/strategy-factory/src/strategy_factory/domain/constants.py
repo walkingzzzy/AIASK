@@ -558,6 +558,19 @@ STRATEGY_FACTORY_FACTOR_IC_CLASSIC_FALLING_MAX_IC: float = _env_float(
     minimum=-1.0,
     maximum=0.0,
 )
+# INVERT-DESIGN P3 改动B：晋升门要求"跨主要 regime 都有正 skill_lcb"。
+# 默认 OFF，保持 promotion_ready 仅看全局 skill_lcb 的历史行为（零变化）。
+# ON 时，晋升额外要求 hit_rate_by_regime 中每个达到最小样本量的 regime 标签 skill_lcb > 0。
+STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED",
+    False,
+)
+STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N: int = _env_int(
+    "STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N",
+    20,
+    minimum=1,
+    maximum=10000,
+)
 STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE: str = str(
     _env_raw("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", "revise") or "revise"
 ).strip().lower() or "revise"

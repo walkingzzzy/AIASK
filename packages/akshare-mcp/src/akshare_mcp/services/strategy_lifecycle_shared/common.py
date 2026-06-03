@@ -17,6 +17,8 @@ from strategy_factory import (
     PROMOTION_THRESHOLDS,
     STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED,
     STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED,
+    STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED,
+    STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,53 @@ _TREND_EXECUTABLE_DSL_TYPES = {"ma_cross", "momentum", "volatility_breakout", "e
 
 def _confidence_diagnostics_enabled() -> bool:
     return bool(STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED)
+
+
+def _promotion_cross_regime_enabled() -> bool:
+    return bool(STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED)
+
+
+def evaluate_cross_regime_skill(
+    hit_rate_by_regime: Optional[dict],
+    *,
+    min_n: int = int(STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N),
+) -> dict:
+    """INVERT-DESIGN P3 改动B：评估"跨主要 regime 是否都有正 skill"。
+
+    输入为 forward_verifier 的 hit_rate_by_regime（{dimension: {label: {skill_lcb, n, ...}}}）。
+    仅对达到 ``min_n`` 样本量的 regime 标签判定；任一达标标签 skill_lcb<=0 即视为未通过。
+    样本不足时不阻断（passed=True, evaluated=False），交由全局 skill_lcb 把关。
+    """
+    source = dict(hit_rate_by_regime or {})
+    evaluated_labels: list[str] = []
+    negative_labels: list[str] = []
+    for dimension, buckets in source.items():
+        for label, stats in dict(buckets or {}).items():
+            payload = dict(stats or {})
+            try:
+                n = int(payload.get("n") or payload.get("effective_n") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n < int(min_n):
+                continue
+            try:
+                skill_lcb = float(payload.get("skill_lcb") or 0.0)
+            except (TypeError, ValueError):
+                skill_lcb = 0.0
+            tag = f"{dimension}:{label}"
+            evaluated_labels.append(tag)
+            if skill_lcb <= 0.0:
+                negative_labels.append(tag)
+    evaluated = bool(evaluated_labels)
+    passed = (not evaluated) or (not negative_labels)
+    return {
+        "enabled": _promotion_cross_regime_enabled(),
+        "evaluated": evaluated,
+        "passed": passed,
+        "min_n": int(min_n),
+        "evaluated_labels": evaluated_labels,
+        "negative_labels": negative_labels,
+    }
 
 
 def _execution_audit_enabled() -> bool:

@@ -14,6 +14,8 @@ from .common import (
     _EXECUTION_AUDIT_PROMOTION_BLOCKING_STAGES,
     _TREND_EXECUTABLE_DSL_TYPES,
     _confidence_diagnostics_enabled,
+    _promotion_cross_regime_enabled,
+    evaluate_cross_regime_skill,
     _quality_report_bool,
     _quality_report_field,
     _safe_float,
@@ -755,6 +757,14 @@ async def build_incubation_overview(
         and risk_hard_gate_status == "passed"
         and not blockers
     )
+    # INVERT-DESIGN P3 改动B：晋升额外要求"跨主要 regime 都有正 skill"（默认 OFF，零变化）。
+    cross_regime_skill = evaluate_cross_regime_skill(signal_stats.get("hit_rate_by_regime"))
+    if _promotion_cross_regime_enabled() and promotion_ready and not cross_regime_skill["passed"]:
+        promotion_ready = False
+        for tag in cross_regime_skill["negative_labels"]:
+            reason = f"cross_regime_skill_lcb_non_positive:{tag}"
+            if reason not in blockers:
+                blockers.append(reason)
     if not execution_hard_gate_passed and execution_audit_gate_status in {
         "missing",
         "bootstrap_pending",
