@@ -189,7 +189,122 @@
         weights = {key: round(value / total, 2) for key, value in weights.items()}
         if factor_signal_count > 0:
             out.append(self._make("multi_factor", {"factor_weights": weights, "lookback": 60}, f"IC驱动多因子权重: {weights}", source="factor_ic", trigger_signal={"field": "factor_ic_weights", "value": weights}, trigger_thresholds=[self._threshold("factor_ic_weights", "derived_from", {"positive_ic": 0.0, "trend_preference": "rising"}, {"factor_ic": factor_ic, "factor_ic_trend": trend, "weights": weights}, "权重派生规则")]))
+        # ALPHA-WIRING-V1 (P-A)：泛因子 IC 接入（默认 OFF，零变化）。
+        # 把已挖出但被经典分支忽略的因子（gp_*/rl_* 等，IC 过阈值）接回生成链，
+        # 每个候选带合成的 prediction_contract + evidence_chain，使其成为可证伪假设，
+        # 而非缺语义契约的 fixed_defaults 填充物。
+        if STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED:
+            out.extend(self._generic_factor_ic_candidates(factor_ic, trend))
         return out
+
+    def _generic_factor_ic_candidates(self, factor_ic: Dict[str, float], trend: Dict[str, str]) -> List[dict]:
+        """ALPHA-WIRING-V1 (P-A)：为已挖出但被经典分支忽略的因子生成带语义契约的候选。
+
+        方向取 IC 符号，horizon 取默认持有期，claim/evidence 由因子名 + 近况 IC +
+        趋势构成可证伪断言。按 |IC| 从大到小取前 N 个，受 MAX_FACTORS 配额约束。
+        """
+        classic_names = {"momentum", "value", "quality", "reversal", "growth"}
+        min_abs_ic = float(STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC)
+        max_factors = int(STRATEGY_FACTORY_FACTOR_IC_GENERIC_MAX_FACTORS)
+        scored: List[tuple] = []
+        for name, raw_ic in dict(factor_ic or {}).items():
+            lowered = str(name or "").strip().lower()
+            if not lowered or lowered in classic_names:
+                continue
+            ic_value = self._safe_float(raw_ic)
+            if abs(ic_value) < min_abs_ic:
+                continue
+            trend_value = str(trend.get(name) or "flat").strip().lower() or "flat"
+            scored.append((str(name).strip(), ic_value, trend_value))
+        scored.sort(key=lambda item: abs(item[1]), reverse=True)
+        out: List[dict] = []
+        for name, ic_value, trend_value in scored[:max_factors]:
+            out.append(self._make_generic_factor_candidate(name, ic_value, trend_value))
+        return out
+
+    def _make_generic_factor_candidate(self, factor_name: str, ic_value: float, trend_value: str) -> dict:
+        """ALPHA-WIRING-V1 (P-A)：把单个已验证因子封装成带语义契约的候选。"""
+        strategy_types = preferred_strategy_types_for_factor(factor_name, default=["multi_factor"])
+        strategy_type = str((strategy_types or ["multi_factor"])[0] or "multi_factor")
+        direction = "up" if ic_value >= 0 else "down"
+        horizon_days = 20
+        ic_rounded = round(float(ic_value), 4)
+        thesis = (
+            f"挖掘因子 {factor_name} 近况 IC={ic_value:.3f}（趋势 {trend_value}），"
+            f"预期对 {strategy_type} 族标的产生 {direction} 方向 {horizon_days} 日前向收益。"
+        )
+        params = {
+            "factor_name": factor_name,
+            "factor_ic": ic_rounded,
+            "factor_ic_trend": trend_value,
+            "lookback": horizon_days,
+        }
+        if strategy_type == "multi_factor":
+            params["factor_weights"] = {factor_name: 1.0}
+        evidence_chain = {
+            "contract_version": "strategy_factory.semantic_contract.v1",
+            "producer": "strategy_factory.factor_ic_generic_intake",
+            "generation_mode": "factor_ic_validated",
+            "thesis": thesis,
+            "evidences": [
+                {
+                    "evidence_id": "ev_factor_ic",
+                    "source_type": "factor_ic_validated",
+                    "direction": direction,
+                    "summary": thesis,
+                    "proxy_only": False,
+                    "horizon_days": horizon_days,
+                    "claim_ids": ["claim_entry"],
+                    "support_metric": {
+                        "factor_name": factor_name,
+                        "ic_value": ic_rounded,
+                        "trend": trend_value,
+                    },
+                },
+            ],
+        }
+        prediction_contract = {
+            "contract_version": "strategy_factory.prediction_contract.v1",
+            "producer": "strategy_factory.factor_ic_generic_intake",
+            "generation_mode": "factor_ic_validated",
+            "primary_horizon_days": horizon_days,
+            "target": "forward_return_positive" if direction == "up" else "forward_return_negative",
+            "claims": [
+                {
+                    "claim_id": "claim_entry",
+                    "claim_type": "entry",
+                    "summary": thesis,
+                    "expected_move": direction,
+                    "expected_horizon": horizon_days,
+                    "evidence_ids": ["ev_factor_ic"],
+                    "failure_condition": f"{factor_name} IC 转向或前向收益与预测方向背离",
+                },
+            ],
+        }
+        extras = {
+            "candidate_origin": "factor_ic_generic_intake",
+            "candidate_family": strategy_type,
+            "evidence_chain": evidence_chain,
+            "prediction_contract": prediction_contract,
+            "tags": ["factor_ic_generic_intake", "factor_ic_validated"],
+        }
+        return self._make(
+            strategy_type,
+            params,
+            f"泛因子接入: {factor_name} IC={ic_value:.3f} 趋势{trend_value}",
+            source="factor_ic",
+            trigger_signal={"field": "factor_ic", "factor": factor_name, "value": ic_value, "trend": trend_value},
+            trigger_thresholds=[
+                self._threshold(
+                    f"factor_ic.{factor_name}",
+                    "abs>=",
+                    float(STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC),
+                    ic_value,
+                    "泛因子IC阈值",
+                ),
+            ],
+            extras=extras,
+        )
 
     def _from_volatility(self, snapshot: dict) -> List[dict]:
         out: List[dict] = []

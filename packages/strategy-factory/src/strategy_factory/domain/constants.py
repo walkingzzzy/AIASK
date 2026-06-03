@@ -522,6 +522,28 @@ STRATEGY_FACTORY_FEEDBACK_V2_ENABLED: bool = _env_bool(
     "STRATEGY_FACTORY_FEEDBACK_V2_ENABLED",
     True,
 )
+# ALPHA-WIRING-V1 (P-A)：泛因子 IC 接入。
+# 默认 OFF，保持 _from_factor_ic 仅认经典 5 因子的零变化行为。
+# ON 时，_from_factor_ic 额外遍历 factor_ic 映射里所有（含 gp_*/rl_* 挖掘）
+# IC 通过阈值的因子，为每个生成带 prediction_contract + evidence_chain 的候选，
+# 把已挖出的 alpha 接回生成链，并在源头饿死 fixed_defaults 填充物。
+STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED",
+    False,
+)
+# 泛因子接入的 |IC| 门槛与单轮配额上限（防止泛因子撑爆候选基数）。
+STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC: float = _env_float(
+    "STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC",
+    0.03,
+    minimum=0.0,
+    maximum=1.0,
+)
+STRATEGY_FACTORY_FACTOR_IC_GENERIC_MAX_FACTORS: int = _env_int(
+    "STRATEGY_FACTORY_FACTOR_IC_GENERIC_MAX_FACTORS",
+    8,
+    minimum=1,
+    maximum=64,
+)
 STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE: str = str(
     _env_raw("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", "revise") or "revise"
 ).strip().lower() or "revise"

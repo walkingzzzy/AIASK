@@ -93,3 +93,91 @@ def test_spawner_injects_factor_pool_candidates():
     assert factor_pool_candidates[0]["params"]["grade"] == "A"
     assert factor_pool_candidates[0]["params"]["engine"] == "rule_seed"
     assert factor_pool_candidates[0]["metadata"]["factor_pool_factor_id"] == "factor-1"
+
+
+# ALPHA-WIRING-V1 (P-A)：泛因子 IC 接入 —— 把已挖出（gp_*/rl_*）但被经典分支忽略的
+# 因子接回 _from_factor_ic 生成链，每个候选带合成的 prediction_contract + evidence_chain。
+def _factor_ic_snapshot() -> dict:
+    return {
+        "fear_greed_index": 55,
+        "fg_level": "neutral",
+        "factor_research": {
+            "ranked_factors": [
+                {"factor_name": "momentum", "ic_value": 0.05, "trend": "rising"},
+                {"factor_name": "gp_factor_6", "ic_value": 0.108, "trend": "rising"},
+                {"factor_name": "rl_factor_1", "ic_value": 0.105, "trend": "rising"},
+                {"factor_name": "rl_factor_2", "ic_value": -0.057, "trend": "falling"},
+                {"factor_name": "gp_factor_2", "ic_value": 0.006, "trend": "flat"},
+            ]
+        },
+        "event_driven": {},
+        "sources": {},
+    }
+
+
+def _reload_spawner():
+    import importlib
+
+    import strategy_factory.domain.constants as constants
+    import strategy_factory.domain.spawner as spawner_mod
+
+    importlib.reload(constants)
+    importlib.reload(spawner_mod)
+    return spawner_mod.StrategySpawner
+
+
+def _generic_factor_ic_candidates(candidates: list) -> list:
+    return [
+        item
+        for item in candidates
+        if str((item.get("params") or {}).get("factor_name") or "").lower().startswith(("gp_", "rl_"))
+    ]
+
+
+def test_factor_ic_generic_intake_off_is_zero_change(monkeypatch):
+    """默认 OFF：泛因子不进入生成链，行为与历史一致。"""
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "0")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_ic(_factor_ic_snapshot())
+    assert _generic_factor_ic_candidates(candidates) == []
+
+
+def test_factor_ic_generic_intake_on_emits_contract_candidates(monkeypatch):
+    """ON：IC 过阈值的 gp_/rl_ 因子产出带完整语义契约的候选，方向随 IC 符号。"""
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC", "0.03")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_ic(_factor_ic_snapshot())
+    generic = _generic_factor_ic_candidates(candidates)
+
+    # gp_factor_6 / rl_factor_1 / rl_factor_2 过阈值；gp_factor_2 (0.006) 被过滤
+    names = {(item.get("params") or {}).get("factor_name") for item in generic}
+    assert names == {"gp_factor_6", "rl_factor_1", "rl_factor_2"}
+
+    by_name = {(item.get("params") or {}).get("factor_name"): item for item in generic}
+    for item in generic:
+        evidence_chain = item.get("evidence_chain") or (item.get("params") or {}).get("evidence_chain")
+        prediction_contract = item.get("prediction_contract") or (item.get("params") or {}).get(
+            "prediction_contract"
+        )
+        assert evidence_chain and evidence_chain.get("evidences")
+        assert prediction_contract and prediction_contract.get("claims")
+
+    # 方向随 IC 符号：正 IC -> up，负 IC -> down
+    up_pc = by_name["gp_factor_6"]["prediction_contract"]
+    down_pc = by_name["rl_factor_2"]["prediction_contract"]
+    assert up_pc["claims"][0]["expected_move"] == "up"
+    assert down_pc["claims"][0]["expected_move"] == "down"
+
+
+def test_factor_ic_generic_intake_respects_max_factors(monkeypatch):
+    """配额上限：MAX_FACTORS 限制单轮泛因子候选数量，按 |IC| 取强者。"""
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_MIN_ABS_IC", "0.03")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_MAX_FACTORS", "1")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_ic(_factor_ic_snapshot())
+    generic = _generic_factor_ic_candidates(candidates)
+    assert len(generic) == 1
+    # |IC| 最大的 gp_factor_6 (0.108) 胜出
+    assert (generic[0].get("params") or {}).get("factor_name") == "gp_factor_6"
