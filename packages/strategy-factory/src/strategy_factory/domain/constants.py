@@ -544,6 +544,20 @@ STRATEGY_FACTORY_FACTOR_IC_GENERIC_MAX_FACTORS: int = _env_int(
     minimum=1,
     maximum=64,
 )
+# ALPHA-WIRING-V1 (P-D)：经典 5 因子分支的 IC 裸阈值改为 env 可配。
+# 默认 0.03 / -0.02 与历史硬编码完全一致（零行为变化）；可调以放宽/收紧准入。
+STRATEGY_FACTORY_FACTOR_IC_CLASSIC_MIN_IC: float = _env_float(
+    "STRATEGY_FACTORY_FACTOR_IC_CLASSIC_MIN_IC",
+    0.03,
+    minimum=0.0,
+    maximum=1.0,
+)
+STRATEGY_FACTORY_FACTOR_IC_CLASSIC_FALLING_MAX_IC: float = _env_float(
+    "STRATEGY_FACTORY_FACTOR_IC_CLASSIC_FALLING_MAX_IC",
+    -0.02,
+    minimum=-1.0,
+    maximum=0.0,
+)
 STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE: str = str(
     _env_raw("STRATEGY_FACTORY_SPEC_COMPLETENESS_MODE", "revise") or "revise"
 ).strip().lower() or "revise"

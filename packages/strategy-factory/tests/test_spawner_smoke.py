@@ -181,3 +181,47 @@ def test_factor_ic_generic_intake_respects_max_factors(monkeypatch):
     assert len(generic) == 1
     # |IC| 最大的 gp_factor_6 (0.108) 胜出
     assert (generic[0].get("params") or {}).get("factor_name") == "gp_factor_6"
+
+
+# ALPHA-WIRING-V1 (P-D)：经典分支 IC 裸阈值改 env 可配（默认 0.03，零变化）。
+def _classic_factor_ic_snapshot():
+    return {
+        "fear_greed_index": 55,
+        "fg_level": "neutral",
+        "factor_research": {
+            "ranked_factors": [
+                # value IC=0.04 > 默认 0.03 阈值 -> 默认放行；提高阈值到 0.05 -> 被挡
+                {"factor_name": "value", "ic_value": 0.04, "trend": "rising"},
+                {"factor_name": "quality", "ic_value": 0.10, "trend": "rising"},
+            ]
+        },
+        "event_driven": {},
+        "sources": {},
+    }
+
+
+def _classic_candidate_names(candidates: list) -> set:
+    # 经典分支候选的 strategy_type（value->value_factor, quality->quality_factor）
+    return {item.get("strategy_type") for item in candidates}
+
+
+def test_factor_ic_classic_threshold_default_zero_change(monkeypatch):
+    monkeypatch.delenv("STRATEGY_FACTORY_FACTOR_IC_CLASSIC_MIN_IC", raising=False)
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "0")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_ic(_classic_factor_ic_snapshot())
+    types = _classic_candidate_names(candidates)
+    # 默认阈值 0.03：value(0.04) 与 quality(0.10) 都放行
+    assert "value_factor" in types
+    assert "quality_factor" in types
+
+
+def test_factor_ic_classic_threshold_configurable_tighten(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_CLASSIC_MIN_IC", "0.05")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "0")
+    spawner = _reload_spawner()()
+    candidates = spawner._from_factor_ic(_classic_factor_ic_snapshot())
+    types = _classic_candidate_names(candidates)
+    # 阈值收紧到 0.05：value(0.04) 被挡，quality(0.10) 仍放行
+    assert "value_factor" not in types
+    assert "quality_factor" in types

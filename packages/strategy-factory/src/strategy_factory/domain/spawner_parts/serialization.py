@@ -114,7 +114,7 @@
 
         for factor_name, ic_value in factor_ic.items():
             trend_value = trend.get(factor_name, "flat")
-            if ic_value > 0.03 and trend_value == "rising":
+            if ic_value > STRATEGY_FACTORY_FACTOR_IC_CLASSIC_MIN_IC and trend_value == "rising":
                 if factor_name == "momentum":
                     event_prefilter = self._snapshot_event_prefilter(
                         snapshot,
@@ -167,7 +167,7 @@
                     out.append(self._make("quality_factor", {"lookback": 60, "buy_quantile": 0.8, "sell_quantile": 0.2}, f"quality IC={ic_value:.3f}上升", source="factor_ic", trigger_signal={"field": "factor_ic", "factor": factor_name, "value": ic_value, "trend": trend_value}, trigger_thresholds=[self._threshold(f"factor_ic.{factor_name}", ">", 0.03, ic_value, "IC阈值"), self._threshold(f"factor_ic_trend.{factor_name}", "==", "rising", trend_value, "趋势阈值")]))
                 elif factor_name == "reversal":
                     out.append(self._make("margin_divergence", self._high_precision_margin_divergence_params(), f"reversal IC={ic_value:.3f}上升，高精度流动性修复", source="factor_ic", trigger_signal={"field": "factor_ic", "factor": factor_name, "value": ic_value, "trend": trend_value}, trigger_thresholds=[self._threshold(f"factor_ic.{factor_name}", ">", 0.03, ic_value, "IC阈值"), self._threshold(f"factor_ic_trend.{factor_name}", "==", "rising", trend_value, "趋势阈值")], extras=self._high_precision_candidate_fields(preferred_regime="liquidity_repair_with_volume_reexpansion", avoid_regime="volume_vacuum_or_failed_rebound", holding_rationale="只有在中期下跌后出现缩量止跌、放量修复和结构转强时才参与，避免把普通噪声反抽误当成高精度修复。", failure_mode={"primary_failure_mode": "factor_reversal_false_positive", "secondary_failure_mode": "false_reexpansion"}, entry_bias="liquidity_divergence_repair_confirmation", exit_bias="liquidity_break_or_time_stop")))
-            elif ic_value < -0.02 and trend_value == "falling" and factor_name == "momentum":
+            elif ic_value < STRATEGY_FACTORY_FACTOR_IC_CLASSIC_FALLING_MAX_IC and trend_value == "falling" and factor_name == "momentum":
                 out.append(self._make("margin_divergence", self._high_precision_margin_divergence_params(), f"momentum IC={ic_value:.3f}下降，转高精度流动性修复", source="factor_ic", trigger_signal={"field": "factor_ic", "factor": factor_name, "value": ic_value, "trend": trend_value}, trigger_thresholds=[self._threshold(f"factor_ic.{factor_name}", "<", -0.02, ic_value, "IC阈值"), self._threshold(f"factor_ic_trend.{factor_name}", "==", "falling", trend_value, "趋势阈值")], extras=self._high_precision_candidate_fields(preferred_regime="liquidity_repair_with_volume_reexpansion", avoid_regime="volume_vacuum_or_failed_rebound", holding_rationale="只有在趋势衰减后出现缩量止跌与放量修复共振时才参与，避免追着噪声做均值回归。", failure_mode={"primary_failure_mode": "trend_break_without_repair", "secondary_failure_mode": "overtrading"}, entry_bias="liquidity_divergence_repair_confirmation", exit_bias="liquidity_break_or_time_stop")))
 
         weights: Dict[str, float] = {}
