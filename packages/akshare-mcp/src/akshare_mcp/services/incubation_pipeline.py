@@ -62,6 +62,51 @@ class StrategyIncubationPipelineService:
             score -= 0.18
         return round(max(0.0, min(score, 1.0)), 4)
 
+    async def _evaluate_promotion_gate(self, db, strategy_id: str, *, signal_quality: dict, observed_days: int) -> dict:
+        """INVERT-DESIGN P3 改动B：对前向收益序列跑 PromotionGate（DSR）。
+
+        n_trials 取观察池规模（同期 listed+incubating 策略数）做选择偏差校正；
+        取不到则回退 observed_days+1（保守，至少 1）。默认 OFF（toggle）时直接返回 enabled=False。
+        软降级：任何异常都不阻断主流程。
+        """
+        try:
+            from .incubation_factory.promotion_gate import (
+                PromotionGate,
+                _promotion_gate_enabled,
+                fetch_forward_return_series,
+            )
+        except Exception as exc:
+            logger.debug('PromotionGate import failed for %s: %s', strategy_id, exc)
+            return {'enabled': False, 'reason': 'import_failed'}
+
+        if not _promotion_gate_enabled():
+            return {'enabled': False}
+
+        primary_horizon = int(signal_quality.get('primary_horizon') or 5)
+        try:
+            series = await fetch_forward_return_series(
+                db, strategy_id, horizon_days=primary_horizon
+            )
+        except Exception as exc:
+            logger.debug('PromotionGate fetch series failed for %s: %s', strategy_id, exc)
+            return {'enabled': True, 'eligible': False, 'passed': False, 'reasons': ['fetch_series_failed']}
+
+        n_trials = 1
+        lister = getattr(db, 'count_strategies_by_status', None) or getattr(db, 'list_strategies', None)
+        try:
+            if callable(getattr(db, 'list_strategies', None)):
+                pool = await db.list_strategies(status='incubating', limit=1000)
+                n_trials = max(1, len(pool or []))
+        except Exception:
+            n_trials = max(1, int(observed_days) + 1)
+
+        verdict = PromotionGate().evaluate(series, n_trials=n_trials)
+        audit = verdict.to_dict()
+        audit['enabled'] = True
+        audit['n_trials'] = n_trials
+        audit['primary_horizon'] = primary_horizon
+        return audit
+
     async def _record_domain_event(self, db, *, strategy_id: str, event_type: str, payload: dict, source: str, correlation_id: Optional[str] = None, severity: str = 'info'):
         if hasattr(db, 'save_strategy_domain_event'):
             await db.save_strategy_domain_event({
@@ -170,6 +215,27 @@ class StrategyIncubationPipelineService:
                 pipeline_status = 'observing'
                 next_action = 'stabilize_signal_quality' if latest_decision == 'halt' or halt_streak > 0 else 'continue_observation'
 
+        # === INVERT-DESIGN P3 改动B: Layer 3 晋升门（前向序列 + DSR）===
+        # graduation_ready 的策略在晋升前，用 PromotionGate 对其累积的**前向收益序列**
+        # 跑 Deflated Sharpe Ratio（喂 n_trials=观察池规模做选择偏差校正）。
+        # 默认 OFF（toggle）；ON 时 DSR 未过 → 降级 graduation_ready→candidate，
+        # 不直接 listed，体现"严出、用前向真实数据、稀少晋升"。
+        promotion_gate_audit: Optional[dict] = None
+        gate_reasons_extra: list[str] = []
+        if pipeline_stage == 'graduation_ready':
+            promotion_gate_audit = await self._evaluate_promotion_gate(
+                db, sid, signal_quality=signal_quality, observed_days=observed_days
+            )
+            if promotion_gate_audit and promotion_gate_audit.get('enabled'):
+                if promotion_gate_audit.get('eligible') and not promotion_gate_audit.get('passed'):
+                    pipeline_stage = 'candidate'
+                    pipeline_status = 'candidate'
+                    next_action = 'accumulate_forward_evidence_for_dsr'
+                    for reason in promotion_gate_audit.get('reasons') or []:
+                        tag = f"promotion_dsr:{reason}"
+                        if tag not in gate_reasons_extra:
+                            gate_reasons_extra.append(tag)
+
         gate_status = pipeline_stage
         gate_reasons = []
         if pipeline_stage == 'failed':
@@ -195,6 +261,8 @@ class StrategyIncubationPipelineService:
             elif pipeline_stage == 'promoted':
                 pipeline_status = 'blocked'
                 next_action = 'resolve_governance_critical'
+        # P3 改动B：把晋升门（DSR）的降级原因并入 gate_reasons。
+        gate_reasons.extend(item for item in gate_reasons_extra if item not in gate_reasons)
         priority_score = self._readiness_score(
             latest_metric=latest_metric,
             overview=overview,
@@ -231,6 +299,7 @@ class StrategyIncubationPipelineService:
             'next_action': next_action,
             'auto_review': bool(auto_apply_review and pipeline_stage == 'graduation_ready'),
             'auto_promoted': False,
+            'promotion_gate': promotion_gate_audit,
             'blockers': list(overview.get('blockers') or []),
             'risk_flags': list(overview.get('risk_flags') or []),
             'summary': {
