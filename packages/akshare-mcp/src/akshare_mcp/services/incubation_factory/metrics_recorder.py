@@ -6,10 +6,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
+from .observation_lifecycle_policy import ObservationLifecyclePolicy
+
 logger = logging.getLogger(__name__)
+
+
+def _regime_lifecycle_enabled() -> bool:
+    """INVERT-DESIGN P2/P3：observe 决策是否纳入 regime 维度（默认 OFF，零变化）。"""
+    return str(
+        os.getenv("STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class MetricsRecorder:
@@ -171,6 +181,7 @@ class MetricsRecorder:
             stability_gap=stability_gap,
             coverage_ratio=coverage_ratio,
             primary_n=primary_n,
+            hit_rate_by_regime=verification.get("hit_rate_by_regime"),
         )
 
         incubation_account = strategy.get("incubation_account")
@@ -240,40 +251,27 @@ class MetricsRecorder:
         stability_gap: float,
         coverage_ratio: float,
         primary_n: int,
+        hit_rate_by_regime: Optional[dict] = None,
     ) -> str:
         """
-        根据指标判定当日决策。
+        根据指标判定当日决策（委托 ObservationLifecyclePolicy，INVERT-DESIGN P2 改动C）。
 
         - promote: 表现优秀，推荐晋升
         - observe: 表现一般，继续观察
         - halt: 表现差，建议暂停
+
+        阈值默认值与历史内联实现一致；regime 维度默认 OFF（toggle 控制），保证零行为变化。
         """
-        # 样本不足时继续观察
-        if primary_n < 10:
-            return "observe"
-
-        # 技能下界为负 → 暂停
-        if recent_primary_skill_lcb < -0.03:
-            return "halt"
-
-        # 稳定性差 → 暂停
-        if stability_gap > 0.10:
-            return "halt"
-
-        # 覆盖率太低 → 观察
-        if coverage_ratio < 0.25:
-            return "observe"
-
-        # 技能下界显著为正 + 稳定 → 推荐晋升
-        if (
-            primary_skill_lcb > 0.02
-            and recent_primary_skill_lcb > 0.0
-            and stability_gap <= 0.05
-            and coverage_ratio >= 0.60
-        ):
-            return "promote"
-
-        return "observe"
+        policy = ObservationLifecyclePolicy(regime_enabled=_regime_lifecycle_enabled())
+        result = policy.decide(
+            primary_skill_lcb=primary_skill_lcb,
+            recent_primary_skill_lcb=recent_primary_skill_lcb,
+            stability_gap=stability_gap,
+            coverage_ratio=coverage_ratio,
+            primary_n=primary_n,
+            hit_rate_by_regime=hit_rate_by_regime,
+        )
+        return result.decision
 
     async def _get_nav_info(
         self, db: Any, account_id: str, metric_date: date
