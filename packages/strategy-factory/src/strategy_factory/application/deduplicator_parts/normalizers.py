@@ -1,8 +1,22 @@
     """去除与已有策略参数过于相似的候选。"""
 
-    THRESHOLD = 0.85
+    # 参数/向量相似度阈值。默认沿用历史值 (0.85 / 0.93)，行为零变化。
+    # 通过 env 抬高阈值可放松去重（让边际去重命中的候选保留），用于过渡期
+    # 解除"唯一存活候选被自重复折叠"的堵点 — 详见架构现状梳理文档 §去重墙。
+    # 取值被 clamp 到 [0.50, 1.0]，1.0 等价于"几乎只折叠完全相同的策略"。
+    def _resolve_dedup_threshold(_env_name: str, _default: float) -> float:
+        try:
+            raw = os.getenv(_env_name)
+            if raw is None:
+                return float(_default)
+            return max(0.50, min(1.0, float(str(raw).strip())))
+        except Exception:
+            return float(_default)
+
+    THRESHOLD = _resolve_dedup_threshold("STRATEGY_FACTORY_DEDUP_PARAM_THRESHOLD", 0.85)
     VECTOR_TRIGGER_THRESHOLD = 0.65
-    VECTOR_THRESHOLD = 0.93
+    VECTOR_THRESHOLD = _resolve_dedup_threshold("STRATEGY_FACTORY_DEDUP_VECTOR_THRESHOLD", 0.93)
+    del _resolve_dedup_threshold
     MAX_VECTOR_CANDIDATES = 8
     MAX_REFRESH_PER_LINEAGE = 2
     MAX_REVISION_PER_LINEAGE = 3
