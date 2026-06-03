@@ -59,6 +59,7 @@ from .._runtime_toggles import (
     diagnostic_observation_min_win_rate as _diagnostic_observation_min_win_rate,
     diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
     observe_d_grade_enabled as _observe_d_grade_enabled,
+    wide_intake_observe_enabled as _wide_intake_observe_enabled,
 )
 from ...domain.constants import (
     FACTORY_SUBMISSION_MIN_BACKTEST_TRADES,

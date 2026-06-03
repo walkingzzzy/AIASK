@@ -55,6 +55,17 @@
             # formal_track_blockers 中已有的 strict_incubation_pass 仍挡住 D 级升 formal,
             # formal 严格性零变化。
             allow_d_grade_observe = _observe_d_grade_enabled()
+            # === INVERT-DESIGN P1 改动A: Layer 1 宽进准入 ===
+            # 当 STRATEGY_FACTORY_WIDE_INTAKE_OBSERVE_ENABLED=1 时,放开"必须 Gate-3 passed"
+            # 这一前置。结构合法(类型已注册 + runtime 字段齐 + 无 semantic hard fail)的候选,
+            # 即使 quality_passed=False,也判 observe-eligible,走零资本 paper 观察。
+            # 此开关只放开 observe,不改 formal(下方 formal_track_blockers 仍要求 strict pass)。
+            wide_intake_observe = _wide_intake_observe_enabled()
+            structurally_valid = (
+                strategy_type_registered
+                and not missing_runtime_fields
+                and not semantic_hard_fail
+            )
             runtime_bootstrap_eligible = (
                 quality_passed
                 and (allow_d_grade_observe or validation_grade != "D")
@@ -62,9 +73,19 @@
                 and not missing_runtime_fields
                 and not semantic_hard_fail
             )
+            # 宽进:Gate-3 未过但结构合法 → 仍可进 observe。
+            wide_intake_admitted = bool(
+                wide_intake_observe
+                and not runtime_bootstrap_eligible
+                and structurally_valid
+            )
+            if wide_intake_admitted:
+                runtime_bootstrap_eligible = True
             if runtime_bootstrap_eligible:
                 # === DEV-V1 P0: D 级走 observe 时使用专用 reason ===
-                if validation_grade == "D":
+                if wide_intake_admitted:
+                    runtime_bootstrap_reason = "wide_intake_observe_gate3_not_required"
+                elif validation_grade == "D":
                     runtime_bootstrap_reason = "d_grade_observe_only_micro_budget"
                 elif execution_semantic_gap:
                     runtime_bootstrap_reason = "execution_semantic_gap_observe_only"
@@ -91,13 +112,14 @@
             if runtime_bootstrap_eligible:
                 budget_tier = (
                     "micro"
-                    if execution_semantic_gap or proxy_runtime_used or diagnostic_only
+                    if wide_intake_admitted or execution_semantic_gap or proxy_runtime_used or diagnostic_only
                     else "standard" if validation_grade in {"A", "B"} else "micro"
                 )
             return {
                 "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
                 "runtime_bootstrap_reason": runtime_bootstrap_reason,
                 "runtime_bootstrap_budget_tier": budget_tier,
+                "wide_intake_admitted": wide_intake_admitted,
                 "runtime_playbook_present": runtime_playbook_present,
                 "runtime_contract_missing_fields": missing_runtime_fields,
                 "strategy_type_registered": strategy_type_registered,

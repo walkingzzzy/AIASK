@@ -576,6 +576,44 @@ class StrategyLifecycleCoordinator:
                 "parent_task_run_id": trace_context.get("parent_task_run_id"),
                 "source_action": trace_context.get("source_action"),
             }
+        elif not gate_passed and result.submission_lane == "observe_incubation":
+            # === INVERT-DESIGN P1 改动A: Layer 1 宽进准入 ===
+            # Gate-3 未通过但结构合法的候选,进零资本 paper observation(不 rejected),
+            # 由 ForwardVerifier 用向前真实数据(带 regime 标签)持续测量。
+            result.final_status = "submitted"
+            step, _ = await self._step(
+                "status_transition",
+                _status_update("submitted", "wide_intake_observe_queue"),
+            )
+            any_step_failed = step.status != "success"
+            result.steps.append(step)
+            step, result.paper_action = await self._step(
+                "enqueue_paper_observation",
+                self._submitter._enqueue_paper_observation(
+                    db,
+                    {**enriched_data, "status": "submitted"},
+                    request.snapshot,
+                ),
+                retryable=True,
+            )
+            any_step_failed = any_step_failed or step.status != "success"
+            result.steps.append(step)
+            result.action_audit = {
+                **dict(request.submission_action or {}),
+                **dict(result.paper_action or {}),
+                "final_status": result.final_status,
+                "admission_layer": "observe",
+                "wide_intake_observe": True,
+                "submission_action_completed": bool(
+                    result.paper_action or request.submission_action.get("submission_action_completed")
+                ),
+                "execution_audit_snapshot_id": (execution_snapshot or {}).get("snapshot_id"),
+                "correlation_id": trace_context.get("correlation_id"),
+                "factory_run_id": trace_context.get("factory_run_id"),
+                "trace_id": trace_context.get("trace_id"),
+                "parent_task_run_id": trace_context.get("parent_task_run_id"),
+                "source_action": trace_context.get("source_action"),
+            }
         elif not gate_passed:
             result.final_status = _string(request.submission_action.get("final_status")) or "rejected"
             transition_reason = _string(request.submission_action.get("submission_action_trigger")) or "quality_gate_failed"

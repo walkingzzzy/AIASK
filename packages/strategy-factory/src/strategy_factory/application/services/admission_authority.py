@@ -98,6 +98,24 @@ class SubmissionAdmissionAuthority:
             fallback_conditions = ["restore_required_research_protocol_fields_before_submission_replay"]
             next_step = "research"
             completed = True
+        elif not bool(normalized_gate.get("passed")) and bool(runtime_bootstrap.get("wide_intake_admitted")):
+            # === INVERT-DESIGN P1 改动A: Layer 1 宽进准入 ===
+            # Gate-3 未通过,但结构合法且 wide_intake toggle 开启 → 进零资本 observe 观察,
+            # 而非直接 rejected。让 ForwardVerifier 用向前真实数据测量它,而不是回测前置拍死。
+            action_type = "paper"
+            submission_lane = "observe_incubation"
+            final_status = "submitted"
+            trigger = str(
+                runtime_bootstrap.get("runtime_bootstrap_reason")
+                or "wide_intake_observe_gate3_not_required"
+            )
+            gaps = list(dict.fromkeys([*admission_block_reasons, "wide_intake_observe"]))
+            fallback_conditions = [
+                "retire_if_forward_skill_lcb_negative_after_min_observation_window",
+                "promote_to_formal_if_forward_skill_significant_across_regimes",
+            ]
+            next_step = "runtime_review"
+            completed = False
         elif not bool(normalized_gate.get("passed")):
             action_type = "research_only"
             submission_lane = "rejected"
@@ -251,6 +269,10 @@ class SubmissionAdmissionAuthority:
             return "revise"
         if submission_lane == "diagnostic_observation" or action_type == "diagnostic":
             return "diagnostic"
+        # INVERT-DESIGN P1 改动A: observe_incubation lane 即使 gate 未 passed(宽进)也属观察,
+        # 不应被下面的 not passed → reject 误判。
+        if submission_lane == "observe_incubation":
+            return "observe_only"
         if final_status == "rejected" or submission_lane == "rejected" or not bool(gate.get("passed")):
             return "reject"
         if bool(gate.get("provisional_pass")):
