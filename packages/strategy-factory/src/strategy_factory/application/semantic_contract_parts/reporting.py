@@ -98,6 +98,93 @@ def _normalize_regime_labels(regime: Optional[Mapping[str, Any]]) -> dict[str, s
     return labels
 
 
+def _build_proxy_signal_evidence_records(
+    payload: Mapping[str, Any],
+    *,
+    params: Mapping[str, Any],
+    signal_id: Optional[str],
+    position_id: Optional[str],
+    account_id: Optional[str],
+    signal_date: Any,
+    code: Optional[str],
+    regime_labels: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """INVERT-DESIGN P1 改动A 配套：为缺 evidence_chain 的宽进 observe 策略合成
+    一条最小代理 evidence，使前向测量可进行。proxy_only=True，明确标记非正式语义契约。
+    方向取 prediction_contract.direction，缺省按策略类型推 long(=up)。
+    """
+    strategy_id = _string(payload.get("id")) or None
+    normalized_signal_id = _string(signal_id) or None
+    if not strategy_id or not normalized_signal_id:
+        return []
+    prediction_contract = _as_dict(
+        payload.get("prediction_contract") or dict(params or {}).get("prediction_contract")
+    )
+    direction = _string(prediction_contract.get("direction")).lower() or "up"
+    if direction in {"long", "buy", "1"}:
+        direction = "up"
+    elif direction in {"short", "sell", "-1"}:
+        direction = "down"
+    resolved_code = (
+        _string(code)
+        or _string((list(payload.get("target_symbols") or params.get("target_symbols") or []) or [None])[0])
+        or None
+    )
+    candidate_artifact_id = _string(
+        _first_non_empty(
+            payload.get("candidate_artifact_id"),
+            payload.get("source_candidate_artifact_id"),
+            dict(params or {}).get("source_candidate_artifact_id"),
+        )
+    ) or None
+    experiment_id = _string(
+        _first_non_empty(payload.get("experiment_id"), dict(params or {}).get("experiment_id"))
+    ) or None
+    signal_ts = _coerce_signal_ts(_first_non_empty(payload.get("signal_ts"), dict(params or {}).get("signal_ts"), signal_date))
+    evidence_id = "wide_intake_observe_proxy"
+    record_id = f"{normalized_signal_id}:{evidence_id}:proxy"
+    return [
+        {
+            "id": record_id,
+            "strategy_id": strategy_id,
+            "signal_id": normalized_signal_id,
+            "position_id": _string(position_id) or None,
+            "account_id": _string(account_id) or None,
+            "signal_date": signal_date,
+            "signal_ts": signal_ts,
+            "code": resolved_code,
+            "symbol": resolved_code,
+            "candidate_artifact_id": candidate_artifact_id,
+            "experiment_id": experiment_id,
+            "applied_claim_id": "wide_intake_observe_proxy_claim",
+            "applied_trade_step_id": "wide_intake_observe_proxy_step",
+            "evidence_id": evidence_id,
+            "claim_ids": [],
+            "evidence_type": "wide_intake_observe_proxy",
+            "source_type": "wide_intake_observe_proxy",
+            "direction": direction,
+            "horizon_days": None,
+            "raw_confidence": None,
+            "calibrated_confidence": None,
+            "proxy_only": True,
+            "doc_uid": None,
+            "headline_label_id": None,
+            "weight": 0.0,
+            **dict(regime_labels),
+            "evidence_payload": {
+                "build_mode": "wide_intake_observe_proxy",
+                "strategy_id": strategy_id,
+                "signal_id": normalized_signal_id,
+                "signal_ts": signal_ts,
+                "code": resolved_code,
+                "direction": direction,
+                "proxy_only": True,
+                **dict(regime_labels),
+            },
+        }
+    ]
+
+
 def build_signal_evidence_records(
     strategy: Optional[Mapping[str, Any]],
     *,
@@ -120,6 +207,21 @@ def build_signal_evidence_records(
     )
     claim_to_trade_step_ids = _as_dict(claim_to_trade_plan_map.get("claim_to_trade_step_ids"))
     if not evidence_chain:
+        # INVERT-DESIGN P1 改动A 配套：宽进 observe 策略通常没有语义 evidence_chain
+        # （fixed_defaults 填充物）。当 WIDE_INTAKE_OBSERVE 开启时，合成一条最小代理
+        # evidence，使 ForwardVerifier 仍能对其做向前命中率测量（proxy_only=True，
+        # 不冒充正式语义契约）。默认 OFF 时保持原 [] 行为，零变化。
+        if str(os.getenv("STRATEGY_FACTORY_WIDE_INTAKE_OBSERVE_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            return _build_proxy_signal_evidence_records(
+                payload,
+                params=params,
+                signal_id=signal_id,
+                position_id=position_id,
+                account_id=account_id,
+                signal_date=signal_date,
+                code=code,
+                regime_labels=regime_labels,
+            )
         return []
     strategy_id = _string(payload.get("id")) or None
     normalized_signal_id = _string(signal_id) or None
