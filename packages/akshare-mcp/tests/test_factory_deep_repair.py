@@ -1062,3 +1062,68 @@ def test_quality_summary_persists_strict_candidate_validation_result():
     assert strict_rows[0]["validation_result"]["metrics"]["rank_ic_mean"] == 0.05
     assert strict_rows[0]["admission_decision"]["evidence_passed"] is True
     assert "rating_grade_not_admissible:C" in strict_rows[0]["admission_decision"]["blockers"]
+
+
+# ALPHA-WIRING-V1 (P-B)：放宽 factor_pool 消费门槛的 toggle。
+# 已挖出 status=active + 有 DSL 但 quality_status 缺失(null) 的强 IC 因子，
+# 默认仍被 promoted 过滤挡住；toggle ON 时放行（quarantine 仍挡）。
+def _seed_pool_for_admission():
+    from akshare_mcp.services.factor_mining_factory.pool.active_pool import ActiveFactorPool
+
+    pool = ActiveFactorPool()
+    pool.hydrate(
+        [
+            {
+                "factor_id": "f_active_null_qs",
+                "name": "rl_factor_1",
+                "family": "custom",
+                "expression_dsl": "ts_rank(open, 5)",
+                "status": "active",
+                "fitness": 2.0,
+                "current_ic": 0.091,
+                "validation_summary": {},  # quality_status 缺失
+            },
+            {
+                "factor_id": "f_active_promoted",
+                "name": "gp_factor_1",
+                "family": "momentum",
+                "expression_dsl": "log1p(abs(volume))",
+                "status": "active",
+                "fitness": 3.0,
+                "current_ic": 0.089,
+                "validation_summary": {"quality_status": "promoted"},
+            },
+            {
+                "factor_id": "f_active_quarantine",
+                "name": "gp_factor_q",
+                "family": "momentum",
+                "expression_dsl": "ts_mean(close, 5)",
+                "status": "active",
+                "fitness": 1.0,
+                "current_ic": 0.05,
+                "validation_summary": {"quality_status": "quarantine"},
+            },
+        ]
+    )
+    return pool
+
+
+def test_factor_pool_admit_default_only_promoted(monkeypatch):
+    monkeypatch.delenv("STRATEGY_FACTORY_FACTOR_POOL_ADMIT_ACTIVE_WITHOUT_PROMOTION", raising=False)
+    pool = _seed_pool_for_admission()
+    factors = asyncio.run(pool.get_active_factors(limit=10))
+    names = {item["name"] for item in factors}
+    # 默认零变化：只放行 promoted
+    assert names == {"gp_factor_1"}
+
+
+def test_factor_pool_admit_active_without_promotion_toggle(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_POOL_ADMIT_ACTIVE_WITHOUT_PROMOTION", "1")
+    pool = _seed_pool_for_admission()
+    factors = asyncio.run(pool.get_active_factors(limit=10))
+    names = {item["name"] for item in factors}
+    # 放行 promoted + active 且 DSL 非空且非 quarantine 的 null-qs 因子
+    assert "gp_factor_1" in names
+    assert "rl_factor_1" in names
+    # quarantine 显式淘汰态仍被挡
+    assert "gp_factor_q" not in names

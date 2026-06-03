@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -383,14 +384,31 @@ class ActiveFactorPool:
         min_grade: str = "B",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """获取活跃因子列表（供策略工厂消费）。"""
+        """获取活跃因子列表（供策略工厂消费）。
+
+        ALPHA-WIRING-V1 (P-B)：默认仍只放行 quality_status=='promoted' 的因子（零变化）。
+        当 STRATEGY_FACTORY_FACTOR_POOL_ADMIT_ACTIVE_WITHOUT_PROMOTION=1 时，放宽为
+        “status=active 且有非空 expression_dsl” 即可放行——用于消费已挖出但尚未走完
+        promotion 流程（quality_status 缺失/null）的因子，避免高 IC 因子被卡在池里。
+        """
+        admit_active_without_promotion = str(
+            os.getenv("STRATEGY_FACTORY_FACTOR_POOL_ADMIT_ACTIVE_WITHOUT_PROMOTION") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         results = []
         for record in self._factors.values():
             if record.get("status") != "active":
                 continue
             validation_summary = dict(record.get("validation_summary") or {})
-            if validation_summary.get("quality_status") != "promoted":
-                continue
+            quality_status = validation_summary.get("quality_status")
+            if quality_status != "promoted":
+                if not admit_active_without_promotion:
+                    continue
+                # 放宽分支：要求有可编译的因子表达式，避免放行空壳。
+                if not str(record.get("expression_dsl") or "").strip():
+                    continue
+                if quality_status == "quarantine":
+                    # quarantine 是显式淘汰态，放宽模式下仍不放行。
+                    continue
             if families and record.get("family") not in families:
                 continue
             results.append(record)
