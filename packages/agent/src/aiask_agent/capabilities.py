@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-HERMES_BASELINE_VERSION = "0.14.0"
-HERMES_RELEASE_TAG = "v2026.5.16"
+HERMES_BASELINE_VERSION = "0.15.1"
+HERMES_RELEASE_TAG = "7402706c5"
 HERMES_BASELINE = f"Hermes v{HERMES_BASELINE_VERSION} full runtime capability reference"
 HERMES_CORE_PARITY_TRACK = "core_runtime"
 HERMES_V014_DELTA_TRACK = "v0.14_delta"
