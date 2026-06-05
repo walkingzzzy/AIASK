@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ class StrategyUpsertService:
         db: Any,
         refresh_existing: bool,
         read_only: bool,
+        source: str = "strategy_factory_submit",
     ) -> bool:
         should_persist_strategy = not refresh_existing or bool(gate.get("passed"))
         if read_only or not should_persist_strategy:
@@ -47,6 +49,14 @@ class StrategyUpsertService:
             )
             data = {**dict(data or {}), "status": initial_status}
         await db.save_strategy(data)
+        await self._persist_trade_prediction(
+            strategy_id=strategy_id,
+            candidate=candidate,
+            data=data,
+            gate=gate,
+            db=db,
+            source=source,
+        )
         await self._submitter._persist_metrics(strategy_id, metrics, validation_report, risk_report, db)
         if not refresh_existing:
             await self._submitter._update_strategy_status(
@@ -69,6 +79,98 @@ class StrategyUpsertService:
                 },
             )
         return should_persist_strategy
+
+    async def _persist_trade_prediction(
+        self,
+        *,
+        strategy_id: str,
+        candidate: dict[str, Any],
+        data: dict[str, Any],
+        gate: dict[str, Any],
+        db: Any,
+        source: str,
+    ) -> bool:
+        params = dict((data or {}).get("params") or {})
+        contract = dict(
+            params.get("trade_prediction_contract")
+            or (candidate or {}).get("trade_prediction_contract")
+            or {}
+        )
+        status = str(
+            params.get("trade_prediction_contract_status")
+            or (candidate or {}).get("trade_prediction_contract_status")
+            or ""
+        ).strip().lower()
+        contract_hash = str(
+            params.get("trade_prediction_contract_hash")
+            or contract.get("contract_hash")
+            or (candidate or {}).get("trade_prediction_contract_hash")
+            or ""
+        ).strip()
+        if status != "ready" or not contract or not contract_hash:
+            return False
+        resolver = getattr(self._submitter, "_get_optional_db_method", None)
+        save_method = (
+            resolver(db, "save_strategy_trade_prediction")
+            if callable(resolver)
+            else getattr(db, "save_strategy_trade_prediction", None)
+        )
+        if save_method is not None and not callable(save_method):
+            save_method = None
+        if save_method is None:
+            return False
+        contract = {
+            **contract,
+            "strategy_id": strategy_id,
+            "contract_hash": contract_hash,
+        }
+        prediction_id = str(
+            params.get("trade_prediction_id")
+            or contract.get("prediction_id")
+            or f"tp_{strategy_id}_{contract_hash[:16]}"
+        ).strip()
+        payload = {
+            "prediction_id": prediction_id,
+            "strategy_id": strategy_id,
+            "stock_code": contract.get("stock_code"),
+            "prediction_as_of": contract.get("prediction_as_of"),
+            "target_trading_date": contract.get("target_trading_date"),
+            "direction": contract.get("direction"),
+            "confidence": contract.get("confidence"),
+            "horizon": contract.get("horizon"),
+            "contract_version": contract.get("contract_version"),
+            "contract_source": contract.get("contract_source"),
+            "contract_hash": contract_hash,
+            "contract_json": contract,
+            "prediction_status": "pending",
+            "metadata": {
+                "source": source or "strategy_factory_submit",
+                "candidate_id": (candidate or {}).get("id") or (candidate or {}).get("candidate_id"),
+                "submission_lane": (gate or {}).get("submission_lane"),
+                "trade_prediction_contract_status": status,
+            },
+        }
+        try:
+            result = save_method(payload)
+            if inspect.isawaitable(result):
+                await result
+            return True
+        except Exception as exc:
+            dlq = getattr(self._submitter, "_persistence_dlq", None)
+            if dlq is None:
+                dlq = []
+                setattr(self._submitter, "_persistence_dlq", dlq)
+            dlq.append(
+                {
+                    "strategy_id": strategy_id,
+                    "period": "trade_prediction",
+                    "payload": payload,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "attempts": 1,
+                }
+            )
+            return False
 
 
 class ExperimentRecorder:
@@ -208,6 +310,7 @@ class SubmissionCoordinator:
             db=db,
             refresh_existing=refresh_existing,
             read_only=options.read_only,
+            source=options.source,
         )
 
     async def handle_existing_refresh(

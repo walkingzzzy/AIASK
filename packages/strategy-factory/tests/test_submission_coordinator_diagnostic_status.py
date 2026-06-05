@@ -3,15 +3,21 @@ from __future__ import annotations
 import pytest
 
 from strategy_factory.application.services.submission_coordinator import StrategyUpsertService
+from strategy_factory.application.trade_prediction_contract import TRADE_PREDICTION_CONTRACT_VERSION
 
 
 class _DB:
     def __init__(self) -> None:
         self.saved_strategy: dict | None = None
+        self.saved_trade_predictions: list[dict] = []
 
     async def save_strategy(self, data: dict) -> dict:
         self.saved_strategy = dict(data)
         return dict(data)
+
+    async def save_strategy_trade_prediction(self, payload: dict) -> dict:
+        self.saved_trade_predictions.append(dict(payload))
+        return dict(payload)
 
 
 class _Submitter:
@@ -94,3 +100,54 @@ async def test_diagnostic_candidate_save_payload_honors_status_rollback(monkeypa
     assert db.saved_strategy is not None
     assert db.saved_strategy["status"] == "submitted"
     assert submitter.status_updates[0]["status"] == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_ready_trade_prediction_is_persisted_after_strategy_save() -> None:
+    db = _DB()
+    submitter = _Submitter()
+    contract = {
+        "strategy_id": "temporary-candidate-id",
+        "stock_code": "600000.SH",
+        "prediction_as_of": "2026-06-05T01:30:00+00:00",
+        "target_trading_date": "2026-06-08",
+        "direction": "up",
+        "confidence": 0.71,
+        "horizon": "next_day",
+        "evidence_refs": ["ev-1"],
+        "contract_version": TRADE_PREDICTION_CONTRACT_VERSION,
+        "contract_source": "explicit",
+        "contract_hash": "a" * 64,
+    }
+
+    persisted = await StrategyUpsertService(submitter).persist_candidate(
+        strategy_id="strategy-final-id",
+        candidate={"id": "temporary-candidate-id"},
+        data={
+            "id": "strategy-final-id",
+            "status": "draft",
+            "params": {
+                "trade_prediction_contract": contract,
+                "trade_prediction_contract_status": "ready",
+                "trade_prediction_contract_hash": contract["contract_hash"],
+            },
+        },
+        metrics={},
+        validation_report=None,
+        risk_report=None,
+        gate={"passed": True, "submission_lane": "formal_incubation"},
+        db=db,
+        refresh_existing=False,
+        read_only=False,
+    )
+
+    assert persisted is True
+    assert db.saved_strategy is not None
+    assert len(db.saved_trade_predictions) == 1
+    prediction = db.saved_trade_predictions[0]
+    assert prediction["prediction_id"] == "tp_strategy-final-id_aaaaaaaaaaaaaaaa"
+    assert prediction["strategy_id"] == "strategy-final-id"
+    assert prediction["contract_json"]["strategy_id"] == "strategy-final-id"
+    assert prediction["contract_hash"] == contract["contract_hash"]
+    assert prediction["metadata"]["candidate_id"] == "temporary-candidate-id"
+    assert prediction["metadata"]["submission_lane"] == "formal_incubation"

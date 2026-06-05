@@ -313,6 +313,7 @@
                 **existing,
                 **dict(candidate or {}),
                 "id": strategy_id,
+                "strategy_id": strategy_id,
                 "name": name,
                 "strategy_type": candidate["strategy_type"],
                 "params": dict(stored_params),
@@ -320,6 +321,37 @@
                 "stock_pool": dict(stored_params.get("stock_pool") or {}),
                 "research_task": dict(stored_params.get("research_task") or {}),
             }
+            trade_prediction_seed_params = dict(stored_params)
+            explicit_trade_prediction_contract = dict(
+                candidate.get("trade_prediction_contract")
+                or stored_params.get("trade_prediction_contract")
+                or {}
+            )
+            if explicit_trade_prediction_contract:
+                explicit_trade_prediction_contract["strategy_id"] = strategy_id
+                contract_source["trade_prediction_contract"] = explicit_trade_prediction_contract
+                trade_prediction_seed_params["trade_prediction_contract"] = explicit_trade_prediction_contract
+            from strategy_factory.application.trade_prediction_contract import freeze_trade_prediction_contract
+
+            frozen_trade_prediction = freeze_trade_prediction_contract(
+                {
+                    **contract_source,
+                    "id": strategy_id,
+                    "strategy_id": strategy_id,
+                    "trade_prediction_contract": explicit_trade_prediction_contract,
+                    "params": trade_prediction_seed_params,
+                }
+            )
+            stored_params["trade_prediction_contract"] = dict(frozen_trade_prediction.get("contract") or {})
+            stored_params["trade_prediction_contract_status"] = frozen_trade_prediction.get("status")
+            stored_params["trade_prediction_contract_hash"] = frozen_trade_prediction.get("contract_hash")
+            stored_params["trade_prediction_contract_missing_fields"] = list(
+                frozen_trade_prediction.get("missing_fields") or []
+            )
+            stored_params["trade_prediction_contract_reject_reasons"] = list(
+                frozen_trade_prediction.get("reject_reasons") or []
+            )
+            contract_source["params"] = dict(stored_params)
             contract_snapshot = build_portfolio_candidate_contract(contract_source)
             resolved_candidate_envelope = build_resolved_candidate_envelope(contract_source)
             stored_params["candidate_contract_snapshot"] = contract_snapshot

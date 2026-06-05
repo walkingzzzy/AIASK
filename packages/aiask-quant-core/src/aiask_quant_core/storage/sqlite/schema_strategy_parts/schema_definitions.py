@@ -202,6 +202,56 @@
             ON signal_forward_returns(signal_id);
     """)
 
+    # 29.2 交易预测合同与结果表（P0: 只做冻结和持久化，不计算评分）
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_trade_predictions (
+            prediction_id TEXT PRIMARY KEY,
+            strategy_id TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            prediction_as_of TEXT NOT NULL,
+            target_trading_date TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            confidence REAL,
+            horizon TEXT,
+            contract_version TEXT NOT NULL,
+            contract_source TEXT DEFAULT 'explicit',
+            contract_hash TEXT NOT NULL,
+            contract_json TEXT DEFAULT '{}',
+            prediction_status TEXT DEFAULT 'pending',
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_predictions_strategy
+            ON strategy_trade_predictions(strategy_id, target_trading_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_predictions_stock_date
+            ON strategy_trade_predictions(stock_code, target_trading_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_predictions_status
+            ON strategy_trade_predictions(prediction_status, target_trading_date DESC);
+
+        CREATE TABLE IF NOT EXISTS strategy_trade_prediction_outcomes (
+            outcome_id TEXT PRIMARY KEY,
+            prediction_id TEXT NOT NULL,
+            strategy_id TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            actual_trading_date TEXT,
+            score_version TEXT NOT NULL,
+            score_status TEXT DEFAULT 'pending',
+            trade_prediction_score REAL,
+            outcome_json TEXT DEFAULT '{}',
+            data_quality_status TEXT DEFAULT 'unknown',
+            metadata TEXT DEFAULT '{}',
+            calculated_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_prediction_outcomes_prediction
+            ON strategy_trade_prediction_outcomes(prediction_id, score_version);
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_prediction_outcomes_strategy
+            ON strategy_trade_prediction_outcomes(strategy_id, actual_trading_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_trade_prediction_outcomes_score
+            ON strategy_trade_prediction_outcomes(score_status, trade_prediction_score DESC);
+    """)
+
     # 29.1 向后兼容：published -> listed 迁移
     await conn.execute("""
         UPDATE strategies SET status = 'listed' WHERE status = 'published';

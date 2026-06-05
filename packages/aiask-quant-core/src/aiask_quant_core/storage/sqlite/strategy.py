@@ -5,6 +5,7 @@ from .strategy_incubation import StrategyIncubationMixin
 from .strategy_runtime import StrategyRuntimeMixin
 from .strategy_vector import StrategyVectorMixin
 from .strategy_ai import StrategyAIMixin
+from .strategy_trade_prediction import StrategyTradePredictionMixin
 
 
 class StrategyMixin(
@@ -13,6 +14,7 @@ class StrategyMixin(
     StrategyRuntimeMixin,
     StrategyVectorMixin,
     StrategyAIMixin,
+    StrategyTradePredictionMixin,
 ):
     """策略超市 — 完整 Mixin（CRUD + 孵化 + 运行时 + 向量 + AI）"""
     pass

@@ -1,5 +1,8 @@
 
 
+from strategy_factory.application.trade_prediction_contract import freeze_trade_prediction_contract
+
+
 def _should_trim_candidate_targets_by_alignment_policy(
     candidate: Optional[Mapping[str, Any]],
     normalized_task: Optional[Mapping[str, Any]],
@@ -253,6 +256,12 @@ def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
 def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     payload = dict(candidate or {})
     envelope = build_resolved_candidate_envelope(payload)
+    trade_prediction = freeze_trade_prediction_contract(payload)
+    trade_prediction_contract = dict(trade_prediction.get("contract") or {})
+    trade_prediction_status = str(trade_prediction.get("status") or "")
+    trade_prediction_hash = trade_prediction.get("contract_hash")
+    trade_prediction_missing_fields = list(trade_prediction.get("missing_fields") or [])
+    trade_prediction_reject_reasons = list(trade_prediction.get("reject_reasons") or [])
     resolved_validation_profile = dict(envelope.get("resolved_validation_profile") or {})
     resolved_targeting_policy = dict(envelope.get("resolved_targeting_policy") or {})
     params = {
@@ -282,6 +291,11 @@ def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "dsl_signature": envelope.get("dsl_signature"),
         "factor_signature": envelope.get("factor_signature"),
         "entry_exit_signature": envelope.get("entry_exit_signature"),
+        "trade_prediction_contract": trade_prediction_contract,
+        "trade_prediction_contract_status": trade_prediction_status,
+        "trade_prediction_contract_hash": trade_prediction_hash,
+        "trade_prediction_contract_missing_fields": trade_prediction_missing_fields,
+        "trade_prediction_contract_reject_reasons": trade_prediction_reject_reasons,
         "candidate_origin": candidate_contract_value(payload, "candidate_origin"),
         "event_anchor": _as_dict(candidate_contract_value(payload, "event_anchor", {})),
         "target_pool_source": candidate_contract_value(payload, "target_pool_source"),
@@ -315,6 +329,11 @@ def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
         "dsl_signature": str(envelope.get("dsl_signature") or ""),
         "factor_signature": str(envelope.get("factor_signature") or ""),
         "entry_exit_signature": str(envelope.get("entry_exit_signature") or ""),
+        "trade_prediction_contract": trade_prediction_contract,
+        "trade_prediction_contract_status": trade_prediction_status,
+        "trade_prediction_contract_hash": str(trade_prediction_hash or ""),
+        "trade_prediction_contract_missing_fields": trade_prediction_missing_fields,
+        "trade_prediction_contract_reject_reasons": trade_prediction_reject_reasons,
         "candidate_origin": candidate_contract_value(payload, "candidate_origin"),
         "event_anchor": _as_dict(candidate_contract_value(payload, "event_anchor", {})),
         "target_pool_source": candidate_contract_value(payload, "target_pool_source"),

@@ -200,6 +200,21 @@ async def run_submission_quality_gate(
                 **semantic_runtime_context,
             }
         )
+        if str(semantic_runtime_context.get("trade_prediction_contract_status") or "").strip().lower() != "ready":
+            contract_reasons = _merge_text_items(
+                ["trade_prediction_contract_not_ready"],
+                list(semantic_runtime_context.get("trade_prediction_contract_reject_reasons") or []),
+            )
+            normalized = normalize_quality_gate_result(
+                {
+                    **normalized,
+                    "passed": False,
+                    "passed_strict": False,
+                    "provisional_pass": False,
+                    "reasons": _merge_text_items(normalized.get("reasons"), contract_reasons),
+                    "hard_fail_reasons": _merge_text_items(normalized.get("hard_fail_reasons"), contract_reasons),
+                }
+            )
         return _attach_admission_evaluations(
             strategy,
             profile,

@@ -379,6 +379,20 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
     evidence_chain = dict(_strategy_payload_value(payload, "evidence_chain") or {})
     prediction_contract = dict(_strategy_payload_value(payload, "prediction_contract") or {})
     confidence_contract = dict(_strategy_payload_value(payload, "confidence_contract") or {})
+    trade_prediction_contract_status = str(
+        _strategy_payload_value(payload, "trade_prediction_contract_status") or ""
+    ).strip().lower()
+    trade_prediction_contract_missing_fields = _normalize_string_list(
+        _strategy_payload_value(payload, "trade_prediction_contract_missing_fields", []),
+        limit=16,
+    )
+    trade_prediction_contract_reject_reasons = _normalize_string_list(
+        _strategy_payload_value(payload, "trade_prediction_contract_reject_reasons", []),
+        limit=32,
+    )
+    trade_prediction_contract_hash = str(
+        _strategy_payload_value(payload, "trade_prediction_contract_hash") or ""
+    ).strip()
     semantic_contract_missing_fields: list[str] = []
     if strategy_type in (_TREND_EXECUTABLE_DSL_TYPES | _PROXY_RUNTIME_FACTOR_TYPES):
         if not evidence_chain:
@@ -444,6 +458,8 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
         hard_fail_reasons.append("runtime_family_semantic_mismatch")
     if bool(dict(gate or {}).get("execution_semantic_gap")):
         hard_fail_reasons.append("execution_semantic_gap")
+    if trade_prediction_contract_status != "ready":
+        hard_fail_reasons.append("trade_prediction_contract_not_ready")
     return {
         "semantic_contract_missing_fields": semantic_contract_missing_fields,
         "semantic_runtime_match": semantic_runtime_match,
@@ -454,6 +470,10 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
         "measurement_source": measurement_source,
         "measured_profile_complete": measured_profile_complete,
         "default_profile_not_allowed": default_profile_not_allowed,
+        "trade_prediction_contract_status": trade_prediction_contract_status or "missing",
+        "trade_prediction_contract_missing_fields": trade_prediction_contract_missing_fields,
+        "trade_prediction_contract_reject_reasons": trade_prediction_contract_reject_reasons,
+        "trade_prediction_contract_hash": trade_prediction_contract_hash or None,
         "hard_fail_reasons": list(dict.fromkeys(hard_fail_reasons)),
     }
 
