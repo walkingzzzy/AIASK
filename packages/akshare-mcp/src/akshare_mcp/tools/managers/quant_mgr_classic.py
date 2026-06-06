@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ import numpy as np
 from ...storage import get_db
 from ..quant import SUPPORTED_FACTORS, run_factor_group_backtest, run_factor_ic_analysis
 from ..quant_definitions import _normalize_factor_name
+from ..quant_engine import _extract_style_exposures
 from .quant_mgr_helpers import (
     _as_code_list,
     _compute_alternative_factors_for_code,
@@ -22,6 +24,18 @@ from .quant_mgr_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_ic_neutralize_enabled() -> bool:
+    """P0-2: 每日 batch IC 是否走行业/市值/beta 中性化的 dual-IC 路径。
+
+    默认 OFF：保持历史行为（AnalysisFactorsMixin.calculate_factor_ic，无中性化）。
+    ON：改用 FactorAnalyzer.calculate_ic_dual，对齐 factor_vals 的 per-stock 风格暴露做截面残差中性化。
+    """
+    raw = os.getenv("STRATEGY_FACTORY_BATCH_IC_NEUTRALIZE_ENABLED")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 _CALCULATE_FACTORS_SUPPORTED = {
     "momentum",
@@ -531,11 +545,16 @@ async def handle_batch_compute_factors(
         # 正确的 IC 计算：用 T-horizon 天的因子值 vs T-horizon 到 T 的实际收益率
         # 避免 look-ahead bias：因子值必须在收益率观测期之前计算
         ic_horizons = [int(h) for h in (kw.get("ic_horizons") or [5, 10, 20, 60])]
+        neutralize = _batch_ic_neutralize_enabled()
         for horizon in ic_horizons:
             horizon_ic = {}
             for factor_name in factors:
                 factor_vals = []
                 forward_rets = []
+                # P0-2: 与 factor_vals 对齐的 per-stock 风格暴露（仅中性化开启时收集）
+                style_industries: list[Any] = []
+                style_market_caps: list[Any] = []
+                style_betas: list[Any] = []
                 for stock_code, factor_values_map in results.items():
                     if factor_name not in factor_values_map:
                         continue
@@ -583,15 +602,41 @@ async def handle_batch_compute_factors(
                         if close_at_signal > 0 and close_at_end > 0:
                             factor_vals.append(lagged_fv)
                             forward_rets.append((close_at_end - close_at_signal) / close_at_signal)
+                            # P0-2: 仅在中性化开启时取风格暴露，保持 OFF 路径零额外开销
+                            if neutralize:
+                                try:
+                                    stock_info = await db.get_stock_info(stock_code)
+                                except Exception:
+                                    stock_info = None
+                                styles = _extract_style_exposures(stock_info, lagged_fin)
+                                style_industries.append(styles.get("industry"))
+                                style_market_caps.append(styles.get("market_cap"))
+                                style_betas.append(styles.get("beta"))
                     except Exception:
                         continue
 
                 if len(factor_vals) >= 10:
-                    from ...services.factor_calculator.analysis import AnalysisFactorsMixin
+                    if neutralize:
+                        # P0-2: 行业/市值/beta 截面残差中性化（dual-IC）。
+                        # 风格暴露与 factor_vals 一一对齐；缺失时 calculate_ic_dual 内部自动降级回原始值。
+                        from ...services.factor_analysis import FactorAnalyzer
 
-                    ic_data = AnalysisFactorsMixin.calculate_factor_ic(factor_vals, forward_rets)
-                    ic_val = ic_data.get("ic", 0.0)
-                    rank_ic = ic_data.get("rank_ic", 0.0)
+                        dual = FactorAnalyzer.calculate_ic_dual(
+                            factor_vals,
+                            forward_rets,
+                            industry=style_industries or None,
+                            market_cap=style_market_caps or None,
+                            beta=style_betas or None,
+                            enable_neutralization=True,
+                        )
+                        ic_val = float(dual.get("normal_ic", 0.0))
+                        rank_ic = float(dual.get("rank_ic", 0.0))
+                    else:
+                        from ...services.factor_calculator.analysis import AnalysisFactorsMixin
+
+                        ic_data = AnalysisFactorsMixin.calculate_factor_ic(factor_vals, forward_rets)
+                        ic_val = ic_data.get("ic", 0.0)
+                        rank_ic = ic_data.get("rank_ic", 0.0)
                     horizon_ic[factor_name] = {"ic": ic_val, "rank_ic": rank_ic, "sample_size": len(factor_vals)}
                     if persist:
                         await db.save_factor_ic(factor_name, str(horizon), today, ic_val, rank_ic, len(factor_vals))

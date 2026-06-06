@@ -38,6 +38,7 @@ from .forward_verifier import ForwardVerifier
 from .metrics_recorder import MetricsRecorder
 from .hit_rate_reporter import HitRateReporter
 from .feedback_writer import FeedbackWriter
+from .trade_prediction_verifier import TradePredictionDailyVerifier
 from .accelerator import IncubationAccelerator
 from .alert_monitor import AlertMonitor
 
@@ -102,6 +103,7 @@ class IncubationFactoryRunner:
         self._metrics_recorder = MetricsRecorder()
         self._reporter = HitRateReporter()
         self._feedback_writer = FeedbackWriter()
+        self._trade_prediction_verifier = TradePredictionDailyVerifier()
         self._accelerator = IncubationAccelerator()
         self._alert_monitor = AlertMonitor()
 
@@ -334,10 +336,26 @@ class IncubationFactoryRunner:
                 verification_errors,
             )
 
+            logger.info("IncubationFactory [%s] Phase 3b: Trade prediction outcomes", run_id)
+            trade_prediction_result = await _run_phase(
+                "trade_prediction_outcomes",
+                lambda: self._trade_prediction_verifier.verify_pending(
+                    db,
+                    include_intraday=True,
+                    sync_intraday_before_replay=True,
+                    persist=not self.dry_run,
+                ),
+                timeout=BATCH_TIMEOUT_SEC,
+            ) or {}
+
             # Phase 4: 孵化流水线评估（复用已有实现）
             logger.info("IncubationFactory [%s] Phase 4: Pipeline evaluation", run_id)
             pipeline_result = await _run_phase(
-                "pipeline", lambda: self._run_pipeline(db),
+                "pipeline",
+                lambda: self._run_pipeline(
+                    db,
+                    strategies=list(incubating) + list(paper_observation),
+                ),
                 timeout=BATCH_TIMEOUT_SEC,
             ) or {}
 
@@ -345,7 +363,13 @@ class IncubationFactoryRunner:
             logger.info("IncubationFactory [%s] Phase 5: Hit rate report", run_id)
             report = await _run_phase(
                 "hit_rate_report",
-                lambda: self._reporter.generate(db, incubating, verifications, pipeline_result),
+                lambda: self._reporter.generate(
+                    db,
+                    all_strategies,
+                    verifications,
+                    pipeline_result,
+                    trade_prediction_result=trade_prediction_result,
+                ),
                 timeout=BATCH_TIMEOUT_SEC,
             ) or {}
 
@@ -411,6 +435,14 @@ class IncubationFactoryRunner:
                     "count": int(pipeline_result.get("count") or 0),
                     "auto_promoted": int(pipeline_result.get("auto_promoted") or 0),
                     "stage_counts": dict(pipeline_result.get("stage_counts") or {}),
+                },
+                "trade_predictions": {
+                    "status": trade_prediction_result.get("status"),
+                    "evaluated": int(trade_prediction_result.get("evaluated") or 0),
+                    "intraday_evaluated": int(trade_prediction_result.get("intraday_evaluated") or 0),
+                    "score_status_counts": dict(trade_prediction_result.get("score_status_counts") or {}),
+                    "data_quality_status_counts": dict(trade_prediction_result.get("data_quality_status_counts") or {}),
+                    "intraday_sync": dict(trade_prediction_result.get("intraday_sync") or {}),
                 },
                 "report": {
                     "overall_hit_rate": (
@@ -627,7 +659,12 @@ class IncubationFactoryRunner:
         except Exception as exc:
             logger.debug("IncubationFactory: diagnostic processed event failed: %s", exc)
 
-    async def _run_pipeline(self, db: Any) -> dict[str, Any]:
+    async def _run_pipeline(
+        self,
+        db: Any,
+        *,
+        strategies: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
         """运行孵化流水线评估（复用已有实现）。"""
         if self.dry_run:
             return {"count": 0, "auto_promoted": 0, "stage_counts": {}, "items": []}
@@ -640,6 +677,7 @@ class IncubationFactoryRunner:
                 db,
                 statuses=["incubating"],
                 limit=200,
+                strategies=strategies,
                 source="incubation_factory",
                 auto_apply_review=self.auto_apply_review,
             )

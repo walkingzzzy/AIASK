@@ -7,6 +7,7 @@ import pytest
 
 from akshare_mcp.services.incubation_factory.metrics_recorder import MetricsRecorder
 from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
+from akshare_mcp.services.incubation_pipeline import StrategyIncubationPipelineService
 
 
 @pytest.fixture(autouse=True)
@@ -96,22 +97,68 @@ def test_metrics_recorder_uses_diagnostic_intake_stage():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_stays_restricted_to_incubating(monkeypatch):
+async def test_runner_pipeline_passes_paper_observation_strategies(monkeypatch):
     calls = {}
 
     class Pipeline:
         async def run_batch(self, db, **kwargs):
             calls.update(kwargs)
-            return {"count": 1, "auto_promoted": 0, "stage_counts": {}}
+            return {
+                "count": len(kwargs.get("strategies") or []),
+                "auto_promoted": 0,
+                "stage_counts": {},
+            }
 
     monkeypatch.setattr(
         "akshare_mcp.services.incubation_pipeline.get_strategy_incubation_pipeline_service",
         lambda: Pipeline(),
     )
     runner = IncubationFactoryRunner(dry_run=False)
+    strategies = [
+        {"id": "incubating-1", "status": "incubating"},
+        {"id": "paper-1", "status": "submitted", "_intake_stage": "paper"},
+    ]
 
-    result = await runner._run_pipeline(MagicMock())
+    result = await runner._run_pipeline(MagicMock(), strategies=strategies)
 
-    assert result["count"] == 1
+    assert result["count"] == 2
     assert calls["statuses"] == ["incubating"]
+    assert [item["id"] for item in calls["strategies"]] == ["incubating-1", "paper-1"]
     assert calls["source"] == "incubation_factory"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_run_batch_with_strategies_skips_status_query(monkeypatch):
+    service = StrategyIncubationPipelineService()
+    db = MagicMock()
+    db.save_strategy_task_run = AsyncMock(return_value={"id": 7, "trace_id": "trace-1"})
+    db.update_strategy_task_run = AsyncMock()
+    db.save_strategy_domain_event = AsyncMock()
+    db.list_strategies = AsyncMock(side_effect=AssertionError("status query should not run"))
+
+    async def fake_run_strategy(db_arg, strategy, **kwargs):
+        return {
+            "strategy_id": strategy["id"],
+            "snapshot": {"pipeline_stage": strategy.get("_expected_stage", "observe")},
+            "auto_promoted": False,
+            "task_run_id": kwargs.get("task_run_id"),
+        }
+
+    monkeypatch.setattr(service, "run_strategy", fake_run_strategy)
+
+    result = await service.run_batch(
+        db,
+        strategies=[
+            {"id": "paper-1", "_expected_stage": "warmup"},
+            {"id": "paper-1", "_expected_stage": "warmup"},
+            {"id": "paper-2", "_expected_stage": "observe"},
+        ],
+        source="incubation_factory",
+    )
+
+    assert result["count"] == 2
+    assert result["stage_counts"] == {"warmup": 1, "observe": 1}
+    db.list_strategies.assert_not_called()
+    payload = db.save_strategy_task_run.call_args[0][0]["payload"]
+    assert payload["provided_strategies"] is True
+    assert payload["strategy_count"] == 3

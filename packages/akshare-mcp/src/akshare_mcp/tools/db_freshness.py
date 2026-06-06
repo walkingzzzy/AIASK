@@ -36,6 +36,101 @@ def _calc_staleness(klines: list[dict]) -> int:
         return 9999
 
 
+def _calc_date_staleness(raw_date: Any) -> int | None:
+    if not raw_date:
+        return None
+    try:
+        if isinstance(raw_date, datetime):
+            parsed = raw_date
+        else:
+            date_text = str(raw_date).strip()[:10]
+            date_format = "%Y%m%d" if len(date_text) == 8 and date_text.isdigit() else "%Y-%m-%d"
+            parsed = datetime.strptime(date_text, date_format)
+        return max(0, (datetime.now().date() - parsed.date()).days)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return getattr(row, key, default)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _date_text(value: Any) -> str:
+    return str(value or "").strip()[:10]
+
+
+async def _classify_source_confirmed_stale_entries(
+    stale_entries: list[dict],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split stale bars into blocking and locally source-confirmed nonblocking rows."""
+    if not stale_entries:
+        return [], [], []
+
+    try:
+        from ..data_source.tdx_local import get_tdx_local_source
+
+        tdx_local = get_tdx_local_source()
+    except Exception:
+        return [], list(stale_entries), []
+
+    nonblocking: list[dict] = []
+    blocking: list[dict] = []
+    invalid_codes: list[dict] = []
+
+    for entry in stale_entries:
+        code = str(entry.get("code") or "").strip()
+        lower_code = code.lower()
+
+        # Explicit index storage codes need dedicated index refresh, not stock-path exemption.
+        if lower_code.startswith(("sh000", "sz399")):
+            blocking.append({**entry, "blocking_reason": "stale_index_kline"})
+            continue
+
+        normalized, code_error = validate_stock_code_format(code)
+        if code_error:
+            invalid_codes.append({"code": code, "error": code_error})
+            blocking.append({**entry, "blocking_reason": "invalid_tracked_code"})
+            continue
+
+        try:
+            source_rows = tdx_local.get_kline(str(normalized), period="daily", limit=1)
+        except Exception as exc:
+            blocking.append({**entry, "blocking_reason": f"tdx_local_check_failed:{type(exc).__name__}"})
+            continue
+
+        source_last_date = _date_text((source_rows or [{}])[-1].get("date") if source_rows else "")
+        db_last_date = _date_text(entry.get("last_date"))
+        if source_last_date and db_last_date and source_last_date <= db_last_date:
+            nonblocking.append({
+                **entry,
+                "source_last_date": source_last_date,
+                "nonblocking_reason": "tdx_local_has_no_newer_bar",
+            })
+            continue
+
+        blocking.append({
+            **entry,
+            "source_last_date": source_last_date or None,
+            "blocking_reason": "tdx_local_has_newer_or_unknown_bar",
+        })
+
+    return nonblocking, blocking, invalid_codes
+
+
 async def ensure_fresh_klines(
     code: str,
     *,
@@ -126,13 +221,14 @@ async def check_freshness(
     codes: list[str],
     *,
     max_stale_days: int = _DEFAULT_STALE_DAYS,
+    db: Any | None = None,
 ) -> dict[str, Any]:
     """批量检查多只股票的 K 线新鲜度。
 
     Returns:
         包含 fresh/stale/missing 分类的报告。
     """
-    db = get_db()
+    db = db or get_db()
     fresh_list: list[dict] = []
     stale_list: list[dict] = []
     missing_list: list[str] = []
@@ -256,6 +352,142 @@ async def _get_all_tracked_codes(db) -> list[str]:
 # ── MCP 注册 ──────────────────────────────────────────────────────
 
 
+async def _load_factor_ic_storage_summary(db: Any) -> dict[str, Any]:
+    try:
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    MAX(ic_date) as max_date,
+                    COUNT(*) as row_count,
+                    COUNT(DISTINCT factor_name) as factor_count
+                FROM factor_ic_history
+                """
+            )
+        max_date = _row_value(row, "max_date")
+        row_count = _safe_int(_row_value(row, "row_count"))
+        factor_count = _safe_int(_row_value(row, "factor_count"))
+        staleness_days = _calc_date_staleness(max_date)
+        return {
+            "max_date": str(max_date or "") or None,
+            "row_count": row_count,
+            "factor_count": factor_count,
+            "staleness_days": staleness_days,
+            "source": "factor_ic_history",
+        }
+    except Exception as e:
+        logger.warning("妫€鏌?factor_ic_history 鏂伴矞搴﹀け璐? %s", e)
+        return {
+            "max_date": None,
+            "row_count": 0,
+            "factor_count": 0,
+            "staleness_days": None,
+            "source": "factor_ic_history",
+            "error": str(e),
+        }
+
+
+async def assess_p0_1_data_readiness(
+    codes: list[str] | None = None,
+    *,
+    max_stale_days: int = _DEFAULT_STALE_DAYS,
+    factor_ic_max_stale_days: int = _DEFAULT_STALE_DAYS,
+    max_codes: int = 200,
+    db: Any | None = None,
+) -> dict[str, Any]:
+    """Read-only readiness check for the P0-1 data freshness gate."""
+    resolved_db = db or get_db()
+    explicit_codes = codes is not None
+    tracked_codes = list(codes or [])
+    if not explicit_codes:
+        tracked_codes = await _get_all_tracked_codes(resolved_db)
+
+    total_tracked_codes = len(tracked_codes)
+    selected_codes = list(tracked_codes)
+    truncated = False
+    if not explicit_codes and max_codes > 0 and len(selected_codes) > max_codes:
+        selected_codes = selected_codes[:max_codes]
+        truncated = True
+
+    if selected_codes:
+        freshness = await check_freshness(
+            selected_codes,
+            max_stale_days=max_stale_days,
+            db=resolved_db,
+        )
+    else:
+        freshness = {
+            "checked_at": datetime.now().isoformat(),
+            "max_stale_days": max_stale_days,
+            "total": 0,
+            "fresh_count": 0,
+            "stale_count": 0,
+            "missing_count": 0,
+            "fresh": [],
+            "stale": [],
+            "missing": [],
+        }
+    factor_ic = await _load_factor_ic_storage_summary(resolved_db)
+
+    nonblocking_stale, blocking_stale, invalid_tracked_codes = await _classify_source_confirmed_stale_entries(
+        list(freshness.get("stale") or [])
+    )
+    kline_ready = (
+        bool(selected_codes)
+        and len(blocking_stale) == 0
+        and freshness.get("missing_count", 0) == 0
+        and len(invalid_tracked_codes) == 0
+    )
+    factor_ic_staleness = factor_ic.get("staleness_days")
+    factor_ic_ready = (
+        _safe_int(factor_ic.get("row_count")) > 0
+        and isinstance(factor_ic_staleness, int)
+        and factor_ic_staleness <= factor_ic_max_stale_days
+    )
+
+    blockers: list[str] = []
+    if total_tracked_codes == 0:
+        blockers.append("no_codes")
+    if selected_codes and not kline_ready:
+        blockers.append("stale_or_missing_klines")
+    if invalid_tracked_codes:
+        blockers.append("invalid_tracked_codes")
+    if _safe_int(factor_ic.get("row_count")) <= 0:
+        blockers.append("factor_ic_missing")
+    elif not factor_ic_ready:
+        blockers.append("factor_ic_stale")
+    if truncated:
+        blockers.append("sample_only")
+
+    return {
+        "ready": kline_ready and factor_ic_ready and not truncated,
+        "kline_ready": kline_ready,
+        "factor_ic_ready": factor_ic_ready,
+        "blockers": blockers,
+        "read_only": True,
+        "checked_code_count": len(selected_codes),
+        "total_tracked_codes": total_tracked_codes,
+        "truncated": truncated,
+        "max_codes": max_codes,
+        "explicit_codes": explicit_codes,
+        "max_stale_days": max_stale_days,
+        "factor_ic_max_stale_days": factor_ic_max_stale_days,
+        "freshness": freshness,
+        "nonblocking_stale": nonblocking_stale,
+        "nonblocking_stale_count": len(nonblocking_stale),
+        "blocking_stale": blocking_stale,
+        "blocking_stale_count": len(blocking_stale),
+        "invalid_tracked_codes": invalid_tracked_codes,
+        "factor_ic": factor_ic,
+        "source_chain": [
+            "tools.db_freshness.assess_p0_1_data_readiness",
+            "tools.db_freshness.check_freshness",
+            "storage.kline_1d",
+            "storage.factor_ic_history",
+        ],
+    }
+
+
 def register(mcp):
     """注册数据库新鲜度检测工具。"""
 
@@ -288,6 +520,50 @@ def register(mcp):
                 })
 
         result = await check_freshness(codes, max_stale_days=max_stale_days)
+        return ok(result)
+
+    @mcp.tool()
+    async def check_p0_1_data_readiness(
+        codes: list[str] | None = None,
+        max_stale_days: int = 5,
+        factor_ic_max_stale_days: int = 5,
+        max_codes: int = 200,
+    ):
+        """Read-only P0-1 data readiness check for K-lines and factor IC history."""
+        max_stale_days, stale_error = validate_int_range(max_stale_days, field_name="max_stale_days", minimum=0)
+        if stale_error:
+            return fail(stale_error)
+        factor_ic_max_stale_days, factor_error = validate_int_range(
+            factor_ic_max_stale_days,
+            field_name="factor_ic_max_stale_days",
+            minimum=0,
+        )
+        if factor_error:
+            return fail(factor_error)
+        max_codes, max_codes_error = validate_int_range(max_codes, field_name="max_codes", minimum=0, maximum=10000)
+        if max_codes_error:
+            return fail(max_codes_error)
+
+        normalized_codes = None
+        if codes is not None:
+            raw_codes = [codes] if isinstance(codes, str) else list(codes or [])
+            normalized_codes = []
+            invalid_codes = []
+            for raw_code in raw_codes:
+                normalized, code_error = validate_stock_code_format(raw_code)
+                if code_error:
+                    invalid_codes.append(str(raw_code))
+                else:
+                    normalized_codes.append(str(normalized))
+            if invalid_codes:
+                return fail(f"Invalid stock code(s): {', '.join(invalid_codes)}")
+
+        result = await assess_p0_1_data_readiness(
+            normalized_codes,
+            max_stale_days=max_stale_days,
+            factor_ic_max_stale_days=factor_ic_max_stale_days,
+            max_codes=max_codes,
+        )
         return ok(result)
 
     @mcp.tool()

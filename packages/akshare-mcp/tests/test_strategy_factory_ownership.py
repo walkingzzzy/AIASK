@@ -76,6 +76,52 @@ def test_factory_dispatch_status_reads_storage_without_scheduler(monkeypatch) ->
     assert result["data"]["status"] == "queued"
 
 
+def test_factory_dispatch_run_inline_passes_target_codes(monkeypatch) -> None:
+    monkeypatch.setenv("STRATEGY_FACTORY_INLINE_EXECUTION_ENABLED", "1")
+    calls: list[dict] = []
+
+    class _Scheduler:
+        async def dispatch_run(self, db=None, *, execution_mode=None, target_codes=None):
+            calls.append(
+                {
+                    "db": db,
+                    "execution_mode": execution_mode,
+                    "target_codes": list(target_codes or []),
+                }
+            )
+            return {
+                "dispatch_id": "dispatch_inline",
+                "status": "queued",
+                "accepted": True,
+                "queued": True,
+                "already_running": False,
+            }
+
+    db = _DispatchDb()
+    monkeypatch.setattr(
+        lifecycle,
+        "_get_strategy_factory_scheduler_with_runtime",
+        lambda resolved_db: _Scheduler(),
+    )
+
+    result = asyncio.run(
+        lifecycle.handle_factory_dispatch_run(
+            db,
+            {"execution_mode": "shadow_readonly", "target_codes": ["600000", "000001"]},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["dispatch_id"] == "dispatch_inline"
+    assert calls == [
+        {
+            "db": db,
+            "execution_mode": "shadow_readonly",
+            "target_codes": ["600000", "000001"],
+        }
+    ]
+
+
 def test_factory_status_reads_persisted_runs_without_scheduler(monkeypatch) -> None:
     def _boom(_db):
         raise AssertionError("scheduler must not be constructed for factory_status")

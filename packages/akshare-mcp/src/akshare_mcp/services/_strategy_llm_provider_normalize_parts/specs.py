@@ -348,7 +348,7 @@
             synthesized_confidence_contract = synthesize_confidence_contract(normalized)
             normalized['confidence_contract'] = dict(synthesized_confidence_contract)
             normalized_params['confidence_contract'] = dict(synthesized_confidence_contract)
-            return normalized
+            return ensure_candidate_semantic_contract(normalized)
 
         @classmethod
         def _minimal_output_example(cls, target_symbols: list[str]) -> dict[str, Any]:

@@ -511,8 +511,10 @@ class StrategyIncubationPipelineService:
         limit: int = 200,
         source: str = 'runtime_cycle',
         auto_apply_review: bool = True,
+        strategies: Optional[list[dict]] = None,
     ) -> dict:
         statuses = list(statuses or ['incubating'])
+        provided_strategies = strategies is not None
         correlation_id = uuid4().hex[:12]
         batch_run = await db.save_strategy_task_run({
             'strategy_id': None,
@@ -525,23 +527,33 @@ class StrategyIncubationPipelineService:
                 'statuses': statuses,
                 'limit': limit,
                 'auto_apply_review': bool(auto_apply_review),
+                'provided_strategies': bool(provided_strategies),
+                'strategy_count': len(strategies or []) if provided_strategies else None,
             },
         }) if hasattr(db, 'save_strategy_task_run') else {'id': None, 'trace_id': correlation_id}
 
         try:
             seen = set()
-            strategies = []
-            for status in statuses:
-                rows = await db.list_strategies(status, limit=max(1, min(int(limit or 200), 1000)))
-                for row in rows:
-                    sid = row.get('id')
+            selected_strategies = []
+            if provided_strategies:
+                rows_iterable = list(strategies or [])
+                for row in rows_iterable:
+                    sid = row.get('id') if isinstance(row, dict) else None
                     if sid and sid not in seen:
                         seen.add(sid)
-                        strategies.append(row)
+                        selected_strategies.append(row)
+            else:
+                for status in statuses:
+                    rows = await db.list_strategies(status, limit=max(1, min(int(limit or 200), 1000)))
+                    for row in rows:
+                        sid = row.get('id')
+                        if sid and sid not in seen:
+                            seen.add(sid)
+                            selected_strategies.append(row)
             items = []
             auto_promoted = 0
             stage_counts: dict[str, int] = {}
-            for strategy in strategies:
+            for strategy in selected_strategies:
                 item = await self.run_strategy(
                     db,
                     strategy,

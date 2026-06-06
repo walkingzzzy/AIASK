@@ -222,6 +222,7 @@ async def _sync_market_text_source_ingest_now(kwargs: dict) -> dict:
         doc_types=kwargs.get('doc_types'),
         news_limit=kwargs.get('news_limit', 50),
         notice_limit=kwargs.get('notice_limit', 80),
+        official_notice_limit=kwargs.get('official_notice_limit', 30),
         notice_days=kwargs.get('notice_days', 30),
         code_notice_limit=kwargs.get('code_notice_limit', 2),
         code_notice_code_limit=kwargs.get('code_notice_code_limit', 20),

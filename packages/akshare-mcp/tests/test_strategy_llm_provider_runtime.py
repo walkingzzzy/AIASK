@@ -149,6 +149,63 @@ def test_strategy_llm_endpoint_preserves_explicit_api_paths() -> None:
     )
 
 
+def test_strategy_llm_normalize_backfills_trade_plan_claim_ids_from_prediction_contract() -> None:
+    normalized = StrategyLLMProvider._normalize_candidate_payload(
+        {
+            "name": "claim-linked llm candidate",
+            "strategy_type": "momentum",
+            "target_symbols": ["600000"],
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "trade_plan_node_id": "entry_llm",
+                    "op": "gt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 10},
+                },
+                "exit": {
+                    "trade_plan_node_id": "exit_llm",
+                    "op": "lt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 10},
+                },
+            },
+            "trade_plan": {
+                "entry": {"node_id": "entry_llm", "summary": "enter when thesis confirms"},
+                "exit": {"node_id": "exit_llm", "summary": "exit when thesis fails"},
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {"evidence_id": "ev_trend", "source_type": "technical", "direction": "up"},
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "llm_claim_entry",
+                        "claim_type": "entry",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_trend"],
+                    }
+                ]
+            },
+        },
+        research_task={"target_symbols": ["600000"], "candidate_family": "momentum"},
+        allow_legacy_contract_defaults=True,
+    )
+
+    assert normalized is not None
+    trade_plan = dict(normalized["trade_plan"])
+    assert trade_plan["entry"]["claim_ids"] == ["llm_claim_entry"]
+    assert trade_plan["entry"]["evidence_ids"] == ["ev_trend"]
+    assert trade_plan["exit"]["claim_ids"] == ["llm_claim_entry"]
+    assert normalized["params"]["trade_plan"]["entry"]["claim_ids"] == ["llm_claim_entry"]
+    assert normalized["claim_to_trade_plan_map"]["trade_step_to_claim_ids"]["entry_llm"] == [
+        "llm_claim_entry"
+    ]
+
+
 def test_factor_llm_endpoint_adds_v1_for_bare_openai_compatible_host() -> None:
     from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
 

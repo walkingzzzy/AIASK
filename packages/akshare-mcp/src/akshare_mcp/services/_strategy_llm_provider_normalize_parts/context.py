@@ -501,7 +501,7 @@
                 }
             )
             compiled_dsl["metadata"] = dsl_metadata
-            return {
+            return ensure_candidate_semantic_contract({
                 **dict(candidate or {}),
                 "strategy_type": strategy_type,
                 "dsl": compiled_dsl,
@@ -518,7 +518,7 @@
                 "validation_profile": dict(validation_profile),
                 "_open_dsl_audit": dict(compilation.audit or {}),
                 "_open_dsl_compiled": True,
-            }
+            })
 
         @classmethod
         def _require_explicit_contract_dict(

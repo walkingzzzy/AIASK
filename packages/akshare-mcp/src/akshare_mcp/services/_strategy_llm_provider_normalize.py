@@ -16,6 +16,7 @@ import pandas as pd
 from strategy_factory.api.semantic_contract import resolve_candidate_validation_profile
 from strategy_factory.api.semantic_contract import validate_precompile_candidate_contract
 from strategy_factory.api.semantic_contract import synthesize_confidence_contract
+from strategy_factory.api.semantic_contract import ensure_candidate_semantic_contract
 from strategy_factory.api.semantic_contract import (
     apply_target_symbol_policy,
     build_target_alignment_contract,

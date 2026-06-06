@@ -8,6 +8,14 @@ from typing import List, Dict, Any, Optional, Tuple
 from scipy import stats
 from numba import jit
 
+# 中性化截面回归的最小自由度（有效样本数 - 设计矩阵列数）。
+# 低于此值跳过中性化（灰度测试发现的小样本翻号风险防护）。可经 env 调整。
+import os as _os
+try:
+    _NEUTRALIZE_MIN_DOF = max(1, int(_os.getenv("FACTOR_NEUTRALIZE_MIN_DOF", "5") or 5))
+except (TypeError, ValueError):
+    _NEUTRALIZE_MIN_DOF = 5
+
 
 class FactorAnalyzer:
     """因子分析器"""
@@ -145,6 +153,17 @@ class FactorAnalyzer:
 
         # 添加截距项
         X_design = np.column_stack([np.ones(len(X_valid)), X_valid])
+
+        # 自由度守卫（灰度测试发现）：当 (有效样本数 - 设计矩阵列数) 过小，
+        # 截面回归会过拟合行业均值，残差化反而扭曲因子排序（小样本下 rank IC 可能翻号）。
+        # 此时跳过中性化、返回原始值，避免污染 IC。生产大截面（n>>列数）不触发。
+        dof = int(X_design.shape[0]) - int(X_design.shape[1])
+        if dof < _NEUTRALIZE_MIN_DOF:
+            info['reason'] = 'insufficient_degrees_of_freedom'
+            info['dof'] = dof
+            info['design_cols'] = int(X_design.shape[1])
+            return factor_values, info
+
         coef, _, _, _ = np.linalg.lstsq(X_design, y_valid, rcond=None)
         y_hat = X_design @ coef
         resid = y_valid - y_hat

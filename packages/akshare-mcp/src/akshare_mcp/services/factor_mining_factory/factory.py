@@ -207,11 +207,108 @@ class FactorMiningFactory:
         await self._persist_decay_report(db, decay_report)
         await self._persist_decay_updates(db, decay_report)
         promotion_report = await self._promote_quarantine_factors(db)
+        qc_report = await self._run_qc_pipeline(db)
         return {
             "decay_report": decay_report,
             "promotion_report": promotion_report,
+            "qc_pipeline_report": qc_report,
             "pool_size": self._active_pool.size,
             "maintained_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def _run_qc_pipeline(self, db) -> dict[str, Any]:
+        """P2-1：toggle ON 时，对活跃因子池跑残酷质检流水线并打标签/(可选)自动上下架。
+
+        默认 OFF（qc_pipeline_enabled() False）→ 直接返回 skipped，零变化。
+        runner 由现有 MCP 工具构造（validate_factor_oos / backtest_factor /
+        factor_robustness_check），closure 捕获验证 universe；任一工具失败该项跳过。
+        """
+        from .qc_pipeline import (
+            apply_qc_to_record,
+            qc_autoshelf_enabled,
+            qc_pipeline_enabled,
+            run_factor_qc,
+        )
+
+        if not qc_pipeline_enabled():
+            return {"enabled": False, "skipped": True}
+
+        from .pool.storage import load_factor_pool_from_db, save_factor_to_pool
+
+        try:
+            from ...tools.quant_analysis import (
+                run_factor_group_backtest,
+                run_factor_oos_validation,
+            )
+            from ...tools._quant_analysis_support import run_factor_robustness_check
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("qc_pipeline: tool import failed: %s", exc)
+            return {"enabled": True, "skipped": True, "reason": f"tool_import_failed:{exc}"}
+
+        # 验证 universe：复用挖矿上下文的 validation_codes（数据充足才有意义）。
+        try:
+            context = await self._build_mining_context(db=db)
+            codes = list(getattr(context, "validation_codes", []) or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("qc_pipeline: build context failed: %s", exc)
+            codes = []
+        if len(codes) < 120:
+            return {"enabled": True, "skipped": True, "reason": "data_universe_insufficient"}
+
+        rows = await load_factor_pool_from_db(db, statuses=("active", "quarantine"), limit=200)
+        if not rows:
+            return {"enabled": True, "skipped": True, "reason": "empty_pool"}
+
+        def _name(rec: dict) -> str:
+            return str(rec.get("name") or "").strip()
+
+        def _oos_runner(name):
+            async def _run(_factor):
+                resp = await run_factor_oos_validation(codes=codes, factor=name)
+                return dict(resp.get("data") or {}) if isinstance(resp, dict) else None
+            return _run
+
+        def _layered_runner(name):
+            async def _run(_factor):
+                resp = await run_factor_group_backtest(codes=codes, factor=name)
+                return dict(resp.get("data") or {}) if isinstance(resp, dict) else None
+            return _run
+
+        def _robust_runner(name):
+            async def _run(_factor):
+                resp = await run_factor_robustness_check(codes=codes, factor=name)
+                return dict(resp.get("data") or {}) if isinstance(resp, dict) else None
+            return _run
+
+        decisions: dict[str, int] = {}
+        processed = 0
+        autoshelf = qc_autoshelf_enabled()
+        for record in rows:
+            name = _name(record)
+            if not name:
+                continue
+            qc_result = await run_factor_qc(
+                name,
+                oos_runner=_oos_runner(name),
+                layered_runner=_layered_runner(name),
+                robustness_runner=_robust_runner(name),
+                multiple_testing_runner=None,  # multiple_testing 嵌在 OOS 输出，单列不必重复跑
+            )
+            updated = apply_qc_to_record(record, qc_result)
+            decision = str((qc_result.get("shelf_decision") or {}).get("decision") or "unknown")
+            decisions[decision] = decisions.get(decision, 0) + 1
+            try:
+                await save_factor_to_pool(db, updated)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qc_pipeline: save failed for %s: %s", name, exc)
+            processed += 1
+
+        return {
+            "enabled": True,
+            "skipped": False,
+            "autoshelf_applied": autoshelf,
+            "processed": processed,
+            "decisions": decisions,
         }
 
     def status(self) -> dict[str, Any]:

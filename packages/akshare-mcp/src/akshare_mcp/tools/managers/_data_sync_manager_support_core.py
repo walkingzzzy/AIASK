@@ -143,6 +143,7 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
             params["doc_types"] = [str(item).strip().lower() for item in doc_types if str(item).strip()]
         params["news_limit"] = _market_text_int("news_limit", 50, 0)
         params["notice_limit"] = _market_text_int("notice_limit", 80, 0)
+        params["official_notice_limit"] = _market_text_int("official_notice_limit", 30, 0)
         params["notice_days"] = _market_text_int("notice_days", 30, 1)
         params["code_notice_limit"] = _market_text_int("code_notice_limit", 2, 0)
         params["code_notice_code_limit"] = _market_text_int("code_notice_code_limit", 20, 0)

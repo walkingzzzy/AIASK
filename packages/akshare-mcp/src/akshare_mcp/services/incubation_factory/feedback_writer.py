@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _prediction_budget_feedback_enabled() -> bool:
+    return str(
+        os.getenv("STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class FeedbackWriter:
@@ -51,6 +58,10 @@ class FeedbackWriter:
         # 1. 写入反馈领域事件（策略工厂可查询）
         await self._write_feedback_event(db, report)
         written_events += 1
+        prediction_feedback = dict(feedback_actions.get("prediction_feedback") or {})
+        if prediction_feedback:
+            await self._write_prediction_feedback_event(db, report, prediction_feedback)
+            written_events += 1
 
         # 2. 对需要冷却/冻结的 family，更新相关策略的 runtime_control
         families_to_cooldown = list(feedback_actions.get("families_to_cooldown") or [])
@@ -70,6 +81,8 @@ class FeedbackWriter:
         result = {
             "written_events": written_events,
             "written_controls": written_controls,
+            "prediction_budget_feedback_enabled": _prediction_budget_feedback_enabled(),
+            "prediction_feedback_suggestions": list(prediction_feedback.get("suggestions") or []),
             "feedback_families_boosted": list(
                 feedback_actions.get("families_to_boost") or []
             ),
@@ -116,6 +129,49 @@ class FeedbackWriter:
             })
         except Exception as exc:
             logger.debug("FeedbackWriter: event write failed: %s", exc)
+
+    async def _write_prediction_feedback_event(
+        self,
+        db: Any,
+        report: dict[str, Any],
+        prediction_feedback: dict[str, Any],
+    ) -> None:
+        """Write prediction feedback diagnostics; budget impact is opt-in."""
+
+        if not hasattr(db, "save_strategy_domain_event"):
+            return
+        enabled = _prediction_budget_feedback_enabled()
+        suggestions = list(prediction_feedback.get("suggestions") or [])
+        budget_suggestions: list[dict[str, Any]] = []
+        if enabled:
+            for item in suggestions:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                multiplier = 1.0
+                if action == "boost":
+                    multiplier = 1.08
+                elif action in {"cool", "repair_data"}:
+                    multiplier = 0.92
+                budget_suggestions.append({**item, "budget_multiplier": multiplier})
+        try:
+            await db.save_strategy_domain_event({
+                "strategy_id": None,
+                "aggregate_type": "incubation_factory",
+                "aggregate_id": f"prediction_feedback_{report.get('report_date', date.today())}",
+                "event_type": "incubation_factory.prediction_feedback_written",
+                "source": "incubation_factory",
+                "severity": "info",
+                "payload": {
+                    "report_date": report.get("report_date"),
+                    "enabled_for_budget_feedback": enabled,
+                    "prediction_feedback": prediction_feedback,
+                    "budget_suggestions": budget_suggestions,
+                    "trade_prediction_dashboard": report.get("trade_prediction_dashboard"),
+                },
+            })
+        except Exception as exc:
+            logger.debug("FeedbackWriter: prediction feedback event write failed: %s", exc)
 
     async def _apply_control_actions(
         self,

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import os
 
+from ...env_loader import load_mcp_env
+
+
+load_mcp_env(override=False, only_prefixes=("STRATEGY_LLM_",))
+
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     try:

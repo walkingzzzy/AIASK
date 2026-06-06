@@ -10,11 +10,24 @@ from akshare_mcp.tools.managers._data_sync_manager_support_sync import (
 )
 
 
+def _write_embedding_env(tmp_path, monkeypatch, db_name: str) -> None:
+    env_file = tmp_path / f"{db_name}.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "STRATEGY_EMBEDDING_ENABLED=1",
+                "STRATEGY_EMBEDDING_PROVIDER=hash_fallback",
+                "STRATEGY_EMBEDDING_HASH_DIMENSIONS=256",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AKSHARE_MCP_ENV", str(env_file))
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / f"{db_name}.sqlite3"))
+
+
 def test_market_text_source_ingest_vectorizes_public_text(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "market_text.sqlite3"))
-    monkeypatch.setenv("STRATEGY_EMBEDDING_ENABLED", "1")
-    monkeypatch.setenv("STRATEGY_EMBEDDING_PROVIDER", "hash_fallback")
-    monkeypatch.setenv("STRATEGY_EMBEDDING_HASH_DIMENSIONS", "256")
+    _write_embedding_env(tmp_path, monkeypatch, "market_text")
 
     import akshare_mcp.services.market_text_source_ingest as ingest_mod
 
@@ -75,6 +88,11 @@ def test_market_text_source_ingest_vectorizes_public_text(tmp_path, monkeypatch)
         }
 
     monkeypatch.setattr(ingest_mod, "fetch_eastmoney_finance_news", fake_news)
+    monkeypatch.setattr(
+        ingest_mod,
+        "fetch_official_market_event_documents",
+        lambda *args, **kwargs: {"items": [], "sources": {"cninfo": {"status": "ok", "fetched": 0}}, "degraded_count": 0},
+    )
     monkeypatch.setattr("akshare_mcp.tools.news.notices.fetch_market_notice_head", fake_notice_head)
     monkeypatch.setattr("akshare_mcp.tools.news.notices.get_stock_notices", fake_stock_notices)
     monkeypatch.setattr("akshare_mcp.tools.news.research.get_research_reports", fake_research_reports)
@@ -156,14 +174,100 @@ def test_market_text_source_ingest_vectorizes_public_text(tmp_path, monkeypatch)
     asyncio.run(_run())
 
 
-def test_data_sync_market_text_source_ingest_task_and_schedule_params(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "market_text_sync.sqlite3"))
-    monkeypatch.setenv("STRATEGY_EMBEDDING_ENABLED", "1")
-    monkeypatch.setenv("STRATEGY_EMBEDDING_PROVIDER", "hash_fallback")
-    monkeypatch.setenv("STRATEGY_EMBEDDING_HASH_DIMENSIONS", "256")
+def test_market_text_source_ingest_persists_official_notice_events(tmp_path, monkeypatch):
+    _write_embedding_env(tmp_path, monkeypatch, "market_text_official")
 
     import akshare_mcp.services.market_text_source_ingest as ingest_mod
 
+    monkeypatch.setattr(ingest_mod, "fetch_eastmoney_finance_news", lambda limit: [])
+    monkeypatch.setattr(
+        ingest_mod,
+        "fetch_official_market_event_documents",
+        lambda *args, **kwargs: {
+            "items": [
+                {
+                    "doc_uid": "cninfo:1225000001",
+                    "title": "000001 signs major order contract",
+                    "summary": "Official disclosure for a new signed order contract.",
+                    "content": "000001 signs major order contract official disclosure.",
+                    "published_at": "2026-06-06",
+                    "evidence_time": "2026-06-06",
+                    "source": "cninfo",
+                    "source_tier": "tier_a",
+                    "provider": "cninfo",
+                    "original_id": "1225000001",
+                    "reliability_score": 0.92,
+                    "url": "https://static.cninfo.com.cn/finalpage/2026-06-06/1225000001.PDF",
+                    "code": "000001",
+                    "stock_code": "000001",
+                }
+            ],
+            "sources": {"cninfo": {"tier": "tier_a", "status": "ok", "fetched": 1, "degraded": False}},
+            "degraded_count": 0,
+        },
+    )
+    monkeypatch.setattr("akshare_mcp.tools.news.notices.fetch_market_notice_head", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "akshare_mcp.tools.news.notices.get_stock_notices",
+        lambda **kwargs: {"success": True, "data": {"events": []}},
+    )
+
+    async def _run() -> None:
+        db = get_db()
+        try:
+            await db.initialize()
+            result = await run_market_text_source_ingest(
+                db,
+                stock_codes=["000001"],
+                doc_types=["notice"],
+                news_limit=0,
+                notice_limit=0,
+                official_notice_limit=1,
+                code_notice_limit=0,
+                research_code_limit=0,
+                build_snapshot=False,
+                activate_snapshot=False,
+                embed=False,
+            )
+
+            assert result["fetched"]["official_notice"] == 1
+            assert result["saved"]["official_notice"]["documents"] == 1
+            assert result["normalized_events"]["official_notice"]["verified"] == 1
+            assert result["strategy_factory_bridge"]["bridged_events"] == 1
+
+            async with db.acquire() as conn:
+                doc = await conn.fetchrow(
+                    """
+                    SELECT source_tier, provider, original_id, reliability_score
+                    FROM market_documents
+                    WHERE doc_uid = $1
+                    """,
+                    "cninfo:1225000001",
+                )
+                event_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM market_events_normalized WHERE source_tier = 'tier_a' AND status = 'verified'"
+                )
+            assert doc["source_tier"] == "tier_a"
+            assert doc["provider"] == "cninfo"
+            assert doc["original_id"] == "1225000001"
+            assert float(doc["reliability_score"]) == 0.92
+            assert event_count == 1
+        finally:
+            await close_db()
+
+    asyncio.run(_run())
+
+
+def test_data_sync_market_text_source_ingest_task_and_schedule_params(tmp_path, monkeypatch):
+    _write_embedding_env(tmp_path, monkeypatch, "market_text_sync")
+
+    import akshare_mcp.services.market_text_source_ingest as ingest_mod
+
+    monkeypatch.setattr(
+        ingest_mod,
+        "fetch_official_market_event_documents",
+        lambda *args, **kwargs: {"items": [], "sources": {"cninfo": {"status": "ok", "fetched": 0}}, "degraded_count": 0},
+    )
     monkeypatch.setattr(
         ingest_mod,
         "fetch_eastmoney_finance_news",

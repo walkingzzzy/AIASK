@@ -1,6 +1,7 @@
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
@@ -10,7 +11,27 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-FORWARD_DAYS = [1, 5, 10, 20]
+# P2-2：前向收益采集窗口。默认 [1,5,10,20]（零变化）；可经
+# STRATEGY_FACTORY_FORWARD_DAYS 覆盖（逗号分隔，如 "1,5,10,20,40" 纳入长线 40 日窗口）。
+def _resolve_forward_days() -> list[int]:
+    raw = os.getenv("STRATEGY_FACTORY_FORWARD_DAYS")
+    if not raw:
+        return [1, 5, 10, 20]
+    out: list[int] = []
+    for tok in str(raw).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            val = int(tok)
+        except ValueError:
+            continue
+        if val > 0 and val not in out:
+            out.append(val)
+    return out or [1, 5, 10, 20]
+
+
+FORWARD_DAYS = _resolve_forward_days()
 FORWARD_RETURN_BATCH_LIMIT = 2000
 FORWARD_RETURN_MAX_ROUNDS = 100
 RECENT_SIGNAL_EVENT_LIMIT = 8

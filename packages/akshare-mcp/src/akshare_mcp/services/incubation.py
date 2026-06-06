@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -495,12 +496,104 @@ async def _record_trade_audit_fill(db, order: dict, trade: dict) -> Optional[dic
     )
 
 
+def _per_symbol_regime_enabled() -> bool:
+    """P0-3: 是否对信号标的逐股推断 trend_regime / vol_regime。
+
+    默认 OFF：保持历史行为（trend/vol 维度恒 "unknown"，仅 sentiment 由 fear_greed 推断）。
+    ON：按标的最新 K 线推断 trend（MA20 斜率 + 20 日动量）与 vol（20 日已实现波动率分位）。
+    """
+    raw = os.getenv("STRATEGY_FACTORY_PER_SYMBOL_REGIME_ENABLED")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _infer_symbol_regime(closes: list[float]) -> dict:
+    """从收盘价序列推断 trend_regime / vol_regime（自包含，无外部依赖）。
+
+    返回的标签为消费侧（ForwardVerifier）按字符串分组的自由 token：
+    - trend_regime: trend_up / trend_down / range
+    - vol_regime:   high_vol / normal_vol / low_vol
+    数据不足时对应维度返回 "unknown"（不阻断）。
+    """
+    labels = {"trend_regime": "unknown", "vol_regime": "unknown"}
+    try:
+        series = [float(c) for c in closes if c is not None and float(c) > 0]
+    except (TypeError, ValueError):
+        return labels
+    n = len(series)
+    if n < 20:
+        return labels
+
+    # ── trend：20 日动量 + MA20 斜率方向 ──
+    ret_20 = (series[-1] - series[-20]) / series[-20] if series[-20] else 0.0
+    ma20_now = sum(series[-20:]) / 20.0
+    if n >= 25:
+        ma20_prev = sum(series[-25:-5]) / 20.0
+    else:
+        ma20_prev = sum(series[:20]) / 20.0
+    ma_slope = (ma20_now - ma20_prev) / ma20_prev if ma20_prev else 0.0
+    if ret_20 > 0.05 and ma_slope > 0:
+        labels["trend_regime"] = "trend_up"
+    elif ret_20 < -0.05 and ma_slope < 0:
+        labels["trend_regime"] = "trend_down"
+    else:
+        labels["trend_regime"] = "range"
+
+    # ── vol：最近 20 日已实现年化波动率，按绝对阈值分档 ──
+    window = series[-21:] if n >= 21 else series
+    rets = [
+        (window[i] - window[i - 1]) / window[i - 1]
+        for i in range(1, len(window))
+        if window[i - 1]
+    ]
+    if len(rets) >= 5:
+        mean_r = sum(rets) / len(rets)
+        var = sum((r - mean_r) ** 2 for r in rets) / (len(rets) - 1)
+        ann_vol = (var ** 0.5) * (252 ** 0.5)
+        if ann_vol >= 0.45:
+            labels["vol_regime"] = "high_vol"
+        elif ann_vol <= 0.20:
+            labels["vol_regime"] = "low_vol"
+        else:
+            labels["vol_regime"] = "normal_vol"
+    return labels
+
+
+async def _infer_symbol_regime_from_db(db, code: str) -> dict:
+    """P0-3: 取标的最新 K 线并推断 trend/vol regime。任何异常都回退 unknown（不阻断）。"""
+    labels = {"trend_regime": "unknown", "vol_regime": "unknown"}
+    if not code:
+        return labels
+    try:
+        get_klines = getattr(db, "get_klines", None)
+        if get_klines is None:
+            return labels
+        klines = await get_klines(code, limit=60)
+        if not klines:
+            return labels
+        # 统一为时间升序的收盘价序列
+        rows = list(klines)
+        try:
+            rows.sort(key=lambda r: str((r or {}).get("date") or ""))
+        except Exception:
+            pass
+        closes = [
+            (r or {}).get("close")
+            for r in rows
+            if isinstance(r, dict) and (r or {}).get("close") is not None
+        ]
+        return _infer_symbol_regime(closes)
+    except Exception:
+        return labels
+
+
 def _resolve_signal_regime(strategy: dict, regime: Optional[dict]) -> dict:
     """INVERT-DESIGN P1 改动D：解析信号当日市场状态标签。
 
     优先用显式传入的 regime；否则从策略快照的 fear_greed 推断 sentiment_regime。
-    trend_regime / vol_regime 需逐标的行情(后续接入)，当前缺省为 unknown。
-    任何异常都不阻断信号落库。
+    trend_regime / vol_regime 由调用方（_persist_signal_evidence，持有 db+code）逐标的推断后经
+    regime 传入；未传入时缺省为 unknown。任何异常都不阻断信号落库。
     """
     labels = {"trend_regime": "unknown", "vol_regime": "unknown", "sentiment_regime": "unknown"}
     try:
@@ -547,7 +640,15 @@ async def _persist_signal_evidence(
     if save_method is None:
         return
     # regime 缺省时由 _resolve_signal_regime 兜底（各维度 unknown），不阻断主流程。
-    regime_labels = _resolve_signal_regime(strategy, regime)
+    # P0-3: toggle ON 时，对信号标的逐股推断 trend/vol regime，合并进显式 regime（不覆盖已传入的非空值）。
+    effective_regime = dict(regime or {})
+    if _per_symbol_regime_enabled():
+        inferred = await _infer_symbol_regime_from_db(db, code)
+        for dim in ("trend_regime", "vol_regime"):
+            existing = str(effective_regime.get(dim) or "").strip().lower()
+            if existing in ("", "unknown") and inferred.get(dim) not in (None, "unknown"):
+                effective_regime[dim] = inferred[dim]
+    regime_labels = _resolve_signal_regime(strategy, effective_regime)
     for evidence in build_signal_evidence_records(
         strategy,
         signal_id=signal_id,

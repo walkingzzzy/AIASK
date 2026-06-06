@@ -848,6 +848,69 @@ def _resolve_profile_quality(
     return quality, feature_coverage
 
 
+def _resolve_regime_from_features(
+    raw_features_grouped: dict[str, dict[str, Any]],
+    *,
+    volatility_20d: Optional[float],
+) -> dict[str, str]:
+    """P1-1: 从画像原始特征派生 trend/vol regime（与 P0-3 标签口径一致）。
+
+    输出 token：
+    - trend_regime: trend_up / trend_down / range
+    - vol_regime:   high_vol / normal_vol / low_vol
+    特征缺失时对应维度返回 "unknown"（不阻断）。sentiment 维度此处不推断（由信号侧 fear_greed 决定）。
+    """
+    def _cell(group: str, key: str) -> Optional[float]:
+        cell = (raw_features_grouped.get(group) or {}).get(key)
+        if isinstance(cell, Mapping):
+            val = cell.get("value")
+        else:
+            val = cell
+        if isinstance(val, (int, float)):
+            return float(val)
+        return None
+
+    labels = {"trend_regime": "unknown", "vol_regime": "unknown"}
+
+    mom_20 = _cell("price_trend_reversal", "momentum_20d")
+    mom_60 = _cell("price_trend_reversal", "momentum_60d")
+    if mom_20 is not None:
+        # momentum_20d 已是收益率口径（约 -1..1）。结合 60 日方向确认。
+        if mom_20 > 0.05 and (mom_60 is None or mom_60 >= 0):
+            labels["trend_regime"] = "trend_up"
+        elif mom_20 < -0.05 and (mom_60 is None or mom_60 <= 0):
+            labels["trend_regime"] = "trend_down"
+        else:
+            labels["trend_regime"] = "range"
+
+    vol = volatility_20d
+    if vol is None:
+        vol = _cell("volatility_risk", "volatility_20d")
+    if vol is not None:
+        # volatility_20d 为日波动率，年化 ≈ vol * sqrt(252)。
+        ann = float(vol) * (252 ** 0.5)
+        if ann >= 0.45:
+            labels["vol_regime"] = "high_vol"
+        elif ann <= 0.20:
+            labels["vol_regime"] = "low_vol"
+        else:
+            labels["vol_regime"] = "normal_vol"
+    return labels
+
+
+def _holding_bucket_hint_from_archetype(archetype: str) -> str:
+    """P1-1: 由 archetype 给出 holding_period_bucket 倾向（供 SR-1 路由 + 矩阵消费）。"""
+    return {
+        "trend_following": "medium",
+        "growth_oriented": "medium",
+        "mean_reversion": "short",
+        "high_volatility_trader": "short",
+        "value_oriented": "long",
+        "fundamental_quality": "long",
+        "balanced_multi_factor": "medium",
+    }.get(str(archetype or "").strip().lower(), "medium")
+
+
 def _build_profile_summary(
     raw_features_grouped: dict[str, dict[str, Any]],
     *,
@@ -869,6 +932,9 @@ def _build_profile_summary(
         primary_archetype,
         profile_quality,
     )
+    # P1-1：补 regime（trend/vol）+ holding_bucket 倾向，供 SR-0/SR-1 路由器消费。
+    regime = _resolve_regime_from_features(raw_features_grouped, volatility_20d=volatility_20d)
+    holding_bucket_hint = _holding_bucket_hint_from_archetype(primary_archetype)
 
     return {
         "primary_archetype": primary_archetype,
@@ -878,6 +944,9 @@ def _build_profile_summary(
         "recommended_families": recommended_families,
         "profile_quality": profile_quality,
         "feature_coverage": feature_coverage,
+        # P1-1 新增字段（向后兼容：旧消费者忽略即可）。
+        "regime": regime,
+        "holding_bucket_hint": holding_bucket_hint,
     }
 
 

@@ -18,6 +18,12 @@ from typing import Any
 import requests
 
 from ..vector_collection_scope import normalize_market_doc_types, resolve_vector_collection_name
+from .market_event_sources import (
+    bridge_normalized_events_to_strategy_factory,
+    event_source_status,
+    fetch_official_market_event_documents,
+    persist_normalized_events,
+)
 
 EASTMONEY_NEWS_URL = "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns"
 EASTMONEY_HEADERS = {
@@ -116,8 +122,11 @@ def fetch_eastmoney_finance_news(limit: int) -> list[dict[str, Any]]:
                     "date": _clean_text(row.get("showTime"), 40),
                     "published_at": _clean_text(row.get("showTime"), 40),
                     "source": _clean_text(row.get("mediaName"), 120) or "eastmoney_finance_news",
+                    "source_tier": "tier_c",
+                    "reliability_score": 0.42,
                     "url": url,
                     "provider": "eastmoney_finance_news",
+                    "original_id": source_id,
                 }
             )
             if len(items) >= resolved_limit:
@@ -139,11 +148,20 @@ def _map_notice_item(item: dict[str, Any]) -> dict[str, Any]:
         "date": _clean_text(item.get("date"), 40),
         "published_at": _clean_text(item.get("date"), 40),
         "source": _clean_text(item.get("source"), 120) or "eastmoney_notice",
+        "source_tier": _clean_text(item.get("source_tier"), 40) or "tier_c",
+        "reliability_score": item.get("reliability_score") if item.get("reliability_score") is not None else 0.48,
         "url": _clean_text(item.get("url"), 1000),
         "provider": "eastmoney_notice",
+        "original_id": _clean_text(item.get("art_code") or item.get("original_id"), 200),
         "notice_type": notice_type,
         "code": code,
     }
+
+
+def _merge_event_summary(bucket: dict[str, Any], event_summary: dict[str, Any]) -> None:
+    for key in ("total", "verified", "provisional", "degraded", "rejected"):
+        bucket[key] = int(bucket.get(key) or 0) + int(event_summary.get(key) or 0)
+    bucket.setdefault("latest", []).extend(list(event_summary.get("latest") or [])[:5])
 
 
 def _map_research_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -165,8 +183,11 @@ def _map_research_item(item: dict[str, Any]) -> dict[str, Any]:
         "date": _clean_text(item.get("date") or item.get("publish_date"), 40),
         "published_at": _clean_text(item.get("date") or item.get("publish_date"), 40),
         "source": institution or "akshare_research_report_em",
+        "source_tier": _clean_text(item.get("source_tier"), 40) or "tier_c",
+        "reliability_score": item.get("reliability_score") if item.get("reliability_score") is not None else 0.5,
         "url": _clean_text(item.get("url") or item.get("pdf_url"), 1000),
         "provider": "akshare_stock_research_report_em",
+        "original_id": _clean_text(item.get("original_id") or item.get("report_id"), 200),
         "author": author,
         "rating": rating,
         "institution": institution,
@@ -370,6 +391,7 @@ async def run_market_text_source_ingest(
     doc_types: Any = None,
     news_limit: Any = 50,
     notice_limit: Any = 80,
+    official_notice_limit: Any = 30,
     notice_days: Any = 30,
     code_notice_limit: Any = 2,
     code_notice_code_limit: Any = 20,
@@ -390,6 +412,7 @@ async def run_market_text_source_ingest(
     requested_codes = _normalize_codes(stock_codes)
     resolved_news_limit = _positive_int(news_limit, 50, minimum=0, maximum=1000)
     resolved_notice_limit = _positive_int(notice_limit, 80, minimum=0, maximum=1000)
+    resolved_official_notice_limit = _positive_int(official_notice_limit, 30, minimum=0, maximum=1000)
     resolved_notice_days = _positive_int(notice_days, 30, minimum=1, maximum=365)
     resolved_code_notice_limit = _positive_int(code_notice_limit, 2, minimum=0, maximum=100)
     resolved_code_notice_code_limit = _positive_int(code_notice_code_limit, 20, minimum=0, maximum=1000)
@@ -410,6 +433,7 @@ async def run_market_text_source_ingest(
             "stock_codes": requested_codes,
             "news_limit": resolved_news_limit,
             "notice_limit": resolved_notice_limit,
+            "official_notice_limit": resolved_official_notice_limit,
             "notice_days": resolved_notice_days,
             "code_notice_limit": resolved_code_notice_limit,
             "code_notice_code_limit": resolved_code_notice_code_limit,
@@ -426,6 +450,9 @@ async def run_market_text_source_ingest(
         },
         "fetched": {},
         "saved": {},
+        "normalized_events": {},
+        "event_source_status": event_source_status(),
+        "strategy_factory_bridge": {},
         "snapshots": [],
         "errors": [],
         "quality_flags": [],
@@ -458,20 +485,79 @@ async def run_market_text_source_ingest(
                     version=resolved_version,
                 )
                 result["saved"]["news"] = {**saved, "news_cache_inserted": cache_rows}
+                result["normalized_events"]["news"] = await persist_normalized_events(
+                    db,
+                    "MARKET",
+                    "news",
+                    news_items,
+                )
 
     notice_codes: list[str] = []
-    if "notice" in requested_doc_types and resolved_notice_limit > 0 and resolved_allow_network:
+    if "notice" in requested_doc_types and (resolved_notice_limit > 0 or resolved_official_notice_limit > 0) and resolved_allow_network:
         from ..tools.news.notices import fetch_market_notice_head, get_stock_notices
 
-        try:
-            raw_notices = fetch_market_notice_head(
-                start_date.isoformat(),
-                end_date.isoformat(),
-                max_items=resolved_notice_limit,
-            )
-        except Exception as exc:
-            raw_notices = []
-            result["errors"].append({"source": "eastmoney_notice_head", "error": f"{type(exc).__name__}: {exc}"})
+        if resolved_official_notice_limit > 0:
+            official_notice_saved = {
+                "documents": 0,
+                "chunks": 0,
+                "embedded_chunks": 0,
+                "headline_labels": 0,
+                "source": "official_disclosure",
+            }
+            try:
+                official_fetch = fetch_official_market_event_documents(
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    limit=resolved_official_notice_limit,
+                    stock_codes=requested_codes,
+                )
+            except Exception as exc:
+                official_fetch = {"items": [], "sources": {}, "degraded_count": 1}
+                result["errors"].append({"source": "official_notice", "error": f"{type(exc).__name__}: {exc}"})
+            official_items = list(official_fetch.get("items") or [])
+            result["event_source_status"]["official_ingest"] = {
+                "sources": dict(official_fetch.get("sources") or {}),
+                "degraded_count": int(official_fetch.get("degraded_count") or 0),
+            }
+            result["fetched"]["official_notice"] = len(official_items)
+            if resolved_dry_run:
+                official_notice_saved["candidate_docs"] = len(official_items)
+            else:
+                official_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                for item in official_items:
+                    code = _clean_text(item.get("code") or item.get("stock_code"), 20)
+                    if code:
+                        official_by_code[code].append(item)
+                for code, items in official_by_code.items():
+                    saved = await db.save_market_documents(
+                        code,
+                        "notice",
+                        items,
+                        embed=resolved_embed,
+                        chunk_size=resolved_chunk_size,
+                        overlap=resolved_overlap,
+                        version=resolved_version,
+                    )
+                    _merge_saved_totals(official_notice_saved, saved)
+                    event_summary = await persist_normalized_events(db, code, "notice", items)
+                    bucket = result["normalized_events"].setdefault(
+                        "official_notice",
+                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
+                    )
+                    _merge_event_summary(bucket, event_summary)
+            result["saved"]["official_notice"] = official_notice_saved
+
+        raw_notices: list[dict[str, Any]] = []
+        if resolved_notice_limit > 0:
+            try:
+                raw_notices = fetch_market_notice_head(
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    max_items=resolved_notice_limit,
+                )
+            except Exception as exc:
+                raw_notices = []
+                result["errors"].append({"source": "eastmoney_notice_head", "error": f"{type(exc).__name__}: {exc}"})
         notice_items = [_map_notice_item(item) for item in raw_notices]
         notice_items = [item for item in notice_items if item.get("code") and item.get("title")]
         result["fetched"]["notice_head"] = len(notice_items)
@@ -496,6 +582,12 @@ async def run_market_text_source_ingest(
                 )
                 _merge_saved_totals(notice_saved, saved)
                 notice_saved["news_cache_inserted"] += int(cache_rows or 0)
+                event_summary = await persist_normalized_events(db, code, "notice", items)
+                bucket = result["normalized_events"].setdefault(
+                    "notice_head",
+                    {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
+                )
+                _merge_event_summary(bucket, event_summary)
         result["saved"]["notice_head"] = notice_saved
 
         universe = await _select_stock_universe(
@@ -540,6 +632,12 @@ async def run_market_text_source_ingest(
                     )
                     _merge_saved_totals(code_notice_saved, saved)
                     code_notice_saved["news_cache_inserted"] += int(cache_rows or 0)
+                    event_summary = await persist_normalized_events(db, code, "notice", mapped)
+                    bucket = result["normalized_events"].setdefault(
+                        "code_notices",
+                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
+                    )
+                    _merge_event_summary(bucket, event_summary)
             except Exception as exc:
                 code_notice_saved["failed_codes"].append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
         result["fetched"]["notice_universe"] = universe
@@ -583,6 +681,12 @@ async def run_market_text_source_ingest(
                     )
                     research_saved["legacy_inserted"] += int(legacy_inserted or 0)
                     _merge_saved_totals(research_saved, saved)
+                    event_summary = await persist_normalized_events(db, code, "research", mapped)
+                    bucket = result["normalized_events"].setdefault(
+                        "research",
+                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
+                    )
+                    _merge_event_summary(bucket, event_summary)
             except Exception as exc:
                 research_saved["failed_codes"].append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
         result["fetched"]["research_universe"] = universe
@@ -598,6 +702,11 @@ async def run_market_text_source_ingest(
             )
         except Exception as exc:
             result["errors"].append({"source": "snapshot", "error": f"{type(exc).__name__}: {exc}"})
+
+    try:
+        result["strategy_factory_bridge"] = await bridge_normalized_events_to_strategy_factory(db)
+    except Exception as exc:
+        result["errors"].append({"source": "normalized_event_bridge", "error": f"{type(exc).__name__}: {exc}"})
 
     try:
         result["final_counts"] = await _load_final_counts(db)

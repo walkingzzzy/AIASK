@@ -14,6 +14,7 @@ from .forward_verifier import ForwardVerifier
 from .metrics_recorder import MetricsRecorder
 from .hit_rate_reporter import HitRateReporter
 from .feedback_writer import FeedbackWriter
+from .trade_prediction_verifier import IntradayReplayService, TradePredictionDailyVerifier
 
 __all__ = [
     "IncubationFactoryRunner",
@@ -24,4 +25,6 @@ __all__ = [
     "MetricsRecorder",
     "HitRateReporter",
     "FeedbackWriter",
+    "IntradayReplayService",
+    "TradePredictionDailyVerifier",
 ]

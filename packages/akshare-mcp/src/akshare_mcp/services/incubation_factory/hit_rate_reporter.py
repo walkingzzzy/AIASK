@@ -31,6 +31,7 @@ class HitRateReporter:
         pipeline_result: dict[str, Any],
         *,
         report_date: Optional[date] = None,
+        trade_prediction_result: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """
         生成命中率报告。
@@ -59,8 +60,18 @@ class HitRateReporter:
         # 趋势分析
         trend = await self._compute_trend(db, strategies)
 
+        # P3-1：命中率矩阵（strategy_type × regime × holding_bucket），复用已算的 verifications
+        hit_rate_matrix = self._aggregate_matrix(strategies, verifications)
+
         # 反馈建议
         feedback_actions = self._derive_feedback_actions(by_family)
+        trade_prediction_dashboard = await self._build_trade_prediction_dashboard(
+            db,
+            trade_prediction_result=trade_prediction_result,
+        )
+        feedback_actions["prediction_feedback"] = self._derive_prediction_feedback_actions(
+            trade_prediction_dashboard
+        )
 
         report = {
             "report_date": str(today),
@@ -81,7 +92,11 @@ class HitRateReporter:
                 "by_family": by_family,
                 "by_stage": by_stage,
                 "trend": trend,
+                # P3-1：type × regime × bucket 矩阵（空单元诚实标注 insufficient_samples）
+                "matrix": hit_rate_matrix,
+                "trade_predictions": trade_prediction_dashboard,
             },
+            "trade_prediction_dashboard": trade_prediction_dashboard,
             "feedback_actions": feedback_actions,
         }
 
@@ -89,6 +104,137 @@ class HitRateReporter:
         await self._persist_report(db, report)
 
         return report
+
+    async def _build_trade_prediction_dashboard(
+        self,
+        db: Any,
+        *,
+        trade_prediction_result: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Build read-only trade prediction diagnostics for reports/UI."""
+
+        summary: dict[str, Any] = {}
+        matrix: dict[str, Any] = {"rows": [], "row_count": 0}
+        if hasattr(db, "summarize_strategy_trade_predictions"):
+            try:
+                summary = await db.summarize_strategy_trade_predictions(limit=1000)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("HitRateReporter: prediction summary failed: %s", exc)
+                summary = {}
+        if hasattr(db, "aggregate_trade_prediction_matrix"):
+            try:
+                matrix = await db.aggregate_trade_prediction_matrix(limit=1000)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("HitRateReporter: prediction matrix failed: %s", exc)
+                matrix = {"rows": [], "row_count": 0, "error": str(exc)}
+
+        phase_result = dict(trade_prediction_result or {})
+        if not summary:
+            status_counts = dict(phase_result.get("score_status_counts") or {})
+            summary = {
+                "object": "trade_prediction.status",
+                "prediction_count": None,
+                "outcome_count": None,
+                "sample_n": int(phase_result.get("evaluated") or 0),
+                "pending_count": None,
+                "evaluated_count": int(phase_result.get("evaluated") or 0),
+                "partial_count": int(status_counts.get("partial_daily_only", 0))
+                + int(status_counts.get("partial_intraday_missing", 0)),
+                "score_status_counts": status_counts,
+                "data_quality_status_counts": dict(phase_result.get("data_quality_status_counts") or {}),
+                "score_version_counts": {},
+                "score_distribution": {},
+            }
+
+        return {
+            "summary": summary,
+            "matrix": matrix,
+            "phase_result": {
+                "status": phase_result.get("status"),
+                "score_version": phase_result.get("score_version"),
+                "intraday_score_version": phase_result.get("intraday_score_version"),
+                "evaluated": int(phase_result.get("evaluated") or 0),
+                "intraday_evaluated": int(phase_result.get("intraday_evaluated") or 0),
+                "score_status_counts": dict(phase_result.get("score_status_counts") or {}),
+                "data_quality_status_counts": dict(phase_result.get("data_quality_status_counts") or {}),
+                "intraday_sync": dict(phase_result.get("intraday_sync") or {}),
+            },
+        }
+
+    def _derive_prediction_feedback_actions(
+        self,
+        dashboard: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create diagnostic-only suggestions from prediction scoring."""
+
+        summary = dict((dashboard or {}).get("summary") or {})
+        matrix = dict((dashboard or {}).get("matrix") or {})
+        rows = list(matrix.get("rows") or [])
+        sample_n = int(summary.get("sample_n") or 0)
+        partial_count = int(summary.get("partial_count") or 0)
+        suggestions: list[dict[str, Any]] = []
+        if sample_n < 30:
+            suggestions.append({
+                "action": "observe",
+                "reason": f"insufficient_samples:{sample_n}<30",
+                "hard_gate": False,
+            })
+        if partial_count > 0:
+            suggestions.append({
+                "action": "repair_data",
+                "reason": f"partial_prediction_outcomes:{partial_count}",
+                "hard_gate": False,
+            })
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            score = row.get("score_avg")
+            lcb = row.get("score_lcb_95")
+            sample = int(row.get("sample_n") or 0)
+            if sample < 10 or score is None:
+                continue
+            action = "boost" if float(score) >= 0.70 and float(lcb or 0.0) >= 0.55 else "cool"
+            suggestions.append({
+                "action": action,
+                "dimension": row.get("dimension"),
+                "value": row.get("value"),
+                "sample_n": sample,
+                "score_avg": score,
+                "score_lcb_95": lcb,
+                "hard_gate": False,
+            })
+        return {
+            "enabled_for_controls": False,
+            "suggestions": suggestions[:50],
+            "sample_n": sample_n,
+            "partial_count": partial_count,
+        }
+
+    def _aggregate_matrix(
+        self,
+        strategies: list[dict[str, Any]],
+        verifications: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """P3-1：把已算的 verifications 交叉聚合成 type × regime × bucket 矩阵。"""
+        try:
+            from .hit_rate_matrix import aggregate_hit_rate_matrix
+
+            strategies_by_id = {
+                str((s or {}).get("id") or "").strip(): dict(s)
+                for s in (strategies or [])
+                if str((s or {}).get("id") or "").strip()
+            }
+            verify_results: list[dict[str, Any]] = []
+            for sid, result in (verifications or {}).items():
+                if not isinstance(result, dict):
+                    continue
+                item = dict(result)
+                item.setdefault("strategy_id", sid)
+                verify_results.append(item)
+            return aggregate_hit_rate_matrix(verify_results, strategies_by_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("HitRateReporter: matrix aggregation failed: %s", exc)
+            return {"matrix": {}, "totals": {}, "error": str(exc)}
 
     def _aggregate_overall(
         self, verifications: dict[str, dict[str, Any]]

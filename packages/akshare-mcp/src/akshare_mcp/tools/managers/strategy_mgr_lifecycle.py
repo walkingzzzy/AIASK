@@ -185,7 +185,7 @@ def _factory_defaults_from_constants(factory_constants: dict[str, Any]) -> dict[
         "readiness_min_completion_ratio": float(
             factory_constants.get("FACTORY_READINESS_MIN_COMPLETION_RATIO") or 0.0
         ),
-        "execution_mode": "legacy_primary",
+        "execution_mode": "stock_first_observe_primary",
         "engine_version": "strategy_factory.v2",
         "latest_parity_result": {},
         "active_dispatch_id": None,
@@ -201,7 +201,10 @@ def _factory_defaults_from_constants(factory_constants: dict[str, Any]) -> dict[
 async def _create_external_factory_dispatch(db, params: dict, *, source_action: str) -> dict:
     if not hasattr(db, "create_strategy_factory_dispatch"):
         return fail("factory dispatch storage is unavailable", error_code="STRATEGY_FACTORY_DISPATCH_UNAVAILABLE")
-    execution_mode = str(params.get("execution_mode") or "legacy_primary").strip() or "legacy_primary"
+    execution_mode = (
+        str(params.get("execution_mode") or "stock_first_observe_primary").strip()
+        or "stock_first_observe_primary"
+    )
     dispatch_id = str(params.get("dispatch_id") or "").strip() or f"factory_dispatch_{uuid4().hex[:12]}"
     target_codes = params.get("target_codes") or params.get("codes") or []
     if isinstance(target_codes, str):
@@ -832,7 +835,7 @@ async def handle_factory_status(db, params: dict) -> dict:
         str(status.get("execution_mode") or "").strip()
         or str((status.get("last_result") or {}).get("execution_mode") or "").strip()
         or str((latest_run or {}).get("execution_mode") or "").strip()
-        or "legacy_primary"
+        or "stock_first_observe_primary"
     )
     status["engine_version"] = (
         str(status.get("engine_version") or "").strip()
@@ -927,11 +930,15 @@ async def handle_factory_dispatch_run(db, params: dict) -> dict:
     if not callable(dispatch_run):
         return fail("factory dispatch is unavailable")
     execution_mode = params.get("execution_mode")
+    target_codes = params.get("target_codes") or params.get("codes") or []
+    kwargs = {}
+    if _call_supports_parameter(dispatch_run, "execution_mode"):
+        kwargs["execution_mode"] = execution_mode
+    if _call_supports_parameter(dispatch_run, "target_codes"):
+        kwargs["target_codes"] = target_codes
     if _run_once_accepts_db_arg(dispatch_run):
-        if _call_supports_parameter(dispatch_run, "execution_mode"):
-            return ok(await dispatch_run(db=db, execution_mode=execution_mode))
-        return ok(await dispatch_run(db=db))
-    return ok(await dispatch_run())
+        return ok(await dispatch_run(db=db, **kwargs))
+    return ok(await dispatch_run(**kwargs))
 
 
 async def handle_factory_dispatch_status(db, params: dict) -> dict:

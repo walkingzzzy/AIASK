@@ -11,6 +11,9 @@ from copy import deepcopy
 from typing import Any, Optional
 
 import pandas as pd
+
+from ..env_loader import load_mcp_env
+
 def _get_strategy_factory_imports():
     from strategy_factory import (
         CATEGORY_MINIMUMS,
@@ -393,6 +396,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
 
         @staticmethod
         def _pipeline_run_timeout_sec() -> float:
+            load_mcp_env(override=False, only_prefixes=("STRATEGY_LLM_",))
             configured = os.getenv('STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC')
             if configured is not None:
                 try:

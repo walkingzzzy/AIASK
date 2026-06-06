@@ -182,6 +182,21 @@ def _parse_lookback_days(value: Any, *, field_name: str) -> tuple[Optional[int],
     return validate_int_range(raw, field_name=field_name, minimum=1)
 
 
+def _coerce_bool_flag(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 # ---------------------------------------------------------------------------
 # MCP tool registration
 # ---------------------------------------------------------------------------
@@ -216,6 +231,77 @@ def register(mcp):
             payload = _factor_library_payload(category)
             payload["source"] = "SUPPORTED_FACTORS"
             return ok(payload)
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_factor_catalog(
+        category: str = "all",
+        factor_name: Optional[str] = None,
+        include_dsl_metadata: bool = True,
+        only_with_ic: bool = False,
+        limit: int = 0,
+    ):
+        """Return the unified read-only factor catalog."""
+        try:
+            from ..services.factor_catalog import build_factor_catalog, get_dsl_summary
+
+            include_dsl = _coerce_bool_flag(include_dsl_metadata, default=True)
+            only_ic = _coerce_bool_flag(only_with_ic, default=False)
+            catalog = await build_factor_catalog(include_dsl_metadata=include_dsl)
+
+            category_key = str(category or "all").strip().lower()
+            if category_key != "all":
+                catalog = {
+                    name: meta
+                    for name, meta in catalog.items()
+                    if str(meta.get("category") or "").lower() == category_key
+                }
+
+            normalized_factor = None
+            if factor_name:
+                normalized_factor = _normalize_factor_name(str(factor_name))
+                if normalized_factor not in catalog:
+                    return fail(f"Unsupported or filtered factor: {factor_name}")
+                catalog = {normalized_factor: catalog[normalized_factor]}
+
+            if only_ic:
+                catalog = {
+                    name: meta
+                    for name, meta in catalog.items()
+                    if bool(meta.get("ic_history_available"))
+                }
+
+            sorted_items = sorted(catalog.items(), key=lambda item: item[0])
+            resolved_limit = max(0, int(limit or 0))
+            if resolved_limit:
+                sorted_items = sorted_items[:resolved_limit]
+            catalog = dict(sorted_items)
+            categories = sorted({str(meta.get("category", "unknown")) for meta in catalog.values()})
+
+            return ok({
+                "catalog": catalog,
+                "count": len(catalog),
+                "category": category_key,
+                "factor_name": normalized_factor,
+                "only_with_ic": only_ic,
+                "include_dsl_metadata": include_dsl,
+                "dsl": get_dsl_summary() if include_dsl else None,
+                "stats": {
+                    "ic_history_available_count": sum(
+                        1 for meta in catalog.values() if bool(meta.get("ic_history_available"))
+                    ),
+                    "category_count": len(categories),
+                    "categories": categories,
+                },
+                "source_chain": [
+                    "tools.quant.get_factor_catalog",
+                    "services.factor_catalog.build_factor_catalog",
+                    "tools.quant_definitions.SUPPORTED_FACTORS",
+                    "services.factor_candidate_compiler.DSL_WHITELIST",
+                    "storage.factor_ic_history",
+                ],
+            })
         except Exception as e:
             return fail(str(e))
 

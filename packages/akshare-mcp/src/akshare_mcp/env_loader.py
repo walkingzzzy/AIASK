@@ -7,6 +7,61 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
+LLM_ENV_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "FINANCIAL_SEMANTIC_API_KEY",
+    "FINANCIAL_SEMANTIC_BASE_URL",
+    "FINANCIAL_SEMANTIC_CONNECT_TIMEOUT_SEC",
+    "FINANCIAL_SEMANTIC_ENABLED",
+    "FINANCIAL_SEMANTIC_MAX_DOCS",
+    "FINANCIAL_SEMANTIC_MAX_TEXT_CHARS",
+    "FINANCIAL_SEMANTIC_MODEL",
+    "FINANCIAL_SEMANTIC_POOL_TIMEOUT_SEC",
+    "FINANCIAL_SEMANTIC_PROVIDER",
+    "FINANCIAL_SEMANTIC_TEMPERATURE",
+    "FINANCIAL_SEMANTIC_TIMEOUT_SEC",
+    "FINANCIAL_SEMANTIC_WRITE_TIMEOUT_SEC",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEYS",
+    "OPENAI_BASE_URL",
+}
+
+LLM_ENV_PREFIXES = (
+    "ANTHROPIC_",
+    "DASHSCOPE_",
+    "DEEPSEEK_",
+    "FACTOR_LLM_",
+    "FINANCIAL_SEMANTIC_",
+    "MOONSHOT_",
+    "OPENAI_",
+    "QWEN_",
+    "STRATEGY_FACTORY_LLM_",
+    "STRATEGY_EMBEDDING_",
+    "STRATEGY_LLM_",
+    "STRATEGY_PIPELINE_STAGE_",
+    "ZHIPU_",
+)
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _llm_env_file_priority_disabled() -> bool:
+    explicit = str(os.getenv("AIASK_LLM_ENV_FILE_PRIORITY", "")).strip().lower()
+    if explicit in {"0", "false", "no", "off"}:
+        return True
+    return _truthy(os.getenv("AIASK_DISABLE_LLM_ENV_FILE_PRIORITY"))
+
+
+def is_llm_env_key(key: str) -> bool:
+    name = str(key or "").strip()
+    if not name:
+        return False
+    return name in LLM_ENV_KEYS or any(name.startswith(prefix) for prefix in LLM_ENV_PREFIXES)
+
+
 def get_mcp_env_candidates(explicit_path: Optional[str] = None) -> list[Path]:
     env_from_var = explicit_path or os.getenv('AKSHARE_MCP_ENV', '').strip()
     candidates = [
@@ -65,9 +120,24 @@ def load_mcp_env(
                 continue
             if prefix_filter and not any(key.startswith(prefix) for prefix in prefix_filter):
                 continue
-            if override:
+            if override or (is_llm_env_key(key) and not _llm_env_file_priority_disabled()):
                 os.environ[key] = value
             else:
                 os.environ.setdefault(key, value)
         return env_path
     return None
+
+
+def load_mcp_llm_env(
+    *,
+    explicit_path: Optional[str] = None,
+    only_keys: Optional[Iterable[str]] = None,
+    only_prefixes: Optional[Iterable[str]] = None,
+) -> Optional[Path]:
+    """Load LLM-related .env values with file priority over process env."""
+    return load_mcp_env(
+        explicit_path=explicit_path,
+        override=True,
+        only_keys=only_keys,
+        only_prefixes=only_prefixes,
+    )

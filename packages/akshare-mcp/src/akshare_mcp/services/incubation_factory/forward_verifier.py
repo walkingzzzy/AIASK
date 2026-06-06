@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -13,8 +14,27 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# 前向验证的时间窗口（交易日）
-FORWARD_HORIZONS = [5, 10, 20]
+# 前向验证的时间窗口（交易日）。默认 [5,10,20]（零变化）；
+# P2-2：可经 STRATEGY_FACTORY_FORWARD_HORIZONS 覆盖（如 "5,10,20,40" 纳入长线窗口）。
+def _resolve_forward_horizons() -> list[int]:
+    raw = os.getenv("STRATEGY_FACTORY_FORWARD_HORIZONS")
+    if not raw:
+        return [5, 10, 20]
+    out: list[int] = []
+    for tok in str(raw).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            val = int(tok)
+        except ValueError:
+            continue
+        if val > 0 and val not in out:
+            out.append(val)
+    return out or [5, 10, 20]
+
+
+FORWARD_HORIZONS = _resolve_forward_horizons()
 
 # === INVERT-DESIGN P1 改动D：市场状态（regime）标签维度 ===
 # 每条信号 evidence 可携带三类 regime 标签，verify 据此分组聚合命中率，

@@ -213,10 +213,7 @@ def _enrich_rule_template_contract(
 
 
 def _rule_semantic_expected_move(strategy_type: str) -> str:
-    strategy_key = str(strategy_type or "").strip().lower()
-    if strategy_key in {"rsi", "gap_fill", "mean_reversion_short", "value_factor"}:
-        return "rebound_up"
-    return "up"
+    return "neutral"
 
 
 def _rule_failure_summary(
@@ -328,8 +325,8 @@ def _build_rule_semantic_contract_bundle(
         "evidences": [
             {
                 "evidence_id": entry_evidence_ids[0],
-                "source_type": "factor_research" if source == "factor_research" else "regime_context",
-                "direction": "up",
+                "source_type": "template_fallback",
+                "direction": "neutral",
                 "summary": (
                     f"{source} 认为 {strategy_key} 与 {regime} 环境匹配"
                     + (f"，top_factors={factor_names}" if factor_names else "")
@@ -343,7 +340,7 @@ def _build_rule_semantic_contract_bundle(
             {
                 "evidence_id": entry_evidence_ids[1],
                 "source_type": "rule_template_contract",
-                "direction": "up",
+                "direction": "neutral",
                 "summary": (
                     f"{strategy_name} 使用模板化 trade plan / risk rules / horizon。"
                     f" entry_bias={normalized_trade_plan.get('entry_bias')},"
@@ -360,7 +357,7 @@ def _build_rule_semantic_contract_bundle(
             {
                 "evidence_id": exit_evidence_ids[0],
                 "source_type": "risk_template",
-                "direction": "down",
+                "direction": "neutral",
                 "summary": f"退出/失效条件由模板风控定义：{failure_summary}。",
                 "proxy_only": True,
                 "target_symbols": list(target_symbol_list),
@@ -372,7 +369,10 @@ def _build_rule_semantic_contract_bundle(
     prediction_contract = {
         "generation_mode": "rule_semantic_contract",
         "primary_horizon_days": primary_horizon_days,
-        "target": "forward_return_positive",
+        "target": "forward_return_neutral",
+        "direction": "neutral",
+        "template_fallback_used": True,
+        "direction_source": "rule_template_diagnostic_fallback",
         "conflict_resolution_rule": {
             "policy": "prefer_invalidation_when_exit_evidence_present",
             "tie_breaker": "risk_first",
@@ -393,7 +393,7 @@ def _build_rule_semantic_contract_bundle(
                 "claim_id": exit_claim_id,
                 "claim_type": "exit",
                 "summary": f"当 {normalized_trade_plan.get('exit_bias') or 'risk_rule'} 出现时退出。",
-                "expected_move": "down",
+                "expected_move": "neutral",
                 "expected_horizon": min(primary_horizon_days, max(1, primary_horizon_days // 2)),
                 "evidence_ids": list(exit_evidence_ids),
                 "failure_condition": "entry thesis restored",

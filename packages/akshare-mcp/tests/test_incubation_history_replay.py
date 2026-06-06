@@ -106,6 +106,66 @@ def test_price_on_or_before_uses_historical_close_before_falling_back():
     assert db.calls[0] == ("600000", "2026-04-17", 1)
 
 
+def test_ensure_account_is_idempotent_for_same_strategy_and_run():
+    class _Db:
+        def __init__(self):
+            self.accounts: dict[str, dict] = {}
+            self.bindings: dict[tuple[str, str], dict] = {}
+            self.events: list[dict] = []
+
+        async def get_strategy_incubation_account(self, strategy_id):
+            rows = [dict(row) for (sid, _), row in self.bindings.items() if sid == strategy_id]
+            return rows[-1] if rows else None
+
+        async def get_paper_account_by_strategy(self, strategy_id):
+            for account in self.accounts.values():
+                if account.get("strategy_id") == strategy_id:
+                    return dict(account)
+            return None
+
+        async def save_paper_account(self, account):
+            self.accounts[account["id"]] = dict(account)
+            return dict(account)
+
+        async def save_strategy_incubation_account(
+            self,
+            strategy_id,
+            account_id,
+            stage="warmup",
+            status="active",
+            source_run_id=None,
+            metadata=None,
+        ):
+            key = (strategy_id, account_id)
+            self.bindings[key] = {
+                "strategy_id": strategy_id,
+                "account_id": account_id,
+                "stage": stage,
+                "status": status,
+                "source_run_id": source_run_id,
+                "metadata": dict(metadata or {}),
+            }
+            return dict(self.bindings[key])
+
+        async def save_strategy_domain_event(self, payload):
+            self.events.append(dict(payload))
+            return dict(payload)
+
+    db = _Db()
+    service = StrategyIncubationService()
+    strategy = {"id": "strategy-idempotent", "name": "idempotent", "strategy_type": "momentum"}
+
+    first = asyncio.run(service.ensure_account(db, strategy, stage="warmup", source_run_id="factory-run-1"))
+    second = asyncio.run(service.ensure_account(db, strategy, stage="warmup", source_run_id="factory-run-1"))
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert first["account"]["id"] == second["account"]["id"]
+    assert len(db.accounts) == 1
+    assert len(db.bindings) == 1
+    assert list(db.bindings.values())[0]["source_run_id"] == "factory-run-1"
+
+
 def test_replay_strategy_history_replays_market_days_in_chronological_order():
     service = _RecordingReplayService()
     db = _ReplayDb()
