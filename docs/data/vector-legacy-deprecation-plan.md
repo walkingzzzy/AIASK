@@ -1,7 +1,7 @@
 # 向量层旧表退役计划（Vector Legacy Tables Deprecation）
 
 > 起始日期：2026-05-18
-> 维护原则：与 [PROJECT_AUDIT_REPORT.md §7.6](../../PROJECT_AUDIT_REPORT.md) 同源；任何新代码不得新增旧表写入。
+> 维护原则：沿用历史 `PROJECT_AUDIT_REPORT.md §7.6` 的结论；任何新代码不得新增旧表写入。
 
 ---
 
@@ -13,8 +13,8 @@
 | `pattern_vectors` | K线形态向量 | `vector_profiles`（profile_type='pattern'） + `kline_pattern_windows` |
 | `vector_documents` | 市场文档向量 | `market_documents` + `market_doc_chunks`（FTS5 索引） |
 
-旧表定义位置：[`_schema_market_phase_3.py:203, 209, 220`](../../packages/akshare-mcp/src/akshare_mcp/storage/sqlite/_schema_market_phase_3.py)。
-新表定义位置：[`schema_vector.py`](../../packages/akshare-mcp/src/akshare_mcp/storage/sqlite/schema_vector.py)（统一向量层 schema）。
+旧表定义位置：[`_schema_market_phase_3.py:203, 209, 220`](../../packages/aiask-quant-core/src/aiask_quant_core/storage/sqlite/_schema_market_phase_3.py)。
+新表定义位置：[`schema_vector.py`](../../packages/aiask-quant-core/src/aiask_quant_core/storage/sqlite/schema_vector.py)（统一向量层 schema）。
 
 ---
 

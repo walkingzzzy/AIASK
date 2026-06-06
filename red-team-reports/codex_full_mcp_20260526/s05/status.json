@@ -1,1 +1,0 @@
-{"scenario_id":"S05","title":"资金流/北向/龙虎榜","summary":{"Pass":1,"Degraded":2,"Fail-graceful":0},"v1_v2_delta":{"north_fund":"政策性RFC-001","dragon_tiger":"政策性 sina+eastmoney双跪","sector_fund_flow":"db.market_blocks fallback OK"}}

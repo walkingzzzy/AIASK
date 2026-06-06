@@ -1,1 +1,0 @@
-{"scenario_id":"S03","title":"新闻/公告/研报/事件","summary":{"Pass":2,"Degraded":3,"Fail-graceful":0,"Fail-schema":0},"tools":["get_market_news","get_stock_news","get_stock_research","get_analyst_ranking","event_manager"]}

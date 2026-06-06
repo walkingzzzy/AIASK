@@ -2,10 +2,10 @@
 
 Date: 2026-04-27
 
-This matrix tracks AIASK-native parity against the vendored Hermes v0.14.0
-snapshot. The original financial-product runtime scope is retained as a
-compatibility label, but the executable matrix now targets full Hermes runtime
-coverage.
+This matrix tracks AIASK-native parity against the vendored Hermes 0.15.1
+snapshot at `7402706c5`. The original financial-product runtime scope is
+retained as a compatibility label, and `v0.14_delta` remains a historical
+capability layer rather than the current baseline.
 
 The executable source of truth is
 `packages/agent/src/aiask_agent/capabilities.py`; `/v1/capabilities/parity` and
