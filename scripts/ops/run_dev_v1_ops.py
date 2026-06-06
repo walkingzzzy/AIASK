@@ -43,7 +43,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "db" / "akshare_mcp.sqlite3"
 
 
@@ -383,7 +383,14 @@ def cmd_cycle(args: argparse.Namespace) -> int:
     start = time.monotonic()
     with open(log_file, "wb") as fout, open(err_file, "wb") as ferr:
         proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", "-u", "run_strategy_factory.py", "--once"],
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                "-u",
+                str(ROOT / "scripts" / "factories" / "run_strategy_factory.py"),
+                "--once",
+            ],
             cwd=str(ROOT), stdout=fout, stderr=ferr,
         )
         print(f"  PID: {proc.pid}", flush=True)

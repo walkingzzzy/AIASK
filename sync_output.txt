@@ -1,0 +1,85 @@
+﻿F:\Python311\python.exe : [DataSource] TDX_LOCAL_ONLY=1, skip Tushare/AkShare init; tdx_dir=C:\new_tdx_test
+At line:1 char:200
++ ... ctory\src"; F:\Python311\python.exe scripts\run_tdx_sync.py --univers ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([DataSource] TD...C:\new_tdx_test:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[DataSource] AkShare index kline failed for sh000001: HTTPSConnectionPool(host='push2his.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/kline/get?secid
+=1.000001&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58&klt=101&fqt=0&beg=19900101&end=20500101 (Caused by ProxyError('Unable to connect 
+to proxy', RemoteDisconnected('Remote end closed connection without response')))
+[DataSource] index kline empty for 000001.SH -> sh000001; not falling back to stock path to avoid cross-symbol contamination
+[DataSource] AkShare index kline failed for sz399300: HTTPSConnectionPool(host='push2his.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/kline/get?secid
+=0.399300&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58&klt=101&fqt=0&beg=19900101&end=20500101 (Caused by ProxyError('Unable to connect 
+to proxy', RemoteDisconnected('Remote end closed connection without response')))
+[DataSource] index kline empty for 399300.SZ -> sz399300; not falling back to stock path to avoid cross-symbol contamination
+[DataSource] AkShare index kline failed for sz399001: HTTPSConnectionPool(host='push2his.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/kline/get?secid
+=0.399001&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58&klt=101&fqt=0&beg=19900101&end=20500101 (Caused by ProxyError('Unable to connect 
+to proxy', RemoteDisconnected('Remote end closed connection without response')))
+[DataSource] index kline empty for 399001.SZ -> sz399001; not falling back to stock path to avoid cross-symbol contamination
+[DataSource] AkShare index kline failed for sz399006: HTTPSConnectionPool(host='push2his.eastmoney.com', port=443): Max retries exceeded with url: /api/qt/stock/kline/get?secid
+=0.399006&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58&klt=101&fqt=0&beg=19900101&end=20500101 (Caused by ProxyError('Unable to connect 
+to proxy', RemoteDisconnected('Remote end closed connection without response')))
+[DataSource] index kline empty for 399006.SZ -> sz399006; not falling back to stock path to avoid cross-symbol contamination
+[run_tdx_sync] DB        = C:/Users/walking/Desktop/aiask/data/db/akshare_mcp.sqlite3
+[run_tdx_sync] DB size   = 3686.3 MB
+[run_tdx_sync] tdx_dir   = ?
+[run_tdx_sync] tdx_only  = 1
+[run_tdx_sync] start     = 2026-06-04T00:15:19.122137
+
+
+  0%|          | 0/3 [00:00<?, ?it/s]
+ 33%|███▎      | 1/3 [00:00<00:00,  2.70it/s]
+ 67%|██████▋   | 2/3 [00:00<00:00,  2.40it/s]
+100%|██████████| 3/3 [00:01<00:00,  2.53it/s]
+
+=== Task Summary ===
+task                     ok   skip elapsed    stats
+----------------------------------------------------------------------------------------------------
+sync_trading_dates       OK              0.83s  {'inserted': 98, 'first': '20260105', 'last': '20260603'}
+sync_stock_basic         OK              9.23s  {'inserted': 5529}
+sync_quote_snapshots     OK            163.53s  {'updated': 5518, 'tried': 5534}
+sync_index_klines        OK              1.37s  {'updated': 0, 'rejected': 0, 'index_count': 4}
+sync_sector_basic        OK             32.65s  {'sectors': 586, 'members': 30511, 'completeness': {'updated': 1, 'data_key': 'sync_sector_basic', 'row_count': 37999, 'as_of_date': '2026-06-03 16:18:50'}}
+sync_more_info           OK              6.44s  {'updated': 299, 'tried': 300}
+sync_consensus           OK              6.06s  {'updated': 300}
+sync_relation            OK             30.71s  {'updated': 299, 'completeness': {'updated': 1, 'data_key': 'sync_relation', 'row_count': 87694, 'as_of_date': '2026-06-03 16:19:33'}}
+sync_gpjy_daily          OK              4.61s  {'updated': 298}
+sync_bkjy_daily          OK             12.41s  {'updated': 586, 'tried': 586}
+sync_scjy_daily          OK              0.01s  {'updated': 1}
+sync_kzz_basic           OK             50.95s  {'updated': 324, 'tried': 339}
+sync_ipo_events          OK              0.01s  {'inserted': 2}
+sync_divid_events        OK              8.55s  {'inserted': 7}
+sync_financial_pro       OK   SKIP       0.00s  {}
+sync_basic_financial     OK              8.47s  {'updated': 299, 'tried': 300}
+sync_stock_fund_flow     OK              0.00s  {'updated': 0}
+sync_derived_factory_market_data OK             20.26s  {'north_fund_flow': {'updated': 0}, 'margin_market_flow': {'updated': 6}, 'margin_detail': {'updated': 0}, 'strategy_factory_market_internals': {'updated': 1, 'symbol_count': 5213}}
+sync_external_gap_data   OK            173.14s  {'enabled': True, 'provider': 'akshare_free', 'north_fund_flow': {'ok': True, 'updated': 2264, 'provider': 'akshare.stock_hsgt_hist_em'}, 'margin_market_flow': {'ok': True, 'updated': 97, 'start': '20260306', 'end': '20260604', 'failed_szse_dates': 52}, 'margin_detail': {'ok': True, 'updated': 39590, 'days': 30, 'failed_dates': 40}}
+record_tdx_data_completeness OK              0.12s  {'updated': 9}
+
+=== Summary ===
+  ok=19  skipped=1  failed=0  total=20  elapsed=529.4s
+
+=== Table Counts (after sync) ===
+  trading_dates                 4175
+  stocks                        5534
+  market_blocks                  722
+  block_stocks                 37277
+  tdx_stock_extra               6616
+  tdx_relation                 87694
+  tdx_consensus                 6898
+  tdx_kzz_basic                  336
+  tdx_gpjy_daily               12615
+  tdx_bkjy_daily               12892
+  tdx_scjy_daily                  10
+  tdx_financial_pro                0
+  stock_quotes                 31455
+  north_fund_flow               2264
+  margin_market_flow             121
+  margin_detail                57566
+  stock_fund_flow               6017
+  strategy_factory_market_internals          16
+  tdx_data_completeness            9
+  events                         524
+TQ数据连接已关闭
+                                             

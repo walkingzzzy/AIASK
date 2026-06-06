@@ -74,7 +74,7 @@ def _configure_stdio_utf8() -> None:
 _configure_stdio_utf8()
 
 # 项目路径
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _bootstrap_local_package_paths() -> None:
@@ -117,6 +117,12 @@ def _load_dotenv():
             value = value.strip()
             if key:
                 os.environ.setdefault(key, value)
+    try:
+        from strategy_factory.infrastructure.env_loader import load_strategy_llm_env
+
+        load_strategy_llm_env(explicit_path=str(env_path))
+    except Exception:
+        pass
 
 
 _load_dotenv()
