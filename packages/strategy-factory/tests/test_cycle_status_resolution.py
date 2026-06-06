@@ -76,6 +76,18 @@ def test_success_no_strategy_when_no_gate3_pass() -> None:
     assert status == FactoryRunStatus.SUCCESS_NO_STRATEGY
 
 
+def test_observe_first_with_observed_candidates_is_success_without_gate3_pass() -> None:
+    summary = {
+        "gate_3_passed": 0,
+        "submitted": 0,
+        "autonomy_task_count": 8,
+        "observe_first_enabled": True,
+        "observed_candidate_count": 5,
+    }
+    status = resolve_run_status("success", _ok_stages(), summary=summary)
+    assert status == FactoryRunStatus.SUCCESS
+
+
 # ---------------------------------------------------------------------------
 # partial_infra
 # ---------------------------------------------------------------------------

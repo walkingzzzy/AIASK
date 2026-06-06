@@ -102,6 +102,121 @@ def test_trade_prediction_contract_can_be_derived_from_legacy_candidate() -> Non
     assert frozen["contract"]["direction"] == "up"
 
 
+def test_resolved_candidate_envelope_derives_ready_trade_prediction_from_legacy_fields() -> None:
+    candidate = {
+        "id": "legacy-resolved",
+        "name": "legacy resolved",
+        "strategy_type": "momentum",
+        "target_symbols": ["600000"],
+        "params": {
+            "as_of_date": "2026-06-05",
+            "holding_horizon": {"horizon": "next_day"},
+            "trade_plan": {"entry_bias": "long", "holding_horizon": "next_day"},
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim-1",
+                        "expected_move": {"return_pct": 0.025},
+                        "confidence": 0.66,
+                        "evidence_ids": ["ev-1"],
+                    }
+                ]
+            },
+            "evidence_chain": {"evidences": [{"evidence_id": "ev-1", "source": "test"}]},
+        },
+    }
+
+    resolved = apply_resolved_candidate_envelope(candidate)
+
+    contract = resolved["trade_prediction_contract"]
+    assert resolved["trade_prediction_contract_status"] == TRADE_PREDICTION_CONTRACT_READY
+    assert resolved["trade_prediction_contract_hash"]
+    assert contract["stock_code"] == "600000.SH"
+    assert contract["direction"] == "up"
+    assert contract["target_trading_date"] == "2026-06-08"
+    assert contract["contract_source"] == DERIVED_FROM_LEGACY_CONTRACT
+
+
+def test_resolved_candidate_envelope_keeps_trade_prediction_reject_reasons() -> None:
+    resolved = apply_resolved_candidate_envelope(
+        {
+            "id": "missing-trade-prediction-fields",
+            "name": "missing fields",
+            "strategy_type": "momentum",
+            "params": {
+                "prediction_contract": {"claims": [{"claim_id": "claim-1"}]},
+            },
+        }
+    )
+
+    assert resolved["trade_prediction_contract_status"] == TRADE_PREDICTION_CONTRACT_REJECTED
+    assert "stock_code" in resolved["trade_prediction_contract_missing_fields"]
+    assert "missing:stock_code" in resolved["trade_prediction_contract_reject_reasons"]
+    assert resolved["params"]["trade_prediction_contract_missing_fields"] == resolved["trade_prediction_contract_missing_fields"]
+    assert resolved["params"]["trade_prediction_contract_reject_reasons"] == resolved["trade_prediction_contract_reject_reasons"]
+
+
+def test_topn_target_injection_makes_local_candidate_trade_prediction_ready() -> None:
+    from strategy_factory.application.research.runner import ResearchPlaneRunner
+    from strategy_factory.application.semantic_contract import ensure_candidate_semantic_contract
+    from strategy_factory.domain.strategy_profile import apply_candidate_strategy_profile
+
+    candidates = [
+        {
+            "id": "local-targetless",
+            "name": "local targetless",
+            "strategy_type": "momentum",
+            "holding_horizon": {"min_days": 3, "max_days": 12},
+            "trade_plan": {
+                "entry_bias": "trend_follow_long",
+                "exit_bias": "time_stop",
+            },
+            "params": {
+                "holding_horizon": {"min_days": 3, "max_days": 12},
+                "trade_plan": {
+                    "entry_bias": "trend_follow_long",
+                    "exit_bias": "time_stop",
+                },
+            },
+        }
+    ]
+
+    injected, report = ResearchPlaneRunner._inject_topn_targets_into_local_candidates(
+        candidates,
+        {
+            "snapshot_id": "fmt-test",
+            "as_of_date": "2026-06-05",
+            "constituents": [
+                {"code": "002241", "rank": 1},
+                {"code": "000063", "rank": 2},
+                {"code": "603501", "rank": 3},
+            ],
+        },
+        {"date": "2026-06-05"},
+    )
+    resolved = apply_resolved_candidate_envelope(
+        apply_candidate_strategy_profile(
+            ensure_candidate_semantic_contract(injected[0]),
+            snapshot={"date": "2026-06-05"},
+        )
+    )
+
+    assert report["injected_candidate_count"] == 1
+    assert set(resolved["target_symbols"]) == {"002241", "000063", "603501"}
+    assert resolved["trade_prediction_contract_status"] == TRADE_PREDICTION_CONTRACT_READY
+    assert resolved["trade_prediction_contract_hash"]
+    assert resolved["trade_prediction_contract"]["stock_code"] in {
+        "002241.SZ",
+        "000063.SZ",
+        "603501.SH",
+    }
+    assert resolved["trade_prediction_contract"]["direction"] == "neutral"
+    assert resolved["trade_prediction_contract"]["direction_source"] == "target_injection_diagnostic_fallback"
+    assert resolved["trade_prediction_contract"]["template_fallback_used"] is True
+    assert resolved["diagnostic_only"] is True
+    assert resolved["trade_prediction_contract"]["horizon"] == "3d"
+
+
 def test_apply_resolved_candidate_envelope_attaches_trade_prediction_fields() -> None:
     from strategy_factory.application.candidate_contract import build_logic_signature
 

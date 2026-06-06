@@ -22,7 +22,9 @@ CYCLE_PIPELINE_STAGE_ORDER: tuple[str, ...] = (
     "factor_research",
     "readiness",
     "research_generation",
-    "candidate_governance",
+    "evidence_scoring",
+    "observe_intake",
+    "promotion_review",
     "elimination",
     "finalize",
 )
@@ -32,7 +34,9 @@ CYCLE_PIPELINE_STAGE_ALIASES: dict[str, tuple[str, ...]] = {
     "factor_research": ("factor_research",),
     "readiness": ("readiness",),
     "research_generation": ("spawn", "autonomy"),
-    "candidate_governance": ("quality_gate", "backtest", "deduplicate", "submit"),
+    "evidence_scoring": ("evidence_scoring", "quality_gate", "backtest"),
+    "observe_intake": ("observe_intake", "deduplicate", "submit"),
+    "promotion_review": ("promotion_review", "submit"),
     "elimination": ("elimination",),
     "finalize": ("finalize",),
 }

@@ -330,7 +330,23 @@ def _legacy_gate_mapping(
 ) -> dict[str, Any]:
     quality = dict(quality_gate_report or {})
     submit = dict(submit_result or {})
+    legacy_gate_executed = quality.get("legacy_gate_executed")
+    if legacy_gate_executed is None:
+        legacy_gate_executed = bool(
+            quality.get("gate_0")
+            or quality.get("pre_gate")
+            or quality.get("gate_1")
+            or quality.get("gate_2")
+        )
+    legacy_funnel_executed = quality.get("legacy_funnel_executed")
+    if legacy_funnel_executed is None:
+        legacy_funnel_executed = bool(legacy_gate_executed)
     return {
+        "artifact_mode": _string(quality.get("evidence_scoring_mode")) or "legacy_gate_mapping",
+        "legacy_gate_executed": bool(legacy_gate_executed),
+        "legacy_funnel_executed": bool(legacy_funnel_executed),
+        "legacy_gate_report_mode": _string(quality.get("legacy_gate_report_mode")) or None,
+        "evidence_scoring_mode": _string(quality.get("evidence_scoring_mode")) or None,
         "gate_a": ["gate_0", "pre_gate", "gate_1", "semantic_contract", "strategy_reviewer"],
         "gate_b": ["gate_2", "gate_3", "submission_gate", "dedup", "submit"],
         "gate_c": [

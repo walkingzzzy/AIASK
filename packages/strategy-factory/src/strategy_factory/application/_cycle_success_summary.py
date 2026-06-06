@@ -71,6 +71,26 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _resolve_event_task_count(
+    autonomy_summary: dict[str, Any],
+    task_scan_summary: dict[str, Any],
+    task_source_counts: dict[str, Any],
+) -> int:
+    """Prefer explicit counts, but keep selected event-driven tasks visible.
+
+    A real event scan can select event-driven tasks while later autonomy work
+    is skipped or produces no candidates. In that path the autonomy summary may
+    report zero, but the scan/source counts still prove Strategy Factory had
+    real event tasks to consume.
+    """
+
+    return max(
+        _safe_int(autonomy_summary.get("event_task_count")),
+        _safe_int(task_scan_summary.get("event_task_count")),
+        _safe_int(task_source_counts.get("event_driven")),
+    )
+
+
 def _add_count(counts: dict[str, int], key: str, value: Any) -> None:
     count = _safe_int(value)
     if count > 0:
@@ -154,6 +174,11 @@ def build_success_run_summary(
         autonomy_summary.get("snapshot_task_count")
         or task_source_counts.get("snapshot", 0)
     )
+    event_task_count = _resolve_event_task_count(
+        autonomy_summary,
+        task_scan_summary,
+        task_source_counts,
+    )
     autonomy_task_briefs = _build_autonomy_task_briefs(autonomy_summary)
     gate_0_summary = dict(quality_gate_report.get("gate_0") or {})
     pre_gate_summary = dict(quality_gate_report.get("pre_gate") or {})
@@ -213,7 +238,27 @@ def build_success_run_summary(
         "pipeline_fallback_counts": dict(autonomy_summary.get("pipeline_fallback_counts") or {}),
         "task_timeout_skip_count": int(autonomy_summary.get("task_timeout_skip_count") or 0),
         "task_timeout_policy": autonomy_summary.get("task_timeout_policy"),
-        "event_task_count": autonomy_summary.get("event_task_count", 0),
+        "event_task_count": event_task_count,
+        "single_anchor_event_count": int(
+            autonomy_summary.get("single_anchor_event_count")
+            or task_scan_summary.get("single_anchor_event_count")
+            or 0
+        ),
+        "multi_source_confirmed_event_count": int(
+            autonomy_summary.get("multi_source_confirmed_event_count")
+            or task_scan_summary.get("multi_source_confirmed_event_count")
+            or 0
+        ),
+        "conflict_event_count": int(
+            autonomy_summary.get("conflict_event_count")
+            or task_scan_summary.get("conflict_event_count")
+            or 0
+        ),
+        "news_only_rejected_count": int(
+            autonomy_summary.get("news_only_rejected_count")
+            or task_scan_summary.get("news_only_rejected_count")
+            or 0
+        ),
         "snapshot_task_count": snapshot_task_count,
         "bulk_stock_task_count": autonomy_summary.get("bulk_stock_task_count", 0),
         "bulk_stock_matrix_enabled": bool(task_scan_summary.get("bulk_stock_matrix_enabled")),
@@ -321,10 +366,30 @@ def build_success_run_summary(
         "bulk_stock_matrix_overflow_task_count": int(
             task_scan_summary.get("bulk_stock_matrix_overflow_task_count") or 0
         ),
+        "router_enabled": bool(task_scan_summary.get("router_enabled")),
+        "router_strict": bool(task_scan_summary.get("router_strict")),
+        "router_telemetry_enabled": bool(task_scan_summary.get("router_telemetry_enabled")),
+        "router_candidate_stock_count": int(task_scan_summary.get("router_candidate_stock_count") or 0),
+        "router_applied_count": int(task_scan_summary.get("router_applied_count") or 0),
+        "router_status_counts": dict(task_scan_summary.get("router_status_counts") or {}),
+        "router_fallback_reason_counts": dict(
+            task_scan_summary.get("router_fallback_reason_counts") or {}
+        ),
+        "router_family_counts": dict(task_scan_summary.get("router_family_counts") or {}),
+        "router_holding_bucket_counts": dict(
+            task_scan_summary.get("router_holding_bucket_counts") or {}
+        ),
+        "profile_summary_present_count": int(task_scan_summary.get("profile_summary_present_count") or 0),
+        "profile_summary_missing_count": int(task_scan_summary.get("profile_summary_missing_count") or 0),
+        "profile_summary_generated_count": int(task_scan_summary.get("profile_summary_generated_count") or 0),
+        "selected_router_applied_count": int(task_scan_summary.get("selected_router_applied_count") or 0),
+        "selected_profile_summary_missing_count": int(
+            task_scan_summary.get("selected_profile_summary_missing_count") or 0
+        ),
         "task_source_counts": task_source_counts,
         "scanner_task_types": task_scan_summary.get("task_types") or {},
         "event_snapshot_mixed": bool(
-            int(autonomy_summary.get("event_task_count") or 0) > 0 and snapshot_task_count > 0
+            event_task_count > 0 and snapshot_task_count > 0
         ),
         "max_research_tasks": int(autonomy_summary.get("max_research_tasks") or 0),
         "max_bulk_research_tasks": int(autonomy_summary.get("max_bulk_research_tasks") or 0),

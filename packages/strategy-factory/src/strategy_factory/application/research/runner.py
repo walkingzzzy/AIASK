@@ -15,12 +15,14 @@ from typing import Any
 
 from .candidate_origin import count_candidate_origins
 from ..candidate_contract import apply_resolved_candidate_envelope
+from ..semantic_contract import ensure_candidate_semantic_contract
 from .contracts import build_research_plane_artifact
 from ..services.task_orchestrator import TaskOrchestrator
 from ...domain.constants import (
     FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
     is_factory_factor_auto_refresh_enabled,
 )
+from ...domain.market_evidence import apply_evidence_first_candidate, summarize_generation_quality
 from ...domain.strategy_profile import apply_candidate_strategy_profile
 from ..services.readiness_service import resolve_factor_refresh_trigger
 
@@ -210,15 +212,37 @@ class ResearchPlaneRunner:
             full_market_topn = {}
             full_market_score_rows = []
 
+        local_candidates, topn_target_injection = self._inject_topn_targets_into_local_candidates(
+            local_candidates,
+            full_market_topn,
+            snapshot,
+        )
+        if int(topn_target_injection.get("injected_candidate_count") or 0) > 0:
+            local_candidates, target_sanitization = await self._sanitize_local_spawn_targets(
+                local_candidates,
+                db,
+            )
+        local_spawn_report = self._annotate_local_spawn_report(
+            local_spawn_report,
+            target_sanitization=target_sanitization,
+            topn_target_injection=topn_target_injection,
+        )
+
         profiled_local_candidates = [
             apply_resolved_candidate_envelope(
-                apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+                apply_candidate_strategy_profile(
+                    ensure_candidate_semantic_contract(candidate),
+                    snapshot=snapshot,
+                )
             )
             for candidate in local_candidates
         ]
         profiled_autonomy_candidates = [
             apply_resolved_candidate_envelope(
-                apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+                apply_candidate_strategy_profile(
+                    ensure_candidate_semantic_contract(candidate),
+                    snapshot=snapshot,
+                )
             )
             for candidate in autonomy_candidates
         ]
@@ -254,6 +278,33 @@ class ResearchPlaneRunner:
 
         # PR-AI1: 股票代码白名单过滤 — 剔除 LLM 幻觉出的无效代码
         generated_candidates = await self._filter_invalid_symbols(generated_candidates, db)
+        generated_candidates = [
+            apply_resolved_candidate_envelope(
+                apply_candidate_strategy_profile(
+                    ensure_candidate_semantic_contract(
+                        apply_evidence_first_candidate(candidate, snapshot=snapshot)
+                    ),
+                    snapshot=snapshot,
+                )
+            )
+            for candidate in generated_candidates
+        ]
+        generation_quality = summarize_generation_quality(generated_candidates)
+        local_spawn_summary = dict((local_spawn_report or {}).get("summary") or {})
+        local_spawn_summary.update(
+            {
+                "candidate_count": len(generated_candidates),
+                "direction_counts": dict(generation_quality.get("direction_counts") or {}),
+                "confidence_distribution": dict(generation_quality.get("confidence_distribution") or {}),
+                "evidence_source_counts": dict(generation_quality.get("evidence_source_counts") or {}),
+                "template_dominance_count": int(generation_quality.get("template_dominance_count") or 0),
+                "factor_backed_candidate_count": int(generation_quality.get("factor_backed_candidate_count") or 0),
+                "event_backed_candidate_count": int(generation_quality.get("event_backed_candidate_count") or 0),
+                "non_proxy_evidence_ratio_mean": generation_quality.get("non_proxy_evidence_ratio_mean"),
+                "generation_quality_flags": list(generation_quality.get("generation_quality_flags") or []),
+            }
+        )
+        local_spawn_report = {**dict(local_spawn_report or {}), "summary": local_spawn_summary}
 
         return ResearchGenerationResult(
             local_candidates=profiled_local_candidates,
@@ -328,6 +379,243 @@ class ResearchPlaneRunner:
                 if token and token not in seen:
                     seen.append(token)
         return seen
+
+    @staticmethod
+    def _topn_target_codes(full_market_topn: dict[str, Any], *, limit: int = 24) -> list[str]:
+        payload = dict(full_market_topn or {})
+        values: list[Any] = []
+        values.extend(list(payload.get("target_symbols") or []))
+        for item in list(payload.get("constituents") or []):
+            if isinstance(item, dict):
+                values.append(item.get("code") or item.get("symbol"))
+            else:
+                values.append(item)
+        codes: list[str] = []
+        for value in values:
+            code = str(value or "").strip()
+            if not code or code in codes:
+                continue
+            codes.append(code)
+            if len(codes) >= max(1, int(limit or 24)):
+                break
+        return codes
+
+    @staticmethod
+    def _snapshot_as_of(snapshot: dict[str, Any], full_market_topn: dict[str, Any]) -> str | None:
+        for value in (
+            dict(full_market_topn or {}).get("as_of_date"),
+            dict(full_market_topn or {}).get("as_of"),
+            dict(snapshot or {}).get("as_of"),
+            dict(snapshot or {}).get("as_of_date"),
+            dict(snapshot or {}).get("date"),
+            dict(snapshot or {}).get("trading_date"),
+            dict(snapshot or {}).get("snapshot_date"),
+        ):
+            token = str(value or "").strip()
+            if token:
+                return token
+        return None
+
+    @staticmethod
+    def _candidate_horizon_days(candidate: dict[str, Any]) -> int:
+        params = dict(candidate.get("params") or {})
+        horizon = dict(candidate.get("holding_horizon") or params.get("holding_horizon") or {})
+        for key in ("min_days", "target_days", "max_days", "alpha_half_life"):
+            try:
+                value = int(float(horizon.get(key)))
+            except Exception:
+                continue
+            if value > 0:
+                return max(1, min(20, value))
+        return 1
+
+    @classmethod
+    def _inject_topn_targets_into_local_candidates(
+        cls,
+        candidates: list[dict[str, Any]],
+        full_market_topn: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        topn_codes = cls._topn_target_codes(full_market_topn)
+        if not candidates or not topn_codes:
+            return list(candidates or []), {
+                "enabled": bool(topn_codes),
+                "source": "full_market_topn",
+                "available_code_count": len(topn_codes),
+                "injected_candidate_count": 0,
+                "injected_symbol_count": 0,
+            }
+
+        as_of = cls._snapshot_as_of(snapshot, full_market_topn)
+        snapshot_id = str(
+            dict(full_market_topn or {}).get("snapshot_id")
+            or dict(full_market_topn or {}).get("run_id")
+            or dict(snapshot or {}).get("factory_run_id")
+            or dict(snapshot or {}).get("trace_id")
+            or "current"
+        ).strip() or "current"
+        output: list[dict[str, Any]] = []
+        injected_candidate_count = 0
+        injected_symbol_count = 0
+        for index, candidate in enumerate(list(candidates or [])):
+            item = dict(candidate or {})
+            if cls._candidate_target_symbols(item):
+                output.append(item)
+                continue
+
+            budget = 1 if len(topn_codes) <= 1 else min(3, len(topn_codes))
+            start = (index * budget) % len(topn_codes)
+            selected = list(dict.fromkeys(topn_codes[(start + offset) % len(topn_codes)] for offset in range(budget)))
+            if not selected:
+                output.append(item)
+                continue
+
+            params = dict(item.get("params") or {})
+            research_task = dict(item.get("research_task") or params.get("research_task") or {})
+            stock_pool = {"selection_mode": "explicit", "symbols": list(selected), "codes": list(selected)}
+            strategy_type = str(item.get("strategy_type") or params.get("strategy_type") or "strategy").strip() or "strategy"
+            candidate_family = str(item.get("candidate_family") or params.get("candidate_family") or strategy_type).strip() or strategy_type
+            horizon_days = cls._candidate_horizon_days(item)
+            evidence_id = f"full_market_topn:{snapshot_id}:{','.join(selected)}"
+
+            evidence_chain = dict(item.get("evidence_chain") or params.get("evidence_chain") or {})
+            if not evidence_chain:
+                evidence_chain = {
+                    "contract_version": "strategy_factory.semantic_contract.v1",
+                    "producer": "strategy_factory",
+                    "generation_mode": "full_market_topn_target_injection",
+                    "thesis": "Candidate target pool derived from the Strategy Factory full-market Top N snapshot.",
+                    "evidences": [
+                        {
+                            "evidence_id": evidence_id,
+                            "source_type": "template_fallback",
+                            "source": "full_market_topn",
+                            "direction": "neutral",
+                            "summary": "Selected symbols only provide the target universe; this is not alpha evidence.",
+                            "proxy_only": True,
+                            "target_symbols": list(selected),
+                            "horizon_days": horizon_days,
+                            "observed_at": as_of,
+                            "raw_confidence": 0.45,
+                            "calibrated_confidence": 0.45,
+                            "support_metric": {
+                                "snapshot_id": snapshot_id,
+                                "available_code_count": len(topn_codes),
+                                "selected_symbols": list(selected),
+                                "target_injection_only": True,
+                            },
+                        }
+                    ],
+                }
+
+            prediction_contract = dict(item.get("prediction_contract") or params.get("prediction_contract") or {})
+            if not prediction_contract:
+                prediction_contract = {
+                    "contract_version": "strategy_factory.prediction_contract.v1",
+                    "producer": "strategy_factory",
+                    "generation_mode": "full_market_topn_target_injection",
+                    "primary_horizon_days": horizon_days,
+                    "target": "forward_return_neutral",
+                    "direction": "neutral",
+                    "confidence": 0.45,
+                    "direction_source": "target_injection_diagnostic_fallback",
+                    "confidence_source": "target_injection_diagnostic_fallback",
+                    "template_fallback_used": True,
+                    "claims": [
+                        {
+                            "claim_id": "claim_full_market_topn_entry",
+                            "claim_type": "entry",
+                            "expected_move": "neutral",
+                            "expected_horizon": horizon_days,
+                            "confidence": 0.45,
+                            "calibrated_confidence": 0.45,
+                            "evidence_ids": [evidence_id],
+                            "target_symbols": list(selected),
+                            "summary": "Full-market Top N injection supplies target symbols only and stays diagnostic until real evidence arrives.",
+                        }
+                    ],
+                }
+
+            confidence_contract = dict(item.get("confidence_contract") or params.get("confidence_contract") or {})
+            if not confidence_contract:
+                confidence_contract = {
+                    "contract_version": "p2-stable/v1",
+                    "producer": "strategy_factory",
+                    "probability": 0.45,
+                    "calibrated_probability": 0.45,
+                    "prediction_quality": {
+                        "raw_probability": 0.45,
+                        "calibrated_probability": 0.45,
+                        "support_samples": len(topn_codes),
+                        "calibration_method": "full_market_topn_conservative_prior",
+                        "quality": "diagnostic",
+                    },
+                }
+
+            research_task = {
+                **research_task,
+                "task_source": str(research_task.get("task_source") or "snapshot").strip() or "snapshot",
+                "synthetic_local_spawn": True,
+                "target_pool_source": "full_market_topn",
+                "target_symbols": list(selected),
+                "stock_pool": stock_pool,
+                "target_symbol_policy": "strict_intersection",
+                "universe_expansion_policy": "forbid",
+                "validation_focus": str(research_task.get("validation_focus") or "candidate_target_only").strip()
+                or "candidate_target_only",
+                "candidate_family": candidate_family,
+                "preferred_strategy_types": list(research_task.get("preferred_strategy_types") or [strategy_type]),
+                "allowed_strategy_types": list(research_task.get("allowed_strategy_types") or [strategy_type]),
+                "gate_1_representative_count": min(3, len(selected)),
+                "as_of_date": as_of,
+            }
+            params.update(
+                {
+                    "research_task": research_task,
+                    "requested_target_symbols": list(selected),
+                    "target_symbols": list(selected),
+                    "stock_pool": stock_pool,
+                    "target_pool_source": "full_market_topn",
+                    "evidence_chain": evidence_chain,
+                    "prediction_contract": prediction_contract,
+                    "confidence_contract": confidence_contract,
+                    "prediction_as_of": as_of,
+                    "diagnostic_only": True,
+                }
+            )
+            tags = list(item.get("tags") or params.get("tags") or [])
+            for tag in ("targeted_universe", "synthetic_local_spawn", "full_market_topn_targets"):
+                if tag not in tags:
+                    tags.append(tag)
+            item.update(
+                {
+                    "research_task": research_task,
+                    "requested_target_symbols": list(selected),
+                    "target_symbols": list(selected),
+                    "stock_pool": stock_pool,
+                    "target_pool_source": "full_market_topn",
+                    "evidence_chain": evidence_chain,
+                    "prediction_contract": prediction_contract,
+                    "confidence_contract": confidence_contract,
+                    "prediction_as_of": as_of,
+                    "diagnostic_only": True,
+                    "candidate_family": candidate_family,
+                    "tags": tags,
+                    "params": params,
+                }
+            )
+            output.append(item)
+            injected_candidate_count += 1
+            injected_symbol_count += len(selected)
+
+        return output, {
+            "enabled": True,
+            "source": "full_market_topn",
+            "snapshot_id": snapshot_id,
+            "available_code_count": len(topn_codes),
+            "injected_candidate_count": injected_candidate_count,
+            "injected_symbol_count": injected_symbol_count,
+        }
 
     @classmethod
     async def _sanitize_local_spawn_targets(
@@ -545,9 +833,11 @@ class ResearchPlaneRunner:
         report: dict[str, Any],
         *,
         target_sanitization: dict[str, Any],
+        topn_target_injection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         annotated = dict(report or {})
         summary = dict(annotated.get("summary") or {})
+        topn_target_injection = dict(topn_target_injection or {})
         summary["target_symbol_sanitization_enabled"] = bool(target_sanitization.get("enabled"))
         summary["target_symbol_sanitization_checked_candidate_count"] = int(
             target_sanitization.get("checked_candidate_count") or 0
@@ -560,6 +850,17 @@ class ResearchPlaneRunner:
         )
         summary["target_symbol_sanitization_insufficient_kline_codes"] = list(
             target_sanitization.get("insufficient_kline_codes") or []
+        )
+        summary["topn_target_injection_enabled"] = bool(topn_target_injection.get("enabled"))
+        summary["topn_target_injection_source"] = topn_target_injection.get("source")
+        summary["topn_target_injection_available_code_count"] = int(
+            topn_target_injection.get("available_code_count") or 0
+        )
+        summary["topn_target_injection_injected_candidate_count"] = int(
+            topn_target_injection.get("injected_candidate_count") or 0
+        )
+        summary["topn_target_injection_injected_symbol_count"] = int(
+            topn_target_injection.get("injected_symbol_count") or 0
         )
         annotated["summary"] = summary
         return annotated

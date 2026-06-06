@@ -268,6 +268,7 @@
         )
         trend_cluster_count = StrategySpawner._trend_cluster_count(candidates)
         diversification_debt = StrategySpawner._diversification_debt(candidates)
+        generation_quality = summarize_generation_quality(candidates)
         return {
             "summary": {
                 "policy_version": get_spawn_policy_version(),
@@ -303,6 +304,14 @@
                 "trend_cluster_ratio": round(trend_cluster_count / len(candidates), 4) if candidates else 0.0,
                 "diversification_debt": diversification_debt,
                 "pool_profile_distribution": StrategySpawner._pool_profile_distribution(candidates),
+                "direction_counts": dict(generation_quality.get("direction_counts") or {}),
+                "confidence_distribution": dict(generation_quality.get("confidence_distribution") or {}),
+                "evidence_source_counts": dict(generation_quality.get("evidence_source_counts") or {}),
+                "template_dominance_count": int(generation_quality.get("template_dominance_count") or 0),
+                "factor_backed_candidate_count": int(generation_quality.get("factor_backed_candidate_count") or 0),
+                "event_backed_candidate_count": int(generation_quality.get("event_backed_candidate_count") or 0),
+                "non_proxy_evidence_ratio_mean": generation_quality.get("non_proxy_evidence_ratio_mean"),
+                "generation_quality_flags": list(generation_quality.get("generation_quality_flags") or []),
             }
         }
 

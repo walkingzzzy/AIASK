@@ -257,6 +257,9 @@
                 "profile_quality": profile_summary.get("profile_quality"),
                 "feature_coverage": dict(profile_summary.get("feature_coverage") or {}),
             }
+        router_status = dict(row.get("_stock_first_router") or {})
+        if router_status:
+            task["stock_first_router"] = router_status
         if profile_param_band:
             task["profile_param_band"] = profile_param_band
         if param_search_space:
@@ -292,7 +295,10 @@
         return cls._finalize_task(task)
 
     async def plan(self, db, snapshot: dict[str, Any]) -> dict[str, Any]:
-        if not STOCK_STRATEGY_MATRIX_ENABLED:
+        matrix_enabled = self._effective_stock_matrix_enabled(snapshot)
+        router_enabled = self._effective_router_enabled(snapshot)
+        router_strict = self._effective_router_strict(snapshot)
+        if not matrix_enabled:
             task_artifact = build_task_artifact()
             self.last_report = {
                 "summary": {
@@ -442,6 +448,12 @@
         except Exception as exc:
             profile_load_error = str(exc)
             profile_load_error_type = type(exc).__name__
+
+        lightweight_profile_generated_count = 0
+        if router_enabled and not router_strict:
+            for row in candidate_rows:
+                if self._ensure_lightweight_profile_summary(row):
+                    lightweight_profile_generated_count += 1
 
         # PR-S20/PR-S22: verified strategy index 观测 + 真复用
         # 当 STRATEGY_FACTORY_VECTOR_REUSE_ENABLED=1 且索引样本充足时，会真正给 row 注入复用提示。
@@ -795,6 +807,7 @@
                 # PR-S17: stock_profile_embeddings 加载可观测
                 "profile_loaded_count": profile_loaded_count,
                 "profile_missing_count": max(0, len(candidate_rows) - profile_loaded_count),
+                "profile_summary_generated_count": lightweight_profile_generated_count,
                 "profile_load_error": profile_load_error,
                 "profile_load_error_type": profile_load_error_type,
                 # PR-S19: 画像质量与原型分布
@@ -887,6 +900,13 @@
             "full_market_topn": full_market_topn,
             "full_market_score_rows": full_market_score_rows,
         }
+        router_telemetry = self._router_telemetry_for_rows(filtered_rows, selected_tasks=tasks)
+        report["router_artifact"] = {
+            "contract_version": "strategy_factory.router_artifact.v1",
+            "available": bool(STOCK_FIRST_ROUTER_TELEMETRY_ENABLED),
+            **router_telemetry,
+        }
+        report["summary"].update(router_telemetry)
         task_artifact = build_task_artifact(
             {
                 "task_scan": report,

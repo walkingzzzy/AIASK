@@ -15,6 +15,7 @@ import logging
 from typing import Any, Optional
 
 from .config import AI_VALIDATION_CONFIG
+from ...infrastructure.env_loader import load_strategy_llm_env
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,7 @@ class LLMStructuralReviewer:
         try:
             import httpx
             import os
+            load_strategy_llm_env()
             # Reuse the same env vars as StrategyLLMProvider
             api_base = os.getenv("STRATEGY_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
             api_key = os.getenv("STRATEGY_LLM_API_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")

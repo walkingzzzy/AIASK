@@ -178,7 +178,7 @@
         profile: str = "announcement_flow_sector_v1",
         min_confirmations: int = 1,
     ) -> dict:
-        allowed_sources = ["announcement", "fund_flow", "sector_catalyst"]
+        allowed_sources = ["market_events_normalized"]
         normalized_sources = [
             token
             for token in cls._normalize_text_list(observed_sources, limit=6)
@@ -199,6 +199,24 @@
                 limit=3,
             ),
             "target_symbols": _normalize_target_codes(normalized_event_anchor.get("target_symbols"), limit=6),
+            "source_doc_uids": cls._normalize_text_list(
+                normalized_event_anchor.get("source_doc_uids"),
+                limit=8,
+            ),
+            "source_tier": str(normalized_event_anchor.get("source_tier") or "").strip() or None,
+            "reliability_score": normalized_event_anchor.get("reliability_score"),
+            "evidence_time": str(normalized_event_anchor.get("evidence_time") or "").strip() or None,
+            "provider_chain": cls._normalize_text_list(
+                normalized_event_anchor.get("provider_chain"),
+                limit=6,
+            ),
+            "verified_event_anchor": bool(normalized_event_anchor.get("verified_event_anchor")),
+            "validation_summary": dict(normalized_event_anchor.get("validation_summary") or {}),
+            "occurrence_status": str(normalized_event_anchor.get("occurrence_status") or "").strip() or None,
+            "alpha_confirmation_status": str(normalized_event_anchor.get("alpha_confirmation_status") or "").strip() or None,
+            "confidence_cap_reason": str(normalized_event_anchor.get("confidence_cap_reason") or "").strip() or None,
+            "needs_alpha_confirmation": bool(normalized_event_anchor.get("needs_alpha_confirmation")),
+            "conflict_count": int(normalized_event_anchor.get("conflict_count") or 0),
         }
         if not any(
             normalized_event_anchor.get(key) not in (None, "", [], {})
@@ -215,7 +233,10 @@
             if anchor_strength not in (None, "", [], {})
             else normalized_event_anchor.get("strength")
         )
-        passed = (not required) or (bool(normalized_event_anchor) and effective_confirmation_count >= min_conf)
+        passed = (not required) or (
+            cls._event_anchor_has_explicit_source(normalized_event_anchor)
+            and effective_confirmation_count >= min_conf
+        )
         status = "passed" if passed else ("missing" if not normalized_sources else "insufficient_confirmations")
         return {
             "required": bool(required),
@@ -280,6 +301,43 @@
         for event in event_items:
             themes = [dict(item or {}) for item in list(event.get("themes") or []) if isinstance(item, dict)]
             for theme in themes:
+                source = str(theme.get("source") or event.get("source") or "").strip().lower()
+                source_tier = str(theme.get("source_tier") or event.get("source_tier") or "").strip().lower()
+                source_doc_uids = cls._normalize_text_list(
+                    theme.get("source_doc_uids") or event.get("source_doc_uids"),
+                    limit=8,
+                )
+                event_anchor_id = str(
+                    theme.get("event_anchor_id")
+                    or event.get("event_anchor_id")
+                    or event.get("event_id")
+                    or ""
+                ).strip()
+                validation_summary = dict(theme.get("validation_summary") or event.get("validation_summary") or {})
+                alpha_status = str(
+                    theme.get("alpha_confirmation_status")
+                    or event.get("alpha_confirmation_status")
+                    or validation_summary.get("alpha_confirmation_status")
+                    or ""
+                ).strip().lower()
+                occurrence_status = str(
+                    theme.get("occurrence_status")
+                    or event.get("occurrence_status")
+                    or validation_summary.get("occurrence_status")
+                    or ""
+                ).strip().lower()
+                conflict_count = int(theme.get("conflict_count") or event.get("conflict_count") or validation_summary.get("conflict_count") or 0)
+                if not (
+                    bool(theme.get("verified_event_anchor") or event.get("verified_event_anchor"))
+                    and source == "market_events_normalized"
+                    and source_tier in {"tier_a", "tier_b"}
+                    and source_doc_uids
+                    and event_anchor_id
+                    and (not occurrence_status or occurrence_status.startswith("verified"))
+                    and alpha_status not in {"news_only_rejected", "source_degraded", "conflicted"}
+                    and conflict_count <= 0
+                ):
+                    continue
                 focus_name = str(theme.get("theme_name") or theme.get("theme_code") or "").strip()
                 target_symbols = _normalize_target_codes(theme.get("target_symbols"), limit=6)
                 score_summary = dict(theme.get("score_summary") or {})
@@ -293,8 +351,13 @@
             _score, event, theme = ranked_events[0]
             focus_name = str(theme.get("theme_name") or theme.get("theme_code") or "").strip()
             return {
-                "source": "sector_catalyst",
-                "id": str(event.get("event_id") or "").strip() or None,
+                "source": "market_events_normalized",
+                "id": str(
+                    theme.get("event_anchor_id")
+                    or event.get("event_anchor_id")
+                    or event.get("event_id")
+                    or ""
+                ).strip() or None,
                 "type": str(event.get("event_type") or "sector_catalyst").strip() or "sector_catalyst",
                 "strength": round(
                     max(
@@ -306,6 +369,24 @@
                 "theme_code": str(theme.get("theme_code") or "").strip() or None,
                 "focus_industries": cls._normalize_text_list(focus_name, hot_sectors, limit=3),
                 "target_symbols": _normalize_target_codes(theme.get("target_symbols"), limit=6),
+                "source_doc_uids": cls._normalize_text_list(
+                    theme.get("source_doc_uids") or event.get("source_doc_uids"),
+                    limit=8,
+                ),
+                "source_tier": str(theme.get("source_tier") or event.get("source_tier") or "").strip() or None,
+                "reliability_score": theme.get("reliability_score") or event.get("reliability_score"),
+                "evidence_time": theme.get("evidence_time") or event.get("evidence_time"),
+                "provider_chain": cls._normalize_text_list(
+                    theme.get("provider_chain") or event.get("provider_chain"),
+                    limit=6,
+                ),
+                "verified_event_anchor": True,
+                "validation_summary": dict(theme.get("validation_summary") or event.get("validation_summary") or {}),
+                "occurrence_status": theme.get("occurrence_status") or event.get("occurrence_status"),
+                "alpha_confirmation_status": theme.get("alpha_confirmation_status") or event.get("alpha_confirmation_status"),
+                "confidence_cap_reason": theme.get("confidence_cap_reason") or event.get("confidence_cap_reason"),
+                "needs_alpha_confirmation": bool(theme.get("needs_alpha_confirmation") or event.get("needs_alpha_confirmation")),
+                "conflict_count": int(theme.get("conflict_count") or event.get("conflict_count") or 0),
             }
         return {}
 
@@ -329,11 +410,11 @@
         if anchor_source == "announcement":
             observed_sources.append("announcement")
             evidence_parts.append(f"announcement:{event_anchor.get('id') or event_anchor.get('type') or 'announcement'}")
-        if anchor_source == "sector_catalyst":
-            observed_sources.append("sector_catalyst")
+        if anchor_source == "market_events_normalized":
+            observed_sources.append("market_events_normalized")
             sector_focus = cls._normalize_text_list(event_anchor.get("focus_industries"), hot_sectors, limit=2)
             evidence_parts.append(
-                f"sector_catalyst:{','.join(sector_focus) or event_anchor.get('theme_code') or event_anchor.get('id') or 'sector'}"
+                f"market_events_normalized:{event_anchor.get('id') or event_anchor.get('theme_code') or ','.join(sector_focus) or 'event'}"
             )
         if source_name == "fund_flow" or trigger_field in {"north_fund_3d_net", "margin_5d_change_pct"}:
             observed_sources.append("fund_flow")
@@ -353,7 +434,24 @@
     @staticmethod
     def _event_anchor_has_explicit_source(event_anchor: Optional[dict[str, Any]]) -> bool:
         payload = dict(event_anchor or {})
-        return str(payload.get("source") or "").strip().lower() in {"announcement", "fund_flow", "sector_catalyst"}
+        source = str(payload.get("source") or "").strip().lower()
+        if source == "market_events_normalized":
+            source_tier = str(payload.get("source_tier") or "").strip().lower()
+            source_doc_uids = [
+                str(item or "").strip()
+                for item in list(payload.get("source_doc_uids") or [])
+                if str(item or "").strip()
+            ]
+            return bool(
+                payload.get("verified_event_anchor")
+                and source_tier in {"tier_a", "tier_b"}
+                and source_doc_uids
+                and str(payload.get("id") or "").strip()
+                and str(payload.get("alpha_confirmation_status") or "").strip().lower()
+                not in {"news_only_rejected", "source_degraded", "conflicted"}
+                and int(payload.get("conflict_count") or 0) <= 0
+            )
+        return False
 
     @classmethod
     def _focus_industry_target_symbols(

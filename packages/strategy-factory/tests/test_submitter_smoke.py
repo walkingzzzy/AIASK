@@ -55,6 +55,103 @@ def test_candidate_semantic_contract_backfill_is_complete():
     assert audit["hard_fail_reasons"] == []
 
 
+def test_candidate_semantic_contract_backfills_trade_plan_claim_ids_from_real_claims():
+    from strategy_factory.application.semantic_contract import (
+        audit_candidate_semantic_contract,
+        ensure_candidate_semantic_contract,
+    )
+
+    candidate = ensure_candidate_semantic_contract(
+        {
+            "strategy_type": "momentum",
+            "name": "real claim candidate",
+            "target_symbols": ["600000"],
+            "holding_horizon": {"max_days": 10},
+            "trade_plan": {
+                "entry": {"node_id": "entry_real", "summary": "enter on signal"},
+                "exit": {"node_id": "exit_real", "summary": "exit on invalidation"},
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {"evidence_id": "ev_up", "source_type": "technical", "direction": "up"},
+                    {"evidence_id": "ev_exit", "source_type": "risk_contract", "direction": "down"},
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "momentum_claim_entry",
+                        "claim_type": "entry",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_up"],
+                    },
+                    {
+                        "claim_id": "momentum_claim_exit",
+                        "claim_type": "exit",
+                        "expected_move": "down",
+                        "evidence_ids": ["ev_exit"],
+                    },
+                ]
+            },
+        }
+    )
+
+    assert candidate["trade_plan"]["entry"]["claim_ids"] == ["momentum_claim_entry"]
+    assert candidate["trade_plan"]["entry"]["evidence_ids"] == ["ev_up"]
+    assert candidate["trade_plan"]["exit"]["claim_ids"] == ["momentum_claim_exit"]
+    assert candidate["trade_plan"]["exit"]["evidence_ids"] == ["ev_exit"]
+    assert candidate["claim_to_trade_plan_map"]["trade_step_to_claim_ids"]["entry_real"] == [
+        "momentum_claim_entry"
+    ]
+    assert candidate["claim_to_trade_plan_map"]["trade_step_to_claim_ids"]["exit_real"] == [
+        "momentum_claim_exit"
+    ]
+
+    audit = audit_candidate_semantic_contract(candidate)
+    assert "trade_plan_node_missing_claim_ids" not in audit["hard_fail_reasons"]
+    assert audit["trade_plan_missing_claim_ids"] == 0
+
+
+def test_candidate_semantic_contract_preserves_invalid_explicit_claim_ids_as_hard_fail():
+    from strategy_factory.application.semantic_contract import (
+        audit_candidate_semantic_contract,
+        ensure_candidate_semantic_contract,
+    )
+
+    candidate = ensure_candidate_semantic_contract(
+        {
+            "strategy_type": "momentum",
+            "name": "bad explicit claim candidate",
+            "target_symbols": ["600000"],
+            "trade_plan": {
+                "entry": {
+                    "node_id": "entry_bad",
+                    "claim_ids": ["not_a_real_claim"],
+                }
+            },
+            "evidence_chain": {
+                "evidences": [
+                    {"evidence_id": "ev_up", "source_type": "technical", "direction": "up"},
+                ]
+            },
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "momentum_claim_entry",
+                        "claim_type": "entry",
+                        "expected_move": "up",
+                        "evidence_ids": ["ev_up"],
+                    }
+                ]
+            },
+        }
+    )
+
+    assert candidate["trade_plan"]["entry"]["claim_ids"] == ["not_a_real_claim"]
+    audit = audit_candidate_semantic_contract(candidate)
+    assert "trade_plan_node_missing_claim_ids" in audit["hard_fail_reasons"]
+
+
 def test_submitter_reports_factor_pool_performance():
     from strategy_factory.application.submitter import StrategySubmitter
 

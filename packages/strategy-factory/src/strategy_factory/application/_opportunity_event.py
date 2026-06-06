@@ -8,6 +8,93 @@ from ..domain.constants import AUTONOMY_CANDIDATES_PER_TASK, EVENT_TASK_GENERATI
 
 
 class _MarketOpportunityScannerEventMixin:
+    @staticmethod
+    def _verified_event_task_anchor(event: dict[str, Any], theme: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = dict(event or {})
+        theme_payload = dict(theme or {})
+        validation_summary = dict(
+            theme_payload.get("validation_summary")
+            or payload.get("validation_summary")
+            or {}
+        )
+        alpha_confirmation_status = str(
+            theme_payload.get("alpha_confirmation_status")
+            or payload.get("alpha_confirmation_status")
+            or validation_summary.get("alpha_confirmation_status")
+            or ""
+        ).strip()
+        occurrence_status = str(
+            theme_payload.get("occurrence_status")
+            or payload.get("occurrence_status")
+            or validation_summary.get("occurrence_status")
+            or ""
+        ).strip()
+        conflict_count = int(
+            theme_payload.get("conflict_count")
+            or payload.get("conflict_count")
+            or validation_summary.get("conflict_count")
+            or 0
+        )
+        doc_uids = [
+            str(item or "").strip()
+            for item in list(
+                theme_payload.get("source_doc_uids")
+                or payload.get("source_doc_uids")
+                or []
+            )
+            if str(item or "").strip()
+        ]
+        source_tier = str(
+            theme_payload.get("source_tier")
+            or payload.get("source_tier")
+            or ""
+        ).strip().lower()
+        source = str(
+            theme_payload.get("source")
+            or payload.get("source")
+            or ""
+        ).strip().lower()
+        anchor_id = str(
+            theme_payload.get("event_anchor_id")
+            or payload.get("event_anchor_id")
+            or payload.get("event_id")
+            or ""
+        ).strip()
+        verified = bool(
+            (theme_payload.get("verified_event_anchor") or payload.get("verified_event_anchor"))
+            and source == "market_events_normalized"
+            and source_tier in {"tier_a", "tier_b"}
+            and anchor_id
+            and doc_uids
+            and (not occurrence_status or occurrence_status.startswith("verified"))
+            and alpha_confirmation_status not in {"news_only_rejected", "source_degraded", "conflicted"}
+            and conflict_count <= 0
+        )
+        return {
+            "verified": verified,
+            "event_anchor_id": anchor_id or None,
+            "source_doc_uids": doc_uids,
+            "source_tier": source_tier or "unknown",
+            "source": source or "unknown",
+            "provider_chain": list(theme_payload.get("provider_chain") or payload.get("provider_chain") or []),
+            "reliability_score": theme_payload.get("reliability_score") or payload.get("reliability_score"),
+            "evidence_time": theme_payload.get("evidence_time") or payload.get("evidence_time"),
+            "validation_summary": validation_summary,
+            "occurrence_status": occurrence_status or None,
+            "alpha_confirmation_status": alpha_confirmation_status or None,
+            "confidence_cap_reason": (
+                theme_payload.get("confidence_cap_reason")
+                or payload.get("confidence_cap_reason")
+                or validation_summary.get("confidence_cap_reason")
+            ),
+            "needs_alpha_confirmation": bool(
+                theme_payload.get("needs_alpha_confirmation")
+                or payload.get("needs_alpha_confirmation")
+                or alpha_confirmation_status == "single_anchor_unconfirmed"
+            ),
+            "conflict_count": conflict_count,
+        }
+
     @classmethod
     def _event_strategy_preferences(
         cls,
@@ -115,6 +202,9 @@ class _MarketOpportunityScannerEventMixin:
                 theme_code = str(theme.get("theme_code") or theme.get("theme") or f"theme_{theme_idx}").strip()
                 if not theme_code:
                     continue
+                anchor = cls._verified_event_task_anchor(event, theme)
+                if not anchor.get("verified"):
+                    continue
                 from ..domain.constants import OPPORTUNITY_TARGET_SYMBOLS_PER_TASK as _EVT_LIMIT
                 target_symbols = cls._normalize_codes(
                     [
@@ -170,6 +260,20 @@ class _MarketOpportunityScannerEventMixin:
                     "event_id": event_id,
                     "event_name": event_name,
                     "event_type": event.get("event_type"),
+                    "event_anchor_id": anchor.get("event_anchor_id"),
+                    "source_doc_uids": list(anchor.get("source_doc_uids") or []),
+                    "source_tier": anchor.get("source_tier"),
+                    "source": "market_events_normalized",
+                    "provider_chain": list(anchor.get("provider_chain") or []),
+                    "reliability_score": anchor.get("reliability_score"),
+                    "evidence_time": anchor.get("evidence_time"),
+                    "verified_event_anchor": True,
+                    "validation_summary": dict(anchor.get("validation_summary") or {}),
+                    "occurrence_status": anchor.get("occurrence_status"),
+                    "alpha_confirmation_status": anchor.get("alpha_confirmation_status"),
+                    "confidence_cap_reason": anchor.get("confidence_cap_reason"),
+                    "needs_alpha_confirmation": bool(anchor.get("needs_alpha_confirmation")),
+                    "conflict_count": int(anchor.get("conflict_count") or 0),
                     "event_summary": event_summary,
                     "theme_code": theme_code,
                     "theme_name": theme_name,
@@ -201,8 +305,20 @@ class _MarketOpportunityScannerEventMixin:
                             "task_id": f"event_{event_id}_{theme_code}",
                             "task_key": f"event_theme:{snapshot.get('date')}:{event_id}:{theme_code}",
                             "task_source": "event_driven",
+                            "event_source": "market_events_normalized",
                             "event_id": event_id,
                             "event_type": event.get("event_type"),
+                            "event_anchor_id": anchor.get("event_anchor_id"),
+                            "source_doc_uids": list(anchor.get("source_doc_uids") or []),
+                            "source_tier": anchor.get("source_tier"),
+                            "reliability_score": anchor.get("reliability_score"),
+                            "evidence_time": anchor.get("evidence_time"),
+                            "verified_event_anchor": True,
+                            "event_validation_summary": dict(anchor.get("validation_summary") or {}),
+                            "alpha_confirmation_status": anchor.get("alpha_confirmation_status"),
+                            "confidence_cap_reason": anchor.get("confidence_cap_reason"),
+                            "needs_alpha_confirmation": bool(anchor.get("needs_alpha_confirmation")),
+                            "conflict_count": int(anchor.get("conflict_count") or 0),
                             "theme_code": theme_code,
                             "theme": f"event_theme_{theme_code}",
                             "title": title,
@@ -226,6 +342,26 @@ class _MarketOpportunityScannerEventMixin:
                             "priority": priority,
                             "generation_limit": generation_limit,
                             "evidence_bundle": evidence_bundle,
+                            "event_context": {
+                                "event_id": event_id,
+                                "event_name": event_name,
+                                "event_type": event.get("event_type"),
+                                "event_source": "market_events_normalized",
+                                "event_anchor_id": anchor.get("event_anchor_id"),
+                                "source_doc_uids": list(anchor.get("source_doc_uids") or []),
+                                "source_tier": anchor.get("source_tier"),
+                                "reliability_score": anchor.get("reliability_score"),
+                                "evidence_time": anchor.get("evidence_time"),
+                                "theme_code": theme_code,
+                                "target_symbols": target_symbols,
+                                "direction": direction,
+                                "verified_event_anchor": True,
+                                "event_validation_summary": dict(anchor.get("validation_summary") or {}),
+                                "alpha_confirmation_status": anchor.get("alpha_confirmation_status"),
+                                "confidence_cap_reason": anchor.get("confidence_cap_reason"),
+                                "needs_alpha_confirmation": bool(anchor.get("needs_alpha_confirmation")),
+                                "conflict_count": int(anchor.get("conflict_count") or 0),
+                            },
                             "selection_logic": list(theme.get("selection_logic") or [])[:3],
                         }
                     )

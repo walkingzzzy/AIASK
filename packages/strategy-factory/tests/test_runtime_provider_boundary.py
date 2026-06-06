@@ -341,6 +341,65 @@ def test_root_runner_claims_dispatch_before_run_once() -> None:
     assert runner._active_dispatch["dispatch_id"] == "dispatch_test"
 
 
+def test_root_runner_dispatch_run_loads_default_universe_when_codes_omitted() -> None:
+    sys.path.insert(0, str(ROOT))
+    try:
+        from run_strategy_factory import StrategyFactoryRunner
+    finally:
+        try:
+            sys.path.remove(str(ROOT))
+        except ValueError:
+            pass
+
+    class _Db:
+        async def list_stock_universe(self, *, limit: int, offset: int = 0):
+            assert limit == 5
+            assert offset == 0
+            return [
+                {"code": "600519.SH"},
+                {"code": "000001.SZ"},
+                {"code": "300750.SZ"},
+                {"code": "601318.SH"},
+                {"code": "600036.SH"},
+            ]
+
+    class _Scheduler:
+        def __init__(self):
+            self._dispatch_tasks: dict[str, asyncio.Task] = {}
+            self.calls: list[list[str]] = []
+
+        async def dispatch_run(self, db=None, *, execution_mode=None, target_codes=None):
+            self.calls.append(list(target_codes or []))
+            return {
+                "dispatch_id": f"dispatch_{len(self.calls)}",
+                "status": "success",
+                "run_id": f"run_{len(self.calls)}",
+            }
+
+    scheduler = _Scheduler()
+    runner = StrategyFactoryRunner(
+        run_once=True,
+        dispatch_run_mode=True,
+        dispatch_concurrency_limit=5,
+        dispatch_shard_size=1,
+        dispatch_default_universe=True,
+        dispatch_default_universe_limit=5,
+    )
+
+    result = asyncio.run(
+        runner._execute_dispatch_run_batch(
+            scheduler,
+            {"db_provider": lambda: _Db()},
+        )
+    )
+
+    assert scheduler.calls == [["600519"], ["000001"], ["300750"], ["601318"], ["600036"]]
+    assert result["status"] == "success"
+    assert result["summary"]["dispatch_count"] == 5
+    assert result["summary"]["default_universe_dispatch"] is True
+    assert result["summary"]["default_universe_code_count"] == 5
+
+
 def test_root_runner_marks_active_dispatch_failed_on_cancel() -> None:
     sys.path.insert(0, str(ROOT))
     try:

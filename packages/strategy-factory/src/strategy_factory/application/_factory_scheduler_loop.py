@@ -65,6 +65,7 @@ from .factory_execution import (
     build_shadow_parity_result,
     resolve_factory_engine_version,
     resolve_factory_execution_mode,
+    resolve_runtime_mode_flags,
 )
 from .factory_market_views import build_portfolio_candidate_from_topn
 from .runtime import (

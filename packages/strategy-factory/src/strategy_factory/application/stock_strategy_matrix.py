@@ -11,6 +11,9 @@ from typing import Any, Dict, List
 
 from ..domain.constants import (
     STOCK_STRATEGY_MATRIX_ENABLED,
+    STOCK_FIRST_ROUTER_ENABLED,
+    STOCK_FIRST_ROUTER_STRICT,
+    STOCK_FIRST_ROUTER_TELEMETRY_ENABLED,
     STOCK_STRATEGY_MATRIX_BATCH_SIZE,
     STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN,
     STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK,
@@ -28,8 +31,10 @@ from ..domain.constants import (
 from ._opportunity_utils import _MarketOpportunityScannerUtilityMixin
 from ._stock_universe_loader import filter_stock_universe_rows_by_codes, load_stock_universe_rows
 from .factory_market_views import build_full_market_topn_payload
+from .factory_execution import resolve_runtime_mode_flags
 from ._matrix_vector_reuse import VectorReuseService
 from .research_plane_contract import build_task_artifact
+from .stock_strategy_router import StockRegimeProfile, route_strategies
 from .sector_taxonomy import (
     normalize_sector_labels,
     sector_profiles_for_label,

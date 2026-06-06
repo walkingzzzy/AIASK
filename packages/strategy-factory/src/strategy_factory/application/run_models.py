@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping, Optional
 
+from ..infrastructure.env_loader import load_strategy_llm_env
+
 
 class StageStatus(str, Enum):
     COMPLETED = "completed"
@@ -280,6 +282,7 @@ def _resolve_llm_timeout_partial_threshold() -> float:
     Reads STRATEGY_FACTORY_LLM_TIMEOUT_PARTIAL_THRESHOLD; clamps to the
     open interval (0, 1); falls back to the default 0.30 on bad input.
     """
+    load_strategy_llm_env()
     raw = os.getenv(
         "STRATEGY_FACTORY_LLM_TIMEOUT_PARTIAL_THRESHOLD",
         str(_LLM_TIMEOUT_RATIO_DEFAULT),
@@ -295,6 +298,7 @@ def _resolve_llm_timeout_partial_threshold() -> float:
 
 def _resolve_llm_no_spec_partial_threshold() -> float:
     """Resolve the LLM no-spec ratio threshold for `partial_llm`."""
+    load_strategy_llm_env()
     raw = os.getenv(
         "STRATEGY_FACTORY_LLM_NO_SPEC_PARTIAL_THRESHOLD",
         str(_LLM_NO_SPEC_RATIO_DEFAULT),
@@ -310,6 +314,7 @@ def _resolve_llm_no_spec_partial_threshold() -> float:
 
 def _resolve_llm_provider_error_partial_threshold() -> float:
     """Resolve the provider-error ratio threshold for `partial_llm`."""
+    load_strategy_llm_env()
     raw = os.getenv(
         "STRATEGY_FACTORY_LLM_PROVIDER_ERROR_PARTIAL_THRESHOLD",
         str(_LLM_PROVIDER_ERROR_RATIO_DEFAULT),
@@ -607,6 +612,14 @@ def resolve_run_status(
 
     # 4) Success variants — distinguish by submission outcome
     overlay = dict(summary or {})
+    observe_first_enabled = bool(overlay.get("observe_first_enabled"))
+    observed_candidate_count = max(
+        _safe_count(overlay.get("observed_candidate_count")),
+        _safe_count(overlay.get("observe_incubation_count")),
+    )
+    if observe_first_enabled and observed_candidate_count > 0:
+        return FactoryRunStatus.SUCCESS
+
     gate_3_passed = int(overlay.get("gate_3_passed") or 0)
     submitted = int(overlay.get("submitted") or 0)
 

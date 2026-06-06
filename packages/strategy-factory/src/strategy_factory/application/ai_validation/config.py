@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ...infrastructure.env_loader import load_strategy_llm_env
+
+load_strategy_llm_env()
+
 # Feature flag: enable AI validation (shadow mode by default)
 AI_VALIDATION_ENABLED = os.getenv("STRATEGY_FACTORY_AI_VALIDATION_ENABLED", "false").strip().lower() == "true"
 AI_VALIDATION_MODE = os.getenv("STRATEGY_FACTORY_AI_VALIDATION_MODE", "shadow").strip().lower()  # shadow / active / disabled

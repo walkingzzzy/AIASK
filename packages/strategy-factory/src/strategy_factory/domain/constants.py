@@ -3,6 +3,11 @@
 import os
 from typing import Dict, List, Optional
 
+from ..infrastructure.env_loader import load_strategy_llm_env
+
+
+load_strategy_llm_env()
+
 # 回测用代表性股票（大盘/中盘/小盘各覆盖）
 # 可通过环境变量 REPRESENTATIVE_STOCKS 覆盖，逗号分隔，如 "600519,000858,601318"
 _DEFAULT_REPRESENTATIVE_STOCKS = [
@@ -397,6 +402,21 @@ EVENT_SNAPSHOT_MIX_MAX = _env_int("STRATEGY_FACTORY_EVENT_SNAPSHOT_MIX_MAX", 4, 
 STOCK_STRATEGY_MATRIX_ENABLED: bool = _env_bool(
     ("STRATEGY_FACTORY_BULK_ENABLED", "STRATEGY_FACTORY_BULK_STOCK_MATRIX_ENABLED"),
     False,
+)
+# SR-1 (开发周期计划 Phase 1)：逐股诊断驱动的策略类型路由器。默认 OFF：
+# 关闭时逐股矩阵维持现有 recommended_families + sector/factor 偏置选族（零变化）；
+# 开启时由 StockStrategyRouter 依个股 regime+周期+排除项决定 family 集合。
+STOCK_FIRST_ROUTER_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_STOCK_FIRST_ROUTER_ENABLED",
+    False,
+)
+STOCK_FIRST_ROUTER_STRICT: bool = _env_bool(
+    "STRATEGY_FACTORY_STOCK_FIRST_ROUTER_STRICT",
+    False,
+)
+STOCK_FIRST_ROUTER_TELEMETRY_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_ROUTER_TELEMETRY_ENABLED",
+    True,
 )
 STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT: int = _env_int(
     (

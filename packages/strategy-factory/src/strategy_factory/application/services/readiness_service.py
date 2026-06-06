@@ -435,9 +435,11 @@ class ReadinessService:
                     warnings.append("governed_candidate_pool_shortfall_recoverable")
                 score -= 0.10
             else:
-                blockers.append("governed_candidate_pool_required")
                 if hard_block:
+                    blockers.append("governed_candidate_pool_required")
                     critical_blockers.append("governed_candidate_pool_required")
+                elif "governed_candidate_pool_required" not in warnings:
+                    warnings.append("governed_candidate_pool_required")
                 score -= 0.22
         if governed_blocked_ratio >= 0.25:
             warnings.append("governed_candidate_pool_blocked_candidates")
@@ -532,9 +534,11 @@ class ReadinessService:
         if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
             if governed_supply_hard_block:
-                blockers.append("governed_candidate_pool_missing_after_scheduler_success")
                 if hard_block:
+                    blockers.append("governed_candidate_pool_missing_after_scheduler_success")
                     critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+                elif "governed_candidate_pool_missing_after_scheduler_success" not in warnings:
+                    warnings.append("governed_candidate_pool_missing_after_scheduler_success")
                 score -= 0.18
             else:
                 score -= 0.08
@@ -544,9 +548,11 @@ class ReadinessService:
         elif governed_pool_runtime_state == "blocked_by_governed_pool" and not governed_pool_missing_after_scheduler_success:
             warnings.append("governed_candidate_pool_refresh_blocked")
             if governed_supply_hard_block:
-                blockers.append("governed_candidate_pool_unavailable_after_refresh")
                 if hard_block:
+                    blockers.append("governed_candidate_pool_unavailable_after_refresh")
                     critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
+                elif "governed_candidate_pool_unavailable_after_refresh" not in warnings:
+                    warnings.append("governed_candidate_pool_unavailable_after_refresh")
                 score -= 0.18
             else:
                 score -= 0.10

@@ -256,7 +256,24 @@ def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) ->
 def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     payload = dict(candidate or {})
     envelope = build_resolved_candidate_envelope(payload)
-    trade_prediction = freeze_trade_prediction_contract(payload)
+    trade_prediction_seed_params = {
+        **_as_dict(payload.get("params")),
+        "research_task": dict(envelope.get("normalized_research_task") or {}),
+        "target_symbols": list(envelope.get("resolved_target_symbols") or []),
+        "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
+        "holding_horizon": dict(envelope.get("resolved_holding_horizon") or {}),
+        "trade_plan": dict(envelope.get("resolved_trade_plan") or {}),
+    }
+    trade_prediction_source = {
+        **payload,
+        "research_task": dict(envelope.get("normalized_research_task") or {}),
+        "target_symbols": list(envelope.get("resolved_target_symbols") or []),
+        "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
+        "holding_horizon": dict(envelope.get("resolved_holding_horizon") or {}),
+        "trade_plan": dict(envelope.get("resolved_trade_plan") or {}),
+        "params": trade_prediction_seed_params,
+    }
+    trade_prediction = freeze_trade_prediction_contract(trade_prediction_source)
     trade_prediction_contract = dict(trade_prediction.get("contract") or {})
     trade_prediction_status = str(trade_prediction.get("status") or "")
     trade_prediction_hash = trade_prediction.get("contract_hash")

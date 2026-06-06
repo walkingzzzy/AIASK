@@ -3,6 +3,57 @@ from __future__ import annotations
 from typing import Any
 
 
+def _ready_trade_prediction_fields(strategy_id: str = "strategy-1") -> dict[str, Any]:
+    from strategy_factory.application.trade_prediction_contract import freeze_trade_prediction_contract
+
+    frozen = freeze_trade_prediction_contract(
+        {
+            "strategy_id": strategy_id,
+            "stock_code": "600000",
+            "prediction_as_of": "2026-06-05T09:30:00+08:00",
+            "target_trading_date": "2026-06-08",
+            "direction": "up",
+            "confidence": 0.71,
+            "horizon": "next_day",
+            "evidence_refs": ["ev-1"],
+        }
+    )
+    return {
+        "trade_prediction_contract": frozen["contract"],
+        "trade_prediction_contract_status": frozen["status"],
+        "trade_prediction_contract_hash": frozen["contract_hash"],
+        "trade_prediction_contract_missing_fields": list(frozen.get("missing_fields") or []),
+        "trade_prediction_contract_reject_reasons": list(frozen.get("reject_reasons") or []),
+    }
+
+
+def _runtime_ready_candidate(
+    strategy_id: str = "strategy-1",
+    *,
+    observe_first: bool = False,
+    **overrides: Any,
+) -> dict[str, Any]:
+    params = {
+        **_ready_trade_prediction_fields(strategy_id),
+    }
+    candidate = {
+        "id": strategy_id,
+        "strategy_type": "volatility_breakout",
+        "target_symbols": ["600000"],
+        "params": params,
+    }
+    if observe_first:
+        candidate["observe_first_intake"] = True
+        candidate["incubation_budget"] = {
+            "track": "observe_incubation",
+            "budget_tier": "micro",
+            "observe_first_intake": True,
+        }
+        params["observe_first_intake"] = True
+    candidate.update(overrides)
+    return candidate
+
+
 def _formal_runtime(_gate: dict[str, Any], *, candidate: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "runtime_bootstrap_eligible": True,
@@ -158,7 +209,7 @@ def test_dev_v1_p0_d_grade_observe_disabled_by_default() -> None:
         "live_candidate_ready": False,
         "strict_incubation_ready": False,
     }
-    candidate = {"strategy_type": "volatility_breakout", "params": {}}
+    candidate = _runtime_ready_candidate("d-grade-disabled")
     result = _resolve_with_real_resolver(gate, candidate)
 
     assert result["submission_lane"] == "deferred_submission"
@@ -180,7 +231,7 @@ def test_dev_v1_p0_d_grade_observe_enabled_routes_to_observe(monkeypatch) -> Non
         "live_candidate_ready": False,
         "strict_incubation_ready": False,
     }
-    candidate = {"strategy_type": "volatility_breakout", "params": {}}
+    candidate = _runtime_ready_candidate("d-grade-enabled")
     result = _resolve_with_real_resolver(gate, candidate)
 
     assert result["submission_lane"] == "observe_incubation"
@@ -192,3 +243,193 @@ def test_dev_v1_p0_d_grade_observe_enabled_routes_to_observe(monkeypatch) -> Non
     assert result["formal_track_eligible"] is False
     assert "strict_incubation_pass_required_for_formal_track" in result["formal_track_blockers"]
     assert result["admission_decision"] == "observe_only"
+
+
+def test_gate3_statistical_failure_routes_to_observe_when_observe_first_requested() -> None:
+    gate = {
+        "passed": False,
+        "validation_grade": "C",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "reason_codes": [
+            "insufficient_statistical_evidence",
+            "weak_bootstrap_ci_lower",
+            "factory_policy_backtest_trade_count_0_4",
+            "profit_factor_0_860_1_000",
+        ],
+        "admission_block_reasons": [
+            "insufficient_statistical_evidence",
+            "weak_bootstrap_ci_lower",
+            "factory_policy_backtest_trade_count_0_4",
+        ],
+    }
+    candidate = _runtime_ready_candidate("gate3-audit-only", observe_first=True)
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "observe_incubation"
+    assert result["final_status"] == "submitted"
+    assert result["runtime_bootstrap_eligible"] is True
+    assert result["wide_intake_admitted"] is True
+    assert result["runtime_bootstrap_reason"] == "wide_intake_observe_gate3_not_required"
+    assert result["admission_decision"] == "observe_only"
+    assert result["formal_track_eligible"] is False
+    assert result["pre_observe_hard_reject_reasons"] == []
+
+
+def test_missing_ready_trade_prediction_contract_still_blocks_observe_first() -> None:
+    gate = {
+        "passed": False,
+        "validation_grade": "C",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "reason_codes": ["insufficient_statistical_evidence"],
+    }
+    candidate = {
+        "id": "missing-trade-prediction",
+        "strategy_type": "volatility_breakout",
+        "target_symbols": ["600000"],
+        "observe_first_intake": True,
+        "incubation_budget": {
+            "track": "observe_incubation",
+            "budget_tier": "micro",
+            "observe_first_intake": True,
+        },
+        "params": {"observe_first_intake": True},
+    }
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "rejected"
+    assert result["final_status"] == "rejected"
+    assert result["runtime_bootstrap_eligible"] is False
+    assert result["wide_intake_admitted"] is False
+    assert result["runtime_bootstrap_reason"] == "trade_prediction_contract_not_ready"
+    assert "trade_prediction_contract_not_ready" in result["pre_observe_hard_reject_reasons"]
+
+
+def test_semantic_hard_fail_still_blocks_observe_first() -> None:
+    gate = {
+        "passed": False,
+        "validation_grade": "C",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "reason_codes": ["temporal_coherence_audit_failed"],
+        "hard_fail_reasons": ["temporal_coherence_audit_failed"],
+    }
+    candidate = _runtime_ready_candidate("semantic-hard-fail", observe_first=True)
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "rejected"
+    assert result["final_status"] == "rejected"
+    assert result["runtime_bootstrap_eligible"] is False
+    assert result["wide_intake_admitted"] is False
+    assert result["runtime_bootstrap_reason"] == "temporal_coherence_audit_failed"
+    assert "temporal_coherence_audit_failed" in result["pre_observe_hard_reject_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_submit_one_keeps_wide_intake_in_observe_lane(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_HEALTH_GUARD_ENABLED", "0")
+
+    async def _gate3_audit_failure(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "passed": False,
+            "passed_strict": False,
+            "validation_grade": "C",
+            "research_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": False,
+            "reason_codes": [
+                "weak_bootstrap_ci_lower",
+                "factory_policy_backtest_trade_count_0_4",
+            ],
+            "admission_block_reasons": ["weak_bootstrap_ci_lower"],
+        }
+
+    class _Gateway:
+        async def run_validation_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        async def run_risk_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _Coordinator:
+        def __init__(self) -> None:
+            self.persisted: list[dict[str, Any]] = []
+            self.handled: list[dict[str, Any]] = []
+
+        async def persist_candidate(self, **kwargs: Any) -> bool:
+            self.persisted.append(dict(kwargs))
+            return True
+
+        async def handle_new_candidate(self, **kwargs: Any) -> dict[str, Any]:
+            self.handled.append(dict(kwargs))
+            action = dict(kwargs.get("submission_action") or {})
+            return {
+                "submission_lane": kwargs.get("submission_lane"),
+                "final_status": action.get("final_status") or "submitted",
+                "submission_action": dict(action.get("submission_action") or {}),
+                "submission_action_type": action.get("submission_action_type"),
+                "submission_action_trigger": action.get("submission_action_trigger"),
+                "submission_action_gaps": list(action.get("submission_action_gaps") or []),
+                "submission_action_fallback_conditions": list(
+                    action.get("submission_action_fallback_conditions") or []
+                ),
+                "submission_action_next_step": action.get("submission_action_next_step"),
+                "submission_action_completed": bool(action.get("submission_action_completed")),
+                "runtime_bootstrap_reason": action.get("runtime_bootstrap_reason"),
+                "wide_intake_admitted": bool(action.get("wide_intake_admitted")),
+                "formal_track_requested": bool(action.get("formal_track_requested")),
+                "formal_track_eligible": bool(action.get("formal_track_eligible")),
+                "formal_track_blockers": list(action.get("formal_track_blockers") or []),
+            }
+
+        async def save_quality_report(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    class _DB:
+        pass
+
+    monkeypatch.setattr(submitter_runner, "_local_run_submission_quality_gate", _gate3_audit_failure)
+
+    submitter = StrategySubmitter(validation_gateway=_Gateway(), risk_gateway=_Gateway())
+    coordinator = _Coordinator()
+    submitter._submission_coordinator = coordinator
+    candidate = _runtime_ready_candidate("submit-one-wide-intake", observe_first=True)
+    candidate.update(
+        {
+            "name": "wide intake candidate",
+            "dedup_result": {"duplicate": False, "refresh_existing": False},
+            "backtest_metrics": {
+                "trade_count": 12,
+                "trades_count": 12,
+                "max_drawdown": 0.12,
+            },
+            "backtest_outcome": {"passed": True, "reason_code": "passed"},
+        }
+    )
+
+    result = await submitter._submit_one(
+        candidate,
+        {"date": "2026-06-05", "factory_run_id": "run-gate3-audit"},
+        _DB(),
+    )
+
+    assert result["created_strategy_pool"] is True
+    assert result["created_audit_only"] is False
+    assert result["admission_decision"] == "observe_only"
+    assert result["summary"]["submission_lane"] == "observe_incubation"
+    assert result["summary"]["status"] == "submitted"
+    assert result["summary"]["runtime_bootstrap_reason"] == "wide_intake_observe_gate3_not_required"
+    assert result["summary"]["wide_intake_admitted"] is True
+    assert not result["summary"].get("diagnostic_observation")
+    assert coordinator.handled[0]["submission_lane"] == "observe_incubation"

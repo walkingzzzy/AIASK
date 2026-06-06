@@ -1,21 +1,23 @@
-"""CandidatePipeline – wraps the spawn → gate → dedup → submit pipeline.
+"""CandidatePipeline wraps candidate processing for legacy and observe-first modes.
 
 Provides a typed service boundary for the candidate processing phase,
 replacing the inline pipeline logic in FactoryCycleRunner.run().
 
 P4 refactor: the pipeline exposes a structured CandidatePipelineReport so
-callers (cycle_runner, tests) can access per-gate counts without fragile
-dict key lookups.
+callers (cycle_runner, tests) can access stable counts without fragile dict
+key lookups.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ..compact_contracts import compact_backtest_report, compact_quality_gate_report
+from ..factory_execution import resolve_runtime_mode_flags
 from ..governance_plane_contract import build_governance_plane_artifact
+from .._runtime_toggles import observe_first_enabled as _observe_first_enabled
 from ...domain.candidates import CandidatePipelineReport
 
 logger = logging.getLogger(__name__)
@@ -24,9 +26,9 @@ logger = logging.getLogger(__name__)
 class CandidatePipeline:
     """Executes gate-0/1/2 → dedup → gate-3 for a list of candidates.
 
-    This service delegates to the existing ``factory_pkg`` runtime objects
-    (BacktestFilter, Deduplicator, StrategySubmitter, run_gated_filter,
-    run_gated_submission_pipeline) so no existing behaviour changes.
+    Legacy mode delegates to the existing ``factory_pkg`` gate helpers.
+    Stock-first observe mode bypasses those helpers and emits an evidence
+    report before deduplication and observe intake.
 
     Usage::
 
@@ -46,6 +48,7 @@ class CandidatePipeline:
         db: Any,
         *,
         read_only: bool = False,
+        execution_mode: str | None = None,
     ) -> "PipelineRunResult":
         """Run the full candidate pipeline and return a structured result."""
         pkg = self._pkg
@@ -53,18 +56,37 @@ class CandidatePipeline:
         backtest_filter = pkg.BacktestFilter()
         deduplicator = scheduler._build_deduplicator(pkg)
         submitter = scheduler._build_submitter(pkg)
+        resolved_execution_mode = (
+            execution_mode
+            or snapshot.get("factory_execution_mode")
+            or snapshot.get("execution_mode")
+        )
+        runtime_mode_flags = resolve_runtime_mode_flags(
+            resolved_execution_mode or "legacy_primary"
+        )
+        observe_first_mode = bool(runtime_mode_flags.get("observe_first_enabled"))
+        if not resolved_execution_mode:
+            observe_first_mode = bool(_observe_first_enabled())
         task_board = getattr(scheduler, "_task_board", None)
         board_task = None
         claim_token = None
         if task_board is not None:
             try:
+                task_type = "evidence_scoring" if observe_first_mode else "quality_gate"
+                title = (
+                    "Candidate evidence scoring/dedup/observe intake"
+                    if observe_first_mode
+                    else "Candidate quality/backtest/dedup/submit pipeline"
+                )
                 board_task = task_board.create_task(
-                    task_type="quality_gate",
-                    title="Candidate quality/backtest/dedup/submit pipeline",
+                    task_type=task_type,
+                    title=title,
                     payload={
                         "candidate_count": len(candidates),
                         "read_only": bool(read_only),
                         "snapshot_date": snapshot.get("date"),
+                        "observe_first_mode": bool(observe_first_mode),
+                        "execution_mode": str(resolved_execution_mode or ""),
                     },
                 )
                 claimed_task = task_board.claim_task(
@@ -91,7 +113,43 @@ class CandidatePipeline:
                 and inspect.iscoroutinefunction(getattr(db, "get_klines", None))
             )
 
-            if supports_unified_submission:
+            if observe_first_mode and candidates:
+                passed = []
+                observe_candidates = self._mark_observe_first_candidates(candidates)
+                unique = await deduplicator.deduplicate(observe_candidates, db)
+                submit_result = await submitter.submit(
+                    unique,
+                    snapshot,
+                    db,
+                    read_only=read_only,
+                )
+                backtest_report = self._build_observe_first_backtest_report(candidates)
+                quality_gate_report = self._build_observe_first_evidence_report(
+                    candidates,
+                    observe_candidates,
+                    unique,
+                    submit_result,
+                    execution_mode=str(resolved_execution_mode or ""),
+                    backtest_report=backtest_report,
+                )
+                quality_gate_report["observe_first"] = {
+                    "enabled": True,
+                    "gate_passed_count": len(passed),
+                    "observe_intake_count": len(observe_candidates),
+                    "deduped_observe_intake_count": len(unique),
+                    "pre_observe_hard_reject_count": 0,
+                    "gate3_pre_observe_block_count": 0,
+                    "mode": "no_legacy_gate",
+                    "pre_observe_gate_removed": True,
+                    "legacy_gate_executed": False,
+                    "legacy_funnel_executed": False,
+                    "legacy_gate_report_mode": "not_executed",
+                    "evidence_scoring_mode": "observe_first_no_legacy_gate",
+                    "execution_mode": str(resolved_execution_mode or ""),
+                }
+                quality_gate_report = compact_quality_gate_report(quality_gate_report)
+                backtest_report = compact_backtest_report(backtest_report)
+            elif supports_unified_submission:
                 pipeline_run = await pkg.run_gated_submission_pipeline(
                     candidates,
                     snapshot,
@@ -220,6 +278,130 @@ class CandidatePipeline:
                 except Exception as block_exc:
                     logger.debug("candidate pipeline: task_board.block_task failed: %s", block_exc)
             raise
+
+    @staticmethod
+    def _candidate_source_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in list(candidates or []):
+            candidate = dict(item or {})
+            source = str(
+                candidate.get("task_source")
+                or candidate.get("source")
+                or (candidate.get("params") or {}).get("task_source")
+                or "unknown"
+            ).strip() or "unknown"
+            counts[source] = counts.get(source, 0) + 1
+        return counts
+
+    @staticmethod
+    def _router_status_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in list(candidates or []):
+            candidate = dict(item or {})
+            router = dict(
+                candidate.get("stock_first_router")
+                or (candidate.get("params") or {}).get("stock_first_router")
+                or {}
+            )
+            status = str(router.get("status") or "not_available").strip().lower() or "not_available"
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    @classmethod
+    def _build_observe_first_backtest_report(
+        cls,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "contract_version": "strategy_factory.observe_first_backtest_report.v1",
+            "mode": "not_run_pre_observe",
+            "legacy_gate_executed": False,
+            "legacy_funnel_executed": False,
+            "summary": {
+                "mode": "not_run_pre_observe",
+                "input_count": len(candidates),
+                "passed_count": 0,
+                "failed_count": 0,
+                "skipped_count": len(candidates),
+                "failed_reason_counts": {},
+                "candidate_source_counts": cls._candidate_source_counts(candidates),
+                "router_status_counts": cls._router_status_counts(candidates),
+                "pre_observe_backtest_skipped": True,
+                "skip_reason": "observe_first_no_legacy_gate",
+            },
+            "passed": [],
+            "failed": [],
+        }
+
+    @classmethod
+    def _build_observe_first_evidence_report(
+        cls,
+        candidates: list[dict[str, Any]],
+        observe_candidates: list[dict[str, Any]],
+        unique: list[dict[str, Any]],
+        submit_result: dict[str, Any],
+        *,
+        execution_mode: str,
+        backtest_report: dict[str, Any],
+    ) -> dict[str, Any]:
+        gate_3_input = int(submit_result.get("gate_3_input") or len(unique))
+        gate_3_passed = int(submit_result.get("gate_3_passed") or 0)
+        gate_3_failed = int(submit_result.get("gate_3_failed") or max(gate_3_input - gate_3_passed, 0))
+        return {
+            "contract_version": "strategy_factory.observe_first_evidence_report.v1",
+            "legacy_gate_executed": False,
+            "legacy_funnel_executed": False,
+            "evidence_scoring_mode": "observe_first_no_legacy_gate",
+            "pre_observe_gate_removed": True,
+            "execution_mode": str(execution_mode or ""),
+            "evidence_scoring": {
+                "mode": "observe_first_no_legacy_gate",
+                "input_count": len(candidates),
+                "scored_count": len(candidates),
+                "observe_intake_count": len(observe_candidates),
+                "deduped_observe_intake_count": len(unique),
+                "pre_observe_hard_reject_count": 0,
+                "legacy_gate_executed": False,
+                "legacy_funnel_executed": False,
+                "candidate_source_counts": cls._candidate_source_counts(candidates),
+                "router_status_counts": cls._router_status_counts(candidates),
+            },
+            "backtest_report": backtest_report,
+            "gate_3": {
+                "status": "post_observe_submission_report",
+                "input_count": gate_3_input,
+                "passed_count": gate_3_passed,
+                "failed_count": gate_3_failed,
+                "pre_observe_blocking": False,
+            },
+            "final_decision": {
+                "stage": "observe_intake",
+                "passed_count": len(unique),
+                "legacy_gate_executed": False,
+                "pre_observe_blocking": False,
+            },
+        }
+
+    @staticmethod
+    def _mark_observe_first_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        marked: list[dict[str, Any]] = []
+        for item in list(candidates or []):
+            candidate = dict(item or {})
+            params = dict(candidate.get("params") or {})
+            params["observe_first_intake"] = True
+            incubation_budget = dict(candidate.get("incubation_budget") or {})
+            incubation_budget["track"] = "observe_incubation"
+            incubation_budget.setdefault("budget_tier", "micro")
+            candidate.update(
+                {
+                    "observe_first_intake": True,
+                    "pre_observe_gate_required": False,
+                    "incubation_budget": incubation_budget,
+                    "params": params,
+                }
+            )
+            marked.append(candidate)
+        return marked
 
     @staticmethod
     def _extract_backtest_report(

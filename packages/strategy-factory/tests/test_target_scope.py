@@ -89,6 +89,33 @@ def test_stock_strategy_matrix_respects_explicit_candidate_codes(monkeypatch):
     assert _task_codes(report) <= {"600519", "000001"}
 
 
+def test_stock_strategy_matrix_strict_generates_lightweight_profiles(monkeypatch):
+    import strategy_factory.application.stock_strategy_matrix as matrix_module
+
+    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", True)
+    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT", 10)
+    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 20)
+    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 20)
+    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_REUSE_ENABLED", False)
+    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_SIMILAR_PROFILE_ENABLED", False)
+
+    report = asyncio.run(
+        matrix_module.StockStrategyMatrixPlanner().plan(_UniverseDb(), _targeted_snapshot())
+    )
+
+    summary = dict(report.get("summary") or {})
+    assert summary["router_enabled"] is True
+    assert summary["router_strict"] is True
+    assert summary["profile_summary_generated_count"] == 2
+    assert summary["profile_summary_missing_count"] == 0
+    assert summary["router_applied_count"] == 2
+    assert summary["selected_router_applied_count"] >= 1
+    assert _task_codes(report) <= {"600519", "000001"}
+    assert all(task.get("stock_first_router", {}).get("status") == "applied" for task in report["tasks"])
+
+
 def test_factor_rank_validation_expands_sample_panel_for_statistical_gate():
     from strategy_factory.domain.targets import _resolve_strategy_sample_selection
 

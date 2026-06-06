@@ -67,6 +67,36 @@
         except Exception:
             return 0
 
+    @classmethod
+    def _runtime_flags_for_snapshot(cls, snapshot: dict[str, Any] | None) -> dict[str, bool]:
+        payload = dict(snapshot or {})
+        execution_mode = str(
+            payload.get("factory_execution_mode")
+            or payload.get("execution_mode")
+            or ""
+        ).strip()
+        if not execution_mode:
+            return {}
+        try:
+            return dict(resolve_runtime_mode_flags(execution_mode) or {})
+        except Exception:
+            return {}
+
+    @classmethod
+    def _effective_stock_matrix_enabled(cls, snapshot: dict[str, Any] | None) -> bool:
+        flags = cls._runtime_flags_for_snapshot(snapshot)
+        return bool(STOCK_STRATEGY_MATRIX_ENABLED or flags.get("stock_first_observe_mode"))
+
+    @classmethod
+    def _effective_router_enabled(cls, snapshot: dict[str, Any] | None) -> bool:
+        flags = cls._runtime_flags_for_snapshot(snapshot)
+        return bool(STOCK_FIRST_ROUTER_ENABLED or flags.get("router_enabled"))
+
+    @classmethod
+    def _effective_router_strict(cls, snapshot: dict[str, Any] | None) -> bool:
+        flags = cls._runtime_flags_for_snapshot(snapshot)
+        return bool(STOCK_FIRST_ROUTER_STRICT or flags.get("router_strict"))
+
     @staticmethod
     def _normalize_factor_names(snapshot: dict[str, Any]) -> list[str]:
         factor_research = dict(snapshot.get("factor_research") or {})
@@ -669,6 +699,178 @@
         summary = dict(metadata.get("profile_summary") or profile.get("profile_summary") or {})
         return summary
 
+    @classmethod
+    def _build_lightweight_profile_summary(cls, row: dict[str, Any]) -> dict[str, Any]:
+        """Build a local, no-IO profile so strict Stock-First runs never use legacy family fallback silently."""
+
+        pe_ratio = cls._safe_float(row.get("pe_ratio"))
+        pb_ratio = cls._safe_float(row.get("pb_ratio"))
+        market_cap = cls._safe_float(row.get("market_cap"))
+        valuation_score = 0.0
+        if 0 < pe_ratio <= 30:
+            valuation_score = max(valuation_score, (30.0 - pe_ratio) / 30.0)
+        if 0 < pb_ratio <= 3:
+            valuation_score = max(valuation_score, (3.0 - pb_ratio) / 3.0)
+        quality_score = 0.0
+        if market_cap > 0:
+            try:
+                quality_score = max(0.0, min(math.log10(market_cap / 1e8 + 1.0) / 3.0, 1.0))
+            except Exception:
+                quality_score = 0.0
+        recommended = ["multi_factor"]
+        if valuation_score >= 0.35 and quality_score >= 0.25:
+            recommended = ["value_factor", "quality_factor", "multi_factor"]
+        elif quality_score >= 0.55:
+            recommended = ["quality_factor", "multi_factor"]
+        return {
+            "profile_quality": "partial",
+            "profile_source": "lightweight_row_fallback",
+            "primary_archetype": "lightweight_unknown",
+            "secondary_archetypes": [],
+            "regime": {
+                "trend_regime": "unknown",
+                "vol_regime": "unknown",
+                "sentiment_regime": "unknown",
+            },
+            "factor_dimension_scores": {
+                "trend": 0.0,
+                "reversal": 0.0,
+                "valuation": round(max(0.0, min(valuation_score, 1.0)), 4),
+                "quality": round(max(0.0, min(quality_score, 1.0)), 4),
+                "growth": 0.0,
+            },
+            "feature_coverage": {
+                "technical_price_volume": "missing",
+                "valuation_financial": "partial" if valuation_score > 0.0 or quality_score > 0.0 else "missing",
+                "alternative_sentiment_capital_flow": "missing",
+                "event_news_notice_research_theme": "missing",
+            },
+            "recommended_families": recommended,
+            "candidate_factor_families": recommended,
+        }
+
+    @classmethod
+    def _ensure_lightweight_profile_summary(cls, row: dict[str, Any]) -> bool:
+        if cls._extract_profile_summary(row):
+            return False
+        profile = dict(row.get("stock_profile") or {})
+        metadata = profile.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                import json as _json
+
+                metadata = _json.loads(metadata or "{}")
+            except Exception:
+                metadata = {}
+        metadata = dict(metadata or {})
+        metadata["profile_summary"] = cls._build_lightweight_profile_summary(row)
+        profile["metadata"] = metadata
+        profile.setdefault("stock_code", row.get("code"))
+        profile.setdefault("source", "lightweight_row_fallback")
+        row["stock_profile"] = profile
+        row["_stock_first_router_lightweight_profile_generated"] = True
+        return True
+
+    @staticmethod
+    def _set_router_status(
+        row: dict[str, Any],
+        *,
+        status: str,
+        enabled: bool | None = None,
+        strict: bool | None = None,
+        reason: str | None = None,
+        families: list[str] | None = None,
+        holding_bucket: str | None = None,
+        confidence: float | None = None,
+        exclusions: list[str] | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        payload = {
+            "enabled": bool(STOCK_FIRST_ROUTER_ENABLED if enabled is None else enabled),
+            "strict": bool(STOCK_FIRST_ROUTER_STRICT if strict is None else strict),
+            "status": str(status or "unknown").strip().lower() or "unknown",
+            "reason": str(reason or "").strip() or None,
+            "families": list(families or []),
+            "holding_bucket": str(holding_bucket or "").strip() or None,
+            "confidence": confidence,
+            "exclusions": list(exclusions or []),
+            "error_type": str(error_type or "").strip() or None,
+            "lightweight_profile_generated": bool(row.get("_stock_first_router_lightweight_profile_generated")),
+        }
+        row["_stock_first_router"] = {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+    @classmethod
+    def _router_telemetry_for_rows(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        selected_tasks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        router_rows = [row for row in list(rows or []) if str((row or {}).get("code") or "").strip()]
+        status_counts: dict[str, int] = {}
+        fallback_reason_counts: dict[str, int] = {}
+        family_counts: dict[str, int] = {}
+        bucket_counts: dict[str, int] = {}
+        applied_count = 0
+        present_count = 0
+        generated_count = 0
+        enabled_seen: list[bool] = []
+        strict_seen: list[bool] = []
+        for row in router_rows:
+            if cls._extract_profile_summary(row):
+                present_count += 1
+            if bool(row.get("_stock_first_router_lightweight_profile_generated")):
+                generated_count += 1
+            status = dict(row.get("_stock_first_router") or {})
+            if "enabled" in status:
+                enabled_seen.append(bool(status.get("enabled")))
+            if "strict" in status:
+                strict_seen.append(bool(status.get("strict")))
+            state = str(status.get("status") or "not_evaluated").strip().lower() or "not_evaluated"
+            status_counts[state] = status_counts.get(state, 0) + 1
+            if state == "applied":
+                applied_count += 1
+                for family in list(status.get("families") or []):
+                    token = str(family or "").strip().lower()
+                    if token:
+                        family_counts[token] = family_counts.get(token, 0) + 1
+                bucket = str(status.get("holding_bucket") or "").strip().lower()
+                if bucket:
+                    bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+            elif state in {"fallback", "blocked"}:
+                reason = str(status.get("reason") or "unknown").strip().lower() or "unknown"
+                fallback_reason_counts[reason] = fallback_reason_counts.get(reason, 0) + 1
+
+        selected_router_applied_count = 0
+        selected_profile_missing_count = 0
+        selected_task_count = 0
+        for task in list(selected_tasks or []):
+            selected_task_count += 1
+            router = dict(task.get("stock_first_router") or {})
+            if str(router.get("status") or "").strip().lower() == "applied":
+                selected_router_applied_count += 1
+            if not task.get("stock_profile_summary"):
+                selected_profile_missing_count += 1
+
+        missing_count = max(0, len(router_rows) - present_count)
+        return {
+            "router_enabled": bool(STOCK_FIRST_ROUTER_ENABLED or any(enabled_seen)),
+            "router_strict": bool(STOCK_FIRST_ROUTER_STRICT or any(strict_seen)),
+            "router_telemetry_enabled": bool(STOCK_FIRST_ROUTER_TELEMETRY_ENABLED),
+            "router_candidate_stock_count": len(router_rows),
+            "router_applied_count": applied_count,
+            "router_status_counts": status_counts,
+            "router_fallback_reason_counts": fallback_reason_counts,
+            "router_family_counts": family_counts,
+            "router_holding_bucket_counts": bucket_counts,
+            "profile_summary_present_count": present_count,
+            "profile_summary_missing_count": missing_count,
+            "profile_summary_generated_count": generated_count,
+            "selected_task_count": selected_task_count,
+            "selected_router_applied_count": selected_router_applied_count,
+            "selected_profile_summary_missing_count": selected_profile_missing_count,
+        }
+
     @staticmethod
     def _profile_dimension_scores(profile_summary: dict[str, Any]) -> dict[str, float]:
         scores = dict(profile_summary.get("factor_dimension_scores") or {})
@@ -705,6 +907,81 @@
         profile_summary = cls._extract_profile_summary(row)
         profile_quality = str(profile_summary.get("profile_quality") or "").strip().lower()
         coverage = dict(profile_summary.get("feature_coverage") or {})
+        router_enabled = cls._effective_router_enabled(snapshot)
+        router_strict = cls._effective_router_strict(snapshot)
+
+        # SR-1 (P1-2)：toggle ON 且画像可用时，由 StockStrategyRouter 依 regime+周期+排除项决定 family。
+        # 严守同步边界：只读已挂在 row 上的 profile_summary，不做任何异步/网络调用。
+        if router_enabled and not profile_summary:
+            cls._set_router_status(
+                row,
+                status="blocked" if router_strict else "fallback",
+                enabled=router_enabled,
+                strict=router_strict,
+                reason="missing_profile_summary",
+            )
+            if router_strict:
+                return []
+        if router_enabled and profile_summary and profile_quality in {"failed", ""}:
+            reason = "profile_failed" if profile_quality == "failed" else "profile_quality_missing"
+            cls._set_router_status(
+                row,
+                status="blocked" if router_strict else "fallback",
+                enabled=router_enabled,
+                strict=router_strict,
+                reason=reason,
+            )
+            if router_strict:
+                return []
+        if router_enabled and profile_summary and profile_quality not in {"failed", ""}:
+            try:
+                regime = dict(profile_summary.get("regime") or {})
+                extras = {
+                    "rsi": ((profile_summary.get("factor_dimension_scores") or {}) or {}).get("rsi"),
+                    "volume_ratio": cls._safe_float(row.get("volume_ratio_5_20")) or 1.0,
+                    "event_catalyst": str(coverage.get("event_news_notice_research_theme") or "").lower()
+                    in {"ok", "partial"},
+                    "liquidity_low": (cls._safe_float(row.get("amount")) or 0.0) > 0
+                    and (cls._safe_float(row.get("amount")) or 0.0) < 1e7,
+                }
+                profile = StockRegimeProfile.from_profile_summary(
+                    str(row.get("code") or ""), profile_summary, regime, extras
+                )
+                routed = route_strategies(profile, max_families=STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)
+                if routed.families:
+                    families = routed.families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                    cls._set_router_status(
+                        row,
+                        status="applied",
+                        enabled=router_enabled,
+                        strict=router_strict,
+                        families=families,
+                        holding_bucket=routed.holding_period_bucket,
+                        confidence=float(routed.confidence or 0.0),
+                        exclusions=list(routed.exclusions or []),
+                    )
+                    return families
+                cls._set_router_status(
+                    row,
+                    status="blocked" if router_strict else "fallback",
+                    enabled=router_enabled,
+                    strict=router_strict,
+                    reason="empty_routed_families",
+                )
+                if router_strict:
+                    return []
+            except Exception as exc:
+                cls._set_router_status(
+                    row,
+                    status="blocked" if router_strict else "fallback",
+                    enabled=router_enabled,
+                    strict=router_strict,
+                    reason="router_exception",
+                    error_type=type(exc).__name__,
+                )
+                if router_strict:
+                    return []
+
         if profile_summary and profile_quality not in {"failed", ""}:
             recommended = [
                 str(item or "").strip().lower()
@@ -733,6 +1010,17 @@
             for fam in candidate_families:
                 if _allowed(fam):
                     add(fam)
+
+        if router_enabled:
+            current = dict(row.get("_stock_first_router") or {})
+            if str(current.get("status") or "").strip().lower() != "applied":
+                cls._set_router_status(
+                    row,
+                    status="fallback",
+                    enabled=router_enabled,
+                    strict=router_strict,
+                    reason=str(current.get("reason") or "legacy_family_fallback"),
+                )
 
         # 旧逻辑（hot/cold sector + 估值 + base family 序列）作为 fallback / 补充
         hot_match = cls._sector_match_strength(industry, hot_sectors)
@@ -990,7 +1278,9 @@
             active_factors=active_factors,
         )
 
-        if allocation_item:
+        router_enabled = cls._effective_router_enabled(snapshot)
+        router_strict = cls._effective_router_strict(snapshot)
+        if allocation_item and not (router_enabled and router_strict):
             allocation_families = [
                 str(plan.get("family") or "").strip().lower()
                 for plan in list(allocation_item.get("family_plans") or [])
@@ -1045,7 +1335,9 @@
             for plan in list((allocation_item or {}).get("family_plans") or [])
             if isinstance(plan, dict)
         ]
-        if allocation_plans:
+        router_enabled = cls._effective_router_enabled(snapshot)
+        router_strict = cls._effective_router_strict(snapshot)
+        if allocation_plans and not (router_enabled and router_strict):
             normalized_plans: list[dict[str, Any]] = []
             for index, plan in enumerate(allocation_plans, 1):
                 family = str(plan.get("family") or "").strip().lower()

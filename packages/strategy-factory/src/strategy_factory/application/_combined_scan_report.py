@@ -100,6 +100,26 @@ def build_combined_scan_report(
             bulk_summary.get("planned_allocation_pass_counts") or {}
         ),
         "bulk_stock_matrix_overflow_task_count": int(bulk_summary.get("overflow_task_count") or 0),
+        "router_enabled": bool(bulk_summary.get("router_enabled")),
+        "router_strict": bool(bulk_summary.get("router_strict")),
+        "router_telemetry_enabled": bool(bulk_summary.get("router_telemetry_enabled")),
+        "router_candidate_stock_count": int(bulk_summary.get("router_candidate_stock_count") or 0),
+        "router_applied_count": int(bulk_summary.get("router_applied_count") or 0),
+        "router_status_counts": dict(bulk_summary.get("router_status_counts") or {}),
+        "router_fallback_reason_counts": dict(
+            bulk_summary.get("router_fallback_reason_counts") or {}
+        ),
+        "router_family_counts": dict(bulk_summary.get("router_family_counts") or {}),
+        "router_holding_bucket_counts": dict(
+            bulk_summary.get("router_holding_bucket_counts") or {}
+        ),
+        "profile_summary_present_count": int(bulk_summary.get("profile_summary_present_count") or 0),
+        "profile_summary_missing_count": int(bulk_summary.get("profile_summary_missing_count") or 0),
+        "profile_summary_generated_count": int(bulk_summary.get("profile_summary_generated_count") or 0),
+        "selected_router_applied_count": int(bulk_summary.get("selected_router_applied_count") or 0),
+        "selected_profile_summary_missing_count": int(
+            bulk_summary.get("selected_profile_summary_missing_count") or 0
+        ),
         "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
         "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
         "combined_research_task_budget": int(
@@ -206,6 +226,7 @@ def build_combined_scan_report(
     return {
         "summary": summary,
         "tasks": list(tasks or []),
+        "router_artifact": dict((bulk_report or {}).get("router_artifact") or {}),
         "opportunity_scan": dict(opportunity_scan or {}),
         "bulk_stock_matrix": dict(bulk_report or {}),
     }

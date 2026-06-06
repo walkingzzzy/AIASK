@@ -548,9 +548,22 @@ def build_gate_artifact(
     gate_1 = dict(quality.get("gate_1") or {})
     gate_2 = dict(quality.get("gate_2") or {})
     gate_3 = dict(quality.get("gate_3") or {})
+    legacy_gate_executed = quality.get("legacy_gate_executed")
+    if legacy_gate_executed is None:
+        legacy_gate_executed = bool(gate_0 or pre_gate or gate_1 or gate_2)
+    legacy_funnel_executed = quality.get("legacy_funnel_executed")
+    if legacy_funnel_executed is None:
+        legacy_funnel_executed = bool(legacy_gate_executed)
+    evidence_scoring_mode = _string(quality.get("evidence_scoring_mode")) or None
     return {
         "contract_version": GATE_ARTIFACT_CONTRACT_VERSION,
         "available": bool(quality or backtest),
+        "artifact_mode": evidence_scoring_mode or "legacy_gate_report",
+        "legacy_gate_executed": bool(legacy_gate_executed),
+        "legacy_funnel_executed": bool(legacy_funnel_executed),
+        "legacy_gate_report_mode": _string(quality.get("legacy_gate_report_mode")) or None,
+        "evidence_scoring_mode": evidence_scoring_mode,
+        "pre_observe_gate_removed": bool(quality.get("pre_observe_gate_removed")),
         "gate_0_passed": _safe_int(gate_0.get("passed_count")),
         "gate_0_failed": _safe_int(gate_0.get("failed_count")),
         "pre_gate_passed": _safe_int(pre_gate.get("passed_count")),

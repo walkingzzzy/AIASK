@@ -120,11 +120,13 @@ def _build_proxy_signal_evidence_records(
     prediction_contract = _as_dict(
         payload.get("prediction_contract") or dict(params or {}).get("prediction_contract")
     )
-    direction = _string(prediction_contract.get("direction")).lower() or "up"
+    direction = _string(prediction_contract.get("direction")).lower()
     if direction in {"long", "buy", "1"}:
         direction = "up"
     elif direction in {"short", "sell", "-1"}:
         direction = "down"
+    elif direction not in {"up", "down", "neutral"}:
+        direction = "neutral"
     resolved_code = (
         _string(code)
         or _string((list(payload.get("target_symbols") or params.get("target_symbols") or []) or [None])[0])

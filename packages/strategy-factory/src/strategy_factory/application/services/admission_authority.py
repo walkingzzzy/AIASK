@@ -269,14 +269,14 @@ class SubmissionAdmissionAuthority:
             return "revise"
         if submission_lane == "diagnostic_observation" or action_type == "diagnostic":
             return "diagnostic"
+        if bool(gate.get("provisional_pass")):
+            return "provisional"
         # INVERT-DESIGN P1 改动A: observe_incubation lane 即使 gate 未 passed(宽进)也属观察,
         # 不应被下面的 not passed → reject 误判。
         if submission_lane == "observe_incubation":
             return "observe_only"
         if final_status == "rejected" or submission_lane == "rejected" or not bool(gate.get("passed")):
             return "reject"
-        if bool(gate.get("provisional_pass")):
-            return "provisional"
         if submission_lane in {"formal_incubation", "live_ready_review", "refresh_existing"}:
             return "accept"
         return "observe_only"

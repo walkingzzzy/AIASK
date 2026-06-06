@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Mapping, Optional
 
 TRADE_PREDICTION_CONTRACT_VERSION = "strategy_factory.trade_prediction_contract.v1"
@@ -148,6 +148,116 @@ def _coerce_iso_date(value: Any) -> Optional[str]:
     return ts[:10] if ts else None
 
 
+def _add_business_days(start_date: date, days: int) -> date:
+    resolved = start_date
+    remaining = max(0, int(days or 0))
+    while remaining > 0:
+        resolved = resolved + timedelta(days=1)
+        if resolved.weekday() < 5:
+            remaining -= 1
+    return resolved
+
+
+def _horizon_business_days(value: Any) -> Optional[int]:
+    token = _string(value).lower().replace("-", "_").replace(" ", "_")
+    if not token:
+        return None
+    aliases = {
+        "next_day": 1,
+        "next_trading_day": 1,
+        "next_session": 1,
+        "t+1": 1,
+        "t1": 1,
+        "1d": 1,
+        "1_day": 1,
+        "one_day": 1,
+        "daily": 1,
+        "2d": 2,
+        "2_day": 2,
+        "3d": 3,
+        "3_day": 3,
+        "5d": 5,
+        "5_day": 5,
+    }
+    if token in aliases:
+        return aliases[token]
+    if token.isdigit():
+        try:
+            return max(1, min(20, int(token)))
+        except Exception:
+            return None
+    digits = "".join(ch for ch in token if ch.isdigit())
+    if digits and token.endswith(("d", "day", "days")):
+        try:
+            return max(1, min(20, int(digits)))
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_horizon_label(value: Any) -> Optional[str]:
+    token = _string(value)
+    if not token:
+        return None
+    days = _horizon_business_days(token)
+    if days is not None and token.lower().replace("-", "_").replace(" ", "_").isdigit():
+        return f"{days}d"
+    return token
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value in _EMPTY_VALUES:
+            return None
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _horizon_from_window(*values: Any) -> Optional[str]:
+    for value in values:
+        if value in _EMPTY_VALUES:
+            continue
+        if isinstance(value, Mapping):
+            payload = dict(value or {})
+            direct = _first_non_empty(
+                payload.get("horizon"),
+                payload.get("label"),
+                payload.get("expected_horizon"),
+                payload.get("primary_horizon"),
+            )
+            if direct not in _EMPTY_VALUES:
+                return _normalize_horizon_label(direct)
+            days = _safe_int(
+                _first_non_empty(
+                    payload.get("min_days"),
+                    payload.get("target_days"),
+                    payload.get("primary_horizon_days"),
+                    payload.get("max_days"),
+                    payload.get("alpha_half_life"),
+                )
+            )
+            if days and days > 0:
+                return f"{max(1, min(20, days))}d"
+            continue
+        token = _string(value)
+        if token:
+            return _normalize_horizon_label(token)
+    return None
+
+
+def _derive_target_date_from_horizon(prediction_as_of: Any, horizon: Any) -> Optional[str]:
+    resolved_as_of = _coerce_iso_ts(prediction_as_of)
+    days = _horizon_business_days(horizon)
+    if not resolved_as_of or not days:
+        return None
+    try:
+        base = datetime.fromisoformat(resolved_as_of.replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+    return _add_business_days(base, days).isoformat()
+
+
 def _coerce_stock_code(value: Any) -> Optional[str]:
     token = _string(value).upper()
     if not token:
@@ -191,6 +301,73 @@ def _normalize_direction(value: Any) -> Optional[str]:
     return _DIRECTION_ALIASES.get(token)
 
 
+def _direction_from_expected_move(value: Any) -> Optional[str]:
+    if value in _EMPTY_VALUES:
+        return None
+    if isinstance(value, Mapping):
+        payload = dict(value or {})
+        for key in ("direction", "expected_direction", "bias"):
+            resolved = _normalize_direction(payload.get(key))
+            if resolved:
+                return resolved
+        for key in ("return", "return_pct", "pct", "move", "expected_return"):
+            try:
+                numeric = float(payload.get(key))
+            except Exception:
+                continue
+            if numeric > 0:
+                return "up"
+            if numeric < 0:
+                return "down"
+        return None
+    text = _string(value)
+    resolved = _normalize_direction(text)
+    if resolved:
+        return resolved
+    try:
+        numeric = float(text.rstrip("%"))
+        if "%" in text:
+            numeric = numeric / 100.0
+    except Exception:
+        return None
+    if numeric > 0:
+        return "up"
+    if numeric < 0:
+        return "down"
+    return "neutral"
+
+
+def _direction_from_bias(value: Any) -> Optional[str]:
+    token = _string(value).lower().replace("-", "_").replace(" ", "_")
+    if not token:
+        return None
+    direct = _normalize_direction(token)
+    if direct:
+        return direct
+    if any(part in token for part in ("short", "bear", "down", "risk_off")):
+        return "down"
+    if any(part in token for part in ("neutral", "hedge", "market_neutral")):
+        return "neutral"
+    if any(
+        part in token
+        for part in (
+            "long",
+            "bull",
+            "trend_follow",
+            "mean_reversion",
+            "repair",
+            "breakout",
+            "rank",
+            "quality",
+            "growth",
+            "value",
+            "defensive",
+        )
+    ):
+        return "up"
+    return None
+
+
 def _coerce_confidence(value: Any) -> Optional[float]:
     try:
         if value in _EMPTY_VALUES:
@@ -201,6 +378,28 @@ def _coerce_confidence(value: Any) -> Optional[float]:
     if resolved < 0.0 or resolved > 1.0:
         return None
     return round(resolved, 6)
+
+
+def _confidence_from_contract(value: Any) -> Optional[float]:
+    payload = _as_dict(value)
+    if not payload:
+        return None
+    prediction_quality = _as_dict(
+        payload.get("prediction_quality")
+        or payload.get("probability_quality")
+        or payload.get("quality")
+    )
+    return _coerce_confidence(
+        _first_non_empty(
+            payload.get("confidence"),
+            payload.get("probability"),
+            payload.get("calibrated_probability"),
+            payload.get("raw_probability"),
+            prediction_quality.get("calibrated_probability"),
+            prediction_quality.get("raw_probability"),
+            prediction_quality.get("probability"),
+        )
+    )
 
 
 def _normalize_evidence_refs(value: Any) -> list[Any]:
@@ -262,9 +461,55 @@ def _extract_explicit_contract(candidate: Mapping[str, Any]) -> Optional[dict[st
         "prediction_as_of",
         "horizon",
     }
-    if contract_markers.intersection(payload):
+    candidate_context_markers = {
+        "params",
+        "strategy_type",
+        "candidate_id",
+        "name",
+        "target_symbols",
+        "stock_pool",
+        "research_task",
+        "trade_plan",
+        "holding_horizon",
+        "evidence_chain",
+        "prediction_contract",
+        "confidence_contract",
+        "tags",
+        "spawn_reason",
+        "market_evidence_pack",
+        "alpha_thesis",
+        "direction_resolution",
+        "confidence_calibration",
+    }
+    if contract_markers.intersection(payload) and not any(
+        payload.get(key) not in _EMPTY_VALUES for key in candidate_context_markers
+    ):
         return dict(payload)
     return None
+
+
+def _has_candidate_context(payload: Mapping[str, Any]) -> bool:
+    return any(
+        payload.get(key) not in _EMPTY_VALUES
+        for key in (
+            "params",
+            "prediction_contract",
+            "evidence_chain",
+            "confidence_contract",
+            "target_symbols",
+            "stock_pool",
+            "research_task",
+            "trade_plan",
+            "holding_horizon",
+            "strategy_type",
+            "candidate_id",
+            "name",
+            "market_evidence_pack",
+            "alpha_thesis",
+            "direction_resolution",
+            "confidence_calibration",
+        )
+    )
 
 
 def derive_trade_prediction_contract(candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -276,8 +521,94 @@ def derive_trade_prediction_contract(candidate: Mapping[str, Any]) -> dict[str, 
     holding_horizon = _as_dict(_candidate_value(payload, "holding_horizon"))
     trade_plan = _as_dict(_candidate_value(payload, "trade_plan"))
     prediction_contract = _as_dict(_candidate_value(payload, "prediction_contract"))
+    research_task = _as_dict(_candidate_value(payload, "research_task"))
+    market_evidence_pack = _as_dict(_candidate_value(payload, "market_evidence_pack"))
+    alpha_thesis = _as_dict(_candidate_value(payload, "alpha_thesis"))
+    direction_resolution = _as_dict(_candidate_value(payload, "direction_resolution"))
+    confidence_calibration = _as_dict(_candidate_value(payload, "confidence_calibration"))
     claims = _as_list(prediction_contract.get("claims"))
     first_claim = _as_dict(claims[0]) if claims else {}
+    prediction_as_of = _coerce_iso_ts(
+        _first_non_empty(
+            payload.get("prediction_as_of"),
+            params.get("prediction_as_of"),
+            payload.get("as_of"),
+            payload.get("as_of_date"),
+            params.get("as_of"),
+            params.get("as_of_date"),
+            payload.get("snapshot_date"),
+            params.get("snapshot_date"),
+            research_task.get("as_of"),
+            research_task.get("as_of_date"),
+            research_task.get("snapshot_date"),
+            payload.get("started_at"),
+            params.get("started_at"),
+            payload.get("created_at"),
+            params.get("created_at"),
+        )
+    )
+    horizon = _normalize_horizon_label(
+        _first_non_empty(
+            payload.get("horizon"),
+            params.get("horizon"),
+            first_claim.get("horizon"),
+            first_claim.get("expected_horizon"),
+            holding_horizon.get("horizon"),
+            holding_horizon.get("label"),
+            trade_plan.get("holding_horizon"),
+            trade_plan.get("horizon"),
+        )
+    ) or _horizon_from_window(
+        holding_horizon,
+        trade_plan.get("holding_window"),
+        trade_plan.get("horizon_window"),
+        prediction_contract.get("primary_horizon_days"),
+        first_claim.get("expected_horizon"),
+    )
+    explicit_target_date = _coerce_iso_date(
+        _first_non_empty(
+            payload.get("target_trading_date"),
+            params.get("target_trading_date"),
+            first_claim.get("target_trading_date"),
+            first_claim.get("target_date"),
+            trade_plan.get("target_trading_date"),
+        )
+    )
+    direction = _normalize_direction(
+        _first_non_empty(
+            direction_resolution.get("direction"),
+            alpha_thesis.get("direction"),
+            prediction_contract.get("direction"),
+            prediction_contract.get("expected_direction"),
+            payload.get("direction"),
+            params.get("direction"),
+            first_claim.get("direction"),
+            first_claim.get("expected_direction"),
+            trade_plan.get("direction"),
+            payload.get("direction_bias"),
+            params.get("direction_bias"),
+            trade_plan.get("entry_bias"),
+        )
+    ) or _direction_from_expected_move(first_claim.get("expected_move")) or _direction_from_bias(
+        _first_non_empty(
+            trade_plan.get("entry_bias"),
+            payload.get("direction_bias"),
+            params.get("direction_bias"),
+        )
+    )
+    confidence = _coerce_confidence(
+        _first_non_empty(
+            confidence_calibration.get("confidence"),
+            alpha_thesis.get("confidence"),
+            payload.get("confidence"),
+            params.get("confidence"),
+            prediction_contract.get("confidence"),
+            first_claim.get("confidence"),
+            first_claim.get("calibrated_confidence"),
+            confidence_contract.get("calibrated_probability"),
+            confidence_contract.get("probability"),
+        )
+    ) or _confidence_from_contract(confidence_contract)
     return {
         "contract_version": TRADE_PREDICTION_CONTRACT_VERSION,
         "contract_source": DERIVED_FROM_LEGACY_CONTRACT,
@@ -291,60 +622,46 @@ def derive_trade_prediction_contract(candidate: Mapping[str, Any]) -> dict[str, 
         )
         or None,
         "stock_code": _first_stock_code(payload, {}),
-        "prediction_as_of": _coerce_iso_ts(
+        "prediction_as_of": prediction_as_of,
+        "target_trading_date": explicit_target_date or _derive_target_date_from_horizon(prediction_as_of, horizon),
+        "direction": direction,
+        "confidence": confidence,
+        "horizon": horizon,
+        "evidence_refs": _derive_evidence_refs(payload),
+        "direction_source": _string(
             _first_non_empty(
-                payload.get("prediction_as_of"),
-                params.get("prediction_as_of"),
-                payload.get("as_of"),
-                payload.get("as_of_date"),
-                params.get("as_of"),
-                params.get("as_of_date"),
-                payload.get("snapshot_date"),
-                params.get("snapshot_date"),
-                payload.get("created_at"),
-                params.get("created_at"),
-            )
-        ),
-        "target_trading_date": _coerce_iso_date(
-            _first_non_empty(
-                payload.get("target_trading_date"),
-                params.get("target_trading_date"),
-                first_claim.get("target_trading_date"),
-                first_claim.get("target_date"),
-                trade_plan.get("target_trading_date"),
-            )
-        ),
-        "direction": _normalize_direction(
-            _first_non_empty(
-                payload.get("direction"),
-                params.get("direction"),
-                first_claim.get("direction"),
-                first_claim.get("expected_direction"),
-                trade_plan.get("direction"),
-                trade_plan.get("entry_bias"),
-            )
-        ),
-        "confidence": _coerce_confidence(
-            _first_non_empty(
-                payload.get("confidence"),
-                params.get("confidence"),
-                first_claim.get("confidence"),
-                confidence_contract.get("calibrated_probability"),
-                confidence_contract.get("probability"),
-            )
-        ),
-        "horizon": _string(
-            _first_non_empty(
-                payload.get("horizon"),
-                params.get("horizon"),
-                first_claim.get("horizon"),
-                holding_horizon.get("horizon"),
-                holding_horizon.get("label"),
-                trade_plan.get("holding_horizon"),
+                direction_resolution.get("direction_source"),
+                prediction_contract.get("direction_source"),
             )
         )
         or None,
-        "evidence_refs": _derive_evidence_refs(payload),
+        "confidence_source": _string(
+            _first_non_empty(
+                confidence_calibration.get("confidence_source"),
+                prediction_contract.get("confidence_source"),
+            )
+        )
+        or None,
+        "evidence_quality_score": _coerce_confidence(
+            _first_non_empty(
+                confidence_calibration.get("evidence_quality_score"),
+                prediction_contract.get("evidence_quality_score"),
+            )
+        ),
+        "conflict_count": _safe_int(
+            _first_non_empty(
+                direction_resolution.get("conflict_count"),
+                confidence_calibration.get("conflict_count"),
+                prediction_contract.get("conflict_count"),
+            )
+        ),
+        "template_fallback_used": bool(
+            _first_non_empty(
+                prediction_contract.get("template_fallback_used"),
+                alpha_thesis.get("template_fallback_used"),
+                market_evidence_pack.get("template_dominance_score"),
+            )
+        ),
     }
 
 
@@ -353,10 +670,28 @@ def normalize_trade_prediction_contract(candidate_or_contract: Mapping[str, Any]
 
     payload = dict(candidate_or_contract or {})
     explicit = _extract_explicit_contract(payload)
+    candidate_context = _has_candidate_context(payload)
     source = EXPLICIT_CONTRACT if explicit is not None else DERIVED_FROM_LEGACY_CONTRACT
-    candidate = payload if explicit is not payload else {}
+    candidate = payload if candidate_context or explicit is None else {}
     raw = explicit if explicit is not None else derive_trade_prediction_contract(payload)
     contract = dict(raw or {})
+    fallback = derive_trade_prediction_contract(payload) if explicit is not None and candidate_context else {}
+    for field_name in (
+        "stock_code",
+        "prediction_as_of",
+        "target_trading_date",
+        "direction",
+        "confidence",
+        "horizon",
+        "evidence_refs",
+        "direction_source",
+        "confidence_source",
+        "evidence_quality_score",
+        "conflict_count",
+        "template_fallback_used",
+    ):
+        if contract.get(field_name) in _EMPTY_VALUES and fallback.get(field_name) not in _EMPTY_VALUES:
+            contract[field_name] = fallback.get(field_name)
     contract["contract_version"] = _string(contract.get("contract_version")) or TRADE_PREDICTION_CONTRACT_VERSION
     contract["contract_source"] = _string(contract.get("contract_source")) or source
     contract["strategy_id"] = _string(
@@ -368,7 +703,13 @@ def normalize_trade_prediction_contract(candidate_or_contract: Mapping[str, Any]
     ) or None
     contract["stock_code"] = _first_stock_code(candidate, contract)
     contract["prediction_as_of"] = _coerce_iso_ts(contract.get("prediction_as_of"))
-    contract["target_trading_date"] = _coerce_iso_date(contract.get("target_trading_date"))
+    target_trading_date = _coerce_iso_date(contract.get("target_trading_date"))
+    if target_trading_date is None and (explicit is None or candidate_context):
+        target_trading_date = _derive_target_date_from_horizon(
+            contract.get("prediction_as_of"),
+            contract.get("horizon"),
+        )
+    contract["target_trading_date"] = target_trading_date
     contract["direction"] = _normalize_direction(contract.get("direction"))
     contract["confidence"] = _coerce_confidence(contract.get("confidence"))
     contract["horizon"] = _string(contract.get("horizon")) or None

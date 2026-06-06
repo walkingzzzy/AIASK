@@ -36,6 +36,9 @@ from ..semantic_contract import (
     synthesize_confidence_contract,
 )
 from ..submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
+from ..trade_prediction_promotion_gate import (
+    evaluate_trade_prediction_promotion_gate,
+)
 from ..utils import (
     _auto_name as _local_auto_name,
     _extract_event_context as _local_extract_event_context,
@@ -58,6 +61,7 @@ from .._runtime_toggles import (
     diagnostic_observation_min_trade_count as _diagnostic_observation_min_trade_count,
     diagnostic_observation_min_win_rate as _diagnostic_observation_min_win_rate,
     diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
+    observe_first_enabled as _observe_first_enabled,
     observe_d_grade_enabled as _observe_d_grade_enabled,
     wide_intake_observe_enabled as _wide_intake_observe_enabled,
 )
@@ -515,6 +519,12 @@ async def _update_strategy_status(*args, **kwargs):
 
 
 _SEMANTIC_CONTRACT_FIELDS = (
+    "market_evidence_pack",
+    "alpha_thesis",
+    "template_dominance_score",
+    "non_proxy_evidence_ratio",
+    "direction_resolution",
+    "confidence_calibration",
     "evidence_chain",
     "prediction_contract",
     "confidence_contract",
@@ -869,12 +879,13 @@ def _diagnostic_observation_submission_action(
 ) -> dict[str, Any]:
     ttl_days = _diagnostic_observation_ttl_days()
     final_status = _diagnostic_observation_final_status()
+    trigger_reason = "observe_first_intake" if _observe_first_enabled() else "diagnostic_observation_gate3_failed"
     action = dict(base_action or {})
     nested = dict(action.get("submission_action") or {})
     nested.update(
         {
             "type": "diagnostic",
-            "trigger_reason": "diagnostic_observation_gate3_failed",
+            "trigger_reason": trigger_reason,
             "next_step": "diagnostic_observation",
             "submission_lane": "diagnostic_observation",
             "final_status": final_status,
@@ -889,7 +900,7 @@ def _diagnostic_observation_submission_action(
         {
             "submission_action": nested,
             "submission_action_type": "diagnostic",
-            "submission_action_trigger": "diagnostic_observation_gate3_failed",
+            "submission_action_trigger": trigger_reason,
             "submission_action_next_step": "diagnostic_observation",
             "submission_action_completed": False,
             "submission_lane": "diagnostic_observation",

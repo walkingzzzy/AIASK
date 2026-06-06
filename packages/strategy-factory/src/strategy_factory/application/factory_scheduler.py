@@ -42,7 +42,11 @@ from ..domain.constants import (
 )
 from ..domain.trading_calendar import get_trading_calendar
 from .cycle_runner import FactoryCycleRunner, FactoryRunContext
-from .factory_execution import FACTORY_ENGINE_VERSION, resolve_factory_execution_mode
+from .factory_execution import (
+    FACTORY_ENGINE_VERSION,
+    resolve_factory_engine_version,
+    resolve_factory_execution_mode,
+)
 from .run_models import (
     FactoryRunStatus,
     StageStatus,
@@ -177,8 +181,14 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._run_once_task_lock: Optional[asyncio.Lock] = None
             self._run_once_task_lock_loop: Optional[asyncio.AbstractEventLoop] = None
             self.execution_mode = resolve_factory_execution_mode()
-            self.engine_version = FACTORY_ENGINE_VERSION
+            self.engine_version = resolve_factory_engine_version(
+                self.execution_mode,
+                default=FACTORY_ENGINE_VERSION,
+            )
             self._dispatch_tasks: Dict[str, asyncio.Task] = {}
+            self._dispatch_semaphore: Optional[asyncio.Semaphore] = None
+            self._dispatch_semaphore_limit: int = 0
+            self._dispatch_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
             self._active_dispatch_id: Optional[str] = None
             self._latest_dispatch_id: Optional[str] = None
             self._last_theme_seed_at: Optional[datetime] = None

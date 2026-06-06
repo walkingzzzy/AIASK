@@ -100,6 +100,21 @@
             }
             bulk_cursor = await self._resolve_bulk_stock_matrix_cursor(db)
             bulk_window_state = self._bulk_stock_matrix_run_window_state(self._now())
+            runtime_mode_flags = resolve_runtime_mode_flags(
+                snapshot.get("factory_execution_mode")
+                or snapshot.get("execution_mode")
+                or getattr(self, "execution_mode", None)
+            )
+            if bool(runtime_mode_flags.get("stock_first_observe_mode")) and not bool(
+                bulk_window_state.get("run_window_active")
+            ):
+                bulk_window_state = {
+                    **bulk_window_state,
+                    "configured_enabled": True,
+                    "run_window_active": True,
+                    "skip_reason": None,
+                    "activation_source": "stock_first_observe_mode",
+                }
             resume_from_cursor = bool(
                 bulk_cursor.get("available")
                 and bulk_cursor.get("enabled")

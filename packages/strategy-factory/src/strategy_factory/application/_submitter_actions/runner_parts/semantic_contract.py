@@ -162,13 +162,15 @@
             )
             submission_lane = str(submission_action.get("submission_lane") or "deferred_submission")
             final_status = str(submission_action.get("final_status") or "submitted")
-            diagnostic_ok, diagnostic_reason = _is_diagnostic_observation_candidate(
-                gate,
-                candidate,
-                metrics,
-                refresh_existing=refresh_existing,
-                read_only=read_only,
-            )
+            diagnostic_ok, diagnostic_reason = (False, None)
+            if not bool(submission_action.get("wide_intake_admitted")):
+                diagnostic_ok, diagnostic_reason = _is_diagnostic_observation_candidate(
+                    gate,
+                    candidate,
+                    metrics,
+                    refresh_existing=refresh_existing,
+                    read_only=read_only,
+                )
             diagnostic_guard: dict[str, Any] = {}
             diagnostic_fingerprint = ""
             if diagnostic_ok:

@@ -24,6 +24,7 @@ from .constants import (
     STRATEGY_FACTORY_FACTOR_POOL_OOS_MIN_SAMPLE_DATES,
     preferred_strategy_types_for_factor,
 )
+from .market_evidence import apply_evidence_first_candidate, summarize_generation_quality
 from .parameter_distribution_registry import ParameterDistributionRegistry
 from .spawn_policy_registry import (
     get_event_focus_targets_by_keyword,

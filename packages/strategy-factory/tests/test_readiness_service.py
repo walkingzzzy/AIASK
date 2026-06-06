@@ -37,10 +37,13 @@ def test_soft_readiness_allows_missing_governed_pool_with_observability(monkeypa
 
     assert readiness["hard_block_enabled"] is False
     assert readiness["can_proceed"] is True
-    assert "governed_candidate_pool_required" in readiness["blockers"]
-    assert "governed_candidate_pool_unavailable_after_refresh" in readiness["blockers"]
+    assert readiness["blockers"] == []
+    assert readiness["blocker_count"] == 0
     assert readiness["critical_blockers"] == []
+    assert "governed_candidate_pool_required" in readiness["warnings"]
+    assert "governed_candidate_pool_unavailable_after_refresh" in readiness["warnings"]
     assert readiness["authority"]["decision"] == "proceed"
+    assert readiness["authority"]["blocking_reason_codes"] == []
 
 
 def test_hard_readiness_blocks_missing_governed_pool(monkeypatch):

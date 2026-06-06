@@ -85,6 +85,7 @@ def test_cycle_runner_delegates_through_explicit_pipeline():
     assert outcome.result["summary"]["cycle_pipeline_stage_aliases"] == {
         key: list(value) for key, value in CYCLE_PIPELINE_STAGE_ALIASES.items()
     }
+    assert "candidate_governance" not in outcome.result["summary"]["cycle_pipeline_stage_order"]
 
 
 def test_cycle_pipeline_returns_runtime_boundary_stage_on_missing_contract():
@@ -161,10 +162,16 @@ def test_cycle_pipeline_maps_legacy_stage_fragments_to_canonical_stages():
 
     assert canonical["research_generation"]["status"] == "partial"
     assert canonical["research_generation"]["observed_stage_names"] == ["spawn", "autonomy"]
-    assert canonical["candidate_governance"]["status"] == "completed"
-    assert canonical["candidate_governance"]["observed_stage_names"] == [
+    assert "candidate_governance" not in canonical
+    assert canonical["evidence_scoring"]["status"] == "completed"
+    assert canonical["evidence_scoring"]["observed_stage_names"] == [
         "quality_gate",
         "backtest",
+    ]
+    assert canonical["observe_intake"]["status"] == "completed"
+    assert canonical["observe_intake"]["observed_stage_names"] == [
         "deduplicate",
         "submit",
     ]
+    assert canonical["promotion_review"]["status"] == "completed"
+    assert canonical["promotion_review"]["observed_stage_names"] == ["submit"]

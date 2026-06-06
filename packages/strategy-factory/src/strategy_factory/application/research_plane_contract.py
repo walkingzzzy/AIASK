@@ -50,6 +50,33 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _router_telemetry_from_task_scan(
+    task_scan_summary: dict[str, Any],
+    router_artifact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = dict(router_artifact or task_scan_summary or {})
+    return {
+        "router_artifact_contract_version": source.get("contract_version"),
+        "router_enabled": bool(source.get("router_enabled")),
+        "router_strict": bool(source.get("router_strict")),
+        "router_telemetry_enabled": bool(source.get("router_telemetry_enabled")),
+        "router_candidate_stock_count": _safe_int(source.get("router_candidate_stock_count")),
+        "router_applied_count": _safe_int(source.get("router_applied_count")),
+        "router_status_counts": dict(source.get("router_status_counts") or {}),
+        "router_fallback_reason_counts": dict(source.get("router_fallback_reason_counts") or {}),
+        "router_family_counts": dict(source.get("router_family_counts") or {}),
+        "router_holding_bucket_counts": dict(source.get("router_holding_bucket_counts") or {}),
+        "profile_summary_present_count": _safe_int(source.get("profile_summary_present_count")),
+        "profile_summary_missing_count": _safe_int(source.get("profile_summary_missing_count")),
+        "profile_summary_generated_count": _safe_int(source.get("profile_summary_generated_count")),
+        "selected_task_count": _safe_int(source.get("selected_task_count")),
+        "selected_router_applied_count": _safe_int(source.get("selected_router_applied_count")),
+        "selected_profile_summary_missing_count": _safe_int(
+            source.get("selected_profile_summary_missing_count")
+        ),
+    }
+
+
 def _compact_list(values: Any, *, limit: int = 8) -> list[str]:
     items: list[str] = []
     for value in list(values or []):
@@ -397,6 +424,7 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
     stage = dict(autonomy_stage or {})
     task_scan = dict(stage.get("task_scan") or {})
     task_scan_summary = dict(task_scan.get("summary") or {})
+    router_artifact = dict(task_scan.get("router_artifact") or {})
     planned_tasks_raw = [
         dict(task or {})
         for task in list(task_scan.get("tasks") or [])
@@ -412,6 +440,7 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         stage.get("bulk_stock_task_count"),
         _safe_int(task_scan_summary.get("bulk_stock_task_count")),
     )
+    router_telemetry = _router_telemetry_from_task_scan(task_scan_summary, router_artifact)
     snapshot_task_count = _safe_int(
         stage.get("snapshot_task_count"),
         _safe_int(task_source_counts.get("snapshot")),
@@ -447,6 +476,9 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         "bulk_stock_matrix_eligible_stock_count": _safe_int(
             task_scan_summary.get("bulk_stock_matrix_eligible_stock_count")
         ),
+        "router_telemetry": router_telemetry,
+        "router_artifact": router_artifact,
+        **router_telemetry,
         "feedback_control_mode_counts": dict(stage.get("selected_feedback_control_mode_counts") or {}),
         "feedback_target_pool_control_mode_counts": dict(
             stage.get("selected_feedback_target_pool_control_mode_counts") or {}

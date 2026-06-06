@@ -501,6 +501,32 @@ def test_strategy_factory_run_summary_compaction_preserves_feedback_diagnostics(
         "gate_3_passed": 0,
         "gate_3_failed": 3,
         "scheduler_cycle_count": 2,
+        "execution_mode": "stock_first_observe_primary",
+        "engine_version": "strategy_factory.stock_first_observe.primary",
+        "stock_first_flow": "observe_first",
+        "observe_first_enabled": True,
+        "observe_first_mode": "score_only",
+        "observed_candidate_count": 8,
+        "pre_observe_gate_removed": True,
+        "pre_observe_hard_reject_count": 0,
+        "gate3_pre_observe_block_count": 0,
+        "legacy_gate_executed": False,
+        "legacy_funnel_executed": False,
+        "legacy_gate_report_mode": "not_executed",
+        "evidence_scoring_mode": "observe_first_no_legacy_gate",
+        "router_enabled": True,
+        "router_strict": True,
+        "router_candidate_stock_count": 2,
+        "router_applied_count": 2,
+        "router_status_counts": {"applied": 2},
+        "router_fallback_reason_counts": {},
+        "profile_summary_generated_count": 2,
+        "selected_router_applied_count": 6,
+        "selected_profile_summary_missing_count": 0,
+        "task_source_counts": {"bulk_stock_matrix": 2},
+        "bulk_stock_task_count": 2,
+        "snapshot_task_count": 0,
+        "cycle_pipeline_stage_order": ["warmup", "collect", "evidence_scoring", "observe_intake"],
         "family_gate_feedback_control_counts": {"suppress": 2, "cooldown": 1},
         "family_gate_feedback_updated_family_count": 3,
         "family_gate_feedback_active_families": ["momentum", "ma_cross", "value_factor"],
@@ -522,6 +548,30 @@ def test_strategy_factory_run_summary_compaction_preserves_feedback_diagnostics(
     assert stored["gate_3_input"] == 3
     assert stored["gate_3_failed"] == 3
     assert stored["scheduler_cycle_count"] == 2
+    assert stored["execution_mode"] == "stock_first_observe_primary"
+    assert stored["engine_version"] == "strategy_factory.stock_first_observe.primary"
+    assert stored["stock_first_flow"] == "observe_first"
+    assert stored["observe_first_enabled"] is True
+    assert stored["observed_candidate_count"] == 8
+    assert stored["pre_observe_gate_removed"] is True
+    assert stored["gate3_pre_observe_block_count"] == 0
+    assert stored["legacy_gate_executed"] is False
+    assert stored["legacy_funnel_executed"] is False
+    assert stored["legacy_gate_report_mode"] == "not_executed"
+    assert stored["evidence_scoring_mode"] == "observe_first_no_legacy_gate"
+    assert stored["router_enabled"] is True
+    assert stored["router_strict"] is True
+    assert stored["router_applied_count"] == 2
+    assert stored["router_status_counts"] == {"applied": 2}
+    assert stored["profile_summary_generated_count"] == 2
+    assert stored["selected_router_applied_count"] == 6
+    assert stored["task_source_counts"] == {"bulk_stock_matrix": 2}
+    assert stored["cycle_pipeline_stage_order"] == [
+        "warmup",
+        "collect",
+        "evidence_scoring",
+        "observe_intake",
+    ]
     assert stored["family_gate_feedback_control_counts"] == {"suppress": 2, "cooldown": 1}
     assert stored["family_gate_feedback_updated_family_count"] == 3
     assert stored["family_gate_feedback_active_families"] == ["momentum", "ma_cross", "value_factor"]

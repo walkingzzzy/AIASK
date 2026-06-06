@@ -72,7 +72,7 @@ class FactoryStatusDTO:
     last_live_ready_given_raw_b_rate: float = 0.0
     last_validation_family_quality_panel: list[dict[str, Any]] = field(default_factory=list)
     quality_baseline: dict[str, Any] = field(default_factory=dict)
-    execution_mode: str = "legacy_primary"
+    execution_mode: str = "stock_first_observe_primary"
     engine_version: str = "strategy_factory.v2"
     latest_parity_result: dict[str, Any] = field(default_factory=dict)
     capability_health: dict[str, Any] = field(default_factory=dict)
@@ -400,7 +400,7 @@ class FactoryStatusDTO:
             ],
             quality_baseline=dict(d.get("quality_baseline") or {}),
             execution_mode=str(
-                d.get("execution_mode") or last_result.get("execution_mode") or "legacy_primary"
+                d.get("execution_mode") or last_result.get("execution_mode") or "stock_first_observe_primary"
             ),
             engine_version=str(
                 d.get("engine_version") or last_result.get("engine_version") or "strategy_factory.v2"

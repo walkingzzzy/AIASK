@@ -164,6 +164,39 @@
                 "research_governed_candidate_activation_task_count": int(
                     task_artifact.get("governed_candidate_activation_task_count") or 0
                 ),
+                "router_artifact_contract_version": task_artifact.get(
+                    "router_artifact_contract_version"
+                ),
+                "router_enabled": bool(task_artifact.get("router_enabled")),
+                "router_strict": bool(task_artifact.get("router_strict")),
+                "router_telemetry_enabled": bool(task_artifact.get("router_telemetry_enabled")),
+                "router_candidate_stock_count": int(
+                    task_artifact.get("router_candidate_stock_count") or 0
+                ),
+                "router_applied_count": int(task_artifact.get("router_applied_count") or 0),
+                "router_status_counts": dict(task_artifact.get("router_status_counts") or {}),
+                "router_fallback_reason_counts": dict(
+                    task_artifact.get("router_fallback_reason_counts") or {}
+                ),
+                "router_family_counts": dict(task_artifact.get("router_family_counts") or {}),
+                "router_holding_bucket_counts": dict(
+                    task_artifact.get("router_holding_bucket_counts") or {}
+                ),
+                "profile_summary_present_count": int(
+                    task_artifact.get("profile_summary_present_count") or 0
+                ),
+                "profile_summary_missing_count": int(
+                    task_artifact.get("profile_summary_missing_count") or 0
+                ),
+                "profile_summary_generated_count": int(
+                    task_artifact.get("profile_summary_generated_count") or 0
+                ),
+                "selected_router_applied_count": int(
+                    task_artifact.get("selected_router_applied_count") or 0
+                ),
+                "selected_profile_summary_missing_count": int(
+                    task_artifact.get("selected_profile_summary_missing_count") or 0
+                ),
                 "lifecycle_feedback_input_contract_version": research_artifact.get(
                     "lifecycle_feedback_input_contract_version"
                 ),
@@ -502,6 +535,9 @@
             snapshot = await collector.collect(db)
             snapshot["factory_run_id"] = results["run_id"]
             snapshot["trace_id"] = trace_id
+            snapshot["factory_execution_mode"] = self._context.execution_mode
+            snapshot["execution_mode"] = self._context.execution_mode
+            snapshot["factory_engine_version"] = self._context.engine_version
             target_codes = [
                 str(code or "").strip()
                 for code in list(getattr(self._context, "target_codes", []) or [])
@@ -909,6 +945,7 @@
                 snapshot,
                 db,
                 read_only=bool(self._context.read_only),
+                execution_mode=self._context.execution_mode,
             )
             passed = list(pipeline_run.passed or [])
             unique = list(pipeline_run.unique or [])
@@ -1025,6 +1062,42 @@
                 results["summary"],
                 results["governance_plane"],
             )
+            observe_first_summary = dict(quality_gate_report.get("observe_first") or {})
+            if observe_first_summary:
+                results["summary"].update(
+                    {
+                        "observe_first_enabled": bool(observe_first_summary.get("enabled")),
+                        "observe_first_mode": observe_first_summary.get("mode"),
+                        "observed_candidate_count": int(
+                            observe_first_summary.get("deduped_observe_intake_count")
+                            or observe_first_summary.get("observe_intake_count")
+                            or 0
+                        ),
+                        "pre_observe_hard_reject_count": int(
+                            observe_first_summary.get("pre_observe_hard_reject_count") or 0
+                        ),
+                        "gate3_pre_observe_block_count": int(
+                            observe_first_summary.get("gate3_pre_observe_block_count") or 0
+                        ),
+                        "pre_observe_gate_removed": bool(
+                            observe_first_summary.get("pre_observe_gate_removed")
+                        ),
+                        "legacy_gate_report_mode": observe_first_summary.get(
+                            "legacy_gate_report_mode"
+                        ),
+                        "legacy_gate_executed": bool(
+                            observe_first_summary.get("legacy_gate_executed")
+                        ),
+                        "legacy_funnel_executed": bool(
+                            observe_first_summary.get("legacy_funnel_executed")
+                        ),
+                        "evidence_scoring_mode": (
+                            observe_first_summary.get("evidence_scoring_mode")
+                            or quality_gate_report.get("evidence_scoring_mode")
+                        ),
+                        "stock_first_flow": "observe_first",
+                    }
+                )
             results["summary"].update(scheduler._build_layered_run_summary(results["summary"], submit_result))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
             submit_log_summary = {

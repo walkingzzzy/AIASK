@@ -106,6 +106,10 @@
             self._apply_snapshot_target_alignment(candidate, snapshot)
             for candidate in [*signal_candidates, *quota_candidates]
         ]
+        candidates = [
+            apply_evidence_first_candidate(candidate, snapshot=snapshot)
+            for candidate in candidates
+        ]
         self.last_report = self._build_spawn_report(
             candidates,
             event_ready=event_ready,

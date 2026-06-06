@@ -19,6 +19,8 @@ class FactoryExecutionMode(str, Enum):
     LEGACY_PRIMARY = "legacy_primary"
     SHADOW_READONLY = "shadow_readonly"
     V2_PRIMARY = "v2_primary"
+    STOCK_FIRST_OBSERVE_PRIMARY = "stock_first_observe_primary"
+    STOCK_FIRST_OBSERVE_SHADOW = "stock_first_observe_shadow"
 
 
 class FactoryArtifactType(str, Enum):
@@ -33,7 +35,7 @@ class FactoryArtifactType(str, Enum):
     SHADOW_DIFF = "shadow_diff"
 
 
-DEFAULT_FACTORY_EXECUTION_MODE = FactoryExecutionMode.LEGACY_PRIMARY
+DEFAULT_FACTORY_EXECUTION_MODE = FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY
 _ARTIFACT_TYPE_ORDER = (
     FactoryArtifactType.RESEARCH_PLANE,
     FactoryArtifactType.GOVERNANCE_PLANE,
@@ -71,7 +73,35 @@ def resolve_factory_execution_mode(
 
 
 def is_shadow_readonly(mode: FactoryExecutionMode | str) -> bool:
-    return normalize_factory_execution_mode(mode) == FactoryExecutionMode.SHADOW_READONLY
+    return normalize_factory_execution_mode(mode) in {
+        FactoryExecutionMode.SHADOW_READONLY,
+        FactoryExecutionMode.STOCK_FIRST_OBSERVE_SHADOW,
+    }
+
+
+def is_stock_first_observe_mode(mode: FactoryExecutionMode | str) -> bool:
+    return normalize_factory_execution_mode(mode) in {
+        FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY,
+        FactoryExecutionMode.STOCK_FIRST_OBSERVE_SHADOW,
+        FactoryExecutionMode.V2_PRIMARY,
+    }
+
+
+def is_stock_first_observe_primary(mode: FactoryExecutionMode | str) -> bool:
+    return normalize_factory_execution_mode(mode) in {
+        FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY,
+        FactoryExecutionMode.V2_PRIMARY,
+    }
+
+
+def resolve_runtime_mode_flags(mode: FactoryExecutionMode | str) -> dict[str, bool]:
+    stock_first_mode = is_stock_first_observe_mode(mode)
+    return {
+        "stock_first_observe_mode": stock_first_mode,
+        "router_enabled": stock_first_mode,
+        "router_strict": stock_first_mode,
+        "observe_first_enabled": stock_first_mode,
+    }
 
 
 def build_run_header(
@@ -260,6 +290,10 @@ def resolve_factory_engine_version(
         return "strategy_factory.v2.primary"
     if resolved_mode == FactoryExecutionMode.SHADOW_READONLY:
         return "strategy_factory.v2.shadow"
+    if resolved_mode == FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY:
+        return "strategy_factory.stock_first_observe.primary"
+    if resolved_mode == FactoryExecutionMode.STOCK_FIRST_OBSERVE_SHADOW:
+        return "strategy_factory.stock_first_observe.shadow"
     return str(default or FACTORY_ENGINE_VERSION).strip() or FACTORY_ENGINE_VERSION
 
 
@@ -274,7 +308,10 @@ __all__ = [
     "build_run_header",
     "build_shadow_parity_result",
     "is_shadow_readonly",
+    "is_stock_first_observe_mode",
+    "is_stock_first_observe_primary",
     "normalize_factory_execution_mode",
+    "resolve_runtime_mode_flags",
     "resolve_factory_engine_version",
     "resolve_factory_execution_mode",
 ]

@@ -142,15 +142,15 @@ def test_scheduler_execution_mode_default():
     from strategy_factory.application.factory_execution import FactoryExecutionMode
 
     sched = StrategyFactoryScheduler()
-    assert sched.execution_mode == FactoryExecutionMode.LEGACY_PRIMARY
+    assert sched.execution_mode == FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY
 
 
 def test_scheduler_engine_version():
     from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
-    from strategy_factory.application.factory_execution import FACTORY_ENGINE_VERSION
+    from strategy_factory.application.factory_execution import resolve_factory_engine_version
 
     sched = StrategyFactoryScheduler()
-    assert sched.engine_version == FACTORY_ENGINE_VERSION
+    assert sched.engine_version == resolve_factory_engine_version(sched.execution_mode)
 
 
 def test_facade_scheduler_applies_explicit_runtime_providers(monkeypatch):
@@ -341,6 +341,50 @@ def test_scheduler_run_once_timeout_blocks_task_board(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["status"] == "blocked"
     assert "StrategyFactory run_once exceeded" in rows[0]["blocked_reason"]
+
+
+def test_scheduler_cycle_cancel_persists_interrupted_run_marker(monkeypatch):
+    from strategy_factory.application import factory_scheduler as scheduler_module
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+    class _DB:
+        def __init__(self):
+            self.runs = []
+
+        async def save_strategy_factory_run(self, payload):
+            self.runs.append(dict(payload))
+
+    class _CancelledRunner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            raise asyncio.CancelledError()
+
+    db = _DB()
+    scheduler = StrategyFactoryScheduler(db_provider=lambda: db)
+    monkeypatch.setattr(scheduler_module, "FactoryCycleRunner", _CancelledRunner)
+
+    async def _run():
+        try:
+            await scheduler._execute_factory_cycle_once(
+                db,
+                previous_result=None,
+                execution_mode="stock_first_observe_primary",
+                run_id="factory_run_cancel_marker",
+                trace_id="trace-cancel",
+            )
+        except asyncio.CancelledError:
+            return
+        raise AssertionError("cycle should have been cancelled")
+
+    asyncio.run(_run())
+
+    statuses = [row["status"] for row in db.runs]
+    assert statuses == ["running", "interrupted"]
+    assert {row["run_id"] for row in db.runs} == {"factory_run_cancel_marker"}
+    assert db.runs[-1]["completed_at"]
+    assert "cancelled" in db.runs[-1]["summary"]["reason"]
 
 
 def test_scheduler_run_once_blocks_orphaned_predecessor_task(tmp_path):

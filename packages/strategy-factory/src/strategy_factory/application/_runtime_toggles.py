@@ -42,6 +42,10 @@ def observe_d_grade_enabled() -> bool:
     return _env_bool("STRATEGY_FACTORY_OBSERVE_D_GRADE_ENABLED", default=False)
 
 
+def observe_first_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_OBSERVE_FIRST_ENABLED", default=False)
+
+
 # === INVERT-DESIGN P1 改动A: Layer 1 宽进准入 ===
 # 倒置架构核心:候选只要结构合法(strategy_type 已注册 + runtime 契约字段齐 +
 # 无 semantic hard fail),即使 Gate-3 回测盈利未通过(quality_passed=False),
@@ -50,7 +54,7 @@ def observe_d_grade_enabled() -> bool:
 # 打开后由 ForwardVerifier(改动D 已带 regime 标签)对其持续测量。
 # 注意:formal_incubation(真实资本前置)严格性零变化 — 宽进只作用于零资本 observe。
 def wide_intake_observe_enabled() -> bool:
-    return _env_bool("STRATEGY_FACTORY_WIDE_INTAKE_OBSERVE_ENABLED", default=False)
+    return observe_first_enabled() or _env_bool("STRATEGY_FACTORY_WIDE_INTAKE_OBSERVE_ENABLED", default=False)
 
 
 # === DEV-V1 P3: 扩展 _TRADE_AWARE_VALIDATION_GRADE_FAMILIES 集合 ===
@@ -147,8 +151,21 @@ def diagnostic_observation_dedupe_enabled() -> bool:
     return _env_bool("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_DEDUPE_ENABLED", default=True)
 
 
+def strategy_trade_prediction_promotion_gate_enabled() -> bool:
+    return _env_bool("STRATEGY_TRADE_PREDICTION_PROMOTION_GATE_ENABLED", default=False)
+
+
+def strategy_trade_prediction_budget_feedback_enabled() -> bool:
+    return _env_bool("STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED", default=False)
+
+
+def strategy_trade_prediction_factor_decay_enabled() -> bool:
+    return _env_bool("STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED", default=False)
+
+
 __all__ = [
     "observe_d_grade_enabled",
+    "observe_first_enabled",
     "wide_intake_observe_enabled",
     "trade_aware_extra_families",
     "paper_intake_enabled",
@@ -162,4 +179,7 @@ __all__ = [
     "diagnostic_observation_health_guard_enabled",
     "diagnostic_observation_health_max_age_hours",
     "diagnostic_observation_dedupe_enabled",
+    "strategy_trade_prediction_promotion_gate_enabled",
+    "strategy_trade_prediction_budget_feedback_enabled",
+    "strategy_trade_prediction_factor_decay_enabled",
 ]

@@ -355,6 +355,48 @@
             event_name = str(event.get("event_name") or event.get("summary") or event_id or "event").strip()
             themes = [dict(item or {}) for item in list(event.get("themes") or []) if isinstance(item, dict)]
             for theme in themes[:3]:
+                source = str(theme.get("source") or event.get("source") or "").strip().lower()
+                source_tier = str(theme.get("source_tier") or event.get("source_tier") or "").strip().lower()
+                source_doc_uids = self._normalize_text_list(
+                    theme.get("source_doc_uids") or event.get("source_doc_uids"),
+                    limit=8,
+                )
+                event_anchor_id = str(
+                    theme.get("event_anchor_id")
+                    or event.get("event_anchor_id")
+                    or event_id
+                    or ""
+                ).strip()
+                validation_summary = dict(theme.get("validation_summary") or event.get("validation_summary") or {})
+                alpha_status = str(
+                    theme.get("alpha_confirmation_status")
+                    or event.get("alpha_confirmation_status")
+                    or validation_summary.get("alpha_confirmation_status")
+                    or ""
+                ).strip().lower()
+                occurrence_status = str(
+                    theme.get("occurrence_status")
+                    or event.get("occurrence_status")
+                    or validation_summary.get("occurrence_status")
+                    or ""
+                ).strip().lower()
+                conflict_count = int(
+                    theme.get("conflict_count")
+                    or event.get("conflict_count")
+                    or validation_summary.get("conflict_count")
+                    or 0
+                )
+                if not (
+                    bool(theme.get("verified_event_anchor") or event.get("verified_event_anchor"))
+                    and source == "market_events_normalized"
+                    and source_tier in {"tier_a", "tier_b"}
+                    and source_doc_uids
+                    and event_anchor_id
+                    and (not occurrence_status or occurrence_status.startswith("verified"))
+                    and alpha_status not in {"news_only_rejected", "source_degraded", "conflicted"}
+                    and conflict_count <= 0
+                ):
+                    continue
                 strategy_preferences = {
                     str(item or "").strip()
                     for item in list(theme.get("preferred_strategy_types") or theme.get("strategy_preferences") or [])
@@ -367,8 +409,8 @@
                     continue
                 focus_name = str(theme.get("theme_name") or theme.get("theme_code") or event_name).strip()
                 event_anchor = {
-                    "source": "announcement" if event_type in {"announcement", "earnings", "filing", "news"} else "sector_catalyst",
-                    "id": event_id or str(theme.get("theme_code") or focus_name).strip(),
+                    "source": "market_events_normalized",
+                    "id": event_anchor_id,
                     "type": event_type,
                     "strength": round(
                         max(
@@ -380,8 +422,23 @@
                     "theme_code": str(theme.get("theme_code") or "").strip() or None,
                     "focus_industries": self._normalize_text_list(focus_name, limit=3),
                     "target_symbols": list(target_symbols),
+                    "source_doc_uids": list(source_doc_uids),
+                    "source_tier": source_tier,
+                    "reliability_score": theme.get("reliability_score") or event.get("reliability_score"),
+                    "evidence_time": theme.get("evidence_time") or event.get("evidence_time"),
+                    "provider_chain": self._normalize_text_list(
+                        theme.get("provider_chain") or event.get("provider_chain"),
+                        limit=6,
+                    ),
+                    "verified_event_anchor": True,
+                    "validation_summary": validation_summary,
+                    "occurrence_status": theme.get("occurrence_status") or event.get("occurrence_status"),
+                    "alpha_confirmation_status": theme.get("alpha_confirmation_status") or event.get("alpha_confirmation_status"),
+                    "confidence_cap_reason": theme.get("confidence_cap_reason") or event.get("confidence_cap_reason"),
+                    "needs_alpha_confirmation": bool(theme.get("needs_alpha_confirmation") or event.get("needs_alpha_confirmation")),
+                    "conflict_count": conflict_count,
                 }
-                observed_sources = ["announcement"] if event_anchor["source"] == "announcement" else ["sector_catalyst"]
+                observed_sources = ["market_events_normalized"]
                 event_prefilter = self._build_event_prefilter(
                     observed_sources=observed_sources,
                     evidence_summary=str(event.get("summary") or event_name or "").strip(),
@@ -406,11 +463,22 @@
                     "validation_focus": "candidate_target_only",
                     "focus_industries": list(event_anchor.get("focus_industries") or []),
                     "event_id": event_id or None,
+                    "event_anchor_id": event_anchor_id,
+                    "source_doc_uids": list(source_doc_uids),
+                    "source_tier": source_tier,
+                    "reliability_score": event_anchor.get("reliability_score"),
+                    "evidence_time": event_anchor.get("evidence_time"),
+                    "verified_event_anchor": True,
+                    "event_validation_summary": validation_summary,
+                    "alpha_confirmation_status": event_anchor.get("alpha_confirmation_status"),
+                    "confidence_cap_reason": event_anchor.get("confidence_cap_reason"),
+                    "needs_alpha_confirmation": bool(event_anchor.get("needs_alpha_confirmation")),
+                    "conflict_count": conflict_count,
                     "event_type": event_type,
                     "theme_code": event_anchor.get("theme_code"),
                     "event_name": event_name,
                     "preference_strength": "strong",
-                    "preference_reason": f"event_anchor:{event_anchor.get('source')}:{event_anchor.get('id')}",
+                    "preference_reason": f"event_anchor:market_events_normalized:{event_anchor.get('id')}",
                     "gate_1_representative_count": min(3, len(target_symbols)),
                     "synthetic_local_spawn": True,
                     "target_pool_source": "event_anchor",
@@ -450,6 +518,16 @@
                         trigger_signal={
                             "field": "event_driven",
                             "event_id": event_id,
+                            "event_anchor_id": event_anchor_id,
+                            "source_doc_uids": list(source_doc_uids),
+                            "source_tier": source_tier,
+                            "reliability_score": event_anchor.get("reliability_score"),
+                            "verified_event_anchor": True,
+                            "event_validation_summary": validation_summary,
+                            "alpha_confirmation_status": event_anchor.get("alpha_confirmation_status"),
+                            "confidence_cap_reason": event_anchor.get("confidence_cap_reason"),
+                            "needs_alpha_confirmation": bool(event_anchor.get("needs_alpha_confirmation")),
+                            "conflict_count": conflict_count,
                             "event_type": event_type,
                             "theme_code": event_anchor.get("theme_code"),
                             "target_symbols": list(target_symbols),

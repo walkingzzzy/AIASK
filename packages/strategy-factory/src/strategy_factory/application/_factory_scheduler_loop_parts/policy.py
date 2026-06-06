@@ -570,6 +570,59 @@
                 )
                 self._apply_run_audit(results, persistence_failures=persistence_failures)
 
+        async def _persist_run_status_marker(
+            self,
+            db,
+            *,
+            run_id: str,
+            status: str,
+            started_at,
+            execution_mode: str,
+            engine_version: str,
+            trace_id: str,
+            parity_role: str,
+            read_only: bool,
+            completed_at=None,
+            elapsed_seconds: float | None = None,
+            error: str | None = None,
+            reason: str | None = None,
+        ) -> None:
+            if read_only or not hasattr(db, "save_strategy_factory_run"):
+                return
+            payload = {
+                "run_id": str(run_id or "").strip(),
+                "trace_id": str(trace_id or "").strip() or None,
+                "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else started_at,
+                "completed_at": completed_at.isoformat() if hasattr(completed_at, "isoformat") else completed_at,
+                "elapsed_seconds": float(elapsed_seconds or 0.0),
+                "status": str(status or "unknown").strip() or "unknown",
+                "execution_mode": str(execution_mode or "").strip() or "legacy_primary",
+                "engine_version": str(engine_version or "").strip() or FACTORY_ENGINE_VERSION,
+                "summary": {
+                    "trace_id": str(trace_id or "").strip() or None,
+                    "run_status_marker": str(status or "unknown").strip() or "unknown",
+                    "parity_role": str(parity_role or "primary").strip() or "primary",
+                    "read_only": bool(read_only),
+                    "reason": str(reason or "").strip() or None,
+                },
+                "stages": {},
+                "snapshot_summary": {},
+                "artifact_refs": [],
+                "parity_result": {},
+                "error": error,
+            }
+            if not payload["run_id"]:
+                return
+            try:
+                await db.save_strategy_factory_run(payload)
+            except Exception as exc:
+                logger.warning(
+                    "StrategyFactory: failed to persist run status marker %s for %s: %s",
+                    payload.get("status"),
+                    payload.get("run_id"),
+                    exc,
+                )
+
         async def _persist_run_artifacts(
             self,
             db,
@@ -645,6 +698,10 @@
             )
             if parity_role and parity_role != "primary":
                 effective_trace_id = f"{effective_trace_id}:{parity_role}"
+            effective_engine_version = resolve_factory_engine_version(
+                resolved_mode,
+                default=str(getattr(self, "engine_version", None) or FACTORY_ENGINE_VERSION),
+            )
             context = FactoryRunContext(
                 db=resolved_db,
                 factory_pkg=get_strategy_factory_package(),
@@ -653,24 +710,70 @@
                 trace_id=effective_trace_id,
                 run_id=effective_run_id,
                 execution_mode=resolved_mode.value,
-                engine_version=resolve_factory_engine_version(
-                    resolved_mode,
-                    default=str(getattr(self, "engine_version", None) or FACTORY_ENGINE_VERSION),
-                ),
+                engine_version=effective_engine_version,
                 parity_role=str(parity_role or "primary"),
                 read_only=bool(read_only),
                 target_codes=_normalize_target_codes(target_codes or [], limit=64),
             )
-            if resolved_mode == FactoryExecutionMode.V2_PRIMARY:
-                # V2_PRIMARY is deprecated: it runs the same FactoryCycleRunner.
-                # Kept as alias for forward-compat; no separate engine.
-                from . import factory_scheduler as scheduler_module
+            await self._persist_run_status_marker(
+                resolved_db,
+                run_id=effective_run_id,
+                status="running",
+                started_at=start,
+                execution_mode=resolved_mode.value,
+                engine_version=effective_engine_version,
+                trace_id=effective_trace_id,
+                parity_role=str(parity_role or "primary"),
+                read_only=bool(read_only),
+                reason="cycle_started",
+            )
+            try:
+                if resolved_mode == FactoryExecutionMode.V2_PRIMARY:
+                    # V2_PRIMARY is deprecated: it runs the same FactoryCycleRunner.
+                    # Kept as alias for forward-compat; no separate engine.
+                    from . import factory_scheduler as scheduler_module
 
-                outcome = await scheduler_module.FactoryCycleRunner(self, context).run()
-            else:
-                from . import factory_scheduler as scheduler_module
+                    outcome = await scheduler_module.FactoryCycleRunner(self, context).run()
+                else:
+                    from . import factory_scheduler as scheduler_module
 
-                outcome = await scheduler_module.FactoryCycleRunner(self, context).run()
+                    outcome = await scheduler_module.FactoryCycleRunner(self, context).run()
+            except asyncio.CancelledError:
+                completed = self._now()
+                await self._persist_run_status_marker(
+                    resolved_db,
+                    run_id=effective_run_id,
+                    status="interrupted",
+                    started_at=start,
+                    completed_at=completed,
+                    elapsed_seconds=round((completed - start).total_seconds(), 1),
+                    execution_mode=resolved_mode.value,
+                    engine_version=effective_engine_version,
+                    trace_id=effective_trace_id,
+                    parity_role=str(parity_role or "primary"),
+                    read_only=bool(read_only),
+                    error="StrategyFactory run_once cancelled before completion",
+                    reason="cancelled",
+                )
+                raise
+            except Exception as exc:
+                completed = self._now()
+                await self._persist_run_status_marker(
+                    resolved_db,
+                    run_id=effective_run_id,
+                    status="failed",
+                    started_at=start,
+                    completed_at=completed,
+                    elapsed_seconds=round((completed - start).total_seconds(), 1),
+                    execution_mode=resolved_mode.value,
+                    engine_version=effective_engine_version,
+                    trace_id=effective_trace_id,
+                    parity_role=str(parity_role or "primary"),
+                    read_only=bool(read_only),
+                    error=str(exc),
+                    reason=exc.__class__.__name__,
+                )
+                raise
             results = dict(outcome.result or {})
             self._attach_runtime_governance(results, previous_result=previous_result)
             return results, list(outcome.persistence_failures or [])

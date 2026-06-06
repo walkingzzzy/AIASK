@@ -43,6 +43,15 @@
                 for item in list(candidate_contract_value(payload, "semantic_contract_missing_fields", []) or [])
                 if str(item or "").strip()
             ]
+            trade_prediction_contract_status = str(
+                candidate_contract_value(payload, "trade_prediction_contract_status") or ""
+            ).strip().lower()
+            trade_prediction_contract_hash = str(
+                candidate_contract_value(payload, "trade_prediction_contract_hash") or ""
+            ).strip()
+            trade_prediction_contract = dict(
+                candidate_contract_value(payload, "trade_prediction_contract", {}) or {}
+            )
             semantic_hard_fail = bool(
                 list(
                     dict(payload.get("evidence_alignment_audit") or {}).get("hard_fail_reasons") or []
@@ -60,7 +69,99 @@
             # 这一前置。结构合法(类型已注册 + runtime 字段齐 + 无 semantic hard fail)的候选,
             # 即使 quality_passed=False,也判 observe-eligible,走零资本 paper 观察。
             # 此开关只放开 observe,不改 formal(下方 formal_track_blockers 仍要求 strict pass)。
-            wide_intake_observe = _wide_intake_observe_enabled()
+            incubation_budget = dict(payload.get("incubation_budget") or {})
+            params = dict(payload.get("params") or {})
+            if not incubation_budget:
+                incubation_budget = dict(params.get("incubation_budget") or {})
+            incubation_budget_track = str(incubation_budget.get("track") or "").strip().lower()
+            observe_intake_requested = bool(
+                candidate_contract_value(payload, "observe_first_intake")
+                or params.get("observe_first_intake")
+                or incubation_budget.get("observe_first_intake")
+                or incubation_budget_track == "observe_incubation"
+            )
+            wide_intake_observe = _wide_intake_observe_enabled() or observe_intake_requested
+            gate_reason_values: list[str] = []
+            for key in (
+                "hard_fail_reasons",
+                "admission_block_reasons",
+                "reason_codes",
+                "reasons",
+            ):
+                raw_values = normalized_gate.get(key)
+                if isinstance(raw_values, (list, tuple, set)):
+                    gate_reason_values.extend(
+                        str(item or "").strip().lower()
+                        for item in raw_values
+                        if str(item or "").strip()
+                    )
+                elif raw_values not in _EMPTY_CONTRACT_VALUES:
+                    gate_reason_values.append(str(raw_values or "").strip().lower())
+            gate_reason_values = list(dict.fromkeys(gate_reason_values))
+            audit_only_fragments = (
+                "insufficient_statistical_evidence",
+                "missing_statistical_metrics",
+                "missing_wf_ic_ir",
+                "missing_pkf_ic",
+                "missing_bootstrap_ci_lower",
+                "missing_param_sensitivity",
+                "weak_wf_ic_ir",
+                "weak_pkf_ic",
+                "weak_bootstrap_ci_lower",
+                "weak_param_sensitivity",
+                "walk_forward_ic_ir",
+                "purged_kfold_ic",
+                "bootstrap_ci_lower",
+                "param_sensitivity",
+                "period_robustness",
+                "trade_count",
+                "factory_policy_backtest_trade_count",
+                "win_rate",
+                "profit_factor",
+                "expectancy",
+                "out_of_sample_profit_factor",
+            )
+            hard_fail_fragments = (
+                "trade_prediction_contract_not_ready",
+                "missing_runtime_contract",
+                "runtime_contract_missing",
+                "semantic_hard_fail",
+                "final_strategy_missing_semantic_contract",
+                "prediction_contract_claim_missing_evidence_ids",
+                "prediction_contract_conflict_resolution_rule_missing",
+                "trade_plan_node_missing_claim_ids",
+                "dsl_entry_not_mapped_to_trade_plan",
+                "dsl_exit_not_mapped_to_trade_plan",
+                "semantic_contract_contradiction_detected",
+                "proxy_only_event_evidence_not_allowed",
+                "dsl_contains_unsupported_rules",
+                "lagging_entry_without_lead_evidence",
+                "temporal_coherence_audit_failed",
+                "ambiguous_regime_condition_not_allowed",
+                "lookahead",
+                "leakage",
+                "live_trading",
+                "broker_write",
+                "precompile_reject",
+                "generator_hard_reject",
+                "not_executable",
+                "non_executable",
+            )
+            pre_observe_hard_reasons = [
+                reason
+                for reason in gate_reason_values
+                if any(fragment in reason for fragment in hard_fail_fragments)
+                and not any(fragment in reason for fragment in audit_only_fragments)
+            ]
+            trade_prediction_ready = (
+                trade_prediction_contract_status == "ready"
+                and bool(trade_prediction_contract_hash)
+                and bool(trade_prediction_contract)
+            )
+            if not trade_prediction_ready:
+                pre_observe_hard_reasons.append("trade_prediction_contract_not_ready")
+            pre_observe_hard_reasons = list(dict.fromkeys(pre_observe_hard_reasons))
+            semantic_hard_fail = bool(semantic_hard_fail or pre_observe_hard_reasons)
             structurally_valid = (
                 strategy_type_registered
                 and not missing_runtime_fields
@@ -95,17 +196,17 @@
                     runtime_bootstrap_reason = "diagnostic_only_observe"
                 else:
                     runtime_bootstrap_reason = "quality_passed_non_d_candidate_with_complete_runtime_contract"
-            elif not quality_passed:
-                runtime_bootstrap_reason = "quality_gate_failed"
-            elif validation_grade == "D":
-                # 仅在 toggle OFF 且 D 级 + Gate passed 时走到此分支
-                runtime_bootstrap_reason = "validation_grade_d_not_allowed_for_runtime"
             elif not strategy_type_registered:
                 runtime_bootstrap_reason = "strategy_type_not_registered"
             elif missing_runtime_fields:
                 runtime_bootstrap_reason = f"missing_runtime_contract:{','.join(missing_runtime_fields)}"
             elif semantic_hard_fail:
-                runtime_bootstrap_reason = "semantic_hard_fail"
+                runtime_bootstrap_reason = str((pre_observe_hard_reasons or ["semantic_hard_fail"])[0])
+            elif not quality_passed:
+                runtime_bootstrap_reason = "quality_gate_failed"
+            elif validation_grade == "D":
+                # 仅在 toggle OFF 且 D 级 + Gate passed 时走到此分支
+                runtime_bootstrap_reason = "validation_grade_d_not_allowed_for_runtime"
             else:
                 runtime_bootstrap_reason = "runtime_bootstrap_blocked"
             budget_tier = None
@@ -122,6 +223,10 @@
                 "wide_intake_admitted": wide_intake_admitted,
                 "runtime_playbook_present": runtime_playbook_present,
                 "runtime_contract_missing_fields": missing_runtime_fields,
+                "observe_intake_requested": observe_intake_requested,
+                "pre_observe_hard_reject_reasons": pre_observe_hard_reasons,
+                "trade_prediction_contract_status": trade_prediction_contract_status or "missing",
+                "trade_prediction_contract_hash": trade_prediction_contract_hash or None,
                 "strategy_type_registered": strategy_type_registered,
                 "execution_semantic_mode": execution_semantic_mode,
                 "execution_semantic_gap": execution_semantic_gap,
@@ -295,6 +400,10 @@
                 "promotion_review_score",
                 "pool_admission_applied",
                 "promotion_applied_transition",
+                "trade_prediction_promotion_gate",
+                "trade_prediction_promotion_gate_enabled",
+                "trade_prediction_promotion_gate_hard_block",
+                "trade_prediction_promotion_gate_reasons",
                 "runtime_bootstrap_eligible",
                 "runtime_bootstrap_reason",
                 "runtime_bootstrap_budget_tier",
@@ -458,6 +567,7 @@
             review_account_id = None
             runtime_control = None
             promotion_review = None
+            trade_prediction_gate: dict[str, Any] = {}
             incubation_gateway = self._get_incubation_gateway()
 
             try:
@@ -507,11 +617,39 @@
                 logger.warning("StrategyFactory: set live-ready runtime control failed for %s: %s", strategy.get("id"), exc)
 
             try:
+                params = dict((strategy or {}).get("params") or {})
+                contract = dict(params.get("trade_prediction_contract") or {})
+                stock_code = (
+                    contract.get("stock_code")
+                    or params.get("stock_code")
+                    or (strategy or {}).get("stock_code")
+                )
+                trade_prediction_gate = await evaluate_trade_prediction_promotion_gate(
+                    db,
+                    strategy_id=str((strategy or {}).get("id") or "").strip() or None,
+                    stock_code=str(stock_code or "").strip() or None,
+                )
+            except Exception as exc:
+                logger.warning("StrategyFactory: trade prediction promotion gate failed for %s: %s", strategy.get("id"), exc)
+                trade_prediction_gate = {
+                    "object": "strategy_factory.trade_prediction_promotion_gate",
+                    "enabled": False,
+                    "diagnostic_only": True,
+                    "passed": True,
+                    "diagnostic_passed": False,
+                    "hard_block": False,
+                    "degraded": True,
+                    "error": str(exc),
+                    "reasons": ["trade_prediction_gate_error"],
+                }
+
+            promotion_auto_apply = not bool(trade_prediction_gate.get("hard_block"))
+            try:
                 promotion_review = await get_strategy_promotion_pipeline_service().review(
                     db,
                     strategy,
                     source="strategy_factory_live_ready_review",
-                    auto_apply=True,
+                    auto_apply=promotion_auto_apply,
                 )
             except Exception as exc:
                 logger.warning("StrategyFactory: trigger live-ready promotion review failed for %s: %s", strategy.get("id"), exc)
@@ -519,6 +657,9 @@
             review_payload = dict((promotion_review or {}).get("review") or {})
             applied_transition = dict((promotion_review or {}).get("applied_transition") or {})
             applied_status = str(applied_transition.get("to") or "").strip().lower()
+            if bool(trade_prediction_gate.get("hard_block")) and applied_status:
+                applied_transition = {}
+                applied_status = ""
             action_audit: dict[str, Any] = {}
             if applied_status:
                 action_audit["final_status"] = applied_status
@@ -557,6 +698,10 @@
                 "promotion_review_status": review_payload.get("status"),
                 "promotion_review_recommendation": review_payload.get("recommendation"),
                 "promotion_review_score": review_payload.get("score"),
+                "trade_prediction_promotion_gate": trade_prediction_gate,
+                "trade_prediction_promotion_gate_enabled": bool(trade_prediction_gate.get("enabled")),
+                "trade_prediction_promotion_gate_hard_block": bool(trade_prediction_gate.get("hard_block")),
+                "trade_prediction_promotion_gate_reasons": list(trade_prediction_gate.get("reasons") or []),
                 **action_audit,
             }
 

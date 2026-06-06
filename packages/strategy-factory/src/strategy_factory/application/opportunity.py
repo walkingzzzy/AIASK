@@ -114,6 +114,7 @@ class MarketOpportunityScanner(
             item for item in tasks
             if str(item.get("task_source") or "").strip() == "event_driven"
         ]
+        event_state = dict(snapshot.get("event_driven") or {})
         event_source_counts: Dict[str, int] = {}
         for item in event_driven_tasks:
             origin = str(item.get("event_source") or "").strip() or "unknown"
@@ -135,6 +136,16 @@ class MarketOpportunityScanner(
                     "manual", len(manual_event_tasks)
                 ),
                 "event_source_counts": event_source_counts,
+                "event_cluster_source_counts": dict(event_state.get("event_source_counts") or {}),
+                "event_source_tier_counts": dict(event_state.get("source_tier_counts") or {}),
+                "verified_event_count": int(event_state.get("verified_event_count") or 0),
+                "provisional_event_count": int(event_state.get("provisional_event_count") or 0),
+                "single_anchor_event_count": int(event_state.get("single_anchor_event_count") or 0),
+                "multi_source_confirmed_event_count": int(event_state.get("multi_source_confirmed_event_count") or 0),
+                "conflict_event_count": int(event_state.get("conflict_event_count") or 0),
+                "news_only_rejected_count": int(event_state.get("news_only_rejected_count") or 0),
+                "stale_event_count": int(event_state.get("stale_event_count") or 0),
+                "post_hoc_rejected_count": int(event_state.get("post_hoc_rejected_count") or 0),
                 **manual_event_meta,
                 "max_tasks": AUTONOMY_MAX_RESEARCH_TASKS,
                 "universe_limit": int(OPPORTUNITY_UNIVERSE_LIMIT),

@@ -24,6 +24,7 @@
             admission_decision_counts: Counter[str] = Counter()
             strict_incubation_ready_count = 0
             factor_performance_reported_count = 0
+            pre_observe_hard_reject_count = 0
             submitted_items: List[dict] = []
             self._diagnostic_observation_lock = asyncio.Lock()
             self._diagnostic_observation_claimed = 0
@@ -33,9 +34,16 @@
             incubation_budget_summary = dict(incubation_budget_plan.get("summary") or {})
             for candidate in candidates:
                 marker = int(id(candidate))
-                candidate["incubation_budget"] = dict(
-                    (incubation_budget_plan.get("plans") or {}).get(marker) or {}
-                )
+                existing_budget = dict(candidate.get("incubation_budget") or {})
+                planned_budget = dict((incubation_budget_plan.get("plans") or {}).get(marker) or {})
+                merged_budget = {**planned_budget, **existing_budget}
+                if bool(candidate.get("observe_first_intake")) or bool(
+                    dict(candidate.get("params") or {}).get("observe_first_intake")
+                ):
+                    merged_budget["track"] = "observe_incubation"
+                    merged_budget.setdefault("budget_tier", "micro")
+                    merged_budget["observe_first_intake"] = True
+                candidate["incubation_budget"] = merged_budget
             submit_concurrency = int(_compat_setting("SUBMIT_CONCURRENCY", SUBMIT_CONCURRENCY) or SUBMIT_CONCURRENCY)
             sem = asyncio.Semaphore(submit_concurrency)
 
@@ -102,19 +110,28 @@
                     strict_incubation_ready_count += 1
                 if bool(summary.get("factor_performance_reported")):
                     factor_performance_reported_count += 1
+                if list(summary.get("pre_observe_hard_reject_reasons") or []):
+                    pre_observe_hard_reject_count += 1
                 submitted_items.append(summary)
 
+            observe_admitted_count = int(submission_lane_counts.get("observe_incubation") or 0) + int(
+                submission_lane_counts.get("diagnostic_observation") or 0
+            )
+            gate3_audit_failed_count = gate_3_failed
             gate_report = build_completed_gate_3_report(
                 {
                     "gate_3_input": gate_3_input,
                     "submitted": submitted,
                     "gate_3_passed": gate_3_passed,
                     "gate_3_failed": gate_3_failed,
+                    "gate3_audit_failed_count": gate3_audit_failed_count,
                     "gate_3_provisional_passed": gate_3_provisional_passed,
                     "gate_3_failure_reason_topn": [
                         {"reason_code": reason_code, "count": count}
                         for reason_code, count in gate_3_failure_codes.most_common(5)
                     ],
+                    "observe_admitted_count": observe_admitted_count,
+                    "pre_observe_hard_reject_count": pre_observe_hard_reject_count,
                     "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
                     "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
                     "diagnostic_observation_count": int(submission_lane_counts.get("diagnostic_observation") or 0),
@@ -141,8 +158,11 @@
                 "passed_quality_gate": passed,
                 "gate_3_passed": gate_3_passed,
                 "gate_3_failed": gate_3_failed,
+                "gate3_audit_failed_count": gate3_audit_failed_count,
                 "gate_3_provisional_passed": gate_3_provisional_passed,
                 "gate_3_failure_reason_topn": gate_report["gate_3"]["failure_reason_topn"],
+                "observe_admitted_count": observe_admitted_count,
+                "pre_observe_hard_reject_count": pre_observe_hard_reject_count,
                 "formal_incubation_count": int(submission_lane_counts.get("formal_incubation") or 0),
                 "observe_incubation_count": int(submission_lane_counts.get("observe_incubation") or 0),
                 "diagnostic_observation_count": int(submission_lane_counts.get("diagnostic_observation") or 0),

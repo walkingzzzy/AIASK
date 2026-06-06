@@ -39,6 +39,39 @@ def test_readiness_soft_blocker_stage_is_partial_when_still_allowed():
     assert status is StageStatus.PARTIAL
 
 
+def test_soft_governed_pool_gap_stage_is_completed_when_still_allowed(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "0")
+
+    from strategy_factory.application.cycle_runner import FactoryCycleRunner
+    from strategy_factory.application.run_models import StageStatus
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    readiness = ReadinessService().evaluate(
+        {
+            "degraded": False,
+            "completeness": {"completion_ratio": 1.0},
+            "sources": {"event_driven": {"status": "success"}},
+            "event_driven": {"tasks_ready_count": 3},
+        },
+        {
+            "summary": {
+                "factor_source_mode": "seed_fallback",
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 0,
+            },
+            "freshness_repair": {
+                "auto_refresh_enabled": False,
+                "refresh_attempted": False,
+                "refresh_status": "disabled",
+            },
+        },
+    )
+
+    assert readiness["can_proceed"] is True
+    assert readiness["blockers"] == []
+    assert FactoryCycleRunner._resolve_readiness_stage_status(readiness) is StageStatus.COMPLETED
+
+
 def test_readiness_cannot_proceed_stage_is_failed():
     from strategy_factory.application.cycle_runner import FactoryCycleRunner
     from strategy_factory.application.run_models import StageStatus

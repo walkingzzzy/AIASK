@@ -12,6 +12,7 @@ from typing import Any
 from ._cycle_success_summary import build_success_run_summary
 from .factory_market_views import build_research_window_status
 from .factory_execution import (
+    DEFAULT_FACTORY_EXECUTION_MODE,
     FACTORY_ENGINE_VERSION,
     build_artifact_refs,
     build_run_artifacts,
@@ -46,7 +47,7 @@ class FactoryRunContext:
     start: datetime
     trace_id: str
     run_id: str
-    execution_mode: str = "legacy_primary"
+    execution_mode: str = DEFAULT_FACTORY_EXECUTION_MODE.value
     engine_version: str = FACTORY_ENGINE_VERSION
     parity_role: str = "primary"
     read_only: bool = False
