@@ -89,15 +89,7 @@ def _sqlite_type(definition: str) -> str:
         (r"\bserial\s+primary\s+key\b", "INTEGER PRIMARY KEY AUTOINCREMENT"),
         (r"\bbigserial\b", "INTEGER"),
         (r"\bserial\b", "INTEGER"),
-        (r"\btimestamptz\b(?!\s*\()", "TEXT"),
-        (r"\bTIMESTAMP\s+WITH\s+TIME\s+ZONE\b(?!\s*\()", "TEXT"),
-        (r"\bTIMESTAMP\b(?!\s*\()", "TEXT"),
-        (r"\bDATE\b(?!\s*\()", "TEXT"),
         (r"\bDOUBLE\s+PRECISION\b", "REAL"),
-        (r"\bjsonb\b(?!\s*\()", "TEXT"),
-        (r"\bJSON\b(?!\s*\()", "TEXT"),
-        (r"\bBYTEA\b", "BLOB"),
-        (r"\bBOOLEAN\b", "INTEGER"),
     ]
     for pattern, repl in replacements:
         text = re.sub(pattern, repl, text, flags=re.I)
@@ -151,7 +143,10 @@ def _split_sql(sql: str) -> list[str]:
 
 def _prepare_sql(sql: str) -> str:
     text = sql.strip().rstrip(";")
-    text = _sqlite_type(text)
+    if re.match(r"^\s*(?:CREATE|ALTER)\b", text, flags=re.I):
+        text = _sqlite_type(text)
+    else:
+        text = re.sub(r"\bNOW\s*\(\s*\)", "CURRENT_TIMESTAMP", text, flags=re.I)
     text = _json_extract_sql(text)
     text = re.sub(r"\bjsonb_array_length\s*\(", "json_array_length(", text, flags=re.I)
     text = re.sub(r"\bjsonb_typeof\s*\(", "json_type(", text, flags=re.I)

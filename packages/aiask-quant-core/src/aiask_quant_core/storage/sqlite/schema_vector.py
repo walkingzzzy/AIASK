@@ -198,20 +198,72 @@ async def init_vector_tables(conn, sqlite_python_enabled: bool) -> None:
             stock_code TEXT,
             doc_type TEXT NOT NULL,
             source TEXT NOT NULL,
+            source_tier TEXT NOT NULL DEFAULT 'tier_c',
+            provider TEXT,
+            original_id TEXT,
             title TEXT,
             summary TEXT,
             body TEXT,
             url TEXT,
             author TEXT,
             published_at TEXT,
+            fetched_at TEXT,
+            checksum TEXT,
+            reliability_score REAL DEFAULT 0,
+            crawl_status TEXT NOT NULL DEFAULT 'ok',
             metadata TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS source_tier TEXT NOT NULL DEFAULT 'tier_c';
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS provider TEXT;
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS original_id TEXT;
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS fetched_at TEXT;
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS checksum TEXT;
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS reliability_score REAL DEFAULT 0;
+        ALTER TABLE market_documents ADD COLUMN IF NOT EXISTS crawl_status TEXT NOT NULL DEFAULT 'ok';
         CREATE INDEX IF NOT EXISTS idx_market_documents_lookup
             ON market_documents(stock_code, doc_type, published_at DESC);
         CREATE INDEX IF NOT EXISTS idx_market_documents_source
             ON market_documents(source, published_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_documents_provenance
+            ON market_documents(source_tier, provider, published_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_documents_checksum
+            ON market_documents(checksum);
+        CREATE TABLE IF NOT EXISTS market_events_normalized (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            summary TEXT,
+            entity_codes TEXT NOT NULL DEFAULT '[]',
+            theme_codes TEXT NOT NULL DEFAULT '[]',
+            direction TEXT NOT NULL DEFAULT 'neutral',
+            event_time TEXT,
+            publish_time TEXT,
+            evidence_time TEXT,
+            source_doc_uids TEXT NOT NULL DEFAULT '[]',
+            source_tier TEXT NOT NULL DEFAULT 'tier_c',
+            source_types TEXT NOT NULL DEFAULT '[]',
+            provider_chain TEXT NOT NULL DEFAULT '[]',
+            reliability_score REAL NOT NULL DEFAULT 0,
+            cross_source_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'provisional',
+            reject_reason TEXT,
+            freshness_status TEXT NOT NULL DEFAULT 'unknown',
+            event_anchor_id TEXT,
+            checksum TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_market_events_normalized_status
+            ON market_events_normalized(status, evidence_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_events_normalized_tier
+            ON market_events_normalized(source_tier, reliability_score DESC, evidence_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_events_normalized_type
+            ON market_events_normalized(event_type, evidence_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_events_normalized_checksum
+            ON market_events_normalized(checksum);
         CREATE TABLE IF NOT EXISTS market_doc_chunks (
             id INTEGER PRIMARY KEY,
             doc_id INTEGER NOT NULL REFERENCES market_documents(id) ON DELETE CASCADE,

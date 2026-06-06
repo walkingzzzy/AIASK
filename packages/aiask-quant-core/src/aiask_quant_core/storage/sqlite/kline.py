@@ -5,6 +5,7 @@ SQLite 适配器 — K线数据 Mixin
 """
 
 import logging
+import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
@@ -42,6 +43,88 @@ def _format_trade_date(value: datetime | date) -> str:
             value = value.astimezone(MARKET_TZ)
         return value.strftime('%Y-%m-%d')
     return value.strftime('%Y-%m-%d')
+
+
+def _normalize_intraday_period(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    aliases = {
+        "1": "1m",
+        "5": "5m",
+        "15": "15m",
+        "30": "30m",
+        "60": "60m",
+        "1min": "1m",
+        "5min": "5m",
+        "15min": "15m",
+        "30min": "30m",
+        "60min": "60m",
+        "minute": "1m",
+    }
+    return aliases.get(token, token or "1m")
+
+
+def _parse_intraday_timestamp(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, date):
+        dt = datetime.combine(value, time.min)
+    elif isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return None
+        if token.endswith("Z"):
+            token = f"{token[:-1]}+00:00"
+        token = token.replace("/", "-")
+        try:
+            dt = datetime.fromisoformat(token)
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
+                try:
+                    dt = datetime.strptime(token, fmt)
+                    break
+                except ValueError:
+                    dt = None
+            if dt is None:
+                return token
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=MARKET_TZ)
+    else:
+        dt = dt.astimezone(MARKET_TZ)
+    return dt.isoformat()
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _json_text(value: Any, default: Any) -> str:
+    if value in (None, ""):
+        value = default
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            parsed = [value]
+        value = parsed
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _decode_json_text(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except Exception:
+        return default
 
 
 class KlineMixin:
@@ -288,6 +371,182 @@ class KlineMixin:
                 'rejected_count': len(rejected_rows),
                 'accept_ratio': round(accept_ratio, 6),
             }
+
+    async def save_intraday_bars(
+        self,
+        code_or_bars,
+        bars: Optional[List[Dict[str, Any]]] = None,
+        *,
+        period: Optional[str] = None,
+        adjust: str = "",
+        source: Optional[str] = None,
+    ) -> dict:
+        """Upsert normalized intraday bars into ``kline_intraday``."""
+
+        if bars is None:
+            default_code = None
+            bars_list = code_or_bars
+        else:
+            default_code = str(code_or_bars).strip() if code_or_bars is not None else None
+            bars_list = bars
+
+        if not bars_list:
+            return {
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "accept_ratio": 1.0,
+                "data_quality_status_counts": {},
+            }
+
+        rows: list[tuple] = []
+        rejected_rows: list[dict] = []
+        quality_counts: dict[str, int] = {}
+        for idx, bar in enumerate(bars_list):
+            if not isinstance(bar, dict):
+                rejected_rows.append({"index": idx, "reason": "row_is_not_dict", "row": {"raw": bar}})
+                continue
+            payload = dict(bar)
+            row_code = str(payload.get("code") or default_code or "").strip()
+            row_period = _normalize_intraday_period(payload.get("period") or period)
+            row_adjust = str(payload.get("adjust") if payload.get("adjust") is not None else adjust or "").strip()
+            timestamp = _parse_intraday_timestamp(
+                payload.get("timestamp")
+                or payload.get("time")
+                or payload.get("datetime")
+                or payload.get("date_time")
+                or payload.get("date")
+            )
+            open_ = _float_or_none(payload.get("open"))
+            high = _float_or_none(payload.get("high"))
+            low = _float_or_none(payload.get("low"))
+            close = _float_or_none(payload.get("close"))
+            if not row_code or not row_period or not timestamp:
+                rejected_rows.append({"index": idx, "reason": "missing_identity_fields", "row": payload})
+                continue
+            if open_ is None or high is None or low is None or close is None:
+                rejected_rows.append({"index": idx, "reason": "missing_ohlc_fields", "row": payload})
+                continue
+            quality_status = str(payload.get("data_quality_status") or "ok").strip() or "ok"
+            if high < max(open_, low, close) or low > min(open_, high, close):
+                quality_status = "invalid_ohlc"
+            volume = _float_or_none(payload.get("volume") if payload.get("volume") is not None else payload.get("vol"))
+            amount = _float_or_none(payload.get("amount"))
+            row_source = str(payload.get("source") or source or "").strip() or None
+            source_chain = _json_text(payload.get("source_chain"), [])
+            rows.append(
+                (
+                    row_code,
+                    row_period,
+                    timestamp,
+                    row_adjust,
+                    open_,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    amount,
+                    row_source,
+                    source_chain,
+                    quality_status,
+                )
+            )
+            quality_counts[quality_status] = quality_counts.get(quality_status, 0) + 1
+
+        if rows:
+            async with self.acquire() as conn:
+                await conn.executemany(
+                    """
+                    INSERT INTO kline_intraday (
+                        code, period, timestamp, adjust,
+                        open, high, low, close, volume, amount,
+                        source, source_chain, data_quality_status,
+                        created_at, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (code, period, timestamp, adjust) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        amount = EXCLUDED.amount,
+                        source = EXCLUDED.source,
+                        source_chain = EXCLUDED.source_chain,
+                        data_quality_status = EXCLUDED.data_quality_status,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    rows,
+                )
+
+        total = len(rows) + len(rejected_rows)
+        accept_ratio = len(rows) / total if total > 0 else 1.0
+        return {
+            "accepted_count": len(rows),
+            "rejected_count": len(rejected_rows),
+            "accept_ratio": round(accept_ratio, 6),
+            "data_quality_status_counts": quality_counts,
+            "rejected": rejected_rows[:20],
+        }
+
+    async def list_intraday_bars(
+        self,
+        code: str,
+        period: str,
+        *,
+        start_ts: Optional[str] = None,
+        end_ts: Optional[str] = None,
+        limit: Optional[int] = None,
+        adjust: str = "",
+    ) -> List[Dict[str, Any]]:
+        """List intraday bars in timestamp ascending order."""
+
+        where = ["code = $1", "period = $2", "adjust = $3"]
+        params: list[Any] = [str(code or "").strip(), _normalize_intraday_period(period), str(adjust or "").strip()]
+        if start_ts:
+            params.append(_parse_intraday_timestamp(start_ts) or str(start_ts))
+            where.append(f"timestamp >= ${len(params)}")
+        if end_ts:
+            params.append(_parse_intraday_timestamp(end_ts) or str(end_ts))
+            where.append(f"timestamp <= ${len(params)}")
+        query = f"""
+            SELECT
+                code, period, timestamp, adjust,
+                open, high, low, close, volume, amount,
+                source, source_chain, data_quality_status,
+                created_at, updated_at
+            FROM kline_intraday
+            WHERE {" AND ".join(where)}
+            ORDER BY datetime(timestamp) ASC, timestamp ASC
+        """
+        if limit is not None:
+            try:
+                limit_value = max(1, min(int(limit), 10000))
+            except Exception:
+                limit_value = 1000
+            params.append(limit_value)
+            query += f" LIMIT ${len(params)}"
+        async with self.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return [
+            {
+                "code": row["code"],
+                "period": row["period"],
+                "timestamp": row["timestamp"],
+                "adjust": row["adjust"],
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row["volume"]) if row["volume"] is not None else None,
+                "amount": float(row["amount"]) if row["amount"] is not None else None,
+                "source": row["source"],
+                "source_chain": _decode_json_text(row["source_chain"], []),
+                "data_quality_status": row["data_quality_status"] or "unknown",
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
 
     async def get_limit_up_stats(self, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """统计指定日期的涨跌停和涨跌家数

@@ -39,6 +39,32 @@ async def init_market_tables_phase_1(conn) -> None:
             ON kline_1d (code, updated_at DESC);
         """)
         await _keep_time_series_table(conn, "kline_1d", "time")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS kline_intraday (
+                code TEXT NOT NULL,
+                period TEXT NOT NULL,
+                "timestamp" TEXT NOT NULL,
+                adjust TEXT NOT NULL DEFAULT '',
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL,
+                amount REAL,
+                source TEXT,
+                source_chain TEXT DEFAULT '[]',
+                data_quality_status TEXT DEFAULT 'ok',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (code, period, "timestamp", adjust)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_kline_intraday_code_period_time
+            ON kline_intraday (code, period, "timestamp");
+
+            CREATE INDEX IF NOT EXISTS idx_kline_intraday_quality_time
+            ON kline_intraday (data_quality_status, "timestamp");
+        """)
 
         # 2. 财务数据表
         await conn.execute("""

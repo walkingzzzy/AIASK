@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterable, Optional
 
 from aiask_quant_core.vector_collection_scope import resolve_dimension_scoped_version, resolve_vector_collection_name
@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 
 class MarketContextMixin:
     """DB persistence helpers for news/notices/research/fund-flow context."""
+
+    _SOURCE_TIER_ALIASES = {
+        "a": "tier_a",
+        "official": "tier_a",
+        "official_disclosure": "tier_a",
+        "tier_a": "tier_a",
+        "b": "tier_b",
+        "institutional": "tier_b",
+        "paid": "tier_b",
+        "tier_b": "tier_b",
+        "c": "tier_c",
+        "media": "tier_c",
+        "open_media": "tier_c",
+        "tier_c": "tier_c",
+    }
+
+    _SOURCE_TIER_DEFAULT_RELIABILITY = {
+        "tier_a": 0.92,
+        "tier_b": 0.82,
+        "tier_c": 0.45,
+    }
 
     @staticmethod
     def _coerce_context_date(value: Any) -> Optional[date]:
@@ -55,6 +76,95 @@ class MarketContextMixin:
         if not text:
             return ""
         return text[:max_len]
+
+    @classmethod
+    def _normalize_source_tier(cls, value: Any, *, provider: Any = None, source: Any = None) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in cls._SOURCE_TIER_ALIASES:
+            return cls._SOURCE_TIER_ALIASES[raw]
+        provider_text = str(provider or source or "").strip().lower()
+        if any(token in provider_text for token in ("cninfo", "sse", "szse", "bse", "csrc", "巨潮", "上交所", "深交所", "北交所", "证监会")):
+            return "tier_a"
+        if any(token in provider_text for token in ("wind", "ifind", "choice", "tushare")):
+            return "tier_b"
+        return "tier_c"
+
+    @classmethod
+    def _default_reliability_score(cls, source_tier: str) -> float:
+        return cls._SOURCE_TIER_DEFAULT_RELIABILITY.get(str(source_tier or "").strip().lower(), 0.35)
+
+    @classmethod
+    def _pick_document_provider(cls, item: dict[str, Any], *, source: str = "") -> str:
+        return cls._clean_context_text(
+            item.get("provider") or item.get("data_provider") or item.get("origin") or source,
+            max_len=120,
+        )
+
+    @classmethod
+    def _pick_document_original_id(cls, item: dict[str, Any]) -> str:
+        return cls._clean_context_text(
+            item.get("original_id")
+            or item.get("art_code")
+            or item.get("announcement_id")
+            or item.get("ann_id")
+            or item.get("id")
+            or item.get("code"),
+            max_len=240,
+        )
+
+    @classmethod
+    def _build_document_checksum(cls, item: dict[str, Any], *, title: str, body: str, url: str, published_at: datetime | None) -> str:
+        explicit = cls._clean_context_text(item.get("checksum"), max_len=128)
+        if explicit:
+            return explicit
+        basis = "|".join(
+            [
+                str(item.get("provider") or item.get("source") or ""),
+                title or "",
+                url or "",
+                published_at.isoformat() if published_at else "",
+                body[:4000] if body else "",
+            ]
+        )
+        return hashlib.sha1(basis.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _coerce_context_datetime(cls, value: Any) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            return datetime.fromisoformat(normalized)
+        except Exception:
+            pass
+        parsed_date = cls._coerce_context_date(raw)
+        return datetime.combine(parsed_date, datetime.min.time()) if parsed_date else None
+
+    @staticmethod
+    def _json_list(values: Any) -> list[Any]:
+        if values is None:
+            return []
+        if isinstance(values, list):
+            return values
+        if isinstance(values, (tuple, set)):
+            return list(values)
+        text = str(values or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+        return [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
 
     @classmethod
     def _pick_document_content(cls, item: dict[str, Any]) -> str:
@@ -367,6 +477,179 @@ class MarketContextMixin:
             result.append(payload)
         return result
 
+    def _decode_market_event_normalized(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(row or {})
+        for key in ("entity_codes", "theme_codes", "source_doc_uids", "source_types", "provider_chain"):
+            payload[key] = self._decode_json_field(payload.get(key), [])
+        payload["metadata"] = self._decode_json_field(payload.get("metadata"), {})
+        return payload
+
+    async def upsert_market_event_normalized(self, item: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(item or {})
+        event_id = self._clean_context_text(payload.get("event_id"), max_len=200)
+        event_type = self._clean_context_text(payload.get("event_type") or "other", max_len=120)
+        event_name = self._clean_context_text(payload.get("event_name") or payload.get("summary"), max_len=300)
+        if not event_id:
+            basis = "|".join(
+                [
+                    event_type,
+                    event_name,
+                    str(payload.get("publish_time") or payload.get("evidence_time") or ""),
+                    ",".join(str(item) for item in self._json_list(payload.get("source_doc_uids"))),
+                ]
+            )
+            event_id = f"mevt_{hashlib.sha1(basis.encode('utf-8')).hexdigest()[:24]}"
+        if not event_name:
+            raise ValueError("event_name is required")
+        source_tier = self._normalize_source_tier(payload.get("source_tier"))
+        reliability_score = self._coerce_context_float(payload.get("reliability_score"))
+        if reliability_score is None:
+            reliability_score = self._default_reliability_score(source_tier)
+        status = self._clean_context_text(payload.get("status") or "provisional", max_len=80) or "provisional"
+        checksum = self._clean_context_text(payload.get("checksum"), max_len=128)
+        if not checksum:
+            checksum_basis = "|".join(
+                [
+                    event_type,
+                    event_name,
+                    str(payload.get("publish_time") or ""),
+                    json.dumps(self._json_list(payload.get("source_doc_uids")), ensure_ascii=False, sort_keys=True),
+                ]
+            )
+            checksum = hashlib.sha1(checksum_basis.encode("utf-8")).hexdigest()
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO market_events_normalized (
+                    event_id, event_type, event_name, summary, entity_codes, theme_codes, direction,
+                    event_time, publish_time, evidence_time, source_doc_uids, source_tier, source_types,
+                    provider_chain, reliability_score, cross_source_count, status, reject_reason,
+                    freshness_status, event_anchor_id, checksum, metadata, created_at, updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7,
+                    $8, $9, $10, $11, $12, $13,
+                    $14, $15, $16, $17, $18,
+                    $19, $20, $21, $22, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (event_id) DO UPDATE SET
+                    event_type = EXCLUDED.event_type,
+                    event_name = EXCLUDED.event_name,
+                    summary = EXCLUDED.summary,
+                    entity_codes = EXCLUDED.entity_codes,
+                    theme_codes = EXCLUDED.theme_codes,
+                    direction = EXCLUDED.direction,
+                    event_time = EXCLUDED.event_time,
+                    publish_time = EXCLUDED.publish_time,
+                    evidence_time = EXCLUDED.evidence_time,
+                    source_doc_uids = EXCLUDED.source_doc_uids,
+                    source_tier = EXCLUDED.source_tier,
+                    source_types = EXCLUDED.source_types,
+                    provider_chain = EXCLUDED.provider_chain,
+                    reliability_score = EXCLUDED.reliability_score,
+                    cross_source_count = EXCLUDED.cross_source_count,
+                    status = EXCLUDED.status,
+                    reject_reason = EXCLUDED.reject_reason,
+                    freshness_status = EXCLUDED.freshness_status,
+                    event_anchor_id = EXCLUDED.event_anchor_id,
+                    checksum = EXCLUDED.checksum,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING *
+                """,
+                event_id,
+                event_type,
+                event_name,
+                self._clean_context_text(payload.get("summary"), max_len=1000) or None,
+                json.dumps(self._json_list(payload.get("entity_codes")), ensure_ascii=False, default=str),
+                json.dumps(self._json_list(payload.get("theme_codes")), ensure_ascii=False, default=str),
+                self._clean_context_text(payload.get("direction") or "neutral", max_len=40) or "neutral",
+                self._clean_context_text(payload.get("event_time"), max_len=80) or None,
+                self._clean_context_text(payload.get("publish_time"), max_len=80) or None,
+                self._clean_context_text(payload.get("evidence_time"), max_len=80) or None,
+                json.dumps(self._json_list(payload.get("source_doc_uids")), ensure_ascii=False, default=str),
+                source_tier,
+                json.dumps(self._json_list(payload.get("source_types")), ensure_ascii=False, default=str),
+                json.dumps(self._json_list(payload.get("provider_chain")), ensure_ascii=False, default=str),
+                float(reliability_score),
+                int(payload.get("cross_source_count") or 0),
+                status,
+                self._clean_context_text(payload.get("reject_reason"), max_len=500) or None,
+                self._clean_context_text(payload.get("freshness_status") or "unknown", max_len=80) or "unknown",
+                self._clean_context_text(payload.get("event_anchor_id") or event_id, max_len=200) or event_id,
+                checksum,
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+            )
+        return self._decode_market_event_normalized(dict(row))
+
+    async def list_market_events_normalized(
+        self,
+        *,
+        status: str | None = None,
+        source_tier: str | None = None,
+        event_type: str | None = None,
+        event_signature: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        idx = 1
+        if status:
+            conditions.append(f"status = ${idx}")
+            params.append(str(status).strip())
+            idx += 1
+        if source_tier:
+            conditions.append(f"source_tier = ${idx}")
+            params.append(self._normalize_source_tier(source_tier))
+            idx += 1
+        if event_type:
+            conditions.append(f"event_type = ${idx}")
+            params.append(str(event_type).strip())
+            idx += 1
+        if event_signature:
+            conditions.append(f"json_extract(metadata, '$.event_signature') = ${idx}")
+            params.append(str(event_signature).strip())
+            idx += 1
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(max(1, min(int(limit or 100), 1000)))
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT *
+                FROM market_events_normalized
+                {where}
+                ORDER BY evidence_time DESC, reliability_score DESC, updated_at DESC
+                LIMIT ${idx}
+                """,
+                *params,
+            )
+        return [self._decode_market_event_normalized(dict(row)) for row in rows]
+
+    async def count_market_events_normalized(self) -> dict[str, Any]:
+        async with self.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM market_events_normalized") or 0
+            by_status = await conn.fetch(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM market_events_normalized
+                GROUP BY status
+                ORDER BY status
+                """
+            )
+            by_tier = await conn.fetch(
+                """
+                SELECT source_tier, COUNT(*) AS count
+                FROM market_events_normalized
+                GROUP BY source_tier
+                ORDER BY source_tier
+                """
+            )
+        return {
+            "total": int(total or 0),
+            "by_status": {str(row.get("status") or ""): int(row.get("count") or 0) for row in by_status},
+            "by_source_tier": {str(row.get("source_tier") or ""): int(row.get("count") or 0) for row in by_tier},
+        }
+
     async def save_market_documents(
         self,
         stock_code: str,
@@ -414,33 +697,58 @@ class MarketContextMixin:
                         continue
                     doc_uid = self._build_market_doc_uid(code, normalized_doc_type, item)
                     source = self._pick_document_source(normalized_doc_type, item)
+                    provider = self._pick_document_provider(item, source=source)
+                    source_tier = self._normalize_source_tier(item.get("source_tier"), provider=provider, source=source)
                     url = self._pick_document_url(item)
                     author = self._clean_context_text(item.get("author") or item.get("analyst"), max_len=200)
                     published_date = self._coerce_context_date(item.get("published_at") or item.get("date") or item.get("time"))
                     published_at = datetime.combine(published_date, datetime.min.time()) if published_date else None
+                    fetched_at = self._coerce_context_datetime(item.get("fetched_at")) or datetime.now(timezone.utc)
+                    checksum = self._build_document_checksum(item, title=title, body=body, url=url, published_at=published_at)
+                    reliability_score = self._coerce_context_float(item.get("reliability_score"))
+                    if reliability_score is None:
+                        reliability_score = self._default_reliability_score(source_tier)
+                    crawl_status = self._clean_context_text(item.get("crawl_status") or "ok", max_len=80) or "ok"
+                    original_id = self._pick_document_original_id(item)
                     doc_meta = {
                         "doc_type": normalized_doc_type,
                         "source": source,
+                        "source_tier": source_tier,
+                        "provider": provider,
+                        "original_id": original_id,
+                        "checksum": checksum,
+                        "reliability_score": round(float(reliability_score), 4),
+                        "crawl_status": crawl_status,
                         "raw_title": item.get("title") or item.get("headline") or item.get("name"),
                         "raw_date": item.get("date") or item.get("time"),
                     }
                     row = await conn.fetchrow(
                         """
                         INSERT INTO market_documents (
-                            doc_uid, stock_code, doc_type, source, title, summary, body, url, author,
-                            published_at, metadata, created_at, updated_at
+                            doc_uid, stock_code, doc_type, source, source_tier, provider, original_id,
+                            title, summary, body, url, author, published_at, fetched_at, checksum,
+                            reliability_score, crawl_status, metadata, created_at, updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7,
+                                $8, $9, $10, $11, $12, $13, $14, $15,
+                                $16, $17, $18, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         ON CONFLICT (doc_uid) DO UPDATE SET
                             stock_code = EXCLUDED.stock_code,
                             doc_type = EXCLUDED.doc_type,
                             source = EXCLUDED.source,
+                            source_tier = EXCLUDED.source_tier,
+                            provider = EXCLUDED.provider,
+                            original_id = EXCLUDED.original_id,
                             title = EXCLUDED.title,
                             summary = EXCLUDED.summary,
                             body = EXCLUDED.body,
                             url = EXCLUDED.url,
                             author = EXCLUDED.author,
                             published_at = EXCLUDED.published_at,
+                            fetched_at = EXCLUDED.fetched_at,
+                            checksum = EXCLUDED.checksum,
+                            reliability_score = EXCLUDED.reliability_score,
+                            crawl_status = EXCLUDED.crawl_status,
                             metadata = EXCLUDED.metadata,
                             updated_at = CURRENT_TIMESTAMP
                         RETURNING id, doc_uid
@@ -449,12 +757,19 @@ class MarketContextMixin:
                         code,
                         normalized_doc_type,
                         source,
+                        source_tier,
+                        provider or None,
+                        original_id or None,
                         title or None,
                         summary or None,
                         body,
                         url or None,
                         author or None,
                         published_at,
+                        fetched_at,
+                        checksum,
+                        float(reliability_score),
+                        crawl_status,
                         json.dumps(doc_meta, ensure_ascii=False, default=str),
                     )
                     if row:
@@ -523,6 +838,10 @@ class MarketContextMixin:
                             "url": url,
                             "author": author,
                             "summary": summary[:280] if summary else "",
+                            "source_tier": source_tier,
+                            "provider": provider,
+                            "checksum": checksum,
+                            "reliability_score": round(float(reliability_score), 4),
                         }
                         chunk_row = await conn.fetchrow(
                             """
@@ -556,6 +875,8 @@ class MarketContextMixin:
                                 "stock_code": code,
                                 "doc_type": normalized_doc_type,
                                 "source": source,
+                                "source_tier": source_tier,
+                                "provider": provider,
                                 "title": title,
                                 "chunk_text": chunk_text,
                                 "published_at": published_at,
@@ -660,6 +981,8 @@ class MarketContextMixin:
                                     "doc_uid": chunk.get("doc_uid"),
                                     "doc_type": chunk.get("doc_type"),
                                     "source": chunk.get("source"),
+                                    "source_tier": chunk.get("source_tier"),
+                                    "provider": chunk.get("provider"),
                                     "title": chunk.get("title"),
                                     "published_at": chunk.get("published_at").isoformat() if isinstance(chunk.get("published_at"), datetime) else None,
                                     "url": chunk.get("url"),
