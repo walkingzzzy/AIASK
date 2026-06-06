@@ -568,6 +568,12 @@ select:focus {
   line-height: 1.5;
 }
 
+.capability-panel {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
 .capability-grid {
   display: grid;
   gap: 12px;

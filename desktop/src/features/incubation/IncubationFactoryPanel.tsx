@@ -320,7 +320,7 @@ function TradePredictionObservability({
     (status?.data_quality_status_counts?.invalid_ohlc || 0);
 
   return (
-    <section className="capability-section">
+    <section className="capability-panel">
       <div className="section-header">
         <div>
           <span>Trade Prediction Observability</span>
