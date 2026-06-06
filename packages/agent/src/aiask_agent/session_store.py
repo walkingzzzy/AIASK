@@ -305,6 +305,41 @@ class AgentSessionStore:
         item["payload"] = _loads(item.pop("payload_json", None), {})
         return item
 
+    def list_runs(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if session_id:
+            clauses.append("session_id = ?")
+            values.append(str(session_id).strip())
+        if status:
+            clauses.append("status = ?")
+            values.append(str(status).strip())
+        values.append(max(1, min(int(limit or 100), 1000)))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT run_id, session_id, status, payload_json, created_at, updated_at
+                FROM runs
+                {where}
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                tuple(values),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = _loads(item.pop("payload_json", None), {})
+            items.append(item)
+        return items
+
     def append_run_event(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         ts = now_iso()
         with self._connection() as conn:
@@ -347,6 +382,36 @@ class AgentSessionStore:
             }
             for row in rows
         ]
+
+    def count_run_events(self, run_id: str) -> int:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM run_events WHERE run_id = ?",
+                (str(run_id or "").strip(),),
+            ).fetchone()
+        return int((row["total"] if row else 0) or 0)
+
+    def latest_message_at(self, session_id: str) -> str | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(session_id or "").strip(),),
+            ).fetchone()
+        return str(row["created_at"]) if row and row["created_at"] else None
+
+    def count_session_messages(self, session_id: str) -> int:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM messages WHERE session_id = ?",
+                (str(session_id or "").strip(),),
+            ).fetchone()
+        return int((row["total"] if row else 0) or 0)
 
     def list_session_messages(self, session_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
         with self._connection() as conn:

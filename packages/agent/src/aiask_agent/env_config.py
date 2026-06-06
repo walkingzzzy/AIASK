@@ -8,6 +8,53 @@ from typing import Any
 _LOADED_ENV_PATH: Path | None = None
 _LOADED_ENV_SOURCE = "none"
 
+LLM_ENV_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "AIASK_AGENT_IMAGE_MODEL",
+    "AIASK_AGENT_MODEL",
+    "AIASK_AGENT_MODEL_PROVIDER",
+    "AIASK_AGENT_MODEL_PROVIDERS",
+    "AIASK_AGENT_MODEL_TIMEOUT",
+    "AIASK_AGENT_CONTEXT_MAX_TOKENS",
+    "AIASK_AGENT_MAX_TOKENS",
+    "AIASK_AGENT_TTS_FORMAT",
+    "AIASK_AGENT_TTS_PROVIDER",
+    "AIASK_AGENT_TTS_VOICE",
+    "AIASK_AGENT_VISION_MODEL",
+    "AIASK_AGENT_VISION_PROVIDER",
+    "AIASK_MOA_AGGREGATOR_MODEL",
+    "AIASK_MOA_REFERENCE_MODELS",
+    "AIASK_VIDEO_API_KEY",
+    "AIASK_VIDEO_API_URL",
+    "AIASK_VIDEO_BASE_URL",
+    "AIASK_VIDEO_DURATION_SECONDS",
+    "AIASK_VIDEO_MODEL",
+    "AIASK_VIDEO_PROVIDER",
+    "AIASK_VIDEO_SIZE",
+    "AIASK_VOICE_STT_PROVIDER",
+    "AIASK_VOICE_TTS_PROVIDER",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEYS",
+    "OPENAI_BASE_URL",
+}
+
+LLM_ENV_PREFIXES = (
+    "AIASK_AGENT_MODEL_",
+    "AIASK_AGENT_IMAGE_",
+    "AIASK_AGENT_VISION_",
+    "AIASK_AGENT_TTS_",
+    "AIASK_MOA_",
+    "AIASK_VIDEO_",
+    "AIASK_VOICE_",
+    "ANTHROPIC_",
+    "DASHSCOPE_",
+    "DEEPSEEK_",
+    "MOONSHOT_",
+    "OPENAI_",
+    "QWEN_",
+    "ZHIPU_",
+)
+
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -18,6 +65,50 @@ def _disabled() -> bool:
     if explicit in {"0", "false", "no", "off"}:
         return True
     return _truthy(os.getenv("AIASK_AGENT_DISABLE_PROJECT_ENV"))
+
+
+def _llm_env_file_priority_disabled() -> bool:
+    explicit = str(os.getenv("AIASK_LLM_ENV_FILE_PRIORITY", "")).strip().lower()
+    if explicit in {"0", "false", "no", "off"}:
+        return True
+    return _truthy(os.getenv("AIASK_DISABLE_LLM_ENV_FILE_PRIORITY"))
+
+
+def _provider_pool_api_key_env_names(raw: str) -> set[str]:
+    import json
+
+    content = str(raw or "").strip()
+    if not content:
+        return set()
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        return set()
+    items = parsed if isinstance(parsed, list) else parsed.get("providers") if isinstance(parsed, dict) else []
+    names: set[str] = set()
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("api_key_env") or item.get("credential_env") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def is_llm_env_key(key: str, values: dict[str, str] | None = None) -> bool:
+    name = str(key or "").strip()
+    if not name:
+        return False
+    if name in LLM_ENV_KEYS:
+        return True
+    if any(name.startswith(prefix) for prefix in LLM_ENV_PREFIXES):
+        return True
+    provider_pool = ""
+    if values is not None:
+        provider_pool = values.get("AIASK_AGENT_MODEL_PROVIDERS", "")
+    if name in _provider_pool_api_key_env_names(provider_pool):
+        return True
+    return False
 
 
 def discover_project_root(start: Path | None = None) -> Path | None:
@@ -117,7 +208,7 @@ def load_project_env(
             continue
         values = _dotenv_values(env_path)
         for key, value in values.items():
-            if override:
+            if override or (is_llm_env_key(key, values) and not _llm_env_file_priority_disabled()):
                 os.environ[key] = value
             else:
                 os.environ.setdefault(key, value)

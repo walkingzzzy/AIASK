@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -276,6 +277,220 @@ async def _execute_webhook(action: str, params: dict[str, Any]) -> dict[str, Any
         return _execution_failed(exc, action=action, dependency="webhook")
 
 
+def _invalid_financial_params(action: str, detail: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "data": {
+            "configured": False,
+            "action": action,
+            "detail": detail,
+        },
+        "error": detail,
+        "error_code": "FINANCIAL_MANAGER_INVALID_PARAMS",
+    }
+
+
+def _financial_scope_blocked(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": False,
+        "data": {
+            "target_tool": "financial_manager",
+            "target_action": action,
+            "params": dict(params or {}),
+            "detail": "Financial Manager confirmed execution is restricted to the allowlisted Desktop scope.",
+        },
+        "error": "financial manager confirmed execution is outside the allowlisted scope",
+        "error_code": "FINANCIAL_MANAGER_EXECUTOR_SCOPE_BLOCKED",
+    }
+
+
+def _financial_dry_run_required(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": False,
+        "data": {
+            "target_tool": "financial_manager",
+            "target_action": action,
+            "params": dict(params or {}),
+            "detail": "This Financial Manager confirmed action is limited to dry-run execution.",
+        },
+        "error": "financial manager confirmed action requires dry_run=true",
+        "error_code": "FINANCIAL_MANAGER_DRY_RUN_REQUIRED",
+    }
+
+
+def _financial_manager_capture() -> type:
+    class _CaptureMcp:
+        def __init__(self) -> None:
+            self.tools: dict[str, Callable[..., Any]] = {}
+
+        def tool(self, *args: Any, **kwargs: Any) -> Callable[..., Any]:
+            if args and callable(args[0]) and len(args) == 1 and not kwargs:
+                fn = args[0]
+                self.tools[fn.__name__] = fn
+                return fn
+
+            def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return _decorator
+
+    return _CaptureMcp
+
+
+def _load_manager_callable(
+    *,
+    module_name: str,
+    register_name: str,
+    tool_name: str,
+) -> Callable[..., Any]:
+    _ensure_monorepo_paths()
+    module = __import__(module_name, fromlist=[register_name])
+    register = getattr(module, register_name)
+    capture = _financial_manager_capture()()
+    register(capture)
+    fn = capture.tools.get(tool_name)
+    if not callable(fn):
+        raise RuntimeError(f"{tool_name} was not registered from {module_name}")
+    return fn
+
+
+def _normalize_financial_payload(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(params or {})
+    dry_run = bool(payload.get("dry_run", False))
+    if action in {"execution_manager.create_plan", "paper_trading_manager.submit_order"} and not dry_run:
+        raise ValueError("FINANCIAL_MANAGER_DRY_RUN_REQUIRED")
+    if action == "watchlist_manager.add":
+        group = payload.get("group") or payload.get("group_id")
+        if group:
+            payload["group_id"] = str(group)
+        if not str(payload.get("code") or "").strip():
+            raise KeyError("code")
+    elif action == "watchlist_manager.remove":
+        group = payload.get("group") or payload.get("group_id")
+        if group:
+            payload["group_id"] = str(group)
+        if not str(payload.get("code") or "").strip():
+            raise KeyError("code")
+    elif action == "portfolio_manager.create":
+        if not str(payload.get("name") or "").strip():
+            raise KeyError("name")
+    elif action == "portfolio_manager.add_holding":
+        if payload.get("shares") is None:
+            candidate = payload.get("quantity")
+            if candidate is not None:
+                payload["shares"] = candidate
+        if payload.get("cost_price") is None and payload.get("price") is not None:
+            payload["cost_price"] = payload.get("price")
+        for required in ("portfolio_id", "code", "shares"):
+            if payload.get(required) in {None, ""}:
+                raise KeyError(required)
+    elif action == "execution_manager.create_plan":
+        algorithm = str(payload.get("algorithm") or "twap").strip().lower()
+        if algorithm not in {"twap", "vwap"}:
+            raise ValueError("algorithm")
+        quantity = payload.get("total_quantity", payload.get("quantity", payload.get("total_shares")))
+        duration = payload.get("duration_minutes", payload.get("duration", 60))
+        if quantity in {None, ""}:
+            raise KeyError("quantity")
+        if not str(payload.get("code") or "").strip():
+            raise KeyError("code")
+        payload["algorithm"] = algorithm
+        payload["total_quantity"] = quantity
+        payload["total_shares"] = quantity
+        payload["duration_minutes"] = duration
+        payload["duration"] = duration
+        payload["dry_run"] = True
+    elif action == "paper_trading_manager.submit_order":
+        quantity = payload.get("quantity", payload.get("shares"))
+        if quantity in {None, ""}:
+            raise KeyError("quantity")
+        if not str(payload.get("code") or "").strip():
+            raise KeyError("code")
+        payload["quantity"] = quantity
+        payload["shares"] = quantity
+        payload["dry_run"] = True
+    return payload
+
+
+async def _execute_financial_manager(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    allowlisted = {
+        "watchlist_manager.add",
+        "watchlist_manager.remove",
+        "portfolio_manager.create",
+        "portfolio_manager.add_holding",
+        "execution_manager.create_plan",
+        "paper_trading_manager.submit_order",
+    }
+    if action not in allowlisted:
+        return _financial_scope_blocked(action, params)
+
+    try:
+        payload = _normalize_financial_payload(action, params)
+    except KeyError as exc:
+        return _invalid_financial_params(action, f"missing required parameter: {exc.args[0]}")
+    except ValueError as exc:
+        if str(exc) == "FINANCIAL_MANAGER_DRY_RUN_REQUIRED":
+            return _financial_dry_run_required(action, params)
+        if str(exc) == "algorithm":
+            return _invalid_financial_params(action, "algorithm must be twap or vwap")
+        return _invalid_financial_params(action, str(exc))
+
+    if action == "paper_trading_manager.submit_order":
+        preview = {
+            "preview_id": f"paper_preview_{int(time.time() * 1000)}",
+            "status": "dry_run_preview",
+            "dry_run": True,
+            "manager": "paper_trading_manager",
+            "action": "place_order",
+            "code": str(payload.get("code") or ""),
+            "side": str(payload.get("side") or payload.get("direction") or "buy"),
+            "quantity": int(payload.get("quantity") or payload.get("shares") or 0),
+            "order_type": str(payload.get("order_type") or "market"),
+            "account_id": payload.get("account_id"),
+            "user_id": payload.get("user_id"),
+            "note": "Financial Manager Desktop keeps paper order confirmed execution in dry-run preview mode only.",
+        }
+        return {"success": True, "data": preview, "error": None}
+
+    try:
+        if action.startswith("watchlist_manager."):
+            fn = _load_manager_callable(
+                module_name="akshare_mcp.tools.managers.watchlist_manager",
+                register_name="register_watchlist_manager",
+                tool_name="watchlist_manager",
+            )
+            manager_action = "add" if action.endswith(".add") else "remove"
+            return await _maybe_await(fn(action=manager_action, params=payload))
+        if action.startswith("portfolio_manager."):
+            fn = _load_manager_callable(
+                module_name="akshare_mcp.tools.managers.portfolio_manager",
+                register_name="register_portfolio_manager",
+                tool_name="portfolio_manager",
+            )
+            manager_action = action.split(".", 1)[1]
+            return await _maybe_await(fn(action=manager_action, params=payload))
+        if action == "execution_manager.create_plan":
+            fn = _load_manager_callable(
+                module_name="akshare_mcp.tools.managers.execution_manager",
+                register_name="register_execution_manager",
+                tool_name="execution_manager",
+            )
+            return await _maybe_await(
+                fn(
+                    action=str(payload.get("algorithm") or "twap"),
+                    params=payload,
+                    dry_run=True,
+                )
+            )
+    except ModuleNotFoundError as exc:
+        return _dependency_missing(exc, dependency="financial_manager")
+    except Exception as exc:
+        return _execution_failed(exc, action=action, dependency="financial_manager")
+
+    return _financial_scope_blocked(action, params)
+
+
 async def execute_confirmed_action(
     target_tool: str,
     action: str,
@@ -299,17 +514,7 @@ async def execute_confirmed_action(
     if normalized_tool == "webhook":
         return await _execute_webhook(normalized_action, payload)
     if normalized_tool == "financial_manager":
-        return {
-            "success": False,
-            "data": {
-                "target_tool": normalized_tool,
-                "target_action": normalized_action,
-                "params": payload,
-                "detail": "Financial Manager V1 records this approval intent only; stateful manager execution is not enabled from Desktop.",
-            },
-            "error": "financial manager stateful execution is disabled in V1",
-            "error_code": "FINANCIAL_MANAGER_INTENT_ONLY",
-        }
+        return await _execute_financial_manager(normalized_action, payload)
     return {
         "success": False,
         "data": {

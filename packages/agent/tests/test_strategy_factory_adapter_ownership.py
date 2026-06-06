@@ -40,3 +40,33 @@ def test_agent_read_only_factory_status_uses_db_facade(monkeypatch) -> None:
     assert result["success"] is True
     assert result["data"]["running"] is False
     assert calls == ["_load_factory_status_handler"]
+
+
+def test_agent_trade_prediction_read_tools_use_db_facade(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    async def fake_call_db_facade(loader, params=None):
+        calls.append({"loader": getattr(loader, "__name__", ""), "params": dict(params or {})})
+        if getattr(loader, "__name__", "") == "_load_trade_prediction_status_handler":
+            return {"success": True, "data": {"object": "trade_prediction.status", "sample_n": 3}, "error": None}
+        if getattr(loader, "__name__", "") == "_load_trade_prediction_outcomes_handler":
+            return {"success": True, "data": {"object": "trade_prediction.outcomes", "items": []}, "error": None}
+        if getattr(loader, "__name__", "") == "_load_trade_prediction_matrix_handler":
+            return {"success": True, "data": {"object": "trade_prediction.matrix", "rows": []}, "error": None}
+        raise AssertionError("unexpected loader")
+
+    monkeypatch.setattr(strategy_factory, "_call_db_facade", fake_call_db_facade)
+
+    status = asyncio.run(strategy_factory.trade_prediction_status({"strategy_id": "s1"}))
+    outcomes = asyncio.run(strategy_factory.trade_prediction_outcomes({"score_version": "trade_prediction_score_v2"}))
+    matrix = asyncio.run(strategy_factory.trade_prediction_matrix({"dimensions": ["family"]}))
+
+    assert status["success"] is True
+    assert outcomes["data"]["object"] == "trade_prediction.outcomes"
+    assert matrix["data"]["object"] == "trade_prediction.matrix"
+    assert [item["loader"] for item in calls] == [
+        "_load_trade_prediction_status_handler",
+        "_load_trade_prediction_outcomes_handler",
+        "_load_trade_prediction_matrix_handler",
+    ]
+    assert calls[0]["params"]["strategy_id"] == "s1"

@@ -172,6 +172,35 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         }
     ),
     "agent_incubation_factory_status": schema({}),
+    "agent_trade_prediction_status": schema(
+        {
+            "strategy_id": {"type": "string"},
+            "stock_code": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 5000},
+        }
+    ),
+    "agent_trade_prediction_outcomes": schema(
+        {
+            "prediction_id": {"type": "string"},
+            "strategy_id": {"type": "string"},
+            "stock_code": {"type": "string"},
+            "score_version": {"type": "string"},
+            "score_status": {"type": "string"},
+            "data_quality_status": {"type": "string"},
+            "actual_trading_date_lte": {"type": "string"},
+            "actual_trading_date_gte": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+        }
+    ),
+    "agent_trade_prediction_matrix": schema(
+        {
+            "strategy_id": {"type": "string"},
+            "stock_code": {"type": "string"},
+            "score_version": {"type": "string"},
+            "dimensions": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 5000},
+        }
+    ),
     "agent_action_intent_create": schema(
         {
             "action": {"type": "string", "enum": sorted(ALLOWED_ACTIONS)},

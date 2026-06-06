@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
+from .env_config import load_project_env
+
 if TYPE_CHECKING:
     from .model_client import ModelClient
     from .memory import FinancialMemoryStore
@@ -93,6 +95,7 @@ class ContextManager:
         )
 
         try:
+            load_project_env()
             response = await self.model_client.complete(
                 messages=[{"role": "user", "content": prompt}],
                 model=os.getenv("AIASK_AGENT_MODEL", "gpt-4.1-mini")

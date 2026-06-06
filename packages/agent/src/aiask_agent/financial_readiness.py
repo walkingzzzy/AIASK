@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from .capabilities import parity_summary
+from .env_config import load_project_env
 from .gateway import ADAPTERS
 from .mcp_client import MCPAggregator
 from .model_client import MockModelClient
@@ -33,6 +34,7 @@ async def financial_system_readiness(
     control_token_configured: bool = False,
     ai_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    load_project_env()
     selected = full_runtime or runtime
     parity = parity_summary(selected.tool_registry.names(), env=dict(os.environ), gateway_adapters=ADAPTERS.keys())
     db_status = quant_adapter.database_status()

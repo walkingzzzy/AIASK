@@ -387,6 +387,7 @@ def _agent_endpoint(default: str = "http://127.0.0.1:8767") -> str:
 
 
 def _ai_status_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any]:
+    load_project_env()
     provider_registry = ModelProviderRegistry(usage_store=ProviderUsageStore(runtime.session_store.path))
     provider_payload = provider_registry.status()
     active_provider = str(provider_payload.get("active_provider") or "").strip().lower()
@@ -485,6 +486,7 @@ async def _ai_smoke_payload_for_runtime(runtime: AgentRuntime, payload: dict[str
 
 
 async def _ai_models_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any]:
+    load_project_env()
     status = _ai_status_payload_for_runtime(runtime)
     if status["mock"]:
         return {
@@ -711,9 +713,10 @@ FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
     {"capability_id": "portfolio", "action_id": "list", "group": "portfolio-watchlist", "label": "Portfolio list", "mode": "read_only", "mcp_tool": "portfolio_manager", "mcp_action": "list", "default_params": {}},
     {"capability_id": "portfolio", "action_id": "get_holdings", "group": "portfolio-watchlist", "label": "Portfolio holdings", "mode": "read_only", "mcp_tool": "portfolio_manager", "mcp_action": "get_holdings", "default_params": {"portfolio_id": 1}},
     {"capability_id": "portfolio", "action_id": "create", "group": "portfolio-watchlist", "label": "Create portfolio intent", "mode": "stateful_intent", "intent_action": "portfolio_manager.create", "default_params": {"name": "Desktop portfolio"}},
-    {"capability_id": "portfolio", "action_id": "add_holding", "group": "portfolio-watchlist", "label": "Add holding intent", "mode": "stateful_intent", "intent_action": "portfolio_manager.add_holding", "default_params": {"portfolio_id": 1, "code": "600519", "weight": 0.1}},
+    {"capability_id": "portfolio", "action_id": "add_holding", "group": "portfolio-watchlist", "label": "Add holding intent", "mode": "stateful_intent", "intent_action": "portfolio_manager.add_holding", "default_params": {"portfolio_id": 1, "code": "600519", "shares": 100, "cost_price": 1800}},
     {"capability_id": "watchlist", "action_id": "list", "group": "portfolio-watchlist", "label": "Watchlist groups", "mode": "read_only", "mcp_tool": "watchlist_manager", "mcp_action": "list", "default_params": {}},
     {"capability_id": "watchlist", "action_id": "add", "group": "portfolio-watchlist", "label": "Add watchlist stock intent", "mode": "stateful_intent", "intent_action": "watchlist_manager.add", "default_params": {"group": "default", "code": "600519"}},
+    {"capability_id": "watchlist", "action_id": "remove", "group": "portfolio-watchlist", "label": "Remove watchlist stock intent", "mode": "stateful_intent", "intent_action": "watchlist_manager.remove", "default_params": {"group": "default", "code": "600519"}},
     {"capability_id": "risk", "action_id": "var", "group": "risk-performance", "label": "Risk VaR", "mode": "read_only", "mcp_tool": "risk_manager", "mcp_action": "var", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
     {"capability_id": "risk", "action_id": "exposure", "group": "risk-performance", "label": "Risk exposure", "mode": "read_only", "mcp_tool": "risk_manager", "mcp_action": "exposure", "default_params": {"codes": ["600519", "000001"], "weights": [0.5, 0.5]}},
     {"capability_id": "performance", "action_id": "calculate_metrics", "group": "risk-performance", "label": "Performance metrics", "mode": "read_only", "mcp_tool": "performance_manager", "mcp_action": "calculate_metrics", "default_params": {"portfolio_id": 1}},
@@ -722,10 +725,10 @@ FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
     {"capability_id": "quant", "action_id": "research_run", "group": "quant-backtest", "label": "Quant research run", "mode": "read_only", "tool": "agent_quant_research_run", "default_params": {"universe": ["600519", "000001"], "factors": ["momentum"], "benchmark": "000300"}},
     {"capability_id": "backtest", "action_id": "suite", "group": "quant-backtest", "label": "Backtest suite", "mode": "read_only", "tool": "agent_backtest_suite", "default_params": {"codes": ["600519", "000001"], "strategy": "ma_cross"}},
     {"capability_id": "backtest", "action_id": "list", "group": "quant-backtest", "label": "Saved backtests", "mode": "read_only", "mcp_tool": "backtest_manager", "mcp_action": "list", "default_params": {}},
-    {"capability_id": "paper", "action_id": "status", "group": "paper-execution", "label": "Paper trading status", "mode": "read_only", "mcp_tool": "paper_trading_manager", "mcp_action": "status", "default_params": {}},
+    {"capability_id": "paper", "action_id": "status", "group": "paper-execution", "label": "Paper trading status", "mode": "read_only", "mcp_tool": "paper_trading_manager", "mcp_action": "summary", "default_params": {}},
     {"capability_id": "paper", "action_id": "orders", "group": "paper-execution", "label": "Paper orders", "mode": "read_only", "mcp_tool": "paper_trading_manager", "mcp_action": "orders", "default_params": {"limit": 20}},
     {"capability_id": "paper", "action_id": "submit_order", "group": "paper-execution", "label": "Paper order intent", "mode": "stateful_intent", "intent_action": "paper_trading_manager.submit_order", "default_params": {"code": "600519", "side": "buy", "quantity": 100, "dry_run": True}},
-    {"capability_id": "execution", "action_id": "plan", "group": "paper-execution", "label": "Execution plan", "mode": "read_only", "mcp_tool": "execution_manager", "mcp_action": "plan", "default_params": {"code": "600519", "side": "buy", "quantity": 1000}},
+    {"capability_id": "execution", "action_id": "plan", "group": "paper-execution", "label": "Execution tasks", "mode": "read_only", "mcp_tool": "execution_manager", "mcp_action": "list", "default_params": {}},
     {"capability_id": "execution", "action_id": "create_plan", "group": "paper-execution", "label": "Create execution plan intent", "mode": "stateful_intent", "intent_action": "execution_manager.create_plan", "default_params": {"code": "600519", "side": "buy", "quantity": 1000, "dry_run": True}},
     {"capability_id": "broker-ths", "action_id": "positions", "group": "broker-readonly", "label": "THS positions", "mode": "read_only", "mcp_tool": "ths_query_position", "default_params": {}},
     {"capability_id": "broker-ths", "action_id": "orders", "group": "broker-readonly", "label": "THS orders", "mode": "read_only", "mcp_tool": "ths_query_orders", "default_params": {}},
@@ -733,6 +736,27 @@ FINANCIAL_MANAGER_ACTIONS: tuple[dict[str, Any], ...] = (
     {"capability_id": "broker-qmt", "action_id": "positions", "group": "broker-readonly", "label": "QMT positions", "mode": "read_only", "mcp_tool": "qmt_query_position", "default_params": {}},
     {"capability_id": "broker-live", "action_id": "place_order", "group": "broker-readonly", "label": "Live place order", "mode": "blocked", "blocked_reason": "Live broker order placement is disabled in Financial Manager V1."},
     {"capability_id": "broker-live", "action_id": "cancel_order", "group": "broker-readonly", "label": "Live cancel order", "mode": "blocked", "blocked_reason": "Live broker cancellation is disabled in Financial Manager V1."},
+)
+
+FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE: dict[str, dict[str, Any]] = {
+    "watchlist_manager.add": {"execution_mode": "confirmed_execute"},
+    "watchlist_manager.remove": {"execution_mode": "confirmed_execute"},
+    "portfolio_manager.create": {"execution_mode": "confirmed_execute"},
+    "portfolio_manager.add_holding": {"execution_mode": "confirmed_execute"},
+    "execution_manager.create_plan": {
+        "execution_mode": "confirmed_execute_dry_run_only",
+        "dry_run_required": True,
+    },
+    "paper_trading_manager.submit_order": {
+        "execution_mode": "confirmed_execute_dry_run_only",
+        "dry_run_required": True,
+    },
+}
+
+FINANCIAL_MANAGER_DRY_RUN_ONLY_ACTIONS: tuple[str, ...] = tuple(
+    action_name
+    for action_name, policy in FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE.items()
+    if bool(policy.get("dry_run_required"))
 )
 
 
@@ -745,6 +769,18 @@ def _financial_action_map() -> dict[str, dict[str, Any]]:
         _financial_action_key(str(item.get("capability_id") or ""), str(item.get("action_id") or "")): dict(item)
         for item in FINANCIAL_MANAGER_ACTIONS
     }
+
+
+def _financial_execution_mode(action: dict[str, Any]) -> str:
+    mode = str(action.get("mode") or "read_only")
+    if mode == "blocked":
+        return "blocked"
+    if mode == "read_only":
+        return "read_only"
+    intent_action = str(action.get("intent_action") or "").strip()
+    if intent_action and intent_action in FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE:
+        return str(FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE[intent_action]["execution_mode"])
+    return "intent_only"
 
 
 def _redact_secrets(value: Any) -> Any:
@@ -859,6 +895,7 @@ def _financial_catalog_payload(runtime: AgentRuntime) -> dict[str, Any]:
     for raw in FINANCIAL_MANAGER_ACTIONS:
         item = dict(raw)
         mode = str(item.get("mode") or "read_only")
+        item["execution_mode"] = _financial_execution_mode(item)
         item["available"] = False
         item["status"] = "unavailable"
         item["side_effect"] = {
@@ -908,9 +945,14 @@ def _financial_catalog_payload(runtime: AgentRuntime) -> dict[str, Any]:
         "safety": {
             "mode": "read_only_plus_intents",
             "live_trading_enabled": False,
-            "stateful_execution": "action_intent_only",
+            "stateful_execution": "allowlisted_confirmed_actions",
+            "confirmed_action_scope": list(FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE.keys()),
+            "dry_run_only_actions": list(FINANCIAL_MANAGER_DRY_RUN_ONLY_ACTIONS),
             "secrets_redacted": True,
         },
+        "stateful_execution": "allowlisted_confirmed_actions",
+        "confirmed_action_scope": list(FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE.keys()),
+        "dry_run_only_actions": list(FINANCIAL_MANAGER_DRY_RUN_ONLY_ACTIONS),
         "secrets_redacted": True,
     }
 
@@ -934,6 +976,9 @@ async def _financial_status_payload(runtime: AgentRuntime) -> dict[str, Any]:
             "registration": _redact_secrets(mcp.registration_diagnostics()),
             "servers": _redact_secrets(mcp.servers_summary(include_all=False)),
         },
+        "stateful_execution": "allowlisted_confirmed_actions",
+        "confirmed_action_scope": list(FINANCIAL_MANAGER_CONFIRMED_ACTION_SCOPE.keys()),
+        "dry_run_only_actions": list(FINANCIAL_MANAGER_DRY_RUN_ONLY_ACTIONS),
         "broker": {
             "live_trading_enabled": False,
             "read_only_surfaces": ["ths_query_position", "ths_query_orders", "ths_query_deals", "qmt_query_account", "qmt_query_position", "qmt_query_orders"],
@@ -941,6 +986,232 @@ async def _financial_status_payload(runtime: AgentRuntime) -> dict[str, Any]:
         },
         "recent_intents": [],
         "secrets_redacted": True,
+    }
+
+
+def _run_event_kind(event_type: str, payload: dict[str, Any]) -> str:
+    name = str(event_type or "").strip().lower()
+    if "approval" in name or "intent" in name:
+        return "approval"
+    if "gateway" in name or str(payload.get("platform") or "").strip():
+        return "gateway"
+    if "mcp" in name:
+        return "mcp"
+    if "failed" in name or "error" in name:
+        return "error"
+    if "tool" in name:
+        return "tool"
+    return "system"
+
+
+def _run_event_severity(event_type: str, payload: dict[str, Any]) -> str:
+    name = str(event_type or "").strip().lower()
+    if "failed" in name or "error" in name:
+        return "error"
+    if "blocked" in name or "retry" in name or "cancel" in name:
+        return "warning"
+    if "completed" in name:
+        return "success"
+    return str(payload.get("severity") or "info")
+
+
+def _run_event_title(event_type: str, payload: dict[str, Any]) -> str:
+    name = str(event_type or "").strip()
+    if payload.get("title"):
+        return str(payload.get("title"))
+    if payload.get("tool"):
+        return f"{name}: {payload.get('tool')}"
+    if payload.get("instruction"):
+        return f"{name}: steer"
+    if payload.get("error"):
+        return f"{name}: error"
+    return name or "run.event"
+
+
+def _run_event_jump_target(kind: str, severity: str) -> str:
+    if kind == "approval":
+        return "tools-intents-approvals"
+    if kind == "gateway":
+        return "gateway"
+    if kind == "mcp":
+        return "mcp-connectors"
+    if severity == "error":
+        return "readiness-health"
+    if kind == "tool":
+        return "tools-intents-approvals"
+    return "runs-events"
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _normalize_run_event(event: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(event.get("data") or {})
+    event_type = str(event.get("event") or "")
+    kind = _run_event_kind(event_type, payload)
+    severity = _run_event_severity(event_type, payload)
+    normalized = dict(event)
+    normalized["kind"] = kind
+    normalized["title"] = _run_event_title(event_type, payload)
+    normalized["severity"] = severity
+    normalized["jump_target"] = _run_event_jump_target(kind, severity)
+    normalized["data"] = payload
+    normalized["event_type"] = event_type
+    normalized["status"] = _first_present(normalized.get("status"), payload.get("status"), severity)
+    normalized["tool_name"] = _first_present(payload.get("tool_name"), payload.get("tool"), payload.get("name"))
+    normalized["error_message"] = _first_present(payload.get("error_message"), payload.get("error"), payload.get("detail"))
+    return normalized
+
+
+def _run_summary(item: dict[str, Any], session_store: AgentSessionStore) -> dict[str, Any]:
+    payload = dict(item.get("payload") or {})
+    run_id = str(item.get("run_id") or "")
+    events = session_store.list_run_events(run_id, limit=1000)
+    normalized_events = [_normalize_run_event(event) for event in events]
+    last_event = normalized_events[-1] if normalized_events else None
+    tool_count = sum(1 for event in normalized_events if event.get("kind") == "tool")
+    approval_count = sum(1 for event in normalized_events if event.get("kind") == "approval")
+    error_count = sum(1 for event in normalized_events if str(event.get("severity") or "") == "error")
+    return {
+        "run_id": run_id,
+        "session_id": item.get("session_id"),
+        "status": item.get("status"),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+        "event_count": len(normalized_events),
+        "tool_call_count": int(payload.get("tool_call_count") or tool_count),
+        "approval_count": approval_count,
+        "error_count": error_count,
+        "response_id": payload.get("response_id"),
+        "last_event": last_event,
+        "has_errors": error_count > 0,
+        "has_pending_approval": any(
+            event.get("kind") == "approval" and str(event.get("status") or "").lower() in {"pending", "awaiting_confirmation", "warning", "info"}
+            for event in normalized_events
+        ),
+    }
+
+
+def _session_summary(
+    session: dict[str, Any],
+    *,
+    session_store: AgentSessionStore,
+    intent_store: ActionIntentStore | None = None,
+    approval_store: ApprovalStore | None = None,
+) -> dict[str, Any]:
+    session_id = str(session.get("session_id") or "").strip()
+    latest_run = next(iter(session_store.list_runs(session_id=session_id, limit=1)), None) if session_id else None
+    latest_run_summary = _run_summary(latest_run, session_store) if latest_run else None
+    message_count = session_store.count_session_messages(session_id) if session_id else 0
+    last_message_at = session_store.latest_message_at(session_id) if session_id else None
+    last_event = latest_run_summary.get("last_event") if latest_run_summary else None
+    pending_intents = list((intent_store or ActionIntentStore()).list(status="awaiting_confirmation", limit=500))
+    pending_approvals = list((approval_store or ApprovalStore(session_store.path)).list(status="pending", limit=500))
+    session_pending_intents = [
+        item
+        for item in pending_intents
+        if str((item.get("params") or {}).get("session_id") or item.get("session_id") or "") == session_id
+    ]
+    session_pending_approvals = [
+        item
+        for item in pending_approvals
+        if str((item.get("arguments") or {}).get("session_id") or item.get("session_id") or "") == session_id
+    ]
+    has_errors = bool((latest_run_summary or {}).get("has_errors"))
+    status = str((latest_run_summary or {}).get("status") or session.get("status") or "idle")
+    return {
+        "session_id": session.get("session_id"),
+        "title": session.get("title") or session.get("session_id"),
+        "user_id": session.get("user_id"),
+        "created_at": session.get("created_at"),
+        "updated_at": session.get("updated_at"),
+        "last_message_at": last_message_at or session.get("updated_at") or session.get("created_at"),
+        "last_run_id": (latest_run_summary or {}).get("run_id"),
+        "last_run_summary": latest_run_summary,
+        "last_event": last_event,
+        "message_count": message_count,
+        "has_errors": has_errors,
+        "has_pending_approval": bool(session_pending_intents or session_pending_approvals or (latest_run_summary or {}).get("has_pending_approval")),
+        "status": "error" if has_errors else status,
+        "metadata": session.get("metadata") or {},
+    }
+
+
+def _session_summary_payload(
+    runtime: AgentRuntime,
+    *,
+    intent_store: ActionIntentStore | None = None,
+    user_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    approval_store = ApprovalStore(runtime.session_store.path)
+    return [
+        _session_summary(
+            session,
+            session_store=runtime.session_store,
+            intent_store=intent_store,
+            approval_store=approval_store,
+        )
+        for session in runtime.session_store.list_sessions(user_id=user_id, limit=limit)
+    ]
+
+
+def _workbench_summary_payload(
+    runtime: AgentRuntime,
+    *,
+    intent_store: ActionIntentStore | None = None,
+    user_id: str | None = None,
+    session_limit: int = 8,
+    run_limit: int = 8,
+) -> dict[str, Any]:
+    store = intent_store or ActionIntentStore()
+    recent_sessions = _session_summary_payload(
+        runtime,
+        intent_store=store,
+        user_id=user_id,
+        limit=max(1, min(int(session_limit or 8), 20)),
+    )
+    runs = runtime.session_store.list_runs(limit=max(1, min(int(run_limit or 8), 50)))
+    run_summaries = [_run_summary(item, runtime.session_store) for item in runs]
+    pending_intents = len(store.list(status="awaiting_confirmation", limit=500))
+    pending_approvals = len(ApprovalStore(runtime.session_store.path).list(status="pending", limit=500))
+    gateway_messages = GatewayMessageStore(runtime.session_store.path).list(limit=500)
+    gateway_failed = sum(1 for item in gateway_messages if str(item.get("status") or "").lower() in {"failed", "error"})
+    mcp_servers = MCPAggregator().servers_summary(include_all=True)
+    mcp_degraded = sum(1 for item in mcp_servers if item.get("configured") is False or item.get("status") == "failed")
+    return {
+        "object": "aiask.desktop.workbench.summary",
+        "recent_sessions": recent_sessions,
+        "recent_runs": run_summaries,
+        "queues": {
+            "pending_intents": pending_intents,
+            "pending_approvals": pending_approvals,
+            "gateway_failed": gateway_failed,
+            "mcp_degraded": mcp_degraded,
+        },
+        "access": {
+            "full_mode_active": bool(_hermes_full_enabled()),
+            "control_token_configured": _control_token_configured(),
+            "sessions_admin_available": bool(_hermes_full_enabled() and _control_token_configured()),
+        },
+    }
+
+
+def _desktop_runs_payload(
+    runtime: AgentRuntime,
+    *,
+    session_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    runs = runtime.session_store.list_runs(session_id=session_id, status=status, limit=limit)
+    return {
+        "object": "list",
+        "data": [_run_summary(item, runtime.session_store) for item in runs],
     }
 
 
@@ -1483,13 +1754,14 @@ def create_app(
         }
 
     async def sse_events(events: list[dict[str, Any]]) -> AsyncIterator[bytes]:
-        for event in events:
+        for raw_event in events:
+            event = _normalize_run_event(raw_event)
             if event.get("id") is not None:
                 yield f"id: {event['id']}\n".encode("utf-8")
             if event.get("event"):
                 yield f"event: {event['event']}\n".encode("utf-8")
             yield b"data: "
-            yield _json_dumps(event.get("data", event))
+            yield _json_dumps(event)
             yield b"\n\n"
 
     async def chat_completion_sse(result: Any, *, model: str) -> AsyncIterator[bytes]:
@@ -1673,6 +1945,96 @@ def create_app(
         require_api(request)
         return await factor_factory_status(limit=limit)
 
+    @app.get("/v1/desktop/trade-predictions/status")
+    async def desktop_trade_predictions_status(
+        request: Request,
+        strategy_id: str | None = None,
+        stock_code: str | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        require_api(request)
+        return await runtime.tool_registry.call_tool(
+            "agent_trade_prediction_status",
+            {"strategy_id": strategy_id, "stock_code": stock_code, "limit": limit},
+        )
+
+    @app.get("/v1/desktop/trade-predictions/outcomes")
+    async def desktop_trade_predictions_outcomes(
+        request: Request,
+        prediction_id: str | None = None,
+        strategy_id: str | None = None,
+        stock_code: str | None = None,
+        score_version: str | None = None,
+        score_status: str | None = None,
+        data_quality_status: str | None = None,
+        actual_trading_date_lte: str | None = None,
+        actual_trading_date_gte: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        require_api(request)
+        return await runtime.tool_registry.call_tool(
+            "agent_trade_prediction_outcomes",
+            {
+                "prediction_id": prediction_id,
+                "strategy_id": strategy_id,
+                "stock_code": stock_code,
+                "score_version": score_version,
+                "score_status": score_status,
+                "data_quality_status": data_quality_status,
+                "actual_trading_date_lte": actual_trading_date_lte,
+                "actual_trading_date_gte": actual_trading_date_gte,
+                "limit": limit,
+            },
+        )
+
+    @app.get("/v1/desktop/trade-predictions/matrix")
+    async def desktop_trade_predictions_matrix(
+        request: Request,
+        strategy_id: str | None = None,
+        stock_code: str | None = None,
+        score_version: str | None = None,
+        dimensions: str = "",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        require_api(request)
+        dimension_list = [item.strip() for item in str(dimensions or "").split(",") if item.strip()]
+        return await runtime.tool_registry.call_tool(
+            "agent_trade_prediction_matrix",
+            {
+                "strategy_id": strategy_id,
+                "stock_code": stock_code,
+                "score_version": score_version,
+                "dimensions": dimension_list,
+                "limit": limit,
+            },
+        )
+
+    @app.get("/v1/desktop/workbench/summary")
+    async def desktop_workbench_summary(
+        request: Request,
+        user_id: str | None = None,
+        session_limit: int = 8,
+        run_limit: int = 8,
+    ) -> dict[str, Any]:
+        require_api(request)
+        return _workbench_summary_payload(
+            runtime,
+            intent_store=intent_executor.store,
+            user_id=user_id,
+            session_limit=session_limit,
+            run_limit=run_limit,
+        )
+
+    @app.get("/v1/desktop/runs")
+    async def desktop_runs(
+        request: Request,
+        session_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        require_api(request)
+        return _desktop_runs_payload(runtime, session_id=session_id, status=status, limit=limit)
+
     @app.get("/v1/ai/status")
     async def ai_status(request: Request) -> dict[str, Any]:
         require_api(request)
@@ -1813,7 +2175,11 @@ def create_app(
     @app.get("/v1/hermes/sessions")
     async def hermes_sessions(request: Request, user_id: str | None = None, limit: int = 100) -> dict[str, Any]:
         require_full(request)
-        return {"object": "list", "implementation": "aiask_native", "data": runtime.session_store.list_sessions(user_id=user_id, limit=limit)}
+        return {
+            "object": "list",
+            "implementation": "aiask_native",
+            "data": _session_summary_payload(runtime, intent_store=intent_executor.store, user_id=user_id, limit=limit),
+        }
 
     @app.post("/v1/responses")
     async def responses(request: Request) -> Any:
@@ -1869,7 +2235,7 @@ def create_app(
     async def run_events(request: Request, run_id: str, after: int = 0) -> StreamingResponse:
         require_api(request)
         events = runtime.session_store.list_run_events(run_id, after_event_id=after)
-        return StreamingResponse(sse_events(events), media_type="text/event-stream")
+        return StreamingResponse(sse_events([_normalize_run_event(event) for event in events]), media_type="text/event-stream")
 
     @app.get("/v1/runs/{run_id}/events/stream")
     async def run_events_stream(request: Request, run_id: str, after: int = 0) -> StreamingResponse:
@@ -2610,13 +2976,14 @@ def build_server(
 
         def _send_sse(self, events: list[dict[str, Any]]) -> None:
             chunks: list[bytes] = []
-            for event in events:
+            for raw_event in events:
+                event = _normalize_run_event(raw_event)
                 if event.get("id") is not None:
                     chunks.append(f"id: {event['id']}\n".encode("utf-8"))
                 if event.get("event"):
                     chunks.append(f"event: {event['event']}\n".encode("utf-8"))
                 chunks.append(b"data: ")
-                chunks.append(_json_dumps(event.get("data", event)))
+                chunks.append(_json_dumps(event))
                 chunks.append(b"\n\n")
             body = b"".join(chunks)
             self.send_response(200)
@@ -2936,7 +3303,9 @@ def build_server(
                     {
                         "object": "list",
                         "implementation": "aiask_native",
-                        "data": runtime.session_store.list_sessions(
+                        "data": _session_summary_payload(
+                            runtime,
+                            intent_store=intent_executor.store,
                             user_id=(query.get("user_id") or [None])[0],
                             limit=int((query.get("limit") or ["100"])[0]),
                         ),
@@ -2989,6 +3358,102 @@ def build_server(
                     self._send_error_json(401, "unauthorized", code="unauthorized")
                     return
                 self._send_json(200, asyncio.run(factor_factory_status(limit=int((query.get("limit") or ["50"])[0]))))
+                return
+            if path == "/v1/desktop/trade-predictions/status":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_trade_prediction_status",
+                            {
+                                "strategy_id": (query.get("strategy_id") or [None])[0],
+                                "stock_code": (query.get("stock_code") or [None])[0],
+                                "limit": int((query.get("limit") or ["1000"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/trade-predictions/outcomes":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_trade_prediction_outcomes",
+                            {
+                                "prediction_id": (query.get("prediction_id") or [None])[0],
+                                "strategy_id": (query.get("strategy_id") or [None])[0],
+                                "stock_code": (query.get("stock_code") or [None])[0],
+                                "score_version": (query.get("score_version") or [None])[0],
+                                "score_status": (query.get("score_status") or [None])[0],
+                                "data_quality_status": (query.get("data_quality_status") or [None])[0],
+                                "actual_trading_date_lte": (query.get("actual_trading_date_lte") or [None])[0],
+                                "actual_trading_date_gte": (query.get("actual_trading_date_gte") or [None])[0],
+                                "limit": int((query.get("limit") or ["100"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/trade-predictions/matrix":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                dimensions = [
+                    item.strip()
+                    for item in str((query.get("dimensions") or [""])[0] or "").split(",")
+                    if item.strip()
+                ]
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_trade_prediction_matrix",
+                            {
+                                "strategy_id": (query.get("strategy_id") or [None])[0],
+                                "stock_code": (query.get("stock_code") or [None])[0],
+                                "score_version": (query.get("score_version") or [None])[0],
+                                "dimensions": dimensions,
+                                "limit": int((query.get("limit") or ["1000"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/workbench/summary":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    _workbench_summary_payload(
+                        runtime,
+                        intent_store=intent_executor.store,
+                        user_id=(query.get("user_id") or [None])[0],
+                        session_limit=int((query.get("session_limit") or ["8"])[0]),
+                        run_limit=int((query.get("run_limit") or ["8"])[0]),
+                    ),
+                )
+                return
+            if path == "/v1/desktop/runs":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    _desktop_runs_payload(
+                        runtime,
+                        session_id=(query.get("session_id") or [None])[0],
+                        status=(query.get("status") or [None])[0],
+                        limit=int((query.get("limit") or ["100"])[0]),
+                    ),
+                )
                 return
             if path == "/v1/ai/status":
                 if not self._api_authorized():
@@ -3103,7 +3568,7 @@ def build_server(
                     },
                 )
                 return
-            if path.startswith("/v1/runs/") and path.endswith("/events"):
+            if path.startswith("/v1/runs/") and (path.endswith("/events") or path.endswith("/events/stream")):
                 if not self._api_authorized():
                     self._send_error_json(401, "unauthorized", code="unauthorized")
                     return

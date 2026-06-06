@@ -28,12 +28,16 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from .env_config import load_project_env
+
 
 def _stt_provider() -> str:
+    load_project_env()
     return str(os.getenv("AIASK_VOICE_STT_PROVIDER") or "openai").strip().lower()
 
 
 def _tts_provider() -> str:
+    load_project_env()
     return str(os.getenv("AIASK_VOICE_TTS_PROVIDER") or "openai").strip().lower()
 
 
@@ -65,6 +69,7 @@ async def transcribe(audio_path: str, *, language: str = "zh") -> dict[str, Any]
 
 
 async def _stt_openai(audio_path: str, *, language: str = "zh") -> dict[str, Any]:
+    load_project_env()
     """OpenAI Whisper STT。"""
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
@@ -176,6 +181,7 @@ async def synthesize(text: str, *, voice: str = "alloy", output_path: str | None
 
 
 async def _tts_openai(text: str, *, voice: str = "alloy", output_path: str | None = None) -> dict[str, Any]:
+    load_project_env()
     """OpenAI TTS。"""
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:

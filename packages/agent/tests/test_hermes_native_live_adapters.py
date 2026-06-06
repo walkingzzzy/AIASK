@@ -165,8 +165,8 @@ def test_strict_parity_has_no_code_gaps_in_full_runtime(tmp_path, monkeypatch) -
         max_iterations=2,
     )
     payload = parity_summary(runtime.tool_registry.names(), env={}, gateway_adapters=ADAPTERS.keys())
-    assert payload["baseline"] == "Hermes v0.14.0 full runtime capability reference"
-    assert payload["baseline_release_tag"] == "v2026.5.16"
+    assert payload["baseline"] == "Hermes v0.15.1 full runtime capability reference"
+    assert payload["baseline_release_tag"] == "7402706c5"
     assert payload["strict_hermes_tool_count"] == 57
     assert payload["strict_gateway_platform_count"] == 22
     assert payload["core_missing_hermes_tools"] == []

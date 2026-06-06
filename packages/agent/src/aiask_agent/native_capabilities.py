@@ -23,6 +23,7 @@ from uuid import uuid4
 from . import homeassistant as ha_native
 from .acp import ACPManager
 from .approvals import ApprovalStore
+from .env_config import load_project_env
 from .gateway import DeliveryRouter, GatewayChannelDirectoryStore, GatewayConfigStore, GatewayMessageStore, GatewayRuntime
 from .financial_skill_templates import FINANCIAL_SKILL_TEMPLATES
 from .mcp_client import MCPAggregator, MCPOAuthRequired
@@ -512,6 +513,7 @@ class MessageOutbox:
 
 
 async def _generate_image(arguments: dict[str, Any]) -> dict[str, Any]:
+    load_project_env()
     prompt = str(arguments.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("prompt is required")
@@ -538,6 +540,7 @@ async def _generate_image(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _text_to_speech(arguments: dict[str, Any]) -> dict[str, Any]:
+    load_project_env()
     text = str(arguments.get("text") or "").strip()
     if not text:
         raise ValueError("text is required")
@@ -591,6 +594,7 @@ async def _text_to_speech(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _transcribe_audio(arguments: dict[str, Any]) -> dict[str, Any]:
+    load_project_env()
     provider = str(arguments.get("provider") or os.getenv("AIASK_AGENT_STT_PROVIDER", "openai")).strip().lower() or "openai"
     if provider != "openai":
         return {"configured": False, "provider": provider, "text": None, "error": f"unsupported STT provider: {provider}"}
@@ -1196,6 +1200,7 @@ def build_native_capability_handlers(
             return _envelope(False, error=str(exc), tool_name=tool, level="filesystem_write", idempotent=False)
 
     async def vision_analyze(arguments: dict[str, Any]) -> dict[str, Any]:
+        load_project_env()
         tool = "agent_vision_analyze"
         image = str(arguments.get("image_path") or arguments.get("image_url") or "").strip()
         if not image:
@@ -1263,6 +1268,7 @@ def build_native_capability_handlers(
             return _envelope(False, error=str(exc), tool_name=tool, level="external_generation", idempotent=False)
 
     async def video_generate(arguments: dict[str, Any]) -> dict[str, Any]:
+        load_project_env()
         tool = "agent_video_generate"
         action = str(arguments.get("action") or "status").strip().lower()
         provider = str(arguments.get("provider") or os.getenv("AIASK_VIDEO_PROVIDER") or "openai_compatible").strip()

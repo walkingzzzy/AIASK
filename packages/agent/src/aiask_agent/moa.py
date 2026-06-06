@@ -4,6 +4,7 @@ import asyncio
 import os
 from typing import Any
 
+from .env_config import load_project_env
 from .model_client import ModelClient
 
 
@@ -11,6 +12,7 @@ DEFAULT_REFERENCE_MODELS = ("gpt-4.1-mini", "gpt-4.1-mini")
 
 
 def reference_models() -> list[str]:
+    load_project_env()
     raw = str(os.getenv("AIASK_MOA_REFERENCE_MODELS", "")).strip()
     if raw:
         return [item.strip() for item in raw.split(",") if item.strip()]
@@ -18,6 +20,7 @@ def reference_models() -> list[str]:
 
 
 def aggregator_model(default_model: str) -> str:
+    load_project_env()
     return str(os.getenv("AIASK_MOA_AGGREGATOR_MODEL", "")).strip() or default_model
 
 

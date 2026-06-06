@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 
 from fastapi.testclient import TestClient
 
+from aiask_agent.moa import aggregator_model, reference_models
 from aiask_agent.model_client import MockModelClient
 from aiask_agent.runtime import AgentRuntime
 from aiask_agent.server import create_app
@@ -79,6 +81,54 @@ def test_desktop_settings_status_uses_project_env_llm_config(tmp_path, monkeypat
     assert provider_status["default_model"] == "root-api-model"
     assert provider_status["config_source"]["loaded"] is True
     assert "sk-root-project-secret" not in raw
+
+
+def test_desktop_settings_status_project_env_llm_overrides_process_env(tmp_path, monkeypatch) -> None:
+    project_env = tmp_path / ".env"
+    project_env.write_text(
+        "\n".join(
+            [
+                "AIASK_AGENT_MODEL_PROVIDER=openai",
+                "AIASK_AGENT_MODEL=file-api-model",
+                "AIASK_AGENT_VISION_MODEL=file-vision-model",
+                "AIASK_AGENT_VISION_PROVIDER=openai",
+                "AIASK_MOA_REFERENCE_MODELS=file-ref-a,file-ref-b",
+                "AIASK_MOA_AGGREGATOR_MODEL=file-agg-model",
+                "OPENAI_BASE_URL=https://file-api.example.test/v1",
+                "OPENAI_API_KEY=sk-file-project-secret",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AIASK_AGENT_LOAD_PROJECT_ENV", "1")
+    monkeypatch.setenv("AIASK_AGENT_ENV_FILE", str(project_env))
+    monkeypatch.setenv("AIASK_AGENT_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("AIASK_AGENT_MODEL", "process-model")
+    monkeypatch.setenv("AIASK_AGENT_VISION_MODEL", "process-vision-model")
+    monkeypatch.setenv("AIASK_AGENT_VISION_PROVIDER", "mock")
+    monkeypatch.setenv("AIASK_MOA_REFERENCE_MODELS", "process-ref")
+    monkeypatch.setenv("AIASK_MOA_AGGREGATOR_MODEL", "process-agg-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://process.example.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-process-secret")
+
+    client = _client(tmp_path, monkeypatch)
+    response = client.get("/v1/desktop/settings/status", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    raw = json.dumps(payload)
+    ai_status = payload["llm"]["ai_status"]
+    provider_status = payload["llm"]["providers"]
+    assert ai_status["provider"] == "openai"
+    assert ai_status["model"] == "file-api-model"
+    assert provider_status["default_model"] == "file-api-model"
+    assert reference_models() == ["file-ref-a", "file-ref-b"]
+    assert aggregator_model("default-agg") == "file-agg-model"
+    assert os.environ["AIASK_AGENT_VISION_MODEL"] == "file-vision-model"
+    assert os.environ["AIASK_AGENT_VISION_PROVIDER"] == "openai"
+    assert ai_status["config_source"]["source"] == "explicit"
+    assert "sk-file-project-secret" not in raw
+    assert "sk-process-secret" not in raw
 
 
 def test_desktop_local_profile_can_be_saved_and_reloaded(tmp_path, monkeypatch) -> None:
@@ -158,3 +208,53 @@ def test_desktop_factor_factory_status_endpoint_uses_safe_facade(tmp_path, monke
     assert payload["status"] == "ready"
     assert payload["active_factors"] == [{"name": "alpha"}]
     assert payload["secrets_redacted"] is True
+
+
+def test_desktop_trade_prediction_routes_use_agent_read_facades(tmp_path, monkeypatch) -> None:
+    async def fake_call_db_facade(loader, params=None):
+        loader_name = getattr(loader, "__name__", "")
+        if loader_name == "_load_trade_prediction_status_handler":
+            return {
+                "success": True,
+                "data": {"object": "trade_prediction.status", "sample_n": 2, "status": "ready"},
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        if loader_name == "_load_trade_prediction_outcomes_handler":
+            return {
+                "success": True,
+                "data": {
+                    "object": "trade_prediction.outcomes",
+                    "items": [{"prediction_id": "tp_1", "score_version": "trade_prediction_score_v2"}],
+                    "count": 1,
+                },
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        if loader_name == "_load_trade_prediction_matrix_handler":
+            return {
+                "success": True,
+                "data": {
+                    "object": "trade_prediction.matrix",
+                    "rows": [{"dimension": "family", "value": "momentum", "sample_n": 2}],
+                    "row_count": 1,
+                },
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        raise AssertionError(loader_name)
+
+    monkeypatch.setattr("aiask_agent.adapters.strategy_factory._call_db_facade", fake_call_db_facade)
+    client = _client(tmp_path, monkeypatch)
+
+    status = client.get("/v1/desktop/trade-predictions/status?strategy_id=s1")
+    outcomes = client.get("/v1/desktop/trade-predictions/outcomes?score_version=trade_prediction_score_v2")
+    matrix = client.get("/v1/desktop/trade-predictions/matrix?dimensions=family")
+
+    assert status.status_code == 200
+    assert status.json()["success"] is True
+    assert status.json()["data"]["object"] == "trade_prediction.status"
+    assert outcomes.status_code == 200
+    assert outcomes.json()["data"]["items"][0]["score_version"] == "trade_prediction_score_v2"
+    assert matrix.status_code == 200
+    assert matrix.json()["data"]["rows"][0]["dimension"] == "family"

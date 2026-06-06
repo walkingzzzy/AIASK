@@ -7,6 +7,8 @@ HERMES_RELEASE_TAG = "7402706c5"
 HERMES_BASELINE = f"Hermes v{HERMES_BASELINE_VERSION} full runtime capability reference"
 HERMES_CORE_PARITY_TRACK = "core_runtime"
 HERMES_V014_DELTA_TRACK = "v0.14_delta"
+HERMES_V014_DELTA_BASELINE = "Hermes v0.14.0 full runtime capability reference"
+HERMES_V014_DELTA_RELEASE_TAG = "v2026.5.16"
 
 HERMES_TOOL_EQUIVALENTS: tuple[dict[str, Any], ...] = (
     {"hermes_tool": "browser_cdp", "aiask_tools": ["agent_browser_cdp"], "area": "browser", "live_required": False},
@@ -656,8 +658,8 @@ def parity_summary(
         "strict_status": "complete" if strict_complete else "in_progress",
         "status": "complete" if len(complete) == len(required) and strict_complete else "in_progress",
         "v014_delta": {
-            "baseline": HERMES_BASELINE,
-            "release_tag": HERMES_RELEASE_TAG,
+            "baseline": HERMES_V014_DELTA_BASELINE,
+            "release_tag": HERMES_V014_DELTA_RELEASE_TAG,
             "total": len(delta_items),
             "implemented_count": len(delta_implemented),
             "partial_count": len(delta_partial),

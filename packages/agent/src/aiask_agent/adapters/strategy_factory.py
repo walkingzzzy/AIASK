@@ -205,6 +205,103 @@ def _load_factory_event_handler(action: str):
     return handler
 
 
+def _safe_limit(value: Any, *, default: int = 100, maximum: int = 1000) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(1, min(parsed, maximum))
+
+
+def _string_or_none(value: Any) -> str | None:
+    token = str(value or "").strip()
+    return token or None
+
+
+def _trade_prediction_meta(tool_name: str) -> dict[str, Any]:
+    return {
+        "tool": tool_name,
+        "side_effect": {
+            "level": "read_only",
+            "confirmation_required": False,
+            "idempotent": True,
+        },
+    }
+
+
+def _trade_prediction_envelope(tool_name: str, data: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "success": True,
+        "data": data,
+        "error": None,
+        "meta": _trade_prediction_meta(tool_name),
+    }
+
+
+def _load_trade_prediction_status_handler():
+    async def handler(db, params: dict[str, Any]) -> dict[str, Any]:
+        data = await db.summarize_strategy_trade_predictions(
+            strategy_id=_string_or_none(params.get("strategy_id")),
+            stock_code=_string_or_none(params.get("stock_code")),
+            limit=_safe_limit(params.get("limit"), default=1000, maximum=5000),
+        )
+        payload = dict(data or {})
+        payload.setdefault("status", "ready")
+        payload.setdefault("configured", True)
+        return _trade_prediction_envelope("agent_trade_prediction_status", payload)
+
+    return handler
+
+
+def _load_trade_prediction_outcomes_handler():
+    async def handler(db, params: dict[str, Any]) -> dict[str, Any]:
+        outcomes = await db.list_strategy_trade_prediction_outcomes(
+            prediction_id=_string_or_none(params.get("prediction_id")),
+            strategy_id=_string_or_none(params.get("strategy_id")),
+            stock_code=_string_or_none(params.get("stock_code")),
+            score_version=_string_or_none(params.get("score_version")),
+            score_status=_string_or_none(params.get("score_status")),
+            data_quality_status=_string_or_none(params.get("data_quality_status")),
+            actual_trading_date_lte=_string_or_none(params.get("actual_trading_date_lte")),
+            actual_trading_date_gte=_string_or_none(params.get("actual_trading_date_gte")),
+            limit=_safe_limit(params.get("limit"), default=100, maximum=1000),
+        )
+        data = {
+            "object": "trade_prediction.outcomes",
+            "status": "ready",
+            "configured": True,
+            "items": [dict(item or {}) for item in list(outcomes or [])],
+            "count": len(list(outcomes or [])),
+        }
+        return _trade_prediction_envelope("agent_trade_prediction_outcomes", data)
+
+    return handler
+
+
+def _load_trade_prediction_matrix_handler():
+    async def handler(db, params: dict[str, Any]) -> dict[str, Any]:
+        raw_dimensions = params.get("dimensions")
+        if isinstance(raw_dimensions, str):
+            dimensions = [item.strip() for item in raw_dimensions.split(",") if item.strip()]
+        elif isinstance(raw_dimensions, (list, tuple)):
+            dimensions = [str(item or "").strip() for item in raw_dimensions if str(item or "").strip()]
+        else:
+            dimensions = ["family", "stage", "regime", "event", "factor"]
+        data = await db.aggregate_trade_prediction_matrix(
+            strategy_id=_string_or_none(params.get("strategy_id")),
+            stock_code=_string_or_none(params.get("stock_code")),
+            score_version=_string_or_none(params.get("score_version")),
+            dimensions=dimensions,
+            limit=_safe_limit(params.get("limit"), default=1000, maximum=5000),
+        )
+        payload = dict(data or {})
+        payload.setdefault("status", "ready")
+        payload.setdefault("configured", True)
+        return _trade_prediction_envelope("agent_trade_prediction_matrix", payload)
+
+    return handler
+
+
 async def factory_status(arguments: dict[str, Any]) -> dict[str, Any]:
     result = await _call_db_facade(_load_factory_status_handler, arguments)
     return _read_only_fallback("factory_status", result)
@@ -289,6 +386,21 @@ async def incubation_factory_status(arguments: dict[str, Any]) -> dict[str, Any]
             },
         },
     }
+
+
+async def trade_prediction_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    result = await _call_db_facade(_load_trade_prediction_status_handler, arguments)
+    return _read_only_fallback("trade_prediction_status", result)
+
+
+async def trade_prediction_outcomes(arguments: dict[str, Any]) -> dict[str, Any]:
+    result = await _call_db_facade(_load_trade_prediction_outcomes_handler, arguments)
+    return _read_only_fallback("trade_prediction_outcomes", result)
+
+
+async def trade_prediction_matrix(arguments: dict[str, Any]) -> dict[str, Any]:
+    result = await _call_db_facade(_load_trade_prediction_matrix_handler, arguments)
+    return _read_only_fallback("trade_prediction_matrix", result)
 
 
 async def execute_confirmed_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

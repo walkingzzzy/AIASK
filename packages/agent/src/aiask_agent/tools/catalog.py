@@ -139,6 +139,27 @@ FINANCE_SAFE_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "description": "Read the incubation factory runner status (run count, last run, error count).",
     },
     {
+        "name": "agent_trade_prediction_status",
+        "capability": "trade_prediction_status",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Read aggregate trade prediction counts, score distribution, and data quality diagnostics.",
+    },
+    {
+        "name": "agent_trade_prediction_outcomes",
+        "capability": "trade_prediction_outcomes",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "List evaluated trade prediction outcomes with score and data quality metadata.",
+    },
+    {
+        "name": "agent_trade_prediction_matrix",
+        "capability": "trade_prediction_matrix",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Read family, stage, regime, event, and factor trade prediction contribution matrices.",
+    },
+    {
         "name": "agent_action_intent_create",
         "capability": "action_intent_create",
         "category": "financial_stateful",

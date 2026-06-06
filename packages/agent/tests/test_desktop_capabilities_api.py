@@ -51,7 +51,7 @@ def test_desktop_capabilities_returns_public_subset_without_control_token(tmp_pa
     assert payload["summary"]["control"]["full_mode_enabled"] is True
     assert payload["summary"]["control"]["control_token_configured"] is True
     assert payload["summary"]["control"]["control_authorized"] is False
-    assert payload["hermes"]["parity"]["baseline"] == "Hermes v0.14.0 full runtime capability reference"
+    assert payload["hermes"]["parity"]["baseline"] == "Hermes v0.15.1 full runtime capability reference"
     assert payload["hermes"]["parity"]["core_missing_hermes_tools"] == []
     assert payload["hermes"]["parity"]["v014_delta"]["missing_count"] == 0
     assert payload["mcp"]["gated"] is True

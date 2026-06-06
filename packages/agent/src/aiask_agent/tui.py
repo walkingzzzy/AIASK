@@ -8,6 +8,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+from .env_config import load_project_env
+
 
 TUI_COMMANDS = ("/help", "/model", "/tools", "/sessions", "/new", "/stop", "/steer", "/skills", "/approvals", "/resume")
 
@@ -164,6 +166,7 @@ def run() -> None:
         def __init__(self) -> None:
             super().__init__()
             self.api = APIClient()
+            load_project_env()
             self.controller = TUIController(model=os.getenv("AIASK_AGENT_MODEL", ""))
 
         def compose(self) -> ComposeResult:
