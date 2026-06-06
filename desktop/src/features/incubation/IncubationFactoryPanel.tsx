@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
+import type { TradePredictionMatrix, TradePredictionMatrixRow, TradePredictionOutcomes, TradePredictionStatus } from "../../types";
 
 interface IncubationRunnerStatus {
   run_time?: string;
@@ -270,11 +271,173 @@ function FeedbackActions({ report }: { report: IncubationReport | null }) {
   );
 }
 
+function formatOptionalNumber(value: unknown, digits = 3): string {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue.toFixed(digits) : "-";
+}
+
+function countEntries(counts?: Record<string, number>): Array<[string, number]> {
+  return Object.entries(counts || {}).sort(([, left], [, right]) => right - left);
+}
+
+function statusSummary(counts?: Record<string, number>): string {
+  const entries = countEntries(counts);
+  return entries.length ? entries.map(([key, value]) => `${key}:${value}`).join(" | ") : "-";
+}
+
+function predictionStatusTone(status?: string): string {
+  if (!status) return "not_loaded";
+  if (status === "ok" || status === "ready") return "implemented";
+  if (status.includes("missing") || status.includes("partial") || status === "insufficient_samples") return "partial";
+  if (status.includes("rejected") || status.includes("invalid")) return "failed";
+  return status;
+}
+
+function matrixRowTone(row: TradePredictionMatrixRow): string {
+  const quality = row.data_quality_status_counts || {};
+  const scoreStatuses = row.score_status_counts || {};
+  if (quality.invalid_ohlc || scoreStatuses.post_hoc_rejected) return "failed";
+  if (quality.intraday_missing || quality.partial_gap || scoreStatuses.insufficient_samples || scoreStatuses.partial_intraday_missing) return "partial";
+  return "implemented";
+}
+
+function TradePredictionObservability({
+  status,
+  outcomes,
+  matrix
+}: {
+  status: TradePredictionStatus | null;
+  outcomes: TradePredictionOutcomes | null;
+  matrix: TradePredictionMatrix | null;
+}) {
+  const rows = matrix?.rows || [];
+  const latestOutcomes = outcomes?.items || [];
+  const insufficientCount = status?.score_status_counts?.insufficient_samples || 0;
+  const dataGapCount =
+    (status?.data_quality_status_counts?.intraday_missing || 0) +
+    (status?.data_quality_status_counts?.partial_gap || 0) +
+    (status?.data_quality_status_counts?.daily_bar_missing || 0) +
+    (status?.data_quality_status_counts?.invalid_ohlc || 0);
+
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>Trade Prediction Observability</span>
+          <h3>预测评分、样本和贡献矩阵</h3>
+        </div>
+        <StatusBadge status={status?.status || "not_loaded"} label={status?.status || "not_loaded"} />
+      </div>
+
+      <div className="diagnostics-summary wide">
+        <MetricCard label="Predictions" value={status?.prediction_count ?? "-"} status={status?.status || "not_loaded"} />
+        <MetricCard label="Pending" value={status?.pending_count ?? "-"} status={(status?.pending_count || 0) > 0 ? "partial" : "implemented"} />
+        <MetricCard label="Evaluated" value={status?.evaluated_count ?? "-"} status={(status?.evaluated_count || 0) > 0 ? "implemented" : "not_loaded"} />
+        <MetricCard label="Partial" value={status?.partial_count ?? "-"} status={(status?.partial_count || 0) > 0 ? "partial" : "implemented"} />
+        <MetricCard label="Sample n" value={status?.sample_n ?? "-"} status={(status?.sample_n || 0) > 0 ? "implemented" : "partial"} />
+        <MetricCard label="Avg score" value={formatOptionalNumber(status?.score_summary?.avg)} status="partial" />
+      </div>
+
+      {(insufficientCount > 0 || dataGapCount > 0) && (
+        <div className="notice warn">
+          <AlertTriangle size={15} />
+          样本不足 {insufficientCount}，数据缺口 {dataGapCount}。这些状态只用于诊断展示，不触发实盘交易动作。
+        </div>
+      )}
+
+      <div className="capability-grid two">
+        <article className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>Score Versions</span>
+              <h3>版本、状态与数据质量</h3>
+            </div>
+            <Activity size={18} />
+          </div>
+          <div className="kv-grid">
+            <span>score_version</span>
+            <strong>{statusSummary(status?.score_version_counts)}</strong>
+            <span>score_status</span>
+            <strong>{statusSummary(status?.score_status_counts)}</strong>
+            <span>data_quality</span>
+            <strong>{statusSummary(status?.data_quality_status_counts)}</strong>
+            <span>score_buckets</span>
+            <strong>{statusSummary(status?.score_distribution)}</strong>
+          </div>
+        </article>
+
+        <article className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>{latestOutcomes.length} outcomes</span>
+              <h3>最近预测结果</h3>
+            </div>
+            <Clock size={18} />
+          </div>
+          <div className="mini-list">
+            {latestOutcomes.slice(0, 6).map((outcome, index) => {
+              const outcomeJson = outcome.outcome_json || {};
+              return (
+                <article className="capability-row" key={outcome.outcome_id || outcome.prediction_id || index}>
+                  <div>
+                    <span>
+                      {outcome.stock_code || "-"} | {outcome.actual_trading_date || "-"}
+                    </span>
+                    <strong>{outcome.strategy_id || outcome.prediction_id || "prediction"}</strong>
+                  </div>
+                  <StatusBadge status={predictionStatusTone(outcome.score_status)} label={outcome.score_status || "unknown"} />
+                  <small>
+                    {outcome.score_version || "-"} | score {formatOptionalNumber(outcome.trade_prediction_score)} | quality{" "}
+                    {outcome.data_quality_status || "-"} | direction {compact(outcomeJson.direction_hit)} | target{" "}
+                    {compact(outcomeJson.target_touch)}
+                  </small>
+                </article>
+              );
+            })}
+            {!latestOutcomes.length && <p className="muted">暂无预测 outcome。</p>}
+          </div>
+        </article>
+      </div>
+
+      <section className="capability-section compact-section">
+        <div className="section-header">
+          <div>
+            <span>{matrix?.row_count ?? rows.length} rows</span>
+            <h3>family / regime / event / factor 矩阵</h3>
+          </div>
+          <StatusBadge status={rows.length ? "implemented" : "not_loaded"} label={matrix?.score_version || "all score versions"} />
+        </div>
+        <div className="mini-list">
+          {rows.slice(0, 12).map((row) => (
+            <article className={`capability-row ${matrixRowTone(row) === "implemented" ? "ok" : matrixRowTone(row) === "failed" ? "bad" : "warn"}`} key={`${row.dimension}:${row.value}`}>
+              <div>
+                <span>
+                  {row.dimension} | n={row.sample_n ?? 0}
+                </span>
+                <strong>{row.value || "unknown"}</strong>
+              </div>
+              <StatusBadge status={matrixRowTone(row)} label={`LCB ${formatOptionalNumber(row.score_lcb_95)}`} />
+              <small>
+                score {formatOptionalNumber(row.score_avg)} | direction {percent(row.direction_hit_rate)} | target{" "}
+                {percent(row.target_touch_rate)} | status {statusSummary(row.score_status_counts)}
+              </small>
+            </article>
+          ))}
+          {!rows.length && <p className="muted">暂无预测贡献矩阵。</p>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }: { endpoint: string; apiToken: string; controlToken?: string }) {
   const client = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
   const [status, setStatus] = useState<IncubationRunnerStatus | null>(null);
   const [report, setReport] = useState<IncubationReport | null>(null);
   const [events, setEvents] = useState<StageEvent[]>([]);
+  const [predictionStatus, setPredictionStatus] = useState<TradePredictionStatus | null>(null);
+  const [predictionOutcomes, setPredictionOutcomes] = useState<TradePredictionOutcomes | null>(null);
+  const [predictionMatrix, setPredictionMatrix] = useState<TradePredictionMatrix | null>(null);
   const [intentEnvelope, setIntentEnvelope] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("NOT_LOADED");
@@ -282,12 +445,18 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [statusEnvelope, eventEnvelope] = await Promise.all([
+      const [statusEnvelope, eventEnvelope, predictionStatusEnvelope, predictionOutcomesEnvelope, predictionMatrixEnvelope] = await Promise.all([
         client.incubationFactoryStatus(),
-        client.strategyDomainEvents({ event_type: "incubation_factory.hit_rate_report_generated", limit: 5 })
+        client.strategyDomainEvents({ event_type: "incubation_factory.hit_rate_report_generated", limit: 5 }),
+        client.tradePredictionStatus({ limit: 1000 }),
+        client.tradePredictionOutcomes({ limit: 50 }),
+        client.tradePredictionMatrix({ dimensions: ["family", "regime", "event", "factor"], limit: 1000 })
       ]);
       const runner = recordFromUnknown(statusEnvelope.data);
       setStatus(runner);
+      setPredictionStatus(predictionStatusEnvelope.data);
+      setPredictionOutcomes(predictionOutcomesEnvelope.data);
+      setPredictionMatrix(predictionMatrixEnvelope.data);
 
       const reportFromStatus = recordFromUnknown(runner.report);
       const reportEvents = eventListFromData(eventEnvelope.data);
@@ -426,9 +595,11 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
 
       <StageTimeline events={events} />
 
+      <TradePredictionObservability status={predictionStatus} outcomes={predictionOutcomes} matrix={predictionMatrix} />
+
       <details className="raw-details">
         <summary>原始孵化数据</summary>
-        <JsonPanel value={{ status, report, events }} />
+        <JsonPanel value={{ status, report, events, predictionStatus, predictionOutcomes, predictionMatrix }} />
       </details>
     </div>
   );

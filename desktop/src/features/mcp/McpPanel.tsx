@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { CapabilityWorkbenchPayload } from "../../types";
 import { JsonPanel, StatusBadge, compact, localizeBlockedReason, shortText } from "../../components/shared";
+import { McpOAuthStatus } from "../../components/McpOAuthStatus";
+import "../../components/AgentEnhancements.css";
 
 function statusFor(value?: string): string {
   if (!value) return "not_loaded";
@@ -131,6 +133,48 @@ export function McpPanel({
       setBusy(false);
     }
   }
+
+  async function handleReauthorize(server: string) {
+    setBusy(true);
+    try {
+      setResult(await api.mcpOauthStart(server));
+      await onRefresh?.();
+    } catch (error) {
+      setResult({ success: false, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 构造 OAuth 服务器状态数据
+  const oauthServers = useMemo(() => {
+    if (!mcp?.oauth || !Array.isArray(mcp.oauth)) return [];
+
+    return mcp.oauth.map((item: any) => {
+      const server = String(item.server || item.name || "");
+      const authenticated = item.authenticated === true || item.status === "authenticated";
+      const expired = item.expired === true || item.status === "expired";
+
+      let status: "authenticated" | "expired" | "missing" | "error";
+      if (item.error) {
+        status = "error";
+      } else if (authenticated) {
+        status = "authenticated";
+      } else if (expired) {
+        status = "expired";
+      } else {
+        status = "missing";
+      }
+
+      return {
+        server,
+        status,
+        expires_at: item.expires_at,
+        last_auth_at: item.last_auth_at || item.authenticated_at,
+        error_message: item.error
+      };
+    });
+  }, [mcp?.oauth]);
 
   if (!mcp) return <p className="muted">请刷新能力中心以加载 MCP 状态。</p>;
   const registrationStatus = mcp.registration_status || (mcp.servers.length ? "registered" : "not_registered");
@@ -319,6 +363,14 @@ export function McpPanel({
           <p className="muted">OAuth 条目 {mcp.oauth.length} 个</p>
         </div>
       </section>
+
+      {/* OAuth 状态详情面板 */}
+      {oauthServers.length > 0 && (
+        <McpOAuthStatus
+          oauthServers={oauthServers}
+          onReauthorize={handleReauthorize}
+        />
+      )}
 
       {result !== null && <ActionResult result={result} />}
       <details className="raw-details" onToggle={(event) => setRawOpen(event.currentTarget.open)}>

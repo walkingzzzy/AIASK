@@ -5,14 +5,14 @@ import { compact, JsonPanel, StatusBadge } from "./shared";
 function eventName(value: unknown, fallback = "event"): string {
   if (!value || typeof value !== "object") return fallback;
   const record = value as Record<string, unknown>;
-  return String(record.event || record.type || fallback);
+  return String(record.title || record.event || record.type || fallback);
 }
 
 function eventStatus(value: unknown): string {
   if (!value || typeof value !== "object") return "ready";
   const record = value as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : {};
-  return compact(record.status || data.status || "ready");
+  return compact(record.status || record.severity || data.status || "ready");
 }
 
 function eventTimestamp(value: unknown): string {
@@ -30,8 +30,21 @@ function eventBody(value: unknown): string | undefined {
 }
 
 function isApprovalEvent(value: unknown): boolean {
+  if (value && typeof value === "object" && typeof (value as Record<string, unknown>).kind === "string") {
+    return String((value as Record<string, unknown>).kind) === "approval";
+  }
   const name = eventName(value, "").toLowerCase();
   return name.includes("approval") || name.includes("intent") || name.includes("control");
+}
+
+function eventKind(value: unknown): TimelineEvent["kind"] {
+  if (value && typeof value === "object" && typeof (value as Record<string, unknown>).kind === "string") {
+    const normalized = String((value as Record<string, unknown>).kind);
+    if (["tool", "approval", "gateway", "mcp", "error", "system", "event"].includes(normalized)) {
+      return normalized as TimelineEvent["kind"];
+    }
+  }
+  return isApprovalEvent(value) ? "approval" : "event";
 }
 
 function timelineEventKey(value: unknown): string {
@@ -107,7 +120,7 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
     seenLoose.add(looseTimelineEventKey(audit));
     events.push({
       id: `${thread.id}:audit:${index}`,
-      kind: isApprovalEvent(audit) ? "approval" : "event",
+      kind: eventKind(audit),
       title: name,
       subtitle: eventTimestamp(audit),
       body: eventBody(audit),
@@ -124,12 +137,14 @@ export function buildTimeline(thread: TaskThread | null, runEvents: unknown[]): 
     seenLoose.add(looseKey);
     events.push({
       id: `${thread.id}:run:${index}`,
-      kind: isApprovalEvent(event) ? "approval" : "event",
+      kind: eventKind(event),
       title: eventName(event, "运行事件"),
       subtitle: eventTimestamp(event),
       body: eventBody(event),
       payload: event,
-      status: eventStatus(event)
+      status: eventStatus(event),
+      severity: event && typeof event === "object" ? String((event as Record<string, unknown>).severity || "") : undefined,
+      jumpTarget: event && typeof event === "object" ? ((event as Record<string, unknown>).jump_target as string | undefined) : undefined
     });
   });
 

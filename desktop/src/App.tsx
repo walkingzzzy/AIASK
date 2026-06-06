@@ -1,17 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
-import { formatApiError, normalizeEndpoint } from "./api";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { formatApiError } from "./api";
 import { AppContextPanel } from "./components/AppContextPanel";
 import { AppSidebar } from "./components/AppSidebar";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { ToolCatalog } from "./components/InspectorPanels";
 import { WorkbenchView } from "./components/WorkbenchView";
+import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
 import { AgentWorkspace } from "./features/agent/AgentWorkspace";
+import { GatewayPage } from "./features/agent-pages/GatewayPage";
+import { LegacyViewShell } from "./features/agent-pages/LegacyViewShell";
+import { McpConnectorsPage } from "./features/agent-pages/McpConnectorsPage";
+import { ReadinessHealthPage } from "./features/agent-pages/ReadinessHealthPage";
+import { RunsEventsPage } from "./features/agent-pages/RunsEventsPage";
+import { SessionsPage } from "./features/agent-pages/SessionsPage";
+import { PluginsSkillsPage } from "./features/agent-pages/PluginsSkillsPage";
+import { ToolsIntentsApprovalsPage } from "./features/agent-pages/ToolsIntentsApprovalsPage";
+import { ExtensionsPilotPage, SlotRenderer } from "./extensions/extensionRegistry";
 import { AutomationWorkspace } from "./features/automation/AutomationWorkspace";
 import { CapabilitiesWorkspace } from "./features/capabilities/CapabilitiesWorkspace";
 import { CoverageWorkspace } from "./features/coverage/CoverageWorkspace";
 import { DataSyncWorkspace } from "./features/data/DataSyncWorkspace";
-import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
 import { FactoryEventTriggerPanel } from "./features/factory-events/FactoryEventTriggerPanel";
 import { FactorFactoryPanel } from "./features/factor/FactorFactoryPanel";
 import { FinancialManagerWorkspace } from "./features/financial-manager/FinancialManagerWorkspace";
@@ -23,82 +33,106 @@ import { SettingsWorkspace } from "./features/settings/SettingsWorkspace";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
 import { LocalUserWorkspace } from "./features/user/LocalUserWorkspace";
 import { WorkflowsWorkspace } from "./features/workflows/WorkflowsWorkspace";
+import { useAppConnectionSettings } from "./hooks/useAppConnectionSettings";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
-import { isMockEndpoint, MOCK_CONTROL_TOKEN } from "./mockApi";
-import { AiaskApi } from "./services/aiaskApi";
-import type { HealthDetailed, InspectorTab, LocalProfile, MainView, SkillView, ToolCatalogItem } from "./types";
-import { VIEW_GROUPS } from "./views";
+import type { InspectorTab, MainView, SkillView } from "./types";
+import { getViewItem, VIEW_GROUPS } from "./views";
 
-const ENDPOINT_KEY = "aiask.endpoint";
-const DEFAULT_ENDPOINT = "http://127.0.0.1:8767";
-const VERIFIED_ENDPOINT_KEY = "aiask.endpoint.verified";
-const AUTO_CONNECT_KEY = "aiask.endpoint.autoconnect";
+function legacyMeta(view: MainView): {
+  title: string;
+  description: string;
+  replacementView?: MainView;
+  replacementLabel?: string;
+} {
+  const item = getViewItem(view);
+  const replacement = item?.replacementView ? getViewItem(item.replacementView) : undefined;
+  const replacementLabel = replacement ? `前往 ${replacement.label}` : undefined;
 
-function isMockMode(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).get("mock") === "1";
-  } catch {
-    return false;
-  }
-}
-
-function storageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function storageSet(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Desktop can run under test or restricted webview origins where localStorage is unavailable.
-  }
-}
-
-function storageRemove(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    // Desktop can run under test or restricted webview origins where localStorage is unavailable.
+  switch (view) {
+    case "tools":
+      return {
+        title: "Legacy: Tools",
+        description: "新主路径已经迁移到 Tools / Intents / Approvals，这个页面仍保留到阶段 2 结束。",
+        replacementView: "tools-intents-approvals",
+        replacementLabel,
+      };
+    case "mcp":
+      return {
+        title: "Legacy: MCP",
+        description: "新主路径已经迁移到 MCP / Connectors，这个页面继续保留为高级入口。",
+        replacementView: "mcp-connectors",
+        replacementLabel,
+      };
+    case "diagnostics":
+      return {
+        title: "Legacy: Diagnostics",
+        description: "Readiness / Health 负责新的运维主路径，这里继续保留为 legacy 诊断快照。",
+        replacementView: "readiness-health",
+        replacementLabel,
+      };
+    case "event-console":
+      return {
+        title: "Legacy: Event Console",
+        description: "Runs / Events 已经承担新的运行与事件主路径，这里继续保留旧控制台入口。",
+        replacementView: "runs-events",
+        replacementLabel,
+      };
+    case "agent":
+      return {
+        title: "Legacy: Agent",
+        description: "Workbench 已成为新的 Agent 首页，这里保留旧版运行时总览。",
+        replacementView: "workbench",
+        replacementLabel,
+      };
+    case "user":
+      return {
+        title: "Legacy: User",
+        description: "Settings / Mode 已经承担新的配置与用户主路径，这里保留旧版本地用户页。",
+        replacementView: "settings",
+        replacementLabel,
+      };
+    default:
+      return {
+        title: `Legacy: ${item?.label || view}`,
+        description: "这个页面仍然保留在 Legacy / Advanced 组中，供迁移期继续使用。",
+        replacementView: item?.replacementView,
+        replacementLabel,
+      };
   }
 }
 
 export function App() {
-  const mockMode = isMockMode();
-  const verifiedEndpoint = storageGet(VERIFIED_ENDPOINT_KEY) === "1";
-  const [endpoint, setEndpoint] = useState(() =>
-    mockMode
-      ? "mock://aiask"
-      : verifiedEndpoint
-        ? storageGet(ENDPOINT_KEY) || DEFAULT_ENDPOINT
-        : DEFAULT_ENDPOINT
-  );
-  const [apiToken, setApiToken] = useState("");
-  const [controlToken, setControlToken] = useState(() => (mockMode ? MOCK_CONTROL_TOKEN : ""));
-  const [agentMode, setAgentMode] = useState<"finance_safe" | "hermes_full">("finance_safe");
+  const {
+    agentMode,
+    agentReachable,
+    apiToken,
+    autoConnectEnabled,
+    connectionBusy,
+    controlToken,
+    defaultEndpoint,
+    endpoint,
+    health,
+    mockMode,
+    normalizedEndpoint,
+    profileName,
+    refreshHealth: refreshConnectionHealth,
+    resetEndpointToDefault,
+    setAgentMode,
+    setApiToken,
+    setControlToken,
+    setEndpoint,
+    setStatus,
+    status,
+    tools,
+    updateLocalProfile,
+    userId,
+  } = useAppConnectionSettings();
   const [mainView, setMainView] = useState<MainView>("workbench");
-  const [userId, setUserId] = useState(() => storageGet("aiask.local.user_id") || "local");
-  const [profileName, setProfileName] = useState(() => storageGet("aiask.local.profile_name") || "本地操作者");
+  const [sessionDetailId, setSessionDetailId] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("details");
-  const [health, setHealth] = useState<HealthDetailed | null>(null);
-  const [tools, setTools] = useState<ToolCatalogItem[]>([]);
-  const [status, setStatus] = useState(() =>
-    verifiedEndpoint ? "AIASK_OFFLINE" : "AIASK_DISCONNECTED"
-  );
-  const [connectionBusy, setConnectionBusy] = useState(false);
 
-  const normalizedEndpoint = normalizeEndpoint(endpoint);
-  // /v1/hermes/sessions is control-gated (require_full). Only attempt to load
-  // session history when we have a control token (or in mock mode); otherwise
-  // the request 401s on initial load and floods the console with noise.
-  const agentReachable =
-    mockMode || !!health || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1");
-  const canLoadAgentHistory = agentReachable && (mockMode || !!controlToken.trim());
-  const api = useMemo(() => new AiaskApi({ endpoint: normalizedEndpoint, apiToken, controlToken }), [apiToken, controlToken, normalizedEndpoint]);
+  const canLoadAgentHistory = agentReachable;
   const hermes = useHermesConsole(normalizedEndpoint, apiToken, controlToken);
   const workbench = useAgentWorkbench({
     endpoint: normalizedEndpoint,
@@ -112,53 +146,26 @@ export function App() {
     onRunEventsLoaded: (events) => {
       hermes.setFullConsole((current) => ({ ...current, runEvents: events }));
       hermes.setMessage("RUN_EVENTS_LOADED");
-    }
+    },
   });
 
   const busy = connectionBusy || hermes.busy || workbench.busy;
   const parity = hermes.fullConsole.parity || hermes.hermesStatus?.parity || health?.hermes?.parity;
   const inspectorVisible = mainView === "workbench";
   const settingsMode = mainView === "settings";
+  const sessionsAccess = workbench.summary?.access;
+  const fullModeActive = Boolean(sessionsAccess?.full_mode_active || health?.hermes?.full_mode_active);
+  const sessionsAdminAvailable = Boolean(sessionsAccess?.sessions_admin_available);
 
   async function refreshHealth() {
-    setConnectionBusy(true);
     try {
-      const [nextHealth, nextTools] = await Promise.all([api.health(), api.tools()]);
-      setHealth(nextHealth);
-      setTools(nextTools.data || []);
-      setStatus("AIASK_ONLINE");
-      if (!isMockEndpoint(normalizedEndpoint)) {
-        storageSet(ENDPOINT_KEY, normalizedEndpoint);
-        storageSet(VERIFIED_ENDPOINT_KEY, "1");
-        storageSet(AUTO_CONNECT_KEY, "1");
-      }
-      try {
-        const nativeHermes = await api.hermesStatus();
-        hermes.setHermesStatus(nativeHermes);
-        if (nativeHermes.parity) {
-          hermes.setFullConsole((current) => ({ ...current, parity: nativeHermes.parity }));
-        }
-      } catch {
-        hermes.setHermesStatus(null);
+      const result = await refreshConnectionHealth();
+      hermes.setHermesStatus(result.hermesStatus);
+      if (result.hermesStatus?.parity) {
+        hermes.setFullConsole((current) => ({ ...current, parity: result.hermesStatus?.parity }));
       }
     } catch (error) {
       setStatus(formatApiError(error));
-      setHealth(null);
-      setTools([]);
-    } finally {
-      setConnectionBusy(false);
-    }
-  }
-
-  function resetEndpointToDefault() {
-    setEndpoint(mockMode ? "mock://aiask" : DEFAULT_ENDPOINT);
-    setHealth(null);
-    setTools([]);
-    setStatus("AIASK_DISCONNECTED");
-    if (!mockMode) {
-      storageRemove(ENDPOINT_KEY);
-      storageRemove(VERIFIED_ENDPOINT_KEY);
-      storageRemove(AUTO_CONNECT_KEY);
     }
   }
 
@@ -178,24 +185,12 @@ export function App() {
       setInspectorTab("details");
       return;
     }
-    if (view === "diagnostics" && !hermes.fullConsole.parity) {
-      void refreshHermes({ keepInspector: true });
-    }
-    if (view === "skills" && !hermes.fullConsole.skills && controlToken.trim()) {
-      void refreshHermes({ keepInspector: true });
-    }
-    if (view === "tools" && !hermes.hermesTools.length && controlToken.trim()) {
-      void refreshHermes({ keepInspector: true });
-    }
-  }
 
-  function updateLocalProfile(profile: LocalProfile) {
-    const nextUserId = profile.user_id || "local";
-    const nextProfileName = profile.profile_name || "本地操作者";
-    setUserId(nextUserId);
-    setProfileName(nextProfileName);
-    storageSet("aiask.local.user_id", nextUserId);
-    storageSet("aiask.local.profile_name", nextProfileName);
+    if (["diagnostics", "readiness-health", "gateway", "tools", "tools-intents-approvals", "skills", "plugins-skills", "extensions-pilot"].includes(view)) {
+      if (controlToken.trim()) {
+        void refreshHermes({ keepInspector: true });
+      }
+    }
   }
 
   function startNewTask() {
@@ -208,6 +203,19 @@ export function App() {
     workbench.selectThread(id);
   }
 
+  function openSessionDetail(sessionId: string) {
+    setSessionDetailId(sessionId);
+    setMainView("sessions");
+  }
+
+  function resumeSession(sessionId: string) {
+    if (!sessionId.trim()) return;
+    workbench.setSessionId(sessionId);
+    setSessionDetailId(sessionId);
+    setMainView("workbench");
+    setInspectorTab("details");
+  }
+
   function applySkillToChat(skill: SkillView | null) {
     if (!skill) return;
     const nextPrompt = `请使用 ${skill.name} 技能协助我完成：${skill.description || "分析当前任务并给出可执行建议。"}`;
@@ -217,17 +225,308 @@ export function App() {
   }
 
   useEffect(() => {
-    if (mockMode || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1")) {
-      refreshHealth();
+    if (mockMode || autoConnectEnabled) {
+      void refreshHealth();
     }
-    // Initial auto-connect is limited to an endpoint that was both verified and explicitly tested.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mockMode]);
+  }, [autoConnectEnabled, mockMode]);
+
+  function renderLegacyShell(view: MainView, child: ReactNode) {
+    const meta = legacyMeta(view);
+    return (
+      <LegacyViewShell
+        title={meta.title}
+        description={meta.description}
+        replacementLabel={meta.replacementLabel}
+        replacementView={meta.replacementView}
+        onOpenReplacement={selectView}
+      >
+        {child}
+      </LegacyViewShell>
+    );
+  }
+
+  const viewRenderers: Partial<Record<MainView, () => ReactNode>> = {
+    overview: () =>
+      renderLegacyShell(
+        "overview",
+        <OverviewWorkspace
+          apiToken={apiToken}
+          autoRefresh={mockMode || !!health || autoConnectEnabled}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          health={health}
+        />
+      ),
+    agent: () =>
+      renderLegacyShell(
+        "agent",
+        <AgentWorkspace
+          apiToken={apiToken}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          health={health}
+          onRefreshHealth={refreshHealth}
+        />
+      ),
+    coverage: () =>
+      renderLegacyShell(
+        "coverage",
+        <CoverageWorkspace
+          apiToken={apiToken}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          health={health}
+          tools={tools}
+        />
+      ),
+    models: () =>
+      renderLegacyShell(
+        "models",
+        <ModelsWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+      ),
+    data: () => <DataSyncWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />,
+    mcp: () =>
+      renderLegacyShell(
+        "mcp",
+        <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="mcp" />
+      ),
+    automation: () => (
+      <AutomationWorkspace
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        userId={userId}
+      />
+    ),
+    workflows: () => <WorkflowsWorkspace onOpenView={selectView} />,
+    "financial-manager": () => (
+      <FinancialManagerWorkspace
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        userId={userId}
+      />
+    ),
+    "strategy-factory": () => <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="factory" />,
+    "factor-factory": () => (
+      <section className="capabilities-workspace">
+        <header className="capabilities-header">
+          <div>
+            <span>因子工厂</span>
+            <h1>因子挖掘与活跃池</h1>
+          </div>
+        </header>
+        <div className="capabilities-body">
+          <div className="capability-stack">
+            <FactorFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+          </div>
+        </div>
+      </section>
+    ),
+    incubation: () => (
+      <section className="capabilities-workspace">
+        <header className="capabilities-header">
+          <div>
+            <span>孵化工厂</span>
+            <h1>生命周期与命中率控制</h1>
+          </div>
+        </header>
+        <div className="capabilities-body">
+          <div className="capability-stack">
+            <IncubationFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+          </div>
+        </div>
+      </section>
+    ),
+    capabilities: () =>
+      renderLegacyShell(
+        "capabilities",
+        <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
+      ),
+    quant: () => <QuantResearchWorkspace apiToken={apiToken} endpoint={normalizedEndpoint} userId={userId} />,
+    "event-console": () =>
+      renderLegacyShell(
+        "event-console",
+        <EventConsolePanel apiToken={apiToken} endpoint={normalizedEndpoint} />
+      ),
+    "factory-events": () => (
+      <FactoryEventTriggerPanel
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+      />
+    ),
+    diagnostics: () =>
+      renderLegacyShell(
+        "diagnostics",
+        <DiagnosticsPanel
+          busy={busy}
+          controlToken={controlToken}
+          fullConsole={hermes.fullConsole}
+          health={health}
+          hermesStatus={hermes.hermesStatus}
+          message={hermes.message}
+          onRefresh={refreshHermes}
+          parity={parity}
+        />
+      ),
+    tools: () =>
+      renderLegacyShell(
+        "tools",
+        <ToolCatalog
+          apiToken={apiToken}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          hermesTools={hermes.hermesTools}
+          tools={tools}
+        />
+      ),
+    skills: () =>
+      renderLegacyShell(
+        "skills",
+        <SkillsPanel
+          apiToken={apiToken}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          onRefresh={() => refreshHermes({ keepInspector: true })}
+          onApplyToChat={applySkillToChat}
+          skillsPayload={
+            (hermes.fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
+            (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
+          }
+        />
+      ),
+    "plugins-skills": () => (
+      <PluginsSkillsPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        onApplyToChat={applySkillToChat}
+      />
+    ),
+    settings: () => (
+      <SettingsWorkspace
+        agentMode={agentMode}
+        apiToken={apiToken}
+        busy={busy}
+        controlToken={controlToken}
+        connectionStatus={status}
+        defaultEndpoint={defaultEndpoint}
+        endpoint={endpoint}
+        health={health}
+        onAgentModeChange={setAgentMode}
+        onApiTokenChange={setApiToken}
+        onBackToApp={() => setMainView("workbench")}
+        onControlTokenChange={setControlToken}
+        onEndpointChange={setEndpoint}
+        onOpenView={selectView}
+        onProfileChange={updateLocalProfile}
+        onRefresh={refreshHealth}
+        onResetEndpoint={resetEndpointToDefault}
+        profileName={profileName}
+        userId={userId}
+      />
+    ),
+    user: () =>
+      renderLegacyShell(
+        "user",
+        <LocalUserWorkspace
+          apiToken={apiToken}
+          controlToken={controlToken}
+          endpoint={normalizedEndpoint}
+          profileName={profileName}
+          userId={userId}
+          onProfileChange={updateLocalProfile}
+        />
+      ),
+    sessions: () => (
+      <SessionsPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        fullModeActive={fullModeActive}
+        onResumeSession={resumeSession}
+        sessionsAdminAvailable={sessionsAdminAvailable}
+        selectedSessionId={sessionDetailId}
+        userId={userId}
+      />
+    ),
+    "runs-events": () => (
+      <RunsEventsPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        onOpenView={selectView}
+      />
+    ),
+    "tools-intents-approvals": () => (
+      <ToolsIntentsApprovalsPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        hermesTools={hermes.hermesTools}
+        tools={tools}
+      />
+    ),
+    "mcp-connectors": () => <McpConnectorsPage apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />,
+    gateway: () => <GatewayPage apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} userId={userId} />,
+    "readiness-health": () => (
+      <ReadinessHealthPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        fullConsole={hermes.fullConsole}
+        health={health}
+        hermesStatus={hermes.hermesStatus}
+        onOpenView={selectView}
+        onRefreshHermes={() => {
+          void refreshHermes({ keepInspector: true });
+        }}
+      />
+    ),
+    "extensions-pilot": () => <ExtensionsPilotPage controlToken={controlToken} fullModeActive={fullModeActive} />,
+    workbench: () => (
+      <WorkbenchView
+        agentMode={agentMode}
+        apiToken={apiToken}
+        busy={busy}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        health={health}
+        onAgentModeChange={setAgentMode}
+        onComposerKeyDown={workbench.handleComposerKeyDown}
+        onOpenView={selectView}
+        onOpenSession={openSessionDetail}
+        onPromptChange={workbench.setPrompt}
+        onRefresh={refreshHealth}
+        onSessionIdChange={workbench.setSessionId}
+        onSubmit={workbench.sendResponse}
+        profileName={profileName}
+        prompt={workbench.prompt}
+        recentRuns={workbench.recentRuns}
+        selectedThread={workbench.selectedThread}
+        sessionId={workbench.sessionId}
+        status={status}
+        summary={workbench.summary}
+        timelineEvents={workbench.timelineEvents}
+        tools={tools}
+        userId={userId}
+      />
+    ),
+  };
+
+  function renderMainView() {
+    const item = getViewItem(mainView);
+    if (item?.render) return item.render();
+    return (viewRenderers[item?.id || mainView] || viewRenderers.workbench)?.();
+  }
 
   return (
     <div className={`app-shell ${settingsMode ? "settings-mode" : inspectorVisible ? "task-mode" : "context-mode"}`}>
       {!settingsMode && (
         <AppSidebar
+          controlToken={controlToken}
           health={health}
           hermesStatus={hermes.hermesStatus}
           inspectorTab={inspectorTab}
@@ -243,187 +542,33 @@ export function App() {
       )}
 
       <main className="workbench">
-        {mainView === "overview" && (
-          <OverviewWorkspace
-            apiToken={apiToken}
-            autoRefresh={mockMode || !!health || (storageGet(VERIFIED_ENDPOINT_KEY) === "1" && storageGet(AUTO_CONNECT_KEY) === "1")}
+        <div className="extension-slot-row main-slot">
+          <SlotRenderer
             controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            health={health}
-          />
-        )}
-        {mainView === "agent" && (
-          <AgentWorkspace
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            health={health}
-            onRefreshHealth={refreshHealth}
-          />
-        )}
-        {mainView === "coverage" && (
-          <CoverageWorkspace
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            health={health}
-            tools={tools}
-          />
-        )}
-        {mainView === "models" && <ModelsWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />}
-        {mainView === "data" && <DataSyncWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />}
-        {mainView === "mcp" && (
-          <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="mcp" />
-        )}
-        {mainView === "automation" && (
-          <AutomationWorkspace
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            userId={userId}
-          />
-        )}
-        {mainView === "workflows" && <WorkflowsWorkspace onOpenView={selectView} />}
-        {mainView === "financial-manager" && (
-          <FinancialManagerWorkspace
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            userId={userId}
-          />
-        )}
-        {mainView === "strategy-factory" && (
-          <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="factory" />
-        )}
-        {mainView === "factor-factory" && (
-          <section className="capabilities-workspace">
-            <header className="capabilities-header">
-              <div>
-                <span>因子工厂</span>
-                <h1>因子挖掘与活跃池</h1>
-              </div>
-            </header>
-            <div className="capabilities-body">
-              <FactorFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
-            </div>
-          </section>
-        )}
-        {mainView === "incubation" && (
-          <section className="capabilities-workspace">
-            <header className="capabilities-header">
-              <div>
-                <span>孵化工厂</span>
-                <h1>生命周期与命中率控制</h1>
-              </div>
-            </header>
-            <div className="capabilities-body">
-              <IncubationFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
-            </div>
-          </section>
-        )}
-        {mainView === "capabilities" && (
-          <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
-        )}
-        {mainView === "quant" && <QuantResearchWorkspace apiToken={apiToken} endpoint={normalizedEndpoint} userId={userId} />}
-        {mainView === "event-console" && <EventConsolePanel apiToken={apiToken} endpoint={normalizedEndpoint} />}
-        {mainView === "factory-events" && (
-          <FactoryEventTriggerPanel
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-          />
-        )}
-        {mainView === "diagnostics" && (
-          <DiagnosticsPanel
-            busy={busy}
-            controlToken={controlToken}
-            fullConsole={hermes.fullConsole}
-            health={health}
-            hermesStatus={hermes.hermesStatus}
-            message={hermes.message}
-            onRefresh={refreshHermes}
-            parity={parity}
-          />
-        )}
-        {mainView === "tools" && (
-          <ToolCatalog
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            hermesTools={hermes.hermesTools}
-            tools={tools}
-          />
-        )}
-        {mainView === "skills" && (
-          <SkillsPanel
-            apiToken={apiToken}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            onRefresh={() => refreshHermes({ keepInspector: true })}
-            onApplyToChat={applySkillToChat}
-            skillsPayload={
-              (hermes.fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
-              (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
-            }
-          />
-        )}
-        {mainView === "settings" && (
-          <SettingsWorkspace
-            agentMode={agentMode}
-            apiToken={apiToken}
-            busy={busy}
-            controlToken={controlToken}
-            endpoint={endpoint}
-            connectionStatus={status}
-            defaultEndpoint={mockMode ? "mock://aiask" : DEFAULT_ENDPOINT}
-            health={health}
-            profileName={profileName}
-            userId={userId}
-            onAgentModeChange={setAgentMode}
-            onApiTokenChange={setApiToken}
-            onBackToApp={() => setMainView("workbench")}
-            onControlTokenChange={setControlToken}
-            onEndpointChange={setEndpoint}
+            fullModeActive={fullModeActive}
             onOpenView={selectView}
-            onProfileChange={updateLocalProfile}
-            onRefresh={refreshHealth}
-            onResetEndpoint={resetEndpointToDefault}
+            slot="pre-main"
           />
-        )}
-        {mainView === "user" && (
-          <LocalUserWorkspace
-            apiToken={apiToken}
+        </div>
+        {renderMainView()}
+        <div className="extension-slot-row main-slot">
+          <SlotRenderer
             controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            profileName={profileName}
-            userId={userId}
-            onProfileChange={updateLocalProfile}
+            fullModeActive={fullModeActive}
+            onOpenView={selectView}
+            slot="post-main"
           />
-        )}
-        {mainView === "workbench" && (
-          <WorkbenchView
-            agentMode={agentMode}
-            busy={busy}
-            controlToken={controlToken}
-            endpoint={normalizedEndpoint}
-            health={health}
-            onAgentModeChange={setAgentMode}
-            onComposerKeyDown={workbench.handleComposerKeyDown}
-            onPromptChange={workbench.setPrompt}
-            onRefresh={refreshHealth}
-            onSessionIdChange={workbench.setSessionId}
-            onSubmit={workbench.sendResponse}
-            prompt={workbench.prompt}
-            profileName={profileName}
-            selectedThread={workbench.selectedThread}
-            sessionId={workbench.sessionId}
-            status={status}
-            timelineEvents={workbench.timelineEvents}
-            tools={tools}
-            userId={userId}
-          />
-        )}
+        </div>
       </main>
+
+      <div className="extension-overlay-slot">
+        <SlotRenderer
+          controlToken={controlToken}
+          fullModeActive={fullModeActive}
+          onOpenView={selectView}
+          slot="overlay"
+        />
+      </div>
 
       {inspectorVisible && (
         <InspectorPanel
@@ -467,6 +612,7 @@ export function App() {
           userId={userId}
         />
       )}
+
       {!settingsMode && !inspectorVisible && (
         <AppContextPanel
           controlToken={controlToken}

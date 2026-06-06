@@ -1,4 +1,5 @@
-import { ChevronDown, FolderGit2, Plus, Settings, Terminal } from "lucide-react";
+import { ChevronDown, FolderGit2, Plus, Terminal } from "lucide-react";
+import { SlotRenderer } from "../extensions/extensionRegistry";
 import { IconButton, StatusBadge } from "./shared";
 import type { HealthDetailed, HermesStatus, InspectorTab, MainView, TaskThread } from "../types";
 import type { ViewGroup, ViewRegistryItem } from "../views";
@@ -7,7 +8,7 @@ function SidebarNavGroup({
   group,
   inspectorTab,
   mainView,
-  onSelectView
+  onSelectView,
 }: {
   group: ViewGroup;
   inspectorTab: InspectorTab;
@@ -23,9 +24,16 @@ function SidebarNavGroup({
         const Icon = view.icon;
         const active = mainView === view.id && (view.id !== "workbench" || inspectorTab === "details");
         return (
-          <IconButton active={active} key={view.id} label={view.label} onClick={() => onSelectView(view.id)}>
-            <Icon size={16} />
-          </IconButton>
+          <div className="sidebar-nav-item" key={view.id}>
+            <IconButton active={active} label={view.label} onClick={() => onSelectView(view.id)}>
+              <Icon size={16} />
+            </IconButton>
+            {(view.legacy || view.badge) && (
+              <span className={`sidebar-nav-badge ${view.legacy ? "legacy" : ""}`}>
+                {view.legacy ? "Legacy" : view.badge}
+              </span>
+            )}
+          </div>
         );
       })}
     </section>
@@ -33,6 +41,7 @@ function SidebarNavGroup({
 }
 
 export function AppSidebar({
+  controlToken,
   health,
   hermesStatus,
   inspectorTab,
@@ -43,8 +52,9 @@ export function AppSidebar({
   selectedThreadId,
   status,
   threads,
-  viewGroups
+  viewGroups,
 }: {
+  controlToken: string;
   health: HealthDetailed | null;
   hermesStatus: HermesStatus | null;
   inspectorTab: InspectorTab;
@@ -57,6 +67,8 @@ export function AppSidebar({
   threads: TaskThread[];
   viewGroups: ViewGroup[];
 }) {
+  const fullModeActive = Boolean(health?.hermes?.full_mode_active || hermesStatus?.full_mode_active);
+
   return (
     <aside className="sidebar app-sidebar">
       <div className="brand-row">
@@ -75,6 +87,15 @@ export function AppSidebar({
         新对话
       </button>
 
+      <div className="extension-slot-row sidebar-slot">
+        <SlotRenderer
+          controlToken={controlToken}
+          fullModeActive={fullModeActive}
+          onOpenView={onSelectView}
+          slot="sidebar-top"
+        />
+      </div>
+
       <nav className="side-actions grouped" aria-label="主导航">
         <div className="section-label nav-label root-label">
           <FolderGit2 size={13} />
@@ -90,6 +111,15 @@ export function AppSidebar({
           />
         ))}
       </nav>
+
+      <div className="extension-slot-row sidebar-slot secondary">
+        <SlotRenderer
+          controlToken={controlToken}
+          fullModeActive={fullModeActive}
+          onOpenView={onSelectView}
+          slot="sidebar-secondary"
+        />
+      </div>
 
       <div className="sidebar-section">
         <div className="section-label">
@@ -112,25 +142,16 @@ export function AppSidebar({
           {!threads.length && (
             <div className="sidebar-empty">
               <strong>暂无任务线程</strong>
-              <span>新对话后，会话、工具调用和审批状态会显示在这里。</span>
+              <span>发起一次对话后，会话、工具调用和审批状态会显示在这里。</span>
             </div>
           )}
         </div>
       </div>
 
       <div className="sidebar-footer">
-        <button
-          aria-label="设置"
-          className={`settings-entry ${mainView === "settings" ? "active" : ""}`}
-          onClick={() => onSelectView("settings")}
-          type="button"
-        >
-          <Settings size={16} />
-          <span>设置</span>
-        </button>
         <StatusBadge status={status} label={status} />
         <span>{health?.tools?.count ?? 0} 个工具</span>
-        <span>{hermesStatus?.full_mode_enabled ? "Hermes full 已开启" : "Hermes full 未开启"}</span>
+        <span>{hermesStatus?.full_mode_enabled ? "Hermes full 已启用" : "Hermes full 未启用"}</span>
       </div>
     </aside>
   );

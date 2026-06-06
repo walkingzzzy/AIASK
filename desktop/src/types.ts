@@ -31,6 +31,10 @@ export interface ToolCatalogItem {
   capability: string;
   category?: string;
   status?: string;
+  visibility?: "api_safe" | "full_mode_only" | string;
+  interaction_mode?: "read_only" | "intent" | "approval" | "blocked" | string;
+  confirmation_required?: boolean;
+  blocked_reason?: string | null;
   side_effect:
     | string
     | {
@@ -72,6 +76,90 @@ export interface ToolEnvelope {
       idempotent?: boolean;
     };
   };
+}
+
+export interface TradePredictionStatus {
+  object?: string;
+  status?: string;
+  configured?: boolean;
+  generated_at?: string;
+  prediction_count?: number;
+  outcome_count?: number;
+  sample_n?: number;
+  pending_count?: number;
+  evaluated_count?: number;
+  partial_count?: number;
+  prediction_status_counts?: Record<string, number>;
+  score_status_counts?: Record<string, number>;
+  latest_score_status_counts?: Record<string, number>;
+  score_version_counts?: Record<string, number>;
+  data_quality_status_counts?: Record<string, number>;
+  latest_data_quality_status_counts?: Record<string, number>;
+  score_distribution?: Record<string, number>;
+  score_summary?: {
+    avg?: number | null;
+    min?: number | null;
+    max?: number | null;
+  };
+  error?: string | null;
+  error_code?: string;
+  [key: string]: unknown;
+}
+
+export interface TradePredictionOutcome {
+  outcome_id?: string;
+  prediction_id?: string;
+  strategy_id?: string;
+  stock_code?: string;
+  actual_trading_date?: string;
+  score_version?: string;
+  score_status?: string;
+  data_quality_status?: string;
+  trade_prediction_score?: number | null;
+  outcome_json?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  calculated_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface TradePredictionOutcomes {
+  object?: string;
+  status?: string;
+  configured?: boolean;
+  items?: TradePredictionOutcome[];
+  count?: number;
+  error?: string | null;
+  error_code?: string;
+  [key: string]: unknown;
+}
+
+export interface TradePredictionMatrixRow {
+  dimension?: string;
+  value?: string;
+  sample_n?: number;
+  score_avg?: number | null;
+  score_lcb_95?: number | null;
+  direction_hit_rate?: number | null;
+  target_touch_rate?: number | null;
+  score_status_counts?: Record<string, number>;
+  data_quality_status_counts?: Record<string, number>;
+  [key: string]: unknown;
+}
+
+export interface TradePredictionMatrix {
+  object?: string;
+  status?: string;
+  configured?: boolean;
+  generated_at?: string;
+  score_version?: string | null;
+  dimensions?: string[];
+  rows?: TradePredictionMatrixRow[];
+  row_count?: number;
+  error?: string | null;
+  error_code?: string;
+  [key: string]: unknown;
 }
 
 export interface AgentToolCall {
@@ -118,28 +206,37 @@ export interface RunRecord {
 
 export type InspectorTab = "details" | "diagnostics" | "tools" | "skills" | "intents" | "settings";
 export type MainView =
-  | "overview"
   | "workbench"
+  | "sessions"
+  | "runs-events"
+  | "tools-intents-approvals"
+  | "plugins-skills"
+  | "extensions-pilot"
   | "financial-manager"
-  | "agent"
-  | "coverage"
-  | "models"
-  | "data"
-  | "mcp"
   | "automation"
-  | "workflows"
-  | "strategy-factory"
+  | "data"
   | "factor-factory"
+  | "factory-events"
+  | "gateway"
   | "incubation"
+  | "mcp-connectors"
   | "quant"
+  | "readiness-health"
+  | "settings"
+  | "strategy-factory"
+  | "workflows"
+  | "agent"
   | "capabilities"
+  | "coverage"
   | "diagnostics"
+  | "event-console"
+  | "mcp"
+  | "models"
+  | "overview"
   | "tools"
   | "skills"
   | "user"
-  | "settings"
-  | "event-console"
-  | "factory-events";
+  ;
 export type CapabilityTab = "overview" | "coverage" | "hermes" | "mcp" | "connectors" | "factory" | "incubation" | "skills" | "plugins" | "ai";
 
 export interface TaskThread {
@@ -150,10 +247,77 @@ export interface TaskThread {
   status: string;
   sessionId?: string;
   runId?: string;
+  lastMessageAt?: string;
   response?: AgentResponse;
 }
 
-export type TimelineEventKind = "user" | "assistant" | "tool" | "approval" | "event";
+export type TimelineEventKind = "user" | "assistant" | "tool" | "approval" | "gateway" | "mcp" | "error" | "system" | "event";
+
+export interface RecentSessionSummary {
+  session_id: string;
+  title: string;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_message_at?: string;
+  last_run_id?: string;
+  last_event?: NormalizedRunEvent | Record<string, unknown> | null;
+  last_run_summary?: DesktopRunSummary | null;
+  message_count?: number;
+  has_errors?: boolean;
+  has_pending_approval?: boolean;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DesktopRunSummary {
+  run_id: string;
+  session_id?: string;
+  status: string;
+  response_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  event_count?: number;
+  tool_call_count?: number;
+  approval_count?: number;
+  error_count?: number;
+  last_event?: NormalizedRunEvent | null;
+  has_errors?: boolean;
+  has_pending_approval?: boolean;
+}
+
+export interface DesktopWorkbenchSummary {
+  recent_sessions: RecentSessionSummary[];
+  recent_runs?: DesktopRunSummary[];
+  queues: {
+    pending_intents: number;
+    pending_approvals: number;
+    gateway_failed: number;
+    mcp_degraded: number;
+  };
+  access: {
+    full_mode_active: boolean;
+    control_token_configured?: boolean;
+    sessions_admin_available: boolean;
+  };
+}
+
+export interface NormalizedRunEvent {
+  id?: string;
+  event?: string;
+  event_type?: string;
+  run_id?: string;
+  created_at?: string;
+  status?: string;
+  kind?: string;
+  title?: string;
+  severity?: string;
+  tool_name?: string | null;
+  error_message?: string | null;
+  jump_target?: MainView | string;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
 
 export interface TimelineEvent {
   id: string;
@@ -162,6 +326,8 @@ export interface TimelineEvent {
   subtitle?: string;
   body?: string;
   status?: string;
+  severity?: string;
+  jumpTarget?: MainView | string;
   payload?: unknown;
 }
 
@@ -368,6 +534,16 @@ export interface SkillView {
 export interface PluginSummaryView {
   name?: string;
   enabled?: boolean;
+  ready?: boolean;
+  configured?: boolean;
+  status?: string;
+  failure_reason?: string | null;
+  error?: string | null;
+  error_code?: string | null;
+  test_status?: string;
+  tool_count?: number;
+  command_count?: number;
+  hook_count?: number;
   source?: string;
   version?: string;
   description?: string;
@@ -469,8 +645,15 @@ export interface GatewayMessage {
   target?: string;
   status?: string;
   message?: string;
+  content?: string;
   created_at?: string;
+  updated_at?: string;
+  last_retry_at?: string;
+  retry_count?: number;
   error?: string | null;
+  error_message?: string | null;
+  failure_reason?: string | null;
+  error_code?: string | null;
   [key: string]: unknown;
 }
 
@@ -722,6 +905,7 @@ export interface FinancialManagerAction {
   group: string;
   label: string;
   mode: FinancialManagerMode;
+  execution_mode?: "read_only" | "intent_only" | "confirmed_execute" | "confirmed_execute_dry_run_only" | "blocked" | string;
   status?: string;
   available?: boolean;
   tool?: string;
@@ -742,6 +926,9 @@ export interface FinancialManagerCatalog {
   actions: FinancialManagerAction[];
   summary?: Record<string, number>;
   safety?: Record<string, unknown>;
+  stateful_execution?: string;
+  confirmed_action_scope?: string[];
+  dry_run_only_actions?: string[];
   secrets_redacted?: boolean;
 }
 
@@ -751,6 +938,9 @@ export interface FinancialManagerStatus {
   readiness?: FinancialSystemReadiness | Record<string, unknown>;
   catalog_summary?: Record<string, number>;
   mcp?: Record<string, unknown>;
+  stateful_execution?: string;
+  confirmed_action_scope?: string[];
+  dry_run_only_actions?: string[];
   broker?: Record<string, unknown>;
   recent_intents?: unknown[];
   secrets_redacted?: boolean;

@@ -209,13 +209,13 @@ function capabilityPayload(authorized: boolean, factoryMode: FactoryMode) {
     hermes: {
       status: {
         implementation: "aiask_native",
-        baseline: "Hermes v0.14.0 full runtime capability reference",
+        baseline: "Hermes v0.15.1 full runtime capability reference",
         embedded_vendor_runtime: false,
         full_mode_enabled: true,
         full_mode_active: authorized
       },
       parity: {
-        baseline: "Hermes v0.14.0 full runtime capability reference",
+        baseline: "Hermes v0.15.1 full runtime capability reference",
         scope: "hermes_full_runtime",
         strict_status: "in_progress",
         status: "in_progress",
@@ -705,6 +705,74 @@ function connectorsSummaryPayload() {
   };
 }
 
+function connectorFixtureList() {
+  const summary = connectorsSummaryPayload().data as { connectors: Array<Record<string, unknown>> };
+  return summary.connectors;
+}
+
+function connectorFixture(type: string, name: string) {
+  return connectorFixtureList().find((connector) => {
+    const connectorType = String(connector.type || "");
+    const connectorId = String(connector.id || "");
+    const connectorName = String(connector.name || "");
+    return connectorType === type && (connectorId === name || connectorName === name);
+  });
+}
+
+function workbenchSummaryPayload() {
+  return {
+    recent_sessions: [
+      {
+        session_id: "session_fixture",
+        title: "E2E session",
+        user_id: "local-e2e",
+        created_at: "2026-05-21T07:59:00.000Z",
+        last_message_at: "2026-05-21T08:00:00.000Z",
+        last_run_id: "run_fixture",
+        message_count: 2,
+        status: "completed"
+      }
+    ],
+    recent_runs: [
+      {
+        run_id: "run_fixture",
+        session_id: "session_fixture",
+        status: "completed",
+        created_at: "2026-05-21T08:00:00.000Z",
+        updated_at: "2026-05-21T08:00:03.000Z",
+        event_count: 5,
+        tool_call_count: 0,
+        approval_count: 0,
+        error_count: 0
+      }
+    ],
+    queues: {
+      pending_intents: 1,
+      pending_approvals: 1,
+      gateway_failed: 1,
+      mcp_degraded: 0
+    },
+    access: {
+      full_mode_active: true,
+      control_token_configured: true,
+      sessions_admin_available: true
+    }
+  };
+}
+
+function runEventsPayload() {
+  return {
+    object: "list",
+    data: [
+      { id: "evt_1", kind: "system", event: "run.started", title: "run.started", run_id: "run_fixture", created_at: "2026-05-21T08:00:00.000Z", status: "started" },
+      { id: "evt_2", kind: "system", event: "model.started", title: "model.started", run_id: "run_fixture", created_at: "2026-05-21T08:00:01.000Z" },
+      { id: "evt_3", kind: "system", event: "model.completed", title: "model.completed", run_id: "run_fixture", created_at: "2026-05-21T08:00:02.000Z" },
+      { id: "evt_4", kind: "system", event: "model.delta", title: "model.delta", run_id: "run_fixture", created_at: "2026-05-21T08:00:02.500Z", data: { content: "AIASK_OK" } },
+      { id: "evt_5", kind: "system", event: "run.completed", title: "run.completed", run_id: "run_fixture", created_at: "2026-05-21T08:00:03.000Z", status: "completed" }
+    ]
+  };
+}
+
 async function fulfillJson(route: Route, payload: unknown, status = 200) {
   await route.fulfill({
     status,
@@ -749,7 +817,7 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       return fulfillJson(route, {
         object: "aiask.hermes_status",
         implementation: "aiask_native",
-        baseline: "Hermes v0.14.0 full runtime capability reference",
+        baseline: "Hermes v0.15.1 full runtime capability reference",
         embedded_vendor_runtime: false,
         full_mode_enabled: true,
         parity: capabilityPayload(authorized, factoryMode).hermes.parity
@@ -757,6 +825,12 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     }
     if (path === "/v1/desktop/capabilities") {
       return fulfillJson(route, capabilityPayload(authorized, factoryMode));
+    }
+    if (path === "/v1/desktop/workbench/summary") {
+      return fulfillJson(route, workbenchSummaryPayload());
+    }
+    if (path === "/v1/desktop/runs") {
+      return fulfillJson(route, { object: "list", data: workbenchSummaryPayload().recent_runs });
     }
     if (path === "/v1/desktop/settings/status") {
       return fulfillJson(route, settingsStatusPayload(authorized));
@@ -864,6 +938,33 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path === "/v1/connectors/summary") {
       return fulfillJson(route, connectorsSummaryPayload());
     }
+    if (path === "/v1/connectors") {
+      const type = url.searchParams.get("type");
+      const category = url.searchParams.get("category");
+      const connectors = connectorFixtureList().filter((connector) => {
+        const typeMatches = !type || String(connector.type || "") === type;
+        const categoryMatches = !category || String(connector.category || "") === category;
+        return typeMatches && categoryMatches;
+      });
+      return fulfillJson(route, { object: "list", data: connectors });
+    }
+    const connectorTestMatch = path.match(/^\/v1\/connectors\/([^/]+)\/([^/]+)\/test$/);
+    if (connectorTestMatch) {
+      const connectorType = decodeURIComponent(connectorTestMatch[1]);
+      const connectorName = decodeURIComponent(connectorTestMatch[2]);
+      const connector = connectorFixture(connectorType, connectorName) || { type: connectorType, name: connectorName };
+      return fulfillJson(route, {
+        object: "aiask.connector_test",
+        data: { ...connector, last_test_status: "passed", test_result: { status: "passed", action: "connector.test" } }
+      });
+    }
+    const connectorDetailMatch = path.match(/^\/v1\/connectors\/([^/]+)\/([^/]+)$/);
+    if (connectorDetailMatch) {
+      const connectorType = decodeURIComponent(connectorDetailMatch[1]);
+      const connectorName = decodeURIComponent(connectorDetailMatch[2]);
+      const connector = connectorFixture(connectorType, connectorName) || { type: connectorType, name: connectorName };
+      return fulfillJson(route, { object: "aiask.connector_detail", data: connector });
+    }
     if (path === "/v1/ai/status") {
       return fulfillJson(route, aiStatus());
     }
@@ -926,11 +1027,23 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
         body: [
           "id: 1",
           "event: run.started",
-          "data: {\"run_id\":\"run_fixture\",\"data\":{\"status\":\"started\"}}",
+          "data: {\"id\":\"evt_1\",\"kind\":\"system\",\"title\":\"run.started\",\"run_id\":\"run_fixture\",\"created_at\":\"2026-05-21T08:00:00.000Z\",\"status\":\"started\"}",
           "",
           "id: 2",
+          "event: model.started",
+          "data: {\"id\":\"evt_2\",\"kind\":\"system\",\"title\":\"model.started\",\"run_id\":\"run_fixture\",\"created_at\":\"2026-05-21T08:00:01.000Z\"}",
+          "",
+          "id: 3",
+          "event: model.completed",
+          "data: {\"id\":\"evt_3\",\"kind\":\"system\",\"title\":\"model.completed\",\"run_id\":\"run_fixture\",\"created_at\":\"2026-05-21T08:00:02.000Z\"}",
+          "",
+          "id: 4",
+          "event: model.delta",
+          "data: {\"id\":\"evt_4\",\"kind\":\"system\",\"title\":\"model.delta\",\"run_id\":\"run_fixture\",\"created_at\":\"2026-05-21T08:00:02.500Z\",\"data\":{\"content\":\"AIASK_OK\"}}",
+          "",
+          "id: 5",
           "event: run.completed",
-          "data: {\"run_id\":\"run_fixture\",\"data\":{\"status\":\"completed\"}}",
+          "data: {\"id\":\"evt_5\",\"kind\":\"system\",\"title\":\"run.completed\",\"run_id\":\"run_fixture\",\"created_at\":\"2026-05-21T08:00:03.000Z\",\"status\":\"completed\"}",
           "",
           ""
         ].join("\n")
@@ -1032,10 +1145,45 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       return fulfillJson(route, { data: [intentEnvelope("desktop.intent").data.intent] });
     }
     if (path === "/v1/gateway/status") {
-      return fulfillJson(route, { status: "ready" });
+      return fulfillJson(route, { object: "aiask.gateway_status", status: "ready", configured: true, updated_at: "2026-05-21T08:00:00.000Z" });
     }
-    if (path === "/v1/gateway/platforms" || path === "/v1/gateway/messages" || path === "/v1/gateway/directory") {
-      return fulfillJson(route, { data: [] });
+    if (path === "/v1/gateway/daemon/status") {
+      return fulfillJson(route, { object: "aiask.gateway_daemon_status", data: { enabled: true, running: true, listeners: { local: "running" } } });
+    }
+    if (path === "/v1/gateway/platforms") {
+      return fulfillJson(route, { object: "list", data: [{ platform: "local", status: "ready", enabled: true, configured: true }] });
+    }
+    if (path === "/v1/gateway/messages") {
+      return fulfillJson(route, {
+        object: "list",
+        data: [
+          {
+            message_id: "gateway_msg_failed",
+            platform: "local",
+            target: "ops",
+            status: "failed",
+            content: "mock failed gateway message",
+            error_message: "mock delivery failed",
+            retry_count: 1,
+            created_at: "2026-05-21T08:00:00.000Z"
+          }
+        ]
+      });
+    }
+    if (path === "/v1/gateway/directory") {
+      return fulfillJson(route, { object: "list", data: [{ platform: "local", kind: "channel", target: "ops", updated_at: "2026-05-21T08:00:00.000Z" }] });
+    }
+    if (path === "/v1/gateway/directory/refresh") {
+      return fulfillJson(route, { object: "aiask.gateway_directory_refresh", success: true, data: { refreshed: true } });
+    }
+    if (path.match(/^\/v1\/gateway\/messages\/[^/]+\/retry$/)) {
+      return fulfillJson(route, { object: "aiask.gateway_retry", success: true, data: { retried: true } });
+    }
+    if (path.match(/^\/v1\/gateway\/platforms\/[^/]+\/(start|stop)$/)) {
+      return fulfillJson(route, { object: "aiask.gateway_platform_action", success: true, data: { status: "ok" } });
+    }
+    if (path.match(/^\/v1\/gateway\/platforms\/[^/]+\/health$/)) {
+      return fulfillJson(route, { object: "aiask.gateway_platform_health", success: true, data: { status: "ready" } });
     }
     if (path === "/v1/terminal/backends" || path === "/v1/terminal/sessions") {
       return fulfillJson(route, { data: [] });
@@ -1088,27 +1236,27 @@ test.afterEach(async ({ page }) => {
 });
 
 const VIEW_LABELS: Record<string, string> = {
-  Overview: "运行概览",
-  Agent: "对话",
-  Workbench: "对话",
-  "Coverage Matrix": "能力覆盖矩阵",
-  Models: "模型",
-  "Data & Sync": "数据与同步",
-  MCP: "MCP",
-  Skills: "技能",
-  Automation: "自动化",
-  "Strategy Factory": "策略工厂",
-  "Factor Factory": "因子工厂",
-  Incubation: "孵化工厂",
-  "Local User": "本地用户",
-  Tools: "工具",
-  Capabilities: "能力中心",
-  "Event Console": "事件控制台",
-  "Factory Events": "工厂事件",
-  Diagnostics: "诊断",
-  "Agent Status": "智能体状态",
-  Workflows: "工作流",
-  Settings: "设置"
+  Overview: "Overview",
+  Agent: "Workbench",
+  Workbench: "Workbench",
+  "Coverage Matrix": "Coverage",
+  Models: "Models",
+  "Data & Sync": "Data",
+  MCP: "MCP / Connectors",
+  Skills: "Plugins / Skills",
+  Automation: "Automation",
+  "Strategy Factory": "Strategy Factory",
+  "Factor Factory": "Factor Factory",
+  Incubation: "Incubation Factory",
+  "Local User": "User",
+  Tools: "Tools",
+  Capabilities: "Capabilities",
+  "Event Console": "Event Console",
+  "Factory Events": "Factory Events",
+  Diagnostics: "Diagnostics",
+  "Agent Status": "Agent",
+  Workflows: "Workflows",
+  Settings: "Settings / Mode"
 };
 
 const TAB_LABELS: Record<string, string> = {
@@ -1129,7 +1277,7 @@ const CONTROL_LABELS: Record<string, string> = {
   Refresh: "刷新",
   Run: "运行",
   Search: "搜索",
-  "Sync Agent state": "同步智能体状态",
+  "Sync Agent state": "同步 AIASK 状态",
   "Finance safe mode": "金融安全模式",
   "Finance safe": "金融安全",
   "Hermes full mode": "Hermes full 模式",
@@ -1161,17 +1309,25 @@ const CONTROL_LABELS: Record<string, string> = {
   "Run safe probe": "运行安全探测",
   "Fill example": "填充示例",
   Disable: "禁用",
+  "Disable plugin": "禁用插件",
   Enable: "启用",
-  "Test tool": "测试工具",
+  Configure: "配置",
+  "Test tool": "测试",
   "Self-test": "自检",
+  "Save plugin": "保存插件",
   "Run AI Smoke": "运行 AI 冒烟测试",
   "List Models": "列出模型",
   "Test connection": "测试连接",
   "Reset endpoint to default Agent endpoint": "恢复默认 Agent 端点",
   "Refresh connectors": "刷新连接器",
+  "Connector detail": "详情",
+  "Connector test": "测试",
+  Reauthorize: "重新认证",
   "risk-review Risk review": "risk-review Risk review",
   "Load messages": "加载消息",
   "Run the first registered plugin tool": "运行第一个已注册插件工具",
+  "Load plugin commands": "加载插件命令",
+  "Test plugin command": "测试插件命令",
   "Fill example for agent_factory_status": "为 agent_factory_status 填充示例",
   "Fill example for agent_memory_search": "为 agent_memory_search 填充示例",
   "Fill example for agent_quant_data_gate": "为 agent_quant_data_gate 填充示例",
@@ -1209,6 +1365,16 @@ const SETTINGS_STRUCTURE_BUTTONS = [
   "关于"
 ];
 
+const LEGACY_REPLACEMENT_BUTTONS = [
+  "前往 Workbench",
+  "前往 Settings / Mode",
+  "前往 Tools / Intents / Approvals",
+  "前往 MCP / Connectors",
+  "前往 Runs / Events",
+  "前往 Readiness / Health",
+  "前往 Plugins / Skills",
+];
+
 function viewLabel(name: string) {
   return VIEW_LABELS[name] || name;
 }
@@ -1226,30 +1392,32 @@ function placeholderLabel(name: string) {
 }
 
 Object.assign(VIEW_LABELS, {
-  Overview: "运行概览",
-  Agent: "对话",
-  Workbench: "对话",
-  "Coverage Matrix": "能力覆盖矩阵",
-  Models: "模型",
-  "Data & Sync": "数据与同步",
-  Skills: "技能",
-  Automation: "自动化",
-  "Strategy Factory": "策略工厂",
-  "Factor Factory": "因子工厂",
-  Incubation: "孵化工厂",
-  "Local User": "本地用户",
-  Tools: "工具",
-  Capabilities: "能力中心",
-  "Event Console": "事件控制台",
-  "Factory Events": "工厂事件",
-  Diagnostics: "诊断",
-  "Agent Status": "智能体状态",
-  Workflows: "工作流",
-  Settings: "设置"
+  Overview: "Overview",
+  Agent: "Workbench",
+  Workbench: "Workbench",
+  "Coverage Matrix": "Coverage",
+  Models: "Models",
+  "Data & Sync": "Data",
+  MCP: "MCP / Connectors",
+  Skills: "Plugins / Skills",
+  Automation: "Automation",
+  "Strategy Factory": "Strategy Factory",
+  "Factor Factory": "Factor Factory",
+  Incubation: "Incubation Factory",
+  "Local User": "User",
+  Tools: "Tools",
+  Capabilities: "Capabilities",
+  "Event Console": "Event Console",
+  "Factory Events": "Factory Events",
+  Diagnostics: "Diagnostics",
+  "Agent Status": "Agent",
+  Workflows: "Workflows",
+  Settings: "Settings / Mode"
 });
 
 Object.assign(CONTROL_LABELS, {
   Refresh: "刷新",
+  "Sync Agent state": "同步 AIASK 状态",
   "Test connection": "测试连接",
   "Reset endpoint to default Agent endpoint": "恢复默认 Agent 端点",
   "Save profile": "保存 profile"
@@ -1257,13 +1425,14 @@ Object.assign(CONTROL_LABELS, {
 
 async function openOverview(page: Page) {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "你想让 AIASK 做什么？" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "session-first 主路径" })).toBeVisible();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toBeVisible();
 }
 
 async function openSettings(page: Page) {
   if (await page.getByRole("button", { name: "返回对话", exact: true }).count()) return;
-  await page.locator(".sidebar-footer").getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
+  await page.getByRole("navigation").getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
 }
 
 async function setControlToken(page: Page) {
@@ -1278,19 +1447,10 @@ async function setControlToken(page: Page) {
   await page.getByRole("button", { name: "返回对话", exact: true }).click();
 }
 
-const WORKFLOW_ENTRY_VIEWS = new Set(["Data & Sync", "Strategy Factory", "Factor Factory", "Incubation", "Factory Events", "Event Console"]);
-const SETTINGS_MODEL_VIEWS = new Set(["Models"]);
-const SETTINGS_MCP_VIEWS = new Set(["MCP"]);
-const SETTINGS_ADVANCED_VIEWS = new Set([
-  "Overview",
-  "Coverage Matrix",
-  "Tools",
-  "Capabilities",
-  "Diagnostics",
-  "Agent Status",
-  "Local User",
-  "Event Console"
-]);
+const WORKFLOW_ENTRY_VIEWS = new Set<string>();
+const SETTINGS_MODEL_VIEWS = new Set<string>();
+const SETTINGS_MCP_VIEWS = new Set<string>();
+const SETTINGS_ADVANCED_VIEWS = new Set<string>();
 
 async function clickShortcutByLabel(page: Page, label: string) {
   const shortcut = page.locator("button.settings-shortcut, article.workflow-hub-card button, .workflow-hub-card button").filter({ hasText: label });
@@ -1355,6 +1515,8 @@ interface FrontendControl {
   disabled: boolean;
   placeholder: string;
   className: string;
+  outerHTML: string;
+  parentText: string;
   rect: { x: number; y: number; width: number; height: number };
 }
 
@@ -1425,15 +1587,17 @@ async function collectMainInventory(page: Page, pageName: string): Promise<Front
         const rect = element.getBoundingClientRect();
         const input = element as HTMLInputElement;
         return {
-          tag: element.tagName.toLowerCase(),
-          name: textOf(element).slice(0, 140),
-          disabled: Boolean(input.disabled) || element.getAttribute("aria-disabled") === "true",
-          placeholder: input.placeholder || "",
-          className: String((element as HTMLElement).className || ""),
-          rect: {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
+        tag: element.tagName.toLowerCase(),
+        name: textOf(element).slice(0, 140),
+        disabled: Boolean(input.disabled) || element.getAttribute("aria-disabled") === "true",
+        placeholder: input.placeholder || "",
+        className: String((element as HTMLElement).className || ""),
+        outerHTML: (element as HTMLElement).outerHTML.slice(0, 260),
+        parentText: ((element.parentElement as HTMLElement | null)?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 260),
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
             height: Math.round(rect.height)
           }
         };
@@ -1523,8 +1687,20 @@ function assertMainButtonCoverage(
       viewLabel(name)
     ])
   );
-  const visibleButtonNames = uniqueNames(inventory.controls.filter((control) => control.tag === "button" || control.tag === "a"));
-  const missing = visibleButtonNames.filter((name) => !allowed.has(name));
+  const visibleButtonControls = inventory.controls.filter((control) => control.tag === "button" || control.tag === "a");
+  const visibleButtonNames = uniqueNames(visibleButtonControls);
+  const missing = visibleButtonNames
+    .filter((name) => !allowed.has(name))
+    .map((name) => {
+      const control = visibleButtonControls.find((item) => item.name === name);
+      return {
+        name,
+        className: control?.className || "",
+        outerHTML: control?.outerHTML || "",
+        parentText: control?.parentText || "",
+        rect: control?.rect,
+      };
+    });
   expect(missing, `${inventory.page} has visible buttons without matrix classification`).toEqual([]);
 }
 
@@ -1742,7 +1918,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await setControlToken(page);
 
   await openMainView(page, "Agent");
-  await expect(page.getByRole("heading", { name: "你想让 AIASK 做什么？" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Sync Agent state") }).click();
   await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Hermes full") }).click();
@@ -1762,7 +1938,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openMainView(page, "MCP");
   await expect(page.getByRole("heading", { name: "连接器评审队列" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Discover or refresh MCP server") }).click();
-  await expect(page.locator(".capability-stack")).toContainText("finance-demo");
+  await expect(page.locator("body")).toContainText("finance-demo");
   await page.getByPlaceholder(placeholderLabel("resource uri")).fill("aiask://quotes");
   await page.getByRole("button", { name: controlLabel("Read MCP resource") }).click();
   await expect(page.getByText("quote resource ok")).toBeVisible();
@@ -1777,7 +1953,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("heading", { name: "已安装 1 个技能" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("risk-review Risk review") }).click();
   await page.getByRole("button", { name: "应用到对话" }).click();
-  await expect(page.getByRole("heading", { name: "你想让 AIASK 做什么？" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toHaveValue(/risk-review/);
   await openSettings(page);
   await page.getByRole("button", { name: "技能管理", exact: true }).click();
@@ -1857,7 +2033,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("heading", { name: "原生插件与技能包治理" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Disable") }).click();
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
-  await page.getByRole("button", { name: controlLabel("Test tool") }).click();
+  await page.getByRole("button", { name: controlLabel("Test tool"), exact: true }).click();
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_tool_tested");
 
   await openMainView(page, "Event Console");
@@ -1922,7 +2098,22 @@ test("Full frontend matrix inventories every page, classifies every button, and 
 
   const workbenchInventory = await recordInventory(report, page, "Workbench");
   await clickAndRecord(report, page, "Workbench", "Sync Agent state", "AIASK_ONLINE");
-  assertMainButtonCoverage(workbenchInventory, ["Sync Agent state", "Finance safe mode", "Hermes full 模式需要控制令牌", "Run thread task"]);
+  assertMainButtonCoverage(workbenchInventory, [
+    "Sync Agent state",
+    "Finance safe mode",
+    "Finance safe",
+    "Hermes full",
+    "Run thread task",
+    "E2E session 2026-05-21T08:00:00.000Z",
+    "run_fixture completed / 工具 0 / 审批 0",
+    "Readiness",
+    "Tools / Intents / Approvals",
+    "MCP / Connectors",
+    "Gateway",
+    "Gateway gated",
+    "Plugins / Skills gated",
+    "Extensions internal",
+  ]);
 
   await openMainView(page, "Data & Sync");
   await page.getByRole("button", { name: controlLabel("Generate sync plan") }).click();
@@ -1966,7 +2157,23 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session...")).fill("请只回复 AIASK_OK");
   await clickAndRecord(report, page, "Agent", "Run", "AIASK_OK");
   await clickAndRecord(report, page, "Agent inspector", "Load run events for selected task", "run.completed");
-  assertMainButtonCoverage(agentInventory, ["Sync Agent state", "Finance safe mode", "Hermes full mode", "Run thread task"]);
+  assertMainButtonCoverage(agentInventory, [
+    "Sync Agent state",
+    "Finance safe mode",
+    "Finance safe",
+    "Hermes full",
+    "Hermes full mode",
+    "Run thread task",
+    "E2E session 2026-05-21T08:00:00.000Z",
+    "run_fixture completed / 工具 0 / 审批 0",
+    "Readiness",
+    "Tools / Intents / Approvals",
+    "MCP / Connectors",
+    "Gateway",
+    "Gateway ready",
+    "Plugins / Skills ready",
+    "Extensions internal",
+  ]);
 
   await openMainView(page, "Models");
   const modelsInventory = await recordInventory(report, page, "Models");
@@ -1985,7 +2192,14 @@ test("Full frontend matrix inventories every page, classifies every button, and 
 
   await openMainView(page, "MCP");
   const mcpInventory = await recordInventory(report, page, "MCP");
-  await clickAndRecord(report, page, "MCP", "Refresh capability review", "Mock 数据");
+  await clickAndRecord(report, page, "MCP", "Refresh", "CONNECTORS_LOADED");
+  const firstConnector = page.locator(".connector-item").first();
+  await firstConnector.getByRole("button", { name: controlLabel("Connector detail"), exact: true }).click();
+  await expect(page.locator("body")).toContainText("CONNECTOR_DETAIL_LOADED");
+  report.actions.push({ page: "MCP", control: "Connector detail", result: "clicked", note: "CONNECTOR_DETAIL_LOADED" });
+  await firstConnector.getByRole("button", { name: controlLabel("Connector test"), exact: true }).click();
+  await expect(page.locator("body")).toContainText("CONNECTOR_TESTED");
+  report.actions.push({ page: "MCP", control: "Connector test", result: "clicked", note: "CONNECTOR_TESTED" });
   await expectDisabledAndRecord(report, page, "MCP", "Register local MCP server", "already registered in mock");
   await clickAndRecord(report, page, "MCP", "Discover or refresh MCP server", "finance-demo");
   await page.getByPlaceholder(placeholderLabel("resource uri")).fill("aiask://quotes");
@@ -1995,15 +2209,16 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await page.getByPlaceholder(placeholderLabel("OAuth server name")).fill("finance-demo");
   await clickAndRecord(report, page, "MCP", "Start MCP OAuth flow", "oauth_required");
   assertMainButtonCoverage(mcpInventory, [
-    "Refresh capability review",
+    "Refresh",
+    "Connector detail",
+    "Connector test",
     "Register local MCP server",
     "Discover or refresh MCP server",
     "Read MCP resource",
     "Get MCP prompt",
-    "Start MCP OAuth flow"
-  ], {
-    structural: ["Overview", "Coverage Matrix", "Connectors", "Hermes", "MCP", "Strategy Factory", "Incubation", "Skills", "Plugins", "AI Tests"]
-  });
+    "Start MCP OAuth flow",
+    "Reauthorize"
+  ]);
 
   await openMainView(page, "Skills");
   const skillsInventory = await recordInventory(report, page, "Skills");
@@ -2011,7 +2226,20 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await page.getByRole("button", { name: "应用到对话" }).click();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toHaveValue(/risk-review/);
   report.actions.push({ page: "Skills", control: "应用到对话", result: "clicked", note: "recommended prompt copied to composer" });
-  assertMainButtonCoverage(skillsInventory, ["risk-review Risk review", "应用到对话"]);
+  assertMainButtonCoverage(skillsInventory, [
+    "Refresh",
+    "risk-review Risk review",
+    "应用到对话",
+    "Install",
+    "Update",
+    "Delete",
+    "Disable plugin",
+    "Configure",
+    "Test tool",
+    "Run the first registered plugin tool",
+    "Load plugin commands",
+    "Save plugin"
+  ]);
 
   await openSettings(page);
   await page.getByRole("button", { name: "技能管理", exact: true }).click();
@@ -2075,7 +2303,9 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expectDisabledAndRecord(report, page, "Local User", "Search", "query required");
   await page.getByPlaceholder(placeholderLabel("Search local sessions, responses, and memory")).fill("AIASK");
   await clickAndRecord(report, page, "Local User", "Search", "USER_DATA_SEARCHED");
-  assertMainButtonCoverage(userInventory, ["Refresh", "Load messages", "Save local profile", "Search"]);
+  assertMainButtonCoverage(userInventory, ["Refresh", "Load messages", "Save local profile", "Search"], {
+    structural: LEGACY_REPLACEMENT_BUTTONS
+  });
 
   await openMainView(page, "Tools");
   const toolsInventory = await recordInventory(report, page, "Tools");
@@ -2087,7 +2317,9 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Fill example for agent_memory_search",
     "Fill example for agent_quant_data_gate",
     "Run safe probe"
-  ]);
+  ], {
+    structural: LEGACY_REPLACEMENT_BUTTONS
+  });
 
   await openMainView(page, "Capabilities");
   const capabilitiesInventory = await recordInventory(report, page, "Capabilities");
@@ -2118,7 +2350,15 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
   await clickAndRecord(report, page, "Capabilities / Plugins", "Test tool");
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_tool_tested");
-  assertMainButtonCoverage(pluginsInventory, ["Disable", "Run the first registered plugin tool"], {
+  assertMainButtonCoverage(pluginsInventory, [
+    "Disable",
+    "Disable plugin",
+    "Configure",
+    "Test tool",
+    "Run the first registered plugin tool",
+    "Load plugin commands",
+    "Save plugin"
+  ], {
     structural: ["Refresh capability review", "Overview", "Coverage Matrix", "Connectors", "Hermes", "MCP", "Strategy Factory", "Incubation", "Skills", "Plugins", "AI Tests"]
   });
 
@@ -2136,17 +2376,23 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   const eventInventory = await recordInventory(report, page, "Event Console");
   await page.getByPlaceholder(placeholderLabel("payload text")).fill("mock");
   await clickAndRecord(report, page, "Event Console", "Refresh", "EVENTS_LOADED");
-  assertMainButtonCoverage(eventInventory, ["Refresh"]);
+  assertMainButtonCoverage(eventInventory, ["Refresh"], {
+    structural: LEGACY_REPLACEMENT_BUTTONS
+  });
 
   await openMainView(page, "Diagnostics");
   const diagnosticsInventory = await recordInventory(report, page, "Diagnostics");
   await clickAndRecord(report, page, "Diagnostics", "Refresh", "系统健康中心");
-  assertMainButtonCoverage(diagnosticsInventory, ["Refresh"]);
+  assertMainButtonCoverage(diagnosticsInventory, ["Refresh"], {
+    structural: LEGACY_REPLACEMENT_BUTTONS
+  });
 
   await openMainView(page, "Agent Status");
   const agentStatusInventory = await recordInventory(report, page, "Agent Status");
   await clickAndRecord(report, page, "Agent Status", "Refresh", "AGENT_STATUS_LOADED");
-  assertMainButtonCoverage(agentStatusInventory, ["Refresh"]);
+  assertMainButtonCoverage(agentStatusInventory, ["Refresh"], {
+    structural: LEGACY_REPLACEMENT_BUTTONS
+  });
 
   await openMainView(page, "Settings");
   const settingsInventory = await recordInventory(report, page, "Settings");

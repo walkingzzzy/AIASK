@@ -35,6 +35,15 @@ function mockFetch() {
     if (url.includes("/v1/desktop/factor-factory/status")) {
       return jsonResponse({ object: "aiask.desktop.factor_factory_status", status: "ready", active_factors: [] });
     }
+    if (url.includes("/v1/desktop/trade-predictions/status")) {
+      return jsonResponse({ success: true, data: { object: "trade_prediction.status", status: "ready", prediction_count: 1 }, error: null });
+    }
+    if (url.includes("/v1/desktop/trade-predictions/outcomes")) {
+      return jsonResponse({ success: true, data: { object: "trade_prediction.outcomes", items: [], count: 0 }, error: null });
+    }
+    if (url.includes("/v1/desktop/trade-predictions/matrix")) {
+      return jsonResponse({ success: true, data: { object: "trade_prediction.matrix", rows: [], row_count: 0 }, error: null });
+    }
     if (url.includes("/intents")) {
       return jsonResponse({ success: true, data: { intent: { intent_id: "intent_1" } }, error: null });
     }
@@ -89,6 +98,27 @@ describe("AiaskApi desktop contract", () => {
     expect(requestBody(calls[2])).toEqual({ codes: ["600519"], task_type: "kline" });
     expect(calls[4].init.method).toBe("PATCH");
     expect(calls[6].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
+  });
+
+  it("uses readonly desktop trade prediction endpoints", async () => {
+    const { calls } = mockFetch();
+    const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767/", apiToken: "api-token", controlToken: "control-token" });
+
+    await api.tradePredictionStatus({ strategy_id: "strategy_1", stock_code: "600519", limit: 5 });
+    await api.tradePredictionOutcomes({
+      score_version: "trade_prediction_score_v2",
+      score_status: "partial_intraday_missing",
+      data_quality_status: "intraday_missing",
+      limit: 12
+    });
+    await api.tradePredictionMatrix({ dimensions: ["family", "regime"], limit: 20 });
+
+    expect(calls.map((call) => [call.init.method || "GET", call.url])).toEqual([
+      ["GET", "http://127.0.0.1:8767/v1/desktop/trade-predictions/status?strategy_id=strategy_1&stock_code=600519&limit=5"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/trade-predictions/outcomes?score_version=trade_prediction_score_v2&score_status=partial_intraday_missing&data_quality_status=intraday_missing&limit=12"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/trade-predictions/matrix?dimensions=family%2Cregime&limit=20"]
+    ]);
+    expect(calls.every((call) => (call.init.headers as Record<string, string>).Authorization === "Bearer api-token")).toBe(true);
   });
 
   it("uses approval intents for factory and sync operations", async () => {

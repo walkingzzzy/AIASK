@@ -133,7 +133,7 @@ export function SkillsPanel({
                   </>
                 )}
               </div>
-              {!management && (
+              {onApplyToChat && (
                 <div className="skill-use-panel">
                   <strong>推荐 prompt</strong>
                   <p>{recommendedPrompt}</p>

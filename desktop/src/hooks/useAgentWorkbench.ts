@@ -1,10 +1,20 @@
 import type { FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { formatApiError, parseSseEvents, requestJson } from "../api";
+import { formatApiError } from "../api";
 import { buildTimeline } from "../components/Timeline";
 import { shortText } from "../components/shared";
-import { isMockEndpoint } from "../mockApi";
-import type { AgentResponse, AgentToolCall, IntentRecord, InspectorTab, TaskThread, ToolEnvelope } from "../types";
+import { AiaskApi } from "../services/aiaskApi";
+import type {
+  AgentResponse,
+  AgentToolCall,
+  DesktopRunSummary,
+  DesktopWorkbenchSummary,
+  IntentRecord,
+  InspectorTab,
+  NormalizedRunEvent,
+  TaskThread,
+  ToolEnvelope,
+} from "../types";
 
 function collectIntentIds(value: unknown, bucket = new Set<string>()): Set<string> {
   if (!value || typeof value !== "object") return bucket;
@@ -23,15 +33,25 @@ function collectIntentIds(value: unknown, bucket = new Set<string>()): Set<strin
   return bucket;
 }
 
-function authToken(controlToken: string, apiToken: string): string {
-  return controlToken.trim() || apiToken.trim();
-}
-
 function contentText(value: unknown): string {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object") return "";
   const record = value as Record<string, unknown>;
   return String(record.content || record.text || record.output_text || "");
+}
+
+function threadFromSummary(session: DesktopWorkbenchSummary["recent_sessions"][number]): TaskThread {
+  const sessionId = String(session.session_id || "");
+  return {
+    id: sessionId,
+    title: String(session.title || sessionId || "最近会话"),
+    prompt: String(session.title || "点击加载最近会话"),
+    createdAt: String(session.last_message_at || new Date().toISOString()),
+    status: String(session.status || "summary"),
+    sessionId,
+    runId: session.last_run_id || undefined,
+    lastMessageAt: session.last_message_at || undefined,
+  };
 }
 
 export function useAgentWorkbench({
@@ -43,7 +63,7 @@ export function useAgentWorkbench({
   userId,
   onAgentStatus,
   onInspectorTab,
-  onRunEventsLoaded
+  onRunEventsLoaded,
 }: {
   endpoint: string;
   apiToken: string;
@@ -53,8 +73,9 @@ export function useAgentWorkbench({
   userId?: string;
   onAgentStatus: (status: string) => void;
   onInspectorTab: (tab: InspectorTab) => void;
-  onRunEventsLoaded: (events: Record<string, unknown>[]) => void;
+  onRunEventsLoaded: (events: NormalizedRunEvent[]) => void;
 }) {
+  const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [endpoint, apiToken, controlToken]);
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [sessionId, setSessionId] = useState("");
@@ -64,7 +85,9 @@ export function useAgentWorkbench({
   const [intentIdInput, setIntentIdInput] = useState("");
   const [intentEnvelope, setIntentEnvelope] = useState<ToolEnvelope | null>(null);
   const [intentMessage, setIntentMessage] = useState("");
-  const [runEventsByRunId, setRunEventsByRunId] = useState<Record<string, unknown[]>>({});
+  const [runEventsByRunId, setRunEventsByRunId] = useState<Record<string, NormalizedRunEvent[]>>({});
+  const [summary, setSummary] = useState<DesktopWorkbenchSummary | null>(null);
+  const [recentRuns, setRecentRuns] = useState<DesktopRunSummary[]>([]);
 
   const selectedThread = useMemo(
     () => (selectedThreadId ? threads.find((item) => item.id === selectedThreadId) || null : null),
@@ -84,34 +107,24 @@ export function useAgentWorkbench({
   }) | null;
   const selectedAuditEventCount = selectedResponse?.metadata?.audit_events?.length ?? 0;
 
-  async function loadSessions() {
-    if (!canLoadHistory) return;
+  async function refreshSummary() {
+    if (!canLoadHistory) return null;
     try {
-      const params = new URLSearchParams();
-      if (userId) params.set("user_id", userId);
-      params.set("limit", "50");
-      const payload = await requestJson<{ data?: Array<Record<string, unknown>> }>(
-        endpoint,
-        `/v1/hermes/sessions?${params.toString()}`,
-        { token: authToken(controlToken, apiToken) }
-      );
-      const sessionThreads = (payload.data || []).map((session) => {
-        const sid = String(session.session_id || "");
-        return {
-          id: sid,
-          title: String(session.title || sid || "历史会话"),
-          prompt: String(session.title || "点击加载历史消息"),
-          createdAt: String(session.updated_at || session.created_at || new Date().toISOString()),
-          status: "history",
-          sessionId: sid
-        } satisfies TaskThread;
-      });
+      const payload = await api.workbenchSummary();
+      setSummary(payload);
+      setRecentRuns(payload.recent_runs || []);
       setThreads((current) => {
-        const currentBySession = new Set(current.map((item) => item.sessionId || item.id));
-        return [...current, ...sessionThreads.filter((item) => !currentBySession.has(item.sessionId || item.id))].slice(0, 50);
+        const hydrated = current.filter((item) => item.response || item.status === "in_progress");
+        const bySession = new Set(hydrated.map((item) => item.sessionId || item.id));
+        const summaryThreads = (payload.recent_sessions || [])
+          .map(threadFromSummary)
+          .filter((item) => !bySession.has(item.sessionId || item.id));
+        return [...hydrated, ...summaryThreads].slice(0, 50);
       });
-    } catch {
-      // Session history is an enhancement; chat should still work if the store is gated or offline.
+      return payload;
+    } catch (error) {
+      onAgentStatus(formatApiError(error));
+      return null;
     }
   }
 
@@ -120,11 +133,7 @@ export function useAgentWorkbench({
     const sid = thread?.sessionId || id;
     if (!sid || thread?.response) return;
     try {
-      const payload = await requestJson<{ data?: Array<Record<string, unknown>> }>(
-        endpoint,
-        `/v1/sessions/${encodeURIComponent(sid)}/messages?limit=200`,
-        { token: apiToken }
-      );
+      const payload = await api.sessionMessages(sid, 200);
       const messages = payload.data || [];
       const firstUser = messages.find((item) => String(item.role) === "user");
       const assistantMessages = messages.filter((item) => String(item.role) === "assistant");
@@ -138,7 +147,7 @@ export function useAgentWorkbench({
         object: "response",
         status: "completed",
         output_text: contentText(lastAssistant?.payload || lastAssistant) || output || "历史会话已加载。",
-        metadata: { session_id: sid }
+        metadata: { session_id: sid, run_id: thread?.runId },
       };
       setThreads((items) =>
         items.map((item) =>
@@ -147,7 +156,7 @@ export function useAgentWorkbench({
                 ...item,
                 prompt: contentText(firstUser?.payload || firstUser) || item.prompt,
                 response,
-                status: "completed"
+                status: "completed",
               }
             : item
         )
@@ -172,7 +181,7 @@ export function useAgentWorkbench({
       object: "response",
       status: "in_progress",
       output_text: "Working...",
-      metadata: { session_id: sessionId || undefined, mode: agentMode }
+      metadata: { session_id: sessionId || undefined, mode: agentMode },
     };
     const optimisticThread: TaskThread = {
       id: tempId,
@@ -181,41 +190,40 @@ export function useAgentWorkbench({
       createdAt: new Date().toISOString(),
       status: "in_progress",
       sessionId,
-      response: optimisticResponse
+      response: optimisticResponse,
     };
-    setThreads((items) => [optimisticThread, ...items].slice(0, 30));
+    setThreads((items) => [optimisticThread, ...items.filter((item) => item.id !== tempId)].slice(0, 50));
     setSelectedThreadId(tempId);
     onInspectorTab("details");
 
     try {
-      const response = await requestJson<AgentResponse>(endpoint, "/v1/responses", {
-        method: "POST",
-        token: agentMode === "hermes_full" ? controlToken : apiToken,
-        body: {
+      const response = await api.response(
+        {
           input: currentPrompt,
           session_id: sessionId || undefined,
           mode: agentMode,
-          user_id: userId || undefined
-        }
-      });
+          user_id: userId || undefined,
+        },
+        agentMode === "hermes_full" ? controlToken : apiToken
+      );
       const nextThread: TaskThread = {
         ...optimisticThread,
         id: response.id,
         status: response.status,
         sessionId: response.metadata?.session_id || sessionId,
         runId: response.metadata?.run_id,
-        response
+        response,
       };
       onAgentStatus("AIASK_ONLINE");
       setSessionId(response.metadata?.session_id || sessionId);
-      setThreads((items) => [nextThread, ...items.filter((item) => item.id !== tempId && item.id !== response.id)].slice(0, 30));
+      setThreads((items) => [nextThread, ...items.filter((item) => item.id !== tempId && item.id !== response.id)].slice(0, 50));
       setSelectedThreadId(response.id);
-
       const ids = Array.from(collectIntentIds(response));
       if (ids.length) {
-        setIntentIds((items) => Array.from(new Set([...ids, ...items])).slice(0, 30));
+        setIntentIds((items) => Array.from(new Set([...ids, ...items])).slice(0, 50));
         setIntentIdInput(ids[0]);
       }
+      await refreshSummary();
     } catch (error) {
       const message = formatApiError(error);
       onAgentStatus(message);
@@ -228,8 +236,8 @@ export function useAgentWorkbench({
                 response: {
                   ...optimisticResponse,
                   status: "failed",
-                  output_text: message
-                }
+                  output_text: message,
+                },
               }
             : item
         )
@@ -259,9 +267,7 @@ export function useAgentWorkbench({
   }
 
   function removeResponseThread(responseId: string) {
-    setThreads((items) =>
-      items.filter((item) => item.id !== responseId && item.response?.id !== responseId)
-    );
+    setThreads((items) => items.filter((item) => item.id !== responseId && item.response?.id !== responseId));
     setSelectedThreadId((current) => {
       const currentThread = threads.find((item) => item.id === current);
       if (current === responseId || currentThread?.response?.id === responseId) return "";
@@ -271,36 +277,15 @@ export function useAgentWorkbench({
 
   useEffect(() => {
     if (!canLoadHistory) return;
-    loadSessions().catch(() => undefined);
+    refreshSummary().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canLoadHistory, endpoint, userId]);
+  }, [canLoadHistory, endpoint, apiToken, userId]);
 
   async function loadRunEvents(runId: string) {
     if (!runId) return;
     setBusy(true);
     try {
-      if (isMockEndpoint(endpoint)) {
-        const payload = await requestJson<{ data?: Record<string, unknown>[] }>(
-          endpoint,
-          `/v1/runs/${encodeURIComponent(runId)}/events`,
-          {
-            token: controlToken.trim() || apiToken
-          }
-        );
-        const events = payload.data || [];
-        setRunEventsByRunId((current) => ({ ...current, [runId]: events }));
-        onRunEventsLoaded(events);
-        return;
-      }
-      const response = await fetch(`${endpoint}/v1/runs/${encodeURIComponent(runId)}/events`, {
-        headers: controlToken.trim()
-          ? { Authorization: `Bearer ${controlToken.trim()}` }
-          : apiToken.trim()
-            ? { Authorization: `Bearer ${apiToken.trim()}` }
-            : {}
-      });
-      if (!response.ok) throw new Error(`AIASK_HTTP_${response.status}`);
-      const events = parseSseEvents<Record<string, unknown>>(await response.text());
+      const events = await api.runEvents(runId, controlToken.trim() || apiToken);
       setRunEventsByRunId((current) => ({ ...current, [runId]: events }));
       onRunEventsLoaded(events);
     } catch (error) {
@@ -316,36 +301,29 @@ export function useAgentWorkbench({
     setBusy(true);
     onInspectorTab("intents");
     try {
-      const envelope = await requestJson<ToolEnvelope>(endpoint, `/intents/${encodeURIComponent(intentId)}`, {
-        token: apiToken
-      });
+      const envelope = await api.getIntent(intentId);
       setIntentEnvelope(envelope);
       setIntentMessage(envelope.success ? "INTENT_LOADED" : envelope.error || "INTENT_ERROR");
-      setIntentIds((items) => Array.from(new Set([intentId, ...items])).slice(0, 30));
+      setIntentIds((items) => Array.from(new Set([intentId, ...items])).slice(0, 50));
     } catch (error) {
       setIntentEnvelope(null);
       setIntentMessage(formatApiError(error));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   }
 
   async function updateIntent(action: "confirm" | "deny") {
     if (!currentIntent || !controlToken.trim()) return;
     setBusy(true);
     try {
-      const envelope = await requestJson<ToolEnvelope>(
-        endpoint,
-        `/intents/${encodeURIComponent(currentIntent.intent_id)}/${action}`,
-        {
-          method: "POST",
-          token: controlToken,
-          body: action === "deny" ? { reason: "desktop_denied" } : {}
-        }
-      );
+      const envelope =
+        action === "confirm"
+          ? await api.confirmIntent(currentIntent.intent_id)
+          : await api.denyIntent(currentIntent.intent_id, "desktop_denied");
       setIntentEnvelope(envelope);
       setIntentMessage(envelope.success ? `INTENT_${action.toUpperCase()}ED` : envelope.error || "INTENT_ERROR");
       await fetchIntent(currentIntent.intent_id);
+      await refreshSummary();
     } catch (error) {
       setIntentMessage(formatApiError(error));
     } finally {
@@ -356,6 +334,7 @@ export function useAgentWorkbench({
   return {
     busy,
     currentIntent,
+    fetchIntent,
     handleComposerKeyDown,
     intentEnvelope,
     intentIdInput,
@@ -363,6 +342,8 @@ export function useAgentWorkbench({
     intentMessage,
     loadRunEvents,
     prompt,
+    recentRuns,
+    refreshSummary,
     removeResponseThread,
     selectThread,
     selectedAuditEventCount,
@@ -378,9 +359,9 @@ export function useAgentWorkbench({
     setSelectedThreadId,
     setSessionId,
     startNewTask,
+    summary,
     threads,
     timelineEvents,
     updateIntent,
-    fetchIntent
   };
 }

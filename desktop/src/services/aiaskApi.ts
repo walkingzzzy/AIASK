@@ -10,7 +10,9 @@ import type {
   ConnectorDetail,
   DesktopDataStatus,
   DesktopDataSyncPlan,
+  DesktopRunSummary,
   DesktopSettingsStatus,
+  DesktopWorkbenchSummary,
   FactorFactoryStatus,
   FactoryEventRecord,
   FinancialManagerCatalog,
@@ -28,14 +30,19 @@ import type {
   LearningProposal,
   LocalProfile,
   PluginCommand,
+  NormalizedRunEvent,
   QuantPresetPayload,
   QuantResearchReport,
   QuantResearchRun,
+  RecentSessionSummary,
   ResponseRecord,
   RlRun,
   RunRecord,
   ToolCatalogItem,
   ToolEnvelope,
+  TradePredictionMatrix,
+  TradePredictionOutcomes,
+  TradePredictionStatus,
   WebhookSubscription
 } from "../types";
 
@@ -307,9 +314,28 @@ export class AiaskApi {
     });
   }
 
-  async runEvents(runId: string, token?: string): Promise<Record<string, unknown>[]> {
+  workbenchSummary(): Promise<DesktopWorkbenchSummary> {
+    return requestJson<DesktopWorkbenchSummary>(this.endpoint, "/v1/desktop/workbench/summary", {
+      token: this.apiToken
+    });
+  }
+
+  runsList(filters: { session_id?: string; status?: string; limit?: number } = {}): Promise<{ object: string; data: DesktopRunSummary[] }> {
+    const params = new URLSearchParams();
+    if (filters.session_id) params.set("session_id", filters.session_id);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<{ object: string; data: DesktopRunSummary[] }>(
+      this.endpoint,
+      `/v1/desktop/runs${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  async runEvents(runId: string, token?: string): Promise<NormalizedRunEvent[]> {
     if (isMockEndpoint(this.endpoint)) {
-      const payload = await requestJson<{ data?: Record<string, unknown>[] }>(
+      const payload = await requestJson<{ data?: NormalizedRunEvent[] }>(
         this.endpoint,
         `/v1/runs/${encodeURIComponent(runId)}/events`,
         { token: token || this.apiToken }
@@ -320,7 +346,7 @@ export class AiaskApi {
       headers: token?.trim() ? { Authorization: `Bearer ${token.trim()}` } : {}
     });
     if (!response.ok) throw new Error(`AIASK_HTTP_${response.status}`);
-    return parseSseEvents<Record<string, unknown>>(await response.text());
+    return parseSseEvents<NormalizedRunEvent>(await response.text());
   }
 
   callTool<T = unknown>(tool: string, body: Record<string, unknown>, token?: string): Promise<ToolEnvelope & { data: T }> {
@@ -471,6 +497,68 @@ export class AiaskApi {
     return this.readOnlyTool<Record<string, unknown>>("agent_incubation_factory_status", {});
   }
 
+  tradePredictionStatus(filters: { strategy_id?: string; stock_code?: string; limit?: number } = {}): Promise<ToolEnvelope & { data: TradePredictionStatus }> {
+    const params = new URLSearchParams();
+    if (filters.strategy_id) params.set("strategy_id", filters.strategy_id);
+    if (filters.stock_code) params.set("stock_code", filters.stock_code);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: TradePredictionStatus }>(
+      this.endpoint,
+      `/v1/desktop/trade-predictions/status${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  tradePredictionOutcomes(
+    filters: {
+      prediction_id?: string;
+      strategy_id?: string;
+      stock_code?: string;
+      score_version?: string;
+      score_status?: string;
+      data_quality_status?: string;
+      actual_trading_date_lte?: string;
+      actual_trading_date_gte?: string;
+      limit?: number;
+    } = {}
+  ): Promise<ToolEnvelope & { data: TradePredictionOutcomes }> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      params.set(key, String(value));
+    }
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: TradePredictionOutcomes }>(
+      this.endpoint,
+      `/v1/desktop/trade-predictions/outcomes${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  tradePredictionMatrix(
+    filters: {
+      strategy_id?: string;
+      stock_code?: string;
+      score_version?: string;
+      dimensions?: string[];
+      limit?: number;
+    } = {}
+  ): Promise<ToolEnvelope & { data: TradePredictionMatrix }> {
+    const params = new URLSearchParams();
+    if (filters.strategy_id) params.set("strategy_id", filters.strategy_id);
+    if (filters.stock_code) params.set("stock_code", filters.stock_code);
+    if (filters.score_version) params.set("score_version", filters.score_version);
+    if (filters.dimensions?.length) params.set("dimensions", filters.dimensions.join(","));
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: TradePredictionMatrix }>(
+      this.endpoint,
+      `/v1/desktop/trade-predictions/matrix${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
   createActionIntent(action: string, params: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
     return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(this.endpoint, "/intents", {
       method: "POST",
@@ -481,6 +569,12 @@ export class AiaskApi {
         rationale,
         ttl_seconds: 86400
       }
+    });
+  }
+
+  getIntent(intentId: string): Promise<ToolEnvelope> {
+    return requestJson<ToolEnvelope>(this.endpoint, `/intents/${encodeURIComponent(intentId)}`, {
+      token: this.apiToken
     });
   }
 
@@ -611,11 +705,11 @@ export class AiaskApi {
     );
   }
 
-  sessionsList(userId?: string, limit = 100): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+  sessionsList(userId?: string, limit = 100): Promise<{ object: string; data: RecentSessionSummary[] }> {
     const params = new URLSearchParams();
     if (userId) params.set("user_id", userId);
     params.set("limit", String(limit));
-    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, `/v1/hermes/sessions?${params.toString()}`, {
+    return requestJson<{ object: string; data: RecentSessionSummary[] }>(this.endpoint, `/v1/hermes/sessions?${params.toString()}`, {
       token: controlOrApiToken(this)
     });
   }

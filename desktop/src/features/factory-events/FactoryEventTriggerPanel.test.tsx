@@ -227,7 +227,8 @@ describe("VIEW_REGISTRY", () => {
     const ids = VIEW_REGISTRY.map((entry) => entry.id);
     expect(ids).toContain("factory-events");
     const entry = VIEW_REGISTRY.find((item) => item.id === "factory-events");
-    expect(entry?.label).toBe("工厂事件");
+    expect(entry?.label).toBe("Factory Events");
+    expect(entry?.route).toBe("/factory-events");
   });
 });
 

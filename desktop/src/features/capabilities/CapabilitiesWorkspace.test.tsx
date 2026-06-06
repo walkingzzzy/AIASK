@@ -23,14 +23,14 @@ const payload = {
   hermes: {
     status: {
       implementation: "aiask_native",
-      baseline: "Hermes v0.14.0 full runtime capability reference",
+      baseline: "Hermes v0.15.1 full runtime capability reference",
       embedded_vendor_runtime: false,
       full_mode_enabled: true,
       full_mode_active: false
     },
     parity: {
       object: "aiask.capability_parity",
-      baseline: "Hermes v0.14.0 full runtime capability reference",
+      baseline: "Hermes v0.15.1 full runtime capability reference",
       scope: "hermes_full_runtime",
       embedded_vendor_runtime: false,
       required_count: 1,
@@ -210,13 +210,15 @@ describe("CapabilitiesWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "插件" }));
 
     expect(screen.getByText("原生插件与技能包治理")).toBeInTheDocument();
-    expect(screen.getByText("audit-plugin")).toBeInTheDocument();
+    expect(screen.getAllByText("audit-plugin").length).toBeGreaterThan(0);
     expect(screen.getByText(/不会加载或执行外部 Hermes dashboard 插件 JavaScript/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "自检" }));
     await waitFor(() => expect(screen.getByText("plugin surface is registered")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "命令" }));
     await waitFor(() => expect(screen.getByText("doctor")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "测试" }));
+    const commandTestButton = screen.getAllByRole("button", { name: "测试" }).find((button) => !button.hasAttribute("disabled"));
+    expect(commandTestButton).toBeTruthy();
+    fireEvent.click(commandTestButton as HTMLElement);
     await waitFor(() => expect(screen.getByText("command ok")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "保存插件" }));
     await waitFor(() => expect(screen.getByText("plugin_upserted")).toBeInTheDocument());

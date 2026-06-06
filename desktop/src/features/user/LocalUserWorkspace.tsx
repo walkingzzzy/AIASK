@@ -3,7 +3,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { JsonPanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
-import type { LocalProfile } from "../../types";
+import type { LocalProfile, RecentSessionSummary } from "../../types";
 
 export function LocalUserWorkspace({
   endpoint,
@@ -24,7 +24,7 @@ export function LocalUserWorkspace({
   const [profile, setProfile] = useState<LocalProfile | null>(null);
   const [draftUserId, setDraftUserId] = useState(userId || "local");
   const [draftProfileName, setDraftProfileName] = useState(profileName || "本地操作者");
-  const [sessions, setSessions] = useState<Array<Record<string, unknown>>>([]);
+  const [sessions, setSessions] = useState<RecentSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [messages, setMessages] = useState<Array<Record<string, unknown>>>([]);
   const [query, setQuery] = useState("");
@@ -180,7 +180,7 @@ export function LocalUserWorkspace({
                 {sessions.slice(0, 8).map((session) => (
                   <article key={String(session.session_id)}>
                     <strong>{String(session.title || session.session_id)}</strong>
-                    <span>{String(session.updated_at || session.created_at || "-")}</span>
+                    <span>{String(session.last_message_at || "-")}</span>
                     <button className="small-button" disabled={busy || !session.session_id} onClick={() => loadSessionMessages(String(session.session_id))} type="button">
                       加载消息
                     </button>
