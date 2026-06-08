@@ -39,6 +39,9 @@ const financeTools: ToolCatalogItem[] = [
   { name: "agent_trade_prediction_status", capability: "trade_prediction_status", category: "financial_read", side_effect: "read_only", description: "Read trade prediction scoring status." },
   { name: "agent_trade_prediction_outcomes", capability: "trade_prediction_outcomes", category: "financial_read", side_effect: "read_only", description: "List trade prediction outcomes." },
   { name: "agent_trade_prediction_matrix", capability: "trade_prediction_matrix", category: "financial_read", side_effect: "read_only", description: "Read trade prediction contribution matrix." },
+  { name: "agent_stock_radar_status", capability: "stock_radar_status", category: "financial_read", side_effect: "read_only", description: "Read stock radar status." },
+  { name: "agent_stock_radar_candidates", capability: "stock_radar_candidates", category: "financial_read", side_effect: "read_only", description: "List stock radar candidates." },
+  { name: "agent_stock_radar_digest", capability: "stock_radar_digest", category: "financial_read", side_effect: "read_only", description: "Preview stock radar digest." },
   { name: "agent_action_intent_create", capability: "action_intent_create", category: "financial_stateful", side_effect: "durable_intent", description: "Create an approval intent." },
   { name: "agent_action_intent_get", capability: "action_intent_get", category: "financial_read", side_effect: "read_only", description: "Read an approval intent." },
   { name: "agent_memory_search", capability: "memory_search", category: "financial_read", side_effect: "read_only", description: "Search financial memory.", input_schema: { type: "object", properties: { query: { type: "string" }, user_id: { type: "string" } } } },
@@ -363,6 +366,74 @@ const mockTradePredictionOutcomes = [
     calculated_at: "2026-06-03T07:18:00Z"
   }
 ];
+
+const mockStockRadarRun = {
+  run_id: "radar_mock_20260608",
+  mode: "dry_run",
+  status: "completed",
+  started_at: "2026-06-08T14:35:00+08:00",
+  completed_at: "2026-06-08T14:36:00+08:00",
+  summary: { candidate_count: 2, tier_counts: { alert: 1, watch: 1 }, docs_scanned: 18 },
+  degraded_flags: ["llm_unavailable_rules_only", "late_session_volume_disabled", "rss_feeds_not_configured"],
+  metadata: { no_trade_instructions: true }
+};
+
+const mockStockRadarCandidates = [
+  {
+    candidate_id: "radar_cand_mock_001",
+    run_id: mockStockRadarRun.run_id,
+    symbol: "300750",
+    stock_name: "CATL",
+    tier: "alert",
+    radar_score: 84.5,
+    event_id: "radar_evt_mock_001",
+    event_type: "ai_compute_cooperation",
+    direction: "positive",
+    summary: "Official announcement matched AI compute cooperation keywords; source is Tier-A CNINFO.",
+    source_doc_uids: ["cninfo:mock:001"],
+    source_chain: [{ provider: "cninfo", source_tier: "tier_a", url: "https://static.cninfo.com.cn/finalpage/mock.pdf" }],
+    extraction: { themes: ["AI", "compute"], confidence: 0.74, llm_status: "unavailable", status: "provisional" },
+    confirmations: { late_session_volume: { status: "disabled" }, dragon_tiger: { status: "degraded" } },
+    risk_flags: [],
+    push_status: "pending"
+  },
+  {
+    candidate_id: "radar_cand_mock_002",
+    run_id: mockStockRadarRun.run_id,
+    symbol: "600000",
+    stock_name: "PF Bank",
+    tier: "watch",
+    radar_score: 66.0,
+    event_id: "radar_evt_mock_002",
+    event_type: "buyback",
+    direction: "positive",
+    summary: "Buyback announcement entered the observation pool; funding confirmation is unavailable.",
+    source_doc_uids: ["cninfo:mock:002"],
+    source_chain: [{ provider: "cninfo", source_tier: "tier_a", url: "https://static.cninfo.com.cn/finalpage/mock2.pdf" }],
+    extraction: { themes: ["buyback"], confidence: 0.68, llm_status: "unavailable", status: "provisional" },
+    confirmations: { fund_flow: { status: "degraded" }, late_session_volume: { status: "disabled" } },
+    risk_flags: [],
+    push_status: "pending"
+  }
+];
+
+function stockRadarPayload() {
+  const digest = [
+    "AIASK Stock Radar Digest",
+    "run=radar_mock_20260608 status=completed",
+    "300750 CATL 84.5 alert ai_compute_cooperation: Official announcement matched AI compute cooperation keywords",
+    "600000 PF Bank 66 watch buyback: Buyback announcement entered the observation pool"
+  ].join("\n");
+  return {
+    status: "completed",
+    configured: true,
+    latest_run: mockStockRadarRun,
+    counts: { alert: 1, watch: 1 },
+    candidates: mockStockRadarCandidates,
+    digest_preview: digest,
+    push_logs: [{ push_id: "radar_push_mock", channel: "preview", status: "preview", candidate_count: 2, created_at: "2026-06-08T14:36:10+08:00" }]
+  };
+}
 
 function queryRecord(query?: URLSearchParams): Record<string, unknown> {
   const record: Record<string, unknown> = {};
@@ -706,6 +777,9 @@ function toolResult(tool: string, body: Record<string, unknown>) {
   if (tool === "agent_trade_prediction_status") return envelope(tool, tradePredictionStatus(body));
   if (tool === "agent_trade_prediction_outcomes") return envelope(tool, tradePredictionOutcomes(body));
   if (tool === "agent_trade_prediction_matrix") return envelope(tool, tradePredictionMatrix(body));
+  if (tool === "agent_stock_radar_status") return envelope(tool, stockRadarPayload());
+  if (tool === "agent_stock_radar_candidates") return envelope(tool, { status: "ready", candidates: mockStockRadarCandidates, count: mockStockRadarCandidates.length });
+  if (tool === "agent_stock_radar_digest") return envelope(tool, stockRadarPayload());
   if (tool === "agent_factory_event_list") {
     const events = [
       {
@@ -1192,6 +1266,14 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   }
   const quantReportMatch = cleanPath.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)\/report$/);
   if (quantReportMatch) return ok({ object: "report", research_id: decodeURIComponent(quantReportMatch[1]), status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, disclaimer: "MOCK_NOT_INVESTMENT_ADVICE", stages: [] } as T);
+  if (cleanPath === "/v1/desktop/stock-radar/status") return ok(envelope("agent_stock_radar_status", stockRadarPayload()) as T);
+  if (cleanPath === "/v1/desktop/stock-radar/candidates") {
+    const filters = queryRecord(query);
+    const tier = String(filters.tier || "");
+    const items = tier ? mockStockRadarCandidates.filter((item) => item.tier === tier) : mockStockRadarCandidates;
+    return ok(envelope("agent_stock_radar_candidates", { status: "ready", candidates: items, count: items.length }) as T);
+  }
+  if (cleanPath === "/v1/desktop/stock-radar/digest") return ok(envelope("agent_stock_radar_digest", stockRadarPayload()) as T);
 
   return ok({ object: "mock.unhandled", path: cleanPath, method, data: {}, status: "ready" } as T);
 }

@@ -343,6 +343,27 @@ describe("AiaskApi factory event helpers", () => {
     expect(requestBody(calls[2]).params).toEqual({ limit: 20 });
   });
 
+  it("stock radar helpers use read routes and confirm-required radar intents", async () => {
+    const { calls } = makeFetchMock();
+    const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
+
+    await api.stockRadarStatus({ limit: 10 });
+    await api.stockRadarCandidates({ tier: "alert", limit: 5 });
+    await api.stockRadarDigest({ channels: ["wecom", "telegram"] });
+    await api.stockRadarRunIntent({ days: 3, allow_network: false });
+    await api.stockRadarPushDigestIntent({ run_id: "radar_1", dry_run: true });
+    await api.stockRadarScheduleUpdateIntent({ schedule: "manual", enabled: false });
+
+    expect(calls[0].url).toBe("http://127.0.0.1:8767/v1/desktop/stock-radar/status?limit=10");
+    expect(calls[1].url).toBe("http://127.0.0.1:8767/v1/desktop/stock-radar/candidates?tier=alert&limit=5");
+    expect(calls[2].url).toBe("http://127.0.0.1:8767/v1/desktop/stock-radar/digest?channels=wecom%2Ctelegram");
+    expect(calls.slice(3).map((call) => requestBody(call).action)).toEqual([
+      "stock_radar.run_once",
+      "stock_radar.push_digest",
+      "stock_radar.schedule_update"
+    ]);
+  });
+
   it("confirm/deny helpers use the right intent route and control token", async () => {
     const { calls } = makeFetchMock();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
@@ -399,6 +420,13 @@ describe("FactoryEventTriggerPanel render", () => {
     });
     // factory_event_list is read through the Agent facade, not the raw manager.
     expect(calls.some((call) => call.url.includes("/v1/tools/agent_factory_event_list"))).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
+    expect(screen.getByText("Stock Radar observation pool")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Evidence-ranked candidates")).toBeInTheDocument();
+    });
+    expect(screen.getByText("WeCom / Telegram payload preview")).toBeInTheDocument();
 
     // Switch to Create tab.
     fireEvent.click(screen.getByRole("tab", { name: "创建" }));

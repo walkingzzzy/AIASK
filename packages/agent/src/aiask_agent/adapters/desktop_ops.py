@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import time
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,6 +13,7 @@ def _ensure_monorepo_paths() -> None:
     for parent in Path(__file__).resolve().parents:
         candidates = [
             parent / "akshare-mcp" / "src",
+            parent / "aiask-quant-core" / "src",
             parent / "strategy-factory" / "src",
         ]
         added = False
@@ -215,6 +217,181 @@ async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> di
         return {"success": bool(not isinstance(result, dict) or result.get("success") is not False), "data": result, "error": None}
     except Exception as exc:
         return _execution_failed(exc, action=action, dependency="incubation_factory")
+
+
+async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _ensure_monorepo_paths()
+        from akshare_mcp.storage import get_db
+        from akshare_mcp.services.stock_radar import (
+            push_stock_radar_digest,
+            run_stock_radar,
+            schedule_stock_radar_update,
+        )
+    except ModuleNotFoundError as exc:
+        return _dependency_missing(exc, dependency="stock_radar")
+
+    async def _record_gateway_delivery_log(db: Any, payload: dict[str, Any], data: dict[str, Any], delivery: dict[str, Any]) -> dict[str, Any] | None:
+        recorder = getattr(db, "save_stock_radar_push_log", None)
+        if not callable(recorder):
+            return None
+        push_logs = list(data.get("push_logs") or [])
+        first_log = next((item for item in push_logs if isinstance(item, dict)), {})
+        channels = data.get("channels") or payload.get("channels") or []
+        if isinstance(channels, str):
+            channels = [item.strip() for item in channels.split(",") if item.strip()]
+        targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+        channel = str(delivery.get("channel") or "")
+        target = payload.get("target")
+        if target is None:
+            target = targets.get(channel)
+        try:
+            return await recorder(
+                {
+                    "run_id": payload.get("run_id") or first_log.get("run_id"),
+                    "channel": channel,
+                    "platform": delivery.get("platform") or channel,
+                    "target": target,
+                    "status": "delivered" if delivery.get("ok") else "failed",
+                    "message_preview": payload.get("message") or data.get("message_preview"),
+                    "candidate_count": int(first_log.get("candidate_count") or data.get("candidate_count") or 0),
+                    "error": None if delivery.get("ok") else delivery.get("error") or delivery.get("status"),
+                    "sent_at": datetime.now(timezone.utc).isoformat() if delivery.get("ok") else None,
+                    "metadata": {
+                        "dry_run": False,
+                        "gateway_delivery": delivery,
+                        "gateway_message_id": delivery.get("message_id"),
+                        "no_trade_instructions": True,
+                        "upstream_push_log_ids": [item.get("push_id") for item in push_logs if isinstance(item, dict) and item.get("push_id")],
+                    },
+                }
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "channel": channel,
+            }
+
+    async def _deliver_stock_radar_digest(payload: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if payload.get("dry_run", True) or result.get("success") is False:
+            return result
+        channels = data.get("channels") or payload.get("channels") or ["wecom", "telegram"]
+        if isinstance(channels, str):
+            channels = [item.strip() for item in channels.split(",") if item.strip()]
+        message = str(payload.get("message") or data.get("message_preview") or "").strip()
+        if not message:
+            return {
+                **result,
+                "data": {**data, "gateway_status": "blocked_empty_message", "gateway_deliveries": []},
+                "success": False,
+                "error": "stock radar digest message is empty",
+                "error_code": "STOCK_RADAR_GATEWAY_MESSAGE_EMPTY",
+            }
+        try:
+            from ..gateway import DeliveryRouter, GatewayChannelDirectoryStore, GatewayMessageStore
+            from ..paths import default_state_db_path
+
+            state_path = default_state_db_path()
+            router = DeliveryRouter(
+                messages=GatewayMessageStore(state_path),
+                directory=GatewayChannelDirectoryStore(state_path),
+            )
+            deliveries: list[dict[str, Any]] = []
+            for channel in list(channels or []):
+                target = payload.get("target")
+                targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+                if target is None:
+                    target = targets.get(str(channel))
+                try:
+                    routed = await router.send(
+                        platform=str(channel),
+                        target=str(target or ""),
+                        message=message,
+                        thread_id=payload.get("thread_id"),
+                        session_id=payload.get("session_id"),
+                        user_id=payload.get("user_id"),
+                    )
+                    adapter = routed.get("adapter") if isinstance(routed, dict) else {}
+                    deliveries.append(
+                        {
+                            "channel": channel,
+                            "status": adapter.get("status") if isinstance(adapter, dict) else "unknown",
+                            "ok": bool(adapter.get("ok")) if isinstance(adapter, dict) else False,
+                            "message_id": (routed.get("message") or {}).get("message_id") if isinstance(routed, dict) and isinstance(routed.get("message"), dict) else None,
+                            "configured": adapter.get("configured") if isinstance(adapter, dict) else None,
+                            "platform": (routed.get("platform") or {}).get("name") if isinstance(routed, dict) and isinstance(routed.get("platform"), dict) else str(channel),
+                        }
+                    )
+                except Exception as exc:
+                    deliveries.append(
+                        {
+                            "channel": channel,
+                            "status": "failed",
+                            "ok": False,
+                            "error": str(exc),
+                            "error_type": type(exc).__name__,
+                        }
+                    )
+            ok_count = sum(1 for item in deliveries if item.get("ok"))
+            audit_logs = [item for delivery in deliveries if (item := await _record_gateway_delivery_log(db, payload, data, delivery)) is not None]
+            gateway_status = "delivered" if ok_count == len(deliveries) and deliveries else "partial_or_failed"
+            return {
+                **result,
+                "success": bool(result.get("success") and ok_count == len(deliveries) and deliveries),
+                "data": {
+                    **data,
+                    "gateway_status": gateway_status,
+                    "gateway_deliveries": deliveries,
+                    "gateway_delivered_count": ok_count,
+                    "gateway_push_logs": audit_logs,
+                },
+                "error": None if ok_count == len(deliveries) and deliveries else "one or more gateway deliveries failed or are unconfigured",
+                "error_code": None if ok_count == len(deliveries) and deliveries else "STOCK_RADAR_GATEWAY_DELIVERY_FAILED",
+            }
+        except Exception as exc:
+            return {
+                **result,
+                "success": False,
+                "data": {**data, "gateway_status": "failed", "gateway_deliveries": []},
+                "error": str(exc),
+                "error_code": "STOCK_RADAR_GATEWAY_DELIVERY_FAILED",
+            }
+
+    try:
+        payload = dict(params or {})
+        timeout = float(payload.pop("_timeout_seconds", 300 if action == "run_once" else 60))
+        db = get_db()
+        await db.initialize()
+        if action == "run_once":
+            result = await asyncio.wait_for(
+                run_stock_radar(
+                    db,
+                    mode=str(payload.get("mode") or "run_once"),
+                    days=payload.get("days", 3),
+                    limit=payload.get("limit", 80),
+                    stock_codes=payload.get("stock_codes") or payload.get("codes"),
+                    allow_network=payload.get("allow_network", False),
+                    embed=payload.get("embed", False),
+                    parse_pdf=payload.get("parse_pdf", True),
+                    include_rss=payload.get("include_rss", True),
+                    ingest_market_text=payload.get("ingest_market_text", True),
+                ),
+                timeout=timeout,
+            )
+        elif action == "push_digest":
+            payload.setdefault("dry_run", True)
+            result = await asyncio.wait_for(push_stock_radar_digest(db, payload), timeout=timeout)
+            result = await _deliver_stock_radar_digest(payload, result if isinstance(result, dict) else {"success": True, "data": result, "error": None})
+        elif action == "schedule_update":
+            result = await asyncio.wait_for(schedule_stock_radar_update(db, payload), timeout=timeout)
+        else:
+            raise ValueError(f"unsupported stock radar action: {action}")
+        return result if isinstance(result, dict) else {"success": True, "data": result, "error": None}
+    except Exception as exc:
+        return _execution_failed(exc, action=action, dependency="stock_radar")
 
 
 async def _execute_gateway(action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +686,8 @@ async def execute_confirmed_action(
         return await _execute_factor_factory(normalized_action, payload)
     if normalized_tool == "incubation_factory":
         return await _execute_incubation_factory(normalized_action, payload)
+    if normalized_tool == "stock_radar":
+        return await _execute_stock_radar(normalized_action, payload)
     if normalized_tool == "gateway":
         return await _execute_gateway(normalized_action, payload)
     if normalized_tool == "webhook":

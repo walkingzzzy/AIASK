@@ -1,12 +1,20 @@
 import { CalendarClock, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, confirmAction } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { JobRunRecord } from "../../types";
 
 function jobId(job: Record<string, unknown>): string {
   return String(job.job_id || job.id || "");
+}
+
+function testIdPart(value: unknown): string {
+  return String(value || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
 }
 
 export function AutomationWorkspace({
@@ -67,6 +75,7 @@ export function AutomationWorkspace({
 
   async function createJob(event: FormEvent) {
     event.preventDefault();
+    if (!confirmAction("创建自动化任务", `任务：${name || "未命名"}\n工具集：${toolset}`)) return;
     setBusy(true);
     try {
       const payload = await api.jobCreate({
@@ -91,11 +100,14 @@ export function AutomationWorkspace({
   async function toggleJob(job: Record<string, unknown>) {
     const id = jobId(job);
     if (!id) return;
+    const nextEnabled = !job.enabled;
+    if (!confirmAction(nextEnabled ? "恢复自动化任务" : "暂停自动化任务", `任务：${String(job.name || id)}`)) return;
     setBusy(true);
+    setMessage(nextEnabled ? "JOB_RESUME_RUNNING" : "JOB_PAUSE_RUNNING");
     try {
-      const payload = await api.jobUpdate(id, { enabled: !job.enabled });
+      const payload = await api.jobUpdate(id, { enabled: nextEnabled });
       setResult(payload);
-      setMessage("JOB_UPDATED");
+      setMessage(nextEnabled ? "JOB_RESUMED" : "JOB_PAUSED");
       await refresh();
     } catch (error) {
       setMessage(formatApiError(error));
@@ -107,7 +119,9 @@ export function AutomationWorkspace({
   async function runJob(job: Record<string, unknown>) {
     const id = jobId(job);
     if (!id) return;
+    if (!confirmAction("运行自动化任务", `任务：${String(job.name || id)}`)) return;
     setRunningJobIds((items) => Array.from(new Set([...items, id])));
+    setMessage("JOB_RUN_RUNNING");
     const runPromise = api.jobRun(id);
     const timeoutPromise = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 45000));
     const finish = async (payload: Awaited<ReturnType<typeof api.jobRun>>) => {
@@ -137,7 +151,9 @@ export function AutomationWorkspace({
   async function deleteJob(job: Record<string, unknown>) {
     const id = jobId(job);
     if (!id) return;
+    if (!confirmAction("删除自动化任务", `任务：${String(job.name || id)}\n删除后将从任务列表移除。`)) return;
     setBusy(true);
+    setMessage("JOB_DELETE_RUNNING");
     try {
       const payload = await api.jobDelete(id);
       setResult(payload);
@@ -274,24 +290,26 @@ export function AutomationWorkspace({
                   {(() => {
                     const id = jobId(job);
                     const rowBusy = busy || runningJobIds.includes(id);
+                    const jobLabel = String(job.name || id || "unnamed job");
+                    const jobTestId = testIdPart(id || jobLabel);
                     return (
                       <>
                   <div>
-                    <strong>{String(job.name || jobId(job))}</strong>
+                    <strong>{jobLabel}</strong>
                     <span>{String(job.schedule || job.interval_seconds || "手动")} | {compact(job.last_run_at || "从未运行")}</span>
                   </div>
                   <StatusBadge status={job.enabled ? "ready" : "disabled"} label={job.enabled ? "已启用" : "已暂停"} />
                   <div className="row-actions">
-                    <button className="small-button" disabled={rowBusy} onClick={() => loadJobRuns(job)} type="button">查看</button>
-                    <button className="small-button" disabled={rowBusy} onClick={() => toggleJob(job)} type="button">
+                    <button aria-label={`查看任务 ${jobLabel}`} className="small-button" data-testid={`job-inspect-${jobTestId}`} disabled={rowBusy} onClick={() => loadJobRuns(job)} type="button">查看</button>
+                    <button aria-label={`${job.enabled ? "暂停任务" : "恢复任务"} ${jobLabel}`} className="small-button" data-testid={`job-toggle-${jobTestId}`} disabled={rowBusy} onClick={() => toggleJob(job)} type="button">
                       {job.enabled ? "暂停" : "恢复"}
                     </button>
-                    <button className="small-button" disabled={rowBusy} onClick={() => runJob(job)} type="button">
+                    <button aria-label={`运行任务 ${jobLabel}`} className="small-button" data-testid={`job-run-${jobTestId}`} disabled={rowBusy} onClick={() => runJob(job)} type="button">
                       <Play size={13} />
                       {runningJobIds.includes(id) ? "运行中" : "运行"}
                     </button>
                     {management && (
-                      <button className="small-button danger" disabled={rowBusy} onClick={() => deleteJob(job)} type="button">
+                      <button aria-label={`删除任务 ${jobLabel}`} className="small-button danger" data-testid={`job-delete-${jobTestId}`} disabled={rowBusy} onClick={() => deleteJob(job)} type="button">
                         <Trash2 size={13} />
                         删除
                       </button>

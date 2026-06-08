@@ -612,12 +612,13 @@ def resolve_run_status(
 
     # 4) Success variants — distinguish by submission outcome
     overlay = dict(summary or {})
-    observe_first_enabled = bool(overlay.get("observe_first_enabled"))
     observed_candidate_count = max(
         _safe_count(overlay.get("observed_candidate_count")),
+        _safe_count(overlay.get("observe_admitted_count")),
         _safe_count(overlay.get("observe_incubation_count")),
+        _safe_count(overlay.get("diagnostic_observation_count")),
     )
-    if observe_first_enabled and observed_candidate_count > 0:
+    if observed_candidate_count > 0:
         return FactoryRunStatus.SUCCESS
 
     gate_3_passed = int(overlay.get("gate_3_passed") or 0)

@@ -1,6 +1,6 @@
 import { RefreshCw, XCircle, Clock, AlertTriangle } from "lucide-react";
 import { useState } from "react";
-import { StatusBadge } from "./shared";
+import { StatusBadge, confirmAction } from "./shared";
 
 interface GatewayMessage {
   message_id: string;
@@ -25,6 +25,7 @@ export function GatewayRetryPanel({ messages, onRetry, onBatchRetry }: GatewayRe
   const failedMessages = messages.filter((msg) => ["failed", "error", "retrying", "pending"].includes(msg.status));
 
   async function handleRetry(messageId: string) {
+    if (!confirmAction("重试 Gateway 消息", `Message: ${messageId}`)) return;
     setBusy(true);
     try {
       await onRetry(messageId);
@@ -35,6 +36,7 @@ export function GatewayRetryPanel({ messages, onRetry, onBatchRetry }: GatewayRe
 
   async function handleBatchRetry() {
     if (selectedMessages.size === 0) return;
+    if (!confirmAction("批量重试 Gateway 消息", `数量：${selectedMessages.size}`)) return;
     setBusy(true);
     try {
       await onBatchRetry(Array.from(selectedMessages));

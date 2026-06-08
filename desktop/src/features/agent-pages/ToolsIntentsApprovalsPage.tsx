@@ -2,7 +2,7 @@ import { RefreshCw, ShieldCheck, Wrench, Filter, Search, Info } from "lucide-rea
 import { useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { GeneralApprovalsPanel } from "../../components/InspectorPanels";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, confirmAction } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { IntentRecord, ToolCatalogItem, ToolEnvelope } from "../../types";
 import "./ToolsIntentsApprovalsPage.css";
@@ -129,7 +129,9 @@ export function ToolsIntentsApprovalsPage({
 
   async function decideIntent(action: "confirm" | "deny") {
     if (!currentIntent) return;
+    if (!confirmAction(action === "confirm" ? "确认意图" : "拒绝意图", `Intent: ${currentIntent.intent_id}\nAction: ${currentIntent.action}`)) return;
     setBusy(true);
+    setMessage(action === "confirm" ? "INTENT_CONFIRM_RUNNING" : "INTENT_DENY_RUNNING");
     try {
       const envelope =
         action === "confirm"

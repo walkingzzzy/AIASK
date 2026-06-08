@@ -28,6 +28,15 @@ interface PluginLifecycleCardProps {
   onToggle: () => void;
   onConfigure: () => void;
   onTest: () => void;
+  disabled?: boolean;
+}
+
+function testIdPart(value: unknown): string {
+  return String(value || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
 }
 
 export function PluginLifecycleCard({
@@ -35,8 +44,13 @@ export function PluginLifecycleCard({
   state,
   onToggle,
   onConfigure,
-  onTest
+  onTest,
+  disabled = false
 }: PluginLifecycleCardProps) {
+  const pluginTestId = testIdPart(name);
+  const toggleLabel = `${state.is_enabled ? "禁用插件" : "启用插件"} ${name}`;
+  const configureLabel = `配置插件 ${name}`;
+  const testLabel = `测试插件 ${name}`;
   const lifecycleSteps = [
     { key: "installed", label: "已安装", met: state.is_installed },
     { key: "enabled", label: "已启用", met: state.is_enabled },
@@ -102,7 +116,10 @@ export function PluginLifecycleCard({
       {/* 快速操作 */}
       <div className="plugin-quick-actions">
         <button
+          aria-label={toggleLabel}
           className="small-button"
+          data-testid={`plugin-toggle-${pluginTestId}`}
+          disabled={disabled}
           onClick={onToggle}
           type="button"
           title={state.is_enabled ? "禁用插件" : "启用插件"}
@@ -114,7 +131,10 @@ export function PluginLifecycleCard({
         {state.is_enabled && (
           <>
             <button
+              aria-label={configureLabel}
               className="small-button"
+              data-testid={`plugin-configure-${pluginTestId}`}
+              disabled={disabled}
               onClick={onConfigure}
               type="button"
             >
@@ -123,10 +143,12 @@ export function PluginLifecycleCard({
             </button>
 
             <button
+              aria-label={testLabel}
               className="small-button"
+              data-testid={`plugin-test-${pluginTestId}`}
               onClick={onTest}
               type="button"
-              disabled={!state.is_configured}
+              disabled={disabled || !state.is_configured}
             >
               <Play size={13} />
               测试

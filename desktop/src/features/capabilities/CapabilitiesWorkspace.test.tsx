@@ -157,9 +157,9 @@ describe("CapabilitiesWorkspace", () => {
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="" />);
 
     await waitFor(() => expect(screen.getByText("运行时评审面板")).toBeInTheDocument());
-    expect(screen.getByText("已实现")).toBeInTheDocument();
+    expect(screen.getAllByText("已实现").length).toBeGreaterThan(0);
     expect(screen.getByText("可处理缺口")).toBeInTheDocument();
-    expect(screen.getAllByText(/缺少控制令牌 Control token/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/缺少 Control token/).length).toBeGreaterThan(0);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8767/v1/desktop/capabilities",
       expect.objectContaining({ method: "GET" })
@@ -212,13 +212,12 @@ describe("CapabilitiesWorkspace", () => {
     expect(screen.getByText("原生插件与技能包治理")).toBeInTheDocument();
     expect(screen.getAllByText("audit-plugin").length).toBeGreaterThan(0);
     expect(screen.getByText(/不会加载或执行外部 Hermes dashboard 插件 JavaScript/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "自检" }));
+    fireEvent.click(screen.getByText("查看详细列表（传统视图）"));
+    fireEvent.click(screen.getByRole("button", { name: "插件自检 audit-plugin" }));
     await waitFor(() => expect(screen.getByText("plugin surface is registered")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "命令" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载插件命令 audit-plugin" }));
     await waitFor(() => expect(screen.getByText("doctor")).toBeInTheDocument());
-    const commandTestButton = screen.getAllByRole("button", { name: "测试" }).find((button) => !button.hasAttribute("disabled"));
-    expect(commandTestButton).toBeTruthy();
-    fireEvent.click(commandTestButton as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "测试插件命令 audit-plugin doctor" }));
     await waitFor(() => expect(screen.getByText("command ok")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "保存插件" }));
     await waitFor(() => expect(screen.getByText("plugin_upserted")).toBeInTheDocument());

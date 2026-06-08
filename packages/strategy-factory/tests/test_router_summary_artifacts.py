@@ -91,6 +91,55 @@ def test_success_summary_keeps_selected_event_driven_tasks_visible() -> None:
     assert summary["event_snapshot_mixed"] is True
 
 
+def test_success_summary_lifts_submission_lane_counts() -> None:
+    summary = build_success_run_summary(
+        trace_id="trace_lanes",
+        snapshot={},
+        candidates=[],
+        passed=[],
+        unique=[],
+        eliminated=[],
+        spawn_report={},
+        submit_result={
+            "created_total": 4,
+            "gate_3_input": 4,
+            "gate_3_passed": 0,
+            "gate_3_failed": 4,
+            "strategies": [
+                {"submission_lane": "observe_incubation"},
+                {"submission_lane": "observe_incubation"},
+                {"submission_lane": "diagnostic_observation"},
+                {
+                    "submission_lane": "live_ready_review",
+                    "submission_action_type": "research_only",
+                },
+            ],
+        },
+        quality_gate_report={},
+        backtest_report={},
+        autonomy_summary={},
+        task_scan_summary={},
+        task_source_counts={},
+        bulk_stock_matrix_family_counts={},
+        bulk_stock_matrix_allocation_pass_counts={},
+        factor_research_summary={},
+        factor_refresh_summary={},
+        readiness_summary={},
+        warmup_summary={},
+        backtest_audit_summary={},
+        submission_audit_summary={},
+        vector_summary={},
+        elapsed=1.0,
+    )
+
+    assert summary["observe_incubation_count"] == 2
+    assert summary["diagnostic_observation_count"] == 1
+    assert summary["observe_admitted_count"] == 3
+    assert summary["live_ready_review_count"] == 1
+    assert summary["research_only_count"] == 1
+    assert summary["submission_lane_counts"]["observe_incubation"] == 2
+
+
 def test_task_artifact_persists_router_telemetry() -> None:
     artifact = build_task_artifact(
         {

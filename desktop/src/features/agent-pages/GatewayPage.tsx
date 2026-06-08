@@ -2,7 +2,7 @@ import { Cable, FolderSync, MessageSquareWarning, RefreshCw, RotateCcw, Send } f
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { GatewayRetryPanel } from "../../components/GatewayRetryPanel";
-import { JsonPanel, MetricCard, StatusBadge, compact, shortText } from "../../components/shared";
+import { JsonPanel, MetricCard, StatusBadge, compact, confirmAction, shortText } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type {
   GatewayDaemonStatus,
@@ -114,6 +114,7 @@ export function GatewayPage({
   }
 
   async function refreshDirectory() {
+    if (!confirmAction("刷新 Gateway 目录", "将通过 Agent 请求重新同步目录。")) return;
     setLoading(true);
     try {
       const payload = await api.gatewayDirectoryRefresh();
@@ -143,6 +144,7 @@ export function GatewayPage({
   }
 
   async function retryMessage(messageId: string) {
+    setMessageStatus("GATEWAY_RETRY_RUNNING");
     try {
       const payload = await api.gatewayMessageRetry(messageId);
       setResult(payload);
@@ -154,6 +156,7 @@ export function GatewayPage({
   }
 
   async function batchRetryMessages(messageIds: string[]) {
+    setMessageStatus("GATEWAY_BATCH_RETRY_RUNNING");
     try {
       const payloads = await Promise.all(messageIds.map((id) => api.gatewayMessageRetry(id)));
       setResult(payloads);
@@ -166,7 +169,9 @@ export function GatewayPage({
 
   async function createSendIntent(event: FormEvent) {
     event.preventDefault();
+    if (!confirmAction("创建 Gateway 发送审批", `Platform: ${sendPlatform}\nTarget: ${sendTarget}`)) return;
     setLoading(true);
+    setMessageStatus("GATEWAY_INTENT_CREATING");
     try {
       const payload = await api.gatewaySendIntent({
         platform: sendPlatform,

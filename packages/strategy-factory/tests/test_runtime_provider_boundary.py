@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import textwrap
 from argparse import Namespace
 from datetime import datetime
 from types import MethodType
@@ -65,6 +66,40 @@ def test_root_runner_resolves_interval_from_environment(monkeypatch) -> None:
     assert _resolve_runner_interval_sec(17) == 17
     assert _resolve_runner_interval_sec(None, now=datetime(2026, 5, 21, 10, 0, tzinfo=tz)) == 301
     assert _resolve_runner_interval_sec(None, now=datetime(2026, 5, 21, 23, 0, tzinfo=tz)) == 1801
+
+
+def test_runner_runtime_bootstrap_does_not_require_risk_model() -> None:
+    code = textwrap.dedent(
+        f"""
+        import importlib.abc
+        import sys
+
+        class _BlockRiskModel(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "aiask_quant_core.risk_model":
+                    raise ModuleNotFoundError("blocked risk model import", name=fullname)
+                return None
+
+        sys.meta_path.insert(0, _BlockRiskModel())
+        sys.path.insert(0, {str(ROOT)!r})
+
+        import run_strategy_factory as runner
+
+        kwargs = runner._runner._load_strategy_factory_runtime_kwargs()
+        assert callable(kwargs["db_provider"])
+        assert type(kwargs["runtime_adapters"]).__name__ == "MCPRuntimeAdapters"
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_supervisor_does_not_force_strategy_interval_by_default() -> None:

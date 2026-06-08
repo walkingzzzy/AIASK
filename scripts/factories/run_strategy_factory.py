@@ -585,7 +585,7 @@ class StrategyFactoryRunner:
             dispatch_id = str(dispatch.get("dispatch_id") or "").strip()
             execution_mode = str(dispatch.get("execution_mode") or "").strip() or None
             target_codes = self.target_codes or list((dispatch.get("metadata") or {}).get("target_codes") or [])
-            logger.info("鎵ц Strategy Factory dispatch: %s", dispatch_id)
+            logger.info("执行 Strategy Factory dispatch: %s", dispatch_id)
             return await scheduler.run_once(
                 execution_mode=execution_mode,
                 dispatch_id=dispatch_id,

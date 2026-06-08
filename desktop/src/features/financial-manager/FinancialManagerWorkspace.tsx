@@ -1,7 +1,7 @@
 import { AlertTriangle, BarChart3, BriefcaseBusiness, Landmark, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
+import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type {
   FinancialManagerAction,
@@ -198,7 +198,7 @@ export function FinancialManagerWorkspace({
                     <AlertTriangle size={14} />
                     真实 live 下单和撤单在 V1 中固定禁用；券商区域只展示账户、持仓、订单、成交等只读查询。
                   </div>
-                  <JsonPanel value={{ safety: catalog?.safety, broker: status?.broker, mcp: status?.mcp }} />
+                  <RawEvidencePanel title="安全边界 JSON" value={{ safety: catalog?.safety, broker: status?.broker, mcp: status?.mcp }} />
                 </div>
               )}
 
@@ -236,7 +236,13 @@ export function FinancialManagerWorkspace({
                   {selectedAction?.mode === "stateful_intent" ? <ShieldCheck size={15} /> : <Play size={15} />}
                   {selectedAction?.mode === "stateful_intent" ? "创建意图" : "运行查询"}
                 </button>
-                {selectedAction?.mode === "blocked" && <p className="muted">{selectedAction.blocked_reason || "该动作在当前版本禁用。"}</p>}
+                {selectedAction?.mode === "blocked" && (
+                  <GatedState
+                    reason={selectedAction.blocked_reason || "该动作在当前版本禁用。"}
+                    status="blocked"
+                    title="动作已阻断"
+                  />
+                )}
               </form>
 
               <section className="capability-section">
@@ -253,7 +259,7 @@ export function FinancialManagerWorkspace({
                     <span>{compact(resultAvailabilityDetail)}</span>
                   </div>
                 )}
-                <JsonPanel value={result || { status: message, selected: selectedAction ? compact(selectedAction) : null }} />
+                <RawEvidencePanel title="动作结果 JSON" value={result || { status: message, selected: selectedAction ? compact(selectedAction) : null }} />
               </section>
             </section>
           </div>

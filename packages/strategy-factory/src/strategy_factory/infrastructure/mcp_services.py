@@ -12,8 +12,6 @@ from typing import Any, Callable
 
 from aiask_quant_core.backtest import BacktestEngine, StrategyRegistry
 from aiask_quant_core.data_pipeline import normalize_klines
-from aiask_quant_core.risk_model import RiskModel
-import aiask_quant_core.validation as validation_runtime
 from aiask_quant_core.strategy_dsl import compile_strategy_blueprint
 
 
@@ -86,10 +84,14 @@ def get_normalize_klines():
 
 
 def get_risk_model_class():
+    from aiask_quant_core.risk_model import RiskModel
+
     return RiskModel
 
 
 def get_validation_runtime():
+    import aiask_quant_core.validation as validation_runtime
+
     return SimpleNamespace(
         FactorValidationPipeline=validation_runtime.FactorValidationPipeline,
         PurgedKFoldCV=validation_runtime.PurgedKFoldCV,

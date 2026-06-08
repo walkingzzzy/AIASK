@@ -3,7 +3,7 @@ import type { ElementType } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useCapabilityWorkbench } from "../../hooks/useCapabilityWorkbench";
 import type { CapabilityTab, CapabilityWorkbenchPayload } from "../../types";
-import { JsonPanel, MetricCard, StatusBadge, localizeBlockedReason } from "../../components/shared";
+import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, localizeBlockedReason } from "../../components/shared";
 import { AiTestingPanel } from "../ai-testing/AiTestingPanel";
 import { ConnectorsPanel } from "../connectors/ConnectorsPanel";
 import { IncubationFactoryPanel } from "../incubation/IncubationFactoryPanel";
@@ -110,10 +110,11 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       )}
 
       {!payload?.summary.control.authorized && (
-        <div className="notice warn">
-          <ShieldCheck size={15} />
-          {localizeBlockedReason(payload?.summary.control.gated_reason || payload?.summary.control.reason) || "需要控制令牌才能查看完整 MCP、技能、插件、网关、终端和 RL 数据。"}
-        </div>
+        <GatedState
+          reason={payload?.summary.control.gated_reason || payload?.summary.control.reason || "需要控制令牌才能查看完整 MCP、技能、插件、网关、终端和 RL 数据。"}
+          status="gated"
+          title="能力评审受限"
+        />
       )}
 
       <section className="capability-grid two">
@@ -155,11 +156,7 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
         </div>
       </section>
 
-      <details className="raw-details">
-        <summary>原始能力中心数据</summary>
-        <p className="status-line">{message || "ready"}</p>
-        <JsonPanel value={payload || { status: "not_loaded" }} />
-      </details>
+      <RawEvidencePanel title="原始能力中心数据" value={payload || { status: "not_loaded", message }} />
     </div>
   );
 }

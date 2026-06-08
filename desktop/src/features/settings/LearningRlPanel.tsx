@@ -1,7 +1,7 @@
 import { BrainCircuit, FileText, Play, RefreshCw, Save, Square } from "lucide-react";
 import { useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, confirmAction } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { LearningProposal, RlRun } from "../../types";
 
@@ -44,7 +44,9 @@ export function LearningRlPanel({ apiToken, controlToken, endpoint }: { apiToken
   }
 
   async function applyProposal(proposalId: string) {
+    if (!confirmAction("应用学习建议", `Proposal: ${proposalId}`)) return;
     setBusy(true);
+    setMessage("LEARNING_PROPOSAL_APPLY_RUNNING");
     try {
       setResult(await api.learningApply(proposalId));
       setMessage("LEARNING_PROPOSAL_APPLIED");
@@ -57,7 +59,9 @@ export function LearningRlPanel({ apiToken, controlToken, endpoint }: { apiToken
   }
 
   async function startRun() {
+    if (!confirmAction("启动 RL 训练", `Environment: ${selectedEnvironment || "默认环境"}`)) return;
     setBusy(true);
+    setMessage("RL_RUN_STARTING");
     try {
       setResult(await api.rlRunStart(selectedEnvironment || undefined, {}));
       setMessage("RL_RUN_STARTED");
@@ -70,7 +74,9 @@ export function LearningRlPanel({ apiToken, controlToken, endpoint }: { apiToken
   }
 
   async function saveConfig() {
+    if (!confirmAction("保存 RL 配置", "将更新 Agent 侧 RL 配置。")) return;
     setBusy(true);
+    setMessage("RL_CONFIG_SAVING");
     try {
       const parsed = JSON.parse(configDraft || "{}") as Record<string, unknown>;
       setResult(await api.rlConfigUpdate(parsed));
@@ -104,7 +110,9 @@ export function LearningRlPanel({ apiToken, controlToken, endpoint }: { apiToken
   }
 
   async function stopRun(runId: string) {
+    if (!confirmAction("停止 RL 运行", `Run: ${runId}`)) return;
     setBusy(true);
+    setMessage("RL_RUN_STOPPING");
     try {
       setResult(await api.rlRunStop(runId));
       setMessage("RL_RUN_STOPPED");

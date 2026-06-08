@@ -63,6 +63,36 @@ def test_hard_readiness_blocks_missing_governed_pool(monkeypatch):
     assert readiness["authority"]["decision"] == "blocked"
 
 
+def test_active_factor_pool_fallback_counts_as_governed_supply(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    readiness = ReadinessService().evaluate(
+        _healthy_snapshot(),
+        {
+            "summary": {
+                "factor_source_mode": "active_factor_pool_fallback",
+                "governed_candidate_pool_mode": "active_factor_pool_fallback",
+                "active_candidate_count": 2,
+                "governed_source_candidate_count": 2,
+                "active_family_names": ["momentum", "quality_factor"],
+                "stale": False,
+                "degraded": False,
+            },
+            "freshness_repair": {
+                "auto_refresh_enabled": False,
+                "refresh_attempted": False,
+                "refresh_status": "not_needed",
+            },
+        },
+    )
+
+    assert readiness["governed_candidate_pool_active"] is True
+    assert readiness["governed_supply_viable"] is True
+    assert readiness["can_proceed"] is True
+
+
 
 # --- P0-3 fix: cohort_zero_signal / promotion_ready_complete_failure regression locks ---
 

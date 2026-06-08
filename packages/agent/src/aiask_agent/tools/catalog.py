@@ -160,6 +160,27 @@ FINANCE_SAFE_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "description": "Read family, stage, regime, event, and factor trade prediction contribution matrices.",
     },
     {
+        "name": "agent_stock_radar_status",
+        "capability": "stock_radar_status",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Read latest AIASK stock radar run status, degraded flags, candidates, and digest preview.",
+    },
+    {
+        "name": "agent_stock_radar_candidates",
+        "capability": "stock_radar_candidates",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "List AIASK stock radar observation-pool candidates with scores and source evidence.",
+    },
+    {
+        "name": "agent_stock_radar_digest",
+        "capability": "stock_radar_digest",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Build a stock radar digest preview for WeCom or Telegram without sending it.",
+    },
+    {
         "name": "agent_action_intent_create",
         "capability": "action_intent_create",
         "category": "financial_stateful",

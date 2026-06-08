@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact, shortText } from "../../components/shared";
+import { RawEvidencePanel, StatusBadge, compact, shortText } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { ToolEnvelope } from "../../types";
 
@@ -93,6 +93,26 @@ interface LineageRow {
   [key: string]: unknown;
 }
 
+interface RadarCandidateRow {
+  candidate_id: string;
+  run_id: string;
+  symbol: string;
+  stock_name?: string;
+  tier: string;
+  radar_score: number;
+  event_id?: string;
+  event_type: string;
+  direction: string;
+  summary?: string;
+  source_doc_uids: string[];
+  source_chain: unknown[];
+  extraction: Record<string, unknown>;
+  confirmations: Record<string, unknown>;
+  risk_flags: string[];
+  push_status?: string;
+  [key: string]: unknown;
+}
+
 interface IntentEnvelope {
   intent?: {
     intent_id?: string;
@@ -109,7 +129,7 @@ interface Props {
   controlToken: string;
 }
 
-type TabId = "events" | "create" | "preview" | "lineage";
+type TabId = "events" | "radar" | "create" | "preview" | "lineage";
 
 const STATUS_OPTIONS = ["", "pending_review", "active", "paused", "expired"];
 const SOURCE_OPTIONS = ["", "manual", "news_llm", "macro_shock", "market_anomaly", "price_inference"];
@@ -209,11 +229,49 @@ function lineageFromData(data: unknown): LineageRow[] {
   });
 }
 
+function radarCandidatesFromData(data: unknown): RadarCandidateRow[] {
+  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+  const rawRows = Array.isArray(record.candidates)
+    ? record.candidates
+    : Array.isArray(data)
+      ? data
+      : [];
+  return rawRows.map((item, index) => {
+    const row = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    return {
+      ...row,
+      candidate_id: compact(row.candidate_id || `radar_candidate_${index}`),
+      run_id: compact(row.run_id || ""),
+      symbol: compact(row.symbol || row.stock_code || ""),
+      stock_name: compact(row.stock_name || row.name || ""),
+      tier: compact(row.tier || "observe"),
+      radar_score: Number(row.radar_score || 0),
+      event_id: compact(row.event_id || ""),
+      event_type: compact(row.event_type || "unknown"),
+      direction: compact(row.direction || "neutral"),
+      summary: compact(row.summary || ""),
+      source_doc_uids: Array.isArray(row.source_doc_uids) ? row.source_doc_uids.map((value) => compact(value)).filter(Boolean) : [],
+      source_chain: Array.isArray(row.source_chain) ? row.source_chain : [],
+      extraction: row.extraction && typeof row.extraction === "object" && !Array.isArray(row.extraction) ? row.extraction as Record<string, unknown> : {},
+      confirmations: row.confirmations && typeof row.confirmations === "object" && !Array.isArray(row.confirmations) ? row.confirmations as Record<string, unknown> : {},
+      risk_flags: Array.isArray(row.risk_flags) ? row.risk_flags.map((value) => compact(value)).filter(Boolean) : [],
+      push_status: compact(row.push_status || "")
+    } as RadarCandidateRow;
+  });
+}
+
 function numericStatus(value: Record<string, unknown> | null, key: string): number {
   if (!value) return 0;
   const raw = value[key];
   const parsed = Number(raw || 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function latestRunId(value: Record<string, unknown> | null): string {
+  const latest = value && typeof value.latest_run === "object" && value.latest_run !== null
+    ? value.latest_run as Record<string, unknown>
+    : {};
+  return compact(latest.run_id || "");
 }
 
 function outboxCount(value: Record<string, unknown> | null, status: string): number {
@@ -291,6 +349,12 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const [bootstrapStatus, setBootstrapStatus] = useState("BOOTSTRAP_NOT_RUN");
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState("MAINTENANCE_NOT_LOADED");
+  const [radarStatus, setRadarStatus] = useState<Record<string, unknown> | null>(null);
+  const [radarCandidates, setRadarCandidates] = useState<RadarCandidateRow[]>([]);
+  const [radarDigest, setRadarDigest] = useState<Record<string, unknown> | null>(null);
+  const [radarLoading, setRadarLoading] = useState(false);
+  const [radarMessage, setRadarMessage] = useState("RADAR_NOT_LOADED");
+  const [radarTierFilter, setRadarTierFilter] = useState("");
 
   // ── Create form state ────────────────────────────────────────────────
   const [formName, setFormName] = useState("");
@@ -330,6 +394,29 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       setMaintenanceLoading(false);
     }
   }, [client]);
+
+  const loadRadar = useCallback(async () => {
+    setRadarLoading(true);
+    try {
+      const [statusEnvelope, candidatesEnvelope, digestEnvelope] = await Promise.all([
+        client.stockRadarStatus({ limit: 20 }),
+        client.stockRadarCandidates({ tier: radarTierFilter, limit: 100 }),
+        client.stockRadarDigest({ limit: 20, channels: ["wecom", "telegram"] })
+      ]);
+      setRadarStatus(statusEnvelope.data || {});
+      setRadarCandidates(radarCandidatesFromData(candidatesEnvelope.data));
+      setRadarDigest(digestEnvelope.data || {});
+      setRadarMessage(
+        statusEnvelope.success && candidatesEnvelope.success && digestEnvelope.success
+          ? "RADAR_LOADED"
+          : statusEnvelope.error || candidatesEnvelope.error || digestEnvelope.error || "RADAR_DEGRADED"
+      );
+    } catch (error) {
+      setRadarMessage(formatApiError(error));
+    } finally {
+      setRadarLoading(false);
+    }
+  }, [client, radarTierFilter]);
 
   const loadLineage = useCallback(async () => {
     setLineageLoading(true);
@@ -376,6 +463,10 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   useEffect(() => {
     loadLineage().catch(() => undefined);
   }, [loadLineage]);
+
+  useEffect(() => {
+    loadRadar().catch(() => undefined);
+  }, [loadRadar]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -684,6 +775,38 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     );
   }, [client, createAndConfirmMaintenanceIntent]);
 
+  const handleRadarRun = useCallback(() => {
+    createAndConfirmMaintenanceIntent("Stock Radar run", () =>
+      client.stockRadarRunIntent({
+        mode: "run_once",
+        days: 3,
+        limit: 80,
+        allow_network: false,
+        ingest_market_text: true,
+        parse_pdf: true
+      })
+    ).then(() => loadRadar());
+  }, [client, createAndConfirmMaintenanceIntent, loadRadar]);
+
+  const handleRadarPushPreview = useCallback(() => {
+    createAndConfirmMaintenanceIntent("Stock Radar push preview", () =>
+      client.stockRadarPushDigestIntent({
+        run_id: latestRunId(radarStatus),
+        channels: ["wecom", "telegram"],
+        dry_run: true
+      })
+    ).then(() => loadRadar());
+  }, [client, createAndConfirmMaintenanceIntent, loadRadar, radarStatus]);
+
+  const handleRadarSchedulePreview = useCallback(() => {
+    createAndConfirmMaintenanceIntent("Stock Radar schedule", () =>
+      client.stockRadarScheduleUpdateIntent({
+        schedule: "manual",
+        enabled: false
+      })
+    ).then(() => loadRadar());
+  }, [client, createAndConfirmMaintenanceIntent, loadRadar]);
+
   const renderMaintenancePanel = () => (
     <section className="capability-section">
       <div className="section-header">
@@ -730,6 +853,143 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       )}
     </section>
   );
+
+  const renderRadarTab = () => {
+    const degradedFlags = Array.isArray(radarStatus?.degraded_flags)
+      ? radarStatus.degraded_flags.map((value) => compact(value)).filter(Boolean)
+      : [];
+    const digestPreview = compact(radarDigest?.digest_preview || radarStatus?.digest_preview || "");
+    const counts = radarStatus?.counts && typeof radarStatus.counts === "object"
+      ? radarStatus.counts as Record<string, unknown>
+      : {};
+    return (
+      <>
+        <section className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>{radarMessage}</span>
+              <h3>Stock Radar observation pool</h3>
+            </div>
+            <Target size={18} />
+          </div>
+          <div className="status-cluster">
+            <StatusBadge status={radarMessage.startsWith("AIASK_") ? "warning" : "implemented"} label={String(radarStatus?.status || "unknown")} />
+            <StatusBadge status="info" label={`${Number(counts.alert || 0)} alert`} />
+            <StatusBadge status="info" label={`${Number(counts.watch || 0)} watch`} />
+            <StatusBadge status={degradedFlags.length ? "warning" : "implemented"} label={`${degradedFlags.length} degraded`} />
+            <StatusBadge status="info" label={`run ${latestRunId(radarStatus) || "-"}`} />
+          </div>
+          <div className="event-filter-grid">
+            <label>
+              <span>Tier</span>
+              <select value={radarTierFilter} onChange={(event) => setRadarTierFilter(event.target.value)}>
+                {["", "alert", "watch", "observe", "reject"].map((value) => (
+                  <option key={value || "all"} value={value}>{value || "all"}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>&nbsp;</span>
+              <button className="small-button" type="button" onClick={loadRadar} disabled={radarLoading}>
+                <RefreshCw size={13} className={radarLoading ? "spin" : ""} />
+                Refresh radar
+              </button>
+            </label>
+            <label>
+              <span>&nbsp;</span>
+              <button className="small-button" type="button" onClick={handleRadarRun} disabled={!hasControlToken || radarLoading}>
+                <Compass size={13} />
+                Run once
+              </button>
+            </label>
+            <label>
+              <span>&nbsp;</span>
+              <button className="small-button" type="button" onClick={handleRadarPushPreview} disabled={!hasControlToken || radarLoading}>
+                <ClipboardCheck size={13} />
+                Push preview
+              </button>
+            </label>
+            <label>
+              <span>&nbsp;</span>
+              <button className="small-button" type="button" onClick={handleRadarSchedulePreview} disabled={!hasControlToken || radarLoading}>
+                <Workflow size={13} />
+                Schedule
+              </button>
+            </label>
+          </div>
+          {degradedFlags.length > 0 && (
+            <div className="notice warn">
+              <AlertTriangle size={15} />
+              {degradedFlags.slice(0, 8).join(", ")}
+            </div>
+          )}
+          {!hasControlToken && (
+            <div className="notice warn">
+              <AlertTriangle size={15} />
+              Radar run and push actions require a control token; read-only status remains available.
+            </div>
+          )}
+        </section>
+
+        <section className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>{radarCandidates.length} candidates</span>
+              <h3>Evidence-ranked candidates</h3>
+            </div>
+            <Workflow size={18} />
+          </div>
+          <div className="event-list">
+            {radarCandidates.map((candidate) => (
+              <article className="event-card" key={candidate.candidate_id}>
+                <div className="event-card-main">
+                  <div className="event-card-icon">
+                    <Target size={15} />
+                  </div>
+                  <div>
+                    <span>
+                      {candidate.symbol} / {candidate.event_type} / {candidate.direction}
+                    </span>
+                    <strong>{candidate.stock_name || candidate.symbol}</strong>
+                    <p>{shortText(candidate.summary || "", 220)}</p>
+                  </div>
+                </div>
+                <div className="event-card-meta">
+                  <StatusBadge status={candidate.tier === "alert" ? "implemented" : candidate.tier === "watch" ? "info" : "warning"} label={`${candidate.tier} ${candidate.radar_score.toFixed(1)}`} />
+                  <small>{candidate.source_doc_uids.length} sources</small>
+                </div>
+                <RawEvidencePanel
+                  title="Evidence and confirmations"
+                  value={{ source_chain: candidate.source_chain, extraction: candidate.extraction, confirmations: candidate.confirmations, risk_flags: candidate.risk_flags }}
+                />
+              </article>
+            ))}
+            {!radarCandidates.length && (
+              <div className="empty-mini">
+                <ClipboardCheck size={24} />
+                <span>No radar candidates for the current filter.</span>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="capability-section">
+          <div className="section-header">
+            <div>
+              <span>Digest preview</span>
+              <h3>WeCom / Telegram payload preview</h3>
+            </div>
+            <ClipboardCheck size={18} />
+          </div>
+          <pre className="json-panel">{digestPreview || "No digest preview yet."}</pre>
+          <div className="notice">
+            <ShieldAlert size={15} />
+            Observation pool only. Digest text does not include buy or sell instructions.
+          </div>
+        </section>
+      </>
+    );
+  };
 
   const renderEventsTab = () => (
     <>
@@ -840,10 +1100,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                   </button>
                 )}
               </div>
-              <details className="raw-details">
-                <summary>证据 payload</summary>
-                <JsonPanel value={event} />
-              </details>
+              <RawEvidencePanel title="证据 payload" value={event} />
             </article>
           ))}
           {!filtered.length && (
@@ -1069,19 +1326,10 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             <StatusBadge status={preview.warnings?.length ? "warning" : "implemented"} label={`${preview.warnings?.length || 0} 条警告`} />
             <StatusBadge status="info" label={preview.preview_mode || "real_bfs"} />
           </div>
-          <details className="raw-details" open>
-            <summary>主题影响 ({preview.impacts?.length || 0})</summary>
-            <JsonPanel value={preview.impacts || []} />
-          </details>
-          <details className="raw-details">
-            <summary>候选标的 ({preview.candidate_symbols?.length || 0})</summary>
-            <JsonPanel value={preview.candidate_symbols || []} />
-          </details>
+          <RawEvidencePanel title={`主题影响 (${preview.impacts?.length || 0})`} value={preview.impacts || []} />
+          <RawEvidencePanel title={`候选标的 (${preview.candidate_symbols?.length || 0})`} value={preview.candidate_symbols || []} />
           {preview.warnings && preview.warnings.length > 0 && (
-            <details className="raw-details" open>
-              <summary>警告</summary>
-              <JsonPanel value={preview.warnings} />
-            </details>
+            <RawEvidencePanel title="警告" value={preview.warnings} />
           )}
         </>
       )}
@@ -1137,10 +1385,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                 />
                 <small>{formatTime(row.generated_at)}</small>
               </div>
-              <details className="raw-details">
-                <summary>血缘 payload</summary>
-                <JsonPanel value={row} />
-              </details>
+              <RawEvidencePanel title="血缘 payload" value={row} />
             </article>
           ))}
           {!lineage.length && (
@@ -1196,6 +1441,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   // ── Render ───────────────────────────────────────────────────────────
 
   const tabs: Array<{ id: TabId; label: string }> = [
+    { id: "radar", label: "Radar" },
     { id: "events", label: "事件" },
     { id: "create", label: "创建" },
     { id: "preview", label: "预览" },
@@ -1260,6 +1506,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           )}
 
           {tab === "events" && renderEventsTab()}
+          {tab === "radar" && renderRadarTab()}
           {tab === "create" && renderCreateTab()}
           {tab === "preview" && renderPreviewTab()}
           {tab === "lineage" && renderLineageTab()}

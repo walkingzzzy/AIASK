@@ -102,12 +102,16 @@ def build_factor_research_summary(
         "family_preference_order": family_preference_order,
         "family_preference_source_mode": family_preference_source_mode,
         "factor_source_mode": (
-            "governed_candidate_pool"
-            if governed_top_candidates
+            "active_factor_pool_fallback"
+            if governed_top_candidates and governed_candidate_pool_mode == "active_factor_pool_fallback"
             else (
-                "governed_pool_missing_after_scheduler_success"
-                if governed_pool_missing_after_scheduler_success
-                else "seed_fallback"
+                "governed_candidate_pool"
+                if governed_top_candidates
+                else (
+                    "governed_pool_missing_after_scheduler_success"
+                    if governed_pool_missing_after_scheduler_success
+                    else "seed_fallback"
+                )
             )
         ),
         "governed_candidate_pool_mode": governed_candidate_pool_mode,

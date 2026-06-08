@@ -123,6 +123,8 @@ describe("QuantResearchWorkspace", () => {
     expect(screen.getByText("data gate")).toBeInTheDocument();
     expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/NOT_INVESTMENT_ADVICE/).length).toBeGreaterThan(0);
+    expect(screen.getByText("结构化报告").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("回测假设 JSON").closest("details")).not.toHaveAttribute("open");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

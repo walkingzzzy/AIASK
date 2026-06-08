@@ -2009,6 +2009,48 @@ def create_app(
             },
         )
 
+    @app.get("/v1/desktop/stock-radar/status")
+    async def desktop_stock_radar_status(request: Request, run_id: str | None = None, limit: int = 20) -> dict[str, Any]:
+        require_api(request)
+        return await runtime.tool_registry.call_tool(
+            "agent_stock_radar_status",
+            {"run_id": run_id, "limit": limit},
+        )
+
+    @app.get("/v1/desktop/stock-radar/candidates")
+    async def desktop_stock_radar_candidates(
+        request: Request,
+        run_id: str | None = None,
+        tier: str | None = None,
+        symbol: str | None = None,
+        min_score: float | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        require_api(request)
+        return await runtime.tool_registry.call_tool(
+            "agent_stock_radar_candidates",
+            {
+                "run_id": run_id,
+                "tier": tier,
+                "symbol": symbol,
+                "min_score": min_score,
+                "limit": limit,
+            },
+        )
+
+    @app.get("/v1/desktop/stock-radar/digest")
+    async def desktop_stock_radar_digest(
+        request: Request,
+        run_id: str | None = None,
+        limit: int = 20,
+        channels: str = "wecom,telegram",
+    ) -> dict[str, Any]:
+        require_api(request)
+        return await runtime.tool_registry.call_tool(
+            "agent_stock_radar_digest",
+            {"run_id": run_id, "limit": limit, "channels": [item.strip() for item in channels.split(",") if item.strip()]},
+        )
+
     @app.get("/v1/desktop/workbench/summary")
     async def desktop_workbench_summary(
         request: Request,
@@ -3421,6 +3463,67 @@ def build_server(
                                 "score_version": (query.get("score_version") or [None])[0],
                                 "dimensions": dimensions,
                                 "limit": int((query.get("limit") or ["1000"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/stock-radar/status":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_stock_radar_status",
+                            {
+                                "run_id": (query.get("run_id") or [None])[0],
+                                "limit": int((query.get("limit") or ["20"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/stock-radar/candidates":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                min_score_raw = (query.get("min_score") or [None])[0]
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_stock_radar_candidates",
+                            {
+                                "run_id": (query.get("run_id") or [None])[0],
+                                "tier": (query.get("tier") or [None])[0],
+                                "symbol": (query.get("symbol") or [None])[0],
+                                "min_score": float(min_score_raw) if min_score_raw not in {None, ""} else None,
+                                "limit": int((query.get("limit") or ["100"])[0]),
+                            },
+                        )
+                    ),
+                )
+                return
+            if path == "/v1/desktop/stock-radar/digest":
+                if not self._api_authorized():
+                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                    return
+                channels = [
+                    item.strip()
+                    for item in str((query.get("channels") or ["wecom,telegram"])[0]).split(",")
+                    if item.strip()
+                ]
+                self._send_json(
+                    200,
+                    asyncio.run(
+                        runtime.tool_registry.call_tool(
+                            "agent_stock_radar_digest",
+                            {
+                                "run_id": (query.get("run_id") or [None])[0],
+                                "limit": int((query.get("limit") or ["20"])[0]),
+                                "channels": channels,
                             },
                         )
                     ),

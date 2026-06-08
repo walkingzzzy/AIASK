@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from .adapters import akshare as akshare_adapter
 from .adapters import quant as quant_adapter
+from .adapters import stock_radar as stock_radar_adapter
 from .adapters import strategy_factory as strategy_factory_adapter
 from .code_graph import build_code_graph_query_handler
 from .general_tools import build_general_tool_handlers
@@ -503,6 +504,9 @@ def build_default_tool_registry(
         ("agent_trade_prediction_status", strategy_factory_adapter.trade_prediction_status),
         ("agent_trade_prediction_outcomes", strategy_factory_adapter.trade_prediction_outcomes),
         ("agent_trade_prediction_matrix", strategy_factory_adapter.trade_prediction_matrix),
+        ("agent_stock_radar_status", stock_radar_adapter.status),
+        ("agent_stock_radar_candidates", stock_radar_adapter.candidates),
+        ("agent_stock_radar_digest", stock_radar_adapter.digest),
         ("agent_action_intent_create", action_intent_create),
         ("agent_action_intent_get", action_intent_get),
         ("agent_memory", memory),

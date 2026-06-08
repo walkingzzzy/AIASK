@@ -1,7 +1,7 @@
 import { Activity, BarChart3, Database, FileText, FlaskConical, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
+import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { QuantPresetPayload, QuantResearchRun } from "../../types";
 
@@ -148,10 +148,7 @@ function ReportPanel({ run }: { run: QuantResearchRun | null }) {
             <ShieldCheck size={14} />
             {report.disclaimer || "NOT_INVESTMENT_ADVICE"}
           </div>
-          <details className="raw-details" open>
-            <summary>结构化报告</summary>
-            <JsonPanel value={report} />
-          </details>
+          <RawEvidencePanel title="结构化报告" value={report} />
         </>
       ) : (
         <div className="empty-mini">
@@ -355,10 +352,11 @@ export function QuantResearchWorkspace({
           </div>
 
           {database && (!database.configured || database.writable === false) && (
-            <div className="notice warn">
-              <Database size={15} />
-              {database.setup_hint || "请配置可写 SQLite 数据库路径，以启用完整量化研究。"}
-            </div>
+            <GatedState
+              reason={database.setup_hint || "请配置可写 SQLite 数据库路径，以启用完整量化研究。"}
+              status="unconfigured"
+              title="量化数据库未就绪"
+            />
           )}
 
           <ResearchConfidencePanel run={run} />
@@ -384,7 +382,10 @@ export function QuantResearchWorkspace({
                 </div>
                 <BarChart3 size={18} />
               </div>
-              <JsonPanel value={run?.report?.backtest_assumptions || { cost_bps: costBps, slippage_bps: slippageBps, benchmark }} />
+              <RawEvidencePanel
+                title="回测假设 JSON"
+                value={run?.report?.backtest_assumptions || { cost_bps: costBps, slippage_bps: slippageBps, benchmark }}
+              />
             </div>
             <div className="capability-card">
               <div className="card-head">
@@ -394,7 +395,7 @@ export function QuantResearchWorkspace({
                 </div>
                 <StatusBadge status={run?.report?.strategy_factory ? "implemented" : "not_loaded"} />
               </div>
-              <JsonPanel value={run?.report?.strategy_factory || { status: "not_loaded" }} />
+              <RawEvidencePanel title="策略工厂评审 JSON" value={run?.report?.strategy_factory || { status: "not_loaded" }} />
             </div>
           </div>
         </section>

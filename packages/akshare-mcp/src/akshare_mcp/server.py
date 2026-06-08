@@ -51,7 +51,7 @@ _core_tool_names = (
     "search", "semantic", "data_warmup", "alerts", "ai_workflows",
     "governance_workflow", "adapter_tools",
     "market_blocks", "basic_data", "managers", "research",
-    "key_levels", "stop_levels", "trade_plan",
+    "key_levels", "stop_levels", "trade_plan", "stock_radar",
 )
 try:
     from .tools import (
@@ -61,7 +61,7 @@ try:
         governance_workflow, adapter_tools,
         market_blocks, basic_data, managers, research,
         key_levels, stop_levels, trade_plan, db_freshness,
-        valuation_consensus, decision_consensus,
+        valuation_consensus, decision_consensus, stock_radar,
     )
 except UnicodeDecodeError as e:
     for _n in _core_tool_names:
@@ -384,6 +384,7 @@ def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
     key_levels.register(app)
     stop_levels.register(app)
     trade_plan.register(app)
+    stock_radar.register(app)
     db_freshness.register(app)
     managers.register(
         app,

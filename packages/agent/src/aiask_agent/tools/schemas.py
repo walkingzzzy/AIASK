@@ -201,6 +201,30 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 5000},
         }
     ),
+    "agent_stock_radar_status": schema(
+        {
+            "run_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    ),
+    "agent_stock_radar_candidates": schema(
+        {
+            "run_id": {"type": "string"},
+            "tier": {"type": "string", "enum": ["", "alert", "watch", "observe", "reject"]},
+            "symbol": {"type": "string"},
+            "stock_code": {"type": "string"},
+            "min_score": {"type": "number", "minimum": 0, "maximum": 100},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+        }
+    ),
+    "agent_stock_radar_digest": schema(
+        {
+            "run_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "channels": {"type": "array", "items": {"type": "string"}},
+            "record_preview": {"type": "boolean", "default": False},
+        }
+    ),
     "agent_action_intent_create": schema(
         {
             "action": {"type": "string", "enum": sorted(ALLOWED_ACTIONS)},

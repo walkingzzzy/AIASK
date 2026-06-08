@@ -1,7 +1,7 @@
 import { Database, GitPullRequest, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, MetricCard, StatusBadge, compact } from "../../components/shared";
+import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { DesktopDataStatus, DesktopDataSyncPlan, ToolEnvelope } from "../../types";
 
@@ -165,10 +165,11 @@ export function DataSyncWorkspace({
             生成同步计划
           </button>
           {!controlToken.trim() && (
-            <div className="notice warn compact-notice">
-              <ShieldCheck size={14} />
-              需要控制令牌后，同步计划才能创建为审批意图。
-            </div>
+            <GatedState
+              reason="control token required"
+              status="gated"
+              title="需要控制令牌后才能创建审批意图"
+            />
           )}
         </form>
 
@@ -208,7 +209,7 @@ export function DataSyncWorkspace({
               </div>
               <StatusBadge status={dataStatus?.quality_gate?.success ? "ready" : "partial"} />
             </div>
-            <JsonPanel value={freshnessRecord || dataStatus?.quality_gate || { status: "not_loaded" }} />
+            <RawEvidencePanel title="质量闸门证据 JSON" value={freshnessRecord || dataStatus?.quality_gate || { status: "not_loaded" }} />
           </section>
         </section>
 
@@ -242,10 +243,7 @@ export function DataSyncWorkspace({
                   <span>请在 Agent 意图检查器中复核并确认这个意图。</span>
                 </div>
               )}
-              <details className="raw-details" open>
-                <summary>同步计划</summary>
-                <JsonPanel value={{ plan, intentEnvelope }} />
-              </details>
+              <RawEvidencePanel title="同步计划 JSON" value={{ plan, intentEnvelope }} />
             </>
           ) : (
             <div className="empty-mini">

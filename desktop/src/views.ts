@@ -9,6 +9,7 @@ import {
   Database,
   Factory,
   FlaskConical,
+  FolderGit2,
   GitBranchPlus,
   Landmark,
   LayoutList,
@@ -18,6 +19,7 @@ import {
   PlugZap,
   Puzzle,
   Radio,
+  SearchCheck,
   ServerCog,
   Settings,
   ShieldCheck,
@@ -34,7 +36,7 @@ export interface ViewRegistryItem {
   label: string;
   icon: ElementType;
   description: string;
-  group: "agent" | "finance" | "ops" | "legacy";
+  group: "workspace" | "finance" | "ops" | "settings" | "agent" | "legacy";
   route?: string;
   requiresControlToken?: boolean;
   requiresFullMode?: boolean;
@@ -44,12 +46,15 @@ export interface ViewRegistryItem {
   legacy?: boolean;
   replacementView?: MainView;
   badge?: string;
+  diagnosticOnly?: boolean;
 }
 
 export interface ViewGroup {
   id: string;
   label: string;
   items: ViewRegistryItem[];
+  defaultCollapsed?: boolean;
+  diagnosticOnly?: boolean;
 }
 
 export const VIEW_REGISTRY: ViewRegistryItem[] = [
@@ -58,8 +63,17 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     label: "Workbench",
     icon: MessageSquare,
     description: "Agent primary entry with a session-first workflow.",
-    group: "agent",
+    group: "workspace",
     route: "/workbench",
+    mountPosition: "primary",
+  },
+  {
+    id: "projects-contexts",
+    label: "Projects / Contexts",
+    icon: FolderGit2,
+    description: "Endpoint, project context, backend mode, and environment readiness.",
+    group: "workspace",
+    route: "/projects-contexts",
     mountPosition: "primary",
   },
   {
@@ -83,11 +97,29 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
   },
   {
     id: "tools-intents-approvals",
-    label: "Tools / Intents / Approvals",
+    label: "Approvals",
     icon: ShieldCheck,
     description: "Tool catalog, intents, approvals, and control flow.",
-    group: "agent",
+    group: "workspace",
     route: "/tools-intents-approvals",
+  },
+  {
+    id: "finance-lab",
+    label: "Finance Lab",
+    icon: SearchCheck,
+    description: "Finance task templates for research, strategy, factor, data, and events.",
+    group: "finance",
+    route: "/finance-lab",
+    mountPosition: "primary",
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    icon: PlugZap,
+    description: "Unified MCP, Gateway, Plugins, Skills, and connector health.",
+    group: "ops",
+    route: "/integrations",
+    mountPosition: "primary",
   },
   {
     id: "plugins-skills",
@@ -143,10 +175,12 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
   },
   {
     id: "automation",
-    label: "Automation",
+    label: "Automations",
     icon: CalendarClock,
-    description: "Jobs and automation workflows.",
-    group: "finance",
+    description: "Automation triage, schedules, and workflow runs.",
+    group: "workspace",
+    route: "/automations",
+    mountPosition: "primary",
   },
   {
     id: "workflows",
@@ -200,10 +234,10 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
   },
   {
     id: "settings",
-    label: "Settings / Mode",
+    label: "Settings",
     icon: Settings,
     description: "Endpoint, tokens, profile, and mode controls.",
-    group: "ops",
+    group: "settings",
   },
   {
     id: "overview",
@@ -212,6 +246,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     description: "Legacy system overview entry.",
     group: "legacy",
     legacy: true,
+    diagnosticOnly: true,
   },
   {
     id: "agent",
@@ -221,6 +256,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "workbench",
+    diagnosticOnly: true,
   },
   {
     id: "capabilities",
@@ -229,6 +265,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     description: "Legacy capabilities workbench entry.",
     group: "legacy",
     legacy: true,
+    diagnosticOnly: true,
   },
   {
     id: "coverage",
@@ -237,6 +274,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     description: "Legacy coverage matrix entry.",
     group: "legacy",
     legacy: true,
+    diagnosticOnly: true,
   },
   {
     id: "tools",
@@ -246,6 +284,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "tools-intents-approvals",
+    diagnosticOnly: true,
   },
   {
     id: "mcp",
@@ -255,6 +294,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "mcp-connectors",
+    diagnosticOnly: true,
   },
   {
     id: "diagnostics",
@@ -264,6 +304,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "readiness-health",
+    diagnosticOnly: true,
   },
   {
     id: "event-console",
@@ -273,6 +314,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "runs-events",
+    diagnosticOnly: true,
   },
   {
     id: "skills",
@@ -282,6 +324,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "plugins-skills",
+    diagnosticOnly: true,
   },
   {
     id: "user",
@@ -291,6 +334,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "legacy",
     legacy: true,
     replacementView: "settings",
+    diagnosticOnly: true,
   },
   {
     id: "models",
@@ -299,6 +343,7 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     description: "Legacy model status page.",
     group: "legacy",
     legacy: true,
+    diagnosticOnly: true,
   },
 ];
 
@@ -312,13 +357,14 @@ function pick(ids: MainView[]): ViewRegistryItem[] {
 
 export const VIEW_GROUPS: ViewGroup[] = [
   {
-    id: "agent",
-    label: "Agent",
-    items: pick(["workbench", "sessions", "runs-events", "tools-intents-approvals"]),
+    id: "primary",
+    label: "Workspace",
+    items: pick(["workbench", "projects-contexts", "runs-events", "tools-intents-approvals", "finance-lab", "integrations", "automation", "settings"]),
   },
   {
-    id: "finance",
-    label: "Finance",
+    id: "advanced-finance",
+    label: "Advanced Finance",
+    defaultCollapsed: true,
     items: pick([
       "financial-manager",
       "quant",
@@ -332,13 +378,16 @@ export const VIEW_GROUPS: ViewGroup[] = [
     ]),
   },
   {
-    id: "ops",
-    label: "Ops",
+    id: "advanced-ops",
+    label: "Advanced Ops",
+    defaultCollapsed: true,
     items: pick(["plugins-skills", "mcp-connectors", "gateway", "readiness-health", "extensions-pilot", "settings"]),
   },
   {
     id: "legacy",
     label: "Legacy / Advanced",
+    defaultCollapsed: true,
+    diagnosticOnly: true,
     items: pick([
       "overview",
       "agent",

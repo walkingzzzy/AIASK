@@ -1,7 +1,7 @@
 import { Cable, RefreshCw, RotateCcw, Send, Settings2 } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, confirmAction } from "../../components/shared";
 import { ConnectorWizard } from "../connectors/ConnectorWizard";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { ConnectorDetail, GatewayDaemonStatus, GatewayMessage, GatewayPlatform } from "../../types";
@@ -94,7 +94,9 @@ export function IntegrationsManagementPanel({
   }
 
   async function platformAction(platform: string, action: "start" | "stop" | "health") {
+    if (action !== "health" && !confirmAction(action === "start" ? "启动 Gateway 平台" : "停止 Gateway 平台", `Platform: ${platform}`)) return;
     setBusy(true);
+    setMessage(`GATEWAY_${action.toUpperCase()}_RUNNING`);
     try {
       const payload =
         action === "start"
@@ -113,7 +115,9 @@ export function IntegrationsManagementPanel({
   }
 
   async function refreshDirectory() {
+    if (!confirmAction("刷新 Gateway 目录", "将通过 Agent 请求重新同步目录。")) return;
     setBusy(true);
+    setMessage("DIRECTORY_REFRESH_RUNNING");
     try {
       setResult(await api.gatewayDirectoryRefresh());
       setMessage("DIRECTORY_REFRESHED");
@@ -126,7 +130,9 @@ export function IntegrationsManagementPanel({
   }
 
   async function retryMessage(messageId: string) {
+    if (!confirmAction("重试 Gateway 消息", `Message: ${messageId}`)) return;
     setBusy(true);
+    setMessage("GATEWAY_RETRY_RUNNING");
     try {
       setResult(await api.gatewayMessageRetry(messageId));
       setMessage("GATEWAY_RETRY_OK");
@@ -140,7 +146,9 @@ export function IntegrationsManagementPanel({
 
   async function createSendIntent(event: FormEvent) {
     event.preventDefault();
+    if (!confirmAction("创建 Gateway 发送审批", `Platform: ${sendPlatform}\nTarget: ${sendTarget}`)) return;
     setBusy(true);
+    setMessage("GATEWAY_INTENT_CREATING");
     try {
       const payload = await api.gatewaySendIntent({
         platform: sendPlatform,

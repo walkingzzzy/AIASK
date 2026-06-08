@@ -1,7 +1,7 @@
 import { ListChecks, Play, Puzzle, Save, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact, localizeBlockedReason } from "../../components/shared";
+import { RawEvidencePanel, StatusBadge, compact, confirmAction, localizeBlockedReason } from "../../components/shared";
 import { PluginLifecycleCard, inferPluginLifecycleState } from "../../components/PluginLifecycleCard";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { CapabilityWorkbenchPayload, PluginCommand, PluginSummaryView, SkillPackStatusView } from "../../types";
@@ -21,6 +21,14 @@ function pluginList(value: unknown): PluginSummaryView[] {
 
 function actionRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function testIdPart(value: unknown): string {
+  return String(value || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
 }
 
 export function PluginsPanel({
@@ -58,7 +66,9 @@ export function PluginsPanel({
 
   async function togglePlugin(plugin: PluginSummaryView) {
     if (!api || !plugin.name) return;
+    if (!confirmAction(plugin.enabled ? "禁用插件" : "启用插件", `Plugin: ${plugin.name}`)) return;
     setBusy(true);
+    setActionResult({ object: "plugin.toggle.running", plugin: plugin.name, enabled: !plugin.enabled });
     try {
       const result = await api.pluginToggle(plugin.name, !plugin.enabled);
       setActionResult(result);
@@ -86,6 +96,7 @@ export function PluginsPanel({
 
   async function upsertPlugin() {
     if (!api) return;
+    if (!confirmAction("保存插件配置", "POST /v1/plugins\n请确认 JSON 内容来自可信来源。")) return;
     setBusy(true);
     try {
       const parsed = JSON.parse(upsertDraft || "{}") as Record<string, unknown>;
@@ -198,6 +209,7 @@ export function PluginsPanel({
                     });
                   }}
                   onTest={() => testPlugin(plugin)}
+                  disabled={busy || !(controlToken || "").trim()}
                 />
               );
             })}
@@ -207,16 +219,22 @@ export function PluginsPanel({
           <details className="legacy-plugin-list" style={{ marginTop: "16px" }}>
             <summary>查看详细列表（传统视图）</summary>
             <div className="mini-list">
-            {plugins.map((plugin, index) => (
+            {plugins.map((plugin, index) => {
+              const pluginName = plugin.name || "unnamed-plugin";
+              const pluginTestId = testIdPart(pluginName);
+              const toggleLabel = `${plugin.enabled ? "禁用插件" : "启用插件"} ${pluginName}`;
+              const testLabel = `${(plugin.tools || []).length ? "测试插件首个工具" : "插件自检"} ${pluginName}`;
+              return (
               <article key={`${plugin.name || "plugin"}:${index}`}>
-                <strong>{plugin.name || "unnamed-plugin"}</strong>
+                <strong>{pluginName}</strong>
                 <span>{plugin.source || plugin.version || "local"}</span>
                 <StatusBadge status={plugin.enabled ? "implemented" : "disabled"} label={plugin.enabled ? "enabled" : "disabled"} />
                 <p>{plugin.description || compact({ tools: plugin.tools?.length, commands: plugin.commands?.length, hooks: plugin.hooks?.length })}</p>
                 <div className="row-actions">
                   <button
-                    aria-label={plugin.enabled ? "禁用插件" : "启用插件"}
+                    aria-label={toggleLabel}
                     className="small-button"
+                    data-testid={`legacy-plugin-toggle-${pluginTestId}`}
                     disabled={busy || !(controlToken || "").trim()}
                     onClick={() => togglePlugin(plugin)}
                     title={plugin.enabled ? "禁用插件" : "启用插件"}
@@ -225,7 +243,9 @@ export function PluginsPanel({
                     {plugin.enabled ? "禁用" : "启用"}
                   </button>
                   <button
+                    aria-label={testLabel}
                     className="small-button"
+                    data-testid={`legacy-plugin-test-${pluginTestId}`}
                     disabled={busy || !(controlToken || "").trim()}
                     onClick={() => testPlugin(plugin)}
                     title={(plugin.tools || []).length ? "运行第一个已注册插件工具" : "对没有工具的插件运行 manifest 自检"}
@@ -234,7 +254,9 @@ export function PluginsPanel({
                     {(plugin.tools || []).length ? "测试工具" : "自检"}
                   </button>
                   <button
+                    aria-label={`加载插件命令 ${pluginName}`}
                     className="small-button"
+                    data-testid={`legacy-plugin-commands-${pluginTestId}`}
                     disabled={busy || !(controlToken || "").trim()}
                     onClick={() => loadCommands(plugin)}
                     title="加载插件命令"
@@ -248,6 +270,7 @@ export function PluginsPanel({
                   <div className="mini-list">
                     {commandsByPlugin[plugin.name || ""].map((command, commandIndex) => {
                       const commandName = String(command.name || command.command || commandIndex);
+                      const commandTestId = testIdPart(commandName);
                       return (
                         <article className="job-row" key={`${plugin.name}:${commandName}`}>
                           <div>
@@ -255,7 +278,9 @@ export function PluginsPanel({
                             <span>{compact(command.description || command.enabled || "-")}</span>
                           </div>
                           <button
+                            aria-label={`测试插件命令 ${pluginName} ${commandName}`}
                             className="small-button"
+                            data-testid={`legacy-plugin-command-test-${pluginTestId}-${commandTestId}`}
                             disabled={busy || !(controlToken || "").trim()}
                             onClick={() => testCommand(plugin, command)}
                             title="测试插件命令"
@@ -270,7 +295,8 @@ export function PluginsPanel({
                   </div>
                 )}
               </article>
-            ))}
+              );
+            })}
             {!plugins.length && (
               <div className="empty-mini">
                 <Puzzle size={24} />
@@ -289,7 +315,7 @@ export function PluginsPanel({
             </div>
             <StatusBadge status={String(skillPackPayload.status || "ready")} />
           </div>
-          <JsonPanel value={skillPackPayload} />
+          <RawEvidencePanel title="技能包 JSON" value={skillPackPayload} />
         </div>
 
         <div className="capability-section">
@@ -318,10 +344,7 @@ export function PluginsPanel({
         </div>
       )}
 
-      <details className="raw-details">
-        <summary>原始插件 payload</summary>
-        <JsonPanel value={{ plugins: pluginsPayload, skill_packs: skillPackPayload, actionResult }} />
-      </details>
+      <RawEvidencePanel title="原始插件 payload" value={{ plugins: pluginsPayload, skill_packs: skillPackPayload, actionResult }} />
     </div>
   );
 }

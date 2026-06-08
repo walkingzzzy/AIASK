@@ -204,12 +204,15 @@ export interface RunRecord {
   [key: string]: unknown;
 }
 
-export type InspectorTab = "details" | "diagnostics" | "tools" | "skills" | "intents" | "settings";
+export type InspectorTab = "details" | "artifacts" | "review" | "diagnostics" | "tools" | "skills" | "intents" | "settings";
 export type MainView =
   | "workbench"
+  | "projects-contexts"
   | "sessions"
   | "runs-events"
   | "tools-intents-approvals"
+  | "finance-lab"
+  | "integrations"
   | "plugins-skills"
   | "extensions-pilot"
   | "financial-manager"
@@ -237,6 +240,48 @@ export type MainView =
   | "skills"
   | "user"
   ;
+
+export type TaskArtifactKind = "report" | "strategy" | "factor" | "data" | "screenshot" | "json" | "run" | "approval" | "note";
+
+export interface TaskArtifact {
+  id: string;
+  kind: TaskArtifactKind;
+  title: string;
+  description?: string;
+  status?: string;
+  source?: string;
+  sourceView?: MainView;
+  createdAt?: string;
+  path?: string;
+  targetPath?: string;
+  severity?: "info" | "warning" | "critical";
+  thumbnailPath?: string;
+  value?: unknown;
+}
+
+export interface TaskReviewComment {
+  id: string;
+  targetId: string;
+  targetType: "artifact" | "run" | "page" | "screenshot" | "thread";
+  body: string;
+  status?: "open" | "resolved";
+  createdAt?: string;
+  targetPath?: string;
+  severity?: "info" | "warning" | "critical";
+}
+
+export interface TaskContextSummary {
+  projectLabel: string;
+  threadLabel: string;
+  runLabel: string;
+  mode: "finance_safe" | "hermes_full";
+  backendMode: "mock" | "live";
+  endpoint: string;
+  healthStatus: string;
+  pendingApprovals: number;
+  pendingIntents: number;
+  artifactCount: number;
+}
 export type CapabilityTab = "overview" | "coverage" | "hermes" | "mcp" | "connectors" | "factory" | "incubation" | "skills" | "plugins" | "ai";
 
 export interface TaskThread {

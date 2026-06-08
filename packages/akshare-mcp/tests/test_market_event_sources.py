@@ -5,6 +5,7 @@ from akshare_mcp.services.market_event_sources import (
     event_source_status,
     fetch_cninfo_official_announcements,
     fetch_official_market_event_documents,
+    fetch_sse_official_announcements,
     normalize_market_text_events,
     persist_normalized_events,
 )
@@ -92,10 +93,89 @@ def test_event_source_status_marks_unimplemented_sources_degraded(monkeypatch):
 
     assert by_name["cninfo"]["implemented"] is True
     assert by_name["cninfo"]["degraded"] is False
-    assert by_name["sse"]["implemented"] is False
-    assert by_name["sse"]["degraded"] is True
+    assert by_name["sse"]["implemented"] is True
+    assert by_name["sse"]["degraded"] is False
+    assert by_name["szse"]["implemented"] is False
+    assert by_name["szse"]["degraded"] is True
     assert by_name["wind"]["implemented"] is False
     assert by_name["wind"]["degraded"] is True
+
+
+def test_fetch_sse_official_announcements_maps_tier_a_documents(monkeypatch):
+    class FakeResponse:
+        text = "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "pageHelp": {
+                    "data": [
+                        {
+                            "SECURITY_CODE": "600519",
+                            "SECURITY_NAME": "贵州茅台",
+                            "SSEDATE": "2026-06-08",
+                            "TITLE": "贵州茅台关于调整利润分配方案的公告",
+                            "BULLETIN_TYPE": "临时公告",
+                            "URL": "/disclosure/listedinfo/announcement/c/new/2026-06-08/600519_mock.pdf",
+                        }
+                    ],
+                    "total": 1,
+                }
+            }
+
+    calls: list[dict] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(dict(params or {}))
+        return FakeResponse()
+
+    monkeypatch.setattr("akshare_mcp.services.market_event_sources.requests.get", fake_get)
+
+    rows = fetch_sse_official_announcements("2026-06-01", "2026-06-08", limit=5, stock_codes=["600519"])
+
+    assert calls[0]["productId"] == "600519"
+    assert rows[0]["provider"] == "sse"
+    assert rows[0]["source_tier"] == "tier_a"
+    assert rows[0]["stock_code"] == "600519"
+    assert rows[0]["url"].startswith("https://static.sse.com.cn/")
+
+
+def test_fetch_official_documents_uses_sse_and_keeps_other_exchanges_degraded(monkeypatch):
+    monkeypatch.setattr("akshare_mcp.services.market_event_sources.fetch_cninfo_official_announcements", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "akshare_mcp.services.market_event_sources.fetch_sse_official_announcements",
+        lambda *args, **kwargs: [
+            {
+                "doc_uid": "sse:1",
+                "title": "SSE official notice",
+                "stock_code": "600519",
+                "source_tier": "tier_a",
+                "provider": "sse",
+            }
+        ],
+    )
+
+    result = fetch_official_market_event_documents(
+        "2026-06-01",
+        "2026-06-08",
+        providers=["cninfo", "sse", "szse", "bse"],
+        limit=5,
+    )
+
+    assert result["items"] == [
+        {
+            "doc_uid": "sse:1",
+            "title": "SSE official notice",
+            "stock_code": "600519",
+            "source_tier": "tier_a",
+            "provider": "sse",
+        }
+    ]
+    assert result["sources"]["sse"]["status"] == "ok"
+    assert result["sources"]["szse"]["reason"] == "official_source_adapter_pending"
+    assert result["sources"]["bse"]["reason"] == "official_source_adapter_pending"
 
 
 def test_tier_a_official_notice_bridges_with_verified_anchor():
@@ -360,6 +440,7 @@ def test_official_fetch_degrades_pending_sources_but_keeps_cninfo(monkeypatch):
         "fetch_cninfo_official_announcements",
         lambda *args, **kwargs: [{"doc_uid": "cninfo:1", "code": "000001", "source_tier": "tier_a"}],
     )
+    monkeypatch.setattr(mod, "fetch_sse_official_announcements", lambda *args, **kwargs: [])
 
     result = fetch_official_market_event_documents(
         "2026-06-01",
@@ -371,8 +452,8 @@ def test_official_fetch_degrades_pending_sources_but_keeps_cninfo(monkeypatch):
 
     assert result["items"] == [{"doc_uid": "cninfo:1", "code": "000001", "source_tier": "tier_a"}]
     assert result["sources"]["cninfo"]["status"] == "ok"
-    assert result["sources"]["sse"]["status"] == "degraded"
-    assert result["sources"]["sse"]["reason"] == "official_source_adapter_pending"
+    assert result["sources"]["sse"]["status"] == "ok"
+    assert result["sources"]["sse"]["fetched"] == 0
 
 
 def test_bridge_skips_news_only_or_low_tier_events():

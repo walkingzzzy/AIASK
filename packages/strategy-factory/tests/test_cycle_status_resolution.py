@@ -88,6 +88,19 @@ def test_observe_first_with_observed_candidates_is_success_without_gate3_pass() 
     assert status == FactoryRunStatus.SUCCESS
 
 
+def test_observe_admissions_are_success_without_legacy_gate3_pass() -> None:
+    summary = {
+        "gate_3_passed": 0,
+        "submitted": 0,
+        "autonomy_task_count": 8,
+        "observe_incubation_count": 3,
+        "diagnostic_observation_count": 1,
+        "observe_admitted_count": 4,
+    }
+    status = resolve_run_status("success", _ok_stages(), summary=summary)
+    assert status == FactoryRunStatus.SUCCESS
+
+
 # ---------------------------------------------------------------------------
 # partial_infra
 # ---------------------------------------------------------------------------

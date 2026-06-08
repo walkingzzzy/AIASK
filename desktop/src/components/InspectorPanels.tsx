@@ -18,7 +18,7 @@ import type {
   ToolCatalogItem,
   ToolEnvelope
 } from "../types";
-import { compact, JsonPanel, StatusBadge } from "./shared";
+import { compact, confirmAction, JsonPanel, StatusBadge } from "./shared";
 
 function contractChips(tool: ToolCatalogItem): string[] {
   const chips: string[] = [];
@@ -99,6 +99,14 @@ function contractSearchText(tool: ToolCatalogItem): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function testIdPart(value: unknown): string {
+  return String(value || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
 }
 
 function formSchemaFor(tool: ToolCatalogItem): Record<string, unknown> | null {
@@ -339,6 +347,7 @@ export function ToolCatalog({
           const derivedStatus = tool.status || (readOnlyTool ? "ready" : "gated");
           const hermesOnly = !financeToolNames.has(tool.name);
           const canProbe = readOnlyTool && (!hermesOnly || controlToken.trim());
+          const toolTestId = testIdPart(tool.name);
           return (
             <article className="tool-row" key={tool.name}>
               <div className="tool-row-head">
@@ -400,6 +409,8 @@ export function ToolCatalog({
                   </div>
                   <div className="button-row">
                     <button
+                      aria-label={`为 ${tool.name} 填充示例`}
+                      data-testid={`tool-fill-example-${toolTestId}`}
                       onClick={() =>
                         setFormDrafts((current) => ({
                           ...current,
@@ -424,6 +435,8 @@ export function ToolCatalog({
                   </summary>
                   <div className="button-row">
                     <button
+                      aria-label={`为 ${tool.name} 填充示例`}
+                      data-testid={`tool-fill-example-${toolTestId}`}
                       onClick={() =>
                         setFormDrafts((current) => ({
                           ...current,
@@ -443,7 +456,7 @@ export function ToolCatalog({
               <div className="tool-probe-row">
                 {readOnlyTool ? (
                   <>
-                    <button className="small-button" disabled={!canProbe || busyTool === tool.name} onClick={() => runSafeProbe(tool, hermesOnly)} type="button">
+                    <button aria-label={`运行安全探测 ${tool.name}`} className="small-button" data-testid={`tool-safe-probe-${toolTestId}`} disabled={!canProbe || busyTool === tool.name} onClick={() => runSafeProbe(tool, hermesOnly)} type="button">
                       <Play size={13} />
                       运行安全探测
                     </button>
@@ -536,7 +549,11 @@ export function IntentsPanel({
             <button
               aria-label="确认所选意图"
               disabled={busy || !controlToken.trim() || currentIntent.status !== "awaiting_confirmation"}
-              onClick={() => onUpdateIntent("confirm")}
+              onClick={() => {
+                if (confirmAction("确认所选意图", `Intent: ${currentIntent.intent_id}\nAction: ${currentIntent.action}`)) {
+                  onUpdateIntent("confirm");
+                }
+              }}
               title="确认所选意图"
               type="button"
             >
@@ -547,7 +564,11 @@ export function IntentsPanel({
               aria-label="拒绝所选意图"
               className="danger"
               disabled={busy || !controlToken.trim() || currentIntent.status !== "awaiting_confirmation"}
-              onClick={() => onUpdateIntent("deny")}
+              onClick={() => {
+                if (confirmAction("拒绝所选意图", `Intent: ${currentIntent.intent_id}\nAction: ${currentIntent.action}`)) {
+                  onUpdateIntent("deny");
+                }
+              }}
               title="拒绝所选意图"
               type="button"
             >
@@ -607,7 +628,9 @@ export function GeneralApprovalsPanel({
   async function decide(item: ApprovalItem, decision: "approve" | "deny") {
     const approvalId = String(item.approval_id || item.id || "");
     if (!approvalId) return;
+    if (!confirmAction(decision === "approve" ? "通过审批" : "拒绝审批", `Approval: ${approvalId}\nReason: ${reason || "desktop_decision"}`)) return;
     setBusy(true);
+    setMessage(`APPROVAL_${decision.toUpperCase()}_RUNNING`);
     try {
       const payload = await api.approvalDecide(approvalId, decision, reason || "desktop_decision");
       setResult(payload);

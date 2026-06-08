@@ -22,7 +22,7 @@ export function LegacyBanner({
         <span>{description}</span>
       </div>
       {replacementLabel && replacementView && onOpenReplacement && (
-        <button className="small-button" onClick={() => onOpenReplacement(replacementView)} type="button">
+        <button className="small-button legacy-replacement-button" onClick={() => onOpenReplacement(replacementView)} type="button">
           <ArrowRight size={13} />
           {replacementLabel}
         </button>

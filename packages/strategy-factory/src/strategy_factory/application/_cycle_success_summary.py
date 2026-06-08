@@ -64,6 +64,26 @@ def _aggregate_metric_source_audit(submit_result: dict[str, Any]) -> dict[str, d
     return audit_counts
 
 
+def _aggregate_submission_lane_counts(submit_result: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for strategy in list(submit_result.get("strategies") or []):
+        payload = dict(strategy or {})
+        lane = str(payload.get("submission_lane") or "").strip().lower()
+        if lane:
+            counts[lane] = counts.get(lane, 0) + 1
+    return counts
+
+
+def _aggregate_submission_action_type_counts(submit_result: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for strategy in list(submit_result.get("strategies") or []):
+        payload = dict(strategy or {})
+        action_type = str(payload.get("submission_action_type") or "").strip().lower()
+        if action_type:
+            counts[action_type] = counts.get(action_type, 0) + 1
+    return counts
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -189,6 +209,36 @@ def build_success_run_summary(
     validation_grade_counts = _aggregate_validation_grade_counts(submit_result)
     statistical_metric_missing_counts = _aggregate_statistical_metric_missing_counts(submit_result)
     metric_source_audit = _aggregate_metric_source_audit(submit_result)
+    submission_lane_counts = _aggregate_submission_lane_counts(submit_result)
+    submission_action_type_counts = _aggregate_submission_action_type_counts(submit_result)
+    formal_incubation_count = max(
+        _safe_int(submit_result.get("formal_incubation_count")),
+        _safe_int(submission_lane_counts.get("formal_incubation")),
+    )
+    observe_incubation_count = max(
+        _safe_int(submit_result.get("observe_incubation_count")),
+        _safe_int(submission_lane_counts.get("observe_incubation")),
+    )
+    diagnostic_observation_count = max(
+        _safe_int(submit_result.get("diagnostic_observation_count")),
+        _safe_int(submission_lane_counts.get("diagnostic_observation")),
+    )
+    live_ready_review_count = max(
+        _safe_int(submit_result.get("live_ready_review_count")),
+        _safe_int(submission_lane_counts.get("live_ready_review")),
+    )
+    deferred_submission_count = max(
+        _safe_int(submit_result.get("deferred_submission_count")),
+        _safe_int(submission_lane_counts.get("deferred_submission")),
+    )
+    research_only_count = max(
+        _safe_int(submit_result.get("research_only_count")),
+        _safe_int(submission_action_type_counts.get("research_only")),
+    )
+    observe_admitted_count = max(
+        _safe_int(submit_result.get("observe_admitted_count")),
+        observe_incubation_count + diagnostic_observation_count,
+    )
     llm_status_counts = _build_llm_status_counts(autonomy_summary)
 
     return {
@@ -781,6 +831,15 @@ def build_success_run_summary(
             ),
         ),
         "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
+        "observe_admitted_count": observe_admitted_count,
+        "formal_incubation_count": formal_incubation_count,
+        "observe_incubation_count": observe_incubation_count,
+        "diagnostic_observation_count": diagnostic_observation_count,
+        "live_ready_review_count": live_ready_review_count,
+        "deferred_submission_count": deferred_submission_count,
+        "research_only_count": research_only_count,
+        "submission_lane_counts": submission_lane_counts,
+        "submission_action_type_counts": submission_action_type_counts,
         "gate_3_failure_reason_topn": gate_3_failure_topn,
         "gate_3_failure_topn": gate_3_failure_topn,
         "validation_grade_counts": validation_grade_counts,

@@ -33,6 +33,9 @@ import { SettingsWorkspace } from "./features/settings/SettingsWorkspace";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
 import { LocalUserWorkspace } from "./features/user/LocalUserWorkspace";
 import { WorkflowsWorkspace } from "./features/workflows/WorkflowsWorkspace";
+import { FinanceLabPage } from "./features/workspace/FinanceLabPage";
+import { IntegrationsPage } from "./features/workspace/IntegrationsPage";
+import { ProjectsContextsPage } from "./features/workspace/ProjectsContextsPage";
 import { useAppConnectionSettings } from "./hooks/useAppConnectionSettings";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
@@ -47,55 +50,55 @@ function legacyMeta(view: MainView): {
 } {
   const item = getViewItem(view);
   const replacement = item?.replacementView ? getViewItem(item.replacementView) : undefined;
-  const replacementLabel = replacement ? `前往 ${replacement.label}` : undefined;
+  const replacementLabel = replacement ? `Open ${replacement.label}` : undefined;
 
   switch (view) {
     case "tools":
       return {
-        title: "Legacy: Tools",
-        description: "新主路径已经迁移到 Tools / Intents / Approvals，这个页面仍保留到阶段 2 结束。",
+        title: "旧入口：Tools",
+        description: "主路径已迁移到 Approvals，此页仅保留为高级工具目录诊断。",
         replacementView: "tools-intents-approvals",
         replacementLabel,
       };
     case "mcp":
       return {
-        title: "Legacy: MCP",
-        description: "新主路径已经迁移到 MCP / Connectors，这个页面继续保留为高级入口。",
-        replacementView: "mcp-connectors",
-        replacementLabel,
+        title: "旧入口：MCP",
+        description: "主路径已迁移到 Integrations，此页仅保留为 MCP 高级诊断快捷入口。",
+        replacementView: "integrations",
+        replacementLabel: "Open Integrations",
       };
     case "diagnostics":
       return {
-        title: "Legacy: Diagnostics",
-        description: "Readiness / Health 负责新的运维主路径，这里继续保留为 legacy 诊断快照。",
+        title: "旧入口：Diagnostics",
+        description: "主路径已迁移到 Readiness / Health，此页保留为旧诊断快照。",
         replacementView: "readiness-health",
         replacementLabel,
       };
     case "event-console":
       return {
-        title: "Legacy: Event Console",
-        description: "Runs / Events 已经承担新的运行与事件主路径，这里继续保留旧控制台入口。",
+        title: "旧入口：Event Console",
+        description: "主路径已迁移到 Runs / Events，此页保留为高级事件控制台。",
         replacementView: "runs-events",
         replacementLabel,
       };
     case "agent":
       return {
-        title: "Legacy: Agent",
-        description: "Workbench 已成为新的 Agent 首页，这里保留旧版运行时总览。",
+        title: "旧入口：Agent",
+        description: "Workbench 已成为 Agent 默认工作面，此页仅保留旧运行时上下文。",
         replacementView: "workbench",
         replacementLabel,
       };
     case "user":
       return {
-        title: "Legacy: User",
-        description: "Settings / Mode 已经承担新的配置与用户主路径，这里保留旧版本地用户页。",
+        title: "旧入口：User",
+        description: "Settings 已承载画像与模式配置，此页仅保留本地用户旧详情。",
         replacementView: "settings",
         replacementLabel,
       };
     default:
       return {
-        title: `Legacy: ${item?.label || view}`,
-        description: "这个页面仍然保留在 Legacy / Advanced 组中，供迁移期继续使用。",
+        title: `旧入口：${item?.label || view}`,
+        description: "此页在导航迁移期间保留于 Advanced，仅用于高级诊断或旧数据查看。",
         replacementView: item?.replacementView,
         replacementLabel,
       };
@@ -186,7 +189,7 @@ export function App() {
       return;
     }
 
-    if (["diagnostics", "readiness-health", "gateway", "tools", "tools-intents-approvals", "skills", "plugins-skills", "extensions-pilot"].includes(view)) {
+    if (["integrations", "diagnostics", "readiness-health", "gateway", "tools", "tools-intents-approvals", "skills", "plugins-skills", "extensions-pilot"].includes(view)) {
       if (controlToken.trim()) {
         void refreshHermes({ keepInspector: true });
       }
@@ -218,7 +221,7 @@ export function App() {
 
   function applySkillToChat(skill: SkillView | null) {
     if (!skill) return;
-    const nextPrompt = `请使用 ${skill.name} 技能协助我完成：${skill.description || "分析当前任务并给出可执行建议。"}`;
+    const nextPrompt = `Please use the ${skill.name} skill to help with this task: ${skill.description || "analyze the current request and propose actionable next steps."}`;
     workbench.setPrompt(nextPrompt);
     setMainView("workbench");
     setInspectorTab("details");
@@ -247,6 +250,32 @@ export function App() {
   }
 
   const viewRenderers: Partial<Record<MainView, () => ReactNode>> = {
+    "projects-contexts": () => (
+      <ProjectsContextsPage
+        agentMode={agentMode}
+        apiToken={apiToken}
+        controlToken={controlToken}
+        defaultEndpoint={defaultEndpoint}
+        endpoint={normalizedEndpoint}
+        health={health}
+        mockMode={mockMode}
+        onOpenView={selectView}
+        onRefresh={refreshHealth}
+        profileName={profileName}
+        status={status}
+        userId={userId}
+      />
+    ),
+    "finance-lab": () => <FinanceLabPage onOpenView={selectView} />,
+    integrations: () => (
+      <IntegrationsPage
+        controlToken={controlToken}
+        health={health}
+        hermesStatus={hermes.hermesStatus}
+        onOpenView={selectView}
+        tools={tools}
+      />
+    ),
     overview: () =>
       renderLegacyShell(
         "overview",
@@ -313,8 +342,8 @@ export function App() {
       <section className="capabilities-workspace">
         <header className="capabilities-header">
           <div>
-            <span>因子工厂</span>
-            <h1>因子挖掘与活跃池</h1>
+            <span>Factor Factory</span>
+            <h1>Factor mining and active pool</h1>
           </div>
         </header>
         <div className="capabilities-body">
@@ -328,8 +357,8 @@ export function App() {
       <section className="capabilities-workspace">
         <header className="capabilities-header">
           <div>
-            <span>孵化工厂</span>
-            <h1>生命周期与命中率控制</h1>
+            <span>Incubation Factory</span>
+            <h1>Lifecycle and hit-rate control</h1>
           </div>
         </header>
         <div className="capabilities-body">
@@ -393,7 +422,7 @@ export function App() {
           onApplyToChat={applySkillToChat}
           skillsPayload={
             (hermes.fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
-            (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
+            (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要 Control token 才能查看技能。" })
           }
         />
       ),
@@ -494,6 +523,7 @@ export function App() {
         controlToken={controlToken}
         endpoint={normalizedEndpoint}
         health={health}
+        mockMode={mockMode}
         onAgentModeChange={setAgentMode}
         onComposerKeyDown={workbench.handleComposerKeyDown}
         onOpenView={selectView}
@@ -603,11 +633,13 @@ export function App() {
           onUpdateIntent={workbench.updateIntent}
           parity={parity}
           profileName={profileName}
+          recentRuns={workbench.recentRuns}
           selectedAuditEventCount={workbench.selectedAuditEventCount}
           selectedResponse={workbench.selectedResponse}
           selectedResponseRecord={workbench.selectedResponseRecord}
           selectedRunId={workbench.selectedRunId}
           selectedThread={workbench.selectedThread}
+          timelineEvents={workbench.timelineEvents}
           tools={tools}
           userId={userId}
         />
@@ -615,10 +647,13 @@ export function App() {
 
       {!settingsMode && !inspectorVisible && (
         <AppContextPanel
+          compact
           controlToken={controlToken}
           endpoint={normalizedEndpoint}
           health={health}
           hermesStatus={hermes.hermesStatus}
+          onOpenSettings={() => selectView("settings")}
+          onOpenWorkbench={() => selectView("workbench")}
           selectedThread={workbench.selectedThread}
           status={status}
           tools={tools}

@@ -26,6 +26,8 @@ SOURCE_TIER_C = "tier_c"
 BRIDGE_SOURCE = "market_events_normalized"
 CNINFO_ANNOUNCEMENT_QUERY_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 CNINFO_STATIC_BASE_URL = "https://static.cninfo.com.cn/"
+SSE_ANNOUNCEMENT_QUERY_URL = "https://query.sse.com.cn/security/stock/queryCompanyBulletin.do"
+SSE_STATIC_BASE_URL = "https://static.sse.com.cn/"
 
 
 _TIER_DEFAULT_RELIABILITY = {
@@ -95,20 +97,13 @@ def build_market_event_source_adapters() -> list[MarketEventSourceAdapter]:
 
     return [
         MarketEventSourceAdapter("cninfo", SOURCE_TIER_A, True, True),
-        MarketEventSourceAdapter(
-            "sse",
-            SOURCE_TIER_A,
-            True,
-            False,
-            "official source adapter pending; cninfo is the active tier_a ingest path",
-            False,
-        ),
+        MarketEventSourceAdapter("sse", SOURCE_TIER_A, True, True),
         MarketEventSourceAdapter(
             "szse",
             SOURCE_TIER_A,
             True,
             False,
-            "official source adapter pending; cninfo is the active tier_a ingest path",
+            "official source adapter pending; cninfo/sse are the active tier_a ingest paths",
             False,
         ),
         MarketEventSourceAdapter(
@@ -116,7 +111,7 @@ def build_market_event_source_adapters() -> list[MarketEventSourceAdapter]:
             SOURCE_TIER_A,
             True,
             False,
-            "official source adapter pending; cninfo is the active tier_a ingest path",
+            "official source adapter pending; cninfo/sse are the active tier_a ingest paths",
             False,
         ),
         MarketEventSourceAdapter(
@@ -291,6 +286,49 @@ def _map_cninfo_announcement(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _sse_pdf_url(value: Any) -> str:
+    path = _clean(value, 1000)
+    if not path:
+        return ""
+    if path.startswith(("http://", "https://")):
+        return path
+    return f"{SSE_STATIC_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _map_sse_announcement(row: dict[str, Any]) -> dict[str, Any] | None:
+    code = _digits_code(row.get("SECURITY_CODE") or row.get("securityCode"))
+    title = _clean_html(row.get("TITLE") or row.get("title"), 500)
+    if not code or not title:
+        return None
+    published_at = _coerce_date_text(row.get("SSEDATE") or row.get("SSEDate") or row.get("ADDDATE"))
+    sec_name = _clean_html(row.get("SECURITY_NAME") or row.get("securityName"), 120)
+    notice_type = _clean_html(row.get("BULLETIN_TYPE") or row.get("BULLETIN_HEADING") or row.get("bulletinType"), 200)
+    url = _sse_pdf_url(row.get("URL") or row.get("url"))
+    original_id = _clean(row.get("BULLETIN_ID") or row.get("file_Serial") or url or f"{code}:{published_at}:{title}", 240)
+    body = " ".join(part for part in (title, sec_name, notice_type) if part)
+    return {
+        "doc_uid": f"sse:{hashlib.sha1(original_id.encode('utf-8')).hexdigest()[:24]}",
+        "title": title,
+        "summary": body,
+        "content": body,
+        "date": published_at,
+        "published_at": published_at,
+        "evidence_time": published_at,
+        "source": "sse",
+        "source_tier": SOURCE_TIER_A,
+        "provider": "sse",
+        "original_id": original_id,
+        "reliability_score": _TIER_DEFAULT_RELIABILITY[SOURCE_TIER_A],
+        "crawl_status": "ok",
+        "url": url,
+        "notice_type": notice_type,
+        "code": code,
+        "stock_code": code,
+        "stock_name": sec_name,
+        "cross_source_count": 1,
+    }
+
+
 def fetch_cninfo_official_announcements(
     start_iso: str,
     end_iso: str,
@@ -362,6 +400,76 @@ def fetch_cninfo_official_announcements(
     return results
 
 
+def fetch_sse_official_announcements(
+    start_iso: str,
+    end_iso: str,
+    *,
+    limit: int = 50,
+    stock_codes: list[str] | None = None,
+    timeout: float = 12.0,
+) -> list[dict[str, Any]]:
+    """Fetch official SSE disclosure metadata and map it into market docs."""
+
+    resolved_limit = max(0, min(int(limit or 0), 500))
+    if resolved_limit <= 0:
+        return []
+    codes = [_digits_code(code) for code in list(stock_codes or [])]
+    codes = [code for code in dict.fromkeys(codes) if code]
+    search_keys = codes or [""]
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.sse.com.cn/disclosure/listedinfo/announcement/",
+    }
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for product_id in search_keys:
+        page = 1
+        while len(results) < resolved_limit and page <= 10:
+            page_size = min(30, max(1, resolved_limit - len(results)))
+            params = {
+                "isPagination": "true",
+                "productId": product_id,
+                "keyWord": "",
+                "securityType": "0101,120100,020100,020200,120200",
+                "reportType2": "",
+                "reportType": "ALL",
+                "beginDate": start_iso,
+                "endDate": end_iso,
+                "pageHelp.pageSize": str(page_size),
+                "pageHelp.pageNo": str(page),
+                "pageHelp.beginPage": str(page),
+                "pageHelp.endPage": str(page),
+                "_": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
+            }
+            response = requests.get(SSE_ANNOUNCEMENT_QUERY_URL, params=params, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            data = response.json() if response.text else {}
+            page_help = data.get("pageHelp") if isinstance(data, dict) else {}
+            rows = list((page_help or {}).get("data") or [])
+            if not rows:
+                break
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                mapped = _map_sse_announcement(row)
+                if not mapped:
+                    continue
+                if product_id and mapped.get("code") != product_id:
+                    continue
+                key = str(mapped.get("doc_uid") or mapped.get("url") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                results.append(mapped)
+                if len(results) >= resolved_limit:
+                    break
+            total = int((page_help or {}).get("total") or (page_help or {}).get("totalCount") or 0)
+            if len(rows) < page_size or (total and page * page_size >= total):
+                break
+            page += 1
+    return results
+
+
 def fetch_official_market_event_documents(
     start_iso: str,
     end_iso: str,
@@ -380,6 +488,30 @@ def fetch_official_market_event_documents(
         if provider == "cninfo":
             try:
                 rows = fetch_cninfo_official_announcements(
+                    start_iso,
+                    end_iso,
+                    limit=max(0, int(limit or 0)) - len(items),
+                    stock_codes=stock_codes,
+                )
+                items.extend(rows)
+                sources[provider] = {
+                    "tier": SOURCE_TIER_A,
+                    "status": "ok",
+                    "fetched": len(rows),
+                    "degraded": False,
+                }
+            except Exception as exc:
+                sources[provider] = {
+                    "tier": SOURCE_TIER_A,
+                    "status": "degraded",
+                    "fetched": 0,
+                    "degraded": True,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            continue
+        if provider == "sse":
+            try:
+                rows = fetch_sse_official_announcements(
                     start_iso,
                     end_iso,
                     limit=max(0, int(limit or 0)) - len(items),
@@ -1207,6 +1339,7 @@ __all__ = [
     "build_market_event_source_adapters",
     "event_source_status",
     "fetch_cninfo_official_announcements",
+    "fetch_sse_official_announcements",
     "fetch_official_market_event_documents",
     "normalize_market_text_events",
     "persist_normalized_events",

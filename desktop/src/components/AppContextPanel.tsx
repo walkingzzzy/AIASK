@@ -1,5 +1,5 @@
 import { Activity, Bot, Database, GitBranch, Globe2, KeyRound, ServerCog, ShieldCheck, Wrench } from "lucide-react";
-import { StatusBadge } from "./shared";
+import { GatedState, StatusBadge } from "./shared";
 import type { HealthDetailed, HermesStatus, TaskThread, ToolCatalogItem } from "../types";
 
 export function AppContextPanel({
@@ -9,7 +9,10 @@ export function AppContextPanel({
   hermesStatus,
   selectedThread,
   status,
-  tools
+  tools,
+  compact = false,
+  onOpenSettings,
+  onOpenWorkbench
 }: {
   controlToken: string;
   endpoint: string;
@@ -18,13 +21,16 @@ export function AppContextPanel({
   selectedThread?: TaskThread | null;
   status: string;
   tools: ToolCatalogItem[];
+  compact?: boolean;
+  onOpenSettings?: () => void;
+  onOpenWorkbench?: () => void;
 }) {
   const fullModeReady = Boolean(hermesStatus?.full_mode_enabled || health?.hermes?.full_mode_enabled || health?.hermes?.full_mode_active);
   const controlReady = Boolean(controlToken.trim() && health?.control?.token_configured);
   const toolset = health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe";
 
   return (
-    <aside className="context-panel" aria-label="环境上下文">
+    <aside className={`context-panel ${compact ? "compact" : ""}`} aria-label="环境上下文">
       <section className="context-card compact">
         <div className="context-card-head">
           <div>
@@ -53,6 +59,20 @@ export function AppContextPanel({
           </div>
           <ShieldCheck size={16} />
         </div>
+        {compact && (!controlReady || !fullModeReady) && (
+          <GatedState
+            action={
+              onOpenSettings ? (
+                <button className="small-button" onClick={onOpenSettings} type="button">
+                  打开 Settings
+                </button>
+              ) : undefined
+            }
+            reason={!controlReady ? "control token required" : "full mode required"}
+            status={!controlReady ? "gated" : "unconfigured"}
+            title={!controlReady ? "控制令牌未就绪" : "Full mode 未开启"}
+          />
+        )}
         <div className="context-list">
           <div className="context-row">
             <KeyRound size={15} />
@@ -96,10 +116,16 @@ export function AppContextPanel({
           <div className="context-empty">
             <strong>暂无选中线程</strong>
             <span>运行智能体任务后，这里会显示回复、模型、Token、审批和事件详情。</span>
+            {compact && onOpenWorkbench && (
+              <button className="small-button" onClick={onOpenWorkbench} type="button">
+                返回 Workbench
+              </button>
+            )}
           </div>
         )}
       </section>
 
+      {!compact && (
       <section className="context-card muted-card">
         <div className="context-card-head">
           <div>
@@ -109,6 +135,7 @@ export function AppContextPanel({
         </div>
         <p>右侧面板用于常驻显示连接、授权、工具和当前任务上下文，避免用户在多个页面之间来回寻找状态。</p>
       </section>
+      )}
     </aside>
   );
 }

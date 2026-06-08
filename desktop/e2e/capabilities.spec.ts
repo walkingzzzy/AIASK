@@ -263,12 +263,12 @@ function capabilityPayload(authorized: boolean, factoryMode: FactoryMode) {
     plugins: authorized
       ? [
           {
-            name: "risk-plugin",
+            name: "audit-plugin",
             enabled: true,
             source: "local",
             version: "0.1.0",
-            description: "Mock risk plugin",
-            tools: [{ name: "risk_echo" }],
+            description: "Mock audit plugin",
+            tools: [{ name: "audit_echo" }],
             commands: [],
             hooks: []
           }
@@ -883,8 +883,8 @@ function connectorsSummaryPayload() {
           description: "Mock MCP server"
         },
         {
-          id: "risk-plugin",
-          name: "Risk plugin",
+          id: "audit-plugin",
+          name: "Audit plugin",
           type: "plugin",
           category: "tool",
           enabled: false,
@@ -1080,12 +1080,12 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       return fulfillJson(route, {
         data: [
           {
-            name: "risk-plugin",
+            name: "audit-plugin",
             enabled: true,
             source: "local",
             version: "0.1.0",
-            description: "Mock risk plugin",
-            tools: [{ name: "risk_echo" }],
+            description: "Mock audit plugin",
+            tools: [{ name: "audit_echo" }],
             commands: [],
             hooks: []
           }
@@ -1420,6 +1420,9 @@ test.beforeEach(async ({ page }) => {
       failedResponses.push(`${status} ${response.url()}`);
     }
   });
+  page.on("dialog", async (dialog) => {
+    await dialog.accept();
+  });
   await page.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem("aiask.endpoint", "http://127.0.0.1:8767");
@@ -1446,7 +1449,7 @@ const VIEW_LABELS: Record<string, string> = {
   "Data & Sync": "Data",
   MCP: "MCP / Connectors",
   Skills: "Plugins / Skills",
-  Automation: "Automation",
+  Automation: "Automations",
   "Strategy Factory": "Strategy Factory",
   "Factor Factory": "Factor Factory",
   Incubation: "Incubation Factory",
@@ -1458,7 +1461,7 @@ const VIEW_LABELS: Record<string, string> = {
   Diagnostics: "Diagnostics",
   "Agent Status": "Agent",
   Workflows: "Workflows",
-  Settings: "Settings / Mode"
+  Settings: "Settings"
 };
 
 const TAB_LABELS: Record<string, string> = {
@@ -1477,16 +1480,16 @@ const TAB_LABELS: Record<string, string> = {
 const CONTROL_LABELS: Record<string, string> = {
   Connect: "连接智能体",
   Refresh: "刷新",
-  Run: "运行",
+  Run: "Run",
   Search: "搜索",
   "Sync Agent state": "同步 AIASK 状态",
-  "Finance safe mode": "金融安全模式",
-  "Finance safe": "金融安全",
+  "Finance safe mode": "Finance safe",
+  "Finance safe": "Finance safe",
   "Hermes full mode": "Hermes full 模式",
   "Hermes full": "Hermes full",
-  "Run thread task": "运行线程任务",
+  "Run thread task": "Run",
   "Load run events": "加载运行事件",
-  "Load run events for selected task": "加载所选任务的运行事件",
+  "Load run events for selected task": "Load events for the selected run",
   "Generate sync plan": "生成同步计划",
   "Create approval intent": "创建审批意图",
   "Refresh capability review": "刷新能力评审",
@@ -1509,7 +1512,9 @@ const CONTROL_LABELS: Record<string, string> = {
   "Save profile": "保存 profile",
   "Save local profile": "保存画像",
   "Run safe probe": "运行安全探测",
+  "Run safe probe for agent_": "运行安全探测 agent_",
   "Fill example": "填充示例",
+  "Fill example for agent_": "为 agent_",
   Disable: "禁用",
   "Disable plugin": "禁用插件",
   Enable: "启用",
@@ -1530,9 +1535,16 @@ const CONTROL_LABELS: Record<string, string> = {
   "Run the first registered plugin tool": "运行第一个已注册插件工具",
   "Load plugin commands": "加载插件命令",
   "Test plugin command": "测试插件命令",
-  "Fill example for agent_factory_status": "为 agent_factory_status 填充示例",
-  "Fill example for agent_memory_search": "为 agent_memory_search 填充示例",
-  "Fill example for agent_quant_data_gate": "为 agent_quant_data_gate 填充示例",
+  "Disable plugin audit-plugin": "禁用插件 audit-plugin",
+  "Enable plugin audit-plugin": "启用插件 audit-plugin",
+  "Configure plugin audit-plugin": "配置插件 audit-plugin",
+  "Test plugin audit-plugin": "测试插件 audit-plugin",
+  "Test first plugin tool audit-plugin": "测试插件首个工具 audit-plugin",
+  "Load commands for plugin audit-plugin": "加载插件命令 audit-plugin",
+  "Inspect job 每日研究监控": "查看任务 每日研究监控",
+  "Pause job 每日研究监控": "暂停任务 每日研究监控",
+  "Run job 每日研究监控": "运行任务 每日研究监控",
+  "Delete job 每日研究监控": "删除任务 每日研究监控",
   "Search tools input": "搜索工具输入"
 };
 
@@ -1540,7 +1552,7 @@ const PLACEHOLDER_LABELS: Record<string, string> = {
   "resource uri": "资源 URI",
   "prompt name": "提示词名称",
   "OAuth server name": "OAuth 服务名称",
-  "Ask AIASK to research, code, inspect tools, or continue a session...": "让 AIASK 做研究、写代码、检查工具，或继续一个会话...",
+  "Ask AIASK to research, code, inspect tools, or continue a session...": "Ask AIASK to research, inspect tools, produce a report, or continue the selected thread...",
   "Search local sessions, responses, and memory": "搜索本地会话、回复和记忆",
   "Search tools": "搜索工具",
   "Search area, tool, platform...": "搜索领域、工具、平台...",
@@ -1575,6 +1587,14 @@ const LEGACY_REPLACEMENT_BUTTONS = [
   "前往 Runs / Events",
   "前往 Readiness / Health",
   "前往 Plugins / Skills",
+  "Open Workbench",
+  "Open Approvals",
+  "Open MCP / Connectors",
+  "Open Runs / Events",
+  "Open Readiness / Health",
+  "Open Plugins / Skills",
+  "Open Settings",
+  "Open Integrations",
 ];
 
 function viewLabel(name: string) {
@@ -1602,7 +1622,7 @@ Object.assign(VIEW_LABELS, {
   "Data & Sync": "Data",
   MCP: "MCP / Connectors",
   Skills: "Plugins / Skills",
-  Automation: "Automation",
+  Automation: "Automations",
   "Strategy Factory": "Strategy Factory",
   "Factor Factory": "Factor Factory",
   Incubation: "Incubation Factory",
@@ -1614,12 +1634,12 @@ Object.assign(VIEW_LABELS, {
   Diagnostics: "Diagnostics",
   "Agent Status": "Agent",
   Workflows: "Workflows",
-  Settings: "Settings / Mode"
+  Settings: "Settings"
 });
 
 Object.assign(CONTROL_LABELS, {
   Refresh: "刷新",
-  "Sync Agent state": "同步 AIASK 状态",
+  "Sync Agent state": "Refresh AIASK status",
   "Test connection": "测试连接",
   "Reset endpoint to default Agent endpoint": "恢复默认 Agent 端点",
   "Save profile": "保存 profile"
@@ -1628,13 +1648,13 @@ Object.assign(CONTROL_LABELS, {
 async function openOverview(page: Page) {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "session-first 主路径" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Thread-first workspace" })).toBeVisible();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toBeVisible();
 }
 
 async function openSettings(page: Page) {
   if (await page.getByRole("button", { name: "返回对话", exact: true }).count()) return;
-  await page.getByRole("navigation").getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
+  await page.getByRole("region", { name: "Workspace" }).getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
 }
 
 async function setControlToken(page: Page) {
@@ -1660,6 +1680,21 @@ async function clickShortcutByLabel(page: Page, label: string) {
   await shortcut.first().click();
 }
 
+async function openCollapsedNavGroup(page: Page, groupName: string, targetLabel: string) {
+  const navigation = page.getByRole("navigation");
+  const group = navigation.locator(`section[aria-label="${groupName}"]`);
+  if (!(await group.count())) return false;
+  const groupToggle = group.getByRole("button", { name: groupName, exact: true });
+  if (!(await group.getByRole("button", { name: targetLabel, exact: true }).count())) {
+    if (!(await groupToggle.count()) || !(await groupToggle.first().isVisible())) return false;
+    await groupToggle.click();
+  }
+  const target = group.getByRole("button", { name: targetLabel, exact: true });
+  if (!(await target.count())) return false;
+  await target.click();
+  return true;
+}
+
 async function openMainView(page: Page, name: string) {
   const backToChat = page.getByRole("button", { name: "返回对话", exact: true });
   if (name !== "Settings" && (await backToChat.count())) {
@@ -1668,6 +1703,11 @@ async function openMainView(page: Page, name: string) {
 
   if (name === "Agent" || name === "Workbench") {
     await page.getByRole("navigation").getByRole("button", { name: viewLabel("Agent"), exact: true }).click();
+    return;
+  }
+
+  if (name === "Settings") {
+    await openSettings(page);
     return;
   }
 
@@ -1703,6 +1743,9 @@ async function openMainView(page: Page, name: string) {
   if (await navigationButton.count()) {
     await navigationButton.click();
     return;
+  }
+  for (const groupName of ["Advanced Finance", "Advanced Ops", "Legacy / Advanced"]) {
+    if (await openCollapsedNavGroup(page, groupName, label)) return;
   }
   await page.getByRole("button", { name: label, exact: true }).click();
 }
@@ -1879,7 +1922,7 @@ function expectCleanInventory(inventory: FrontendInventory) {
 function assertMainButtonCoverage(
   inventory: FrontendInventory,
   covered: string[],
-  options: { structural?: string[]; gated?: string[] } = {}
+  options: { structural?: string[]; gated?: string[]; allowedPrefixes?: string[] } = {}
 ) {
   const allowed = new Set(
     [...covered, ...(options.structural || []), ...(options.gated || [])].flatMap((name) => [
@@ -1889,10 +1932,16 @@ function assertMainButtonCoverage(
       viewLabel(name)
     ])
   );
+  const allowedPrefixes = (options.allowedPrefixes || []).flatMap((prefix) => [
+    prefix,
+    controlLabel(prefix),
+    tabLabel(prefix),
+    viewLabel(prefix)
+  ]);
   const visibleButtonControls = inventory.controls.filter((control) => control.tag === "button" || control.tag === "a");
   const visibleButtonNames = uniqueNames(visibleButtonControls);
   const missing = visibleButtonNames
-    .filter((name) => !allowed.has(name))
+    .filter((name) => !allowed.has(name) && !allowedPrefixes.some((prefix) => name.startsWith(prefix)))
     .map((name) => {
       const control = visibleButtonControls.find((item) => item.name === name);
       return {
@@ -1952,7 +2001,7 @@ test("MCP panel gates controls without token and executes resource, prompt, and 
 
   await openMainView(page, "Capabilities");
   await openCapabilityTab(page, "MCP");
-  await expect(page.getByText("缺少控制令牌 Control token", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("缺少 Control token", { exact: false }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: controlLabel("Read MCP resource"), exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: controlLabel("Get MCP prompt"), exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: controlLabel("Start MCP OAuth flow"), exact: true })).toBeDisabled();
@@ -2060,7 +2109,7 @@ test("AI Tests panel runs model status, smoke, model list, and Workbench respons
 
   await openMainView(page, "Agent");
   await page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session...")).fill("请只回复 AIASK_OK");
-  await page.getByRole("button", { name: controlLabel("Run") }).click();
+  await page.getByRole("button", { name: controlLabel("Run"), exact: true }).click();
   await expect(page.getByRole("heading", { name: "智能体回复" })).toBeVisible();
   await expect(page.getByText("AIASK_OK").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "run.started" })).toBeVisible();
@@ -2069,7 +2118,7 @@ test("AI Tests panel runs model status, smoke, model list, and Workbench respons
   await expect(page.getByRole("heading", { name: "model.delta" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "run.completed" })).toBeVisible();
 
-  await page.getByRole("button", { name: controlLabel("Load run events for selected task") }).click();
+  await page.getByRole("button", { name: controlLabel("Load run events for selected task"), exact: true }).click();
   await expect(page.getByRole("heading", { name: "run.completed" }).first()).toBeVisible();
 });
 
@@ -2175,10 +2224,10 @@ test("Unified control console opens every primary page and exercises safe mock c
   await page.getByRole("button", { name: controlLabel("Create job") }).click();
   await expect(automationResult).toContainText("created");
   const jobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" });
-  await jobRow.getByRole("button", { name: controlLabel("Inspect") }).click();
-  await jobRow.getByRole("button", { name: controlLabel("Pause") }).click();
+  await jobRow.getByRole("button", { name: controlLabel("Inspect job 每日研究监控") }).click();
+  await jobRow.getByRole("button", { name: controlLabel("Pause job 每日研究监控") }).click();
   await expect(automationResult).toContainText("updated");
-  await jobRow.getByRole("button", { name: controlLabel("Run") }).click();
+  await jobRow.getByRole("button", { name: controlLabel("Run job 每日研究监控") }).click();
   await expect(automationResult).toContainText("completed");
   await expect(jobRow.getByRole("button", { name: controlLabel("Delete") })).toHaveCount(0);
 
@@ -2187,8 +2236,8 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("heading", { name: "自动化管理" }).first()).toBeVisible();
   const managedAutomationResult = page.locator(".capability-section").filter({ hasText: "运行输出" });
   const managedJobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" });
-  await expect(managedJobRow.getByRole("button", { name: controlLabel("Delete") })).toHaveCount(1);
-  await managedJobRow.getByRole("button", { name: controlLabel("Delete") }).click();
+  await expect(managedJobRow.getByRole("button", { name: controlLabel("Delete job 每日研究监控") })).toHaveCount(1);
+  await managedJobRow.getByRole("button", { name: controlLabel("Delete job 每日研究监控") }).click();
   await expect(managedAutomationResult).toContainText("deleted");
 
   await openMainView(page, "Strategy Factory");
@@ -2197,14 +2246,14 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByText("STRATEGY_FACTORY_INTENT_CREATED")).toBeVisible();
 
   await openMainView(page, "Factor Factory");
-  await expect(page.getByRole("heading", { name: "因子挖掘与活跃池" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Factor mining and active pool" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Create run intent") }).click();
   await expect(page.getByText("FACTOR_RUN_INTENT_CREATED")).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Maintenance intent") }).click();
   await expect(page.getByText("FACTOR_MAINTENANCE_INTENT_CREATED")).toBeVisible();
 
   await openMainView(page, "Incubation");
-  await expect(page.getByRole("heading", { name: "生命周期与命中率控制" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Lifecycle and hit-rate control" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Run intent"), exact: true }).click();
   await expect(page.getByText("INCUBATION_RUN_ONCE_INTENT_CREATED")).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Dry-run intent") }).click();
@@ -2233,10 +2282,10 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("heading", { name: "应用绑定与集成" })).toBeVisible();
   await openCapabilityTab(page, "Plugins");
   await expect(page.getByRole("heading", { name: "原生插件与技能包治理" })).toBeVisible();
-  await page.getByRole("button", { name: controlLabel("Disable") }).click();
-  await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
-  await page.getByRole("button", { name: controlLabel("Test tool"), exact: true }).click();
+  await page.getByRole("button", { name: controlLabel("Test plugin audit-plugin"), exact: true }).click();
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_tool_tested");
+  await page.getByRole("button", { name: controlLabel("Disable plugin audit-plugin") }).click();
+  await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
 
   await openMainView(page, "Event Console");
   await expect(page.getByRole("heading", { name: "生命周期、风险与孵化事件" })).toBeVisible();
@@ -2307,10 +2356,12 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Hermes full",
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
-    "run_fixture completed / 工具 0 / 审批 0",
+    "run_fixture completed / tools 0 / approvals 0",
     "Readiness",
-    "Tools / Intents / Approvals",
-    "MCP / Connectors",
+    "Projects / Contexts",
+    "Approvals",
+    "Finance Lab",
+    "Integrations",
     "Gateway",
     "Gateway gated",
     "Plugins / Skills gated",
@@ -2367,10 +2418,12 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Hermes full mode",
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
-    "run_fixture completed / 工具 0 / 审批 0",
+    "run_fixture completed / tools 0 / approvals 0",
     "Readiness",
-    "Tools / Intents / Approvals",
-    "MCP / Connectors",
+    "Projects / Contexts",
+    "Approvals",
+    "Finance Lab",
+    "Integrations",
     "Gateway",
     "Gateway ready",
     "Plugins / Skills ready",
@@ -2435,11 +2488,11 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Install",
     "Update",
     "Delete",
-    "Disable plugin",
-    "Configure",
-    "Test tool",
-    "Run the first registered plugin tool",
-    "Load plugin commands",
+    "Disable plugin audit-plugin",
+    "Configure plugin audit-plugin",
+    "Test plugin audit-plugin",
+    "Test first plugin tool audit-plugin",
+    "Load commands for plugin audit-plugin",
     "Save plugin"
   ]);
 
@@ -2460,18 +2513,18 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await clickAndRecord(report, page, "Automation", "Refresh", "JOBS_LOADED");
   await clickAndRecord(report, page, "Automation", "Create job", "created");
   const jobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" });
-  await clickAndRecord(report, page, "Automation", "Inspect", "每日研究监控", jobRow);
-  await clickAndRecord(report, page, "Automation", "Pause", "updated", jobRow);
-  await clickAndRecord(report, page, "Automation", "Run", "completed", jobRow);
+  await clickAndRecord(report, page, "Automation", "Inspect job 每日研究监控", "每日研究监控", jobRow);
+  await clickAndRecord(report, page, "Automation", "Pause job 每日研究监控", "updated", jobRow);
+  await clickAndRecord(report, page, "Automation", "Run job 每日研究监控", "completed", jobRow);
   await expect(jobRow.getByRole("button", { name: controlLabel("Delete") })).toHaveCount(0);
-  assertMainButtonCoverage(automationInventory, ["Refresh", "Create job", "Inspect", "Pause", "Run"]);
+  assertMainButtonCoverage(automationInventory, ["Refresh", "Create job", "Inspect job 每日研究监控", "Pause job 每日研究监控", "Run job 每日研究监控"]);
 
   await openSettings(page);
   await page.getByRole("button", { name: "自动化管理", exact: true }).click();
   const automationManagementInventory = await recordInventory(report, page, "Automation management");
   const managedJobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" });
-  await clickAndRecord(report, page, "Automation management", "Delete", "deleted", managedJobRow);
-  assertMainButtonCoverage(automationManagementInventory, ["Refresh", "Create job", "Inspect", "Pause", "Run", "Delete"], {
+  await clickAndRecord(report, page, "Automation management", "Delete job 每日研究监控", "deleted", managedJobRow);
+  assertMainButtonCoverage(automationManagementInventory, ["Refresh", "Create job", "Inspect job 每日研究监控", "Pause job 每日研究监控", "Run job 每日研究监控", "Delete job 每日研究监控"], {
     structural: SETTINGS_STRUCTURE_BUTTONS
   });
 
@@ -2514,12 +2567,8 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await page.getByPlaceholder(placeholderLabel("Search tools")).fill("factory");
   await expect(page.getByText("agent_factory_status")).toBeVisible();
   report.actions.push({ page: "Tools", control: "Search tools input", result: "typed", note: "agent_factory_status visible" });
-  assertMainButtonCoverage(toolsInventory, [
-    "Fill example for agent_factory_status",
-    "Fill example for agent_memory_search",
-    "Fill example for agent_quant_data_gate",
-    "Run safe probe"
-  ], {
+  assertMainButtonCoverage(toolsInventory, [], {
+    allowedPrefixes: ["Fill example for agent_", "Run safe probe for agent_"],
     structural: LEGACY_REPLACEMENT_BUTTONS
   });
 
@@ -2548,17 +2597,16 @@ test("Full frontend matrix inventories every page, classifies every button, and 
 
   await openCapabilityTab(page, "Plugins");
   const pluginsInventory = await recordInventory(report, page, "Capabilities / Plugins");
-  await clickAndRecord(report, page, "Capabilities / Plugins", "Disable");
-  await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
-  await clickAndRecord(report, page, "Capabilities / Plugins", "Test tool");
+  await clickAndRecord(report, page, "Capabilities / Plugins", "Test plugin audit-plugin");
   await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_tool_tested");
+  await clickAndRecord(report, page, "Capabilities / Plugins", "Disable plugin audit-plugin");
+  await expect(page.locator(".raw-details").filter({ hasText: "原始插件 payload" })).toContainText("plugin_updated");
   assertMainButtonCoverage(pluginsInventory, [
-    "Disable",
-    "Disable plugin",
-    "Configure",
-    "Test tool",
-    "Run the first registered plugin tool",
-    "Load plugin commands",
+    "Disable plugin audit-plugin",
+    "Configure plugin audit-plugin",
+    "Test plugin audit-plugin",
+    "Test first plugin tool audit-plugin",
+    "Load commands for plugin audit-plugin",
     "Save plugin"
   ], {
     structural: ["Refresh capability review", "Overview", "Coverage Matrix", "Connectors", "Hermes", "MCP", "Strategy Factory", "Incubation", "Skills", "Plugins", "AI Tests"]

@@ -52,6 +52,160 @@ def _enrich_governed_candidate(
     return payload
 
 
+def _compact_active_pool_factor_candidate(
+    builder_cls,
+    factor: dict[str, Any],
+    *,
+    snapshot_date: date | None,
+) -> dict[str, Any] | None:
+    payload = dict(factor or {})
+    name = str(payload.get("name") or payload.get("factor_name") or payload.get("factor_id") or "").strip()
+    family = str(payload.get("family") or name).strip().lower()
+    if not name or not family:
+        return None
+    validation_summary = dict(payload.get("validation_summary") or {})
+    evidence_summary = dict(
+        validation_summary.get("evidence_summary")
+        or validation_summary.get("cross_section_summary")
+        or validation_summary.get("metrics")
+        or {}
+    )
+    quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+    quality_score = builder_cls._safe_float(
+        validation_summary.get("quality_score"),
+        builder_cls._safe_float(payload.get("fitness")),
+    )
+    total_score = round(quality_score * 100.0, 4) if 0.0 < quality_score <= 1.0 else round(quality_score, 4)
+    factor_id = str(payload.get("factor_id") or name).strip()
+    latest_validation_at = (
+        payload.get("last_evaluated_at")
+        or payload.get("updated_at")
+        or payload.get("admission_date")
+        or payload.get("created_at")
+    )
+    candidate = {
+        "artifact_id": factor_id,
+        "name": name,
+        "family": family,
+        "registry_stage": "governed",
+        "pool_entry_mode": "active_factor_pool_fallback",
+        "source": "factor_mining_active_pool",
+        "source_validation_artifact_id": (
+            str(validation_summary.get("artifact_id") or validation_summary.get("validation_artifact_id") or factor_id).strip()
+            or None
+        ),
+        "latest_validation_at": latest_validation_at,
+        "expected_regime": list(payload.get("expected_regime") or []),
+        "expected_holding_period": payload.get("expected_holding_period"),
+        "total_score": total_score,
+        "factor_pool": {
+            "factor_id": factor_id,
+            "status": payload.get("status"),
+            "quality_status": quality_status or None,
+            "fitness": payload.get("fitness"),
+        },
+        "risk_audit": {
+            "required_audits_complete": quality_status == "promoted",
+            "lookahead_available": bool(evidence_summary),
+            "multiple_testing_available": bool(
+                evidence_summary.get("multiple_testing_available")
+                or evidence_summary.get("deflated_sharpe")
+                or evidence_summary.get("pbo")
+            ),
+            "overall_risk_level": "low" if quality_status == "promoted" else "medium",
+            "blocked": False,
+        },
+    }
+    return _enrich_governed_candidate(builder_cls, candidate, snapshot_date=snapshot_date)
+
+
+def apply_active_factor_pool_fallback(
+    builder_cls,
+    runtime_context: dict[str, Any],
+    factory_pool_factors: list[dict[str, Any]],
+    *,
+    snapshot_date: date | None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if list(runtime_context.get("governed_top_candidates") or []):
+        return list(runtime_context.get("governed_top_candidates") or [])
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for factor in list(factory_pool_factors or []):
+        if not isinstance(factor, dict):
+            continue
+        candidate = _compact_active_pool_factor_candidate(
+            builder_cls,
+            factor,
+            snapshot_date=snapshot_date,
+        )
+        if not candidate:
+            continue
+        key = str(candidate.get("artifact_id") or candidate.get("name") or "").strip()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        candidates.append(candidate)
+        if len(candidates) >= max(1, int(limit or 20)):
+            break
+    if not candidates:
+        return []
+
+    family_counts: dict[str, int] = {}
+    for item in candidates:
+        family = str(item.get("family") or "").strip().lower()
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
+    family_summary = [
+        {"family": family, "count": count}
+        for family, count in sorted(family_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    latest_at = None
+    for item in candidates:
+        value = item.get("latest_validation_at")
+        if value and (latest_at is None or str(value) > str(latest_at)):
+            latest_at = value
+
+    active_candidate_pool = dict(runtime_context.get("active_candidate_pool") or {})
+    active_candidate_pool.update(
+        {
+            "active_pool_mode": "active_factor_pool_fallback",
+            "count": len(candidates),
+            "source_count": max(int(active_candidate_pool.get("source_count") or 0), len(candidates)),
+            "strict_count": len(candidates),
+            "provisional_count": 0,
+            "top_candidates": candidates,
+            "family_summary": family_summary,
+            "latest_active_candidate_updated_at": latest_at,
+            "fallback_source": "factor_mining_active_pool",
+        }
+    )
+    runtime_context["active_candidate_pool"] = active_candidate_pool
+    runtime_context["governed_top_candidates"] = candidates
+    runtime_context["governed_candidate_pool_mode"] = "active_factor_pool_fallback"
+    runtime_context["governed_candidate_pool_provisional"] = False
+    runtime_context["governed_candidate_pool_strict_count"] = len(candidates)
+    runtime_context["governed_candidate_pool_provisional_count"] = 0
+    runtime_context["governed_source_candidate_count"] = max(
+        int(runtime_context.get("governed_source_candidate_count") or 0),
+        len(candidates),
+    )
+    runtime_context["governed_active_registry_candidate_count"] = max(
+        int(runtime_context.get("governed_active_registry_candidate_count") or 0),
+        len(candidates),
+    )
+    runtime_context["governed_family_summary"] = family_summary
+    runtime_context["governed_latest_candidate_at"] = latest_at
+    runtime_context["governed_freshness_days"] = builder_cls._days_since(
+        builder_cls._parse_date(latest_at),
+        reference_date=snapshot_date,
+    )
+    runtime_context["active_factor_pool_fallback"] = True
+    runtime_context["active_factor_pool_fallback_count"] = len(candidates)
+    return candidates
+
+
 async def load_research_runtime_context(
     builder_cls,
     db,

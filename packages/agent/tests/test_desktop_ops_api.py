@@ -258,3 +258,57 @@ def test_desktop_trade_prediction_routes_use_agent_read_facades(tmp_path, monkey
     assert outcomes.json()["data"]["items"][0]["score_version"] == "trade_prediction_score_v2"
     assert matrix.status_code == 200
     assert matrix.json()["data"]["rows"][0]["dimension"] == "family"
+
+
+def test_desktop_stock_radar_routes_use_agent_read_facades(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_stock_radar_facade(loader, params=None):
+        payload = dict(params or {})
+        loader_name = getattr(loader, "__name__", "")
+        calls.append((loader_name, payload))
+        if loader_name == "_load_status_handler":
+            return {
+                "success": True,
+                "data": {"object": "stock_radar.status", "status": "completed", "latest_run": {"run_id": payload.get("run_id")}},
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        if loader_name == "_load_candidates_handler":
+            return {
+                "success": True,
+                "data": {
+                    "object": "stock_radar.candidates",
+                    "candidates": [{"symbol": payload.get("symbol"), "tier": payload.get("tier")}],
+                    "count": 1,
+                },
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        if loader_name == "_load_digest_handler":
+            return {
+                "success": True,
+                "data": {"object": "stock_radar.digest", "channels": payload.get("channels"), "digest_preview": "preview"},
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
+        raise AssertionError(loader_name)
+
+    monkeypatch.setattr("aiask_agent.adapters.stock_radar._call_db_handler", fake_stock_radar_facade)
+    client = _client(tmp_path, monkeypatch)
+
+    status = client.get("/v1/desktop/stock-radar/status?run_id=radar_1&limit=5")
+    candidates = client.get("/v1/desktop/stock-radar/candidates?run_id=radar_1&tier=alert&symbol=600000&min_score=80&limit=3")
+    digest = client.get("/v1/desktop/stock-radar/digest?run_id=radar_1&channels=wecom,telegram")
+
+    assert status.status_code == 200
+    assert status.json()["success"] is True
+    assert candidates.status_code == 200
+    assert candidates.json()["data"]["candidates"] == [{"symbol": "600000", "tier": "alert"}]
+    assert digest.status_code == 200
+    assert digest.json()["data"]["channels"] == ["wecom", "telegram"]
+    assert calls == [
+        ("_load_status_handler", {"run_id": "radar_1", "limit": 5}),
+        ("_load_candidates_handler", {"run_id": "radar_1", "tier": "alert", "symbol": "600000", "min_score": 80.0, "limit": 3}),
+        ("_load_digest_handler", {"run_id": "radar_1", "limit": 20, "channels": ["wecom", "telegram"]}),
+    ]

@@ -27,6 +27,9 @@ def test_registry_exposes_only_aiask_financial_allowlist(tmp_path) -> None:
         "agent_trade_prediction_status",
         "agent_trade_prediction_outcomes",
         "agent_trade_prediction_matrix",
+        "agent_stock_radar_status",
+        "agent_stock_radar_candidates",
+        "agent_stock_radar_digest",
         "agent_action_intent_create",
         "agent_action_intent_get",
     } <= names

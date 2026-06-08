@@ -105,7 +105,7 @@ describe("ToolCatalog", () => {
     expect(screen.getByText("参数")).toBeInTheDocument();
     expect(screen.getByText("agent_plain")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("填充示例"));
+    fireEvent.click(screen.getByRole("button", { name: "为 agent_mcp_akshare_get_realtime_quote 填充示例" }));
     expect(screen.getByPlaceholderText("code")).toHaveValue("600519");
 
     const search = screen.getByPlaceholderText("搜索工具");

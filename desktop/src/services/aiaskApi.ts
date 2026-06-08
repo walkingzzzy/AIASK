@@ -403,6 +403,60 @@ export class AiaskApi {
     return this.readOnlyTool<Record<string, unknown>>("agent_factory_event_outbox_status", body);
   }
 
+  stockRadarStatus(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      params.set(key, String(value));
+    }
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
+      this.endpoint,
+      `/v1/desktop/stock-radar/status${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  stockRadarCandidates(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      params.set(key, String(value));
+    }
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
+      this.endpoint,
+      `/v1/desktop/stock-radar/candidates${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  stockRadarDigest(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === "") continue;
+      params.set(key, Array.isArray(value) ? value.join(",") : String(value));
+    }
+    const query = params.toString();
+    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
+      this.endpoint,
+      `/v1/desktop/stock-radar/digest${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  stockRadarRunIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent("stock_radar.run_once", params, rationale || "Run AIASK stock radar once from Desktop.");
+  }
+
+  stockRadarPushDigestIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent("stock_radar.push_digest", params, rationale || "Create a stock radar digest delivery intent from Desktop.");
+  }
+
+  stockRadarScheduleUpdateIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
+    return this.createActionIntent("stock_radar.schedule_update", params, rationale || "Update stock radar schedule from Desktop.");
+  }
+
   // Write actions go through the ActionIntent chain enforced by PR-F:
   //   POST /intents (create) → POST /intents/{id}/confirm → adapter.
   // Desktop never touches ``ACTION_HANDLERS`` directly; it stays on

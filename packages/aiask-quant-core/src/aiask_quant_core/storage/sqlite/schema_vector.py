@@ -264,6 +264,71 @@ async def init_vector_tables(conn, sqlite_python_enabled: bool) -> None:
             ON market_events_normalized(event_type, evidence_time DESC);
         CREATE INDEX IF NOT EXISTS idx_market_events_normalized_checksum
             ON market_events_normalized(checksum);
+        CREATE TABLE IF NOT EXISTS stock_radar_runs (
+            run_id TEXT PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'dry_run',
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            summary TEXT NOT NULL DEFAULT '{}',
+            degraded_flags TEXT NOT NULL DEFAULT '[]',
+            error TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_runs_status
+            ON stock_radar_runs(status, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_runs_mode
+            ON stock_radar_runs(mode, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS stock_radar_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES stock_radar_runs(run_id) ON DELETE CASCADE,
+            symbol TEXT NOT NULL,
+            stock_name TEXT,
+            tier TEXT NOT NULL DEFAULT 'observe',
+            radar_score REAL NOT NULL DEFAULT 0,
+            event_id TEXT,
+            event_type TEXT NOT NULL DEFAULT 'unknown',
+            direction TEXT NOT NULL DEFAULT 'neutral',
+            summary TEXT,
+            source_doc_uids TEXT NOT NULL DEFAULT '[]',
+            source_chain TEXT NOT NULL DEFAULT '[]',
+            extraction TEXT NOT NULL DEFAULT '{}',
+            confirmations TEXT NOT NULL DEFAULT '{}',
+            risk_flags TEXT NOT NULL DEFAULT '[]',
+            push_status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_candidates_run
+            ON stock_radar_candidates(run_id, radar_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_candidates_tier
+            ON stock_radar_candidates(tier, radar_score DESC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_candidates_symbol
+            ON stock_radar_candidates(symbol, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_candidates_event
+            ON stock_radar_candidates(event_id);
+
+        CREATE TABLE IF NOT EXISTS stock_radar_push_logs (
+            push_id TEXT PRIMARY KEY,
+            run_id TEXT REFERENCES stock_radar_runs(run_id) ON DELETE SET NULL,
+            channel TEXT NOT NULL,
+            platform TEXT,
+            target TEXT,
+            status TEXT NOT NULL DEFAULT 'preview',
+            message_preview TEXT,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            sent_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_push_logs_run
+            ON stock_radar_push_logs(run_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_radar_push_logs_status
+            ON stock_radar_push_logs(status, created_at DESC);
         CREATE TABLE IF NOT EXISTS market_doc_chunks (
             id INTEGER PRIMARY KEY,
             doc_id INTEGER NOT NULL REFERENCES market_documents(id) ON DELETE CASCADE,

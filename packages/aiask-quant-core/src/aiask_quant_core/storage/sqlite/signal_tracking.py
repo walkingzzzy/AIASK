@@ -7,8 +7,6 @@ import random
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +99,8 @@ def _calc_bucket_stats(
             "forward_ic": None,
             "forward_sharpe": None,
         }
+
+    import numpy as np
 
     signals_arr = np.array([float(row.get("signal") or 0.0) for row in records], dtype=float)
     returns_arr = np.array([float(row.get("actual_return") or 0.0) for row in records], dtype=float)

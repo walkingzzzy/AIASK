@@ -95,8 +95,13 @@ def resolve_governed_pool_state(factor_summary: dict[str, Any] | None = None) ->
         active_candidate_count > 0
         and (
             factor_source_mode == "governed_candidate_pool"
+            or factor_source_mode == "active_factor_pool_fallback"
             or governed_source_candidate_count > 0
-            or governed_candidate_pool_mode in {"strict_governed", "provisional_validated_watch"}
+            or governed_candidate_pool_mode in {
+                "strict_governed",
+                "provisional_validated_watch",
+                "active_factor_pool_fallback",
+            }
         )
     )
     return {

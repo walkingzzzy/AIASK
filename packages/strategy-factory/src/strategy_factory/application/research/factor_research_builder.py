@@ -40,6 +40,7 @@ from ._feedback_routes import (
 )
 from ._research_artifact_payload import build_factor_research_artifact_payload
 from ._research_build_steps import (
+    apply_active_factor_pool_fallback,
     build_ranked_factor_context,
     load_research_runtime_context,
     resolve_factor_names,
@@ -104,11 +105,42 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
             from ...infrastructure.mcp_services import get_factor_pool_gateway
             gateway = get_factor_pool_gateway()
             factors = await gateway.get_active_factors(limit=50)
+            if not factors:
+                pool_rows = await gateway.get_active_factors(
+                    limit=100,
+                    include_quarantine=True,
+                )
+                factors = [
+                    dict(item or {})
+                    for item in list(pool_rows or [])
+                    if cls._is_eligible_active_pool_factor(item)
+                ][:50]
             cls._cache_set(cache_key, factors, ttl_category="governed_pool")
             return factors
         except Exception:
             # 工厂不可用时静默降级
             return []
+
+    @classmethod
+    def _is_eligible_active_pool_factor(cls, item: dict[str, Any]) -> bool:
+        payload = dict(item or {})
+        if str(payload.get("status") or "").strip().lower() != "active":
+            return False
+        if not str(payload.get("expression_dsl") or "").strip():
+            return False
+        validation_summary = dict(payload.get("validation_summary") or {})
+        quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+        if quality_status == "quarantine":
+            return False
+        if quality_status == "promoted":
+            return True
+        grade = str(
+            payload.get("admission_grade")
+            or validation_summary.get("grade")
+            or dict(validation_summary.get("rating") or {}).get("grade")
+            or ""
+        ).strip().upper()
+        return grade in {"A", "B"}
 
     @classmethod
     async def _load_factor_history_meta(
@@ -382,6 +414,11 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
         # ── Factor Mining Factory Pool 集成 ──────────────────────────
         factory_pool_factors = await cls._load_factory_pool_factors()
         if factory_pool_factors:
+            eligible_factory_pool_factors = [
+                dict(item or {})
+                for item in list(factory_pool_factors or [])
+                if cls._is_eligible_active_pool_factor(item)
+            ]
             # 将工厂池中的活跃因子合并到 governed_top_candidates
             for pool_factor in factory_pool_factors:
                 factor_name = pool_factor.get("name", "")
@@ -389,6 +426,13 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
                     names.append(factor_name)
             runtime_context["factory_pool_factors"] = factory_pool_factors
             runtime_context["factory_pool_size"] = len(factory_pool_factors)
+            if not governed_top_candidates:
+                governed_top_candidates = apply_active_factor_pool_fallback(
+                    cls,
+                    runtime_context,
+                    eligible_factory_pool_factors,
+                    snapshot_date=snapshot_date,
+                )
         # ── End Factory Pool 集成 ────────────────────────────────────
 
         factor_context = build_ranked_factor_context(

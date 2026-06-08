@@ -1,6 +1,3 @@
-/**
- * FE-110: WorkbenchView 组件测试
- */
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +20,7 @@ describe("WorkbenchView", () => {
       status: "online",
       service: "aiask",
     } as HealthDetailed,
+    mockMode: true,
     onAgentModeChange: vi.fn(),
     onComposerKeyDown: vi.fn(),
     onOpenView: vi.fn(),
@@ -31,7 +29,7 @@ describe("WorkbenchView", () => {
     onSessionIdChange: vi.fn(),
     onSubmit: vi.fn(),
     prompt: "",
-    profileName: "测试用户",
+    profileName: "Test user",
     recentRuns: [] as DesktopRunSummary[],
     selectedThread: null as TaskThread | null,
     sessionId: "",
@@ -42,28 +40,22 @@ describe("WorkbenchView", () => {
     userId: "local",
   };
 
-  it("应该渲染 Workbench 标题", () => {
+  it("renders the task object header", () => {
     render(<WorkbenchView {...mockProps} />);
     expect(screen.getByText("AIASK Workbench")).toBeInTheDocument();
-  });
-
-  it("应该显示端点信息", () => {
-    render(<WorkbenchView {...mockProps} />);
     expect(screen.getByText("http://127.0.0.1:8767")).toBeInTheDocument();
+    expect(screen.getAllByText("mock").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Test user/).length).toBeGreaterThan(0);
   });
 
-  it("应该显示用户信息", () => {
-    render(<WorkbenchView {...mockProps} />);
-    expect(screen.getByText(/测试用户/)).toBeInTheDocument();
-    expect(screen.getByText(/local/)).toBeInTheDocument();
-  });
-
-  it("应该显示当前模式", () => {
+  it("shows current mode and access summary", () => {
     render(<WorkbenchView {...mockProps} />);
     expect(screen.getAllByText("finance_safe").length).toBeGreaterThan(0);
+    expect(screen.getByText("Access")).toBeInTheDocument();
+    expect(screen.getByText("safe mode")).toBeInTheDocument();
   });
 
-  it("应该显示最近会话区域", () => {
+  it("shows recent sessions and runs", () => {
     const summaryWithSessions: DesktopWorkbenchSummary = {
       access: {
         full_mode_active: false,
@@ -78,18 +70,11 @@ describe("WorkbenchView", () => {
       recent_sessions: [
         {
           session_id: "sess_001",
-          title: "测试会话",
+          title: "Test session",
           last_message_at: "2026-06-04T10:00:00Z",
         },
       ],
     };
-
-    render(<WorkbenchView {...mockProps} summary={summaryWithSessions} />);
-    expect(screen.getByText("最近会话")).toBeInTheDocument();
-    expect(screen.getByText("测试会话")).toBeInTheDocument();
-  });
-
-  it("应该显示最近运行摘要", () => {
     const runs: DesktopRunSummary[] = [
       {
         run_id: "run_001",
@@ -100,12 +85,14 @@ describe("WorkbenchView", () => {
       },
     ];
 
-    render(<WorkbenchView {...mockProps} recentRuns={runs} />);
-    expect(screen.getByText("最近运行")).toBeInTheDocument();
-    expect(screen.getByText("run_001")).toBeInTheDocument();
+    render(<WorkbenchView {...mockProps} summary={summaryWithSessions} recentRuns={runs} />);
+    expect(screen.getByText("Recent sessions")).toBeInTheDocument();
+    expect(screen.getByText("Test session")).toBeInTheDocument();
+    expect(screen.getByText("Recent runs")).toBeInTheDocument();
+    expect(screen.getAllByText("run_001").length).toBeGreaterThan(0);
   });
 
-  it("应该显示待处理队列", () => {
+  it("shows operational queue and context actions", () => {
     const summaryWithQueues: DesktopWorkbenchSummary = {
       access: {
         full_mode_active: false,
@@ -121,54 +108,47 @@ describe("WorkbenchView", () => {
     };
 
     render(<WorkbenchView {...mockProps} summary={summaryWithQueues} />);
-    expect(screen.getByText("待处理队列")).toBeInTheDocument();
+    expect(screen.getByText("Operational queue")).toBeInTheDocument();
     expect(screen.getByText("Intents")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getAllByText("Approvals").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Projects / Contexts").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Finance Lab").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Integrations").length).toBeGreaterThan(0);
   });
 
-  it("应该显示快速链接", () => {
-    render(<WorkbenchView {...mockProps} />);
-    expect(screen.getAllByText("Readiness").length).toBeGreaterThan(0);
-    expect(screen.getByText("Tools / Intents / Approvals")).toBeInTheDocument();
-    expect(screen.getByText("MCP / Connectors")).toBeInTheDocument();
-    expect(screen.getAllByText("Gateway").length).toBeGreaterThan(0);
-  });
-
-  it("Hermes full 模式需要 control token", () => {
+  it("shows Hermes full guidance when control token is missing", () => {
     render(<WorkbenchView {...mockProps} agentMode="hermes_full" controlToken="" />);
-    expect(screen.getByText(/Hermes full 模式需要先在 Settings/)).toBeInTheDocument();
+    expect(screen.getByText(/Hermes full requires a Control token/)).toBeInTheDocument();
   });
 
-  it("Full mode 激活时应显示可用状态", () => {
-    const summaryWithFullMode: DesktopWorkbenchSummary = {
-      access: {
-        full_mode_active: true,
-        sessions_admin_available: true,
-      },
-      queues: {
-        pending_intents: 0,
-        pending_approvals: 0,
-        gateway_failed: 0,
-        mcp_degraded: 0,
-      },
-      recent_sessions: [],
+  it("shows artifact and review panels", () => {
+    const thread: TaskThread = {
+      id: "thread_1",
+      title: "Review a strategy",
+      prompt: "Analyze strategy output",
+      createdAt: "2026-06-08T10:00:00Z",
+      status: "queued",
+      sessionId: "sess_1",
+      runId: "run_1"
     };
 
-    render(<WorkbenchView {...mockProps} summary={summaryWithFullMode} controlToken="test-control" />);
-    expect(screen.getByText("可用")).toBeInTheDocument();
+    render(<WorkbenchView {...mockProps} selectedThread={thread} />);
+    expect(screen.getByText("Task artifacts")).toBeInTheDocument();
+    expect(screen.getByText("Review queue")).toBeInTheDocument();
+    expect(screen.getAllByText("Review a strategy").length).toBeGreaterThan(0);
   });
 
-  it("应该显示工具数量", () => {
+  it("shows tool count", () => {
     const tools: ToolCatalogItem[] = [
       {
         name: "agent_test",
         capability: "test",
-        description: "测试工具",
+        description: "test tool",
         side_effect: "read_only",
       },
     ];
 
     render(<WorkbenchView {...mockProps} tools={tools} />);
-    expect(screen.getByText("1 个工具可用")).toBeInTheDocument();
+    expect(screen.getByText("1 tools available")).toBeInTheDocument();
   });
 });

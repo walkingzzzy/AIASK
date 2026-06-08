@@ -1,7 +1,7 @@
 import { Eye, PlugZap, RefreshCw, ServerCog, TestTubeDiagonal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, MetricCard, StatusBadge, compact, localizeBlockedReason, shortText } from "../../components/shared";
+import { GatedState, JsonPanel, MetricCard, RawEvidencePanel, StatusBadge, compact, localizeBlockedReason, shortText } from "../../components/shared";
 import { useCapabilityWorkbench } from "../../hooks/useCapabilityWorkbench";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { CapabilityWorkbenchPayload, ConnectorDetail } from "../../types";
@@ -151,9 +151,11 @@ export function McpConnectorsPage({
           </div>
 
           {!controlToken.trim() && (
-            <div className="notice warn">
-              {localizeBlockedReason("control token required") || "MCP 和 connectors 管理需要 Control token。"}
-            </div>
+            <GatedState
+              reason={localizeBlockedReason("control token required") || "MCP 和 connectors 管理需要 Control token。"}
+              status="gated"
+              title="连接器管理受限"
+            />
           )}
 
           <div className="diagnostics-summary wide">
@@ -168,10 +170,11 @@ export function McpConnectorsPage({
           </div>
 
           {missingAuth.length ? (
-            <div className="notice warn">
-              <strong>MCP auth missing</strong>
-              <span>{missingAuth.join(", ")}</span>
-            </div>
+            <GatedState
+              reason={`MCP 授权缺失：${missingAuth.join(", ")}`}
+              status="unconfigured"
+              title="MCP 授权未配置"
+            />
           ) : null}
 
           <section className="capability-grid two">
@@ -350,10 +353,7 @@ export function McpConnectorsPage({
               ) : (
                 <p className="muted">Select a connector or run a test.</p>
               )}
-              <details className="raw-details" open={Boolean(connectorResult)}>
-                <summary>Connector raw result</summary>
-                <JsonPanel value={{ selectedConnector, connectorResult, connectorSummary }} />
-              </details>
+              <RawEvidencePanel title="Connector raw result" value={{ selectedConnector, connectorResult, connectorSummary }} />
             </div>
           </section>
 
